@@ -1,0 +1,42 @@
+{
+  "_comment": "agent-webhook-bridge — Claude Code hooks for surfacing the inbox into conversation context. Append to your existing ~/.claude/settings.json's 'hooks' object (or merge if the keys already exist). Point the path at YOUR install's artisan (each agent is its own Laravel install, so the install dir selects the agent — there is no --config flag).",
+  "_dl072_note": "bridge:inbox auto-detects Claude Code's hook stdin JSON (parses hook_event_name) and wraps output in the {hookSpecificOutput: {hookEventName, additionalContext}} envelope for events that support context injection (SessionStart, Setup, SubagentStart, UserPromptSubmit, UserPromptExpansion, PreToolUse, PostToolUse, PostToolUseFailure, PostToolBatch). Plain stdout from those events reaches the debug log only and never the model — the v0.4.0..v0.6.0 silent surfacing bug. Stop and Notification do NOT support additionalContext per the hooks spec; bridge:inbox still fires there for the seen-dedup side effect, but surface text reaches the debug log only. Auto-detection is the default (--hook-format=auto); force with --hook-format=claude-code|plain. The id-based inbox-seen.json dedup makes re-running on every PreToolUse naturally idempotent (silent when nothing is unseen), so no throttle flag is needed.",
+
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "php /home/youragent/agent-webhook-bridge/artisan bridge:inbox"
+          }
+        ]
+      }
+    ],
+
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "php /home/youragent/agent-webhook-bridge/artisan bridge:inbox"
+          }
+        ]
+      }
+    ],
+
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "php /home/youragent/agent-webhook-bridge/artisan bridge:inbox"
+          }
+        ]
+      }
+    ]
+  }
+}

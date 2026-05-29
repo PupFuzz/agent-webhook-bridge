@@ -1,0 +1,266 @@
+# Multi-host channel_push: bridge on one machine, Claude Code on another
+
+When the bridge and your Claude Code session run on different machines — bridge on a public webhook-receiving host (A), Claude Code on a firewalled workstation (B) — wire `channel_push` via SSH reverse tunnel.
+
+If both run on the same host, use the [Unix domain socket transport](../examples/channel-servers/README.md) instead — simpler, more secure, no tunnel-lifecycle complexity. This runbook is only for the cross-machine case.
+
+## Topology
+
+```
+┌──────────────────────────────────────┐                  ┌───────────────────────────────────────┐
+│  Host A — bridge (Laravel)           │                  │  Host B — your workstation            │
+│  (public webhook receiver;           │                  │  (Claude Code interactive session +   │
+│   synchronous in-request dispatch)   │                  │   channel MCP server child)           │
+│                                      │                  │                                       │
+│   webhook arrives → classify →       │                  │   B initiates outbound SSH:           │
+│   channel_push fires in-request;     │                  │   autossh -M 0 -N \                   │
+│   payload={"url":                    │   ◄──────────────│     -R 127.0.0.1:8788:127.0.0.1:8788\ │
+│      "http://127.0.0.1:8788/"}       │  reverse tunnel  │     bridge-user@host-A                │
+│                                      │                  │                                       │
+│   POST hits A's loopback :8788       │                  │   Tunnel terminates on B's loopback  │
+│   → SSH tunnel forwards to B's       │                  │   :8788 → channel MCP server         │
+│   loopback :8788                     │                  │   receives → mcp.notification()      │
+└──────────────────────────────────────┘                  └───────────────────────────────────────┘
+```
+
+## Threat model
+
+- **Outbound from B only**: firewall permits no inbound. B is always the active party.
+- **SSH key pair**: wire is encrypted; auth is public-key. The bridge-user account on A is the SSH endpoint.
+- **Bearer token (defense-in-depth)**: the bridge POSTs `Authorization: Bearer <token>`. The channel server on B validates it. SSH protects the wire; the token protects against same-host compromise on A.
+- **No durable-delivery guarantee**: when the tunnel is down, the bridge gets `connection refused` and records the dispatch as done-with-note. **Always pair `channel_push` with `Intent` emission** in your classifier so `php artisan bridge:inbox` surfaces the event next session — see [`docs/customization.md § channel_push`](customization.md) and [`CLAUDE_DECISIONS.md`](../CLAUDE_DECISIONS.md).
+
+## Prerequisites
+
+- Bridge installed and running on host A (see [`CLAUDE_DEPLOYMENT.md`](../CLAUDE_DEPLOYMENT.md)).
+- Claude Code running on host B with the [reference channel server](../examples/channel-servers/README.md) configured for **HTTP** transport (not UDS — the cross-host case requires TCP for the SSH tunnel terminus).
+- SSH access from B to A via public-key auth (no password prompts).
+- `autossh` installed on host B (`apt install autossh` or `brew install autossh`).
+
+## Setup
+
+### 1. On host B — pick a port and generate a token
+
+```bash
+# A port no other service on either host uses. 8788 is the channels reference default.
+export BRIDGE_CHANNEL_PORT=8788
+
+# A long-random shared secret. Both .mcp.json (server side) and the bridge's
+# classifier (client side) need this exact value.
+export BRIDGE_CHANNEL_TOKEN="$(openssl rand -base64 48 | tr -d /=+ | head -c 64)"
+echo "Save this token securely: $BRIDGE_CHANNEL_TOKEN"
+```
+
+### 2. On host B — configure Claude Code for HTTP transport
+
+Drop `.mcp.json` in your Claude Code project root:
+
+```json
+{
+  "_comment": "Multi-host channel_push: HTTP transport on loopback; SSH tunnel from host B to host A makes A's loopback:8788 reachable. Token gating defense-in-depth.",
+  "mcpServers": {
+    "agent-webhook-bridge": {
+      "command": "node",
+      "args": ["/abs/path/to/examples/channel-servers/agent-webhook-bridge-channel.mjs"],
+      "env": {
+        "BRIDGE_CHANNEL_TRANSPORT": "http",
+        "BRIDGE_CHANNEL_PORT": "8788",
+        "BRIDGE_CHANNEL_NAME": "agent-webhook-bridge",
+        "BRIDGE_CHANNEL_TOKEN": "REPLACE_WITH_TOKEN_FROM_STEP_1"
+      }
+    }
+  }
+}
+```
+
+Start Claude Code with the channels research-preview flag:
+
+```bash
+claude --dangerously-load-development-channels server:agent-webhook-bridge
+```
+
+Expected startup log:
+
+```
+[agent-webhook-bridge] listening on http://127.0.0.1:8788
+[agent-webhook-bridge] bearer-token gating active
+```
+
+### 3. On host B — start the SSH reverse tunnel
+
+Single-shot for testing:
+
+```bash
+ssh -N -R 127.0.0.1:8788:127.0.0.1:8788 bridge-user@host-A
+```
+
+For persistent setup, use `autossh` with a systemd user unit (`~/.config/systemd/user/agent-webhook-bridge-tunnel.service`):
+
+```ini
+[Unit]
+Description=SSH reverse tunnel: agent-webhook-bridge channel_push from host A → host B
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+Environment=AUTOSSH_GATETIME=0
+Environment=AUTOSSH_PORT=0
+ExecStart=/usr/bin/autossh -M 0 -N \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes \
+  -R 127.0.0.1:8788:127.0.0.1:8788 \
+  bridge-user@host-A
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+```
+
+Enable + start:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now agent-webhook-bridge-tunnel.service
+systemctl --user status agent-webhook-bridge-tunnel.service
+```
+
+### 4. On host A — restrict the bridge-user SSH key
+
+Add the public key from host B to the bridge-user `~/.ssh/authorized_keys` on A. **Restrict it to ONLY the reverse-forward**:
+
+```
+command="echo 'tunnel-only key; no shell access'",no-pty,no-X11-forwarding,no-agent-forwarding,no-port-forwarding,permitopen="127.0.0.1:8788" ssh-ed25519 AAAA... bridge-tunnel@host-B
+```
+
+`permitopen="127.0.0.1:8788"` is the load-bearing restriction — without it the key could forward arbitrary ports. `command=...` prevents shell access; `no-port-forwarding` blocks `-L` forwards while still permitting the `-R` configured server-side.
+
+Verify:
+
+```bash
+# Should print the override message and exit, NOT open a shell:
+ssh bridge-user@host-A
+# tunnel-only key; no shell access
+```
+
+### 5. On host A — configure the bridge classifier
+
+The classifier POSTs to `127.0.0.1:8788` (the local tunnel endpoint) with the same `BRIDGE_CHANNEL_TOKEN` as the channel server on B.
+
+See [`docs/customization.md`](customization.md) for the full classifier API. The load-bearing piece is the `channel_push` target's `url` and `headers` keys:
+
+```php
+<?php
+// app/Bridge/Classifiers/MyClassifier.php (placed in the bridge install)
+
+namespace App\Bridge\Classifiers;
+
+use App\Bridge\Contracts\Classifier;
+use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyResult;
+use App\Bridge\Dispatch\Intent;
+use App\Bridge\Dispatch\ReactionTarget;
+
+class MyClassifier implements Classifier
+{
+    public function classify(
+        string $eventType,
+        array $payload,
+        Actor $actor,
+        string $provider,
+        string $scopeId,
+    ): ClassifyResult {
+        if ($eventType !== 'card.updated') {
+            return ClassifyResult::empty();
+        }
+
+        // Intent: the durable inbox-feeding backstop. ALWAYS emit one for
+        // events that must reach the agent — channel_push is only a
+        // live-push optimization for active sessions. The silent-drop guard
+        // catches this misconfig.
+        $intent = Intent::make(
+            kind: 'card_updated',
+            subjectId: "card:{$payload['id']}",
+            actor: $actor,
+            summary: "card {$payload['id']} updated",
+            provider: 'kanban',
+            payload: $payload,
+        );
+
+        // Read the token from an env var or file; never hardcode.
+        $token = env('BRIDGE_CHANNEL_TOKEN');
+
+        return new ClassifyResult(
+            intents: [$intent],
+            targets: [
+                // Live-push to the remote Claude Code session via SSH tunnel.
+                ReactionTarget::make(
+                    handler: 'channel_push',
+                    targetId: $intent->subjectId,
+                    debounceSeconds: 0,
+                    payload: array_merge($intent->toArray(), [
+                        'url' => 'http://127.0.0.1:8788/',
+                        'headers' => ['Authorization' => "Bearer {$token}"],
+                        'timeout_seconds' => 2.0,
+                    ]),
+                ),
+            ],
+        );
+    }
+}
+```
+
+Register in `<agent>.yml`:
+
+```yaml
+identity:
+  self: prod-agent
+classifier:
+  class: App\Bridge\Classifiers\MyClassifier
+# ... rest of your agent config
+```
+
+## Smoke test
+
+1. On host B, run `/mcp` in the Claude Code session. Verify `agent-webhook-bridge` shows as connected.
+2. On host B, watch the channel server's stderr (Claude Code debug log at `~/.claude/debug/<session-id>.txt`).
+3. On host A, trigger a webhook (real or simulated). The bridge classifies synchronously in-request and `channel_push` fires immediately — POSTing to `127.0.0.1:8788`. The tunnel forwards to B's loopback; the channel server emits `notifications/claude/channel` to Claude Code. **The tunnel must be up when the webhook arrives** — there is no deferred drain step.
+
+Direct tunnel test (bypasses the bridge):
+
+```bash
+# From host A:
+curl -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $BRIDGE_CHANNEL_TOKEN" \
+  -d '{"intent": {"kind": "smoke_test", "target_id": "manual_curl"}}' \
+  http://127.0.0.1:8788/
+```
+
+Expected: `forwarded` (HTTP 202). The Claude Code session on host B receives `<channel source="agent-webhook-bridge" kind="smoke_test" target_id="manual_curl">...</channel>` within seconds.
+
+## Operator action by failure mode
+
+| Symptom | Likely cause | Action |
+| --- | --- | --- |
+| `curl: connection refused` from host A | SSH tunnel down (autossh restarting, network partition, host B asleep) | Check `systemctl --user status agent-webhook-bridge-tunnel` on B; verify autossh process; restart unit if needed |
+| `curl` returns `401 unauthorized` | `BRIDGE_CHANNEL_TOKEN` mismatch between `.mcp.json` (server) and classifier (client) | Compare both values; regenerate + redeploy if either rotated |
+| `curl` returns 200 but Claude Code shows nothing | Channel server isn't bound (Claude Code session closed) OR `--dangerously-load-development-channels` flag missing | Run `/mcp` in the Claude Code session; check `~/.claude/debug/<session-id>.txt` for spawn errors |
+| Bridge logs `process_error` constantly | Tunnel is up but channel server crashed | Restart the Claude Code session on B (the server dies and respawns with the session) |
+| `connection refused` only sometimes | Tunnel flapping during autossh reconnect | Standard. The silent-drop guard ensures the Intent emission still feeds `php artisan bridge:inbox` for next-session catch-up |
+
+## What this runbook does NOT cover
+
+- **NAT traversal without SSH**: alternative tunnel mechanisms (Tailscale, Cloudflare Tunnel, WireGuard) work the same way at the bridge handler level — the URL points at `http://127.0.0.1:<port>/` regardless of how the loopback gets to host B. SSH is the canonical choice for single-tenant trust.
+- **Multiple Claude Code sessions on the same host B**: requires distinct ports per session and distinct `BRIDGE_CHANNEL_NAME` per server. See [`docs/multi-agent.md § Multi-agent channel_push`](multi-agent.md) for the per-agent alignment story; the multi-host case adds the per-session-tunnel layer on top.
+- **High-availability** failover from host A → host A'. The bridge is single-host by design.
+
+## References
+
+- Bridge handler: [`app/Bridge/Handlers/ChannelPushHandler.php`](../app/Bridge/Handlers/ChannelPushHandler.php)
+- Channel reference server: [`examples/channel-servers/README.md`](../examples/channel-servers/README.md)
+- Local-host UDS topology: [`examples/channel-servers/README.md § Register with Claude Code (UDS)`](../examples/channel-servers/README.md)
+- Multi-agent topology: [`docs/multi-agent.md`](multi-agent.md)
+- Decisions: [`CLAUDE_DECISIONS.md`](../CLAUDE_DECISIONS.md) DL-001 (synchronous Laravel architecture)
+- Channels spec: https://code.claude.com/docs/en/channels-reference

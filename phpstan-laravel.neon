@@ -1,0 +1,19 @@
+# PHPStan (larastan) config for the Laravel v0.12 rewrite.
+#
+# Scoped to app/Bridge/** at level 7 per the v0.12 plan. The framework-magic
+# heavy default skeleton classes (app/Models/User, app/Providers/*) are
+# deliberately NOT analysed here — they get pruned/replaced as the rewrite
+# lands its own code in PRs #145-#147.
+#
+# The receiver's plain-PHPStan config (phpstan.neon, level 5, paths: receiver)
+# is separate and still drives the Python-era CI (test.yml). This file is
+# loaded explicitly via `-c phpstan-laravel.neon` in laravel-tests.yml.
+
+includes:
+    - vendor/larastan/larastan/extension.neon
+
+parameters:
+    level: 7
+    paths:
+        - app/Bridge
+    tmpDir: .phpstan-cache-laravel

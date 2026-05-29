@@ -1,0 +1,68 @@
+# Per-instance config & secrets — these live outside the repo
+config/local/
+*.local.yml
+*.local.json
+
+# Logs
+*.log
+logs/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Test artifacts
+.pytest_cache/
+.phpunit.cache/
+coverage/
+.coverage
+.coverage.*
+htmlcov/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.phpstan-cache/
+.phpstan-cache-laravel/
+
+# Mutmut workspace (T-016 — regenerated on each `mutmut run`)
+mutants/
+.mutmut-cache/
+
+# Composer (dev-only — phpstan etc.)
+vendor/
+
+# Built receiver bundles
+receiver/dist/
+
+# Per-instance receiver config (copy of config.example.php with real creds)
+receiver/config.php
+
+# Local venv
+.venv/
+
+# pytest
+.pytest_cache/
+
+# Laravel (v0.12 rewrite)
+.env
+.env.backup
+.env.production
+/node_modules
+/public/build
+/public/hot
+/public/storage
+/storage/*.key
+/storage/pail
+.phpunit.result.cache
+_ide_helper.php
+/auth.json

@@ -1,0 +1,9 @@
+{
+    "preset": "laravel",
+    "exclude": [
+        "bin",
+        "lib",
+        "receiver",
+        "examples"
+    ]
+}

@@ -1,0 +1,134 @@
+# Architecture
+
+> AI-audience fast-orientation map of the bridge's structure. The bridge is a **single Laravel 13 app**: a webhook arrives, and receive → classify → stage → dispatch all happen **synchronously in that one request**. There is no queue worker, no consumer cron, no daemon. For *why* the v0.1–v0.11 5-layer async pipeline was collapsed into this, see [`CLAUDE_DECISIONS.md`](CLAUDE_DECISIONS.md) DL-001.
+
+## The synchronous request lifecycle
+
+```
+Upstream system (kanban-board, GitHub, ...)
+   │  POST /webhooks/<provider>?b=<scope>   (HMAC-signed body)
+   ▼
+ routes/webhooks.php
+   ├─ EnvelopeSizeLimit            reject oversized bodies (413)
+   ├─ VerifyHmacSignature          constant-time HMAC over the RAW body; loads the
+   │                               per-(provider,scope) secret; sets bridge.{provider,scope_id,body}
+   ▼
+ WebhookController::receive
+   ├─ WebhookAdapterFactory::for(provider)->parse()   envelope → EventDto  (malformed → 400)
+   ├─ isPing? → 200 "pong"
+   ├─ payload-scope == URL-scope?  (else 401 scope_mismatch)
+   ▼
+ DispatchService::dispatch(provider, scopeId, event, payload)      ← the synchronous core
+   ├─ record   dedupCreate(webhook_events)   UNIQUE(delivery_id) dedup + audit/replay store
+   ├─ for each subscribed agent on this (provider, scope):
+   │    ├─ build Actor via AgentRegistry → EchoSuppression: is this the agent's own write? skip.
+   │    ├─ classify()   → ClassifyResult(intents, targets)        (A) throws → record + ack 200
+   │    ├─ stage intents → inbox.jsonl                            (B) throws → propagate → 5xx (redelivered)
+   │    └─ run each target's Handler                              (C) throws → dispatch done-with-note, continue
+   └─ return
+   ▼
+ 200 "ok"   (only after every subscribed agent is processed)
+```
+
+`webhook_events` is **not** a work-queue — nothing drains it. It is the dedup gate (`UNIQUE(delivery_id)`, so kanban-board retries land idempotently) plus the durable audit/replay store. `agent_dispatches` is the per-agent, per-event outcome ledger (one row per agent that processed an event), enabling per-agent replay + isolation.
+
+### The three-way failure treatment (load-bearing)
+
+The whole reliability story lives in how `DispatchService` treats the three failure points (`WebhookController` docstring + `DispatchService`):
+
+| Where it throws | Treatment | Why |
+|---|---|---|
+| **(A) classify** | record the error note, leave that agent's dispatch `processed_at` **null** (errored), ack **200** | A classifier bug must not wedge delivery. The raw event is stored and the dispatch stays unfinished; fix the classifier and `bridge:replay <id>` to complete it. |
+| **(B) inbox staging** | propagate → **5xx** → kanban-board redelivers | `inbox.jsonl` is the durable pull-backstop. Silently losing a staged intent is the one unacceptable outcome, so we'd rather be re-delivered. |
+| **(C) handler** | mark that agent's dispatch *done-with-note*, continue | Per-agent isolation. One agent's channel server being down must not fail the delivery or the other agents. |
+
+At-least-once is **borrowed**, not built: any uncaught/durability failure → 5xx → kanban-board's webhook retry redelivers (see [[feedback-verify-borrowed-guarantees]] — confirmed against kanban-board's retry source, ~11-day envelope). The local `inbox.jsonl` is the pull-side backstop the agent reads even if a push never reached it. There is deliberately **no** `DB::transaction` around the dispatch loop — a handler does network I/O (channel_push), and a rollback can't un-send a POST; each dispatch records its own outcome independently (see DL-001).
+
+## Package map (`app/Bridge` + HTTP layer)
+
+### Receiver (HTTP boundary — security-critical)
+
+| File | Role |
+|---|---|
+| `routes/webhooks.php` | The `/webhooks/{provider}` route + middleware stack |
+| `app/Http/Middleware/VerifyHmacSignature.php` | Loads the per-`(provider,scope)` secret, computes HMAC over the **raw** request body, constant-time compare. Stashes `bridge.{provider,scope_id,body}` request attributes. |
+| `app/Http/Middleware/EnvelopeSizeLimit.php` | Rejects bodies over the configured cap before HMAC work |
+| `app/Http/Controllers/Webhook/WebhookController.php` | Parse envelope → ping short-circuit → scope double-check → hand off to `DispatchService` |
+
+### Adapters (per-provider envelope + signature shape)
+
+| File | Role |
+|---|---|
+| `app/Bridge/Contracts/WebhookAdapter.php` | Adapter contract: `parse(Request, body) → EventDto`, `isPing(EventDto) → bool`, signature header name + scheme |
+| `app/Bridge/Adapters/AbstractWebhookAdapter.php` | Shared HMAC + parse scaffolding |
+| `app/Bridge/Adapters/KanbanAdapter.php` | `X-Kanban-Signature`; event_type from `event`; scope from `board_id`; actor from `user_id` |
+| `app/Bridge/Adapters/GitHubAdapter.php` | `X-Hub-Signature-256`; event_type = `X-GitHub-Event` + body `action`; scope from `repository.full_name`; actor from `sender.login`; `ping` no-op |
+| `app/Bridge/Adapters/EventDto.php` | Normalized envelope: `deliveryId`, `provider`, `scopeId`, `eventType`, `actorId`, … |
+| `app/Bridge/Adapters/WebhookAdapterFactory.php` | `for(provider)` → the right adapter (unknown → `UnknownProviderException`) |
+
+### Storage
+
+| File | Role |
+|---|---|
+| `database/migrations/..._create_webhook_events_table.php` | `webhook_events`: `UNIQUE(delivery_id)` dedup gate + audit/replay store; indexed by `(scope_id, event_type)` + `(actor_id)` |
+| `database/migrations/..._create_agent_dispatches_table.php` | `agent_dispatches`: per-agent, per-event outcome ledger (`processed_at` + `error_message`) |
+| `app/Models/WebhookEvent.php` | Plain Eloquent model over `webhook_events` (the `UNIQUE(delivery_id)` constraint is the dedup gate) |
+| `app/Models/AgentDispatch.php` | Plain Eloquent model for the per-agent dispatch ledger |
+
+### Classification + dispatch (the synchronous core)
+
+| File | Role |
+|---|---|
+| `app/Bridge/Dispatch/DispatchService.php` | The loop: record → per-agent (echo-suppress → classify → stage → handlers) with the three-way failure treatment. Its private `dedupCreate` (create + catch `UniqueConstraintViolationException` → refetch) is the at-least-once write primitive (used for both `webhook_events` and `agent_dispatches`) |
+| `app/Bridge/Dispatch/{Intent,ReactionTarget,Actor,ClassifyResult,IntentLog}.php` | Core data shapes (plain PHP objects/arrays — no freeze/thaw, no serialization layer) |
+| `app/Bridge/Contracts/Classifier.php` | Classifier contract: `classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId): ClassifyResult` |
+| `app/Bridge/Classifiers/InboxOnlyClassifier.php` | Reference classifier — surfaces lifecycle/activity events as intents; no dispatched targets |
+| `app/Bridge/Classifiers/EventDrivenClassifier.php` | Reference event-driven classifier — emits `channel_push` targets paired with intents |
+| `app/Bridge/Contracts/Handler.php` + `app/Bridge/Handlers/*` | Reaction handlers: `LogIntentHandler`, `ChannelPushHandler`, `RegistryAppendHandler`, `SpawnDetachedHandler` |
+| `app/Bridge/Support/HandlerRegistry.php` / `ClassifierResolver.php` | Resolve the agent-configured handler/classifier names → instances |
+
+### Config, identity, secrets
+
+| File | Role |
+|---|---|
+| `app/Bridge/Support/SubscriptionRegistry.php` | Loads every per-agent YAML in the config dir; **fail-closed** (malformed YAML throws → 5xx, never silently skips an agent) |
+| `app/Bridge/Support/AgentConfig.php` + `SubscriptionConfig.php` + `ProviderApiConfig.php` | Parsed per-agent config shapes (`identity`, `api`, `receiver`, `subscriptions`, optional `classifier`/`surface`) |
+| `app/Bridge/Support/AgentRegistry.php` + `RegisteredAgent.php` | Cross-agent discovery substrate (`agents.json`): resolve a raw `user_id`/`login` → friendly agent name |
+| `app/Bridge/Support/EchoSuppression.php` + `EchoSuppressionConfig.php` + `SignalAllowlist.php` | Predicate-based echo suppression (skip the agent's own writes); signal-allowlist for explicit treat-as-signal |
+| `app/Bridge/Support/SecretPath.php` | The single shared secret-path shape: `<secret_dir>/<provider>/webhook-secret-scope-<scope>` |
+| `app/Bridge/Support/InstallGuard.php` | Dev/prod crosstalk guard (`BRIDGE_INSTALL_SUFFIX` ↔ DB-name marker) |
+| `app/Bridge/Support/{BridgePaths,PathHelper}.php` | Resolve config dir / secret dir / state dir from `config/bridge.php` |
+| `app/Bridge/Validation/{ProviderName,ScopeId,ChannelName,SocketPath}.php` | Format validators reused across config + provisioning |
+| `config/bridge.php` | Runtime config: `config_dir`, `secret_dir`, `install_suffix`, `max_body_bytes` (envelope cap). The state dir (inbox.jsonl + inbox-seen.json) is derived as `<config_dir>/state` by `BridgePaths`, not a separate key |
+
+### Provisioning + ops CLIs (`php artisan bridge:*`)
+
+| Command | Role |
+|---|---|
+| `bridge:provision` (`ProvisionCommand` + `app/Bridge/Provision/*`) | Idempotent `(provider, scope)` subscription create on kanban-board + per-scope HMAC secret write; `--reconcile` fixes inactive/filter drift (delete + recreate reusing the secret); URL-drift orphan cleanup is manual (no local registry — the live API is truth) |
+| `bridge:check` (`CheckCommand`) | Validate the install: config dir, DB connectivity, agent YAMLs parse, install-guard |
+| `bridge:inbox` (`InboxCommand`) | Read staged `inbox.jsonl`, cursor-dedup, format, write to stdout (Claude Code hook-aware envelope); silent-when-empty |
+| `bridge:inspect` (`InspectCommand`) | Pretty-print one `webhook_events` row + its `agent_dispatches` ledger |
+| `bridge:replay` (`ReplayCommand`) | Re-run dispatch for a stored event (recovery for errored/missed dispatches) |
+| `bridge:stats` (`StatsCommand`) | Event / dispatch counts |
+
+## Multi-agent mental model
+
+- One bridge **codebase** (this repo); each agent runs its **own install** (own webroot, own `.env`, own DB) — per-agent, never shared runtime state.
+- The per-agent YAMLs in one config dir are all loaded by `SubscriptionRegistry`; a single webhook for `(provider, scope)` fans out to **every** agent subscribed to that scope (the dispatch loop iterates them), each with independent classify/stage/dispatch + its own `agent_dispatches` row. One agent failing (treatment C) doesn't affect the others.
+- `agents.json` is the discovery substrate — maps raw `kanban_user_id`/`github_login` → friendly name so intents read "edited by prod-agent" not a raw id. Collision-safe: a shared identity resolves to the raw id rather than a confidently-wrong name.
+- Echo suppression is **predicate-based**: default skips events whose actor matches `identity.self` or appears in `treat_as_echo`.
+
+## Multi-provider mental model
+
+- The receiver core (middleware + controller) is provider-agnostic; everything provider-specific lives behind the `WebhookAdapter` contract.
+- Adding a provider = a new `app/Bridge/Adapters/<Provider>Adapter.php` (HMAC header + envelope extraction + ping rule) registered in `WebhookAdapterFactory`, plus — only if it's API-provisionable — a provisioning client like `KanbanProvisionClient`. GitHub webhooks are configured in repo settings, so `bridge:provision` skips them by design.
+- See [`docs/provider-adapters.md`](docs/provider-adapters.md) for the integration walkthrough.
+
+## Cross-references
+
+- **Why these specific shapes?** → [`CLAUDE_DECISIONS.md`](CLAUDE_DECISIONS.md) (DL-001 is the v0.12 architecture decision).
+- **How to add a feature without breaking conventions?** → [`CLAUDE_CONVENTIONS.md`](CLAUDE_CONVENTIONS.md).
+- **How to test it?** → [`CLAUDE_TESTING.md`](CLAUDE_TESTING.md).
+- **How to deploy / operate an install?** → [`CLAUDE_DEPLOYMENT.md`](CLAUDE_DEPLOYMENT.md).
+- **Common pitfalls?** → [`CLAUDE_GOTCHAS.md`](CLAUDE_GOTCHAS.md).

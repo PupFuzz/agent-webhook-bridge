@@ -1,0 +1,125 @@
+name: Laravel Tests
+
+# CI for the v0.12 Laravel app (the sole test workflow since the Python tree
+# was removed in Phase 3). Three checks: Pint (style), PHPStan/larastan level 7
+# on app/Bridge, and PHPUnit on the verified Laravel↔PHPUnit↔PHP matrix
+# (Laravel 13 / PHPUnit 12 / PHP 8.3) across SQLite + MariaDB 10.6 + MariaDB 11.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+    # Docs-only PRs can't change a PHP code path. Mirrors the Python
+    # Tests workflow so doc PRs skip both suites consistently.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'examples/**'
+
+# Cancel in-flight CI on rapid PR pushes; push events to main/dev run to
+# completion (matches the Python Tests/Security workflows).
+concurrency:
+  group: laravel-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  phpunit:
+    name: PHPUnit + Pint + PHPStan (PHP 8.3, SQLite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up PHP 8.3
+        uses: shivammathur/setup-php@7c071dfe9dc99bdf297fa79cb49ea005b9fcadbc  # 2.37.1
+        with:
+          php-version: '8.3'
+          extensions: pdo, pdo_sqlite, pdo_mysql, mbstring, bcmath, intl, dom, fileinfo
+          coverage: none
+          tools: composer
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      - name: Pint (code style)
+        run: vendor/bin/pint --test
+
+      - name: PHPStan (app/Bridge, level 7)
+        # app/Bridge is the rewrite's service layer. It is an empty skeleton
+        # in the scaffold PR; PHPStan activates here automatically once the
+        # first bridge code lands (plan PR #145). The guard avoids PHPStan's
+        # "no files found" failure on the empty tree without masking real
+        # analysis errors once files exist.
+        run: |
+          if [ -n "$(find app/Bridge -name '*.php' -print -quit)" ]; then
+            vendor/bin/phpstan analyse -c phpstan-laravel.neon --no-progress
+          else
+            echo "::notice::app/Bridge has no PHP files yet (scaffold). PHPStan activates with the first bridge code (PR #145)."
+          fi
+
+      - name: PHPUnit (SQLite in-memory)
+        run: vendor/bin/phpunit
+
+  phpunit-mariadb:
+    name: PHPUnit (MariaDB ${{ matrix.mariadb }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mariadb: ["10.6", "11"]
+
+    services:
+      mariadb:
+        image: mariadb:${{ matrix.mariadb }}
+        env:
+          MARIADB_ROOT_PASSWORD: ci_root_password
+          MARIADB_DATABASE: agent_webhook_bridge_ci
+          MARIADB_USER: ci_user
+          MARIADB_PASSWORD: ci_user_password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=15
+
+    env:
+      # Override phpunit.xml's sqlite default (non-forced <env> entries, so
+      # the real environment wins) to exercise the MariaDB driver path.
+      DB_CONNECTION: mysql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_DATABASE: agent_webhook_bridge_ci
+      DB_USERNAME: ci_user
+      DB_PASSWORD: ci_user_password
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up PHP 8.3
+        uses: shivammathur/setup-php@7c071dfe9dc99bdf297fa79cb49ea005b9fcadbc  # 2.37.1
+        with:
+          php-version: '8.3'
+          extensions: pdo, pdo_sqlite, pdo_mysql, mbstring, bcmath, intl, dom, fileinfo
+          coverage: none
+          tools: composer
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      - name: Verify MariaDB connectivity
+        run: php artisan db:show
+
+      - name: PHPUnit (MariaDB)
+        run: vendor/bin/phpunit

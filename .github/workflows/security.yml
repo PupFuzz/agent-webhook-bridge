@@ -1,0 +1,39 @@
+name: Security
+
+# Runs on every push to main + every PR: gitleaks committed-secret scanner.
+# (The Python pip-audit job was removed with the v0.12 Laravel rewrite — DL-001;
+# Composer/PHP dependency CVEs are surfaced by dependabot.)
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  # Re-run nightly so a newly-disclosed CVE in an unchanged dep is caught
+  # even when the codebase isn't being modified.
+  schedule:
+    - cron: "37 4 * * *"   # 04:37 UTC daily (off-peak)
+
+# Cancel in-flight CI on rapid PR pushes; push events to main/dev run
+# to completion (in-history-commit SHAs MUST be scanned).
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gitleaks:
+    name: gitleaks (committed-secret scan)
+    runs-on: ubuntu-latest
+    # gitleaks-action calls the PR-commits API to produce diff context
+    # in the scan report; without these permissions it 403s on PR runs.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # Scan full history on pushes to main; scan PR diff on PRs.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7  # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

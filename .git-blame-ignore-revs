@@ -1,0 +1,10 @@
+# Revs to skip when running `git blame --ignore-revs-file=.git-blame-ignore-revs`.
+# Configure as default per-repo:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (or globally: `git config --global blame.ignoreRevsFile .git-blame-ignore-revs`)
+#
+# Format: one full SHA per line. Comments allowed.
+
+# Initial ruff format pass across the codebase. Mechanical reformatting —
+# no logical changes; do not credit the formatter with authorship.
+# Filled in by the commit that runs `ruff format lib bin tests`.

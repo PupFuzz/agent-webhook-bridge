@@ -1,0 +1,70 @@
+name: Auto-tag v<version> on merge to main
+
+# Fires on every push to main (release-PR merges). Reads the version
+# string from the VERSION file at repo root and creates a v<version>
+# git tag at the merge commit. Idempotent: tag-already-at-this-SHA → skip.
+# Tag-already-at-different-SHA → fail loud (two releases claimed the
+# same version; release PR forgot to bump VERSION). Eliminates the
+# manual `git tag -a v<X> <SHA> && git push --tags` step in the
+# operator's release flow.
+#
+# Adapted from kanban-board's auto-tag-version.yml (same shape, swaps
+# config/app.php → VERSION). VERSION is the single source of
+# truth.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  auto-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with tags)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Extract version from VERSION
+        id: ver
+        run: |
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: VERSION '$VERSION' is not semver x.y.z"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Tag merge commit (idempotent)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          MERGE_SHA: ${{ github.sha }}
+        run: |
+          TAG="v${VERSION}"
+          EXISTING=$(git rev-parse --verify "refs/tags/${TAG}" 2>/dev/null || true)
+
+          if [ -z "$EXISTING" ]; then
+            # Case 1: tag does not exist — create it at the merge SHA.
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag "$TAG" "$MERGE_SHA"
+            git push origin "$TAG"
+            echo "Created $TAG at $MERGE_SHA"
+          elif [ "$EXISTING" = "$MERGE_SHA" ]; then
+            # Case 2: tag already exists at this SHA — idempotent no-op.
+            # Happens when I (Claude) hand-tagged before the workflow ran,
+            # which I'll stop doing now that this workflow is in place.
+            echo "Tag $TAG already at $MERGE_SHA; skipping."
+          else
+            # Case 3: tag exists at a different SHA — two merges claimed
+            # the same version. The release PR forgot to bump VERSION.
+            # Recovery: bump VERSION + re-run the release flow.
+            echo "ERROR: $TAG exists at $EXISTING but merge is $MERGE_SHA."
+            echo "Two release merges to main have claimed the same version."
+            echo "Open a follow-up PR that bumps VERSION + CHANGELOG + CLAUDE.md, then re-merge."
+            exit 1
+          fi

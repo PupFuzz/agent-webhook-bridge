@@ -1,0 +1,117 @@
+# agent-webhook-bridge — per-agent configuration template.
+#
+# SETUP:
+#   1. Copy this file to ~/.config/agent-webhook-bridge/<your-agent-name>.yml
+#   2. Fill in the values for your install.
+#   3. `chmod 600 ~/.config/agent-webhook-bridge/<your-agent-name>.yml`
+#
+# Each agent on a multi-agent host gets its own config file in the bridge's
+# config dir (config/bridge.php → BRIDGE_CONFIG_DIR, default
+# ~/.config/agent-webhook-bridge). The agent name (filename without `.yml`) is
+# also the identity referenced in the shared `agents.json` registry — keep
+# them consistent.
+#
+# NOTE (v0.12): the database connection and the HMAC-secret directory are NO
+# LONGER set here. The DB comes from Laravel's .env (DB_CONNECTION/DB_*); the
+# secret dir comes from config/bridge.php (BRIDGE_SECRET_DIR). One install per
+# agent. A migrated v0.11 YAML with leftover `db:` / `secrets:` sections still
+# loads — those keys are tolerated and ignored.
+
+# ----------------------------------------------------------------------------
+# identity: who this agent is.
+# ----------------------------------------------------------------------------
+identity:
+  self: your-agent
+    # Must match the agent's "name" field in agents.json AND the basename of
+    # this config file (filename without .yml). Used for echo-suppression +
+    # surface formatting. Pick a name meaningful to your install — e.g.
+    # "prod-agent", "ops-bot", or just your project's nickname.
+
+# ----------------------------------------------------------------------------
+# api: per-provider API endpoint + token discovery.
+# ----------------------------------------------------------------------------
+api:
+  kanban:
+    base_url: https://kanban.example.com/api/v3
+    token_path: ~/.kanban-dev-token
+      # Path to a single-line file containing the bearer token for this provider.
+      # Generated manually by the user (e.g. via the kanban-board UI's API tokens
+      # page). Token must have webhook-management permission.
+
+  # Add other providers (github, gitlab, ...) here in the same shape.
+  # The provider name must match a registered adapter
+  # (App\Bridge\Adapters\<Provider>Adapter, wired in WebhookAdapterFactory).
+
+# ----------------------------------------------------------------------------
+# receiver: the bridge's public-facing webhook URL.
+# ----------------------------------------------------------------------------
+receiver:
+  base_url: https://bridge.example.com/webhooks
+    # The receiver appends `/<provider>?b=<scope_id>` automatically when
+    # building per-scope subscription URLs.
+
+# ----------------------------------------------------------------------------
+# subscriptions: which provider scopes this agent subscribes to.
+# ----------------------------------------------------------------------------
+# Each entry maps one provider to one or more scope IDs and an optional
+# event_filter (glob patterns). `php artisan bridge:provision` iterates this
+# list and ensures each subscription exists on the upstream (idempotent).
+subscriptions:
+  - provider: kanban
+    scopes: [5]            # kanban board IDs to subscribe to
+    event_filter: []        # empty = all events; use ["task.*", "comment.*"] etc. to narrow
+
+  # GitHub subscription example. GitHub webhooks are configured in the repo's
+  # settings, NOT via an API — `bridge:provision` skips the github provider with
+  # a non-zero exit. Enumerate the events you want when you create the hook:
+  #
+  # - provider: github
+  #   scopes: ["your-org/kanban-board"]  # full_name slug
+  #   event_filter: ["push", "pull_request", "issues", "issue_comment", "release"]
+
+# ----------------------------------------------------------------------------
+# echo_suppression: how to filter events authored by other agents.
+# ----------------------------------------------------------------------------
+echo_suppression:
+  treat_as_echo: []
+    # Names of agents from agents.json whose writes the bridge should silently
+    # skip (no inbox surfacing, no reaction). Always include this agent's own
+    # identity here — listed for clarity:
+    #   treat_as_echo: [your-agent]
+  treat_as_echo_ids: []
+    # Raw provider identifiers (kanban user_id, GitHub sender.login) whose
+    # writes the bridge should silently skip. STRONGLY RECOMMENDED to include
+    # this agent's own kanban_user_id here as a safety net — if agents.json
+    # ever goes missing, name-based matching breaks and the bridge would
+    # otherwise react to its own writes (infinite-loop hazard). Example:
+    #   treat_as_echo_ids: ["137"]   # this agent's kanban user_id, as string
+  treat_as_signal: []
+    # Names of agents whose writes ARE signal (surface as activity). Default
+    # behaviour when an actor is not on either list is to treat as signal.
+
+# ----------------------------------------------------------------------------
+# classifier (optional): which classifier turns events into intents + reactions.
+# ----------------------------------------------------------------------------
+# Defaults to App\Bridge\Classifiers\InboxOnlyClassifier (surface-only, no
+# dispatched reactions). Point `class` at any FQCN implementing
+# App\Bridge\Contracts\Classifier — see docs/customization.md.
+# classifier:
+#   class: App\Bridge\Classifiers\EventDrivenClassifier
+
+# ----------------------------------------------------------------------------
+# channel (optional): channel_push target for the EventDrivenClassifier.
+# ----------------------------------------------------------------------------
+# `name` (default = identity.self) is the <channel source="..."> label only.
+# `socket` is the absolute UDS path the channel_push handler falls back to when a
+# target carries no socket/url — it MUST equal the path your channel server binds.
+# v0.12 does NOT derive the socket from `name` (the v0.11 /run/user/<uid>/... auto-
+# derivation was dropped). Only relevant if your classifier emits channel_push.
+# channel:
+#   name: your-agent
+#   socket: /run/user/1000/agent-webhook-bridge-channel-your-agent.sock
+
+# ----------------------------------------------------------------------------
+# surface (optional): inbox/surfacing behaviour.
+# ----------------------------------------------------------------------------
+# surface:
+#   silent_drop_warnings: true   # warn when a channel_push target has no paired Intent

@@ -1,0 +1,39 @@
+# Dependabot config for agent-webhook-bridge.
+#
+# Two ecosystems (the pip ecosystem was removed with the v0.12 Laravel
+# rewrite — DL-001):
+#   * github-actions — pinned actions in .github/workflows/*.yml
+#   * composer       — Laravel + bridge PHP deps (composer.json)
+#
+# Weekly cadence; target dev (not main) so PRs flow through the normal
+# review + auto-merge-on-green path. No auto-merge — per feedback-git-workflow
+# the PR-review gate is non-negotiable. Major-version bumps + framework
+# bumps get elevated scrutiny.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "America/New_York"
+    target-branch: dev
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
+
+  - package-ecosystem: composer
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "America/New_York"
+    target-branch: dev
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - php

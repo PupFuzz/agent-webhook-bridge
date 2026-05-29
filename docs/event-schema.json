@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/your-org/agent-webhook-bridge/blob/main/docs/v1/event-schema.json",
+  "title": "Intent",
+  "description": "An Intent is a classifier-produced event the bridge surfaces to an agent's inbox. Produced by `lib.classify.Classifier.classify` from a raw `webhook_events` row. JSONL-encoded one-per-line in `<state_dir>/inbox.jsonl`.",
+  "type": "object",
+  "required": ["kind", "subject_id", "provider", "actor", "summary", "payload", "ts"],
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "type": "string",
+      "description": "Dotted intent name. Conventional shape: `<resource>_<lifecycle>` (e.g. `new_card`, `card_moved`). The producer's classifier owns this namespace; consumers shouldn't assume any fixed set."
+    },
+    "subject_id": {
+      "type": "string",
+      "description": "Stable identifier of the subject the intent is about (e.g., a card id, a PR number, a comment id). Used by handlers for debounce keying and by consumers for cross-event correlation."
+    },
+    "provider": {
+      "type": "string",
+      "description": "Upstream system that produced the event (`kanban`, `github`, etc.). Stamped by the receiver from the per-adapter URL (`?p=<provider>`); copied through by classifiers. Schema version 2+ — the wire-level source of truth for provider routing, replacing the earlier `event_type`-prefix-derivation convention."
+    },
+    "actor": {
+      "type": "object",
+      "description": "Who caused the underlying event. Wire shape matches what bin/consume._stage_intents emits.",
+      "required": ["id", "name", "is_known_agent"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": ["string", "null"],
+          "description": "Raw provider-side actor identifier. For kanban: integer user_id as a string. For GitHub: `sender.login` (a string username). May be null for system-emitted events."
+        },
+        "name": {
+          "type": ["string", "null"],
+          "description": "Registry-resolved friendly name (from `agents.json`). Null if the actor isn't registered."
+        },
+        "is_known_agent": {
+          "type": "boolean",
+          "description": "True iff the actor matched a registered agent in `agents.json`. Echo suppression already filters out the consumer's own actor; consumers receive this flag for visibility into other registered agents."
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "Human-readable one-line description, ready to render in an inbox surface. Producer's classifier owns the format."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Intent-specific structured data. Schema is per-`kind`; consumers should branch on `kind` before accessing keys here. Emitted from `Intent.payload_dict()` — the in-memory representation is a frozen tuple-of-tuples for hashability, but the JSON form is a flat object.",
+      "additionalProperties": true
+    },
+    "ts": {
+      "type": "number",
+      "description": "Unix timestamp (seconds, fractional) stamped at staging time in `bin/consume._stage_intents`. Used by `bin/inbox` for cursor advance. Consumers should use this for ordering; not for wall-clock authority."
+    }
+  }
+}

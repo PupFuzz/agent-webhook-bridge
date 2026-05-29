@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/your-org/agent-webhook-bridge/blob/main/docs/v1/reaction-target-schema.json",
+  "title": "ReactionTarget",
+  "description": "A ReactionTarget addresses a single handler invocation for a single subject. `lib.classify.ClassifyResult.targets: frozenset[ReactionTarget]` carries any number per classified event. The bridge's dispatch loop coalesces by `debounce_key` within a drain pass. The handler-log records `{ts, agent, handler, target_id, debounce_key, payload}` for each dispatched ReactionTarget; consumers observing the log validate against this schema.",
+  "type": "object",
+  "required": ["handler", "target_id", "debounce_key", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "handler": {
+      "type": "string",
+      "description": "Name of the registered handler to dispatch to. Handlers live in `lib/handlers.py` and the per-agent classifier module. Conventional shape: lowercase, underscore-separated (e.g., `log_intent`, `notify_channel_mcp`)."
+    },
+    "target_id": {
+      "type": "string",
+      "description": "Stable identifier for the subject being addressed. Often duplicates the source Intent's `subject_id` but may differ when one Intent fans out to multiple targets (e.g., a cross-board move addresses both source and dest boards as separate targets)."
+    },
+    "debounce_key": {
+      "type": "string",
+      "description": "Coalescing key. Within a single drain pass, multiple ReactionTargets sharing the same `debounce_key` collapse into one handler invocation. Across drain passes, the `DebounceTracker` (`lib/debounce.py`) re-suppresses if the same key was dispatched within the configured window. Conventional shape: `<resource>:<id>:<action>` (e.g., `task:42:any`)."
+    },
+    "debounce_seconds": {
+      "type": ["integer", "null"],
+      "description": "Per-target debounce-window override. `null` uses the consumer's default (30s out of the box). Present-but-null is the conventional 'inherit default' marker."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Handler-specific structured data. Schema is per-`handler`. JSON object on the wire; in-memory shape is a frozen tuple-of-tuples (use `ReactionTarget.payload_dict()` for the object form).",
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "_comment_1": "Project-level Claude Code MCP config. Drop at .mcp.json in the project root where you run `claude`. UDS is the default; HTTP retained for SSH-tunneled multi-host setups.",
+  "_comment_2": "Pick ONE name matching [a-z0-9_-]+ for both the mcpServers key AND BRIDGE_CHANNEL_NAME env. Same string twice in this file; mirror it in <agent>.yml's `channel.name`. The bridge auto-derives the UDS socket path on systemd Linux + per-user cron — BRIDGE_CHANNEL_SOCKET is only needed on macOS / containers (see _alternative_macos_setup below).",
+  "mcpServers": {
+    "kanbanboard-agent": {
+      "command": "node",
+      "args": ["/absolute/path/to/examples/channel-servers/agent-webhook-bridge-channel.mjs"],
+      "env": {
+        "BRIDGE_CHANNEL_TRANSPORT": "unix",
+        "BRIDGE_CHANNEL_NAME": "kanbanboard-agent"
+      }
+    },
+    "_alternative_macos_setup": {
+      "_comment": "On macOS / containers without $XDG_RUNTIME_DIR resolving to /run/user/<uid>, BOTH this BRIDGE_CHANNEL_SOCKET AND <agent>.yml's channel.socket must be set to the same explicit path under a chmod-0700 directory you own. Delete the entry above and rename this one to your chosen channel name.",
+      "command": "node",
+      "args": ["/absolute/path/to/examples/channel-servers/agent-webhook-bridge-channel.mjs"],
+      "env": {
+        "BRIDGE_CHANNEL_TRANSPORT": "unix",
+        "BRIDGE_CHANNEL_NAME": "kanbanboard-agent",
+        "BRIDGE_CHANNEL_SOCKET": "/Users/you/Library/Application Support/agent-webhook-bridge-channel.sock"
+      }
+    },
+    "_alternative_http_setup": {
+      "_comment": "HTTP fallback for SSH-tunneled multi-host setups. Delete the unused entries above and rename this one to your chosen channel name.",
+      "command": "node",
+      "args": ["/absolute/path/to/examples/channel-servers/agent-webhook-bridge-channel.mjs"],
+      "env": {
+        "BRIDGE_CHANNEL_TRANSPORT": "http",
+        "BRIDGE_CHANNEL_PORT": "8788",
+        "BRIDGE_CHANNEL_NAME": "kanbanboard-agent",
+        "BRIDGE_CHANNEL_TOKEN": "REPLACE_WITH_long_random_string"
+      }
+    }
+  }
+}
