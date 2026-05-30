@@ -13,12 +13,12 @@ on:
     branches: [main, dev]
   pull_request:
     branches: [main, dev]
-    # Docs-only PRs can't change a PHP code path. Mirrors the Python
-    # Tests workflow so doc PRs skip both suites consistently.
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'examples/**'
+    # NO paths filter — deliberately. These three jobs are REQUIRED status checks
+    # in dev/main branch protection, so they must run and report on EVERY PR. A
+    # paths-ignore (e.g. skipping docs-only PRs) makes the required check never
+    # report on those PRs, which permanently BLOCKS them. The suite is fast
+    # (~30s/job); running it on a docs PR is cheaper than the block. Don't re-add
+    # a paths filter without also dropping these from the required-checks set.
 
 # Cancel in-flight CI on rapid PR pushes; push events to main/dev run to
 # completion (matches the Python Tests/Security workflows).
