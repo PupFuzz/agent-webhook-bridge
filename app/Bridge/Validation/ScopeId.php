@@ -9,8 +9,8 @@ namespace App\Bridge\Validation;
  * segment-separator `/`). The `..` rejection is the path-traversal defense:
  * the scope becomes a filename component when loading the per-scope secret.
  *
- * PATTERN is kept character-for-character identical to lib/validators.py's
- * SCOPE_ID_PATTERN (the Python provisioner side must reject the same set).
+ * PATTERN is the single source of truth for scope-id validation; any change
+ * must be matched by the test suite (it is also the path-traversal boundary).
  */
 final class ScopeId
 {

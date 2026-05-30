@@ -232,8 +232,7 @@ final class AgentConfig
      * or null section defaults to empty; a present non-mapping value (e.g. a
      * scalar from `classifier: SomeName` instead of `classifier: {class: ...}`)
      * is a malformed config and throws rather than silently degrading to
-     * defaults. Mirrors lib/config.py's `isinstance(dict)` checks for the
-     * surface/classifier/channel sections.
+     * defaults.
      *
      * @param  array<mixed>  $raw
      * @return array<mixed>

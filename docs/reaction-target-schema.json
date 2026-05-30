@@ -2,14 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/your-org/agent-webhook-bridge/blob/main/docs/v1/reaction-target-schema.json",
   "title": "ReactionTarget",
-  "description": "A ReactionTarget addresses a single handler invocation for a single subject. `lib.classify.ClassifyResult.targets: frozenset[ReactionTarget]` carries any number per classified event. The bridge's dispatch loop coalesces by `debounce_key` within a drain pass. The handler-log records `{ts, agent, handler, target_id, debounce_key, payload}` for each dispatched ReactionTarget; consumers observing the log validate against this schema.",
+  "description": "A ReactionTarget addresses a single handler invocation for a single subject. A classifier's `ClassifyResult` carries any number per classified event. The handler-log records `{ts, agent, handler, target_id, debounce_key, payload}` for each dispatched ReactionTarget; consumers observing the log validate against this schema.",
   "type": "object",
   "required": ["handler", "target_id", "debounce_key", "payload"],
   "additionalProperties": false,
   "properties": {
     "handler": {
       "type": "string",
-      "description": "Name of the registered handler to dispatch to. Handlers live in `lib/handlers.py` and the per-agent classifier module. Conventional shape: lowercase, underscore-separated (e.g., `log_intent`, `notify_channel_mcp`)."
+      "description": "Name of the registered handler to dispatch to. Registered handlers live in `app/Bridge/Handlers/` (or a custom handler the agent registers). Conventional shape: lowercase, underscore-separated (e.g., `log_intent`, `notify_channel_mcp`)."
     },
     "target_id": {
       "type": "string",
@@ -17,15 +17,15 @@
     },
     "debounce_key": {
       "type": "string",
-      "description": "Coalescing key. Within a single drain pass, multiple ReactionTargets sharing the same `debounce_key` collapse into one handler invocation. Across drain passes, the `DebounceTracker` (`lib/debounce.py`) re-suppresses if the same key was dispatched within the configured window. Conventional shape: `<resource>:<id>:<action>` (e.g., `task:42:any`)."
+      "description": "Coalescing/correlation key for handlers and consumers. The synchronous bridge dispatches every ReactionTarget and does NOT itself coalesce or suppress by `debounce_key` (no drain pass, no cross-delivery tracker); it is recorded in the handler-log for consumers that choose to coalesce. Conventional shape: `<resource>:<id>:<action>` (e.g., `task:42:any`)."
     },
     "debounce_seconds": {
       "type": ["integer", "null"],
-      "description": "Per-target debounce-window override. `null` uses the consumer's default (30s out of the box). Present-but-null is the conventional 'inherit default' marker."
+      "description": "Advisory per-target debounce window for the consumer to honor; the synchronous bridge carries it but does not enforce a cross-delivery window. `null` defers to the consumer's default. Present-but-null is the conventional 'inherit default' marker."
     },
     "payload": {
       "type": "object",
-      "description": "Handler-specific structured data. Schema is per-`handler`. JSON object on the wire; in-memory shape is a frozen tuple-of-tuples (use `ReactionTarget.payload_dict()` for the object form).",
+      "description": "Handler-specific structured data. Schema is per-`handler`. A plain JSON object on the wire (a plain associative array in memory; no freeze/thaw).",
       "additionalProperties": true
     }
   }

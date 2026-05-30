@@ -24,7 +24,7 @@ use Illuminate\Support\Facades\Log;
  *     one GitHub login because the platform forces shared credentials).
  *     Attribution can't pick one agent, so Actor.name stays null and a custom
  *     classifier re-attributes. This is the intentional, declared-once form of
- *     the DL-074 collision bypass.
+ *     the shared-login collision bypass.
  *
  * Accidental collisions on a per-agent axis (the same id on two agent entries)
  * are still detected at construction and bypassed (Actor.name null, raw id

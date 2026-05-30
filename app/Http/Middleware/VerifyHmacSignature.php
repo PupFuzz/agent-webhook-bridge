@@ -11,7 +11,7 @@ use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * The receiver's security gate, ported from receiver/webhook.php steps 2-6.
+ * The receiver's security gate.
  * Resolves the adapter from the {provider} route segment and the scope from
  * the `?b=` query, loads the per-(provider, scope) HMAC secret, and verifies
  * the signature with a constant-time compare — all before the request reaches

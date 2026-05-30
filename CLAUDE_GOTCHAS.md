@@ -151,7 +151,7 @@ If the guard fires unexpectedly in a test: verify `phpunit.xml` has this stanza 
 
 **Fix:** Use `github_user_id` (the numeric account id) in `agents.json`, not `github_login`. For a shared account, declare it once under `shared_identities`. Put the numeric id in `treat_as_echo_ids` so suppression survives renames. A stale `github_login` label logs a one-line drift warning naming the current login — update the label, recognition is unaffected.
 
-**Discovery:** FR (immutable-identity hardening), 2026-05-30 — same problem class as DL-074 (shared-login collision), but the identifier-durability dimension.
+**Discovery:** FR (immutable-identity hardening), 2026-05-30 — same problem class as the earlier shared-login collision-bypass work, but the identifier-durability dimension.
 
 **Related:** `app/Bridge/Adapters/GitHubAdapter.php` (`sender.id`), `app/Bridge/Support/AgentRegistry.php` (`actorFromEvent(string $provider, …)`, `shared_identities`, drift warning) + `RegisteredAgent.php` + `SharedIdentity.php`, `CLAUDE_DECISIONS.md` DL-002.
 
