@@ -13,15 +13,16 @@ No consumer cron, no drain loop, no daemon. Drop a new `<agent>.yml` in the conf
 
 ## Shared agent registry
 
-`agents.json` in the config dir maps raw `kanban_user_id` / `github_login` to friendly agent names so intents read "edited by prod-agent" rather than a raw integer.
+`agents.json` (schema v2) in the config dir maps **immutable numeric ids** — kanban `user_id` and GitHub `sender.id` — to friendly agent names so intents read "edited by prod-agent" rather than a raw integer. Matching is provider-aware: a kanban event consults `kanban_user_id`, a GitHub event consults `github_user_id`, so the same integer on different axes never cross-matches.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "agents": [
     {"name": "prod-agent", "kanban_user_id": 3,  "scope": "ops + maintenance"},
     {"name": "dev-agent",  "kanban_user_id": 4,  "scope": "bridge dev / test workspace"},
-    {"name": "device",     "kanban_user_id": 53, "scope": "device-coord cards", "github_login": "device-bot"}
+    {"name": "device",     "kanban_user_id": 53, "scope": "device-coord cards",
+     "github_user_id": 41000123, "github_login": "device-bot"}
   ]
 }
 ```
@@ -30,7 +31,7 @@ No consumer cron, no drain loop, no daemon. Drop a new `<agent>.yml` in the conf
 
 Without `agents.json`: attribution falls back to the raw provider id. Classifiers still work; echo suppression by raw id (`treat_as_echo_ids`) still works; only friendly names are missing.
 
-`github_login` is optional — lets the registry resolve GitHub `sender.login` strings. Agents that don't act on GitHub can omit it.
+`github_user_id` is optional — it's the immutable GitHub account id (`sender.id`) and the GitHub matching key; agents that don't act on GitHub can omit it. `github_login` is a **display-only label** (GitHub usernames are renameable, so they are never a matching key — see DL-002); if it goes stale the registry logs a one-line drift warning naming the current login. An outdated `schema_version` (e.g. `1`) is not parsed — the registry warns with a migration note and degrades to empty.
 
 ## Per-agent config
 
@@ -162,15 +163,17 @@ All 4 agents read the same `agents.json`. Cross-registration is what lets each a
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "agents": [
-    {"name": "pm",        "kanban_user_id": 100, "github_login": "pm-bot"},
-    {"name": "device",    "kanban_user_id": 101, "github_login": "device-bot"},
-    {"name": "backend",   "kanban_user_id": 102, "github_login": "backend-bot"},
-    {"name": "inventory", "kanban_user_id": 103, "github_login": "inventory-bot"}
+    {"name": "pm",        "kanban_user_id": 100, "github_user_id": 41000101, "github_login": "pm-bot"},
+    {"name": "device",    "kanban_user_id": 101, "github_user_id": 41000102, "github_login": "device-bot"},
+    {"name": "backend",   "kanban_user_id": 102, "github_user_id": 41000103, "github_login": "backend-bot"},
+    {"name": "inventory", "kanban_user_id": 103, "github_user_id": 41000104, "github_login": "inventory-bot"}
   ]
 }
 ```
+
+(This is the *distinct-account-per-agent* case — each agent has its own GitHub account, so attribution resolves to a name. When all agents share **one** account, declare it once under `shared_identities` instead — see [§ Shared identity across agents](#shared-identity-across-agents).)
 
 #### Webhook provisioning: one subscription per scope, NOT N
 
@@ -222,23 +225,32 @@ Each agent's `.mcp.json` uses the matching name as both the `mcpServers.<key>` l
 
 ## Shared identity across agents
 
-When multiple agents share an upstream identity (same GitHub login or same kanban user), `AgentRegistry` detects the collision at construction and warns:
+Sometimes the platform forces multiple agents to authenticate under **one** account (e.g. four Claude Code agents sharing a single GitHub login because that's the only credential available). Events from that account can't be attributed to a single agent by identity alone.
 
+### Path A — Distinct accounts per agent (preferred)
+
+Give each agent its own account, with a distinct `kanban_user_id` / `github_user_id`. The registry resolves cleanly, friendly names work, no special handling. Only blocked when your platform genuinely requires shared credentials.
+
+### Path B — Declare the shared account once, accept the null name
+
+Declare the shared GitHub account **once** under `shared_identities` (don't repeat the id on every agent entry):
+
+```json
+{
+  "schema_version": 2,
+  "agents": [
+    {"name": "pm"}, {"name": "device"}, {"name": "backend"}, {"name": "inventory"}
+  ],
+  "shared_identities": [
+    {"github_user_id": 41000042, "github_login": "team-bot",
+     "agents": ["pm", "device", "backend", "inventory"]}
+  ]
+}
 ```
-WARNING: agent registry: github_login 'shared-login' is shared by multiple agents
-  (backend, device, inventory, pm); attribution will be bypassed for events from
-  this identity — Actor.name will be null and the raw id surfaces.
-```
 
-The friendly-name lookup is bypassed for collided keys; `Actor.name` stays `null`. **Echo suppression by raw id (`treat_as_echo_ids`) still works** — only friendly-name attribution is affected. Same detection applies to `kanban_user_id` collisions.
+Events from `github_user_id 41000042` resolve to `Actor.name = null` on purpose — the bridge can't pick one of the four agents. **Echo suppression by raw id (`treat_as_echo_ids: ["41000042"]`) still works** — and because it keys on the immutable id, it survives a username rename (`github_login` is just a display label; a stale one logs a one-line drift warning naming the current login). Recognition keys on the id, so renaming the account is a non-event — no config edit required. Acceptable when friendly-name attribution isn't load-bearing.
 
-### Path A — Distinct identities per agent (preferred)
-
-Give each agent a distinct `github_login` and `kanban_user_id`. Registry resolves cleanly, no warnings, friendly names work. Only blocked when your platform genuinely requires shared credentials.
-
-### Path B — Accept the bypass
-
-Run with the bypass. Costs: inbox surfaces raw ids; classifier logic keyed on `actor.name` sees `null` for the collided identity. Echo suppression via `treat_as_echo_ids` still functions. Acceptable when friendly-name attribution is not load-bearing.
+> Declaring the shared account is the explicit form of what the registry would otherwise infer from an *accidental* duplicate id across two `agents[]` entries (which it bypasses + warns about, pointing you here). Prefer the explicit `shared_identities` declaration — one source of truth, no N-place denormalization.
 
 ### Path C — Custom-classifier sub-resolution
 
@@ -278,4 +290,4 @@ class MyClassifier implements Classifier
 }
 ```
 
-This composes cleanly with the registry bypass: the bridge's safety net (warn + bypass) catches the silent-corruption mode; your classifier's recovery layer adds back the friendly name for the cases where your protocol gives you a recovery signal.
+This composes cleanly with the shared-identity declaration (Path B): the registry deliberately yields `Actor.name = null` for the shared account, and your classifier's recovery layer adds the friendly name back from a secondary signal (repo scope here, or a `FROM:` line in the event body). The same handoff catches the accidental-duplicate-id safety net.

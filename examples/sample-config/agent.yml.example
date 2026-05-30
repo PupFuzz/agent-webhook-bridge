@@ -79,12 +79,14 @@ echo_suppression:
     # identity here — listed for clarity:
     #   treat_as_echo: [your-agent]
   treat_as_echo_ids: []
-    # Raw provider identifiers (kanban user_id, GitHub sender.login) whose
-    # writes the bridge should silently skip. STRONGLY RECOMMENDED to include
-    # this agent's own kanban_user_id here as a safety net — if agents.json
-    # ever goes missing, name-based matching breaks and the bridge would
-    # otherwise react to its own writes (infinite-loop hazard). Example:
-    #   treat_as_echo_ids: ["137"]   # this agent's kanban user_id, as string
+    # Raw IMMUTABLE provider identifiers (kanban user_id, GitHub sender.id —
+    # the numeric account id, NOT the renameable login) whose writes the bridge
+    # should silently skip. STRONGLY RECOMMENDED to include this agent's own
+    # id(s) here as a safety net — if agents.json ever goes missing, name-based
+    # matching breaks and the bridge would otherwise react to its own writes
+    # (infinite-loop hazard). Using the numeric id (not the login) means a
+    # GitHub username rename never breaks suppression. Example:
+    #   treat_as_echo_ids: ["137", "41000123"]   # kanban user_id + github_user_id, as strings
   treat_as_signal: []
     # Names of agents whose writes ARE signal (surface as activity). Default
     # behaviour when an actor is not on either list is to treat as signal.
