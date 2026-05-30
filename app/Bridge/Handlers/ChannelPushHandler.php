@@ -47,9 +47,16 @@ final class ChannelPushHandler implements Handler
         $url = $payload['url'] ?? null;
 
         // Key-absent (not falsy) fallback: payload {"url": ""} still errors —
-        // an empty string is a classifier bug, not a fallback signal.
-        if (! array_key_exists('socket', $payload) && ! array_key_exists('url', $payload) && $agent->channelSocket !== null) {
-            $socket = $agent->channelSocket;
+        // an empty string is a classifier bug, not a fallback signal. The
+        // agent's configured channel.socket wins; channel.url is the fallback
+        // for the SSH-tunneled remote-host case (they're mutually exclusive in
+        // config, so at most one is non-null).
+        if (! array_key_exists('socket', $payload) && ! array_key_exists('url', $payload)) {
+            if ($agent->channelSocket !== null) {
+                $socket = $agent->channelSocket;
+            } elseif ($agent->channelUrl !== null) {
+                $url = $agent->channelUrl;
+            }
         }
 
         $socketSet = is_string($socket) && $socket !== '';

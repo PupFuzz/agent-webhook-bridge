@@ -15,6 +15,7 @@ use App\Models\AgentDispatch;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Http;
 use RuntimeException;
 use Tests\Fixtures\CoalescingTargetsClassifier;
 use Tests\Fixtures\LogIntentClassifier;
@@ -284,6 +285,31 @@ class DispatchServiceTest extends TestCase
         }
         $this->assertSame('B', $byKey['bucket-x']);   // last-wins within the shared bucket
         $this->assertSame('C', $byKey['bucket-y']);
+    }
+
+    public function test_channel_route_intents_pushes_each_staged_intent(): void
+    {
+        Http::fake(['*' => Http::response('ok', 200)]);
+
+        // Agent with channel.url + route_intents → the dispatcher auto-pushes
+        // each staged intent to the channel (no classifier channel_push). Uses a
+        // plain inbox classifier (LogIntentClassifier) — the routing is what
+        // produces the channel_push.
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  self: prod-agent\n"
+            ."api:\n  kanban:\n    base_url: https://k.example.com\n    token_path: /t\n"
+            ."receiver:\n  base_url: https://b.example.com/webhooks\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."classifier:\n  class: '".LogIntentClassifier::class."'\n"
+            ."channel:\n  url: http://127.0.0.1:8788/\n  route_intents: true\n");
+
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $this->payload());
+
+        // Routed channel_push reached the configured channel with the intent.
+        Http::assertSent(fn ($r) => $r->url() === 'http://127.0.0.1:8788/'
+            && ($r->data()['intent']['subject_id'] ?? null) === '42');
+        // The intent is still durably staged (channel push is layered on top).
+        $this->assertSame(1, $this->inboxCount());
+        $this->assertNull(AgentDispatch::firstOrFail()->error_message);
     }
 
     public function test_already_processed_dispatch_is_skipped_on_redelivery(): void

@@ -10,7 +10,7 @@ use Illuminate\Console\Command;
  */
 class InspectCommand extends Command
 {
-    protected $signature = 'bridge:inspect {id : the webhook_events.id}';
+    protected $signature = 'bridge:inspect {id : the webhook_events.id} {--agent= : show only this agent\'s dispatch row}';
 
     protected $description = 'Show a webhook event and its agent dispatches';
 
@@ -36,12 +36,17 @@ class InspectCommand extends Command
         $this->line('payload:');
         $this->line((string) json_encode($event->payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
-        $rows = $event->dispatches->map(fn ($d) => [
+        $agent = $this->option('agent');
+        $dispatches = is_string($agent) && $agent !== ''
+            ? $event->dispatches->where('agent_name', $agent)
+            : $event->dispatches;
+
+        $rows = $dispatches->map(fn ($d) => [
             $d->agent_name,
             $d->processed_at !== null ? 'done' : 'errored/pending',
             (string) $d->processed_at,
             $d->error_message !== null ? mb_strimwidth((string) $d->error_message, 0, 60, '…') : '',
-        ])->all();
+        ])->values()->all();
         $this->table(['agent', 'status', 'processed_at', 'error'], $rows);
 
         return self::SUCCESS;

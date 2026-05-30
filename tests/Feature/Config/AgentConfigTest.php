@@ -139,6 +139,50 @@ class AgentConfigTest extends TestCase
         AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => 'relative/x.sock']]));
     }
 
+    public function test_channel_url_parsed(): void
+    {
+        $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => ['url' => 'http://127.0.0.1:8788/']]));
+        $this->assertSame('http://127.0.0.1:8788/', $cfg->channelUrl);
+        $this->assertNull($cfg->channelSocket);
+    }
+
+    public function test_channel_url_with_whitespace_throws(): void
+    {
+        $this->expectException(ConfigException::class);
+        AgentConfig::fromArray('a', $this->raw(['channel' => ['url' => 'http://127.0.0.1 :8788/']]));
+    }
+
+    public function test_channel_socket_and_url_mutually_exclusive_throws(): void
+    {
+        $this->expectException(ConfigException::class);
+        AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => '/run/x.sock', 'url' => 'http://127.0.0.1:8788/']]));
+    }
+
+    public function test_channel_route_intents_defaults_false(): void
+    {
+        $cfg = AgentConfig::fromArray('a', $this->raw());
+        $this->assertFalse($cfg->channelRouteIntents);
+    }
+
+    public function test_channel_route_intents_parsed_with_socket(): void
+    {
+        $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => '/run/user/1000/x.sock', 'route_intents' => true]]));
+        $this->assertTrue($cfg->channelRouteIntents);
+    }
+
+    public function test_channel_route_intents_non_bool_throws(): void
+    {
+        $this->expectException(ConfigException::class);
+        AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => '/run/x.sock', 'route_intents' => 'yes']]));
+    }
+
+    public function test_channel_route_intents_without_target_throws(): void
+    {
+        // route_intents needs somewhere to route — no socket and no url.
+        $this->expectException(ConfigException::class);
+        AgentConfig::fromArray('a', $this->raw(['channel' => ['route_intents' => true]]));
+    }
+
     public function test_surface_silent_drop_warnings_bool(): void
     {
         $cfg = AgentConfig::fromArray('a', $this->raw(['surface' => ['silent_drop_warnings' => false]]));

@@ -145,6 +145,27 @@ final class DispatchService
             foreach ($result->targets as $t) {
                 $targets[$t->debounceKey] = $t;
             }
+
+            // Per-agent channel routing (DL-006): channel.route_intents pushes
+            // every staged intent to the agent's configured channel without the
+            // classifier hand-emitting channel_push — the config-driven form of
+            // EventDrivenClassifier, for fan-out where an agent is remote/idle.
+            // The debounceKey is namespaced ('channel_push:<subject>') so a routed
+            // push never clobbers an unrelated classifier target on the same
+            // subject; it coalesces per subject like EventDrivenClassifier. (Pair
+            // route_intents with a plain inbox classifier, not EventDriven, or you
+            // get two pushes per event.)
+            if ($agent->channelRouteIntents) {
+                foreach ($result->intents as $intent) {
+                    $routed = ReactionTarget::make(
+                        handler: 'channel_push',
+                        targetId: $intent->subjectId,
+                        debounceKey: 'channel_push:'.$intent->subjectId,
+                        payload: $intent->toArray(),
+                    );
+                    $targets[$routed->debounceKey] = $routed;
+                }
+            }
             $note = null;
             foreach ($targets as $target) {
                 $handler = $this->handlers->resolve($target->handler);
