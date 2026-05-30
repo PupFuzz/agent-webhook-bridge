@@ -123,9 +123,17 @@ final class DispatchService
                 $this->intentLog->stage($agent, $event, $intent, $index);
             }
 
-            // (C) handlers — best-effort; a failure is a recorded note, not a 5xx
+            // (C) handlers — best-effort; a failure is a recorded note, not a 5xx.
+            // Same-event coalescing: collapse targets sharing a debounceKey
+            // (last-wins) so a classifier emitting duplicate buckets fires each
+            // handler once. No cross-delivery debounce in the synchronous model
+            // (debounceSeconds is advisory metadata, not enforced here).
+            $targets = [];
+            foreach ($result->targets as $t) {
+                $targets[$t->debounceKey] = $t;
+            }
             $note = null;
-            foreach ($result->targets as $target) {
+            foreach ($targets as $target) {
                 $handler = $this->handlers->resolve($target->handler);
                 try {
                     if ($handler === null) {

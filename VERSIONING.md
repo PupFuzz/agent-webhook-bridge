@@ -58,4 +58,4 @@ Hybrid policy: ask before opening every PR; auto-merge dev-targeted on green; on
 
 ## Pre-1.0 status
 
-The current line is **v0.12.0** — the Laravel rewrite, shipped as a fresh repository (git history begins here; see `CLAUDE_DECISIONS.md` DL-001). Pre-1.0 semver applies: every change is a minor bump until v1.0.0. See [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for the per-version log.
+The current line is **v0.13.0**. Git history begins at v0.12.0 — the Laravel rewrite, shipped as a fresh repository (see `CLAUDE_DECISIONS.md` DL-001). Pre-1.0 semver applies: every change is a minor bump until v1.0.0. See [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for the per-version log.

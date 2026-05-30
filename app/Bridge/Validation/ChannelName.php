@@ -6,8 +6,7 @@ namespace App\Bridge\Validation;
  * channel.name validator: lowercase letters/digits/underscore/hyphen,
  * non-empty. Stricter than the channel server's free-form BRIDGE_CHANNEL_NAME
  * because the bridge composes it into a UDS socket-path component, so it must
- * be filesystem-safe (no slashes/colons/spaces/uppercase). PATTERN mirrors
- * lib/validators.py's CHANNEL_NAME_PATTERN.
+ * be filesystem-safe (no slashes/colons/spaces/uppercase).
  */
 final class ChannelName
 {
