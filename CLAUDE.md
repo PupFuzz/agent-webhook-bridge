@@ -60,6 +60,7 @@ Filled in by the release PR that produces each version tag. See [`docs/CHANGELOG
 
 | Version | Date | Highlights |
 | --- | --- | --- |
+| v0.13.0 | 2026-05-30 | **Agent recognition keys on the immutable GitHub account id, not the renameable username (DL-002).** `GitHubAdapter` uses `sender.id`; matching is provider-aware; `agents.json` → `schema_version 2` (per-agent `github_user_id` + declared-once `shared_identities`; `github_login` is a display-only label with a stale-login drift warning). A username rename is a non-event. **Breaking:** v1 `agents.json` must be migrated to v2. Pint clean · PHPStan level 7 0 errors · PHPUnit 199/199. |
 | v0.12.0 | 2026-05-29 | **The Laravel rewrite, shipped as a fresh repository (see CLAUDE_DECISIONS.md DL-001).** Collapsed the v0.1–v0.11 Python-consumer + PHP-receiver 5-layer async pipeline into a single Laravel 13 app doing synchronous in-request dispatch — no queue, no consumer cron, no daemon. At-least-once is borrowed from kanban-board's webhook retry plus the `inbox.jsonl` pull-backstop. Git history starts here (prior history was not carried over). Pint clean · PHPStan level 7 (`app/Bridge`) 0 errors · PHPUnit 188/188. |
 
 ## Critical paths
