@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Http;
 
 /**
  * Thin client for kanban-board's webhook API, scoped to what provisioning
- * needs. Mirrors lib/providers/kanban.py: board-scoped list/create plus the
+ * needs: board-scoped list/create plus the
  * Laravel-style {"data": ...} envelope. Throws on non-2xx (the command
  * surfaces it).
  */

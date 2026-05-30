@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/your-org/agent-webhook-bridge/blob/main/docs/v1/event-schema.json",
   "title": "Intent",
-  "description": "An Intent is a classifier-produced event the bridge surfaces to an agent's inbox. Produced by `lib.classify.Classifier.classify` from a raw `webhook_events` row. JSONL-encoded one-per-line in `<state_dir>/inbox.jsonl`.",
+  "description": "An Intent is a classifier-produced event the bridge surfaces to an agent's inbox. Produced by a classifier's `classify()` from a raw `webhook_events` row. JSONL-encoded one-per-line in `<state_dir>/inbox.jsonl`.",
   "type": "object",
   "required": ["kind", "subject_id", "provider", "actor", "summary", "payload", "ts"],
   "additionalProperties": false,
@@ -21,13 +21,13 @@
     },
     "actor": {
       "type": "object",
-      "description": "Who caused the underlying event. Wire shape matches what bin/consume._stage_intents emits.",
+      "description": "Who caused the underlying event. Wire shape matches what the bridge stages to `inbox.jsonl`.",
       "required": ["id", "name", "is_known_agent"],
       "additionalProperties": false,
       "properties": {
         "id": {
           "type": ["string", "null"],
-          "description": "Raw provider-side actor identifier. For kanban: integer user_id as a string. For GitHub: `sender.login` (a string username). May be null for system-emitted events."
+          "description": "Raw provider-side actor identifier. For kanban: integer user_id as a string. For GitHub: the immutable numeric `sender.id` as a string (not the renameable login). May be null for system-emitted events."
         },
         "name": {
           "type": ["string", "null"],
@@ -45,12 +45,12 @@
     },
     "payload": {
       "type": "object",
-      "description": "Intent-specific structured data. Schema is per-`kind`; consumers should branch on `kind` before accessing keys here. Emitted from `Intent.payload_dict()` — the in-memory representation is a frozen tuple-of-tuples for hashability, but the JSON form is a flat object.",
+      "description": "Intent-specific structured data. Schema is per-`kind`; consumers should branch on `kind` before accessing keys here. A plain JSON object on the wire (a plain associative array in memory; no freeze/thaw).",
       "additionalProperties": true
     },
     "ts": {
       "type": "number",
-      "description": "Unix timestamp (seconds, fractional) stamped at staging time in `bin/consume._stage_intents`. Used by `bin/inbox` for cursor advance. Consumers should use this for ordering; not for wall-clock authority."
+      "description": "Unix timestamp (seconds, fractional) stamped when the intent is written to `inbox.jsonl`. `bridge:inbox` uses it for cursor advance. Consumers should use this for ordering; not for wall-clock authority."
     }
   }
 }

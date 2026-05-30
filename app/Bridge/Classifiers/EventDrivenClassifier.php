@@ -9,8 +9,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 
 /**
  * inbox_only + a paired channel_push ReactionTarget per Intent — the canonical
- * "go live" pattern. Ported from
- * examples/classifiers/event_driven_example.py.
+ * "go live" pattern.
  *
  * Every channel_push target's id matches an Intent's subject_id in the same
  * result (so the silent-drop guard never warns), and carries the Intent's

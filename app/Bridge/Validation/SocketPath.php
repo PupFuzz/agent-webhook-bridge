@@ -3,8 +3,7 @@
 namespace App\Bridge\Validation;
 
 /**
- * Format-only validator for a channel.socket path. Mirrors
- * lib/validators.py's validate_socket_path_format: a non-empty absolute path,
+ * Format-only validator for a channel.socket path: a non-empty absolute path,
  * no null byte, no `..` segment. Does NOT stat() the path — existence and
  * UDS-file-type checks happen at dispatch time, since the socket server may
  * not be running at config-load. The `..` rejection prevents escaping a

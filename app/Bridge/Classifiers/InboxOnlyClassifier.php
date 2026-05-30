@@ -9,8 +9,7 @@ use App\Bridge\Dispatch\Intent;
 
 /**
  * Canonical default classifier: surfaces kanban activity to the agent inbox
- * as Intents, with no automated reactions (no ReactionTargets). Ported from
- * examples/classifiers/inbox_only.py.
+ * as Intents, with no automated reactions (no ReactionTargets).
  *
  * Lifecycle events (delete/archive/restore/unarchive) are NOT noise when
  * kanban is the source of truth — they're invalidation signals for any

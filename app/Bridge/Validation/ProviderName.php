@@ -4,7 +4,6 @@ namespace App\Bridge\Validation;
 
 /**
  * Provider URL-slug validator: lowercase letters/digits/underscore only.
- * PATTERN mirrors lib/validators.py's PROVIDER_NAME_PATTERN.
  */
 final class ProviderName
 {
