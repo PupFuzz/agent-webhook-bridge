@@ -32,7 +32,7 @@ class GitHubAdapterTest extends TestCase
         $body = (string) json_encode([
             'action' => 'opened',
             'repository' => ['full_name' => 'acme-corp/widget'],
-            'sender' => ['login' => 'octocat'],
+            'sender' => ['id' => 583231, 'login' => 'octocat'],
         ]);
 
         $event = (new GitHubAdapter)->parse($this->request($body, $this->defaultHeaders()), $body);
@@ -40,7 +40,8 @@ class GitHubAdapterTest extends TestCase
         $this->assertSame('gh-delivery-1', $event->deliveryId);
         $this->assertSame('pull_request.opened', $event->eventType);
         $this->assertSame('acme-corp/widget', $event->scopeId);
-        $this->assertSame('octocat', $event->actorId);
+        // actor_id is the immutable numeric sender.id, not the renameable login.
+        $this->assertSame('583231', $event->actorId);
     }
 
     public function test_event_type_without_action(): void

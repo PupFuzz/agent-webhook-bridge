@@ -99,7 +99,7 @@ final class DispatchService
                 continue;   // already done on a prior delivery → redelivery-skip
             }
 
-            $actor = $this->agents->actorFromEvent($dto->actorId, $payload);
+            $actor = $this->agents->actorFromEvent($provider, $dto->actorId, $payload);
 
             if ($this->isEcho($agent, $actor) || ! $this->isSignal($agent, $actor)) {
                 $this->markDone($dispatch);   // filtered out → done, no work

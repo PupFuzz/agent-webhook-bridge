@@ -14,7 +14,8 @@ use Illuminate\Http\Request;
  *
  * event_type → "<event>.<body.action>" when an action is present, else
  * "<event>" (push/ping have none). scope_id → repository.full_name (org/repo),
- * actor_id → sender.login. A `ping` is GitHub's connectivity test.
+ * actor_id → sender.id (the IMMUTABLE numeric account id — usernames rename;
+ * see DL-002). A `ping` is GitHub's connectivity test.
  */
 final class GitHubAdapter extends AbstractWebhookAdapter
 {
@@ -45,7 +46,7 @@ final class GitHubAdapter extends AbstractWebhookAdapter
         // A ping body carries no repository; isPing() short-circuits the
         // downstream scope check, so a synthetic empty scope_id is fine.
         $scopeId = $this->nestedScalar($decoded, 'repository', 'full_name') ?? '';
-        $actorId = $this->nestedScalar($decoded, 'sender', 'login');
+        $actorId = $this->nestedScalar($decoded, 'sender', 'id');
 
         return new EventDto($deliveryId, $scopeId, $eventType, $actorId);
     }

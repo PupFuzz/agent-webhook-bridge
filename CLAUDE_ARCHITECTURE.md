@@ -62,7 +62,7 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 | `app/Bridge/Contracts/WebhookAdapter.php` | Adapter contract: `parse(Request, body) → EventDto`, `isPing(EventDto) → bool`, signature header name + scheme |
 | `app/Bridge/Adapters/AbstractWebhookAdapter.php` | Shared HMAC + parse scaffolding |
 | `app/Bridge/Adapters/KanbanAdapter.php` | `X-Kanban-Signature`; event_type from `event`; scope from `board_id`; actor from `user_id` |
-| `app/Bridge/Adapters/GitHubAdapter.php` | `X-Hub-Signature-256`; event_type = `X-GitHub-Event` + body `action`; scope from `repository.full_name`; actor from `sender.login`; `ping` no-op |
+| `app/Bridge/Adapters/GitHubAdapter.php` | `X-Hub-Signature-256`; event_type = `X-GitHub-Event` + body `action`; scope from `repository.full_name`; actor from `sender.id` (immutable numeric — usernames rename, DL-002); `ping` no-op |
 | `app/Bridge/Adapters/EventDto.php` | Normalized envelope: `deliveryId`, `provider`, `scopeId`, `eventType`, `actorId`, … |
 | `app/Bridge/Adapters/WebhookAdapterFactory.php` | `for(provider)` → the right adapter (unknown → `UnknownProviderException`) |
 
@@ -93,7 +93,7 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 |---|---|
 | `app/Bridge/Support/SubscriptionRegistry.php` | Loads every per-agent YAML in the config dir; **fail-closed** (malformed YAML throws → 5xx, never silently skips an agent) |
 | `app/Bridge/Support/AgentConfig.php` + `SubscriptionConfig.php` + `ProviderApiConfig.php` | Parsed per-agent config shapes (`identity`, `api`, `receiver`, `subscriptions`, optional `classifier`/`surface`) |
-| `app/Bridge/Support/AgentRegistry.php` + `RegisteredAgent.php` | Cross-agent discovery substrate (`agents.json`): resolve a raw `user_id`/`login` → friendly agent name |
+| `app/Bridge/Support/AgentRegistry.php` + `RegisteredAgent.php` + `SharedIdentity.php` | Cross-agent discovery substrate (`agents.json`, schema v2): resolve an immutable `kanban_user_id` / `github_user_id` → friendly agent name (provider-aware). Shared accounts declared once under `shared_identities`; `github_login` is a display-only label with stale-login drift warning (DL-002) |
 | `app/Bridge/Support/EchoSuppression.php` + `EchoSuppressionConfig.php` + `SignalAllowlist.php` | Predicate-based echo suppression (skip the agent's own writes); signal-allowlist for explicit treat-as-signal |
 | `app/Bridge/Support/SecretPath.php` | The single shared secret-path shape: `<secret_dir>/<provider>/webhook-secret-scope-<scope>` |
 | `app/Bridge/Support/InstallGuard.php` | Dev/prod crosstalk guard (`BRIDGE_INSTALL_SUFFIX` ↔ DB-name marker) |
@@ -116,7 +116,7 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 
 - One bridge **codebase** (this repo); each agent runs its **own install** (own webroot, own `.env`, own DB) — per-agent, never shared runtime state.
 - The per-agent YAMLs in one config dir are all loaded by `SubscriptionRegistry`; a single webhook for `(provider, scope)` fans out to **every** agent subscribed to that scope (the dispatch loop iterates them), each with independent classify/stage/dispatch + its own `agent_dispatches` row. One agent failing (treatment C) doesn't affect the others.
-- `agents.json` is the discovery substrate — maps raw `kanban_user_id`/`github_login` → friendly name so intents read "edited by prod-agent" not a raw id. Collision-safe: a shared identity resolves to the raw id rather than a confidently-wrong name.
+- `agents.json` (schema v2) is the discovery substrate — maps an immutable `kanban_user_id` / `github_user_id` → friendly name so intents read "edited by prod-agent" not a raw id. Matching is provider-aware (a kanban and a github id that are the same integer never cross-match). A GitHub account shared by multiple agents is declared once under `shared_identities` and resolves to a null name on purpose (custom classifier re-attributes); `github_login` is a display-only label, never a matching key (DL-002). Collision-safe: an accidental duplicate id resolves to the raw id rather than a confidently-wrong name.
 - Echo suppression is **predicate-based**: default skips events whose actor matches `identity.self` or appears in `treat_as_echo`.
 
 ## Multi-provider mental model
