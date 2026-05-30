@@ -1,0 +1,13 @@
+{
+  "//": "OPTIONAL — only needed when several agents share ONE upstream account.",
+  "//2": "Place at $BRIDGE_DIR/shared-identities.json. Omit the file entirely if no account is shared.",
+  "//3": "Per-agent identity ids live in each <agent>.yml's `identity:` block; the registry is built by scanning those. This file is ONLY for the shared-account case (DL-002): an account used by multiple agents resolves to Actor.name = null so a custom classifier re-attributes (FROM:-line / repo-scope). github_login is a display-only label.",
+
+  "shared_identities": [
+    {
+      "github_user_id": 41000042,
+      "github_login": "team-bot",
+      "agents": ["pm", "backend", "inventory"]
+    }
+  ]
+}

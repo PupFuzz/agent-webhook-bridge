@@ -25,7 +25,7 @@ Each agent's inbox:
 <BRIDGE_CONFIG_DIR>/state/inbox.jsonl
 ```
 
-`BRIDGE_CONFIG_DIR` = `config('bridge.config_dir')` (set via `BRIDGE_CONFIG_DIR` in the Laravel `.env`). Default: `~/.config/agent-webhook-bridge-<suffix>/state/inbox.jsonl`. See `CLAUDE_DEPLOYMENT.md § Where things land` for the full path table.
+`BRIDGE_CONFIG_DIR` = `config('bridge.config_dir')`, which defaults to `BRIDGE_DIR` — the one base dir set in the Laravel `.env` (`BRIDGE_CONFIG_DIR` is an optional override only when the config dir lives elsewhere). Default: `~/.config/agent-webhook-bridge-<suffix>/state/inbox.jsonl`. See `CLAUDE_DEPLOYMENT.md § Where things land` for the full path table.
 
 One JSON document per line. Each document is an `Intent` (schema below).
 
@@ -35,7 +35,7 @@ One JSON document per line. Each document is an `Intent` (schema below).
 |---|---|
 | Intent (line in `inbox.jsonl`) | [`docs/event-schema.json`](event-schema.json) |
 | ReactionTarget (in handler-log + custom-handler args) | [`docs/reaction-target-schema.json`](reaction-target-schema.json) |
-| Agent registry | [`docs/multi-agent.md § agents.json`](multi-agent.md) — `schema_version: 2` |
+| Agent registry | [`docs/multi-agent.md § Agent registry`](multi-agent.md) — built from per-agent YAML `identity` blocks |
 
 Both schemas are JSON Schema 2020-12 draft. Non-additive changes (renames, removals, type tightening) bump the version; additive fields do not. Pin your parser to the schema version you built against; fail-soft on bump.
 
@@ -51,11 +51,14 @@ php artisan bridge:inbox --hook-format=claude-code
 php artisan bridge:inbox --hook-format=plain
 ```
 
-**The only flag is `--hook-format={auto|claude-code|plain}`** (default `auto`).
+**Flags:**
 
-- `auto` — reads stdin for a `hook_event_name` key. If the detected event supports `additionalContext` injection, wraps output in the hook envelope; otherwise emits plain markdown.
-- `claude-code` — forces the hook envelope regardless of stdin shape. Use in wrapper scripts that can't pipe stdin through.
-- `plain` — forces plain markdown. Useful for ad-hoc inspection or piping.
+- `--hook-format={auto|claude-code|plain}` (default `auto`):
+  - `auto` — reads stdin for a `hook_event_name` key. If the detected event supports `additionalContext` injection, wraps output in the hook envelope; otherwise emits plain markdown.
+  - `claude-code` — forces the hook envelope regardless of stdin shape. Use in wrapper scripts that can't pipe stdin through.
+  - `plain` — forces plain markdown. Useful for ad-hoc inspection or piping.
+- `--agent=<name>` — surface only that agent's intents (its `inbox-<agent>.jsonl`, or the shared file filtered by the `agent` tag), with its own seen cursor. For a single install fanning out to N agents; see [`multi-agent.md` § Per-agent surfacing](multi-agent.md#per-agent-surfacing-one-install-n-agents). Defaults to `BRIDGE_DEFAULT_AGENT` when unset.
+- `--no-cursor-advance` — print unseen intents without marking them seen (a peek). The next run re-surfaces them.
 
 **Hook envelope.** Plain stdout from hook events that support `additionalContext` goes to Claude Code's debug log only — it never reaches the model. `bridge:inbox` wraps output automatically:
 
@@ -75,9 +78,9 @@ SessionStart, Setup, SubagentStart, UserPromptSubmit,
 UserPromptExpansion, PreToolUse, PostToolUse, PostToolUseFailure, PostToolBatch
 ```
 
-Events that do NOT support `additionalContext` (`Stop`, `Notification`, etc.) receive plain markdown. `bridge:inbox` still fires — cursor-dedup state (`inbox-seen.json`) is updated — but the text cannot reach model context regardless of envelope shape.
+Events that do NOT support `additionalContext` (`Stop`, `Notification`, etc.) receive plain markdown that can't reach model context. On those events `bridge:inbox` prints but **does not advance the seen cursor** — the intents stay unseen so the next `SessionStart`/`PreToolUse` surfaces them. So wiring `bridge:inbox` on `Stop` is safe: it never silently eats an intent. (A manual, non-hook run reaches the terminal, so it does advance; use `--no-cursor-advance` to force a non-advancing peek.)
 
-**Dedup state** is stored in `<BRIDGE_CONFIG_DIR>/state/inbox-seen.json` as a JSON array of seen `id` strings. A redelivered or re-staged line with the same `id` never re-surfaces.
+**Dedup state** is a JSON array of seen `id` strings: `<state_dir>/inbox-seen.json` for the shared inbox, or `<state_dir>/inbox-seen-<agent>.json` per agent under `--agent`. A redelivered or re-staged line with the same `id` never re-surfaces, and one agent's cursor never hides another's intents.
 
 ### B. Tail `inbox.jsonl` directly
 
@@ -161,20 +164,31 @@ If nothing surfaces to the model after wiring: verify the hook event type is in 
 
 ## Agent registry contract
 
-```
-<BRIDGE_CONFIG_DIR>/agents.json
+There is no `agents.json`. The registry is built per request by scanning the per-agent YAMLs in the config dir — the FILENAME (`prod-agent.yml` → `prod-agent`) is the agent's name, and its `identity:` block holds its immutable upstream ids:
+
+```yaml
+# prod-agent.yml
+identity:
+  kanban_user_id: 3
+  github_user_id: 12345678
+  github_login: prod-agent-bot   # display-only label
+
+# dev-agent.yml
+identity:
+  kanban_user_id: 4
 ```
 
-Shape (current `schema_version: 2`):
+| `identity` field | Required? | Notes |
+|---|---|---|
+| (filename) | yes | The `<agent>.yml` filename is the agent name — used for echo suppression by `actor.name` and as the addressing token for ReactionTarget routing |
+| `kanban_user_id` | optional | Immutable integer; absent = agent has no kanban identity |
+| `github_user_id` | optional | Immutable numeric GitHub account id (`sender.id`); the GitHub **matching key**. absent = agent has no GitHub identity |
+| `github_login` | optional | Display-only label (GitHub usernames rename, so they are never a matching key — DL-002). A stale label fires a one-line drift warning |
+
+An optional `shared-identities.json` in the config dir declares a GitHub account shared by multiple agents **once** (instead of repeating the id in every agent's `identity` block):
 
 ```json
 {
-  "schema_version": 2,
-  "agents": [
-    {"name": "prod-agent", "kanban_user_id": 3,  "scope": "ops + maintenance",
-     "github_user_id": 12345678, "github_login": "prod-agent-bot"},
-    {"name": "dev-agent",  "kanban_user_id": 4,  "scope": "bridge dev / test workspace"}
-  ],
   "shared_identities": [
     {"github_user_id": 12000042, "github_login": "shared-bot",
      "agents": ["pm", "device", "backend", "inventory"]}
@@ -182,17 +196,9 @@ Shape (current `schema_version: 2`):
 }
 ```
 
-| Field | Required? | Notes |
-|---|---|---|
-| `name` | yes | Used for echo suppression by `actor.name` and as the addressing token for ReactionTarget routing |
-| `kanban_user_id` | optional | Immutable integer; null = agent has no kanban identity |
-| `github_user_id` | optional | Immutable numeric GitHub account id (`sender.id`); the GitHub **matching key**. null = agent has no GitHub identity |
-| `github_login` | optional | Display-only label (GitHub usernames rename, so they are never a matching key — DL-002). A stale label fires a one-line drift warning |
-| `scope` | optional | Free-text description. Not load-bearing for the bridge |
+Events from a shared account can't be attributed to a single agent, so `actor.name` resolves to `null` on purpose — a custom classifier re-attributes from a secondary signal (repo scope, a `FROM:` line). The file is omitted entirely when no account is shared. See [`multi-agent.md § Shared identity across agents`](multi-agent.md).
 
-`shared_identities[]` (optional) declares a GitHub account shared by multiple agents **once** (instead of repeating the id on every agent entry): `{github_user_id, github_login?, agents[]}`. Events from a shared account can't be attributed to a single agent, so `actor.name` resolves to `null` on purpose — a custom classifier re-attributes from a secondary signal (repo scope, a `FROM:` line). See [`multi-agent.md § Shared identity across agents`](multi-agent.md).
-
-Source of truth for "what agents exist + how to address them." Read-on-startup is fine; file changes only on operator action.
+Source of truth for "what agents exist + how to address them." Read-on-startup is fine; the YAMLs change only on operator action.
 
 ## Echo-suppression semantics
 
@@ -209,7 +215,7 @@ Both filters happen **before** `inbox.jsonl` writes. Consumers do not need to re
 | `webhook_events` DB schema | `EXPECTED_SCHEMA_VERSION` in the migration set | Bumps on column add/remove/rename or constraint change. Internal; consumers tail JSONL, not the DB. |
 | Event-schema (Intent) | `v1` (per `$id` URI path) | Bumps on non-additive change. v2 would live at `docs/v2/event-schema.json`; v1 stays at current path. |
 | ReactionTarget schema | `v1` (per `$id` URI path) | Same policy. |
-| `agents.json` | `schema_version: 2` (in file body) | Bumps on non-additive change. v2 keyed recognition on immutable numeric ids (`github_user_id`) and added `shared_identities` (DL-002); an outdated version warns + degrades to an empty registry. |
+| Agent registry | per-agent YAML `identity` blocks + optional `shared-identities.json` | Not a versioned wire surface — operator config. Recognition keys on immutable numeric ids (`kanban_user_id` / `github_user_id`); `github_login` is a display-only label (DL-002). Consumers tail `inbox.jsonl`, not the registry. |
 
 Pin to the schema version you built against. Fail-soft (warn + skip) on intents whose `schema_version` doesn't match.
 

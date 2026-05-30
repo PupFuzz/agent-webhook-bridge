@@ -31,11 +31,11 @@
         },
         "name": {
           "type": ["string", "null"],
-          "description": "Registry-resolved friendly name (from `agents.json`). Null if the actor isn't registered."
+          "description": "Registry-resolved friendly name (from the registry built by scanning per-agent YAML `identity` blocks). Null if the actor isn't registered."
         },
         "is_known_agent": {
           "type": "boolean",
-          "description": "True iff the actor matched a registered agent in `agents.json`. Echo suppression already filters out the consumer's own actor; consumers receive this flag for visibility into other registered agents."
+          "description": "True iff the actor matched a registered agent (an agent's `identity` ids in its `<agent>.yml`). Echo suppression already filters out the consumer's own actor; consumers receive this flag for visibility into other registered agents."
         }
       }
     },

@@ -2,16 +2,17 @@
 
 How to install, update, operate, and diagnose a v0.12 bridge install. The model is deliberately small: **a single Laravel app on Apache + PHP-FPM 8.3 that does all its work synchronously in the webhook request** — no queue, no consumer cron, no scheduler, no daemon, no systemd unit. Operating it is operating a normal PHP-FPM web app. There is no "queue not draining" failure mode because there is no queue.
 
-One install per agent: its own webroot, `.env`, DB, config dir, and (ideally) PHP-FPM pool. The canonical reference host runs `prod-agent` + `dev-agent` side by side.
+One install per agent: its own webroot, `.env`, DB, base dir, and (ideally) PHP-FPM pool. The canonical reference host runs `prod-agent` + `dev-agent` side by side.
 
 ## Install layout
 
 | Piece | Where |
 |---|---|
 | App (served root) | `~/agent-webhook-bridge-<agent>/public` (Apache vhost DocumentRoot → routes `/webhooks/*`) |
-| Config dir (`BRIDGE_CONFIG_DIR`) | `~/.config/agent-webhook-bridge-<agent>/` — per-agent `<agent>.yml` + `agents.json` + `state/` |
-| Secret dir (`BRIDGE_SECRET_DIR`) | usually the same dir — `<provider>/webhook-secret-scope-<scope>` (chmod 600) |
-| State | `<BRIDGE_CONFIG_DIR>/state/` — `inbox.jsonl`, `inbox-seen.json`, handler logs |
+| Base dir (`BRIDGE_DIR`) | `~/.config/agent-webhook-bridge-<agent>/` — per-agent `<agent>.yml` + optional `shared-identities.json` + HMAC secrets + API tokens + `state/` |
+| Config dir / Secret dir | both default to `BRIDGE_DIR`; override with `BRIDGE_CONFIG_DIR` / `BRIDGE_SECRET_DIR` only if they live elsewhere |
+| Secrets | `<secret_dir>/<provider>/webhook-secret-scope-<scope>` (chmod 600); API token by convention `<secret_dir>/<provider>/token` |
+| State | `<state_dir>/` (defaults to `<config_dir>/state/`) — `inbox.jsonl`, `inbox-seen.json`, handler logs |
 | DB | MariaDB `agent_webhook_bridge_<agent>` (creds in `.env`) |
 
 ### Required `.env`
@@ -27,11 +28,20 @@ DB_DATABASE=agent_webhook_bridge_prod
 DB_USERNAME=kanban
 DB_PASSWORD=...
 
-BRIDGE_SECRET_DIR=/home/kanban/.config/agent-webhook-bridge-prod   # per-(provider,scope) HMAC secrets
-BRIDGE_CONFIG_DIR=/home/kanban/.config/agent-webhook-bridge-prod   # per-agent YAMLs + agents.json + state/
+# One base dir for per-agent YAMLs + shared-identities.json + HMAC secrets + API tokens.
+BRIDGE_DIR=/home/kanban/.config/agent-webhook-bridge-prod
+# BRIDGE_CONFIG_DIR=...               # optional override (defaults to BRIDGE_DIR)
+# BRIDGE_SECRET_DIR=...               # optional override (defaults to BRIDGE_DIR)
+
+# Per-install endpoints (same for every agent on this install).
+BRIDGE_RECEIVER_BASE_URL=https://bridge.example.com/webhooks   # this bridge's public webhook URL
+BRIDGE_KANBAN_API_BASE_URL=https://kanban.example.com/api/v3   # upstream API base (bridge:provision)
+# BRIDGE_GITHUB_API_BASE_URL=https://api.github.com            # defaults to api.github.com
 # BRIDGE_MAX_BODY_BYTES=262144        # optional; default 256K. Keep ≤ the FPM pool's post_max_size.
-# BRIDGE_INSTALL_SUFFIX=-prod         # reserved (a -prod/-dev vs DB-name cross-check; not yet enforced)
+# BRIDGE_INSTALL_SUFFIX=-prod         # -prod/-dev cross-DSN safety marker
 ```
+
+The API token is read by convention from `<secret_dir>/<provider>/token` (e.g. `$BRIDGE_DIR/kanban/token`, chmod 600); set a per-agent `api.<provider>.token_path` override in the YAML only when an agent authenticates as a distinct account.
 
 There is **no** queue worker, scheduler, crontab, or systemd unit to install.
 
@@ -73,17 +83,17 @@ git pull --ff-only
 composer install --no-dev --optimize-autoloader
 php artisan migrate --force                       # no-op if no new migrations
 php artisan optimize:clear && php artisan optimize
-sudo systemctl reload php8.3-fpm                  # recycle workers so they re-read config + agents.json
+sudo systemctl reload php8.3-fpm                  # recycle workers so they re-read config + agent YAMLs
 php artisan bridge:check
 ```
 
 ## The #1 Laravel trap — config edits don't take
 
-FPM workers are long-lived and `php artisan optimize` caches `.env`. After editing **`.env` / `agents.json` / any per-agent YAML**:
+FPM workers are long-lived and `php artisan optimize` caches `.env`. After editing **`.env` / `shared-identities.json` / any per-agent YAML**:
 
 ```bash
 php artisan optimize:clear && php artisan optimize   # MANDATORY after .env edits
-sudo systemctl reload php8.3-fpm                     # recycle workers so they re-read agents.json / YAML
+sudo systemctl reload php8.3-fpm                     # recycle workers so they re-read the agent YAMLs
 ```
 
 Forget `optimize:clear` and the app silently uses the cached old values — no error surfaces it.
@@ -102,7 +112,7 @@ kanban-board's webhook delivery retries on **5xx / 429 only** (≈11 attempts ov
 | `413` | body over the size cap | not retried |
 | `500` | transient/internal failure (DB down, **malformed config**, durable inbox-write failure) | **retried** on the ~11-day curve |
 
-A malformed `agents.json` / per-agent YAML is intentionally a `5xx` — the loader fails closed and kanban-board holds everything until the config is fixed and FPM reloaded.
+A malformed per-agent YAML / `shared-identities.json` is intentionally a `5xx` — the loader fails closed and kanban-board holds everything until the config is fixed and FPM reloaded.
 
 ## Per-agent dispatch: done vs errored
 
@@ -113,10 +123,16 @@ Each `(event, agent)` is one `agent_dispatches` row:
 
 ## Where things land
 
+All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR` / `BRIDGE_SECRET_DIR` / `BRIDGE_STATE_DIR` override them.
+
 | What | Path |
 |---|---|
 | App + dispatch-warning logs | `storage/logs/laravel.log` |
-| Inbox (agent surface) | `<BRIDGE_CONFIG_DIR>/state/inbox.jsonl` |
+| Per-agent config | `<config_dir>/<agent>.yml` |
+| Shared-account declaration (optional) | `<config_dir>/shared-identities.json` |
+| Per-`(provider,scope)` HMAC secret | `<secret_dir>/<provider>/webhook-secret-scope-<scope>` (chmod 600) |
+| API token (by convention) | `<secret_dir>/<provider>/token` (chmod 600) |
+| Inbox (agent surface) | `<state_dir>/inbox.jsonl` (state dir defaults to `<config_dir>/state`) |
 | Inbox seen-set (`bridge:inbox` dedup) | `…/state/inbox-seen.json` |
 | Handler forensic log (`log_intent`) | `…/state/handler-log.jsonl` |
 | Per-target registry (`registry_append`) | `…/state/registry-<target>.jsonl` |
@@ -163,7 +179,7 @@ Reinstall/upgrade one agent at a time (halves blast radius; the `systemctl reloa
 
 | | prod-agent | dev-agent |
 |---|---|---|
-| `BRIDGE_CONFIG_DIR` / `BRIDGE_SECRET_DIR` | `~/.config/agent-webhook-bridge-prod` | `~/.config/agent-webhook-bridge-dev` |
+| `BRIDGE_DIR` (config + secret base) | `~/.config/agent-webhook-bridge-prod` | `~/.config/agent-webhook-bridge-dev` |
 | Working dir | `~/agent-webhook-bridge-prod` | `~/agent-webhook-bridge-dev` |
 | DB | `agent_webhook_bridge_prod` | `agent_webhook_bridge_dev` |
 | Apache vhost | `bridge.<host>` | `bridge-dev.<host>` |

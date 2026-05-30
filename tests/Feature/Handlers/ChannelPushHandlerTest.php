@@ -14,9 +14,7 @@ class ChannelPushHandlerTest extends TestCase
     private function agent(?string $channelSocket = null): AgentConfig
     {
         $raw = [
-            'identity' => ['self' => 'prod-agent'],
-            'api' => ['kanban' => ['base_url' => 'https://k.example.com', 'token_path' => '/t']],
-            'receiver' => ['base_url' => 'https://b.example.com/webhooks'],
+            'identity' => ['kanban_user_id' => 137],
             'subscriptions' => [],
         ];
         if ($channelSocket !== null) {
@@ -136,6 +134,26 @@ class ChannelPushHandlerTest extends TestCase
         $this->push(['url' => 'http://localhost:8788/', 'body' => ['custom' => true]]);
 
         Http::assertSent(fn ($request) => $request->data() === ['custom' => true]);
+    }
+
+    public function test_falls_back_to_agent_channel_url_when_no_socket(): void
+    {
+        Http::fake(['*' => Http::response('ok', 200)]);
+
+        $agent = AgentConfig::fromArray('prod-agent', [
+            'identity' => ['kanban_user_id' => 137],
+            'subscriptions' => [],
+            'channel' => ['url' => 'http://127.0.0.1:8788/'],
+        ]);
+
+        // Payload carries neither socket nor url → falls back to channel.url.
+        (new ChannelPushHandler)->handle(
+            ReactionTarget::make('channel_push', '42', payload: ['kind' => 'new_card', 'subject_id' => '42']),
+            $agent,
+        );
+
+        Http::assertSent(fn ($request) => $request->url() === 'http://127.0.0.1:8788/'
+            && $request->data() === ['intent' => ['kind' => 'new_card', 'subject_id' => '42']]);
     }
 
     public function test_non_array_body_rejected(): void

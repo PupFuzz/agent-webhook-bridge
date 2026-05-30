@@ -1,116 +1,84 @@
 # agent-webhook-bridge — per-agent configuration template.
 #
 # SETUP:
-#   1. Copy this file to ~/.config/agent-webhook-bridge/<your-agent-name>.yml
+#   1. Copy this file to $BRIDGE_DIR/<your-agent-name>.yml
 #   2. Fill in the values for your install.
-#   3. `chmod 600 ~/.config/agent-webhook-bridge/<your-agent-name>.yml`
+#   3. `chmod 600 $BRIDGE_DIR/<your-agent-name>.yml`
 #
-# Each agent on a multi-agent host gets its own config file in the bridge's
-# config dir (config/bridge.php → BRIDGE_CONFIG_DIR, default
-# ~/.config/agent-webhook-bridge). The agent name (filename without `.yml`) is
-# also the identity referenced in the shared `agents.json` registry — keep
-# them consistent.
+# The FILENAME (without `.yml`) IS the agent's name and its echo "self" — there
+# is no `identity.self`. The agent registry is built by scanning these files;
+# there is no separate agents.json roster.
 #
-# NOTE (v0.12): the database connection and the HMAC-secret directory are NO
-# LONGER set here. The DB comes from Laravel's .env (DB_CONNECTION/DB_*); the
-# secret dir comes from config/bridge.php (BRIDGE_SECRET_DIR). One install per
-# agent. A migrated v0.11 YAML with leftover `db:` / `secrets:` sections still
-# loads — those keys are tolerated and ignored.
+# PER-INSTALL settings are NOT here — they're the same for every agent on an
+# install, so they live in the Laravel .env / config/bridge.php:
+#   - the database (DB_CONNECTION/DB_*)
+#   - the receiver public URL (BRIDGE_RECEIVER_BASE_URL)
+#   - each provider's API base URL (BRIDGE_KANBAN_API_BASE_URL, ...)
+#   - the secret + config base dir (BRIDGE_DIR)
+# The API token is read by convention from <secret_dir>/<provider>/token.
 
 # ----------------------------------------------------------------------------
-# identity: who this agent is.
+# identity: this agent's own IMMUTABLE upstream account ids.
 # ----------------------------------------------------------------------------
+# Used to build the registry (resolve other agents' events to names) and to
+# AUTO-SEED this agent's own echo-suppression — you never hand-list your own id.
+# Omit an id the agent doesn't have. github_login is a display-only label.
 identity:
-  self: your-agent
-    # Must match the agent's "name" field in agents.json AND the basename of
-    # this config file (filename without .yml). Used for echo-suppression +
-    # surface formatting. Pick a name meaningful to your install — e.g.
-    # "prod-agent", "ops-bot", or just your project's nickname.
-
-# ----------------------------------------------------------------------------
-# api: per-provider API endpoint + token discovery.
-# ----------------------------------------------------------------------------
-api:
-  kanban:
-    base_url: https://kanban.example.com/api/v3
-    token_path: ~/.kanban-dev-token
-      # Path to a single-line file containing the bearer token for this provider.
-      # Generated manually by the user (e.g. via the kanban-board UI's API tokens
-      # page). Token must have webhook-management permission.
-
-  # Add other providers (github, gitlab, ...) here in the same shape.
-  # The provider name must match a registered adapter
-  # (App\Bridge\Adapters\<Provider>Adapter, wired in WebhookAdapterFactory).
-
-# ----------------------------------------------------------------------------
-# receiver: the bridge's public-facing webhook URL.
-# ----------------------------------------------------------------------------
-receiver:
-  base_url: https://bridge.example.com/webhooks
-    # The receiver appends `/<provider>?b=<scope_id>` automatically when
-    # building per-scope subscription URLs.
+  kanban_user_id: 137
+  # github_user_id: 41000123
+  # github_login: your-bot        # display label only; recognition keys on the id
 
 # ----------------------------------------------------------------------------
 # subscriptions: which provider scopes this agent subscribes to.
 # ----------------------------------------------------------------------------
-# Each entry maps one provider to one or more scope IDs and an optional
-# event_filter (glob patterns). `php artisan bridge:provision` iterates this
-# list and ensures each subscription exists on the upstream (idempotent).
+# `php artisan bridge:provision` iterates this list and ensures each kanban
+# subscription exists on the upstream (idempotent). GitHub webhooks are
+# configured in repo settings — bridge:provision skips github (non-zero exit).
 subscriptions:
   - provider: kanban
-    scopes: [5]            # kanban board IDs to subscribe to
-    event_filter: []        # empty = all events; use ["task.*", "comment.*"] etc. to narrow
+    scopes: [5]             # kanban board IDs
+    event_filter: []        # empty = all events; e.g. ["task.*", "comment.*"] to narrow
 
-  # GitHub subscription example. GitHub webhooks are configured in the repo's
-  # settings, NOT via an API — `bridge:provision` skips the github provider with
-  # a non-zero exit. Enumerate the events you want when you create the hook:
-  #
   # - provider: github
-  #   scopes: ["your-org/kanban-board"]  # full_name slug
-  #   event_filter: ["push", "pull_request", "issues", "issue_comment", "release"]
+  #   scopes: ["your-org/your-repo"]   # full_name slug
+  #   event_filter: ["push", "pull_request", "issues"]
 
 # ----------------------------------------------------------------------------
-# echo_suppression: how to filter events authored by other agents.
+# echo_suppression (optional): the agent's OWN writes are auto-suppressed from
+# its identity ids above — these lists are only for OTHER agents.
 # ----------------------------------------------------------------------------
-echo_suppression:
-  treat_as_echo: []
-    # Names of agents from agents.json whose writes the bridge should silently
-    # skip (no inbox surfacing, no reaction). Always include this agent's own
-    # identity here — listed for clarity:
-    #   treat_as_echo: [your-agent]
-  treat_as_echo_ids: []
-    # Raw IMMUTABLE provider identifiers (kanban user_id, GitHub sender.id —
-    # the numeric account id, NOT the renameable login) whose writes the bridge
-    # should silently skip. STRONGLY RECOMMENDED to include this agent's own
-    # id(s) here as a safety net — if agents.json ever goes missing, name-based
-    # matching breaks and the bridge would otherwise react to its own writes
-    # (infinite-loop hazard). Using the numeric id (not the login) means a
-    # GitHub username rename never breaks suppression. Example:
-    #   treat_as_echo_ids: ["137", "41000123"]   # kanban user_id + github_user_id, as strings
-  treat_as_signal: []
-    # Names of agents whose writes ARE signal (surface as activity). Default
-    # behaviour when an actor is not on either list is to treat as signal.
+# echo_suppression:
+#   treat_as_echo: [other-agent]        # other agents' writes to silently skip (by name)
+#   treat_as_echo_ids: ["999"]          # extra raw ids to skip (rarely needed)
+#   treat_as_signal: [pm]               # if set, ONLY these agents' writes are signal
+#                                       # (a name with no matching <name>.yml is rejected)
 
 # ----------------------------------------------------------------------------
-# classifier (optional): which classifier turns events into intents + reactions.
+# classifier (optional): defaults to InboxOnlyClassifier (surface-only).
 # ----------------------------------------------------------------------------
-# Defaults to App\Bridge\Classifiers\InboxOnlyClassifier (surface-only, no
-# dispatched reactions). Point `class` at any FQCN implementing
-# App\Bridge\Contracts\Classifier — see docs/customization.md.
 # classifier:
 #   class: App\Bridge\Classifiers\EventDrivenClassifier
 
 # ----------------------------------------------------------------------------
-# channel (optional): channel_push target for the EventDrivenClassifier.
+# api (optional): per-agent token-path OVERRIDE.
 # ----------------------------------------------------------------------------
-# `name` (default = identity.self) is the <channel source="..."> label only.
-# `socket` is the absolute UDS path the channel_push handler falls back to when a
-# target carries no socket/url — it MUST equal the path your channel server binds.
-# v0.12 does NOT derive the socket from `name` (the v0.11 /run/user/<uid>/... auto-
-# derivation was dropped). Only relevant if your classifier emits channel_push.
+# The token is read by convention from <secret_dir>/<provider>/token. Override
+# only when this agent authenticates as a distinct account:
+# api:
+#   kanban:
+#     token_path: ~/.config/.../custom-kanban-token
+
+# ----------------------------------------------------------------------------
+# channel (optional): where channel_push / route_intents delivers.
+# ----------------------------------------------------------------------------
+# Set `socket` (local UDS) OR `url` (loopback http, e.g. an SSH tunnel) — they
+# are mutually exclusive. `route_intents: true` makes the dispatcher push every
+# staged intent here (config-driven EventDriven; pair with a plain classifier,
+# not EventDriven, or it double-pushes).
 # channel:
-#   name: your-agent
 #   socket: /run/user/1000/agent-webhook-bridge-channel-your-agent.sock
+#   # url: http://127.0.0.1:8788/
+#   route_intents: false
 
 # ----------------------------------------------------------------------------
 # surface (optional): inbox/surfacing behaviour.

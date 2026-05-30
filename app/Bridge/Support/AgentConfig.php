@@ -4,50 +4,53 @@ namespace App\Bridge\Support;
 
 use App\Bridge\Classifiers\InboxOnlyClassifier;
 use App\Bridge\Exceptions\ConfigException;
-use App\Bridge\Validation\ChannelName;
 use App\Bridge\Validation\SocketPath;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\Yaml\Exception\ParseException;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * A parsed per-agent config (<config_dir>/<agent>.yml). v0.12 adaptation of
- * the v0.11 shape: the `db` and `secrets.base_dir` sections are gone — the DB
- * connection and the HMAC secret dir now come from Laravel's .env /
- * config/bridge.php (one install per agent). Those keys are still TOLERATED in
- * a YAML (no warning) so migrating configs load cleanly; their values are
- * ignored. `classifier.module` (a Python path) becomes `classifier.class` (a
- * PHP FQCN). Everything else (identity / api / receiver / subscriptions /
- * echo_suppression / channel / surface) is preserved.
+ * A parsed per-agent config (`<config_dir>/<agent>.yml`). The FILENAME is the
+ * canonical agent name — and the agent's echo "self" — so there is no
+ * `identity.self` (that was a denormalization that could silently drift from the
+ * filename and break echo suppression). Per-INSTALL settings live in
+ * `config/bridge.php`, NOT here: the receiver base URL and each provider's API
+ * base URL are the same for every agent on an install. The API token is read by
+ * convention from `<secret_dir>/<provider>/token` (override per agent with
+ * `api.<provider>.token_path` only when an agent authenticates as a distinct
+ * account).
+ *
+ * Sections: `identity` (the agent's own immutable upstream ids — they build the
+ * AgentRegistry and auto-seed self echo-suppression), `subscriptions`,
+ * `echo_suppression` (lists OTHER agents only; self is derived from the filename
+ * + identity ids), `classifier`, `channel`, `surface`.
  */
 final class AgentConfig
 {
     /**
-     * Recognized top-level keys. `db`/`secrets` are retained (ignored) so a
-     * migrated v0.11 YAML doesn't trip the unknown-key warning.
-     *
      * @var list<string>
      */
     private const KNOWN_TOP_LEVEL_KEYS = [
-        'identity', 'api', 'receiver', 'subscriptions', 'echo_suppression',
-        'db', 'secrets', 'surface', 'classifier', 'channel',
+        'identity', 'subscriptions', 'echo_suppression', 'surface', 'classifier', 'channel', 'api',
     ];
 
     /**
-     * @param  array<string, ProviderApiConfig>  $api
      * @param  list<SubscriptionConfig>  $subscriptions
+     * @param  array<string, string>  $tokenPathOverrides  provider => explicit token path (overrides the convention)
      * @param  array<mixed>  $raw
      */
     public function __construct(
         public readonly string $agentName,
-        public readonly string $selfIdentity,
-        public readonly array $api,
-        public readonly string $receiverBaseUrl,
+        public readonly ?int $kanbanUserId,
+        public readonly ?int $githubUserId,
+        public readonly ?string $githubLogin,
         public readonly array $subscriptions,
         public readonly EchoSuppressionConfig $echoSuppression,
         public readonly string $classifierClass,
-        public readonly string $channelName,
         public readonly ?string $channelSocket,
+        public readonly ?string $channelUrl,
+        public readonly bool $channelRouteIntents,
+        public readonly array $tokenPathOverrides,
         public readonly bool $surfaceSilentDropWarnings,
         public readonly array $raw,
     ) {}
@@ -83,24 +86,9 @@ final class AgentConfig
         self::warnUnknownTopLevelKeys($raw, $agentName);
 
         $identity = self::section($raw, 'identity');
-        $selfIdentity = $identity['self'] ?? null;
-        if (! is_string($selfIdentity) || $selfIdentity === '') {
-            throw new ConfigException(
-                'identity.self must be a non-empty string (set it to the agent name as it appears in agents.json)'
-            );
-        }
-
-        $apiRaw = self::section($raw, 'api');
-        if ($apiRaw === []) {
-            throw new ConfigException('api section is required with at least one provider configured');
-        }
-        $api = [];
-        foreach ($apiRaw as $name => $cfg) {
-            $api[(string) $name] = ProviderApiConfig::fromArray((string) $name, is_array($cfg) ? $cfg : []);
-        }
-
-        $receiver = self::section($raw, 'receiver');
-        $receiverBaseUrl = rtrim(self::validateUrl($receiver['base_url'] ?? null, 'receiver.base_url'), '/');
+        $kanbanUserId = isset($identity['kanban_user_id']) && is_numeric($identity['kanban_user_id']) ? (int) $identity['kanban_user_id'] : null;
+        $githubUserId = isset($identity['github_user_id']) && is_numeric($identity['github_user_id']) ? (int) $identity['github_user_id'] : null;
+        $githubLogin = isset($identity['github_login']) && is_scalar($identity['github_login']) ? (string) $identity['github_login'] : null;
 
         $subsRaw = $raw['subscriptions'] ?? [];
         if (! is_array($subsRaw)) {
@@ -118,7 +106,20 @@ final class AgentConfig
             }
         }
 
-        $echo = EchoSuppressionConfig::fromArray(self::section($raw, 'echo_suppression'));
+        // Self echo-suppression is DERIVED — the agent's own identity ids are
+        // auto-seeded into the echo-id set (no hand-listed treat_as_echo_ids of
+        // self, which drifts), and self-by-name is the filename (agentName).
+        // treat_as_echo / treat_as_signal name OTHER agents only.
+        $echoRaw = EchoSuppressionConfig::fromArray(self::section($raw, 'echo_suppression'));
+        $selfIds = array_values(array_filter([
+            $kanbanUserId !== null ? (string) $kanbanUserId : null,
+            $githubUserId !== null ? (string) $githubUserId : null,
+        ], fn ($x) => $x !== null));
+        $echo = new EchoSuppressionConfig(
+            treatAsEcho: $echoRaw->treatAsEcho,
+            treatAsSignal: $echoRaw->treatAsSignal,
+            treatAsEchoIds: array_values(array_unique([...$echoRaw->treatAsEchoIds, ...$selfIds])),
+        );
 
         $surface = self::requireMapping($raw, 'surface');
         $silentDrop = $surface['silent_drop_warnings'] ?? true;
@@ -128,21 +129,48 @@ final class AgentConfig
 
         $classifierClass = self::resolveClassifierClass(self::requireMapping($raw, 'classifier'));
 
-        [$channelName, $channelSocket] = self::resolveChannel(self::requireMapping($raw, 'channel'), $selfIdentity);
+        [$channelSocket, $channelUrl, $channelRouteIntents] = self::resolveChannel(self::requireMapping($raw, 'channel'));
 
         return new self(
             agentName: $agentName,
-            selfIdentity: $selfIdentity,
-            api: $api,
-            receiverBaseUrl: $receiverBaseUrl,
+            kanbanUserId: $kanbanUserId,
+            githubUserId: $githubUserId,
+            githubLogin: $githubLogin,
             subscriptions: $subscriptions,
             echoSuppression: $echo,
             classifierClass: $classifierClass,
-            channelName: $channelName,
             channelSocket: $channelSocket,
+            channelUrl: $channelUrl,
+            channelRouteIntents: $channelRouteIntents,
+            tokenPathOverrides: self::resolveTokenOverrides(self::section($raw, 'api')),
             surfaceSilentDropWarnings: $silentDrop,
             raw: $raw,
         );
+    }
+
+    /**
+     * The API token path for a provider: the per-agent override if set, else the
+     * `<secret_dir>/<provider>/token` convention.
+     */
+    public function tokenPath(string $secretDir, string $provider): string
+    {
+        return $this->tokenPathOverrides[$provider] ?? TokenPath::for($secretDir, $provider);
+    }
+
+    /**
+     * @param  array<mixed>  $api
+     * @return array<string, string>
+     */
+    private static function resolveTokenOverrides(array $api): array
+    {
+        $overrides = [];
+        foreach ($api as $provider => $cfg) {
+            if (is_array($cfg) && isset($cfg['token_path']) && is_string($cfg['token_path']) && $cfg['token_path'] !== '') {
+                $overrides[(string) $provider] = PathHelper::expandUser($cfg['token_path']);
+            }
+        }
+
+        return $overrides;
     }
 
     /**
@@ -160,62 +188,50 @@ final class AgentConfig
 
     /**
      * @param  array<mixed>  $channel
-     * @return array{string, ?string}
+     * @return array{?string, ?string, bool}
      */
-    private static function resolveChannel(array $channel, string $selfIdentity): array
+    private static function resolveChannel(array $channel): array
     {
-        $explicitName = $channel['name'] ?? null;
-        if ($explicitName !== null) {
-            $name = is_scalar($explicitName) ? (string) $explicitName : '';
-            if (! ChannelName::matches($name)) {
-                throw new ConfigException("channel.name '{$name}' must be lowercase letters/digits/underscore/hyphen, non-empty");
-            }
-            $channelName = $name;
-        } else {
-            // Fall back to identity.self UNVALIDATED — lazily validated only if
-            // a default socket path is derived at dispatch time.
-            $channelName = $selfIdentity;
-        }
-
+        $socketStr = null;
         $socket = $channel['socket'] ?? null;
         if ($socket !== null) {
             $socketStr = is_scalar($socket) ? (string) $socket : '';
             if (! SocketPath::isValid($socketStr)) {
                 throw new ConfigException("channel.socket '{$socketStr}' must be an absolute path with no '..' segment or null byte");
             }
-
-            return [$channelName, $socketStr];
         }
 
-        return [$channelName, null];
-    }
-
-    private static function validateUrl(mixed $value, string $field): string
-    {
-        if (! is_string($value) || $value === '') {
-            throw new ConfigException("{$field} must be a non-empty string URL");
+        // channel.url — for the SSH-tunneled remote-host case (multi-host.md).
+        // Shape-validated here; the loopback/SSRF check is the channel_push
+        // handler's (single source of truth). Mutually exclusive with socket.
+        $urlStr = null;
+        $url = $channel['url'] ?? null;
+        if ($url !== null) {
+            $urlStr = is_scalar($url) ? (string) $url : '';
+            if ($urlStr === '' || preg_match('/\s/', $urlStr) === 1) {
+                throw new ConfigException("channel.url '{$urlStr}' must be a non-empty URL with no whitespace");
+            }
         }
-        if (preg_match('/\s/', $value) === 1) {
-            throw new ConfigException("{$field} '{$value}' contains whitespace; check for paste errors");
-        }
-        $parts = parse_url($value);
-        if ($parts === false) {
-            throw new ConfigException("{$field} '{$value}' is not a valid URL");
-        }
-        if (! in_array($parts['scheme'] ?? '', ['http', 'https'], true)) {
-            throw new ConfigException("{$field} '{$value}' must use http or https");
-        }
-        if (($parts['host'] ?? '') === '') {
-            throw new ConfigException("{$field} '{$value}' must have a host component");
+        if ($socketStr !== null && $urlStr !== null) {
+            throw new ConfigException('channel.socket and channel.url are mutually exclusive — set exactly one');
         }
 
-        return $value;
+        // channel.route_intents: the dispatcher auto-pushes every staged intent
+        // to this agent's channel (the config-driven form of EventDrivenClassifier).
+        $routeIntents = $channel['route_intents'] ?? false;
+        if (! is_bool($routeIntents)) {
+            throw new ConfigException('channel.route_intents must be a boolean');
+        }
+        if ($routeIntents && $socketStr === null && $urlStr === null) {
+            throw new ConfigException('channel.route_intents requires channel.socket or channel.url (nowhere to route)');
+        }
+
+        return [$socketStr, $urlStr, $routeIntents];
     }
 
     /**
-     * Read a top-level section as an array, defaulting to empty (tolerant —
-     * a non-mapping value is coerced to empty). Used for sections the loader
-     * accesses field-by-field with its own per-field validation.
+     * Read a top-level section as an array, defaulting to empty (tolerant — a
+     * non-mapping value is coerced to empty).
      *
      * @param  array<mixed>  $raw
      * @return array<mixed>
@@ -228,11 +244,9 @@ final class AgentConfig
     }
 
     /**
-     * Read a top-level section that MUST be a mapping when present. An absent
-     * or null section defaults to empty; a present non-mapping value (e.g. a
-     * scalar from `classifier: SomeName` instead of `classifier: {class: ...}`)
-     * is a malformed config and throws rather than silently degrading to
-     * defaults.
+     * Read a top-level section that MUST be a mapping when present. An absent or
+     * null section defaults to empty; a present non-mapping value (e.g. a scalar
+     * `classifier: SomeName`) is malformed and throws rather than degrading.
      *
      * @param  array<mixed>  $raw
      * @return array<mixed>

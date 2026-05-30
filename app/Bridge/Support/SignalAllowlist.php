@@ -3,15 +3,15 @@
 namespace App\Bridge\Support;
 
 use App\Bridge\Dispatch\Actor;
+use App\Bridge\Exceptions\ConfigException;
 use Closure;
-use Illuminate\Support\Facades\Log;
 
 /**
- * Optional positive filter applied AFTER echo suppression (T-015). When
- * treat_as_signal is set, only events authored by the named agents reach
- * classify; everything else is dropped. Empty list → allow all (current
- * behaviour). Matched against actor.name (from the registry), so allowlisting
- * by raw id requires the agent to be in agents.json first.
+ * Optional positive filter applied AFTER echo suppression. When treat_as_signal
+ * is set, only events authored by the named agents reach classify; everything
+ * else is dropped. Empty list → allow all. Matched against actor.name (from the
+ * registry), so a name must be a real agent (a <name>.yml) — an unknown name is
+ * fail-closed (a typo would silently classify everything NOT-IN-SIGNAL).
  */
 final class SignalAllowlist
 {
@@ -39,10 +39,9 @@ final class SignalAllowlist
         if ($registry !== null) {
             $unknown = array_values(array_diff($allowlist, $registry->names()));
             if ($unknown !== []) {
-                Log::warning(sprintf(
-                    'treat_as_signal references name(s) not in agents.json: %s — these entries '.
-                    'will never match, so events by those names are classified NOT-IN-SIGNAL. '.
-                    'Add the agent to agents.json or remove the entry.',
+                throw new ConfigException(sprintf(
+                    'treat_as_signal references name(s) with no matching agent config: %s — they would '.
+                    'never match (events by them classified NOT-IN-SIGNAL). Add the <name>.yml or fix the typo.',
                     implode(', ', $unknown),
                 ));
             }

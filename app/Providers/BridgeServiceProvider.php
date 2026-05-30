@@ -32,10 +32,19 @@ class BridgeServiceProvider extends ServiceProvider
 
         $this->app->bind(DispatchService::class, function (): DispatchService {
             $configDir = (string) config('bridge.config_dir');
+            // The identity registry is built from the SAME scanned YAMLs the
+            // subscription registry reads (each agent declares its own identity
+            // ids) — one source of truth, fail-closed: a malformed YAML throws
+            // here too (→ 5xx → upstream redelivers once fixed), not a silent
+            // degrade. shared-identities.json is the only separate file.
+            $subscriptions = new SubscriptionRegistry($configDir);
 
             return new DispatchService(
-                new SubscriptionRegistry($configDir),
-                AgentRegistry::load(rtrim($configDir, '/').'/agents.json'),
+                $subscriptions,
+                AgentRegistry::fromAgentConfigs(
+                    $subscriptions->agentConfigs(),
+                    AgentRegistry::loadSharedIdentities($configDir),
+                ),
                 $this->app->make(HandlerRegistry::class),
                 new IntentLog,
             );

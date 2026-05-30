@@ -10,6 +10,35 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.16.0] - 2026-05-30
+
+**Per-agent inbox surfacing for a single multi-agent install, then a config-schema cleanup that kills the duplication it exposed.** ⚠ **Breaking — operators must migrate their per-agent config (see below).**
+
+### Added
+
+- **Per-agent inbox surfacing (DL-006).** A single install fanning out to N agents can now give each agent a clean view. Every staged inbox line carries the serving `agent`; `BRIDGE_INBOX_LAYOUT=shared|per-agent|both` (default `shared`); `bridge:inbox --agent <name>` reads that agent's file (or the shared file filtered by tag) with an isolated per-agent seen cursor; `BRIDGE_DEFAULT_AGENT` for a bare invocation. Cross-user read via a group convention (`BRIDGE_STATE_DIR` outside the secret dir + `BRIDGE_INBOX_GROUP`/`BRIDGE_INBOX_FILE_MODE`, requires `per-agent` layout). `channel.route_intents` (+ `channel.url`) routes each staged intent to an agent's channel without a hand-coded `channel_push`. `--agent` added to `bridge:stats` / `bridge:inspect`. (#16)
+- **`bridge:inbox` cursor-advance reliability fix (DL-006).** Advances the seen cursor only when output can reach a consumer — wiring it on a `Stop`/`Notification` hook no longer silently eats intents. `--no-cursor-advance` for a non-advancing peek. (#16)
+
+### Changed
+
+- ⚠ **BREAKING — config schema v2 (DL-007).** Kills config duplication the surfacing work exposed.
+  - The `<agent>.yml` **filename is the agent name** — `identity.self` removed.
+  - Per-**install** settings moved to `.env`/`config/bridge.php`: `BRIDGE_RECEIVER_BASE_URL` and provider API base URLs (`BRIDGE_KANBAN_API_BASE_URL`); the per-agent YAML keeps only an optional `api.<provider>.token_path` override.
+  - Per-agent identity folded into the YAML (`identity: {kanban_user_id, github_user_id, github_login}`); the registry is built by scanning the YAMLs. **`agents.json` → optional `shared-identities.json`** (shared accounts only).
+  - **`BRIDGE_DIR`** collapses `BRIDGE_CONFIG_DIR`+`BRIDGE_SECRET_DIR` (both still overridable). API **token by convention** `<secret_dir>/<provider>/token` (per-agent override allowed). **`channel.name` removed** (dead field).
+  - An agent's own echo-suppression ids are **auto-seeded** from its `identity` (`echo_suppression: {}` is the common case). Fail-closed: a malformed YAML 5xx's; an unknown `treat_as_signal` name throws. `bridge:check` validates the whole config surface (classifier FQCN, endpoint URLs, token/secret presence, signal names, default agent) with actionable messages.
+
+  **Migration:** move ids into each `<agent>.yml`'s `identity` block; drop `identity.self` / `receiver` / `api.<provider>.base_url` / `channel.name`; set `BRIDGE_DIR` + `BRIDGE_RECEIVER_BASE_URL` + `BRIDGE_KANBAN_API_BASE_URL`; move the API token to `<secret_dir>/<provider>/token`; rename `agents.json` → `shared-identities.json` keeping only the `shared_identities` block. See `CLAUDE_DECISIONS.md` DL-007 and the rewritten `examples/sample-config/*`.
+
+### Internal
+
+- A bad `classifier.class` FQCN is locked as treatment-A (record + ack 200, not a 5xx) by a regression test, and surfaced early by `bridge:check`. (#17)
+- Consolidation: one canonical JSONL reader (`BridgePaths::readJsonl`/`jsonlContainsId`/`agentInboxLines`); new `UrlValidator` + `TokenPath` + a `BridgeCommand` base (`strOption`); `ProviderApiConfig` removed. (#16, #18)
+
+### Verification
+
+- PHPUnit **229/229** (SQLite + MariaDB 10.6/11) · Pint clean · PHPStan level 7 (`app/Bridge`) 0 errors.
+
 ## [0.15.0] - 2026-05-30
 
 **Custom-handler registration now works as documented, and per-agent echo suppression is restored for a shared upstream identity.** Both reported by a peer integrator.

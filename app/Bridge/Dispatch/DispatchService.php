@@ -145,6 +145,27 @@ final class DispatchService
             foreach ($result->targets as $t) {
                 $targets[$t->debounceKey] = $t;
             }
+
+            // Per-agent channel routing (DL-006): channel.route_intents pushes
+            // every staged intent to the agent's configured channel without the
+            // classifier hand-emitting channel_push — the config-driven form of
+            // EventDrivenClassifier, for fan-out where an agent is remote/idle.
+            // The debounceKey is namespaced ('channel_push:<subject>') so a routed
+            // push never clobbers an unrelated classifier target on the same
+            // subject; it coalesces per subject like EventDrivenClassifier. (Pair
+            // route_intents with a plain inbox classifier, not EventDriven, or you
+            // get two pushes per event.)
+            if ($agent->channelRouteIntents) {
+                foreach ($result->intents as $intent) {
+                    $routed = ReactionTarget::make(
+                        handler: 'channel_push',
+                        targetId: $intent->subjectId,
+                        debounceKey: 'channel_push:'.$intent->subjectId,
+                        payload: $intent->toArray(),
+                    );
+                    $targets[$routed->debounceKey] = $routed;
+                }
+            }
             $note = null;
             foreach ($targets as $target) {
                 $handler = $this->handlers->resolve($target->handler);
@@ -167,10 +188,20 @@ final class DispatchService
 
     private function isEcho(AgentConfig $agent, Actor $actor): bool
     {
-        return EchoSuppression::default(
-            $agent->selfIdentity,
-            $agent->echoSuppression->treatAsEcho,
+        // Self identity is the agent's name (the YAML filename); its own upstream
+        // ids are auto-seeded into treatAsEchoIds by AgentConfig. But drop any id
+        // the registry knows is SHARED: a shared account's events must reach
+        // classify so the DL-005 re-attribution decides per agent, rather than
+        // being suppressed wholesale here by an auto-seeded shared self id (DL-007).
+        $echoIds = array_values(array_filter(
             $agent->echoSuppression->treatAsEchoIds,
+            fn (string $id) => ! $this->agents->isSharedGithubId($id),
+        ));
+
+        return EchoSuppression::default(
+            $agent->agentName,
+            $agent->echoSuppression->treatAsEcho,
+            $echoIds,
         )->isEcho($actor);
     }
 

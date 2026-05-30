@@ -173,19 +173,19 @@ class MyClassifier implements Classifier
         string $scopeId,
     ): ClassifyResult {
         if ($eventType !== 'card.updated') {
-            return ClassifyResult::empty();
+            return new ClassifyResult;
         }
 
         // Intent: the durable inbox-feeding backstop. ALWAYS emit one for
         // events that must reach the agent — channel_push is only a
         // live-push optimization for active sessions. The silent-drop guard
         // catches this misconfig.
-        $intent = Intent::make(
+        $intent = new Intent(
             kind: 'card_updated',
             subjectId: "card:{$payload['id']}",
+            provider: 'kanban',
             actor: $actor,
             summary: "card {$payload['id']} updated",
-            provider: 'kanban',
             payload: $payload,
         );
 
@@ -212,15 +212,28 @@ class MyClassifier implements Classifier
 }
 ```
 
-Register in `<agent>.yml`:
+Register in `<agent>.yml` (the filename is the agent name — no `identity.self`):
 
 ```yaml
-identity:
-  self: prod-agent
 classifier:
   class: App\Bridge\Classifiers\MyClassifier
 # ... rest of your agent config
 ```
+
+### Simpler alternative — `channel.route_intents` (no classifier code)
+
+If you don't need a per-delivery `Authorization` header (the SSH tunnel + loopback-only bind is already the trust boundary; the Bearer token is defense-in-depth), you can skip the custom classifier entirely and let the dispatcher route every staged intent to the tunnel:
+
+```yaml
+# <agent>.yml — route intents to the local tunnel endpoint automatically
+classifier:
+  class: App\Bridge\Classifiers\InboxOnlyClassifier   # or EventDriven; just don't double-push
+channel:
+  url: http://127.0.0.1:8788/   # local end of the reverse tunnel to host B
+  route_intents: true
+```
+
+The dispatcher then pushes each intent (best-effort; a down tunnel is a recorded note, and the inbox backstop still holds it) — see [`multi-agent.md` § Per-agent surfacing](multi-agent.md#per-agent-surfacing-one-install-n-agents). Use the classifier form above instead when you need the `Bearer` header on each push.
 
 ## Smoke test
 

@@ -34,10 +34,7 @@ class WebhookDispatchTest extends TestCase
         File::ensureDirectoryExists($this->dir.'/github');
         File::put($this->dir.'/kanban/webhook-secret-scope-5', $this->secret);
         File::put($this->dir.'/github/webhook-secret-scope-acme-corp%2Fwidget', $this->githubSecret);
-        File::put($this->dir.'/agents.json', (string) json_encode(['schema_version' => 2, 'agents' => [['name' => 'prod-agent', 'kanban_user_id' => 137]]]));
-        File::put($this->dir.'/prod-agent.yml', "identity:\n  self: prod-agent\n"
-            ."api:\n  kanban:\n    base_url: https://k.example.com\n    token_path: /t\n"
-            ."receiver:\n  base_url: https://b.example.com/webhooks\n"
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
             ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
 
         config(['bridge.secret_dir' => $this->dir, 'bridge.config_dir' => $this->dir]);
@@ -106,24 +103,40 @@ class WebhookDispatchTest extends TestCase
     }
 
     /**
-     * Install a github-subscribed agent (`gh-agent`) that uses a test
-     * classifier emitting an intent for ANY event — so "an intent staged" is a
-     * causal signal that the event reached classify (the shipped
-     * InboxOnlyClassifier no-ops on github events, which would make an
-     * inbox-empty assertion pass for the wrong reason). gh-agent echo-suppresses
-     * its own identity. `$agents` is the agents.json `agents` array.
+     * Install a github-subscribed agent (`gh-agent`) that uses a test classifier
+     * emitting an intent for ANY event — so "an intent staged" is a causal signal
+     * that the event reached classify (the shipped InboxOnlyClassifier no-ops on
+     * github events). gh-agent's own events are echo-suppressed by its
+     * (auto-seeded) identity.github_user_id. Each entry in `$agents` becomes a
+     * per-agent YAML carrying its identity ids — the v2 registry is built by
+     * scanning the YAMLs (no agents.json). Non-`gh-agent` entries are
+     * identity-only author configs (no subscriptions) so the registry can
+     * resolve them.
      *
      * @param  list<array<string, mixed>>  $agents
      */
     private function writeGithubAgent(array $agents): void
     {
-        File::put($this->dir.'/agents.json', (string) json_encode(['schema_version' => 2, 'agents' => $agents]));
-        File::put($this->dir.'/gh-agent.yml', "identity:\n  self: gh-agent\n"
-            ."api:\n  kanban:\n    base_url: https://k.example.com\n    token_path: /t\n"
-            ."receiver:\n  base_url: https://b.example.com/webhooks\n"
-            ."classifier:\n  class: Tests\\Feature\\Dispatch\\AlwaysIntentClassifier\n"
-            ."subscriptions:\n  - provider: github\n    scopes: [acme-corp/widget]\n"
-            ."echo_suppression:\n  treat_as_echo: [gh-agent]\n");
+        foreach ($agents as $a) {
+            $name = (string) $a['name'];
+            $identity = '';
+            if (isset($a['github_user_id'])) {
+                $identity .= "  github_user_id: {$a['github_user_id']}\n";
+            }
+            if (isset($a['github_login'])) {
+                $identity .= "  github_login: {$a['github_login']}\n";
+            }
+            $identityBlock = $identity !== '' ? "identity:\n{$identity}" : '';
+
+            if ($name === 'gh-agent') {
+                File::put($this->dir."/{$name}.yml", $identityBlock
+                    ."classifier:\n  class: Tests\\Feature\\Dispatch\\AlwaysIntentClassifier\n"
+                    ."subscriptions:\n  - provider: github\n    scopes: [acme-corp/widget]\n");
+            } else {
+                // Author-only agent: identity so the registry resolves its events; no subscriptions.
+                File::put($this->dir."/{$name}.yml", $identityBlock."subscriptions: []\n");
+            }
+        }
     }
 
     private function postGithub(string $body, string $delivery): TestResponse

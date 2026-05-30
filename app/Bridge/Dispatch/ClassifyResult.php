@@ -18,7 +18,7 @@ namespace App\Bridge\Dispatch;
  * classify and suppresses the event only when it is the serving agent's own
  * write (a different shared-id agent's write still surfaces). Reporting the
  * author is content analysis (the classifier's job); deciding "is that me?" is
- * per-agent policy (the dispatcher's job, reusing identity.self /
+ * per-agent policy (the dispatcher's job, reusing the agent name /
  * treat_as_echo). Left null by every shipped classifier → no behaviour change.
  */
 final class ClassifyResult
