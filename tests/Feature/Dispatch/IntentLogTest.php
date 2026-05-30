@@ -62,8 +62,16 @@ class IntentLogTest extends TestCase
 
     private function inboxLines(): array
     {
-        $path = $this->dir.'/state/inbox.jsonl';
+        return $this->linesAt($this->dir.'/state/inbox.jsonl');
+    }
 
+    private function perAgentLines(string $agent = 'prod-agent'): array
+    {
+        return $this->linesAt($this->dir.'/state/inbox-'.$agent.'.jsonl');
+    }
+
+    private function linesAt(string $path): array
+    {
         return array_values(array_filter(array_map(
             fn ($l) => json_decode($l, true),
             File::exists($path) ? file($path, FILE_IGNORE_NEW_LINES) : [],
@@ -112,5 +120,49 @@ class IntentLogTest extends TestCase
         $lines = $this->inboxLines();
         $this->assertCount(2, $lines);
         $this->assertSame(['evt-1:prod-agent:0', 'evt-1:prod-agent:1'], array_column($lines, 'id'));
+    }
+
+    public function test_line_carries_serving_agent(): void
+    {
+        (new IntentLog)->stage($this->agent(), $this->event(), $this->intent('42'), 0);
+
+        $lines = $this->inboxLines();
+        $this->assertSame('prod-agent', $lines[0]['agent']);   // serving agent, distinct from actor (author)
+    }
+
+    public function test_per_agent_layout_writes_only_the_per_agent_file(): void
+    {
+        config(['bridge.inbox_layout' => 'per-agent']);
+
+        (new IntentLog)->stage($this->agent(), $this->event(), $this->intent('42'), 0);
+
+        $this->assertSame([], $this->inboxLines());                  // shared file NOT written
+        $perAgent = $this->perAgentLines();
+        $this->assertCount(1, $perAgent);
+        $this->assertSame('evt-1:prod-agent:0', $perAgent[0]['id']);
+        $this->assertSame('prod-agent', $perAgent[0]['agent']);
+    }
+
+    public function test_both_layout_writes_shared_and_per_agent(): void
+    {
+        config(['bridge.inbox_layout' => 'both']);
+
+        (new IntentLog)->stage($this->agent(), $this->event(), $this->intent('42'), 0);
+
+        $this->assertCount(1, $this->inboxLines());
+        $this->assertCount(1, $this->perAgentLines());
+        $this->assertSame($this->inboxLines()[0]['id'], $this->perAgentLines()[0]['id']);
+    }
+
+    public function test_per_agent_file_restage_is_idempotent(): void
+    {
+        config(['bridge.inbox_layout' => 'per-agent']);
+        $event = $this->event();
+        $agent = $this->agent();
+
+        (new IntentLog)->stage($agent, $event, $this->intent('42'), 0);
+        (new IntentLog)->stage($agent, $event, $this->intent('42'), 0);   // redelivery
+
+        $this->assertCount(1, $this->perAgentLines());
     }
 }

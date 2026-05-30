@@ -48,6 +48,8 @@ final class AgentConfig
         public readonly string $classifierClass,
         public readonly string $channelName,
         public readonly ?string $channelSocket,
+        public readonly ?string $channelUrl,
+        public readonly bool $channelRouteIntents,
         public readonly bool $surfaceSilentDropWarnings,
         public readonly array $raw,
     ) {}
@@ -128,7 +130,7 @@ final class AgentConfig
 
         $classifierClass = self::resolveClassifierClass(self::requireMapping($raw, 'classifier'));
 
-        [$channelName, $channelSocket] = self::resolveChannel(self::requireMapping($raw, 'channel'), $selfIdentity);
+        [$channelName, $channelSocket, $channelUrl, $channelRouteIntents] = self::resolveChannel(self::requireMapping($raw, 'channel'), $selfIdentity);
 
         return new self(
             agentName: $agentName,
@@ -140,6 +142,8 @@ final class AgentConfig
             classifierClass: $classifierClass,
             channelName: $channelName,
             channelSocket: $channelSocket,
+            channelUrl: $channelUrl,
+            channelRouteIntents: $channelRouteIntents,
             surfaceSilentDropWarnings: $silentDrop,
             raw: $raw,
         );
@@ -160,7 +164,7 @@ final class AgentConfig
 
     /**
      * @param  array<mixed>  $channel
-     * @return array{string, ?string}
+     * @return array{string, ?string, ?string, bool}
      */
     private static function resolveChannel(array $channel, string $selfIdentity): array
     {
@@ -177,17 +181,44 @@ final class AgentConfig
             $channelName = $selfIdentity;
         }
 
+        $socketStr = null;
         $socket = $channel['socket'] ?? null;
         if ($socket !== null) {
             $socketStr = is_scalar($socket) ? (string) $socket : '';
             if (! SocketPath::isValid($socketStr)) {
                 throw new ConfigException("channel.socket '{$socketStr}' must be an absolute path with no '..' segment or null byte");
             }
-
-            return [$channelName, $socketStr];
         }
 
-        return [$channelName, null];
+        // channel.url — for the SSH-tunneled remote-host case (multi-host.md):
+        // the agent's intents route to a loopback endpoint forwarded to its box.
+        // Shape-validated here; the loopback/SSRF check is the channel_push
+        // handler's (single source of truth). Mutually exclusive with socket.
+        $urlStr = null;
+        $url = $channel['url'] ?? null;
+        if ($url !== null) {
+            $urlStr = is_scalar($url) ? (string) $url : '';
+            if ($urlStr === '' || preg_match('/\s/', $urlStr) === 1) {
+                throw new ConfigException("channel.url '{$urlStr}' must be a non-empty URL with no whitespace");
+            }
+        }
+        if ($socketStr !== null && $urlStr !== null) {
+            throw new ConfigException('channel.socket and channel.url are mutually exclusive — set exactly one');
+        }
+
+        // channel.route_intents: the dispatcher auto-pushes every staged intent
+        // to this agent's channel (no classifier-emitted channel_push needed) —
+        // the config-driven form of EventDrivenClassifier, for fan-out where one
+        // agent is remote/idle.
+        $routeIntents = $channel['route_intents'] ?? false;
+        if (! is_bool($routeIntents)) {
+            throw new ConfigException('channel.route_intents must be a boolean');
+        }
+        if ($routeIntents && $socketStr === null && $urlStr === null) {
+            throw new ConfigException('channel.route_intents requires channel.socket or channel.url (nowhere to route)');
+        }
+
+        return [$channelName, $socketStr, $urlStr, $routeIntents];
     }
 
     private static function validateUrl(mixed $value, string $field): string

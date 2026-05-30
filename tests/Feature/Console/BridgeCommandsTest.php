@@ -59,6 +59,54 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:check')->assertExitCode(1);
     }
 
+    public function test_check_fails_on_invalid_inbox_layout(): void
+    {
+        $this->writeAgent();
+        config(['bridge.inbox_layout' => 'bogus']);
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('BRIDGE_INBOX_LAYOUT')
+            ->assertExitCode(1);
+    }
+
+    public function test_check_fails_on_cross_user_group_without_per_agent_layout(): void
+    {
+        $this->writeAgent();
+        // group read under shared/both would expose the shared inbox → refused.
+        config(['bridge.inbox_group' => 'agent-bridge', 'bridge.inbox_layout' => 'both']);
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('per-agent')
+            ->assertExitCode(1);
+    }
+
+    public function test_check_passes_with_per_agent_layout_and_group(): void
+    {
+        $this->writeAgent();
+        config(['bridge.inbox_group' => 'agent-bridge', 'bridge.inbox_layout' => 'per-agent']);
+        $this->artisan('bridge:check')->assertExitCode(0);
+    }
+
+    public function test_check_fails_on_unresolvable_classifier_fqcn(): void
+    {
+        File::put($this->dir.'/agents.json', (string) json_encode(['agents' => [['name' => 'prod-agent', 'kanban_user_id' => 137]]]));
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  self: prod-agent\n"
+            ."api:\n  kanban:\n    base_url: https://k.example.com\n    token_path: /t\n"
+            ."receiver:\n  base_url: https://b.example.com/webhooks\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."classifier:\n  class: 'App\\Bridge\\Classifiers\\NoSuchClassifier'\n");
+
+        // A bad FQCN is a 5xx-storm at dispatch; bridge:check catches it early.
+        $this->artisan('bridge:check')->assertExitCode(1);
+    }
+
+    public function test_check_warns_on_unknown_default_agent(): void
+    {
+        $this->writeAgent();
+        config(['bridge.default_agent' => 'ghost']);
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('BRIDGE_DEFAULT_AGENT')
+            ->assertExitCode(0);   // warn, not fail
+    }
+
     public function test_stats_reports_counts(): void
     {
         $event = $this->event();
@@ -121,6 +169,80 @@ class BridgeCommandsTest extends TestCase
         // Seen advanced → second run surfaces nothing (no new output).
         $this->artisan('bridge:inbox', ['--hook-format' => 'plain'])
             ->doesntExpectOutput()
+            ->assertExitCode(0);
+    }
+
+    public function test_inbox_agent_flag_filters_shared_inbox_and_isolates_cursor(): void
+    {
+        File::ensureDirectoryExists($this->dir.'/state');
+        File::put($this->dir.'/state/inbox.jsonl',
+            json_encode(['id' => 'e:pm:0', 'ts' => 1.0, 'agent' => 'pm', 'kind' => 'new_card', 'summary' => 'pm card'])."\n"
+            .json_encode(['id' => 'e:backend:0', 'ts' => 1.0, 'agent' => 'backend', 'kind' => 'new_card', 'summary' => 'backend card'])."\n");
+
+        $this->artisan('bridge:inbox', ['--agent' => 'pm', '--hook-format' => 'plain'])
+            ->expectsOutputToContain('pm card')
+            ->assertExitCode(0);
+
+        // pm saw ONLY its own line (strict filtering proof) and its cursor is separate.
+        $this->assertSame(['e:pm:0'], json_decode((string) File::get($this->dir.'/state/inbox-seen-pm.json'), true));
+
+        // backend's cursor is untouched by pm's mark-seen → backend still surfaces its own.
+        $this->artisan('bridge:inbox', ['--agent' => 'backend', '--hook-format' => 'plain'])
+            ->expectsOutputToContain('backend card')
+            ->assertExitCode(0);
+    }
+
+    public function test_inbox_reads_per_agent_file_when_present(): void
+    {
+        File::ensureDirectoryExists($this->dir.'/state');
+        File::put($this->dir.'/state/inbox-pm.jsonl',
+            json_encode(['id' => 'e:pm:0', 'ts' => 1.0, 'agent' => 'pm', 'kind' => 'new_card', 'summary' => 'from per-agent file'])."\n");
+
+        $this->artisan('bridge:inbox', ['--agent' => 'pm', '--hook-format' => 'plain'])
+            ->expectsOutputToContain('from per-agent file')
+            ->assertExitCode(0);
+    }
+
+    public function test_inbox_honors_default_agent_env(): void
+    {
+        config(['bridge.default_agent' => 'pm']);
+        File::ensureDirectoryExists($this->dir.'/state');
+        File::put($this->dir.'/state/inbox.jsonl',
+            json_encode(['id' => 'e:pm:0', 'ts' => 1.0, 'agent' => 'pm', 'kind' => 'new_card', 'summary' => 'pm card'])."\n");
+
+        // Bare bridge:inbox (no --agent) surfaces the default agent and uses its cursor.
+        $this->artisan('bridge:inbox', ['--hook-format' => 'plain'])
+            ->expectsOutputToContain('pm card')
+            ->assertExitCode(0);
+        $this->assertFileExists($this->dir.'/state/inbox-seen-pm.json');
+        $this->assertFileDoesNotExist($this->dir.'/state/inbox-seen.json');
+    }
+
+    public function test_inbox_no_cursor_advance_leaves_intents_unseen(): void
+    {
+        File::ensureDirectoryExists($this->dir.'/state');
+        File::put($this->dir.'/state/inbox.jsonl',
+            json_encode(['id' => 'e:x:0', 'ts' => 1.0, 'kind' => 'new_card', 'summary' => 'card 42'])."\n");
+
+        // Peek without advancing → the next run still surfaces it.
+        $this->artisan('bridge:inbox', ['--hook-format' => 'plain', '--no-cursor-advance' => true])
+            ->expectsOutputToContain('card 42')
+            ->assertExitCode(0);
+        $this->assertFileDoesNotExist($this->dir.'/state/inbox-seen.json');
+
+        $this->artisan('bridge:inbox', ['--hook-format' => 'plain'])
+            ->expectsOutputToContain('card 42')
+            ->assertExitCode(0);
+    }
+
+    public function test_stats_agent_flag_scopes_metrics(): void
+    {
+        $event = $this->event();
+        AgentDispatch::create(['webhook_event_id' => $event->id, 'agent_name' => 'pm', 'processed_at' => now()]);
+        AgentDispatch::create(['webhook_event_id' => $event->id, 'agent_name' => 'backend', 'error_message' => 'boom']);
+
+        $this->artisan('bridge:stats', ['--agent' => 'pm'])
+            ->expectsOutputToContain('[pm]')
             ->assertExitCode(0);
     }
 

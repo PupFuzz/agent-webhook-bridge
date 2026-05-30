@@ -132,7 +132,7 @@ HMAC secrets are keyed by `(provider, scope)` — one per upstream scope, not pe
     └── webhook-secret-scope-myorg-acme-inventory
 ```
 
-`inbox.jsonl` lives in the state dir (`BRIDGE_STATE_DIR` in `.env`). By default one shared file; per-agent inboxes are possible via a custom surface formatter — see [`customization.md`](customization.md).
+`inbox.jsonl` lives in the state dir (`BRIDGE_STATE_DIR`, defaulting to `config_dir/state`). By default one shared file; set `BRIDGE_INBOX_LAYOUT=per-agent` for one `inbox-<agent>.jsonl` per serving agent so each session gets a clean, independently-cursored view — see [§ Per-agent surfacing](#per-agent-surfacing-one-install-n-agents) below.
 
 #### Per-agent YAML differences
 
@@ -203,6 +203,94 @@ When `pm`'s classifier throws on event N, `pm`'s `agent_dispatches` row records 
 ### Retention
 
 `webhook_events` rows are the audit/replay store; there is no retention command in v0.12 — add a scheduled DB job for age-based cleanup. `agent_dispatches` rows cascade-delete with their parent `webhook_event`.
+
+## Per-agent surfacing (one install, N agents)
+
+A single install fans out to all subscribed agents and, by default, stages every intent to **one shared** `inbox.jsonl`. Each staged line carries the serving `agent` (distinct from `actor`, the event's author), so the same event fanned out to `pm` + `backend` + `inventory` produces three lines — and a plain `bridge:inbox` would surface that one event three times. `BRIDGE_INBOX_LAYOUT` + `bridge:inbox --agent` give each agent a clean view.
+
+### Layout + per-agent files
+
+```bash
+# .env (the single install)
+BRIDGE_INBOX_LAYOUT=per-agent     # one inbox-<agent>.jsonl per serving agent
+#   shared (default) — one inbox.jsonl for all agents
+#   per-agent        — state/inbox-pm.jsonl, state/inbox-backend.jsonl, …
+#   both             — shared file (global tail) + per-agent files
+```
+
+```bash
+# Surface only pm's unseen intents (its own file + its own seen cursor).
+php artisan bridge:inbox --agent pm
+php artisan bridge:inbox --agent backend
+```
+
+Each agent has its **own** seen cursor (`state/inbox-seen-<agent>.json`), so `pm` marking-seen never hides `backend`'s intents. `--agent` works under every layout — with `per-agent`/`both` it reads `inbox-<agent>.jsonl`; under `shared` it reads `inbox.jsonl` filtered by the `agent` tag.
+
+For an install with **one primary** agent that still wants the per-agent file/cursor, set a default so a bare `bridge:inbox` targets it:
+
+```bash
+BRIDGE_DEFAULT_AGENT=pm
+```
+
+> Switching an existing install from a bare `bridge:inbox` to `BRIDGE_DEFAULT_AGENT` (or `--agent`) moves the cursor from `inbox-seen.json` to `inbox-seen-<agent>.json`, which starts empty — so already-consumed intents re-surface **once**. Harmless (no data loss), but expect one catch-up burst on the switch.
+
+Per-agent visibility on the other commands:
+
+```bash
+php artisan bridge:stats --agent pm        # dispatch metrics + inbox line count for pm
+php artisan bridge:inspect 1234 --agent pm # just pm's dispatch row for event 1234
+```
+
+### Cross-user read (co-located different-OS-user agents)
+
+When a co-located agent runs as a **different OS user** (e.g. `backend`/`inventory` are separate users on the same box with no web server of their own), it reads its own `inbox-<agent>.jsonl` directly — no need to run the install's artisan as that user. Make the per-agent files group-readable:
+
+```bash
+# .env (the install)
+BRIDGE_INBOX_LAYOUT=per-agent              # REQUIRED for cross-user (see note below)
+BRIDGE_STATE_DIR=/srv/agent-bridge/state   # MUST be outside the 0700 secret config_dir
+BRIDGE_INBOX_GROUP=agent-bridge            # chgrp applied to per-agent inbox files
+BRIDGE_INBOX_FILE_MODE=0640                # group-readable
+```
+
+> **`per-agent` layout is mandatory with `BRIDGE_INBOX_GROUP`** — `bridge:check` refuses `shared`/`both` + a group. Reason: a group-traversable state dir under `shared`/`both` also exposes the shared `inbox.jsonl` (every agent's intents) to the group. Under `per-agent` there's no shared file. **Note** the state dir also holds `handler-log.jsonl` / `registry-*.jsonl` / `spawn-*.log` (written by handlers regardless of layout) — they're group-reachable too once the dir is traversable, so point a handler's `log_path` elsewhere if its output is sensitive. The bridge sets perms on the per-agent inbox *files* only; it never widens the directory — that's the operator's `install -d` step below (so the bridge can't silently expose a dir holding other agents' state).
+
+```bash
+# one-time operator setup (the convention the bridge relies on)
+sudo groupadd agent-bridge
+sudo usermod -aG agent-bridge "$INSTALL_USER"   # the PHP-FPM / artisan user
+sudo usermod -aG agent-bridge backend           # each co-located reader
+sudo usermod -aG agent-bridge inventory
+sudo install -d -m 0750 -g agent-bridge /srv/agent-bridge/state
+```
+
+The backend agent then just tails its file:
+
+```bash
+tail -F /srv/agent-bridge/state/inbox-backend.jsonl
+```
+
+> **Why a separate `BRIDGE_STATE_DIR`?** `config_dir` is `0700` because it holds HMAC secrets and API tokens — it can't be made group-traversable without exposing those. Point `BRIDGE_STATE_DIR` at a dedicated group-readable directory. The bridge sets the file mode + group on each per-agent file (best-effort: a `chgrp` the install user isn't permitted to make is the operator's group-setup to fix). Seen-cursors stay install-user-owned; a co-located reader that wants its own cursor tracks consumption on its side (e.g. a `tail` offset).
+
+### Remote agent → route intents over its channel
+
+When an agent is on a **remote, firewalled host** (`device`), its intents need to reach it, not sit in a file on the install's box. Set up the SSH-tunneled channel (see [`multi-host.md`](multi-host.md)) and let the dispatcher route `device`'s intents to it automatically — no classifier code, no hand-emitted `channel_push`:
+
+```yaml
+# device.yml (on the install) — route every staged intent to device's channel
+channel:
+  url: http://127.0.0.1:8930/   # local end of the SSH tunnel to device's host
+  route_intents: true
+```
+
+```yaml
+# A co-located agent instead uses a UDS socket:
+channel:
+  socket: /run/user/1000/agent-webhook-bridge-channel-device.sock
+  route_intents: true
+```
+
+`route_intents: true` makes the dispatcher push every staged intent to the agent's `channel.socket`/`channel.url` (best-effort — a connection-refused is recorded as a note, the durable inbox backstop still holds the intent). It's the config-driven form of `EventDrivenClassifier`; **use it OR an `EventDrivenClassifier`, not both**, or each event pushes twice. `channel.socket` and `channel.url` are mutually exclusive, and `route_intents` requires one of them.
 
 ## Multi-agent `channel_push`
 

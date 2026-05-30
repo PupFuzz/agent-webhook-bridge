@@ -15,7 +15,10 @@ use Illuminate\Console\Command;
  */
 class InboxCommand extends Command
 {
-    protected $signature = 'bridge:inbox {--hook-format=auto : auto|claude-code|plain}';
+    protected $signature = 'bridge:inbox '
+        .'{--agent= : surface only this agent\'s intents (per-agent file/cursor); defaults to BRIDGE_DEFAULT_AGENT} '
+        .'{--hook-format=auto : auto|claude-code|plain} '
+        .'{--no-cursor-advance : print without marking intents seen}';
 
     protected $description = 'Surface unseen inbox intents (Claude Code hook-aware)';
 
@@ -32,10 +35,10 @@ class InboxCommand extends Command
 
     public function handle(): int
     {
-        $stateDir = BridgePaths::stateDir();
-        $seenPath = $stateDir.'/inbox-seen.json';
+        $agent = $this->resolveAgent();
+        $seenPath = $this->seenPath($agent);
 
-        $lines = $this->readInbox($stateDir.'/inbox.jsonl');
+        $lines = BridgePaths::agentInboxLines($agent);
         $seen = $this->readSeen($seenPath);
 
         $unseen = array_values(array_filter(
@@ -48,12 +51,47 @@ class InboxCommand extends Command
         }
 
         $format = (string) $this->option('hook-format');
-        $this->output->writeln($this->buildOutput($unseen, $format, $this->readHookEvent()));
+        $hookEvent = $this->readHookEvent();
+        $this->output->writeln($this->buildOutput($unseen, $format, $hookEvent));
 
-        $newIds = array_map(fn (array $line) => (string) $line['id'], $unseen);
-        $this->writeSeen($seenPath, array_values(array_unique([...$seen, ...$newIds])));
+        // Only advance the seen cursor when the output can actually reach a
+        // consumer. On a hook event WITHOUT additionalContext (Stop,
+        // Notification, …) stdout never reaches the model — advancing there
+        // would silently eat the intents; leave them unseen so the next
+        // SessionStart/PreToolUse surfaces them. A manual (non-hook) run reaches
+        // the operator/terminal, so it advances. --no-cursor-advance forces a
+        // peek that never marks seen.
+        $reachesConsumer = $hookEvent === null || in_array($hookEvent, self::ADDITIONAL_CONTEXT_EVENTS, true);
+        if ($reachesConsumer && ! $this->option('no-cursor-advance')) {
+            $newIds = array_map(fn (array $line) => (string) $line['id'], $unseen);
+            // Seen-cursors stay install-user-owned (not group-shared) — only the
+            // process running bridge:inbox writes them (DL-006).
+            $this->writeSeen($seenPath, array_values(array_unique([...$seen, ...$newIds])));
+        }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Effective serving agent: --agent wins, else BRIDGE_DEFAULT_AGENT, else
+     * null (the shared inbox — unchanged single-agent behavior).
+     */
+    private function resolveAgent(): ?string
+    {
+        $opt = $this->option('agent');
+        if (is_string($opt) && $opt !== '') {
+            return $opt;
+        }
+        $default = config('bridge.default_agent');
+
+        return is_string($default) && $default !== '' ? $default : null;
+    }
+
+    private function seenPath(?string $agent): string
+    {
+        return $agent === null
+            ? BridgePaths::stateDir().'/inbox-seen.json'
+            : BridgePaths::agentSeenPath($agent);
     }
 
     /**
@@ -94,25 +132,6 @@ class InboxCommand extends Command
         }
 
         return implode("\n", $out);
-    }
-
-    /**
-     * @return list<array<string, mixed>>
-     */
-    private function readInbox(string $path): array
-    {
-        if (! is_file($path)) {
-            return [];
-        }
-        $lines = [];
-        foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $raw) {
-            $row = json_decode($raw, true);
-            if (is_array($row)) {
-                $lines[] = $row;
-            }
-        }
-
-        return $lines;
     }
 
     /**

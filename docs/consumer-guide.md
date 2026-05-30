@@ -51,11 +51,14 @@ php artisan bridge:inbox --hook-format=claude-code
 php artisan bridge:inbox --hook-format=plain
 ```
 
-**The only flag is `--hook-format={auto|claude-code|plain}`** (default `auto`).
+**Flags:**
 
-- `auto` — reads stdin for a `hook_event_name` key. If the detected event supports `additionalContext` injection, wraps output in the hook envelope; otherwise emits plain markdown.
-- `claude-code` — forces the hook envelope regardless of stdin shape. Use in wrapper scripts that can't pipe stdin through.
-- `plain` — forces plain markdown. Useful for ad-hoc inspection or piping.
+- `--hook-format={auto|claude-code|plain}` (default `auto`):
+  - `auto` — reads stdin for a `hook_event_name` key. If the detected event supports `additionalContext` injection, wraps output in the hook envelope; otherwise emits plain markdown.
+  - `claude-code` — forces the hook envelope regardless of stdin shape. Use in wrapper scripts that can't pipe stdin through.
+  - `plain` — forces plain markdown. Useful for ad-hoc inspection or piping.
+- `--agent=<name>` — surface only that agent's intents (its `inbox-<agent>.jsonl`, or the shared file filtered by the `agent` tag), with its own seen cursor. For a single install fanning out to N agents; see [`multi-agent.md` § Per-agent surfacing](multi-agent.md#per-agent-surfacing-one-install-n-agents). Defaults to `BRIDGE_DEFAULT_AGENT` when unset.
+- `--no-cursor-advance` — print unseen intents without marking them seen (a peek). The next run re-surfaces them.
 
 **Hook envelope.** Plain stdout from hook events that support `additionalContext` goes to Claude Code's debug log only — it never reaches the model. `bridge:inbox` wraps output automatically:
 
@@ -75,9 +78,9 @@ SessionStart, Setup, SubagentStart, UserPromptSubmit,
 UserPromptExpansion, PreToolUse, PostToolUse, PostToolUseFailure, PostToolBatch
 ```
 
-Events that do NOT support `additionalContext` (`Stop`, `Notification`, etc.) receive plain markdown. `bridge:inbox` still fires — cursor-dedup state (`inbox-seen.json`) is updated — but the text cannot reach model context regardless of envelope shape.
+Events that do NOT support `additionalContext` (`Stop`, `Notification`, etc.) receive plain markdown that can't reach model context. On those events `bridge:inbox` prints but **does not advance the seen cursor** — the intents stay unseen so the next `SessionStart`/`PreToolUse` surfaces them. So wiring `bridge:inbox` on `Stop` is safe: it never silently eats an intent. (A manual, non-hook run reaches the terminal, so it does advance; use `--no-cursor-advance` to force a non-advancing peek.)
 
-**Dedup state** is stored in `<BRIDGE_CONFIG_DIR>/state/inbox-seen.json` as a JSON array of seen `id` strings. A redelivered or re-staged line with the same `id` never re-surfaces.
+**Dedup state** is a JSON array of seen `id` strings: `<state_dir>/inbox-seen.json` for the shared inbox, or `<state_dir>/inbox-seen-<agent>.json` per agent under `--agent`. A redelivered or re-staged line with the same `id` never re-surfaces, and one agent's cursor never hides another's intents.
 
 ### B. Tail `inbox.jsonl` directly
 

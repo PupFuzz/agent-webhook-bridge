@@ -222,6 +222,21 @@ classifier:
 # ... rest of your agent config
 ```
 
+### Simpler alternative — `channel.route_intents` (no classifier code)
+
+If you don't need a per-delivery `Authorization` header (the SSH tunnel + loopback-only bind is already the trust boundary; the Bearer token is defense-in-depth), you can skip the custom classifier entirely and let the dispatcher route every staged intent to the tunnel:
+
+```yaml
+# <agent>.yml — route intents to the local tunnel endpoint automatically
+classifier:
+  class: App\Bridge\Classifiers\InboxOnlyClassifier   # or EventDriven; just don't double-push
+channel:
+  url: http://127.0.0.1:8788/   # local end of the reverse tunnel to host B
+  route_intents: true
+```
+
+The dispatcher then pushes each intent (best-effort; a down tunnel is a recorded note, and the inbox backstop still holds it) — see [`multi-agent.md` § Per-agent surfacing](multi-agent.md#per-agent-surfacing-one-install-n-agents). Use the classifier form above instead when you need the `Bearer` header on each push.
+
 ## Smoke test
 
 1. On host B, run `/mcp` in the Claude Code session. Verify `agent-webhook-bridge` shows as connected.
