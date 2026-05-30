@@ -5,7 +5,7 @@
 | Extension | What it does | Loaded via | Default |
 |---|---|---|---|
 | **Classifier** | Maps webhook events to `Intent` (inbox) and/or `ReactionTarget` (handler) instances. | `classifier.class` in agent YAML (FQCN). | `App\Bridge\Classifiers\InboxOnlyClassifier` |
-| **Handler** | Implements `Handler` contract; dispatched by name synchronously in the same request. | `HandlerRegistry::register(name, instance)` in a `ServiceProvider`. | Four ship: `log_intent`, `registry_append`, `spawn_detached`, `channel_push`. |
+| **Handler** | Implements `Handler` contract; dispatched by name synchronously in the same request. | `afterResolving(HandlerRegistry::class, fn ($r) => $r->register(name, instance))` in a `ServiceProvider`. | Four ship: `log_intent`, `registry_append`, `spawn_detached`, `channel_push`. |
 
 The Python-era surface formatter (a callable swapped into `bin/inbox`) does not exist in v0.12. `bridge:inbox` ships one built-in Markdown renderer; the output format is not operator-swappable. To reshape output, post-process `bridge:inbox` stdout or read `inbox.jsonl` directly (see [`consumer-guide.md`](consumer-guide.md)).
 
@@ -430,38 +430,22 @@ final class SyncBoardHandler implements Handler
 <?php
 // app/Providers/AppServiceProvider.php  (or a dedicated provider)
 
-use App\Bridge\Dispatch\DispatchService;
-use App\Bridge\Dispatch\IntentLog;
 use App\Bridge\Handlers\SyncBoardHandler;
-use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\HandlerRegistry;
-use App\Bridge\Support\SubscriptionRegistry;
 
 public function register(): void
 {
-    // BridgeServiceProvider binds DispatchService with a HandlerRegistry that
-    // is `new`-ed INSIDE the closure — it is never resolved from the container,
-    // so afterResolving(HandlerRegistry::class, ...) would never fire. Re-bind
-    // DispatchService instead, building the registry yourself and registering
-    // your handler on it. Laravel uses the last binding registered for a key, so
-    // list this provider AFTER BridgeServiceProvider in bootstrap/providers.php.
-    $this->app->bind(DispatchService::class, function (): DispatchService {
-        $configDir = (string) config('bridge.config_dir');
-
-        $handlers = new HandlerRegistry;
-        $handlers->register('sync_board', new SyncBoardHandler);
-
-        return new DispatchService(
-            new SubscriptionRegistry($configDir),
-            AgentRegistry::load(rtrim($configDir, '/').'/agents.json'),
-            $handlers,
-            new IntentLog,
-        );
-    });
+    // HandlerRegistry is a container singleton (bound by BridgeServiceProvider),
+    // so this callback fires when the dispatcher first resolves it and registers
+    // onto the exact instance the dispatch loop uses.
+    $this->app->afterResolving(
+        HandlerRegistry::class,
+        fn (HandlerRegistry $registry) => $registry->register('sync_board', new SyncBoardHandler),
+    );
 }
 ```
 
-This mirrors `BridgeServiceProvider::register()` exactly, with the one added `register('sync_board', ...)` call.
+Provider order does not matter — `afterResolving` is a resolution-time hook registered at boot, well before the first webhook resolves the registry. If your handler needs constructor dependencies, resolve them inside the callback (`new SyncBoardHandler($app->make(...))`, where `$app` is the second argument the callback receives).
 
 ### Handler discipline
 
