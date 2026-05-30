@@ -428,6 +428,8 @@ The earlier setup ran `bridge:inbox` from Claude Code hooks (`SessionStart` for 
 
    Expected: `forwarded` (HTTP 202) from curl, and a `<channel source="kanbanboard-agent" ...>` tag in your Claude Code session within seconds.
 
+> **Channels are CLI-only — there is no config auto-load.** `--dangerously-load-development-channels server:<KEY>` must be passed on **every** `claude` invocation; it cannot live in `settings.json`, `.mcp.json`, or any config file (the flag deliberately bypasses the channel allowlist, so loading a development channel requires an explicit per-session opt-in). Wrap it in a launcher so you don't retype it — see [`examples/start-channel-session.sh`](../examples/start-channel-session.sh), which also clears a stale socket and installs the channel-server deps on first run. **Live push only delivers while that session is up**; otherwise `channel_push` is best-effort (`done-with-note`) and `inbox.jsonl` is the backstop.
+
 > **uid caveat.** The bridge pushes to exactly the `channel.socket` you configure — it never derives a path. The channel server computes its bind path from `$XDG_RUNTIME_DIR` (the interactive user's `/run/user/<uid>`), while the bridge runs as the PHP-FPM worker user. Setting `channel.socket` explicitly to the server's bind path makes the two agree regardless of uid.
 
 ### Writing a custom handler

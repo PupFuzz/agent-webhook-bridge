@@ -77,6 +77,8 @@ Custom channels aren't on the [approved allowlist](https://code.claude.com/docs/
 claude --dangerously-load-development-channels server:kanbanboard-agent
 ```
 
+This flag is **CLI-only every session** — there is no `settings.json`/`.mcp.json` way to auto-load a development channel (it deliberately bypasses the allowlist). The convenience launcher [`../start-channel-session.sh`](../start-channel-session.sh) wraps this command and also clears a stale socket and runs `npm install` on first use.
+
 Claude Code spawns `agent-webhook-bridge-channel.mjs` as a subprocess, the server binds the UDS, and you'll see:
 
 ```

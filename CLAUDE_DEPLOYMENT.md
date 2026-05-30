@@ -87,6 +87,25 @@ sudo systemctl reload php8.3-fpm                  # recycle workers so they re-r
 php artisan bridge:check
 ```
 
+> **No `sudo`?** The FPM reload is for a clean worker recycle; it's not strictly required. With PHP's default `opcache.validate_timestamps=On`, FPM workers pick up changed `.php` / cached-config files within `revalidate_freq` (a couple of seconds) on their own. After a code/`.env` change, `optimize:clear && optimize` + a healthy `bridge:check` and `/up` 200 confirm the new state is live; reload when you can for a deterministic recycle.
+
+## Upgrading an existing install to v0.16 (config schema v2)
+
+v0.16.0 is a **breaking config change** (DL-007). After `git pull` to v0.16+, migrate each install's config once — the v1 YAML still *loads* (old keys ignored/warned) but identity/echo/endpoints won't resolve until migrated. Checklist:
+
+1. **`.env`** — add `BRIDGE_DIR=<the path>` (it supersedes `BRIDGE_CONFIG_DIR`+`BRIDGE_SECRET_DIR`; keep those only as overrides if they differ), and add the per-install endpoints hoisted out of the YAMLs:
+   ```
+   BRIDGE_RECEIVER_BASE_URL=https://<your-bridge-host>/webhooks
+   BRIDGE_KANBAN_API_BASE_URL=https://<your-kanban>/api/v3
+   ```
+2. **Each `<agent>.yml`** — move the agent's ids from the old `agents.json` into an `identity:` block (`kanban_user_id` / `github_user_id` / `github_login`); **delete** `identity.self`, the `receiver:` block, `api.<provider>.base_url`, and `channel.name`. Drop self from `treat_as_echo` / `treat_as_echo_ids` (auto-seeded now). Keep `api.<provider>.token_path` only as an override.
+3. **Peers** — for any name referenced in `treat_as_signal`/`treat_as_echo` that runs in a *separate* install, add an author-only `<peer>.yml` here (`identity:` + `subscriptions: []`) — the registry is per-install now (see `docs/multi-agent.md`).
+4. **Token** — move it to the convention `<secret_dir>/<provider>/token` (e.g. `$BRIDGE_DIR/kanban/token`), or keep its path via the `api.<provider>.token_path` override.
+5. **`agents.json`** — delete it. If (and only if) several agents share one upstream account, create `shared-identities.json` with just the `shared_identities` block.
+6. `php artisan optimize:clear` (then `optimize` on a pure-serving install; leave a dev/test workspace **uncached**), then **`php artisan bridge:check`** — it validates the whole v2 surface (identity, endpoints, token/secret presence, signal names) with actionable messages. Fix anything it flags, then reload FPM.
+
+The rewritten `examples/sample-config/agent.yml.example` + `shared-identities.json.example` are the canonical templates.
+
 ## The #1 Laravel trap — config edits don't take
 
 FPM workers are long-lived and `php artisan optimize` caches `.env`. After editing **`.env` / `shared-identities.json` / any per-agent YAML**:

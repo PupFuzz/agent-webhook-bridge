@@ -39,6 +39,15 @@ An agent's own ids in `identity:` are auto-seeded into its echo suppression — 
 
 When several agents share **one** upstream account, declare it once in an optional `shared-identities.json` — see [§ Shared identity across agents](#shared-identity-across-agents).
 
+> **Cross-install peers need a local author-only YAML.** The registry is built from **this install's** config dir — there is no shared `agents.json` anymore. So if an agent names a peer that runs in a *separate* install — e.g. `treat_as_signal: [prod-agent]` or `treat_as_echo: [prod-agent]` where `prod-agent` is its own install — that peer must still have an `<peer>.yml` here so the registry knows the name and can attribute its events. Make it **author-only** (identity ids + no subscriptions), so it's never dispatched to locally:
+> ```yaml
+> # prod-agent.yml in the dev install — peer the dev-agent references; not run here
+> identity:
+>   kanban_user_id: 3
+> subscriptions: []
+> ```
+> This matters most for `treat_as_signal`, which is **fail-closed**: a name with no matching local `<name>.yml` throws at config load (`bridge:check` catches it). Under the old shared `agents.json`, peers were globally known; per-install registries make this explicit.
+
 ## Per-agent config
 
 ```yaml
