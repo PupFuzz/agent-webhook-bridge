@@ -19,13 +19,15 @@ class ProvisionTest extends TestCase
     {
         parent::setUp();
         $this->dir = sys_get_temp_dir().'/provision-'.uniqid();
-        File::ensureDirectoryExists($this->dir);
-        File::put($this->dir.'/kanban.token', 'secret-token'); // gitleaks:allow — test fixture
-        File::put($this->dir.'/prod-agent.yml', "identity:\n  self: prod-agent\n"
-            ."api:\n  kanban:\n    base_url: https://kanban.example.com/api/v3\n    token_path: {$this->dir}/kanban.token\n"
-            ."receiver:\n  base_url: https://bridge.example.com/webhooks\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
-        config(['bridge.config_dir' => $this->dir, 'bridge.secret_dir' => $this->dir]);
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/token', 'secret-token'); // gitleaks:allow — <secret_dir>/<provider>/token convention
+        File::put($this->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+        config([
+            'bridge.config_dir' => $this->dir,
+            'bridge.secret_dir' => $this->dir,
+            'bridge.receiver_base_url' => 'https://bridge.example.com/webhooks',
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+        ]);
     }
 
     protected function tearDown(): void
@@ -79,10 +81,7 @@ class ProvisionTest extends TestCase
 
     public function test_unknown_provider_is_skipped_with_failure_exit(): void
     {
-        File::put($this->dir.'/gh-agent.yml', "identity:\n  self: gh-agent\n"
-            ."api:\n  github:\n    base_url: https://api.github.com\n    token_path: {$this->dir}/kanban.token\n"
-            ."receiver:\n  base_url: https://bridge.example.com/webhooks\n"
-            ."subscriptions:\n  - provider: github\n    scopes: [acme-corp/widget]\n");
+        File::put($this->dir.'/gh-agent.yml', "subscriptions:\n  - provider: github\n    scopes: [acme-corp/widget]\n");
         Http::fake(['*' => Http::response(['data' => []])]);
 
         // gh-agent's github sub is skipped (non-zero), prod-agent's kanban sub still provisions.
@@ -91,7 +90,7 @@ class ProvisionTest extends TestCase
 
     public function test_missing_token_is_skipped_with_failure_exit(): void
     {
-        File::delete($this->dir.'/kanban.token');
+        File::delete($this->dir.'/kanban/token');
         Http::fake(['*' => Http::response(['data' => []])]);
 
         $this->artisan('bridge:provision')->assertExitCode(1);

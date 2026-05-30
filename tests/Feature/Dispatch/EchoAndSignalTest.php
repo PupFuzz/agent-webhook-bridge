@@ -3,11 +3,11 @@
 namespace Tests\Feature\Dispatch;
 
 use App\Bridge\Dispatch\Actor;
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\EchoSuppression;
 use App\Bridge\Support\RegisteredAgent;
 use App\Bridge\Support\SignalAllowlist;
-use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 class EchoAndSignalTest extends TestCase
@@ -54,15 +54,13 @@ class EchoAndSignalTest extends TestCase
         $this->assertFalse($signal->isSignal(new Actor(id: '3', name: null)));
     }
 
-    public function test_signal_warns_on_name_not_in_registry(): void
+    public function test_signal_unknown_name_throws_fail_closed(): void
     {
-        Log::spy();
+        // A treat_as_signal name with no matching agent config is fail-closed
+        // (a typo would otherwise silently classify everything NOT-IN-SIGNAL).
         $registry = new AgentRegistry([new RegisteredAgent(name: 'prod-agent', kanbanUserId: 137)]);
 
+        $this->expectException(ConfigException::class);
         SignalAllowlist::default(['typo-agent'], $registry);
-
-        Log::shouldHaveReceived('warning')->withArgs(
-            fn (string $msg) => str_contains($msg, 'treat_as_signal') && str_contains($msg, 'typo-agent')
-        )->once();
     }
 }

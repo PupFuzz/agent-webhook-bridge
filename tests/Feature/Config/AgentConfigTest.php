@@ -13,9 +13,9 @@ use Tests\TestCase;
 class AgentConfigTest extends TestCase
 {
     /**
-     * Note: array_replace_recursive merges list values BY INDEX, so an
-     * override list must be at least as long as the base to fully replace it
-     * (all current overrides satisfy this).
+     * v2 minimal config: the filename is the agent name (no identity.self), and
+     * per-install endpoints (receiver / api base urls) are in config/bridge.php,
+     * not here.
      *
      * @param  array<mixed>  $overrides
      * @return array<mixed>
@@ -23,11 +23,8 @@ class AgentConfigTest extends TestCase
     private function raw(array $overrides = []): array
     {
         return array_replace_recursive([
-            'identity' => ['self' => 'prod-agent'],
-            'api' => ['kanban' => ['base_url' => 'https://kanban.example.com/api/v3/', 'token_path' => '/tokens/kanban']],
-            'receiver' => ['base_url' => 'https://bridge.example.com/webhooks/'],
+            'identity' => ['kanban_user_id' => 137],
             'subscriptions' => [['provider' => 'kanban', 'scopes' => [5], 'event_filter' => ['task.*']]],
-            'echo_suppression' => ['treat_as_echo_ids' => ['137']],
         ], $overrides);
     }
 
@@ -36,48 +33,50 @@ class AgentConfigTest extends TestCase
         $cfg = AgentConfig::fromArray('prod-agent', $this->raw());
 
         $this->assertSame('prod-agent', $cfg->agentName);
-        $this->assertSame('prod-agent', $cfg->selfIdentity);
-        $this->assertSame('https://kanban.example.com/api/v3', $cfg->api['kanban']->baseUrl);  // trailing / stripped
-        $this->assertSame('/tokens/kanban', $cfg->api['kanban']->tokenPath);
-        $this->assertSame('https://bridge.example.com/webhooks', $cfg->receiverBaseUrl);       // trailing / stripped
+        $this->assertSame(137, $cfg->kanbanUserId);
+        $this->assertNull($cfg->githubUserId);
         $this->assertCount(1, $cfg->subscriptions);
         $this->assertSame('kanban', $cfg->subscriptions[0]->provider);
         $this->assertSame('5', $cfg->subscriptions[0]->scopeId);
-        $this->assertSame(['137'], $cfg->echoSuppression->treatAsEchoIds);
-        $this->assertSame(InboxOnlyClassifier::class, $cfg->classifierClass);   // default
-        $this->assertSame('prod-agent', $cfg->channelName);                     // falls back to identity.self
+        $this->assertSame(['137'], $cfg->echoSuppression->treatAsEchoIds);   // auto-seeded from identity
+        $this->assertSame(InboxOnlyClassifier::class, $cfg->classifierClass);  // default
         $this->assertNull($cfg->channelSocket);
+        $this->assertNull($cfg->channelUrl);
+        $this->assertFalse($cfg->channelRouteIntents);
         $this->assertTrue($cfg->surfaceSilentDropWarnings);
     }
 
-    public function test_missing_identity_self_throws(): void
+    public function test_identity_ids_parsed(): void
     {
-        $raw = $this->raw();
-        unset($raw['identity']);
+        $cfg = AgentConfig::fromArray('pm', $this->raw([
+            'identity' => ['kanban_user_id' => 100, 'github_user_id' => 9001, 'github_login' => 'pm-bot'],
+        ]));
 
-        $this->expectException(ConfigException::class);
-        AgentConfig::fromArray('a', $raw);
+        $this->assertSame(100, $cfg->kanbanUserId);
+        $this->assertSame(9001, $cfg->githubUserId);
+        $this->assertSame('pm-bot', $cfg->githubLogin);
     }
 
-    public function test_empty_api_section_throws(): void
+    public function test_self_echo_ids_are_auto_seeded_from_identity(): void
     {
-        $raw = $this->raw();
-        $raw['api'] = [];
+        // No echo_suppression block at all — the agent's own ids are still
+        // suppressed (the operator never hand-lists self ids).
+        $cfg = AgentConfig::fromArray('pm', [
+            'identity' => ['kanban_user_id' => 100, 'github_user_id' => 9001],
+            'subscriptions' => [],
+        ]);
 
-        $this->expectException(ConfigException::class);
-        AgentConfig::fromArray('a', $raw);
+        $this->assertEqualsCanonicalizing(['100', '9001'], $cfg->echoSuppression->treatAsEchoIds);
     }
 
-    public function test_receiver_url_rejects_whitespace(): void
+    public function test_explicit_echo_ids_union_with_self_ids(): void
     {
-        $this->expectException(ConfigException::class);
-        AgentConfig::fromArray('a', $this->raw(['receiver' => ['base_url' => 'https://bad host.example.com/webhooks']]));
-    }
+        $cfg = AgentConfig::fromArray('pm', $this->raw([
+            'identity' => ['kanban_user_id' => 137],
+            'echo_suppression' => ['treat_as_echo_ids' => ['50']],
+        ]));
 
-    public function test_receiver_url_rejects_missing_scheme(): void
-    {
-        $this->expectException(ConfigException::class);
-        AgentConfig::fromArray('a', $this->raw(['receiver' => ['base_url' => 'bridge.example.com/webhooks']]));
+        $this->assertEqualsCanonicalizing(['50', '137'], $cfg->echoSuppression->treatAsEchoIds);
     }
 
     public function test_subscriptions_expand_multiple_scopes(): void
@@ -113,18 +112,6 @@ class AgentConfigTest extends TestCase
         ]));
 
         $this->assertSame(EventDrivenClassifier::class, $cfg->classifierClass);
-    }
-
-    public function test_channel_name_explicit_validated(): void
-    {
-        $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => ['name' => 'kanbanboard-agent']]));
-        $this->assertSame('kanbanboard-agent', $cfg->channelName);
-    }
-
-    public function test_channel_name_invalid_throws(): void
-    {
-        $this->expectException(ConfigException::class);
-        AgentConfig::fromArray('a', $this->raw(['channel' => ['name' => 'Has Spaces']]));
     }
 
     public function test_channel_socket_validated(): void
@@ -178,9 +165,17 @@ class AgentConfigTest extends TestCase
 
     public function test_channel_route_intents_without_target_throws(): void
     {
-        // route_intents needs somewhere to route — no socket and no url.
         $this->expectException(ConfigException::class);
         AgentConfig::fromArray('a', $this->raw(['channel' => ['route_intents' => true]]));
+    }
+
+    public function test_token_path_convention_and_override(): void
+    {
+        $cfg = AgentConfig::fromArray('pm', $this->raw());
+        $this->assertSame('/secrets/kanban/token', $cfg->tokenPath('/secrets', 'kanban'));
+
+        $overridden = AgentConfig::fromArray('pm', $this->raw(['api' => ['kanban' => ['token_path' => '/custom/tok']]]));
+        $this->assertSame('/custom/tok', $overridden->tokenPath('/secrets', 'kanban'));
     }
 
     public function test_surface_silent_drop_warnings_bool(): void
@@ -197,9 +192,7 @@ class AgentConfigTest extends TestCase
 
     public function test_non_mapping_classifier_section_throws(): void
     {
-        // A plausible operator typo: `classifier: SomeName` instead of
-        // `classifier: {class: SomeName}`. Must fail loud, not silently use
-        // the default classifier.
+        // A plausible typo: `classifier: SomeName` instead of `{class: SomeName}`.
         $this->expectException(ConfigException::class);
         AgentConfig::fromArray('a', $this->raw(['classifier' => 'SomeClassName']));
     }
@@ -213,23 +206,11 @@ class AgentConfigTest extends TestCase
     public function test_unknown_top_level_key_warns(): void
     {
         Log::spy();
-        AgentConfig::fromArray('prod-agent', $this->raw(['identitiy' => ['self' => 'typo']]));
+        AgentConfig::fromArray('prod-agent', $this->raw(['identitiy' => ['kanban_user_id' => 1]]));
 
         Log::shouldHaveReceived('warning')->withArgs(
             fn (string $msg) => str_contains($msg, 'identitiy') && str_contains($msg, 'unknown top-level key')
         )->once();
-    }
-
-    public function test_legacy_db_and_secrets_keys_are_tolerated_without_warning(): void
-    {
-        Log::spy();
-        $cfg = AgentConfig::fromArray('prod-agent', $this->raw([
-            'db' => ['dsn' => 'mysql://u:p@h/agent_webhook_bridge_prod'],
-            'secrets' => ['base_dir' => '/home/x/.config/agent-webhook-bridge-prod'],
-        ]));
-
-        $this->assertSame('prod-agent', $cfg->selfIdentity);   // loads fine, db/secrets ignored
-        Log::shouldNotHaveReceived('warning');
     }
 
     public function test_load_reads_yaml_file(): void
@@ -238,20 +219,15 @@ class AgentConfigTest extends TestCase
         File::ensureDirectoryExists($dir);
         File::put($dir.'/prod-agent.yml', <<<'YAML'
         identity:
-          self: prod-agent
-        api:
-          kanban:
-            base_url: https://kanban.example.com/api/v3
-            token_path: /tokens/kanban
-        receiver:
-          base_url: https://bridge.example.com/webhooks
+          kanban_user_id: 137
         subscriptions:
           - provider: kanban
             scopes: [5]
         YAML);
 
         $cfg = AgentConfig::load('prod-agent', $dir);
-        $this->assertSame('prod-agent', $cfg->selfIdentity);
+        $this->assertSame('prod-agent', $cfg->agentName);
+        $this->assertSame(137, $cfg->kanbanUserId);
         $this->assertSame('5', $cfg->subscriptions[0]->scopeId);
 
         File::deleteDirectory($dir);
@@ -267,7 +243,7 @@ class AgentConfigTest extends TestCase
     {
         $dir = sys_get_temp_dir().'/agentcfg-'.uniqid();
         File::ensureDirectoryExists($dir);
-        File::put($dir.'/bad.yml', "identity:\n  self: x\n :\n  - broken: [unclosed");
+        File::put($dir.'/bad.yml', "identity:\n  kanban_user_id: 1\n :\n  - broken: [unclosed");
 
         try {
             $this->expectException(ConfigException::class);

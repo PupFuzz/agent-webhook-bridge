@@ -2,7 +2,10 @@
 
 namespace Tests\Feature\Dispatch;
 
+use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
+use App\Bridge\Support\RegisteredAgent;
+use App\Bridge\Support\SharedIdentity;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
@@ -10,37 +13,45 @@ use Tests\TestCase;
 class AgentRegistryTest extends TestCase
 {
     /**
+     * Build a registry directly from agent specs (mirrors what fromAgentConfigs
+     * derives from the scanned YAMLs — the lookup/collision/drift logic is in
+     * the constructor and is provider-source-agnostic).
+     *
      * @param  list<array<string, mixed>>  $agents
      * @param  list<array<string, mixed>>  $sharedIdentities
      */
-    private function writeRegistry(array $agents, array $sharedIdentities = [], int $schemaVersion = AgentRegistry::SCHEMA_VERSION): string
+    private function registry(array $agents, array $sharedIdentities = []): AgentRegistry
     {
-        $path = sys_get_temp_dir().'/agents-'.uniqid().'.json';
-        $body = ['schema_version' => $schemaVersion, 'agents' => $agents];
-        if ($sharedIdentities !== []) {
-            $body['shared_identities'] = $sharedIdentities;
-        }
-        File::put($path, (string) json_encode($body));
+        $regAgents = array_map(fn (array $a): RegisteredAgent => new RegisteredAgent(
+            name: (string) $a['name'],
+            kanbanUserId: $a['kanban_user_id'] ?? null,
+            githubUserId: $a['github_user_id'] ?? null,
+            githubLogin: $a['github_login'] ?? null,
+        ), $agents);
 
-        return $path;
+        $shared = array_map(fn (array $s): SharedIdentity => new SharedIdentity(
+            githubUserId: (int) $s['github_user_id'],
+            githubLogin: $s['github_login'] ?? null,
+            agentNames: $s['agents'] ?? [],
+        ), $sharedIdentities);
+
+        return new AgentRegistry(array_values($regAgents), array_values($shared));
     }
 
     protected function tearDown(): void
     {
-        foreach (glob(sys_get_temp_dir().'/agents-*.json') ?: [] as $f) {
-            @unlink($f);
+        foreach (glob(sys_get_temp_dir().'/sharedid-*') ?: [] as $f) {
+            File::deleteDirectory($f);
         }
         parent::tearDown();
     }
 
-    public function test_loads_and_resolves_by_kanban_user_id(): void
+    public function test_resolves_by_kanban_user_id(): void
     {
-        $path = $this->writeRegistry([
+        $registry = $this->registry([
             ['name' => 'prod-agent', 'kanban_user_id' => 137],
             ['name' => 'acme-pm', 'kanban_user_id' => 42, 'github_user_id' => 9001],
         ]);
-
-        $registry = AgentRegistry::load($path);
 
         $this->assertSame('prod-agent', $registry->byKanbanUserId(137)?->name);
         $this->assertSame('acme-pm', $registry->byKanbanUserId('42')?->name);   // string coerces
@@ -49,8 +60,7 @@ class AgentRegistryTest extends TestCase
 
     public function test_resolves_by_github_user_id(): void
     {
-        $path = $this->writeRegistry([['name' => 'acme-pm', 'kanban_user_id' => 42, 'github_user_id' => 9001]]);
-        $registry = AgentRegistry::load($path);
+        $registry = $this->registry([['name' => 'acme-pm', 'kanban_user_id' => 42, 'github_user_id' => 9001]]);
 
         $this->assertSame('acme-pm', $registry->byGithubUserId(9001)?->name);
         $this->assertSame('acme-pm', $registry->byGithubUserId('9001')?->name);   // string coerces
@@ -58,10 +68,9 @@ class AgentRegistryTest extends TestCase
         $this->assertNull($registry->byGithubUserId(null));
     }
 
-    public function test_actor_from_event_kanban_precedence(): void
+    public function test_actor_from_event_kanban(): void
     {
-        $path = $this->writeRegistry([['name' => 'prod-agent', 'kanban_user_id' => 137]]);
-        $registry = AgentRegistry::load($path);
+        $registry = $this->registry([['name' => 'prod-agent', 'kanban_user_id' => 137]]);
 
         $actor = $registry->actorFromEvent('kanban', '137', ['user_id' => 137]);
 
@@ -72,7 +81,7 @@ class AgentRegistryTest extends TestCase
 
     public function test_actor_from_event_falls_back_to_payload_user_id_for_kanban(): void
     {
-        $registry = AgentRegistry::load($this->writeRegistry([]));
+        $registry = $this->registry([]);
 
         $actor = $registry->actorFromEvent('kanban', null, ['user_id' => 55]);
 
@@ -83,8 +92,7 @@ class AgentRegistryTest extends TestCase
 
     public function test_actor_from_event_resolves_github_by_immutable_id(): void
     {
-        $path = $this->writeRegistry([['name' => 'acme-pm', 'github_user_id' => 9001]]);
-        $registry = AgentRegistry::load($path);
+        $registry = $this->registry([['name' => 'acme-pm', 'github_user_id' => 9001]]);
 
         // The event carries the numeric sender.id (adapter contract), not the login.
         $actor = $registry->actorFromEvent('github', '9001', ['sender' => ['id' => 9001, 'login' => 'whatever-current-name']]);
@@ -96,10 +104,7 @@ class AgentRegistryTest extends TestCase
 
     public function test_github_recognition_survives_a_username_rename(): void
     {
-        // Configured login is the OLD username; the event carries a NEW one.
-        // Recognition keys on the id, so attribution is unchanged by the rename.
-        $path = $this->writeRegistry([['name' => 'acme-pm', 'github_user_id' => 9001, 'github_login' => 'old-name']]);
-        $registry = AgentRegistry::load($path);
+        $registry = $this->registry([['name' => 'acme-pm', 'github_user_id' => 9001, 'github_login' => 'old-name']]);
 
         $actor = $registry->actorFromEvent('github', '9001', ['sender' => ['id' => 9001, 'login' => 'new-name']]);
 
@@ -109,12 +114,10 @@ class AgentRegistryTest extends TestCase
 
     public function test_kanban_and_github_ids_do_not_cross_match(): void
     {
-        // Same integer 137 on different axes must not collide across providers.
-        $path = $this->writeRegistry([
+        $registry = $this->registry([
             ['name' => 'kanban-only', 'kanban_user_id' => 137],
             ['name' => 'github-only', 'github_user_id' => 137],
         ]);
-        $registry = AgentRegistry::load($path);
 
         $this->assertSame('kanban-only', $registry->actorFromEvent('kanban', '137', [])->name);
         $this->assertSame('github-only', $registry->actorFromEvent('github', '137', [])->name);
@@ -122,20 +125,13 @@ class AgentRegistryTest extends TestCase
 
     public function test_shared_identity_yields_null_name_for_classifier_reattribution(): void
     {
-        // The shared-account shape: N agents under one GitHub account.
-        $path = $this->writeRegistry(
-            [
-                ['name' => 'pm'], ['name' => 'device'],
-                ['name' => 'backend'], ['name' => 'inventory'],
-            ],
+        $registry = $this->registry(
+            [['name' => 'pm'], ['name' => 'device'], ['name' => 'backend'], ['name' => 'inventory']],
             [['github_user_id' => 12000042, 'github_login' => 'shared-bot', 'agents' => ['pm', 'device', 'backend', 'inventory']]],
         );
-        $registry = AgentRegistry::load($path);
 
         $actor = $registry->actorFromEvent('github', '12000042', ['sender' => ['id' => 12000042, 'login' => 'shared-bot']]);
 
-        // name=null + isKnownAgent=false: exactly today's collision-bypass result,
-        // so the custom FROM:/repo re-attribution layer is untouched.
         $this->assertSame('12000042', $actor->id);
         $this->assertNull($actor->name);
         $this->assertFalse($actor->isKnownAgent);
@@ -143,35 +139,32 @@ class AgentRegistryTest extends TestCase
 
     public function test_shared_identity_wins_over_a_per_agent_github_user_id(): void
     {
-        $path = $this->writeRegistry(
+        $registry = $this->registry(
             [['name' => 'pm', 'github_user_id' => 12000042]],
             [['github_user_id' => 12000042, 'agents' => ['pm']]],
         );
-        $registry = AgentRegistry::load($path);
 
-        // The shared declaration is explicit → bypass, not per-agent attribution.
         $this->assertNull($registry->byGithubUserId(12000042));
         $this->assertNull($registry->actorFromEvent('github', '12000042', [])->name);
     }
 
     public function test_unknown_actor_surfaces_raw_id_with_no_name(): void
     {
-        $registry = AgentRegistry::load($this->writeRegistry([['name' => 'prod-agent', 'kanban_user_id' => 137]]));
+        $registry = $this->registry([['name' => 'prod-agent', 'kanban_user_id' => 137]]);
 
         $this->assertNull($registry->actorFromEvent('kanban', '999', [])->name);
         $this->assertNull($registry->actorFromEvent('github', '999', [])->name);
         $this->assertFalse($registry->actorFromEvent('github', '999', [])->isKnownAgent);
     }
 
-    public function test_kanban_user_id_collision_is_bypassed_and_warned_dl074(): void
+    public function test_kanban_user_id_collision_is_bypassed_and_warned(): void
     {
         Log::spy();
 
-        $path = $this->writeRegistry([
+        $registry = $this->registry([
             ['name' => 'agent-a', 'kanban_user_id' => 137],
             ['name' => 'agent-b', 'kanban_user_id' => 137],
         ]);
-        $registry = AgentRegistry::load($path);
 
         $this->assertNull($registry->byKanbanUserId(137));
         $actor = $registry->actorFromEvent('kanban', '137', []);
@@ -187,20 +180,16 @@ class AgentRegistryTest extends TestCase
     {
         Log::spy();
 
-        // Same id on two per-agent entries (without a shared_identities
-        // declaration) is the accidental-collision shape: bypass + warn,
-        // pointing at shared_identities as the intentional form.
-        $path = $this->writeRegistry([
+        $registry = $this->registry([
             ['name' => 'agent-a', 'github_user_id' => 555],
             ['name' => 'agent-b', 'github_user_id' => 555],
         ]);
-        $registry = AgentRegistry::load($path);
 
         $this->assertNull($registry->byGithubUserId(555));
         $this->assertNull($registry->actorFromEvent('github', '555', [])->name);
 
         Log::shouldHaveReceived('warning')->withArgs(
-            fn (string $msg) => str_contains($msg, 'github_user_id') && str_contains($msg, 'shared_identities')
+            fn (string $msg) => str_contains($msg, 'github_user_id') && str_contains($msg, 'shared-identities')
         )->atLeast()->once();
     }
 
@@ -208,8 +197,7 @@ class AgentRegistryTest extends TestCase
     {
         Log::spy();
 
-        $path = $this->writeRegistry([['name' => 'acme-pm', 'github_user_id' => 9001, 'github_login' => 'old-name']]);
-        $registry = AgentRegistry::load($path);
+        $registry = $this->registry([['name' => 'acme-pm', 'github_user_id' => 9001, 'github_login' => 'old-name']]);
 
         $payload = ['sender' => ['id' => 9001, 'login' => 'new-name']];
         $registry->actorFromEvent('github', '9001', $payload);
@@ -224,61 +212,64 @@ class AgentRegistryTest extends TestCase
     {
         Log::spy();
 
-        $path = $this->writeRegistry([['name' => 'acme-pm', 'github_user_id' => 9001, 'github_login' => 'steady-name']]);
-        $registry = AgentRegistry::load($path);
+        $registry = $this->registry([['name' => 'acme-pm', 'github_user_id' => 9001, 'github_login' => 'steady-name']]);
 
         $registry->actorFromEvent('github', '9001', ['sender' => ['id' => 9001, 'login' => 'steady-name']]);
 
         Log::shouldNotHaveReceived('warning');
     }
 
-    public function test_outdated_schema_version_degrades_with_migration_warning(): void
+    public function test_from_agent_configs_builds_lookups_from_yaml_identity(): void
     {
-        Log::spy();
+        // The v2 source of truth: the registry is derived from the scanned
+        // per-agent configs' identity blocks, not a separate roster.
+        $configs = [
+            AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 137], 'subscriptions' => []]),
+            AgentConfig::fromArray('acme-pm', ['identity' => ['github_user_id' => 9001, 'github_login' => 'pm-bot'], 'subscriptions' => []]),
+        ];
 
-        $path = $this->writeRegistry([['name' => 'prod-agent', 'kanban_user_id' => 137]], [], schemaVersion: 1);
-        $registry = AgentRegistry::load($path);
+        $registry = AgentRegistry::fromAgentConfigs($configs);
 
-        $this->assertSame([], $registry->names());
-        $this->assertNull($registry->byKanbanUserId(137));
-        Log::shouldHaveReceived('warning')->withArgs(
-            fn (string $msg) => str_contains($msg, 'schema_version') && str_contains($msg, 'github_user_id')
-        )->atLeast()->once();
+        $this->assertSame('prod-agent', $registry->byKanbanUserId(137)?->name);
+        $this->assertSame('acme-pm', $registry->byGithubUserId(9001)?->name);
+        $this->assertEqualsCanonicalizing(['prod-agent', 'acme-pm'], $registry->names());
     }
 
-    public function test_missing_file_degrades_to_empty_with_warning(): void
+    public function test_load_shared_identities_missing_file_is_empty(): void
+    {
+        $dir = sys_get_temp_dir().'/sharedid-'.uniqid();
+        File::ensureDirectoryExists($dir);
+
+        // Optional file: absent → no shared identities, no warning.
+        $this->assertSame([], AgentRegistry::loadSharedIdentities($dir));
+    }
+
+    public function test_load_shared_identities_parses_file_and_skips_malformed(): void
     {
         Log::spy();
+        $dir = sys_get_temp_dir().'/sharedid-'.uniqid();
+        File::ensureDirectoryExists($dir);
+        File::put($dir.'/shared-identities.json', (string) json_encode(['shared_identities' => [
+            ['github_user_id' => 12000042, 'github_login' => 'team-bot', 'agents' => ['pm', 'device']],
+            ['github_login' => 'no-id'],   // missing numeric github_user_id → skipped
+        ]]));
 
-        $registry = AgentRegistry::load(sys_get_temp_dir().'/does-not-exist-'.uniqid().'.json');
+        $shared = AgentRegistry::loadSharedIdentities($dir);
 
-        $this->assertSame([], $registry->names());
-        $this->assertNull($registry->byKanbanUserId(1));
+        $this->assertCount(1, $shared);
+        $this->assertSame(12000042, $shared[0]->githubUserId);
+        $this->assertSame(['pm', 'device'], $shared[0]->agentNames);
         Log::shouldHaveReceived('warning')->atLeast()->once();
-    }
-
-    public function test_malformed_entry_is_skipped(): void
-    {
-        Log::spy();
-
-        $path = $this->writeRegistry([
-            ['name' => 'good', 'kanban_user_id' => 1],
-            ['kanban_user_id' => 2],   // no name → skipped
-        ]);
-        $registry = AgentRegistry::load($path);
-
-        $this->assertSame(['good'], $registry->names());
     }
 
     public function test_shared_identity_referencing_unknown_agent_warns(): void
     {
         Log::spy();
 
-        $path = $this->writeRegistry(
+        $this->registry(
             [['name' => 'pm']],
             [['github_user_id' => 12000042, 'agents' => ['pm', 'ghost']]],
         );
-        AgentRegistry::load($path);
 
         Log::shouldHaveReceived('warning')->withArgs(
             fn (string $msg) => str_contains($msg, 'unknown agent') && str_contains($msg, 'ghost')

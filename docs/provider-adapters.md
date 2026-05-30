@@ -271,7 +271,7 @@ Notable wire-shape differences from kanban-board:
 
 - **Event type composition** — kanban-board's `task.moved` is the full event name in the body; GitHub's `pull_request.opened` is assembled by the adapter from the `X-GitHub-Event` header and the body's `action` field.
 - **Scope contains `/`** — GitHub's `org/repo` slug is URL-encoded to `%2F` for the on-disk secret filename so scopes `foo` and `foo/bar` can coexist without filesystem collision.
-- **Actor is the immutable numeric id, not the username** — `sender.id` is the matching key (`agents.json` `github_user_id`), because GitHub usernames are renameable and a rename must not break recognition or echo-suppression (DL-002). `sender.login` is still in the payload for surface display, and `agents.json` may carry it as a display-only `github_login` label (a drift warning fires if it goes stale).
+- **Actor is the immutable numeric id, not the username** — `sender.id` is the matching key (each agent's `identity.github_user_id` in its `<agent>.yml`), because GitHub usernames are renameable and a rename must not break recognition or echo-suppression (DL-002). `sender.login` is still in the payload for surface display, and an `identity` block may carry it as a display-only `github_login` label (a drift warning fires if it goes stale).
 
 ## Adding a third provider — quick checklist
 

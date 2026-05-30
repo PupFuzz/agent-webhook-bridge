@@ -31,10 +31,7 @@ class BridgeCommandsTest extends TestCase
 
     private function writeAgent(): void
     {
-        File::put($this->dir.'/agents.json', (string) json_encode(['agents' => [['name' => 'prod-agent', 'kanban_user_id' => 137]]]));
-        File::put($this->dir.'/prod-agent.yml', "identity:\n  self: prod-agent\n"
-            ."api:\n  kanban:\n    base_url: https://k.example.com\n    token_path: /t\n"
-            ."receiver:\n  base_url: https://b.example.com/webhooks\n"
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
             ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
     }
 
@@ -87,15 +84,34 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_fails_on_unresolvable_classifier_fqcn(): void
     {
-        File::put($this->dir.'/agents.json', (string) json_encode(['agents' => [['name' => 'prod-agent', 'kanban_user_id' => 137]]]));
-        File::put($this->dir.'/prod-agent.yml', "identity:\n  self: prod-agent\n"
-            ."api:\n  kanban:\n    base_url: https://k.example.com\n    token_path: /t\n"
-            ."receiver:\n  base_url: https://b.example.com/webhooks\n"
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
             ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
             ."classifier:\n  class: 'App\\Bridge\\Classifiers\\NoSuchClassifier'\n");
 
-        // A bad FQCN is a 5xx-storm at dispatch; bridge:check catches it early.
+        // A bad FQCN would be a dispatch error; bridge:check catches it early.
         $this->artisan('bridge:check')->assertExitCode(1);
+    }
+
+    public function test_check_fails_on_malformed_receiver_url(): void
+    {
+        $this->writeAgent();
+        config(['bridge.receiver_base_url' => 'not a url']);
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('receiver_base_url')
+            ->assertExitCode(1);
+    }
+
+    public function test_check_fails_on_unknown_treat_as_signal_name(): void
+    {
+        $this->writeAgent();   // prod-agent
+        File::put($this->dir.'/pm.yml', "identity:\n  kanban_user_id: 100\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [6]\n"
+            ."echo_suppression:\n  treat_as_signal: [ghost]\n");
+
+        // 'ghost' has no config → fail-closed (would 5xx at dispatch); caught at preflight.
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('treat_as_signal')
+            ->assertExitCode(1);
     }
 
     public function test_check_warns_on_unknown_default_agent(): void

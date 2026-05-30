@@ -4,22 +4,43 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Per-agent config + secret directories
+    | Install directories
     |--------------------------------------------------------------------------
     |
-    | Operator-configured paths (preserved from v0.11.x for interface
-    | continuity): per-agent YAML + agents.json live under config_dir, and
-    | the per-(provider, scope) HMAC secrets under secret_dir. Both are
-    | absolute paths outside the repo. install_suffix is the cross-DSN
-    | safety marker (-prod / -dev).
+    | BRIDGE_DIR is the one base path for per-agent YAMLs + shared-identities.json
+    | + per-(provider, scope) HMAC secrets + per-(provider) API tokens. config_dir
+    | and secret_dir default to it; override either only when they live elsewhere.
+    | All absolute, outside the repo. install_suffix is the cross-DSN safety
+    | marker (-prod / -dev).
     |
     */
 
-    'secret_dir' => env('BRIDGE_SECRET_DIR'),
+    'config_dir' => env('BRIDGE_CONFIG_DIR') ?: env('BRIDGE_DIR'),
 
-    'config_dir' => env('BRIDGE_CONFIG_DIR'),
+    'secret_dir' => env('BRIDGE_SECRET_DIR') ?: env('BRIDGE_DIR'),
 
     'install_suffix' => env('BRIDGE_INSTALL_SUFFIX', ''),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Per-install endpoints
+    |--------------------------------------------------------------------------
+    |
+    | Identical for every agent on one install, so they live here, not in each
+    | per-agent YAML. receiver_base_url is this bridge's public webhook URL (used
+    | by bridge:provision to register the callback). providers.<name>.api_base_url
+    | is the upstream API base for providers the bridge calls (only kanban is
+    | API-provisioned today; github's API base is constant and only relevant when
+    | a github adapter needs it).
+    |
+    */
+
+    'receiver_base_url' => env('BRIDGE_RECEIVER_BASE_URL'),
+
+    'providers' => [
+        'kanban' => ['api_base_url' => env('BRIDGE_KANBAN_API_BASE_URL')],
+        'github' => ['api_base_url' => env('BRIDGE_GITHUB_API_BASE_URL', 'https://api.github.com')],
+    ],
 
     /*
     |--------------------------------------------------------------------------

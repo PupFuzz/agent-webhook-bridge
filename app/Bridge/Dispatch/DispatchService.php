@@ -188,10 +188,20 @@ final class DispatchService
 
     private function isEcho(AgentConfig $agent, Actor $actor): bool
     {
-        return EchoSuppression::default(
-            $agent->selfIdentity,
-            $agent->echoSuppression->treatAsEcho,
+        // Self identity is the agent's name (the YAML filename); its own upstream
+        // ids are auto-seeded into treatAsEchoIds by AgentConfig. But drop any id
+        // the registry knows is SHARED: a shared account's events must reach
+        // classify so the DL-005 re-attribution decides per agent, rather than
+        // being suppressed wholesale here by an auto-seeded shared self id (DL-007).
+        $echoIds = array_values(array_filter(
             $agent->echoSuppression->treatAsEchoIds,
+            fn (string $id) => ! $this->agents->isSharedGithubId($id),
+        ));
+
+        return EchoSuppression::default(
+            $agent->agentName,
+            $agent->echoSuppression->treatAsEcho,
+            $echoIds,
         )->isEcho($actor);
     }
 

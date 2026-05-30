@@ -37,7 +37,6 @@ class DispatchServiceTest extends TestCase
         $this->dir = sys_get_temp_dir().'/dispatch-'.uniqid();
         File::ensureDirectoryExists($this->dir);
         config(['bridge.config_dir' => $this->dir]);
-        File::put($this->dir.'/agents.json', (string) json_encode(['agents' => [['name' => 'prod-agent', 'kanban_user_id' => 137]]]));
     }
 
     protected function tearDown(): void
@@ -50,13 +49,15 @@ class DispatchServiceTest extends TestCase
     /**
      * @param  list<string>  $treatAsEchoIds
      * @param  list<string>  $treatAsSignal
+     * @param  list<int>  $scopes
      */
-    private function writeAgent(string $name, string $classifierClass, array $treatAsEchoIds = [], array $treatAsSignal = []): void
+    private function writeAgent(string $name, string $classifierClass, array $treatAsEchoIds = [], array $treatAsSignal = [], ?int $kanbanUserId = null, array $scopes = [5]): void
     {
-        $yaml = "identity:\n  self: {$name}\n"
-            ."api:\n  kanban:\n    base_url: https://k.example.com\n    token_path: /t\n"
-            ."receiver:\n  base_url: https://b.example.com/webhooks\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+        $yaml = '';
+        if ($kanbanUserId !== null) {
+            $yaml .= "identity:\n  kanban_user_id: {$kanbanUserId}\n";
+        }
+        $yaml .= 'subscriptions:'."\n  - provider: kanban\n    scopes: [".implode(', ', $scopes)."]\n"
             // Single-quoted YAML treats backslashes literally, so the FQCN's
             // single backslashes are written as-is (no escaping).
             ."classifier:\n  class: '".$classifierClass."'\n"
@@ -68,9 +69,11 @@ class DispatchServiceTest extends TestCase
 
     private function dispatcher(?IntentLog $intentLog = null): DispatchService
     {
+        $subs = new SubscriptionRegistry($this->dir);
+
         return new DispatchService(
-            new SubscriptionRegistry($this->dir),
-            AgentRegistry::load($this->dir.'/agents.json'),
+            $subs,
+            AgentRegistry::fromAgentConfigs($subs->agentConfigs(), AgentRegistry::loadSharedIdentities($this->dir)),
             new HandlerRegistry,
             $intentLog ?? new IntentLog,
         );
@@ -125,12 +128,16 @@ class DispatchServiceTest extends TestCase
 
     public function test_signal_allowlist_filters_non_signal_actor(): void
     {
-        $this->writeAgent('prod-agent', ThrowingClassifier::class, treatAsSignal: ['some-other-agent']);
+        // peer-agent exists so the allowlist name is valid (unknown names are
+        // fail-closed) but subscribes to a different scope, so only prod-agent
+        // dispatches here. actor 137 → prod-agent (its kanban_user_id), not in
+        // the [peer-agent] allowlist → filtered, done, no classify.
+        $this->writeAgent('peer-agent', LogIntentClassifier::class, scopes: [99]);
+        $this->writeAgent('prod-agent', ThrowingClassifier::class, treatAsSignal: ['peer-agent'], kanbanUserId: 137);
 
-        // actor 137 resolves to prod-agent (not in the allowlist) → filtered, done, no classify.
         $this->dispatcher()->dispatch('kanban', '5', $this->dto(actorId: '137'), $this->payload());
 
-        $dispatch = AgentDispatch::firstOrFail();
+        $dispatch = AgentDispatch::where('agent_name', 'prod-agent')->firstOrFail();
         $this->assertNotNull($dispatch->processed_at);
         $this->assertNull($dispatch->error_message);
         $this->assertSame(0, $this->inboxCount());
@@ -254,12 +261,8 @@ class DispatchServiceTest extends TestCase
 
     public function test_mid_loop_failure_leaves_earlier_agents_processed_no_transaction(): void
     {
-        $this->writeAgent('agent-a', LogIntentClassifier::class);
-        $this->writeAgent('agent-b', LogIntentClassifier::class);
-        File::put($this->dir.'/agents.json', (string) json_encode(['agents' => [
-            ['name' => 'agent-a', 'kanban_user_id' => 1],
-            ['name' => 'agent-b', 'kanban_user_id' => 2],
-        ]]));
+        $this->writeAgent('agent-a', LogIntentClassifier::class, kanbanUserId: 1);
+        $this->writeAgent('agent-b', LogIntentClassifier::class, kanbanUserId: 2);
 
         $failOnB = new class extends IntentLog
         {
@@ -314,10 +317,8 @@ class DispatchServiceTest extends TestCase
         // each staged intent to the channel (no classifier channel_push). Uses a
         // plain inbox classifier (LogIntentClassifier) — the routing is what
         // produces the channel_push.
-        File::put($this->dir.'/prod-agent.yml', "identity:\n  self: prod-agent\n"
-            ."api:\n  kanban:\n    base_url: https://k.example.com\n    token_path: /t\n"
-            ."receiver:\n  base_url: https://b.example.com/webhooks\n"
-            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+        File::put($this->dir.'/prod-agent.yml',
+            "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
             ."classifier:\n  class: '".LogIntentClassifier::class."'\n"
             ."channel:\n  url: http://127.0.0.1:8788/\n  route_intents: true\n");
 
@@ -329,6 +330,28 @@ class DispatchServiceTest extends TestCase
         // The intent is still durably staged (channel push is layered on top).
         $this->assertSame(1, $this->inboxCount());
         $this->assertNull(AgentDispatch::firstOrFail()->error_message);
+    }
+
+    public function test_shared_github_id_is_not_pre_suppressed_so_dl005_can_reattribute(): void
+    {
+        // pm shares a github account (declared in shared-identities.json). pm's
+        // own github_user_id is auto-seeded as a self echo-id — but because it's
+        // SHARED, the pre-classify gate must NOT suppress it; the event must reach
+        // classify so DL-005 re-attribution can decide per agent. (Regression for
+        // DL-007: auto-seed must not re-introduce the all-or-nothing shared-inbox
+        // suppression DL-005 removed.)
+        File::put($this->dir.'/pm.yml', "identity:\n  github_user_id: 41000042\n"
+            ."classifier:\n  class: '".LogIntentClassifier::class."'\n"
+            ."subscriptions:\n  - provider: github\n    scopes: [acme/widget]\n");
+        File::put($this->dir.'/shared-identities.json', (string) json_encode([
+            'shared_identities' => [['github_user_id' => 41000042, 'agents' => ['pm']]],
+        ]));
+
+        $dto = new EventDto(deliveryId: 'gh-1', scopeId: 'acme/widget', eventType: 'pull_request.opened', actorId: '41000042');
+        $this->dispatcher()->dispatch('github', 'acme/widget', $dto, ['subject_id' => 'pr-1']);
+
+        // Reached classify (intent staged) — not pre-suppressed by the shared self id.
+        $this->assertSame(1, $this->inboxCount());
     }
 
     public function test_already_processed_dispatch_is_skipped_on_redelivery(): void

@@ -5,7 +5,6 @@ namespace App\Console\Commands\Bridge;
 use App\Bridge\Adapters\EventDto;
 use App\Bridge\Dispatch\DispatchService;
 use App\Models\WebhookEvent;
-use Illuminate\Console\Command;
 
 /**
  * Re-run dispatch for a stored event. Errored dispatch rows (processed_at null)
@@ -13,7 +12,7 @@ use Illuminate\Console\Command;
  * already-delivered channel_push / spawn_detached. --agent scopes to one agent;
  * --force clears processed_at first so succeeded rows re-run too.
  */
-class ReplayCommand extends Command
+class ReplayCommand extends BridgeCommand
 {
     protected $signature = 'bridge:replay {id : the webhook_events.id} {--agent= : scope to one agent} {--force : re-run even already-succeeded agents}';
 
@@ -33,8 +32,7 @@ class ReplayCommand extends Command
             return self::FAILURE;
         }
 
-        $onlyAgent = $this->option('agent');
-        $onlyAgent = is_string($onlyAgent) && $onlyAgent !== '' ? $onlyAgent : null;
+        $onlyAgent = $this->strOption('agent');
 
         if ($this->option('force')) {
             $query = $event->dispatches();

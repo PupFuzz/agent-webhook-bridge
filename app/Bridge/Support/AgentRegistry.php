@@ -6,35 +6,31 @@ use App\Bridge\Dispatch\Actor;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Reader for the shared agents.json identity registry — translates raw actor
- * ids into friendly agent names. Missing/corrupt/outdated file degrades to an
- * empty registry (classifiers still work, just without friendly-name
- * enrichment, and echo suppression falls back to raw-id matching).
+ * Translates a raw actor id into a friendly agent name. The roster is built by
+ * SCANNING the per-agent YAMLs (each declares its own immutable `identity` ids)
+ * — there is no separate agents.json roster (it duplicated the YAMLs). The only
+ * separate file is `shared-identities.json`, declaring upstream accounts shared
+ * by several agents (absent when none).
  *
  * Recognition keys on IMMUTABLE numeric ids only — kanban `user_id` and GitHub
  * `sender.id`. GitHub usernames are renameable, so `github_login` is a
- * display-only label, never a matching key (DL-002). Matching is
- * provider-aware: a kanban `user_id` and a github `sender.id` that happen to
- * be the same integer never cross-match.
+ * display-only label, never a matching key (DL-002). Matching is provider-aware:
+ * a kanban `user_id` and a github `sender.id` that are the same integer never
+ * cross-match.
  *
  * Two ways an account maps to agents:
- *   - per-agent `kanban_user_id` / `github_user_id` → one account, one agent
- *     (attribution sets Actor.name).
- *   - `shared_identities[]` → one account, many agents (e.g. four agents under
- *     one GitHub login because the platform forces shared credentials).
- *     Attribution can't pick one agent, so Actor.name stays null and a custom
- *     classifier re-attributes. This is the intentional, declared-once form of
- *     the shared-login collision bypass.
+ *   - per-agent `identity.kanban_user_id` / `github_user_id` → one account, one
+ *     agent (attribution sets Actor.name).
+ *   - `shared_identities[]` → one account, many agents. Attribution can't pick
+ *     one, so Actor.name stays null and a custom classifier re-attributes
+ *     (DL-002 / DL-005).
  *
- * Accidental collisions on a per-agent axis (the same id on two agent entries)
- * are still detected at construction and bypassed (Actor.name null, raw id
- * surfaces) rather than silently mis-attributing to the last-listed agent; a
- * warning names the sharing agents and points at shared_identities.
+ * Accidental collisions on a per-agent axis (the same id on two agents) are
+ * detected at construction and bypassed (Actor.name null, raw id surfaces)
+ * rather than mis-attributing; a warning names the sharing agents.
  */
 final class AgentRegistry
 {
-    public const SCHEMA_VERSION = 2;
-
     /** @var array<int, RegisteredAgent> */
     private array $byKanbanUid = [];
 
@@ -68,8 +64,9 @@ final class AgentRegistry
                 if (! isset($this->byName[$name])) {
                     Log::warning(sprintf(
                         'agent registry: shared_identities github_user_id %d references unknown agent "%s" '.
-                        '(not present in agents[]); the reference is ignored.',
+                        '(no %s.yml); the reference is ignored.',
                         $s->githubUserId,
+                        $name,
                         $name,
                     ));
                 }
@@ -82,7 +79,7 @@ final class AgentRegistry
         $this->byKanbanUid = $this->buildIntLookup(
             fn (RegisteredAgent $a) => $a->kanbanUserId,
             'kanban_user_id',
-            'Set a distinct kanban_user_id per agent.',
+            'Give each agent a distinct identity.kanban_user_id.',
         );
         // A github_user_id declared shared takes precedence over a per-agent
         // entry carrying the same id — exclude it from the unique lookup so the
@@ -90,13 +87,60 @@ final class AgentRegistry
         $this->byGithubUid = $this->buildIntLookup(
             fn (RegisteredAgent $a) => isset($this->sharedGithubIds[$a->githubUserId]) ? null : $a->githubUserId,
             'github_user_id',
-            'Give each agent a distinct github_user_id, or declare the shared account once under shared_identities.',
+            'Give each agent a distinct identity.github_user_id, or declare the shared account once in shared-identities.json.',
         );
         foreach ($agents as $a) {
             if ($a->githubUserId !== null && $a->githubLogin !== null && ! isset($this->driftLogins[$a->githubUserId])) {
                 $this->driftLogins[$a->githubUserId] = $a->githubLogin;
             }
         }
+    }
+
+    /**
+     * Build the registry from the scanned per-agent configs (each carrying its
+     * own identity ids) plus the shared-identities declaration.
+     *
+     * @param  list<AgentConfig>  $configs
+     * @param  list<SharedIdentity>  $sharedIdentities
+     */
+    public static function fromAgentConfigs(array $configs, array $sharedIdentities = []): self
+    {
+        $agents = array_map(
+            fn (AgentConfig $c): RegisteredAgent => new RegisteredAgent(
+                name: $c->agentName,
+                kanbanUserId: $c->kanbanUserId,
+                githubUserId: $c->githubUserId,
+                githubLogin: $c->githubLogin,
+            ),
+            $configs,
+        );
+
+        return new self($agents, $sharedIdentities);
+    }
+
+    /**
+     * Read the optional shared-identities.json from the config dir. Missing →
+     * none. Malformed → none, with a warning (it's a declared-once policy file,
+     * not load-bearing for routing — a corrupt one degrades to "no shared
+     * accounts", which surfaces the raw id rather than mis-attributing).
+     *
+     * @return list<SharedIdentity>
+     */
+    public static function loadSharedIdentities(string $configDir): array
+    {
+        $path = rtrim($configDir, '/').'/shared-identities.json';
+        if (! is_file($path)) {
+            return [];
+        }
+
+        $raw = json_decode((string) file_get_contents($path), true);
+        if (! is_array($raw)) {
+            Log::warning("shared-identities.json at {$path} is not valid JSON / not an object; ignoring it");
+
+            return [];
+        }
+
+        return self::parseSharedIdentities($raw['shared_identities'] ?? [], $path);
     }
 
     /**
@@ -152,73 +196,6 @@ final class AgentRegistry
         }
     }
 
-    public static function load(string $path): self
-    {
-        if (! is_file($path)) {
-            Log::warning("agent registry not found at {$path}; degrading to empty registry");
-
-            return new self([]);
-        }
-
-        $raw = json_decode((string) file_get_contents($path), true);
-        if (! is_array($raw)) {
-            Log::warning("agent registry at {$path} is not valid JSON / not an object; degrading to empty registry");
-
-            return new self([]);
-        }
-
-        $version = $raw['schema_version'] ?? null;
-        if ($version !== self::SCHEMA_VERSION) {
-            Log::warning(sprintf(
-                'agent registry at %s has schema_version %s; this build requires %d. Migrate the file '.
-                '(github_login is no longer a matching key — replace it with the immutable github_user_id, '.
-                'and declare shared accounts under shared_identities). Degrading to empty registry until then.',
-                $path,
-                is_scalar($version) ? (string) $version : 'missing',
-                self::SCHEMA_VERSION,
-            ));
-
-            return new self([]);
-        }
-
-        return new self(
-            self::parseAgents($raw['agents'] ?? [], $path),
-            self::parseSharedIdentities($raw['shared_identities'] ?? [], $path),
-        );
-    }
-
-    /**
-     * @param  mixed  $agentsRaw
-     * @return list<RegisteredAgent>
-     */
-    private static function parseAgents($agentsRaw, string $path): array
-    {
-        if (! is_array($agentsRaw)) {
-            return [];
-        }
-
-        $agents = [];
-        foreach ($agentsRaw as $a) {
-            if (! is_array($a) || ! isset($a['name'])) {
-                Log::warning("agent registry at {$path} has a malformed entry (missing 'name'); skipping it");
-
-                continue;
-            }
-            $uid = $a['kanban_user_id'] ?? null;
-            $guid = $a['github_user_id'] ?? null;
-            $gh = $a['github_login'] ?? null;
-            $agents[] = new RegisteredAgent(
-                name: (string) (is_scalar($a['name']) ? $a['name'] : ''),
-                kanbanUserId: is_numeric($uid) ? (int) $uid : null,
-                scope: isset($a['scope']) && is_scalar($a['scope']) ? (string) $a['scope'] : '',
-                githubUserId: is_numeric($guid) ? (int) $guid : null,
-                githubLogin: is_scalar($gh) ? (string) $gh : null,
-            );
-        }
-
-        return $agents;
-    }
-
     /**
      * @param  mixed  $sharedRaw
      * @return list<SharedIdentity>
@@ -233,7 +210,7 @@ final class AgentRegistry
         foreach ($sharedRaw as $s) {
             $guid = is_array($s) ? ($s['github_user_id'] ?? null) : null;
             if (! is_array($s) || ! is_numeric($guid)) {
-                Log::warning("agent registry at {$path} has a shared_identities entry without a numeric github_user_id; skipping it");
+                Log::warning("shared-identities.json at {$path} has an entry without a numeric github_user_id; skipping it");
 
                 continue;
             }
@@ -278,6 +255,17 @@ final class AgentRegistry
     }
 
     /**
+     * Is this a github account declared shared (shared-identities.json)? The
+     * pre-classify echo gate uses this to NOT wholesale-suppress a shared
+     * account's events from an auto-seeded self id — they must reach classify so
+     * the DL-005 re-attribution can decide per agent (DL-007).
+     */
+    public function isSharedGithubId(int|string|null $id): bool
+    {
+        return $id !== null && is_numeric($id) && isset($this->sharedGithubIds[(int) $id]);
+    }
+
+    /**
      * @return list<string>
      */
     public function names(): array
@@ -286,10 +274,9 @@ final class AgentRegistry
     }
 
     /**
-     * Build an Actor from a verified event's actor_id + parsed payload.
-     * Matching is provider-aware: kanban events match `kanban_user_id`, GitHub
-     * events match the immutable `github_user_id` (the adapter puts
-     * `sender.id` in actor_id). A GitHub account declared in shared_identities
+     * Build an Actor from a verified event's actor_id + parsed payload. Matching
+     * is provider-aware: kanban events match `kanban_user_id`, GitHub events
+     * match the immutable `github_user_id`. A GitHub account in shared_identities
      * resolves to a null name on purpose (custom classifier re-attributes).
      *
      * @param  array<mixed>  $payload
@@ -334,10 +321,9 @@ final class AgentRegistry
     }
 
     /**
-     * Warn (once per drifted login) when the username on an incoming GitHub
-     * event no longer matches the login configured for that immutable account
-     * id — so a rename surfaces as an actionable log line instead of silent
-     * stale display. Recognition is unaffected (it keys on the id).
+     * Warn (once per drifted login) when an incoming GitHub event's username no
+     * longer matches the login configured for that immutable account id.
+     * Recognition is unaffected (it keys on the id).
      *
      * @param  array<mixed>  $payload
      */

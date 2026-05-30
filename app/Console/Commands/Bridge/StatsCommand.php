@@ -5,7 +5,6 @@ namespace App\Console\Commands\Bridge;
 use App\Bridge\Support\BridgePaths;
 use App\Models\AgentDispatch;
 use App\Models\WebhookEvent;
-use Illuminate\Console\Command;
 
 /**
  * Summarise the event/dispatch ledger: totals, processed vs errored, and a
@@ -13,7 +12,7 @@ use Illuminate\Console\Command;
  * agent and adds its staged-inbox line count (single-install multi-agent
  * visibility, symmetry with bridge:inbox --agent).
  */
-class StatsCommand extends Command
+class StatsCommand extends BridgeCommand
 {
     protected $signature = 'bridge:stats {--agent= : scope dispatch metrics to one agent}';
 
@@ -21,8 +20,7 @@ class StatsCommand extends Command
 
     public function handle(): int
     {
-        $agent = $this->option('agent');
-        $agent = is_string($agent) && $agent !== '' ? $agent : null;
+        $agent = $this->strOption('agent');
 
         $dispatches = AgentDispatch::query();
         if ($agent !== null) {
