@@ -190,6 +190,25 @@ class DispatchServiceTest extends TestCase
         $this->assertSame(1, $this->inboxCount());      // null reattribution → no suppression
     }
 
+    public function test_unresolvable_classifier_fqcn_is_treatment_a_not_5xx(): void
+    {
+        // A bad classifier.class FQCN is a deterministic config error. The
+        // resolver throw is caught like any classify error (it's evaluated
+        // inside the classify try) → recorded + acked, NOT propagated to a 5xx
+        // that would wedge delivery into the upstream retry storm. Locks this
+        // behavior so a future refactor can't move the resolver call out of the
+        // try and silently regress it.
+        $this->writeAgent('prod-agent', 'App\\Bridge\\Classifiers\\NoSuchClassifier');
+
+        // Must NOT throw out of dispatch().
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $this->payload());
+
+        $dispatch = AgentDispatch::firstOrFail();
+        $this->assertNull($dispatch->processed_at);                            // errored → replayable
+        $this->assertStringContainsString('NoSuchClassifier', (string) $dispatch->error_message);
+        $this->assertSame(0, $this->inboxCount());
+    }
+
     public function test_classifier_failure_is_recorded_and_left_errored_case_a(): void
     {
         $this->writeAgent('prod-agent', ThrowingClassifier::class);
