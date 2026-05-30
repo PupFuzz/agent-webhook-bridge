@@ -274,20 +274,34 @@ class MyClassifier implements Classifier
 
     public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId): ClassifyResult
     {
-        if ($provider === 'github' && $actor->name === null) {
+        $reattributed = null;
+        if ($provider === 'github' && $actor->name === null && isset(self::REPO_TO_AGENT[$scopeId])) {
             // scope_id is the repo full_name for github
-            if (isset(self::REPO_TO_AGENT[$scopeId])) {
-                $actor = new Actor(
-                    id: $actor->id,
-                    name: self::REPO_TO_AGENT[$scopeId],
-                    isKnownAgent: true,
-                    rawEnvelope: $actor->rawEnvelope,
-                );
-            }
+            $actor = $reattributed = new Actor(
+                id: $actor->id,
+                name: self::REPO_TO_AGENT[$scopeId],
+                isKnownAgent: true,
+                rawEnvelope: $actor->rawEnvelope,
+            );
         }
-        // ... rest of your classify logic using the resolved actor ...
+
+        // ... build your intents/targets using the resolved $actor ...
+
+        // Return the recovered author as reattributedActor so the dispatcher
+        // can apply per-agent echo on it (see below). Leave it null when you
+        // didn't recover one — the result is then dispatched unchanged.
+        return new ClassifyResult(intents: $intents, reattributedActor: $reattributed);
     }
 }
 ```
 
 This composes cleanly with the shared-identity declaration (Path B): the registry deliberately yields `Actor.name = null` for the shared account, and your classifier's recovery layer adds the friendly name back from a secondary signal (repo scope here, or a `FROM:` line in the event body). The same handoff catches the accidental-duplicate-id safety net.
+
+#### Per-agent echo on the recovered author (DL-005)
+
+The pre-classify echo gate can only match a shared account by raw id (`treat_as_echo_ids`), which suppresses **every** agent's view of that account — there is no per-agent middle ground, because the account's `Actor.name` is null before classify runs. Returning the recovered author as `ClassifyResult::reattributedActor` closes that gap: after `classify`, the dispatcher re-runs the **same** echo check (`identity.self` + `treat_as_echo`) on the reattributed author. So:
+
+- the event the agent **itself** authored (recovered name == its `identity.self`) is suppressed — no inbox noise, no self-react loop;
+- an event a **different** shared-id agent authored (recovered name != its `identity.self`) still surfaces.
+
+You report *who* authored the event; the dispatcher decides *is that me?* per agent — so the one classifier, running for all four agents, yields per-agent self-echo from a single shared account. Reporting the author is enough; you do not filter inside `classify` (see [`customization.md`](customization.md) § Per-agent echo for a shared upstream identity).

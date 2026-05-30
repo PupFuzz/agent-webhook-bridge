@@ -10,6 +10,22 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.15.0] - 2026-05-30
+
+**Custom-handler registration now works as documented, and per-agent echo suppression is restored for a shared upstream identity.** Both reported by a peer integrator.
+
+### Added
+
+- **Per-agent echo suppression for a *shared* upstream identity (DL-005).** New optional `ClassifyResult::$reattributedActor`. When several agents share one upstream account (`shared_identities`), the registry resolves `Actor.name = null` on purpose, so the pre-classify echo gate can only match the raw id (`treat_as_echo_ids`) — all-or-nothing across every agent. A classifier that recovers the true author (FROM:-line / repo-scope) now returns it on the result; **after** classify, the dispatcher re-runs the **same** per-agent echo check on it, suppressing only the serving agent's own write while a different shared-id agent's write still surfaces. The classifier reports *who* authored the event; the dispatcher decides *is that me?* per agent — so the `Classifier` contract and the "classifiers don't filter" invariant are both unchanged, and `null` (every shipped classifier) is a no-op. Completes the `shared_identities` design (DL-002). (#12)
+
+### Fixed
+
+- **The documented custom-handler extension point is functional again (DL-004).** `HandlerRegistry` is now bound as a container **singleton** in `BridgeServiceProvider`, and `DispatchService` resolves it from the container instead of constructing its own. So `afterResolving(HandlerRegistry::class, fn ($r) => $r->register('x', new XHandler))` in a `ServiceProvider` — the path `docs/customization.md` always advertised — registers onto the **exact** instance the dispatcher uses, with no provider-ordering requirement. Previously the only working path was re-binding `DispatchService` wholesale and duplicating its constructor wiring (fragile across upgrades). (#11)
+
+### Verification
+
+- PHPUnit **205/205** (SQLite + MariaDB 10.6/11) · Pint clean · PHPStan level 7 (`app/Bridge`) 0 errors.
+
 ## [0.14.0] - 2026-05-30
 
 **Same-event ReactionTarget coalescing restored (DL-003), plus a post-v0.13 divergent-duplication cleanup.**
