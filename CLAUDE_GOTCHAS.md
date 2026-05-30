@@ -143,6 +143,20 @@ If the guard fires unexpectedly in a test: verify `phpunit.xml` has this stanza 
 
 ---
 
+## G-015 — GitHub actor is `sender.id` (numeric), not `sender.login` — and `github_login` is display-only
+
+**Symptom:** A GitHub agent configured with `github_login` in `agents.json` isn't recognized (`Actor.name` is null, echoes leak) — most visibly after the account's username is renamed. Or: a `schema_version: 1` `agents.json` loads to an empty registry with a warning.
+
+**Cause:** GitHub usernames are renameable; the numeric account id (`sender.id`) is immutable. v0.12.0 (DL-002) keyed GitHub recognition on `sender.login`, so a rename staled every config that named the login. v2 fixed this: `GitHubAdapter` puts `sender.id` in `actor_id`, `agents.json` matches on `github_user_id`, and `github_login` is a **display-only label** — never a matching key. Matching is also provider-aware now, so a kanban `user_id` and a github `sender.id` that are the same integer never cross-match. There is no v1→v2 compatibility shim (single-operator project): a `schema_version: 1` file warns + degrades to empty.
+
+**Fix:** Use `github_user_id` (the numeric account id) in `agents.json`, not `github_login`. For a shared account, declare it once under `shared_identities`. Put the numeric id in `treat_as_echo_ids` so suppression survives renames. A stale `github_login` label logs a one-line drift warning naming the current login — update the label, recognition is unaffected.
+
+**Discovery:** FR (immutable-identity hardening), 2026-05-30 — same problem class as DL-074 (shared-login collision), but the identifier-durability dimension.
+
+**Related:** `app/Bridge/Adapters/GitHubAdapter.php` (`sender.id`), `app/Bridge/Support/AgentRegistry.php` (`actorFromEvent(string $provider, …)`, `shared_identities`, drift warning) + `RegisteredAgent.php` + `SharedIdentity.php`, `CLAUDE_DECISIONS.md` DL-002.
+
+---
+
 ## How to add an entry
 
 1. New `G-NNN` (next available number).

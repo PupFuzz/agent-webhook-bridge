@@ -4,8 +4,12 @@ namespace App\Bridge\Support;
 
 /**
  * One entry in agents.json — the cross-agent identity registry.
- * kanbanUserId matches kanban events' integer user_id; githubLogin matches
- * GitHub events' string sender.login. Either may be null.
+ *
+ * Recognition keys on IMMUTABLE numeric ids: kanbanUserId matches kanban
+ * events' integer user_id; githubUserId matches GitHub events' numeric
+ * sender.id. githubLogin is a display-only label (GitHub usernames are
+ * renameable, so they must never be a matching key — see DL-002); it drives
+ * the "edited by <login>" surface text and the stale-login drift warning.
  */
 final class RegisteredAgent
 {
@@ -13,6 +17,7 @@ final class RegisteredAgent
         public readonly string $name,
         public readonly ?int $kanbanUserId,
         public readonly string $scope = '',
+        public readonly ?int $githubUserId = null,
         public readonly ?string $githubLogin = null,
     ) {}
 }

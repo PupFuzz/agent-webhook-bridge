@@ -262,7 +262,7 @@ Secret-ordering invariant (enforced in `WebhookProvisioner::createWithSecret`): 
 | `delivery_id` source | `X-GitHub-Delivery` request header (UUID) |
 | `event_type` source | `X-GitHub-Event` header + body `action` field, composite: `pull_request.opened`; events without an action (e.g. `push`) use the bare header value |
 | `scope_id` source | Body `repository.full_name` (e.g. `org/repo`; stored on disk as `org%2Frepo`) |
-| `actor_id` source | Body `sender.login` (username; bot accounts surface as `name[bot]`) |
+| `actor_id` source | Body `sender.id` (the immutable numeric account id — usernames rename, so the login is never the matching key; see DL-002) |
 | Ping events | YES — `X-GitHub-Event: ping` sent on every subscription creation. `isPing` returns true; receiver 200-pongs without persisting. |
 | Event filter syntax | Per-event-name list (no globs): `events: ["push", "pull_request"]`; `["*"]` for all |
 | API-provisionable | No — webhooks are configured in repo/org settings; write the HMAC secret to disk manually (see "Secret on disk" above) |
@@ -271,7 +271,7 @@ Notable wire-shape differences from kanban-board:
 
 - **Event type composition** — kanban-board's `task.moved` is the full event name in the body; GitHub's `pull_request.opened` is assembled by the adapter from the `X-GitHub-Event` header and the body's `action` field.
 - **Scope contains `/`** — GitHub's `org/repo` slug is URL-encoded to `%2F` for the on-disk secret filename so scopes `foo` and `foo/bar` can coexist without filesystem collision.
-- **Actor is a username, not a numeric ID** — `sender.login` is the canonical GitHub actor identifier for echo-suppression and surface formatting.
+- **Actor is the immutable numeric id, not the username** — `sender.id` is the matching key (`agents.json` `github_user_id`), because GitHub usernames are renameable and a rename must not break recognition or echo-suppression (DL-002). `sender.login` is still in the payload for surface display, and `agents.json` may carry it as a display-only `github_login` label (a drift warning fires if it goes stale).
 
 ## Adding a third provider — quick checklist
 
