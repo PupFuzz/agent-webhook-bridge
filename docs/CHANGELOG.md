@@ -10,6 +10,26 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.17.0] - 2026-05-30
+
+**Install-easing docs + a CI fix, surfaced while wiring live channel push on a real install.**
+
+### Changed
+
+- ⚠ **Channel-server example renamed** `examples/channel-servers/kanban-bridge-channel.mjs` → `agent-webhook-bridge-channel.mjs`, to match `package.json` (`bin`/`start`), the README, and `.mcp.json.example` — all of which already referenced the new name — plus the bound socket prefix and the project name. **Breaking for anyone whose `.mcp.json` points at the old filename:** update the `args` path to `agent-webhook-bridge-channel.mjs`, or the channel server won't launch (and `npm start` was already broken before the rename). (#22)
+
+### Fixed
+
+- **CI: docs-only PRs are no longer permanently blocked.** The three Laravel Tests jobs are required status checks but were `paths-ignore`'d on docs/examples PRs, so on those PRs the required check never reported and the PR was un-mergeable without an admin override. Removed the filter so the (fast) checks always run + report on every PR. (#23)
+
+### Docs
+
+- Cross-install peer-YAML note (an agent naming a peer in `treat_as_signal`/`treat_as_echo` that runs in a *separate* install needs a local author-only `<peer>.yml`, since the v2 registry is per-install); an explicit "channels are CLI-only — no config auto-load" statement + a launcher script (`examples/start-channel-session.sh`); an "Upgrading to v0.16 (config schema v2)" checklist; an FPM-reload-needs-sudo note. (#22)
+
+### Verification
+
+- PHPUnit **229/229** (SQLite + MariaDB 10.6/11) · Pint clean · PHPStan level 7 (`app/Bridge`) 0 errors.
+
 ## [0.16.0] - 2026-05-30
 
 **Per-agent inbox surfacing for a single multi-agent install, then a config-schema cleanup that kills the duplication it exposed.** ⚠ **Breaking — operators must migrate their per-agent config (see below).**
