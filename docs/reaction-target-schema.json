@@ -17,7 +17,7 @@
     },
     "debounce_key": {
       "type": "string",
-      "description": "Coalescing/correlation key for handlers and consumers. The synchronous bridge dispatches every ReactionTarget and does NOT itself coalesce or suppress by `debounce_key` (no drain pass, no cross-delivery tracker); it is recorded in the handler-log for consumers that choose to coalesce. Conventional shape: `<resource>:<id>:<action>` (e.g., `task:42:any`)."
+      "description": "Coalescing bucket; defaults to `target_id`. Within ONE classified event, targets sharing a `debounce_key` are coalesced (last-wins) at dispatch time so the handler bucket fires once. There is no CROSS-delivery debounce in the synchronous model (no drain pass, no time-window tracker). Conventional shape: `<resource>:<id>:<action>` (e.g., `task:42:any`)."
     },
     "debounce_seconds": {
       "type": ["integer", "null"],
