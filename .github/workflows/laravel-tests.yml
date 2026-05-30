@@ -4,6 +4,9 @@ name: Laravel Tests
 # was removed in Phase 3). Three checks: Pint (style), PHPStan/larastan level 7
 # on app/Bridge, and PHPUnit on the verified Laravel↔PHPUnit↔PHP matrix
 # (Laravel 13 / PHPUnit 12 / PHP 8.3) across SQLite + MariaDB 10.6 + MariaDB 11.
+#
+# Shared runtime setup (PHP + composer + .env) lives in the local composite
+# action .github/actions/setup-app so the SQLite and MariaDB jobs can't drift.
 
 on:
   push:
@@ -29,38 +32,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-
-      - name: Set up PHP 8.3
-        uses: shivammathur/setup-php@7c071dfe9dc99bdf297fa79cb49ea005b9fcadbc  # 2.37.1
-        with:
-          php-version: '8.3'
-          extensions: pdo, pdo_sqlite, pdo_mysql, mbstring, bcmath, intl, dom, fileinfo
-          coverage: none
-          tools: composer
-
-      - name: Install Composer dependencies
-        run: composer install --no-interaction --no-progress --prefer-dist
-
-      - name: Prepare environment
-        run: |
-          cp .env.example .env
-          php artisan key:generate
+      - uses: ./.github/actions/setup-app
 
       - name: Pint (code style)
         run: vendor/bin/pint --test
 
       - name: PHPStan (app/Bridge, level 7)
-        # app/Bridge is the rewrite's service layer. It is an empty skeleton
-        # in the scaffold PR; PHPStan activates here automatically once the
-        # first bridge code lands (plan PR #145). The guard avoids PHPStan's
-        # "no files found" failure on the empty tree without masking real
-        # analysis errors once files exist.
-        run: |
-          if [ -n "$(find app/Bridge -name '*.php' -print -quit)" ]; then
-            vendor/bin/phpstan analyse -c phpstan-laravel.neon --no-progress
-          else
-            echo "::notice::app/Bridge has no PHP files yet (scaffold). PHPStan activates with the first bridge code (PR #145)."
-          fi
+        run: vendor/bin/phpstan analyse -c phpstan-laravel.neon --no-progress
 
       - name: PHPUnit (SQLite in-memory)
         run: vendor/bin/phpunit
@@ -101,22 +79,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-
-      - name: Set up PHP 8.3
-        uses: shivammathur/setup-php@7c071dfe9dc99bdf297fa79cb49ea005b9fcadbc  # 2.37.1
-        with:
-          php-version: '8.3'
-          extensions: pdo, pdo_sqlite, pdo_mysql, mbstring, bcmath, intl, dom, fileinfo
-          coverage: none
-          tools: composer
-
-      - name: Install Composer dependencies
-        run: composer install --no-interaction --no-progress --prefer-dist
-
-      - name: Prepare environment
-        run: |
-          cp .env.example .env
-          php artisan key:generate
+      - uses: ./.github/actions/setup-app
 
       - name: Verify MariaDB connectivity
         run: php artisan db:show
