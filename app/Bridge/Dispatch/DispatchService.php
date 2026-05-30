@@ -116,6 +116,19 @@ final class DispatchService
                 continue;
             }
 
+            // Shared-identity echo completion (DL-005): the pre-classify echo
+            // gate above could only match the raw id for a shared upstream
+            // account (Actor.name was null by design, DL-002). If the classifier
+            // recovered the true author, re-run the SAME per-agent echo check
+            // now that attribution is better — drop the agent's OWN write (a
+            // different shared-id agent's write has a non-self name and stays).
+            // No-op when the classifier left reattributedActor null.
+            if ($result->reattributedActor !== null && $this->isEcho($agent, $result->reattributedActor)) {
+                $this->markDone($dispatch);
+
+                continue;
+            }
+
             // (B) inbox staging — durability; an IO failure propagates → 5xx.
             // intents is a list, so $index is the intent's array index (the
             // stable per-event identity IntentLog needs).

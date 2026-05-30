@@ -44,6 +44,7 @@ public function classify(
 
 - `$intents` — `list<Intent>` staged to `inbox.jsonl`
 - `$targets` — `list<ReactionTarget>` dispatched against the handler registry
+- `$reattributedActor` — *optional* `?Actor`; only for a shared upstream identity (see [Per-agent echo for a shared upstream identity](#per-agent-echo-for-a-shared-upstream-identity)). Null in the common case.
 
 ### Minimal worked example
 
@@ -179,6 +180,38 @@ final class MyEventDrivenClassifier extends InboxOnlyClassifier
 
 Point `classifier.class` at `EventDrivenClassifier` directly if it fits, or subclass it further.
 
+### Per-agent echo for a shared upstream identity
+
+Echo suppression runs **before** `classify()`, matching the resolved `Actor` against the agent's `identity.self` + `treat_as_echo` (by name) and `treat_as_echo_ids` (by raw id). That works when each agent has its own upstream account. But when several agents **share one** upstream account (declared once under `shared_identities` in `agents.json` — see [`multi-agent.md`](multi-agent.md)), the registry deliberately resolves `Actor.name = null` (it can't pick one agent), so the only echo lever left is `treat_as_echo_ids` on the raw id — and that is **all-or-nothing**: it either suppresses the shared account for *every* agent (killing the whole inbox) or for none (so each agent sees its own writes echoed back). There is no per-agent middle ground pre-classify, because the true author isn't known yet.
+
+`ClassifyResult::$reattributedActor` closes that gap. A classifier that recovers the true author from a secondary signal (a `FROM:` line in the event body, repo scope → agent mapping, etc.) returns it on the result; **after** `classify`, the dispatcher re-runs the **same** per-agent echo check on the reattributed actor and drops the event only when it is the serving agent's own write:
+
+```php
+public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId): ClassifyResult
+{
+    // Shared account → Actor.name is null. Recover the author from your own
+    // convention (here: a "FROM: <agent>" first line in a comment body).
+    $reattributed = null;
+    if ($actor->name === null) {
+        $body = (string) ($payload['payload']['body'] ?? '');
+        if (preg_match('/^FROM:\s*(\S+)/', $body, $m) === 1) {
+            $reattributed = new Actor(id: $actor->id, name: $m[1], isKnownAgent: true);
+        }
+    }
+
+    // Build intents/targets as normal, using $reattributed ?? $actor for display.
+    $intents = [/* ... */];
+
+    return new ClassifyResult(intents: $intents, reattributedActor: $reattributed);
+}
+```
+
+- **You report *who*; the dispatcher decides *is that me?*.** The classifier doesn't know which agent it's serving (one cached instance serves all of them) and **must not filter** — it just names the author. The dispatcher applies each agent's own `identity.self` / `treat_as_echo`, so the same classifier yields per-agent self-echo across all the agents sharing the account.
+- **A different shared-id agent's write still surfaces** — its recovered name isn't the serving agent's `identity.self`, so it isn't an echo for that agent.
+- **Leave it `null` when you didn't recover an author** (or there's nothing to recover) — the result dispatches unchanged. Every shipped classifier leaves it null, so this is a no-op unless you opt in.
+
+This is the completion of the `shared_identities` design (DL-002): the registry preserves the null name on purpose so this recovery layer can re-attribute. See [`multi-agent.md`](multi-agent.md) § Path C for the full shared-identity walkthrough.
+
 ### Constructing the data shapes
 
 **`Intent`** — a signal surfaced to the agent's conversation context:
@@ -228,7 +261,7 @@ Same-event dedup is by `debounceKey` (last-wins): targets in one `ClassifyResult
 
 - **`Intent::payload` and `ReactionTarget::payload` are plain PHP arrays.** No freeze/thaw, no tuple-of-pairs, no `payload_dict()`. The Python-era freeze machinery is absent in v0.12.
 - **Distinct intent `kind` per lifecycle / shape.** `bridge:inbox` groups by `kind`. See `InboxOnlyClassifier::LIFECYCLE` for precedent (`card_removed` / `card_archived` / `card_restored` / `card_unarchived` as four distinct kinds).
-- **Don't emit `Intent` for events the agent already authored.** Echo suppression handles this upstream. Use `treat_as_echo_ids` in config to mark your bot user's id as echo.
+- **Don't emit `Intent` for events the agent already authored.** Echo suppression handles this upstream. Use `treat_as_echo_ids` in config to mark your bot user's id as echo. (The one exception is a *shared* upstream identity, where the author isn't known until you recover it — see [Per-agent echo for a shared upstream identity](#per-agent-echo-for-a-shared-upstream-identity); even then you report the author, you don't filter.)
 - **Lifecycle events are invalidation signals, not noise.** When kanban-board is your source of truth, `task.deleted` / `task.archived` / `task.restored` / `task.unarchived` indicate the agent may hold a phantom reference keyed on `subject_id`. Surface them.
 - **No network calls inside `classify`.** `classify` runs synchronously in the webhook request — emit a `ReactionTarget` whose handler makes the call.
 - **Classifier throws → event recorded + acked 200 (treatment A).** A deterministic bug must not wedge delivery into an 11-day retry storm. The raw event is stored; fix the classifier and `bridge:replay`. The classify pass does not get a second chance on the same delivery.

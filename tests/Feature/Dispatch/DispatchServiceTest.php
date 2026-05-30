@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\File;
 use RuntimeException;
 use Tests\Fixtures\CoalescingTargetsClassifier;
 use Tests\Fixtures\LogIntentClassifier;
+use Tests\Fixtures\ReattributingClassifier;
 use Tests\Fixtures\ThrowingClassifier;
 use Tests\Fixtures\UnknownHandlerClassifier;
 use Tests\TestCase;
@@ -132,6 +133,60 @@ class DispatchServiceTest extends TestCase
         $this->assertNotNull($dispatch->processed_at);
         $this->assertNull($dispatch->error_message);
         $this->assertSame(0, $this->inboxCount());
+    }
+
+    public function test_reattributed_self_author_is_echo_suppressed_after_classify(): void
+    {
+        // Shared-identity case (DL-005): the raw actor (999) is unattributable
+        // pre-classify (name null), so it passes the pre-classify echo gate and
+        // reaches classify. The classifier recovers the true author as
+        // prod-agent (this agent's own identity.self) → the post-classify echo
+        // recheck suppresses it: done, no error, nothing staged.
+        $this->writeAgent('prod-agent', ReattributingClassifier::class);
+
+        $payload = ['subject_id' => 42, 'board_id' => 5, 'reattributed_to' => 'prod-agent', 'payload' => ['name' => 'Ship it']];
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $payload);
+
+        $dispatch = AgentDispatch::firstOrFail();
+        $this->assertNotNull($dispatch->processed_at);
+        $this->assertNull($dispatch->error_message);
+        $this->assertSame(0, $this->inboxCount());      // own write suppressed
+    }
+
+    public function test_reattributed_other_shared_agent_author_still_surfaces(): void
+    {
+        // Same shared account, but the recovered author is a DIFFERENT agent
+        // (peer-agent ≠ this agent's identity.self) → not a self-echo → the
+        // intent surfaces. This is the middle ground the all-or-nothing
+        // treat_as_echo_ids could not express.
+        $this->writeAgent('prod-agent', ReattributingClassifier::class);
+
+        $payload = ['subject_id' => 42, 'board_id' => 5, 'reattributed_to' => 'peer-agent', 'payload' => ['name' => 'Ship it']];
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $payload);
+
+        $dispatch = AgentDispatch::firstOrFail();
+        $this->assertNotNull($dispatch->processed_at);
+        $this->assertNull($dispatch->error_message);
+        $this->assertSame(1, $this->inboxCount());      // a peer's write is signal
+    }
+
+    public function test_null_reattributed_actor_keys_only_on_reattribution_not_intent_actor(): void
+    {
+        // The echo recheck keys on ClassifyResult::reattributedActor ONLY. Here
+        // the classifier leaves it null but stamps the emitted intent's OWN
+        // actor name as prod-agent (this agent's identity.self). The intent must
+        // STILL surface — the dispatcher never inspects intent.actor for echo,
+        // and the raw actor (999) already cleared the pre-classify gate. Pins
+        // the `reattributedActor !== null` guard as load-bearing.
+        $this->writeAgent('prod-agent', ReattributingClassifier::class);
+
+        $payload = ['subject_id' => 42, 'board_id' => 5, 'intent_author' => 'prod-agent', 'payload' => ['name' => 'Ship it']];
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $payload);
+
+        $dispatch = AgentDispatch::firstOrFail();
+        $this->assertNotNull($dispatch->processed_at);
+        $this->assertNull($dispatch->error_message);
+        $this->assertSame(1, $this->inboxCount());      // null reattribution → no suppression
     }
 
     public function test_classifier_failure_is_recorded_and_left_errored_case_a(): void
