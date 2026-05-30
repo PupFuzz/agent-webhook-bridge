@@ -41,13 +41,12 @@ Unix domain socket is the recommended default transport. Filesystem permissions 
 
 The name propagates everywhere automatically. Match `[a-z0-9_-]+` (lowercase letters, digits, underscore, hyphen). It will appear in:
 
-- `<agent>.yml` `channel.name` field (bridge side — the `<channel source="...">` label)
 - `mcpServers.<KEY>` key in `.mcp.json` (Claude Code matches this against `--dangerously-load-development-channels server:<KEY>`)
 - `BRIDGE_CHANNEL_NAME` env in the same `.mcp.json` block (the channel server uses this to derive its bind path + the `source="..."` tag)
 
-Three references, ONE name.
+Two references, ONE name — and the same name appears in the `channel.socket` path you set in `<agent>.yml` (next step).
 
-**Important — socket path alignment.** The Node channel server derives its bind path from `$XDG_RUNTIME_DIR/agent-webhook-bridge-channel-${BRIDGE_CHANNEL_NAME}.sock`. **The bridge does NOT compute that path** — v0.12 requires an explicit `channel.socket` in your `<agent>.yml` pointing at exactly the same path the channel server binds. `channel.name` is only the source label; the bridge never uses it to derive a socket path. On systemd Linux + per-user environment, set `channel.socket` in YAML to `/run/user/<uid>/agent-webhook-bridge-channel-<NAME>.sock`. On macOS / containers without `$XDG_RUNTIME_DIR`, set BOTH `channel.socket` in YAML AND `BRIDGE_CHANNEL_SOCKET` in `.mcp.json` env to the same explicit path.
+**Important — socket path alignment.** The Node channel server derives its bind path from `$XDG_RUNTIME_DIR/agent-webhook-bridge-channel-${BRIDGE_CHANNEL_NAME}.sock`. **The bridge does NOT compute that path** — it requires an explicit `channel.socket` in your `<agent>.yml` pointing at exactly the same path the channel server binds. There is no `channel.name` field (it was removed); the `<channel source="...">` label comes from `BRIDGE_CHANNEL_NAME`. On systemd Linux + per-user environment, set `channel.socket` in YAML to `/run/user/<uid>/agent-webhook-bridge-channel-<NAME>.sock`. On macOS / containers without `$XDG_RUNTIME_DIR`, set BOTH `channel.socket` in YAML AND `BRIDGE_CHANNEL_SOCKET` in `.mcp.json` env to the same explicit path.
 
 ### 2. Drop `.mcp.json` in your project root
 
@@ -142,11 +141,11 @@ classifier:
   class: App\Bridge\Classifiers\EventDrivenClassifier
 ```
 
-Also add the channel block (the `socket` path must match the channel server's bind path — the bridge does NOT derive it from `channel.name`):
+Also add the channel block (the `socket` path must match the channel server's bind path — the bridge does NOT derive it from any name):
 
 ```yaml
 channel:
-  name: kanbanboard-agent      # same string as the mcpServers key + BRIDGE_CHANNEL_NAME above
+  # the path embeds the same name as the mcpServers key + BRIDGE_CHANNEL_NAME above
   socket: /run/user/1000/agent-webhook-bridge-channel-kanbanboard-agent.sock
 ```
 
@@ -163,12 +162,10 @@ Verify after switching: trigger a test event (or `php artisan bridge:replay <N>`
 Register your classifier in `<agent>.yml`:
 
 ```yaml
-identity:
-  self: prod-agent
+# in prod-agent.yml — the filename is the agent name; no identity.self
 classifier:
   class: App\Bridge\Classifiers\EventDrivenClassifier   # FQCN; backslash prefix stripped automatically
 channel:
-  name: kanbanboard-agent
   socket: /run/user/1000/agent-webhook-bridge-channel-kanbanboard-agent.sock
 # ... rest of your agent config
 ```

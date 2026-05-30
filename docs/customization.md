@@ -36,7 +36,7 @@ public function classify(
 
 - `$eventType` — wire-format event name (`"task.created"`, `"comment.created"`, etc.).
 - `$payload` — parsed envelope as a plain PHP array. The kanban adapter normalizes to `['event', 'board_id', 'subject_id', 'subject_type', 'action', 'payload', 'user_id', 'timestamp', 'delivery_id', 'attempt', ...]`. The nested `payload['payload']` is the event-specific data. See [`provider-adapters.md`](provider-adapters.md) for other providers' shapes.
-- `$actor` — `Actor` resolved against `agents.json`. `$actor->name` is the friendly name (null if unknown); `$actor->isKnownAgent` is true only for registry entries; `$actor->id` is the raw provider id; `$actor->rawEnvelope` holds raw actor fields from the adapter. **Echo suppression has already happened** — do not re-filter inside `classify`.
+- `$actor` — `Actor` resolved against the registry (built by scanning the per-agent YAMLs' `identity` blocks). `$actor->name` is the friendly name (null if unknown); `$actor->isKnownAgent` is true only for registry entries; `$actor->id` is the raw provider id; `$actor->rawEnvelope` holds raw actor fields from the adapter. **Echo suppression has already happened** — do not re-filter inside `classify`.
 - `$provider` — upstream system id (`"kanban"`, `"github"`, etc.). Pass through to every `Intent` you construct.
 - `$scopeId` — receiver-extracted scope id (kanban `board_id` stringified, GitHub `repository.full_name`, etc.).
 
@@ -182,7 +182,7 @@ Point `classifier.class` at `EventDrivenClassifier` directly if it fits, or subc
 
 ### Per-agent echo for a shared upstream identity
 
-Echo suppression runs **before** `classify()`, matching the resolved `Actor` against the agent's `identity.self` + `treat_as_echo` (by name) and `treat_as_echo_ids` (by raw id). That works when each agent has its own upstream account. But when several agents **share one** upstream account (declared once under `shared_identities` in `agents.json` — see [`multi-agent.md`](multi-agent.md)), the registry deliberately resolves `Actor.name = null` (it can't pick one agent), so the only echo lever left is `treat_as_echo_ids` on the raw id — and that is **all-or-nothing**: it either suppresses the shared account for *every* agent (killing the whole inbox) or for none (so each agent sees its own writes echoed back). There is no per-agent middle ground pre-classify, because the true author isn't known yet.
+Echo suppression runs **before** `classify()`, matching the resolved `Actor` against the agent's own name (auto-seeded from its `identity` ids) + `treat_as_echo` (by name) and `treat_as_echo_ids` (by raw id). That works when each agent has its own upstream account. But when several agents **share one** upstream account (declared once in `shared-identities.json` — see [`multi-agent.md`](multi-agent.md)), the registry deliberately resolves `Actor.name = null` (it can't pick one agent), so the only echo lever left is `treat_as_echo_ids` on the raw id — and that is **all-or-nothing**: it either suppresses the shared account for *every* agent (killing the whole inbox) or for none (so each agent sees its own writes echoed back). There is no per-agent middle ground pre-classify, because the true author isn't known yet.
 
 `ClassifyResult::$reattributedActor` closes that gap. A classifier that recovers the true author from a secondary signal (a `FROM:` line in the event body, repo scope → agent mapping, etc.) returns it on the result; **after** `classify`, the dispatcher re-runs the **same** per-agent echo check on the reattributed actor and drops the event only when it is the serving agent's own write:
 
@@ -206,8 +206,8 @@ public function classify(string $eventType, array $payload, Actor $actor, string
 }
 ```
 
-- **You report *who*; the dispatcher decides *is that me?*.** The classifier doesn't know which agent it's serving (one cached instance serves all of them) and **must not filter** — it just names the author. The dispatcher applies each agent's own `identity.self` / `treat_as_echo`, so the same classifier yields per-agent self-echo across all the agents sharing the account.
-- **A different shared-id agent's write still surfaces** — its recovered name isn't the serving agent's `identity.self`, so it isn't an echo for that agent.
+- **You report *who*; the dispatcher decides *is that me?*.** The classifier doesn't know which agent it's serving (one cached instance serves all of them) and **must not filter** — it just names the author. The dispatcher applies each agent's own name / `treat_as_echo`, so the same classifier yields per-agent self-echo across all the agents sharing the account.
+- **A different shared-id agent's write still surfaces** — its recovered name isn't the serving agent's own name, so it isn't an echo for that agent.
 - **Leave it `null` when you didn't recover an author** (or there's nothing to recover) — the result dispatches unchanged. Every shipped classifier leaves it null, so this is a no-op unless you opt in.
 
 This is the completion of the `shared_identities` design (DL-002): the registry preserves the null name on purpose so this recovery layer can re-attribute. See [`multi-agent.md`](multi-agent.md) § Path C for the full shared-identity walkthrough.
@@ -391,22 +391,18 @@ The earlier setup ran `bridge:inbox` from Claude Code hooks (`SessionStart` for 
 
        cd <bridge install>/examples/channel-servers && npm install
 
-2. **Pick one name** matching `[a-z0-9_-]+` (e.g. `kanbanboard-agent`). This name appears in three places:
+2. **Pick one name** matching `[a-z0-9_-]+` (e.g. `kanbanboard-agent`). This name appears in two places:
 
    | Where | Whose responsibility |
    | --- | --- |
-   | `<agent>.yml` `channel.name` field | bridge YAML (the `<channel source="...">` label) |
    | `mcpServers.<KEY>` key in `.mcp.json` | Claude Code (matches `--dangerously-load-development-channels server:<KEY>`) |
    | `BRIDGE_CHANNEL_NAME` env in `.mcp.json` | channel server (derives its bind path + `<channel source="...">` tag) |
 
-   The reference channel server binds `$XDG_RUNTIME_DIR/agent-webhook-bridge-channel-${BRIDGE_CHANNEL_NAME}.sock`. **The bridge does NOT compute that path in v0.12** — set it explicitly in `<agent>.yml` as `channel.socket`, pointing at the same path the channel server binds. `channel.name` is only the source label.
+   The reference channel server binds `$XDG_RUNTIME_DIR/agent-webhook-bridge-channel-${BRIDGE_CHANNEL_NAME}.sock`. **The bridge does NOT compute that path** — set it explicitly in `<agent>.yml` as `channel.socket`, pointing at the same path the channel server binds. There is no `channel.name` field (it was dead and is removed); the `<channel source="...">` label comes from `BRIDGE_CHANNEL_NAME`.
 
-   **If `channel.name` is omitted** in YAML it defaults to `identity.self` (label only).
-
-3. **Add the channel block to `<agent>.yml`** — `socket` is REQUIRED:
+3. **Add the channel block to `<agent>.yml`** — set `socket` (or `url`); they are mutually exclusive:
 
        channel:
-         name: kanbanboard-agent                                              # source label
          socket: /run/user/1000/agent-webhook-bridge-channel-kanbanboard-agent.sock  # must equal the channel server's bind path
 
 4. **Drop `.mcp.json`** in the project root where you'll run `claude`. Start from [`examples/channel-servers/.mcp.json.example`](../examples/channel-servers/.mcp.json.example). Paste the name into `mcpServers.<KEY>` AND `env.BRIDGE_CHANNEL_NAME`. On systemd Linux the channel server derives its bind path from `$XDG_RUNTIME_DIR` + `BRIDGE_CHANNEL_NAME`; make the YAML `channel.socket` from step 3 equal that path.
@@ -510,14 +506,10 @@ class SyncBoardHandlerTest extends TestCase
         );
 
         // AgentConfig::fromArray needs the minimum required sections; build it
-        // inline (there is no global config-fixture helper).
+        // inline (there is no global config-fixture helper). The agent name is
+        // the first arg — there is no identity.self; ids live in identity.
         $agent = AgentConfig::fromArray('test-agent', [
-            'identity' => ['self' => 'test-agent'],
-            'api' => ['kanban' => [
-                'base_url' => 'https://kanban.example.com/api/v3',
-                'token_path' => '/tmp/token',
-            ]],
-            'receiver' => ['base_url' => 'https://bridge.example.com/webhooks'],
+            'identity' => ['kanban_user_id' => 137],
             'subscriptions' => [['provider' => 'kanban', 'scopes' => [5]]],
         ]);
 

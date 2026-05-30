@@ -75,9 +75,7 @@ class ChannelPushUdsTest extends TestCase
         $this->assertFileExists($socketPath, 'child failed to bind the UDS');
 
         $agent = AgentConfig::fromArray('prod-agent', [
-            'identity' => ['self' => 'prod-agent'],
-            'api' => ['kanban' => ['base_url' => 'https://k.example.com', 'token_path' => '/t']],
-            'receiver' => ['base_url' => 'https://b.example.com/webhooks'],
+            'identity' => ['kanban_user_id' => 137],
             'subscriptions' => [],
         ]);
 

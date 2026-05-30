@@ -3,12 +3,11 @@
 namespace App\Console\Commands\Bridge;
 
 use App\Models\WebhookEvent;
-use Illuminate\Console\Command;
 
 /**
  * Pretty-print a single webhook event and its per-agent dispatch ledger.
  */
-class InspectCommand extends Command
+class InspectCommand extends BridgeCommand
 {
     protected $signature = 'bridge:inspect {id : the webhook_events.id} {--agent= : show only this agent\'s dispatch row}';
 
@@ -36,8 +35,8 @@ class InspectCommand extends Command
         $this->line('payload:');
         $this->line((string) json_encode($event->payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
-        $agent = $this->option('agent');
-        $dispatches = is_string($agent) && $agent !== ''
+        $agent = $this->strOption('agent');
+        $dispatches = $agent !== null
             ? $event->dispatches->where('agent_name', $agent)
             : $event->dispatches;
 

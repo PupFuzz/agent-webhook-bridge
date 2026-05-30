@@ -3,10 +3,13 @@
 namespace App\Console\Commands\Bridge;
 
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\InstallGuard;
 use App\Bridge\Support\SecretPath;
+use App\Bridge\Support\SignalAllowlist;
+use App\Bridge\Support\UrlValidator;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Throwable;
@@ -67,7 +70,24 @@ class CheckCommand extends Command
             $ok = false;
         }
 
+        // Per-install endpoint URLs (when set — unset is fine until provisioning).
+        foreach ([
+            'receiver_base_url' => (string) config('bridge.receiver_base_url'),
+            'providers.kanban.api_base_url' => (string) config('bridge.providers.kanban.api_base_url'),
+        ] as $field => $value) {
+            if ($value === '') {
+                continue;
+            }
+            try {
+                UrlValidator::httpUrl($value, "bridge.{$field}");
+            } catch (Throwable $e) {
+                $this->error($e->getMessage());
+                $ok = false;
+            }
+        }
+
         $agentNames = [];
+        $configs = [];
         $hasSecretDir = is_string($secretDir) && str_starts_with($secretDir, '/');
         if (is_string($configDir) && is_dir($configDir)) {
             foreach (glob(rtrim($configDir, '/').'/*.yml') ?: [] as $file) {
@@ -81,6 +101,7 @@ class CheckCommand extends Command
 
                     continue;
                 }
+                $configs[] = $cfg;
 
                 // The classifier FQCN is only resolved at dispatch time, where a
                 // bad value is an uncaught 5xx (→ upstream retry storm). Resolve
@@ -106,6 +127,30 @@ class CheckCommand extends Command
                             $this->warn("agent {$name}: {$sub->provider}:{$sub->scopeId} has no secret at {$secretPath} — run bridge:provision");
                         }
                     }
+                    // API token presence per provider (the token bridge:provision
+                    // uses). Convention <secret_dir>/<provider>/token, or the
+                    // per-agent override. Warn — a provider may not be provisioned yet.
+                    foreach (array_unique(array_map(fn ($s) => $s->provider, $cfg->subscriptions)) as $provider) {
+                        $tokenPath = $cfg->tokenPath((string) $secretDir, $provider);
+                        if (! is_file($tokenPath) || ! is_readable($tokenPath)) {
+                            $this->warn("agent {$name}: {$provider} API token not readable at {$tokenPath} — bridge:provision will SKIP {$provider} scopes");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build the registry from the scanned configs (surfaces id-collision
+        // warnings at preflight) and validate each agent's treat_as_signal — an
+        // unknown name is fail-closed at dispatch (5xx), so catch it here.
+        if ($configs !== [] && is_string($configDir)) {
+            $registry = AgentRegistry::fromAgentConfigs($configs, AgentRegistry::loadSharedIdentities($configDir));
+            foreach ($configs as $cfg) {
+                try {
+                    SignalAllowlist::default($cfg->echoSuppression->treatAsSignal, $registry);
+                } catch (Throwable $e) {
+                    $this->error("agent {$cfg->agentName}: ".$e->getMessage());
+                    $ok = false;
                 }
             }
         }
@@ -115,6 +160,13 @@ class CheckCommand extends Command
         $defaultAgent = config('bridge.default_agent');
         if (is_string($defaultAgent) && $defaultAgent !== '' && ! in_array($defaultAgent, $agentNames, true)) {
             $this->warn("BRIDGE_DEFAULT_AGENT '{$defaultAgent}' has no matching config {$configDir}/{$defaultAgent}.yml");
+        }
+
+        // shared-identities.json is optional; report it when present so a v0.13
+        // schema-v1 migration / a malformed file surfaces at preflight.
+        if (is_string($configDir) && is_file(rtrim($configDir, '/').'/shared-identities.json')) {
+            $shared = AgentRegistry::loadSharedIdentities($configDir);
+            $this->info('shared-identities.json: '.count($shared).' shared account(s)');
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;

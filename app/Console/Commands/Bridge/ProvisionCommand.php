@@ -7,7 +7,6 @@ use App\Bridge\Provision\ProvisionResult;
 use App\Bridge\Provision\WebhookProvisioner;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\SubscriptionRegistry;
-use Illuminate\Console\Command;
 use Throwable;
 
 /**
@@ -22,7 +21,7 @@ use Throwable;
  * non-zero exit. URL-drift orphan cleanup is manual (no local registry — the
  * live API is the source of truth).
  */
-class ProvisionCommand extends Command
+class ProvisionCommand extends BridgeCommand
 {
     protected $signature = 'bridge:provision {--agent= : limit to one agent} {--dry-run : preview, change nothing} {--list : show live subscriptions and exit} {--reconcile : fix inactive/filter-drifted subscriptions (delete + recreate, reusing the secret)}';
 
@@ -33,14 +32,21 @@ class ProvisionCommand extends Command
         $configDir = (string) config('bridge.config_dir');
         $secretDir = (string) config('bridge.secret_dir');
         if ($configDir === '' || $secretDir === '') {
-            $this->error('bridge.config_dir and bridge.secret_dir must be configured');
+            $this->error('bridge.config_dir and bridge.secret_dir must be configured (set BRIDGE_DIR)');
+
+            return self::FAILURE;
+        }
+
+        $receiverBaseUrl = (string) config('bridge.receiver_base_url');
+        if ($receiverBaseUrl === '') {
+            $this->error('bridge.receiver_base_url (BRIDGE_RECEIVER_BASE_URL) must be configured');
 
             return self::FAILURE;
         }
 
         $agents = (new SubscriptionRegistry($configDir))->agentConfigs();
-        $only = $this->option('agent');
-        if (is_string($only) && $only !== '') {
+        $only = $this->strOption('agent');
+        if ($only !== null) {
             $agents = array_values(array_filter($agents, fn (AgentConfig $a) => $a->agentName === $only));
         }
 
@@ -58,16 +64,24 @@ class ProvisionCommand extends Command
                     continue;
                 }
 
-                $token = $this->readToken($agent, $sub->provider);
+                $token = $this->readToken($agent, $sub->provider, $secretDir);
                 if ($token === null) {
-                    $this->warn("{$label} SKIP — token unreadable (api.{$sub->provider}.token_path)");
+                    $this->warn("{$label} SKIP — token unreadable ({$agent->tokenPath($secretDir, $sub->provider)})");
                     $rc = self::FAILURE;
 
                     continue;
                 }
 
-                $client = new KanbanProvisionClient($agent->api[$sub->provider]->baseUrl, $token);
-                $receiverUrl = "{$agent->receiverBaseUrl}/{$sub->provider}?b={$sub->scopeId}";
+                $apiBaseUrl = (string) config("bridge.providers.{$sub->provider}.api_base_url");
+                if ($apiBaseUrl === '') {
+                    $this->warn("{$label} SKIP — no API base url configured (BRIDGE_".strtoupper($sub->provider).'_API_BASE_URL)');
+                    $rc = self::FAILURE;
+
+                    continue;
+                }
+
+                $client = new KanbanProvisionClient($apiBaseUrl, $token);
+                $receiverUrl = rtrim($receiverBaseUrl, '/')."/{$sub->provider}?b={$sub->scopeId}";
 
                 try {
                     if ($this->option('list')) {
@@ -94,12 +108,9 @@ class ProvisionCommand extends Command
         return $rc;
     }
 
-    private function readToken(AgentConfig $agent, string $provider): ?string
+    private function readToken(AgentConfig $agent, string $provider, string $secretDir): ?string
     {
-        if (! isset($agent->api[$provider])) {
-            return null;
-        }
-        $path = $agent->api[$provider]->tokenPath;
+        $path = $agent->tokenPath($secretDir, $provider);
         if (! is_file($path)) {
             return null;
         }

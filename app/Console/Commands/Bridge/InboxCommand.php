@@ -3,7 +3,6 @@
 namespace App\Console\Commands\Bridge;
 
 use App\Bridge\Support\BridgePaths;
-use Illuminate\Console\Command;
 
 /**
  * Surface unseen inbox intents to the agent's context. Dedups on the stable
@@ -13,7 +12,7 @@ use Illuminate\Console\Command;
  * markdown is wrapped in the hookSpecificOutput envelope; otherwise it
  * prints plain markdown. Silent when there's nothing new.
  */
-class InboxCommand extends Command
+class InboxCommand extends BridgeCommand
 {
     protected $signature = 'bridge:inbox '
         .'{--agent= : surface only this agent\'s intents (per-agent file/cursor); defaults to BRIDGE_DEFAULT_AGENT} '
@@ -78,8 +77,8 @@ class InboxCommand extends Command
      */
     private function resolveAgent(): ?string
     {
-        $opt = $this->option('agent');
-        if (is_string($opt) && $opt !== '') {
+        $opt = $this->strOption('agent');
+        if ($opt !== null) {
             return $opt;
         }
         $default = config('bridge.default_agent');

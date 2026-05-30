@@ -27,14 +27,6 @@ class SubscriptionRegistryTest extends TestCase
     private function writeAgent(string $name, string $provider, int $scope): void
     {
         File::put($this->dir."/{$name}.yml", <<<YAML
-        identity:
-          self: {$name}
-        api:
-          {$provider}:
-            base_url: https://up.example.com/api
-            token_path: /tokens/t
-        receiver:
-          base_url: https://bridge.example.com/webhooks
         subscriptions:
           - provider: {$provider}
             scopes: [{$scope}]
@@ -57,7 +49,7 @@ class SubscriptionRegistryTest extends TestCase
     public function test_malformed_config_fails_closed(): void
     {
         $this->writeAgent('prod-agent', 'kanban', 5);
-        File::put($this->dir.'/broken.yml', "identity: {}\napi: {}\n");   // missing identity.self + empty api
+        File::put($this->dir.'/broken.yml', "subscriptions: not-a-list\n");   // subscriptions must be a list
 
         $registry = new SubscriptionRegistry($this->dir);
 

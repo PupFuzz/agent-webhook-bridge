@@ -4,8 +4,8 @@ namespace App\Bridge\Support;
 
 /**
  * A provider account shared by more than one agent, declared once in
- * agents.json under `shared_identities` rather than denormalized across every
- * agent entry. Events from a shared account cannot be attributed to a single
+ * `shared-identities.json` rather than denormalized across every agent's
+ * identity block. Events from a shared account cannot be attributed to a single
  * agent by identity alone, so recognition intentionally yields Actor.name =
  * null and defers to a custom classifier (e.g. a FROM:-line / repo-scope
  * re-attribution layer). See DL-002.

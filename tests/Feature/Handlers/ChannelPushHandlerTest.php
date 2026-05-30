@@ -14,9 +14,7 @@ class ChannelPushHandlerTest extends TestCase
     private function agent(?string $channelSocket = null): AgentConfig
     {
         $raw = [
-            'identity' => ['self' => 'prod-agent'],
-            'api' => ['kanban' => ['base_url' => 'https://k.example.com', 'token_path' => '/t']],
-            'receiver' => ['base_url' => 'https://b.example.com/webhooks'],
+            'identity' => ['kanban_user_id' => 137],
             'subscriptions' => [],
         ];
         if ($channelSocket !== null) {
@@ -143,9 +141,7 @@ class ChannelPushHandlerTest extends TestCase
         Http::fake(['*' => Http::response('ok', 200)]);
 
         $agent = AgentConfig::fromArray('prod-agent', [
-            'identity' => ['self' => 'prod-agent'],
-            'api' => ['kanban' => ['base_url' => 'https://k.example.com', 'token_path' => '/t']],
-            'receiver' => ['base_url' => 'https://b.example.com/webhooks'],
+            'identity' => ['kanban_user_id' => 137],
             'subscriptions' => [],
             'channel' => ['url' => 'http://127.0.0.1:8788/'],
         ]);
