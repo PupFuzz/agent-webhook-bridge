@@ -79,7 +79,7 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 
 | File | Role |
 |---|---|
-| `app/Bridge/Dispatch/DispatchService.php` | The loop: record → per-agent (echo-suppress → classify → stage → handlers) with the three-way failure treatment. Its private `dedupCreate` (create + catch `UniqueConstraintViolationException` → refetch) is the at-least-once write primitive (used for both `webhook_events` and `agent_dispatches`) |
+| `app/Bridge/Dispatch/DispatchService.php` | The loop: record → per-agent (echo-suppress → classify → stage → coalesce targets by `debounceKey` (last-wins) → run handlers) with the three-way failure treatment. Its private `dedupCreate` (create + catch `UniqueConstraintViolationException` → refetch) is the at-least-once write primitive (used for both `webhook_events` and `agent_dispatches`) |
 | `app/Bridge/Dispatch/{Intent,ReactionTarget,Actor,ClassifyResult,IntentLog}.php` | Core data shapes (plain PHP objects/arrays — no freeze/thaw, no serialization layer) |
 | `app/Bridge/Contracts/Classifier.php` | Classifier contract: `classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId): ClassifyResult` |
 | `app/Bridge/Classifiers/InboxOnlyClassifier.php` | Reference classifier — surfaces lifecycle/activity events as intents; no dispatched targets |
