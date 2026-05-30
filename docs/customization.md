@@ -222,7 +222,7 @@ new ReactionTarget(
 );
 ```
 
-Same-pass dedup is by `debounceKey` (last-wins).
+Same-event dedup is by `debounceKey` (last-wins): targets in one `ClassifyResult` sharing a `debounceKey` fire the handler once.
 
 ### Conventions + gotchas
 
@@ -467,7 +467,7 @@ This mirrors `BridgeServiceProvider::register()` exactly, with the one added `re
 
 - **Handlers run synchronously in the webhook request.** If your handler makes an external HTTP call or shells out to a command taking more than ~1 second, use `spawn_detached` instead — it absorbs `setsid` / log-rotation / env-merge in one place.
 - **Failures are recorded, not retried automatically.** A handler throw writes `done-with-note` to `agent_dispatches`. The intent is already durable in `inbox.jsonl`. To retry: `php artisan bridge:replay <N>`. Treatment C: one agent's handler failing does not fail the delivery or affect other agents.
-- **Debouncing is handled by the dispatcher, not the handler.** `ReactionTarget::$debounceKey` (defaults to `targetId`) and `$debounceSeconds` coalesce same-key targets within the window.
+- **Same-event coalescing is handled by the dispatcher, not the handler.** `ReactionTarget::$debounceKey` (defaults to `targetId`) collapses targets sharing a key within one `ClassifyResult` (last-wins) so the handler fires once. `$debounceSeconds` is **advisory metadata only** — the synchronous bridge carries it to the handler/handler-log but does NOT enforce a cross-delivery time window (no drain pass; redelivery dedup is the `webhook_events` UNIQUE gate, see DL-003).
 - **`$agent` is for context, not mutation.** `AgentConfig` is the parsed YAML for the agent being dispatched. Read from it; do not write or cache mutable state on it.
 
 ### Testing your handler

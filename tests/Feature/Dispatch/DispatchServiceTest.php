@@ -16,6 +16,7 @@ use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use RuntimeException;
+use Tests\Fixtures\CoalescingTargetsClassifier;
 use Tests\Fixtures\LogIntentClassifier;
 use Tests\Fixtures\ThrowingClassifier;
 use Tests\Fixtures\UnknownHandlerClassifier;
@@ -207,6 +208,27 @@ class DispatchServiceTest extends TestCase
         // even though agent-b threw — so a redelivery resumes from agent-b.
         $this->assertNotNull(AgentDispatch::where('agent_name', 'agent-a')->firstOrFail()->processed_at);
         $this->assertNull(AgentDispatch::where('agent_name', 'agent-b')->firstOrFail()->processed_at);
+    }
+
+    public function test_same_event_targets_coalesce_by_debounce_key_last_wins(): void
+    {
+        $this->writeAgent('prod-agent', CoalescingTargetsClassifier::class);
+
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $this->payload());
+
+        $lines = array_map(
+            fn ($l) => json_decode($l, true),
+            file($this->dir.'/state/handler-log.jsonl', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)
+        );
+        // bucket-x (targets A,B) collapses to one (last-wins = B); bucket-y (C)
+        // fires on its own → two handler invocations, not three.
+        $this->assertCount(2, $lines);
+        $byKey = [];
+        foreach ($lines as $l) {
+            $byKey[$l['debounce_key']] = $l['target_id'];
+        }
+        $this->assertSame('B', $byKey['bucket-x']);   // last-wins within the shared bucket
+        $this->assertSame('C', $byKey['bucket-y']);
     }
 
     public function test_already_processed_dispatch_is_skipped_on_redelivery(): void

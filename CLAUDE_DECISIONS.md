@@ -41,4 +41,18 @@
 
 ---
 
+## DL-003 — Same-event ReactionTarget coalescing is enforced; cross-delivery debounce is not
+
+- **Date:** 2026-05-30
+- **Context:** `ReactionTarget` carries `debounceKey` (defaults to `targetId`) and `debounceSeconds`, and `ClassifyResult` / `ReactionTarget` docblocks + `docs/reaction-target-schema.json` + the handler-log all described `debounce_key` coalescing. But the v0.12 rewrite dropped the implementation: `DispatchService` iterated `$result->targets` and invoked **every** target's handler — no coalescing anywhere. A divergent-duplication audit surfaced the doc-vs-code gap. The original async design had two debounce behaviors: same-pass coalescing (collapse duplicate keys) **and** a cross-pass `DebounceTracker` time-window (the `debounceSeconds` window) that suppressed repeats across drain passes.
+- **Decision:** Split the two behaviors by what the synchronous model needs.
+  - **Same-event coalescing — restored** (`DispatchService`): within one `ClassifyResult`, targets sharing a `debounceKey` collapse last-wins (associative-array key) before the handler loop, so a classifier emitting N targets to one bucket fires that handler once. Cheap, matches the long-published contract (the field, its `targetId` default, the docblocks, the schema, the handler-log key), and protects the bridge's core extension point — a custom classifier emitting duplicate-bucket targets no longer double-fires a handler.
+  - **Cross-delivery debounce — intentionally NOT enforced.** The `debounceSeconds` time-window / old `DebounceTracker` was an async-drain construct (suppress repeats across batched passes). The synchronous model handles one event per request with no batching; redelivery dedup is the `webhook_events` `UNIQUE(delivery_id)` gate + kanban-board's retry (DL-001), not a time window. `debounceSeconds` remains **advisory metadata** carried to the handler + handler-log for a consumer that chooses to honor it.
+- **Alternatives considered:**
+  - **Document-only (demote `debounce_key` to advisory, no coalescing).** Rejected: leaves a published coalescing key that silently doesn't coalesce — a footgun precisely at the custom-classifier extension point, and the cheaper-looking option only because it ships less correctness.
+  - **Re-implement the cross-delivery `DebounceTracker` (time-window suppression).** Rejected: reintroduces persistent cross-request state the synchronous design (DL-001) deliberately removed; the UNIQUE-gate + upstream retry already cover redelivery.
+- **Consequences:** `ClassifyResult.targets` are coalesced last-wins by `debounceKey` at dispatch time; built-in classifiers emit ≤1 target so are unaffected, but custom classifiers can rely on `debounceKey` to dedupe their own same-event targets. Files: `app/Bridge/Dispatch/DispatchService.php` (the coalescing loop), `ClassifyResult.php` + `ReactionTarget.php` (docblocks), `docs/reaction-target-schema.json`.
+
+---
+
 > **How to add a DL entry.** Use the next available `DL-NNN`. Lead with Date + Context (what made the decision necessary), then Decision (what was chosen), then Alternatives considered (with one-line rejections), then Consequences (what this enables or constrains downstream). Cite specific files/lines when load-bearing. If correcting a prior DL, write a new one titled "Correction to DL-NNN" and leave the original frozen.
