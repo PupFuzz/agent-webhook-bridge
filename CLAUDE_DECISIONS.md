@@ -241,4 +241,24 @@
 
 ---
 
+## DL-014 — Security tail of the architecture review: regex `D`-anchor, classifier-socket prefix gate, config-dir perms warning (B-13 + B-14 + B-17)
+
+- **Date:** 2026-05-31
+- **Context:** Three lower-severity security findings from the architecture review, bundled because each is a small, fail-closed tightening:
+  - **B-13 (regex anchor):** `ProviderName` (`^[a-z0-9_]+$`) and `ScopeId` matched with `preg_match` but **without the `D` modifier**, so `$` also matches *before* a trailing `\n` — `"github\n…"` / `"5\n…"` could slip a second line past the anchor. Low exploitability (provider comes from the route, scope is re-checked vs the body), but `ScopeId` is also the path-traversal boundary for the per-scope secret filename.
+  - **B-14 (classifier-supplied socket):** `channel_push`'s `url` transport is loopback-SSRF-gated, but a **classifier-supplied `socket`** (payload, attacker-influenceable — same trust class as `spawn_detached`'s argv, DL-011) had no path constraint. A custom passthrough classifier could point the push at another tenant's UDS. (No shipped classifier supplies a payload socket — `EventDrivenClassifier` leaves the transport to the agent's config — so this is a guard against custom classifiers, not a live bug.)
+  - **B-17 (config-dir perms):** the config dir holds the HMAC secrets + tokens but nothing warned if it was left group/world-traversable on a multi-tenant host.
+- **Decision:**
+  - **B-13:** add the `D` (PCRE_DOLLAR_ENDONLY) modifier to both validators' `matches()`. The `PATTERN` constants are unchanged (so the published-pattern tests stand); only the match call tightens.
+  - **B-14:** a classifier-supplied socket (the `! $usedAgentChannel` branch in `ChannelPushHandler`) must sit under a configured absolute prefix `bridge.channel.allowed_socket_dir` (`BRIDGE_CHANNEL_ALLOWED_SOCKET_DIR`); when that is unset, a classifier-supplied socket is **refused outright** (fail-closed, mirroring DL-011's opt-in posture). The path is first run through `SocketPath::isValid` (rejects `..`), so the `str_starts_with` prefix compare can't be escaped via `/allowed/../other.sock`. The **agent's own `channel.socket`** (operator-authored YAML) is exempt — the gate only constrains the attacker-influenceable payload path.
+  - **B-17:** `bridge:check` **warns** (not fails) when a secret-holding dir is group/world-accessible (`mode & 0o077 != 0`) — the config dir, **and** `secret_dir` when split to a different path (a shared `warnIfDirInsecure` helper covers both). Warn, not fail, because perms are operator-owned and the per-secret `0600` gate (DL-010) is the hard backstop — this is the preflight nudge.
+- **Alternatives considered:**
+  - **B-13 via `\z` in the PATTERN constant instead of the `D` modifier.** Rejected: changing the constant would ripple into the "pattern matches the provisioner" tests and the path-traversal doc; the `D` flag is the localized, behavior-only fix.
+  - **B-14: allow any classifier socket, rely on the existing `..`/symlink/filetype checks.** Rejected: those stop traversal and TOCTOU but not *which directory* — an absolute `/run/user/<other>/x.sock` passes them all. The prefix gate is the missing "whose socket" constraint, and fail-closed-when-unset matches how DL-011 treats the analogous `spawn_detached` surface.
+  - **B-14: a global on/off flag instead of a dir prefix.** Rejected: the prefix both enables the capability and bounds it in one value, the same shape as `spawn_allowlist`.
+  - **B-17: fail (not warn) on a non-0700 config dir.** Rejected: it would brick existing installs whose dir is `0750`/`0755` but whose individual secrets are `0600` (already enforced, DL-010); the directory perm is defense-in-depth, so a warning is proportionate.
+- **Consequences:** New config `bridge.channel.allowed_socket_dir` (`BRIDGE_CHANNEL_ALLOWED_SOCKET_DIR`, default null). **Behavior change:** a classifier that hand-emits a `channel_push` with its own `socket` now requires that env to be set (and the socket under it) — the no-classifier `route_intents` path and agent-config sockets are unaffected. `ProviderName`/`ScopeId` reject trailing-newline inputs. `bridge:check` gains a config-dir perms warning. Files: `app/Bridge/Validation/{ProviderName,ScopeId}.php`, `app/Bridge/Handlers/ChannelPushHandler.php`, `config/bridge.php`, `app/Console/Commands/Bridge/CheckCommand.php`, `.env.example`, tests across validators/handler/console.
+
+---
+
 > **How to add a DL entry.** Use the next available `DL-NNN`. Lead with Date + Context (what made the decision necessary), then Decision (what was chosen), then Alternatives considered (with one-line rejections), then Consequences (what this enables or constrains downstream). Cite specific files/lines when load-bearing. If correcting a prior DL, write a new one titled "Correction to DL-NNN" and leave the original frozen.

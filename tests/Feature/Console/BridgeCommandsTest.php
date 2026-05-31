@@ -57,6 +57,16 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:check')->assertExitCode(1);
     }
 
+    public function test_check_warns_on_group_accessible_config_dir(): void
+    {
+        // DL-014: the config dir holds secrets → warn (not fail) if it's not 0700.
+        $this->writeAgent();
+        chmod($this->dir, 0o755);
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('group/world-accessible')
+            ->assertExitCode(0);
+    }
+
     public function test_inbox_collapses_duplicate_ids_on_read(): void
     {
         // DL-012: the writer is append-only, so a partial-staging redelivery can

@@ -11,6 +11,8 @@ final class ProviderName
 
     public static function matches(string $value): bool
     {
-        return preg_match('/'.self::PATTERN.'/', $value) === 1;
+        // `D` (PCRE_DOLLAR_ENDONLY): `$` matches only at the very end, not before
+        // a trailing "\n" — so "github\n" can't slip a second line past the anchor.
+        return preg_match('/'.self::PATTERN.'/D', $value) === 1;
     }
 }
