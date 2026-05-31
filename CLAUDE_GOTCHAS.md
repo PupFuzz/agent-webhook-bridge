@@ -165,7 +165,7 @@ If the guard fires unexpectedly in a test: verify `phpunit.xml` has this stanza 
 
 **Fix:** `chmod 600` the secret/token file. `php artisan bridge:check` warns on insecure perms for all three secret kinds at preflight, naming the runtime consequence — run it after placing any secret by hand. The check reads live perms (`clearstatcache`), so it reflects the current mode.
 
-**Discovery:** 2026-05-31 5-year architecture review item B-2 (DL-010) — extends DL-008's channel-token perms posture to the two higher-value secrets.
+**Discovery:** 2026-05-31 architecture review item B-2 (DL-010) — extends DL-008's channel-token perms posture to the two higher-value secrets.
 
 **Related:** `app/Bridge/Support/SecretFile.php` (`isInsecure`/`read`), `app/Http/Middleware/VerifyHmacSignature.php` (`loadSecret`), `app/Bridge/Support/ChannelToken.php`, `app/Console/Commands/Bridge/{Provision,Check}Command.php`, `CLAUDE_DECISIONS.md` DL-010 / DL-008.
 
