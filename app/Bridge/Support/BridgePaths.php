@@ -55,26 +55,6 @@ final class BridgePaths
     }
 
     /**
-     * Short-circuiting scan for a stable `id` — does NOT materialize the whole
-     * file (the dedup check runs per intent per delivery, so the early return
-     * matters as inbox files grow).
-     */
-    public static function jsonlContainsId(string $path, string $id): bool
-    {
-        if (! is_file($path)) {
-            return false;
-        }
-        foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $raw) {
-            $row = json_decode($raw, true);
-            if (is_array($row) && ($row['id'] ?? null) === $id) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
      * The inbox lines for a serving agent (or the shared inbox when null) —
      * the single home for the layout-fallback contract: a per-agent file when
      * present (per-agent / both layout), else the shared inbox filtered by the

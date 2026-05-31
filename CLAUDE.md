@@ -18,6 +18,7 @@ vendor/bin/phpstan analyse -c phpstan-laravel.neon  # static analysis (app/Bridg
 php artisan bridge:check                 # validate the install (dirs, DB connectivity, agent YAMLs)
 php artisan bridge:provision             # idempotent webhook subscription setup (--reconcile fixes drift)
 php artisan bridge:inbox                 # surface staged intents (Claude Code hook-aware)
+php artisan bridge:prune --older-than=30d # retention: prune old events/dispatches/inbox lines (the one cron the design accepts)
 php artisan bridge:replay <N>            # re-dispatch a stored event by id (recovery for errored/missed dispatches)
 php artisan bridge:inspect <N>           # pretty-print one event + its dispatch ledger
 php artisan bridge:stats                 # event / dispatch counts
