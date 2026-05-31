@@ -36,7 +36,7 @@ _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
 ### Docs
 
-- **Architecture review** (`docs/reviews/2026-05-31-5yr-architecture-review.md`) across scalability / maintainability / security, with every backlog item (B-1…B-6) now marked addressed. (#28)
+- **Architecture review** (`docs/reviews/2026-05-31-architecture-review.md`) across scalability / maintainability / security, with every backlog item (B-1…B-6) now marked addressed. (#28)
 - **Doc drift fixed (DL-013 / B-5):** the `CLAUDE_*.md` onboarding map no longer describes the deleted `ProviderApiConfig` or the removed `agents.json` / `identity.self` as current; `CLAUDE_GOTCHAS.md` G-015 rewritten to the post-DL-007 reality. (#34)
 
 ### Verification

