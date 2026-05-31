@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Provision;
 
+use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
 use Throwable;
 
@@ -97,6 +98,13 @@ final class WebhookProvisioner
         // Reuse the existing secret so there's no rotation window. If it's
         // gone, refuse rather than silently rotate to a fresh key.
         $secretPath = SecretPath::for($this->secretDir, $provider, $scopeId);
+        // Don't reuse + re-push a group/world-readable secret upstream (DL-010):
+        // the receiver fail-closes on it anyway, so reconciling with it would
+        // recreate a subscription the receiver then 500s. Refuse; operator
+        // chmods + re-runs.
+        if (SecretFile::isInsecure($secretPath)) {
+            return ProvisionResult::cannotReconcile($kind, $secretPath.' (group/world-readable — chmod 600)');
+        }
         $secret = is_file($secretPath) ? trim((string) file_get_contents($secretPath)) : '';
         if ($secret === '') {
             return ProvisionResult::cannotReconcile($kind, $secretPath);

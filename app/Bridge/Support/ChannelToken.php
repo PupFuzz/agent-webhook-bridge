@@ -24,12 +24,14 @@ final class ChannelToken
         if (! is_file($path) || ! is_readable($path)) {
             throw new ChannelTokenException("channel auth token not readable at {$path}");
         }
-        $perms = fileperms($path);
-        if ($perms !== false && ($perms & 0o077) !== 0) {
+        // The mode & 0o077 gate lives in SecretFile (DL-010, shared with the HMAC
+        // receiver + API/writeback token); the channel-specific message + the
+        // ChannelTokenException type (DL-008 contract) stay here.
+        if (SecretFile::isInsecure($path)) {
             throw new ChannelTokenException(sprintf(
                 'channel auth token at %s is group/world-readable (mode %04o) — chmod 600',
                 $path,
-                $perms & 0o777,
+                (int) fileperms($path) & 0o777,
             ));
         }
         $token = TokenFile::readTrimmed($path);
