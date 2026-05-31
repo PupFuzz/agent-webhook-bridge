@@ -86,6 +86,47 @@ class ChannelPushHandlerTest extends TestCase
         $this->push(['socket' => '/nonexistent/'.uniqid().'.sock']);
     }
 
+    public function test_classifier_socket_rejected_when_no_allowed_dir(): void
+    {
+        // DL-014: a classifier-supplied socket is fail-closed unless the operator
+        // configures an allowed dir.
+        config(['bridge.channel.allowed_socket_dir' => null]);
+        $this->expectException(HandlerException::class);
+        $this->expectExceptionMessageMatches('/allowed_socket_dir/');
+        $this->push(['socket' => '/run/some/'.uniqid().'.sock']);
+    }
+
+    public function test_classifier_socket_outside_allowed_dir_rejected(): void
+    {
+        config(['bridge.channel.allowed_socket_dir' => '/run/agent-bridge']);
+        $this->expectException(HandlerException::class);
+        $this->expectExceptionMessageMatches('/outside the allowed dir/');
+        $this->push(['socket' => '/run/other/'.uniqid().'.sock']);
+    }
+
+    public function test_classifier_socket_traversal_rejected(): void
+    {
+        // `..` can't escape the prefix — refused before the prefix compare.
+        config(['bridge.channel.allowed_socket_dir' => '/run/agent-bridge']);
+        $this->expectException(HandlerException::class);
+        $this->push(['socket' => '/run/agent-bridge/../other/x.sock']);
+    }
+
+    public function test_agent_config_socket_is_exempt_from_allowed_dir(): void
+    {
+        // No allowed_socket_dir set, but the socket comes from the AGENT's config
+        // (operator-authored) → the DL-014 prefix gate is skipped; it fails later
+        // at the does-not-exist check, NOT at the allowed_socket_dir gate.
+        config(['bridge.channel.allowed_socket_dir' => null]);
+        try {
+            $this->push([], '/nonexistent/'.uniqid().'.sock');   // agent channel.socket
+            $this->fail('expected HandlerException');
+        } catch (HandlerException $e) {
+            $this->assertStringNotContainsString('allowed_socket_dir', $e->getMessage());
+            $this->assertStringContainsString('does not exist', $e->getMessage());
+        }
+    }
+
     public function test_regular_file_socket_rejected(): void
     {
         $file = tempnam(sys_get_temp_dir(), 'notsock');

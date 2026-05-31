@@ -74,6 +74,9 @@ class ChannelPushUdsTest extends TestCase
         }
         $this->assertFileExists($socketPath, 'child failed to bind the UDS');
 
+        // DL-014: a classifier-supplied socket must sit under the configured dir.
+        config(['bridge.channel.allowed_socket_dir' => sys_get_temp_dir()]);
+
         $agent = AgentConfig::fromArray('prod-agent', [
             'identity' => ['kanban_user_id' => 137],
             'subscriptions' => [],

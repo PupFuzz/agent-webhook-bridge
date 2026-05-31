@@ -8,6 +8,7 @@ use App\Bridge\Exceptions\ChannelTokenException;
 use App\Bridge\Exceptions\HandlerException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelToken;
+use App\Bridge\Validation\SocketPath;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -114,6 +115,14 @@ final class ChannelPushHandler implements Handler
 
         if ($socketSet) {
             /** @var string $socket */
+            if (! $usedAgentChannel) {
+                // Classifier-supplied socket (payload, attacker-influenced):
+                // constrain it to the operator-configured prefix so a custom
+                // classifier can't point the push at another tenant's UDS (DL-014;
+                // same trust class as spawn_detached). The agent's own
+                // channel.socket is operator-authored and exempt.
+                $this->assertClassifierSocketAllowed($socket);
+            }
             $this->validateSocketPath($socket);
             $request = Http::connectTimeout(1)->timeout($timeout)
                 ->withOptions(['curl' => [CURLOPT_UNIX_SOCKET_PATH => $socket]])
@@ -185,6 +194,27 @@ final class ChannelPushHandler implements Handler
         }
 
         return $headers;
+    }
+
+    /**
+     * Fail-closed prefix gate for a CLASSIFIER-supplied socket (DL-014). The
+     * SocketPath::isValid check rejects `..` segments, so the str_starts_with
+     * prefix test below can't be escaped (`/allowed/../other.sock` is refused
+     * before it reaches the prefix compare).
+     */
+    private function assertClassifierSocketAllowed(string $socket): void
+    {
+        if (! SocketPath::isValid($socket)) {
+            throw new HandlerException("channel_push: classifier-supplied socket is not a valid absolute path (no '..'): {$socket}");
+        }
+        $allowed = config('bridge.channel.allowed_socket_dir');
+        if (! is_string($allowed) || $allowed === '') {
+            throw new HandlerException('channel_push: a classifier-supplied socket requires bridge.channel.allowed_socket_dir (BRIDGE_CHANNEL_ALLOWED_SOCKET_DIR) to be set; an agent\'s own channel.socket is exempt');
+        }
+        $prefix = rtrim($allowed, '/').'/';
+        if (! str_starts_with($socket, $prefix)) {
+            throw new HandlerException("channel_push: classifier-supplied socket {$socket} is outside the allowed dir {$allowed}");
+        }
     }
 
     private function validateSocketPath(string $path): void
