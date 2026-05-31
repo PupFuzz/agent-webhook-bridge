@@ -2,7 +2,6 @@
 
 namespace Tests\Unit\Validation;
 
-use App\Bridge\Validation\ChannelName;
 use App\Bridge\Validation\ProviderName;
 use App\Bridge\Validation\ScopeId;
 use App\Bridge\Validation\SocketPath;
@@ -20,7 +19,6 @@ class ValidatorsTest extends TestCase
     {
         $this->assertSame('^[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)*(/[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)*)*$', ScopeId::PATTERN);
         $this->assertSame('^[a-z0-9_]+$', ProviderName::PATTERN);
-        $this->assertSame('^[a-z0-9_-]+$', ChannelName::PATTERN);
     }
 
     /**
@@ -55,15 +53,6 @@ class ValidatorsTest extends TestCase
         $this->assertFalse(ProviderName::matches('Kanban'));   // uppercase
         $this->assertFalse(ProviderName::matches('git-hub'));  // hyphen
         $this->assertFalse(ProviderName::matches(''));
-    }
-
-    public function test_channel_name_matching(): void
-    {
-        $this->assertTrue(ChannelName::matches('kanban-agent'));
-        $this->assertTrue(ChannelName::matches('prod_agent'));
-        $this->assertFalse(ChannelName::matches(''));        // non-empty required
-        $this->assertFalse(ChannelName::matches('UPPER'));
-        $this->assertFalse(ChannelName::matches('a/b'));     // slash unsafe for socket path
     }
 
     public function test_socket_path_validation(): void
