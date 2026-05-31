@@ -13,12 +13,29 @@ class SpawnDetachedHandlerTest extends TestCase
 {
     private string $dir;
 
+    private string $touch;
+
     protected function setUp(): void
     {
         parent::setUp();
         $this->dir = sys_get_temp_dir().'/spawn-'.uniqid();
         File::ensureDirectoryExists($this->dir);
-        config(['bridge.config_dir' => $this->dir]);
+        $this->touch = $this->resolveProgram('touch');
+        config([
+            'bridge.config_dir' => $this->dir,
+            // DL-011: cmd[0] must be an allowlisted absolute path.
+            'bridge.spawn.allowlist' => [$this->touch],
+        ]);
+    }
+
+    private function resolveProgram(string $name): string
+    {
+        foreach (['/usr/bin/', '/bin/'] as $prefix) {
+            if (is_file($prefix.$name)) {
+                return $prefix.$name;
+            }
+        }
+        $this->markTestSkipped("{$name} not found in /usr/bin or /bin");
     }
 
     protected function tearDown(): void
@@ -61,10 +78,19 @@ class SpawnDetachedHandlerTest extends TestCase
         $this->spawn(['cmd' => ['echo', 123]]);
     }
 
+    public function test_program_not_in_allowlist_throws(): void
+    {
+        // A relative name, or any path not in the allowlist, is rejected even
+        // though `touch` (absolute) IS allowed — the program is trusted by the
+        // allowlist, never by source (DL-011).
+        $this->expectException(HandlerException::class);
+        $this->spawn(['cmd' => ['touch', $this->dir.'/x']]);   // 'touch' != '/usr/bin/touch'
+    }
+
     public function test_valid_cmd_executes_detached(): void
     {
         $marker = $this->dir.'/ran.marker';
-        $this->spawn(['cmd' => ['touch', $marker]]);
+        $this->spawn(['cmd' => [$this->touch, $marker]]);
 
         // Fire-and-forget; poll briefly for the detached child to land.
         $deadline = microtime(true) + 5.0;
@@ -76,13 +102,14 @@ class SpawnDetachedHandlerTest extends TestCase
         $this->assertFileExists($this->dir.'/state/spawn-job1.log');   // default log path
     }
 
-    public function test_argv_is_escaped_no_shell_injection(): void
+    public function test_argv_has_no_shell_injection_surface(): void
     {
         // The metacharacters are a single argv element to `touch`, NOT a shell
-        // command — escapeshellarg must prevent the `; touch EVIL` from running.
+        // command. proc_open execs the argv array directly (no /bin/sh), so the
+        // `; touch EVIL` is a literal filename, never a second command.
         $evil = $this->dir.'/EVIL.marker';
         $weirdName = $this->dir.'/legit; touch '.$evil;
-        $this->spawn(['cmd' => ['touch', $weirdName]]);
+        $this->spawn(['cmd' => [$this->touch, $weirdName]]);
 
         usleep(500_000);
         $this->assertFileDoesNotExist($evil);   // injection did NOT execute

@@ -99,4 +99,35 @@ return [
 
     'max_body_bytes' => (int) env('BRIDGE_MAX_BODY_BYTES', 256 * 1024),
 
+    /*
+    |--------------------------------------------------------------------------
+    | spawn_detached handler (off by default — DL-011)
+    |--------------------------------------------------------------------------
+    |
+    | spawn_detached runs a detached child process: the highest-blast-radius
+    | handler (RCE as the install user). "cmd is operator-authored" is a
+    | convention, not an invariant — docs/customization.md invites custom
+    | classifiers, and a passthrough one would hand an attacker the argv. So it
+    | is NOT registered unless `enabled`, and even then the program (cmd[0]) must
+    | be one of `allowlist` (absolute paths, comma-separated in
+    | BRIDGE_SPAWN_ALLOWLIST). An empty allowlist with enabled=true runs nothing.
+    | Execution is shell-free (proc_open argv + `setsid -f`), so there is no
+    | shell-metacharacter surface regardless.
+    |
+    | ⚠ Allowlist FIXED-PURPOSE WRAPPER SCRIPTS, not an interpreter or flag-
+    | flexible tool (php, bash, env, git, find, awk, ssh, …): the allowlist gates
+    | only cmd[0], and the classifier controls cmd[1..], so one allowlisted
+    | `php`/`git` lets attacker-supplied args run arbitrary code — reopening the
+    | RCE this guards against.
+    |
+    */
+
+    'spawn' => [
+        'enabled' => (bool) env('BRIDGE_SPAWN_ENABLED', false),
+        'allowlist' => array_values(array_filter(
+            array_map('trim', explode(',', (string) env('BRIDGE_SPAWN_ALLOWLIST', ''))),
+            fn (string $p) => $p !== '',
+        )),
+    ],
+
 ];
