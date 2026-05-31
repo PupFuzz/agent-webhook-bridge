@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\Adapters\WebhookAdapterFactory;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
@@ -91,6 +92,21 @@ class CheckCommand extends Command
             } catch (Throwable $e) {
                 $this->error($e->getMessage());
                 $ok = false;
+            }
+        }
+
+        // Every configured provider must have a registered adapter (B-15): the
+        // two provider lists (config('bridge.providers') and
+        // WebhookAdapterFactory::SUPPORTED) are otherwise independent and drift —
+        // an api_base_url for a provider with no adapter is a dead config the
+        // receiver would 400 (unknown_provider) on.
+        $providers = config('bridge.providers');
+        if (is_array($providers)) {
+            foreach (array_keys($providers) as $provider) {
+                if (is_string($provider) && ! WebhookAdapterFactory::supports($provider)) {
+                    $this->error("bridge.providers.{$provider} is configured but has no adapter (WebhookAdapterFactory::SUPPORTED = ".implode(', ', WebhookAdapterFactory::SUPPORTED).')');
+                    $ok = false;
+                }
             }
         }
 

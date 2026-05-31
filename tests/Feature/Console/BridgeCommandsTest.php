@@ -57,6 +57,17 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:check')->assertExitCode(1);
     }
 
+    public function test_check_fails_on_configured_provider_without_adapter(): void
+    {
+        // B-15: a config('bridge.providers') key with no WebhookAdapterFactory
+        // adapter is dead config (the receiver would 400 unknown_provider).
+        $this->writeAgent();
+        config(['bridge.providers.gitlab' => ['api_base_url' => 'https://gitlab.example.com/api/v4']]);
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('no adapter')
+            ->assertExitCode(1);
+    }
+
     public function test_check_warns_on_group_accessible_config_dir(): void
     {
         // DL-014: the config dir holds secrets → warn (not fail) if it's not 0700.
