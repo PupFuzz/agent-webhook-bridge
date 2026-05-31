@@ -75,8 +75,8 @@ The doc system *is* the onboarding path (for the next maintainer **and** the nex
 
 ## NICE-TO-HAVE
 
-- **B-15.** Two provider lists drift (`WebhookAdapterFactory::SUPPORTED` vs `config('bridge.providers')`) — derive one or assert in `bridge:check` (Scal N1).
-- **B-16.** `composer audit` CI step in `security.yml` — catches a fresh CVE on PR vs waiting for dependabot (Sec N2).
+- **B-15.** ✅ **Addressed (DL-015):** `bridge:check` fails if a `config('bridge.providers')` key has no `WebhookAdapterFactory` adapter. Two provider lists drift (`WebhookAdapterFactory::SUPPORTED` vs `config('bridge.providers')`) — derive one or assert in `bridge:check` (Scal N1).
+- **B-16.** ✅ **Addressed (DL-015):** `composer audit` job added to `security.yml` (PR + nightly). `composer audit` CI step in `security.yml` — catches a fresh CVE on PR vs waiting for dependabot (Sec N2).
 - **B-17.** ✅ **Addressed (DL-014):** `bridge:check` warns when the config dir is group/world-accessible (`mode & 0o077`). `bridge:check` assertion that the config dir is actually 0700 / not group-writable on a multi-tenant host (Sec N3).
 - **B-18.** Trim bare "mirrors the Python contract" provenance docstrings (`Classifier.php:14`, etc.) — keep only the ones justifying a behavior (ksort, parse_url) (Maint N1).
 - **B-19.** Single `BridgePaths::ensureDir` so 0700 can't drift per call site; document the no-`TrustProxies` posture (Sec N1/N4).

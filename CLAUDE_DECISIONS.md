@@ -261,4 +261,19 @@
 
 ---
 
+## DL-015 — Single-source the provider list (assert in `bridge:check`) + `composer audit` CI (B-15 + B-16)
+
+- **Date:** 2026-05-31
+- **Context:** Two NICE-TO-HAVE hygiene items from the architecture review. **B-15:** the supported-provider set lives in two independent places — `WebhookAdapterFactory::SUPPORTED` (`['kanban','github']`, the providers with an adapter that can *receive* webhooks) and `config('bridge.providers')` (per-provider API base URLs the bridge *calls*). They can silently drift: an `api_base_url` configured for a provider with no adapter is dead config the receiver would `400 unknown_provider` on. **B-16:** Composer dependency CVEs were only surfaced by dependabot (its own cadence); nothing failed a build on a known-vulnerable dep at PR time.
+- **Decision:**
+  - **B-15 — assert, don't merge the lists.** `bridge:check` now **fails** if any `config('bridge.providers')` key is not in `WebhookAdapterFactory::SUPPORTED`. The two lists keep their distinct meanings (adapter-set vs API-base-set), but the *containment* invariant (every configured provider has an adapter) is enforced at preflight. Chosen over deriving one list from the other because they answer different questions — not every supported provider needs an `api_base_url` (a webhook-only provider doesn't), so `config.providers ⊆ SUPPORTED` is the real constraint, not equality.
+  - **B-16 — `composer audit` CI job** in `security.yml` (alongside gitleaks; runs on every PR + the existing nightly schedule). It reads `composer.lock` (no full install), so it's fast. A known CVE in a dependency now reds the build at PR time instead of waiting for a dependabot alert.
+- **Alternatives considered:**
+  - **B-15: derive `config('bridge.providers')` keys from `SUPPORTED` (or vice versa) at runtime.** Rejected: they encode different facts (which providers can be received vs which have a configured API base), so collapsing them would force a config entry for webhook-only providers or an adapter assumption for API-only ones. The containment assertion catches the real drift (a typo'd / orphan provider key) without conflating the two.
+  - **B-15: warn instead of fail.** Rejected: a configured provider with no adapter can never work (the receiver 400s it) — a definite misconfig, so fail-closed matches the project posture, unlike the secret-perms *warnings* (DL-014) which are defense-in-depth over a hard backstop.
+  - **B-16: rely on dependabot alone.** Rejected (the review's point): dependabot is asynchronous and easy to let lapse; a CI gate makes a vulnerable dep block the PR that introduces/keeps it.
+- **Consequences:** `bridge:check` gains one provider-containment assertion (uses `WebhookAdapterFactory::supports`). New `composer-audit` CI job. Both are low-churn drift/CVE guards. Files: `app/Console/Commands/Bridge/CheckCommand.php`, `.github/workflows/security.yml`, `tests/Feature/Console/BridgeCommandsTest.php`.
+
+---
+
 > **How to add a DL entry.** Use the next available `DL-NNN`. Lead with Date + Context (what made the decision necessary), then Decision (what was chosen), then Alternatives considered (with one-line rejections), then Consequences (what this enables or constrains downstream). Cite specific files/lines when load-bearing. If correcting a prior DL, write a new one titled "Correction to DL-NNN" and leave the original frozen.

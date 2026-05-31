@@ -1,8 +1,9 @@
 name: Security
 
-# Runs on every push to main + every PR: gitleaks committed-secret scanner.
-# (The Python pip-audit job was removed with the v0.12 Laravel rewrite — DL-001;
-# Composer/PHP dependency CVEs are surfaced by dependabot.)
+# Runs on every push to main + every PR: gitleaks committed-secret scanner +
+# composer audit (Composer dependency CVEs). (The Python pip-audit job was
+# removed with the v0.12 Laravel rewrite — DL-001; dependabot also files PRs for
+# vulnerable deps, composer audit catches them at PR/nightly time.)
 
 on:
   push:
@@ -37,3 +38,24 @@ jobs:
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7  # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  composer-audit:
+    name: composer audit (dependency CVEs)
+    # Surfaces a known CVE in a Composer dependency at PR time (and nightly via
+    # the schedule above) rather than waiting for a dependabot alert. (B-16,
+    # architecture review.)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: shivammathur/setup-php@7c071dfe9dc99bdf297fa79cb49ea005b9fcadbc  # 2.37.1
+        with:
+          php-version: '8.3'
+          tools: composer
+          coverage: none
+      # `--locked`: audit composer.lock directly — without it (and with no
+      # `composer install`/vendor/) `composer audit` prints "No packages -
+      # skipping audit" and exits 0, an inert gate.
+      - name: composer audit
+        run: composer audit --locked --no-interaction
