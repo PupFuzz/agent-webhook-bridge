@@ -53,6 +53,8 @@ The doc system *is* the onboarding path (for the next maintainer **and** the nex
 **Fix:** (a) correct those four sites; (b) CI grep asserting every class name in non-historical `CLAUDE_*.md`/docblocks resolves to an extant file (allow an explicit `(removed in vX)` marker — the convention already exists in the DL log). Converts "remember to update docs" into "CI fails if you didn't."
 
 ### B-6. Delete the dead `ChannelName` validator (Maintainability M2)
+> **✅ Addressed (2026-05-31):** `app/Bridge/Validation/ChannelName.php` + its `ValidatorsTest` cases deleted; the four `CLAUDE_*` doc references to it removed in the same change. No DL (trivial cleanup).
+
 `channel.name` was deleted in DL-007, but `app/Bridge/Validation/ChannelName.php` survives — referenced **nowhere in app code**, kept green only by `tests/Unit/Validation/ValidatorsTest.php:23,62-66`. The most dangerous dead code: it has passing tests, so it looks load-bearing and a future maintainer will preserve/rewire it. Violates the project's own no-dead-config / scope-discipline posture.
 **Fix:** delete the class + its test cases.
 

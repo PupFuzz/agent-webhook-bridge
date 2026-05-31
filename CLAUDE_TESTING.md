@@ -27,7 +27,7 @@ vendor/bin/pint                                      # fix in place
 | `tests/Unit/Adapters/` | `KanbanAdapter`, `GitHubAdapter` — envelope parsing + HMAC shape | Unit; pure PHP, no DB, no HTTP, extends `PHPUnit\Framework\TestCase` |
 | `tests/Unit/Classifiers/` | `InboxOnlyClassifier`, `EventDrivenClassifier` — classify output + intent shapes | Unit; pure PHP |
 | `tests/Unit/Dispatch/` | Plain value objects — `Intent`, `ReactionTarget`, `Actor`, `ClassifyResult` | Unit; pure PHP |
-| `tests/Unit/Validation/` | Format validators (`ProviderName`, `ScopeId`, `ChannelName`, etc.) | Unit; pure PHP |
+| `tests/Unit/Validation/` | Format validators (`ProviderName`, `ScopeId`, `SocketPath`) | Unit; pure PHP |
 | `tests/Feature/Webhook/` | End-to-end HTTP status contract through the real middleware + adapter stack | Feature; `RefreshDatabase`; uses `$this->call()` |
 | `tests/Feature/Dispatch/` | `DispatchService` + `AgentRegistry` + echo/signal logic | Feature; `RefreshDatabase`; tmp config dir |
 | `tests/Feature/Config/` | `SubscriptionRegistry`, `AgentConfig`, `InstallGuard`, `ClassifierResolver` | Feature; tmp filesystem or env override |

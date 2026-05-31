@@ -98,7 +98,7 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 | `app/Bridge/Support/SecretPath.php` | The single shared secret-path shape: `<secret_dir>/<provider>/webhook-secret-scope-<scope>` |
 | `app/Bridge/Support/InstallGuard.php` | Dev/prod crosstalk guard (`BRIDGE_INSTALL_SUFFIX` ↔ DB-name marker) |
 | `app/Bridge/Support/{BridgePaths,PathHelper}.php` | Resolve config dir / secret dir / state dir from `config/bridge.php` |
-| `app/Bridge/Validation/{ProviderName,ScopeId,ChannelName,SocketPath}.php` | Format validators reused across config + provisioning |
+| `app/Bridge/Validation/{ProviderName,ScopeId,SocketPath}.php` | Format validators reused across config + provisioning |
 | `config/bridge.php` | Runtime config: `config_dir`, `secret_dir`, `install_suffix`, `max_body_bytes` (envelope cap). The state dir (inbox.jsonl + inbox-seen.json) is derived as `<config_dir>/state` by `BridgePaths`, not a separate key |
 
 ### Provisioning + ops CLIs (`php artisan bridge:*`)

@@ -16,7 +16,7 @@ agent-webhook-bridge/
 │   │   ├── Handlers/               # Built-in handler impls (LogIntentHandler, ChannelPushHandler, …)
 │   │   ├── Provision/              # Provisioning support (KanbanProvisionClient, …)
 │   │   ├── Support/                # Config parsing, registries, guards, path helpers, validators
-│   │   └── Validation/             # Format validators: ProviderName, ScopeId, ChannelName, SocketPath
+│   │   └── Validation/             # Format validators: ProviderName, ScopeId, SocketPath
 │   ├── Console/Commands/Bridge/    # Artisan commands: bridge:* (one class per command)
 │   ├── Http/
 │   │   ├── Controllers/Webhook/    # WebhookController (the synchronous receiver entry point)
