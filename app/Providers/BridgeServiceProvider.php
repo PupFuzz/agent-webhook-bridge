@@ -21,8 +21,8 @@ use Illuminate\Support\ServiceProvider;
  *
  * DispatchService is bound (not a singleton) because its other registries are
  * built per request from the current config('bridge.config_dir') — the
- * per-agent YAMLs + agents.json are read fresh each request (FPM-worker caching
- * is a future optimisation).
+ * per-agent YAMLs (+ optional shared-identities.json) are read fresh each
+ * request (FPM-worker caching is a future optimisation).
  */
 class BridgeServiceProvider extends ServiceProvider
 {
