@@ -276,4 +276,23 @@
 
 ---
 
+## DL-016 — Cleanups: one `ensureDir`, `CheckCommand extends BridgeCommand`, trimmed Python-provenance docstrings, documented no-`TrustProxies` (B-18 + B-19 + B-10/S3)
+
+- **Date:** 2026-05-31
+- **Context:** Three NICE-TO-HAVE/maintainability tail items from the architecture review:
+  - **B-19:** four call sites created a state/secret-adjacent directory with an inline `if (! is_dir) mkdir($dir, 0700, true)` — the mode (`0700`) was duplicated and could drift per site. Also (Sec N4): the no-`TrustProxies` posture was undocumented.
+  - **B-18:** several docblocks carried bare "mirrors the v0.11.x Python contract" provenance — archaeology that adds noise without explaining a behavior (the Python tree is long gone, DL-001).
+  - **B-10/S3:** `CheckCommand` still extended `Illuminate\Console\Command` directly, leaving the DL-007 `BridgeCommand` base-class consolidation incomplete.
+- **Decision:**
+  - **B-19:** add `BridgePaths::ensureDir(string $dir)` (the one place a `0700` dir is created) and route all four call sites (`appendJsonl`, `WebhookProvisioner::writeSecret`, `InboxCommand::writeSeen`, `SpawnDetachedHandler`) through it, so the mode can't drift. **Document the no-`TrustProxies` posture** in `CLAUDE_ARCHITECTURE.md`: the app never trusts `X-Forwarded-*` (HMAC is over the raw body, scope from the URL re-checked vs the body, the loopback gate uses the configured URL) — nothing reads a forwardable header, so registering `TrustProxies` would only widen the trust surface.
+  - **B-18:** trim the bare Python-provenance docstrings (`Classifier` signature note, `PathHelper::expandUser`, the `appendJsonl` ksort note's Python parenthetical) to state the *behavior/contract* instead. KEEP the ones that justify a real PHP behavior — `ChannelPushHandler`'s `parse_url`-vs-`urlparse` gotcha and `DispatchService`'s `23000`-handling reference (an internal cross-ref, not Python).
+  - **B-10/S3:** `CheckCommand extends BridgeCommand` (dropping the direct `Command` import) — completing the base-class consolidation. No behavior change (it uses no options; `self::SUCCESS/FAILURE` come through the base).
+- **Alternatives considered:**
+  - **B-19: a configurable dir mode.** Rejected: every bridge-created dir holds (or sits beside) secrets and must be `0700`; a knob would invite a non-0700 value. One hardcoded `0700` helper is the safe shape.
+  - **B-18: delete the docblocks entirely.** Rejected: the *contract/behavior* parts are useful (the classifier signature is a real contract); only the Python archaeology is noise.
+  - **B-10/S3: leave `CheckCommand` on `Command`.** Rejected: it's the one `bridge:*` command not on the shared base — a small consistency gap the review flagged; aligning it is zero-risk.
+- **Consequences:** New `BridgePaths::ensureDir`; the four `mkdir(0700)` sites collapse to it. `CheckCommand` is on `BridgeCommand`. Docstring noise trimmed. `CLAUDE_ARCHITECTURE.md` documents the no-`TrustProxies` posture. No runtime behavior change. Files: `app/Bridge/Support/BridgePaths.php`, `app/Bridge/Provision/WebhookProvisioner.php`, `app/Console/Commands/Bridge/{InboxCommand,CheckCommand}.php`, `app/Bridge/Handlers/SpawnDetachedHandler.php`, `app/Bridge/Contracts/Classifier.php`, `app/Bridge/Support/PathHelper.php`, `CLAUDE_ARCHITECTURE.md`.
+
+---
+
 > **How to add a DL entry.** Use the next available `DL-NNN`. Lead with Date + Context (what made the decision necessary), then Decision (what was chosen), then Alternatives considered (with one-line rejections), then Consequences (what this enables or constrains downstream). Cite specific files/lines when load-bearing. If correcting a prior DL, write a new one titled "Correction to DL-NNN" and leave the original frozen.

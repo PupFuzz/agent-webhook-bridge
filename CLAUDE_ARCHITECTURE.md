@@ -55,6 +55,8 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 | `app/Http/Middleware/EnvelopeSizeLimit.php` | Rejects bodies over the configured cap before HMAC work |
 | `app/Http/Controllers/Webhook/WebhookController.php` | Parse envelope → ping short-circuit → scope double-check → hand off to `DispatchService` |
 
+> **No `TrustProxies` (deliberate, DL-016).** The app does not register Laravel's `TrustProxies` middleware, so it never trusts `X-Forwarded-*` headers. Nothing security-relevant reads them: HMAC is computed over the **raw body** (not headers), the scope comes from the URL path and is re-checked against the body, and `channel_push`'s loopback gate uses the **configured** URL, not the request host. So there is no client-IP / scheme / host decision a forwarded header could spoof — adding `TrustProxies` would only widen the trust surface for no gain.
+
 ### Adapters (per-provider envelope + signature shape)
 
 | File | Role |

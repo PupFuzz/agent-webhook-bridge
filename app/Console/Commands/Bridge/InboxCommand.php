@@ -161,10 +161,7 @@ class InboxCommand extends BridgeCommand
      */
     private function writeSeen(string $path, array $ids): void
     {
-        $dir = dirname($path);
-        if (! is_dir($dir)) {
-            mkdir($dir, 0700, true);
-        }
+        BridgePaths::ensureDir(dirname($path));
         file_put_contents($path, (string) json_encode($ids, JSON_UNESCAPED_SLASHES), LOCK_EX);
     }
 

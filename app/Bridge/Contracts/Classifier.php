@@ -11,11 +11,10 @@ use App\Bridge\Dispatch\ClassifyResult;
  * agent-specific behaviour; the bridge ships InboxOnlyClassifier as the
  * canonical default.
  *
- * Signature mirrors the v0.11.x Python contract (event_type, payload, actor,
- * provider, scope_id) so existing custom classifiers port mechanically and
- * the interface stays decoupled from the persistence layer. scope_id is the
- * receiver-extracted scope (board_id / repo full_name); provider is its
- * symmetric peer.
+ * The signature (event_type, payload, actor, provider, scope_id) is a stable
+ * contract custom classifiers depend on, kept decoupled from the persistence
+ * layer. scope_id is the receiver-extracted scope (board_id / repo full_name);
+ * provider is its symmetric peer.
  */
 interface Classifier
 {

@@ -5,9 +5,9 @@ namespace App\Bridge\Support;
 final class PathHelper
 {
     /**
-     * Expand a leading `~` or `~/` to the current user's home directory,
-     * mirroring Python's os.path.expanduser for the config's path fields.
-     * Returns the value unchanged when there is no home dir or no leading ~.
+     * Expand a leading `~` or `~/` to the current user's home directory for the
+     * config's path fields. Returns the value unchanged when there is no home
+     * dir or no leading ~.
      */
     public static function expandUser(string $path): string
     {
