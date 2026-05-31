@@ -94,7 +94,7 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 | File | Role |
 |---|---|
 | `app/Bridge/Support/SubscriptionRegistry.php` | Loads every per-agent YAML in the config dir; **fail-closed** (malformed YAML throws → 5xx, never silently skips an agent) |
-| `app/Bridge/Support/{AgentConfig,SubscriptionConfig,ChannelConfig,EchoSuppressionConfig}.php` | Parsed per-agent config shapes (`identity`, `subscriptions`, optional `echo_suppression`/`channel`/`classifier`/`surface`/`api.<provider>.token_path`) |
+| `app/Bridge/Support/{AgentConfig,IdentityConfig,SubscriptionConfig,ChannelConfig,EchoSuppressionConfig}.php` | Parsed per-agent config shapes (`identity`, `subscriptions`, optional `echo_suppression`/`channel`/`classifier`/`surface`/`api.<provider>.token_path`) |
 | `app/Bridge/Support/{AgentRegistry,RegisteredAgent,SharedIdentity}.php` | Cross-agent discovery substrate — built by scanning the per-agent YAMLs' `identity` blocks plus an optional `shared-identities.json` (there is **no** `agents.json`, removed in DL-007): resolve an immutable `kanban_user_id` / `github_user_id` → friendly agent name (provider-aware). Shared accounts declared once under `shared_identities`; `github_login` is a display-only label with stale-login drift warning (DL-002) |
 | `app/Bridge/Support/EchoSuppression.php` + `EchoSuppressionConfig.php` + `SignalAllowlist.php` | Predicate-based echo suppression (skip the agent's own writes); signal-allowlist for explicit treat-as-signal |
 | `app/Bridge/Support/SecretPath.php` | The single shared secret-path shape: `<secret_dir>/<provider>/webhook-secret-scope-<scope>` |

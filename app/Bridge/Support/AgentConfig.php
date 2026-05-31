@@ -41,9 +41,7 @@ final class AgentConfig
      */
     public function __construct(
         public readonly string $agentName,
-        public readonly ?int $kanbanUserId,
-        public readonly ?int $githubUserId,
-        public readonly ?string $githubLogin,
+        public readonly IdentityConfig $identity,
         public readonly array $subscriptions,
         public readonly EchoSuppressionConfig $echoSuppression,
         public readonly string $classifierClass,
@@ -83,10 +81,7 @@ final class AgentConfig
     {
         self::warnUnknownTopLevelKeys($raw, $agentName);
 
-        $identity = self::section($raw, 'identity');
-        $kanbanUserId = isset($identity['kanban_user_id']) && is_numeric($identity['kanban_user_id']) ? (int) $identity['kanban_user_id'] : null;
-        $githubUserId = isset($identity['github_user_id']) && is_numeric($identity['github_user_id']) ? (int) $identity['github_user_id'] : null;
-        $githubLogin = isset($identity['github_login']) && is_scalar($identity['github_login']) ? (string) $identity['github_login'] : null;
+        $identity = IdentityConfig::fromArray(self::section($raw, 'identity'));
 
         $subsRaw = $raw['subscriptions'] ?? [];
         if (! is_array($subsRaw)) {
@@ -109,14 +104,10 @@ final class AgentConfig
         // self, which drifts), and self-by-name is the filename (agentName).
         // treat_as_echo / treat_as_signal name OTHER agents only.
         $echoRaw = EchoSuppressionConfig::fromArray(self::section($raw, 'echo_suppression'));
-        $selfIds = array_values(array_filter([
-            $kanbanUserId !== null ? (string) $kanbanUserId : null,
-            $githubUserId !== null ? (string) $githubUserId : null,
-        ], fn ($x) => $x !== null));
         $echo = new EchoSuppressionConfig(
             treatAsEcho: $echoRaw->treatAsEcho,
             treatAsSignal: $echoRaw->treatAsSignal,
-            treatAsEchoIds: array_values(array_unique([...$echoRaw->treatAsEchoIds, ...$selfIds])),
+            treatAsEchoIds: array_values(array_unique([...$echoRaw->treatAsEchoIds, ...$identity->selfIds()])),
         );
 
         $surface = self::requireMapping($raw, 'surface');
@@ -131,9 +122,7 @@ final class AgentConfig
 
         return new self(
             agentName: $agentName,
-            kanbanUserId: $kanbanUserId,
-            githubUserId: $githubUserId,
-            githubLogin: $githubLogin,
+            identity: $identity,
             subscriptions: $subscriptions,
             echoSuppression: $echo,
             classifierClass: $classifierClass,

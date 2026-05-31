@@ -295,4 +295,16 @@
 
 ---
 
+## DL-017 — Group AgentConfig's identity triple into an `IdentityConfig` DTO (B-9, partial)
+
+- **Date:** 2026-05-31
+- **Context:** `AgentConfig`'s constructor carried three loose identity args (`?int $kanbanUserId, ?int $githubUserId, ?string $githubLogin`) inline — the largest remaining flat-field cluster in an otherwise DTO-grouped shape (`EchoSuppressionConfig`, `ChannelConfig` are already sub-DTOs). The architecture review (B-9) flagged the constructor's positional-arg count and proposed grouping the identity fields, "the same medicine DL-008 applied to the channel tuple."
+- **Decision:** Extract `App\Bridge\Support\IdentityConfig` (`kanbanUserId`, `githubUserId`, `githubLogin` + a `selfIds()` helper for echo-seeding + a `fromArray()` parser), and hold it as a single `AgentConfig::$identity` prop. `AgentConfig::fromArray` builds it via `IdentityConfig::fromArray(section('identity'))`; the two readers (`AgentRegistry::fromAgentConfigs`, the `AgentConfig` tests) go through `$cfg->identity->…`. Mirrors the `EchoSuppressionConfig`/`ChannelConfig` idiom so the YAML `identity:` block has a 1:1 typed shape.
+- **Alternatives considered:**
+  - **The full B-9 (also split `BridgePaths` into `BridgePaths` + `JsonlStore` + `InboxLayout`, and extract an `AgentConfigParser` from `AgentConfig`).** **Declined** (see "Deferred / declined" in the review doc): those are line-count-driven splits of cohesive, well-tested classes with broad call-site churn and no correctness gain — the kind of "while I'm here" restructure the project's right-sizing posture resists. The identity grouping is the one concrete smell (a related-field cluster begging for a DTO); the file splits are deferred until a real second reason to touch those files appears.
+  - **Leave the three args inline.** Rejected: they are conceptually one thing (the agent's identity), map 1:1 to the YAML `identity:` block, and grouping them removes a positional-mismatch hazard at construction — a proportionate, idiom-consistent change.
+- **Consequences:** New `app/Bridge/Support/IdentityConfig.php`; `AgentConfig`'s constructor drops from 11 to 9 args; `$cfg->kanbanUserId` → `$cfg->identity->kanbanUserId` at the two read sites. No runtime behavior change (the YAML schema is unchanged). Files: `app/Bridge/Support/{IdentityConfig,AgentConfig,AgentRegistry}.php`, `tests/Feature/Config/AgentConfigTest.php`, `tests/Unit/Support/IdentityConfigTest.php`, `CLAUDE_ARCHITECTURE.md`.
+
+---
+
 > **How to add a DL entry.** Use the next available `DL-NNN`. Lead with Date + Context (what made the decision necessary), then Decision (what was chosen), then Alternatives considered (with one-line rejections), then Consequences (what this enables or constrains downstream). Cite specific files/lines when load-bearing. If correcting a prior DL, write a new one titled "Correction to DL-NNN" and leave the original frozen.
