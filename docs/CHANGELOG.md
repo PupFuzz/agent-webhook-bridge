@@ -10,6 +10,39 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.18.0] - 2026-05-31
+
+**The architecture-review hardening pass (B-1…B-6) + config-level channel auth.** ⚠ **Breaking — fail-closed tightening on secrets + `spawn_detached`, and a DB migration; see Security/Changed below.**
+
+### Added
+
+- **Config-level channel auth — `channel.auth.token_path` (DL-008).** The no-code `route_intents` push can now carry an `Authorization: Bearer <token>` (a file path, chmod 600, enforced + read at point-of-use, never placed in a payload) so a cross-user / loopback-TCP channel server is authenticated — not just a 0600-UDS whose filesystem perms were the only boundary. Rejected at config load unless `channel.url` is set (the token surface stays on the TCP transport). (#27)
+- **`bridge:prune` retention command (DL-012).** `--older-than=Nd` deletes old `webhook_events` (cascading `agent_dispatches`) and trims old inbox lines + bounds their seen-cursor; `--null-payloads-older-than=Md` sheds 50–100 KB payload bodies past the replay window while keeping the row's dedup-gate + audit metadata; `--dry-run`. The one (optional) periodic job in the otherwise daemonless design — nothing on the dispatch path depends on it. (#32)
+- **Doc-sync CI guard — `bin/check-doc-refs.php` (DL-013).** A CI step that fails the build if a `CLAUDE_*.md` doc names a PHP file path / `App\` FQCN that no longer exists (with a `(removed in …)` / `~~strikethrough~~` escape hatch). Converts the soft "doc-sync in every PR" rule into an enforced one. (#34)
+- **DL-009 — durable-reaction + writeback-authz seam designed (design-only, no runtime change).** The typed contract a future GitHub-PR→card-move writeback builds against: a durable-reaction handler class (failure → 5xx/retry, not a swallowed note), a dedicated least-privilege writeback token, operator-config-only repo→board mapping, and global echo-suppression of the writeback identity. (#29)
+
+### Security
+
+- ⚠ **Unified 0600 secret-perms enforcement across every secret reader (DL-010).** DL-008's SSH-style `mode & 0o077` gate now also covers the two higher-value secrets — the per-`(provider, scope)` HMAC secret and the kanban API token — plus the provisioner's reconcile re-read, via a shared `SecretFile` (live-perms, fail-closed). **A group/world-readable HMAC secret now returns `500 secret_perms_insecure` (kanban-board holds + redelivers); a readable API token fails `bridge:provision`.** Safe direction — the provisioner already writes `0600`, so a correctly-provisioned install is unaffected; `bridge:check` warns on all three at preflight (G-016). (#30)
+- ⚠ **`spawn_detached` is opt-in + executable-allowlisted + shell-free (DL-011).** The highest-blast-radius handler is **no longer registered unless `BRIDGE_SPAWN_ENABLED=true`**, and the program (`cmd[0]`) **must be in `BRIDGE_SPAWN_ALLOWLIST`** (absolute paths). Execution moved from an `exec()` shell string to `proc_open` with an argv array + `setsid -f` — no `/bin/sh`, so no shell-metacharacter surface. Allowlist fixed-purpose wrapper scripts, never an interpreter (`php`, `bash`, `git`, …), which would reopen RCE via `cmd[1..]`. (#31)
+
+### Changed
+
+- ⚠ **Inbox dedup moved off the synchronous hot path + `webhook_events.payload` is now nullable (DL-012).** `IntentLog` no longer scans the whole inbox file per intent (an O(file) cost that grew on calendar time and inflated webhook latency); idempotency is the upstream `agent_dispatches.processed_at` gate plus a read-side id-collapse in `bridge:inbox`. **Run `php artisan migrate` on deploy** (the payload-nullable migration). `BridgePaths::jsonlContainsId` removed (dead). (#32)
+
+### Removed
+
+- **Dead `ChannelName` validator deleted (B-6).** `channel.name` was removed in DL-007 but `app/Bridge/Validation/ChannelName.php` survived — referenced nowhere in app code, kept green only by its own tests, so it looked load-bearing. Deleted with its tests + the four `CLAUDE_*` doc references. (#33)
+
+### Docs
+
+- **Architecture review** (`docs/reviews/2026-05-31-5yr-architecture-review.md`) across scalability / maintainability / security, with every backlog item (B-1…B-6) now marked addressed. (#28)
+- **Doc drift fixed (DL-013 / B-5):** the `CLAUDE_*.md` onboarding map no longer describes the deleted `ProviderApiConfig` or the removed `agents.json` / `identity.self` as current; `CLAUDE_GOTCHAS.md` G-015 rewritten to the post-DL-007 reality. (#34)
+
+### Verification
+
+- PHPUnit **262/262** (SQLite + MariaDB 10.6/11) · Pint clean · PHPStan level 7 (`app/Bridge`) 0 errors · doc-refs guard green. Each item passed an adversarial review loop before merge.
+
 ## [0.17.0] - 2026-05-30
 
 **Install-easing docs + a CI fix, surfaced while wiring live channel push on a real install.**
