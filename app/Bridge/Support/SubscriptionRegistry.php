@@ -7,8 +7,8 @@ use App\Bridge\Exceptions\ConfigException;
 /**
  * Answers "which agents subscribe to this (provider, scope)?" by scanning the
  * per-agent YAML files under the config dir. Subscription interest lives in
- * each agent's YAML `subscriptions:` block (agents.json is identity
- * only, not subscriptions).
+ * each agent's YAML `subscriptions:` block (identity lives in the same YAMLs'
+ * `identity:` block + optional shared-identities.json — there is no agents.json).
  *
  * FAIL-CLOSED: a malformed config file makes agentConfigs() throw
  * (ConfigException), which propagates out of the synchronous dispatch loop to
