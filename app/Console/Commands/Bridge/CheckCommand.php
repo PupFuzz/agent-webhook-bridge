@@ -5,6 +5,7 @@ namespace App\Console\Commands\Bridge;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Support\ChannelToken;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\InstallGuard;
 use App\Bridge\Support\SecretPath;
@@ -135,6 +136,17 @@ class CheckCommand extends Command
                         if (! is_file($tokenPath) || ! is_readable($tokenPath)) {
                             $this->warn("agent {$name}: {$provider} API token not readable at {$tokenPath} — bridge:provision will SKIP {$provider} scopes");
                         }
+                    }
+                }
+
+                // channel.auth.token_path readability + perms (DL-008). Path is
+                // explicit (not under secret_dir), so checked independent of it.
+                // Warn at preflight; the handler is fail-closed at push time.
+                if ($cfg->channel->tokenPath !== null) {
+                    try {
+                        ChannelToken::read($cfg->channel->tokenPath);
+                    } catch (Throwable $e) {
+                        $this->warn("agent {$name}: ".$e->getMessage().' — channel_push will FAIL until fixed');
                     }
                 }
             }

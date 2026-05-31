@@ -75,9 +75,16 @@ subscriptions:
 # are mutually exclusive. `route_intents: true` makes the dispatcher push every
 # staged intent here (config-driven EventDriven; pair with a plain classifier,
 # not EventDriven, or it double-pushes).
+#
+# auth.token_path (HTTP transport only): a chmod-600 file holding the Bearer
+# token the channel server validates (BRIDGE_CHANNEL_TOKEN). Required on a
+# cross-user / multi-tenant host where loopback-bind is not the trust boundary;
+# read fail-closed at push time (must be 0600, non-empty). UDS needs no token.
 # channel:
 #   socket: /run/user/1000/agent-webhook-bridge-channel-your-agent.sock
 #   # url: http://127.0.0.1:8788/
+#   # auth:
+#   #   token_path: ~/.config/agent-webhook-bridge/secrets/channel/your-agent-token
 #   route_intents: false
 
 # ----------------------------------------------------------------------------

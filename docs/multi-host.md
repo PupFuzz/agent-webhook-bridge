@@ -222,7 +222,7 @@ classifier:
 
 ### Simpler alternative — `channel.route_intents` (no classifier code)
 
-If you don't need a per-delivery `Authorization` header (the SSH tunnel + loopback-only bind is already the trust boundary; the Bearer token is defense-in-depth), you can skip the custom classifier entirely and let the dispatcher route every staged intent to the tunnel:
+Skip the custom classifier entirely and let the dispatcher route every staged intent to the tunnel. Add `channel.auth.token_path` and the routed push carries the same `Authorization: Bearer <token>` the classifier form sets by hand — so the no-code path works even when the Bearer token is a hard requirement (a cross-user or multi-tenant host where loopback-bind is **not** the trust boundary), not only when it's defense-in-depth:
 
 ```yaml
 # <agent>.yml — route intents to the local tunnel endpoint automatically
@@ -230,10 +230,16 @@ classifier:
   class: App\Bridge\Classifiers\InboxOnlyClassifier   # or EventDriven; just don't double-push
 channel:
   url: http://127.0.0.1:8788/   # local end of the reverse tunnel to host B
+  auth:
+    token_path: ~/.config/agent-webhook-bridge/secrets/channel/<agent>-token   # chmod 600
   route_intents: true
 ```
 
-The dispatcher then pushes each intent (best-effort; a down tunnel is a recorded note, and the inbox backstop still holds it) — see [`multi-agent.md` § Per-agent surfacing](multi-agent.md#per-agent-surfacing-one-install-n-agents). Use the classifier form above instead when you need the `Bearer` header on each push.
+The dispatcher then pushes each intent (best-effort; a down tunnel is a recorded note, and the inbox backstop still holds it) — see [`multi-agent.md` § Per-agent surfacing](multi-agent.md#per-agent-surfacing-one-install-n-agents).
+
+`token_path` is a file (never an inline secret), holding exactly the `BRIDGE_CHANNEL_TOKEN` the channel server validates. The bridge reads it **fail-closed at push time**: the file must exist, be non-empty, and be `chmod 600` (not group/world-readable) — on a multi-user host the token *is* the trust boundary, so a readable token file is no boundary at all. `bridge:check` warns at preflight; a bad token file makes the routed `channel_push` error (recorded note; the inbox backstop still holds the intent) rather than push unauthenticated. The token rides the `Authorization` header only — it is never written to `inbox.jsonl` or the dispatch ledger. It is applied only when the endpoint comes from this agent's `channel` config; a classifier that emits its own `url` must attach its own `headers` (the agent's token is not injected onto an endpoint it wasn't minted for).
+
+> Use the **classifier form** above instead only when you need a non-Bearer scheme or a per-delivery header the config path doesn't model.
 
 ## Smoke test
 

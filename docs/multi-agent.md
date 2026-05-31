@@ -291,13 +291,24 @@ channel:
 ```
 
 ```yaml
-# A co-located agent instead uses a UDS socket:
+# A co-located agent running as the SAME OS user instead uses a UDS socket:
 channel:
   socket: /run/user/1000/agent-webhook-bridge-channel-device.sock
   route_intents: true
 ```
 
-`route_intents: true` makes the dispatcher push every staged intent to the agent's `channel.socket`/`channel.url` (best-effort — a connection-refused is recorded as a note, the durable inbox backstop still holds the intent). It's the config-driven form of `EventDrivenClassifier`; **use it OR an `EventDrivenClassifier`, not both**, or each event pushes twice. `channel.socket` and `channel.url` are mutually exclusive, and `route_intents` requires one of them.
+A co-located agent running as a **different OS user** (the `backend`/`inventory` case above) can't share a `0600` UDS the install user can't reach, so it takes the loopback-HTTP transport — and on a multi-tenant box that needs a Bearer token, since any local account can POST to the port. Add `channel.auth.token_path`:
+
+```yaml
+# inventory.yml — cross-user co-located agent, token-gated loopback HTTP
+channel:
+  url: http://127.0.0.1:8789/                # inventory's own channel-server port
+  auth:
+    token_path: ~/.config/agent-webhook-bridge/secrets/channel/inventory-token   # chmod 600
+  route_intents: true
+```
+
+`route_intents: true` makes the dispatcher push every staged intent to the agent's `channel.socket`/`channel.url` (best-effort — a connection-refused is recorded as a note, the durable inbox backstop still holds the intent). It's the config-driven form of `EventDrivenClassifier`; **use it OR an `EventDrivenClassifier`, not both**, or each event pushes twice. `channel.socket` and `channel.url` are mutually exclusive, and `route_intents` requires one of them. `channel.auth.token_path` (HTTP transport) attaches `Authorization: Bearer <token>` on the routed push, read fail-closed at push time (must be `0600`, non-empty) — see [`multi-host.md` § Simpler alternative](multi-host.md#simpler-alternative--channelroute_intents-no-classifier-code).
 
 ## Multi-agent `channel_push`
 
