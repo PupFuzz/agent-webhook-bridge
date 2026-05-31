@@ -200,18 +200,26 @@ final class BridgePaths
     }
 
     /**
+     * Create a directory (and parents) owner-only (0700) if absent. The ONE
+     * place the bridge creates a state/secret-holding dir, so the mode can't
+     * drift per call site (DL-016) — these dirs sit next to HMAC secrets/tokens.
+     */
+    public static function ensureDir(string $dir): void
+    {
+        if (! is_dir($dir)) {
+            mkdir($dir, 0700, true);
+        }
+    }
+
+    /**
      * Append one JSON-line record to a state file, creating parent dirs.
-     * Keys are recursively sorted for deterministic output (matches the
-     * Python handlers' json.dumps(sort_keys=True)).
+     * Keys are recursively sorted for deterministic output.
      *
      * @param  array<string, mixed>  $entry
      */
     public static function appendJsonl(string $path, array $entry): void
     {
-        $dir = dirname($path);
-        if (! is_dir($dir)) {
-            mkdir($dir, 0700, true);
-        }
+        self::ensureDir(dirname($path));
         file_put_contents(
             $path,
             json_encode(self::ksortRecursive($entry), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)."\n",

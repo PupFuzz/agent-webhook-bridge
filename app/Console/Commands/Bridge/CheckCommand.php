@@ -13,7 +13,6 @@ use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\UrlValidator;
-use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 
@@ -21,7 +20,7 @@ use Throwable;
  * Validate the install: config/secret dirs, DB connectivity, and that every
  * per-agent YAML parses. Run before going live (and in the cutover runbook).
  */
-class CheckCommand extends Command
+class CheckCommand extends BridgeCommand
 {
     protected $signature = 'bridge:check';
 

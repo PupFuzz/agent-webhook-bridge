@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Provision;
 
+use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
 use Throwable;
@@ -161,10 +162,7 @@ final class WebhookProvisioner
 
     private function writeSecret(string $path, string $secret): void
     {
-        $dir = dirname($path);
-        if (! is_dir($dir)) {
-            mkdir($dir, 0700, true);
-        }
+        BridgePaths::ensureDir(dirname($path));
         file_put_contents($path, $secret, LOCK_EX);
         chmod($path, 0600);
     }

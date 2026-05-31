@@ -67,10 +67,7 @@ final class SpawnDetachedHandler implements Handler
             ? $logPathRaw
             : BridgePaths::stateDir().'/spawn-'.PathHelper::sanitizeSegment($target->targetId).'.log';
 
-        $logDir = dirname($logPath);
-        if (! is_dir($logDir)) {
-            mkdir($logDir, 0700, true);
-        }
+        BridgePaths::ensureDir(dirname($logPath));
 
         $cwdRaw = $payload['cwd'] ?? null;
         $cwd = is_string($cwdRaw) && $cwdRaw !== '' ? $cwdRaw : null;
