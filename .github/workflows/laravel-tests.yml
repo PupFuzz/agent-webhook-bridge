@@ -40,6 +40,9 @@ jobs:
       - name: PHPStan (app/Bridge, level 7)
         run: vendor/bin/phpstan analyse -c phpstan-laravel.neon --no-progress
 
+      - name: Doc-sync (CLAUDE_*.md PHP references resolve)
+        run: php bin/check-doc-refs.php
+
       - name: PHPUnit (SQLite in-memory)
         run: vendor/bin/phpunit
 

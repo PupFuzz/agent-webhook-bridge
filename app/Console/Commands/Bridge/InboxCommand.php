@@ -40,10 +40,20 @@ class InboxCommand extends BridgeCommand
         $lines = BridgePaths::agentInboxLines($agent);
         $seen = $this->readSeen($seenPath);
 
-        $unseen = array_values(array_filter(
-            $lines,
-            fn (array $line) => isset($line['id']) && is_string($line['id']) && ! in_array($line['id'], $seen, true),
-        ));
+        // Collapse duplicate ids among the unseen lines (keep first): the
+        // writer no longer dedups before appending (DL-012), so a partial-
+        // staging redelivery can leave two lines with the same id — surface it
+        // once. Already-seen ids are filtered by $seen as before.
+        $unseen = [];
+        $unseenIds = [];
+        foreach ($lines as $line) {
+            $id = $line['id'] ?? null;
+            if (! is_string($id) || in_array($id, $seen, true) || isset($unseenIds[$id])) {
+                continue;
+            }
+            $unseenIds[$id] = true;
+            $unseen[] = $line;
+        }
 
         if ($unseen === []) {
             return self::SUCCESS;   // silent-when-empty discipline

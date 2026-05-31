@@ -34,6 +34,11 @@ class WebhookReceiveTest extends TestCase
         File::put($this->secretDir.'/kanban/webhook-secret-scope-5', $this->kanbanSecret);
         File::put($this->secretDir.'/kanban/webhook-secret-scope-7', '   ');   // whitespace-only = empty
         File::put($this->secretDir.'/github/webhook-secret-scope-acme-corp%2Fwidget', 'gh-secret');
+        // 0600 like the provisioner writes — the receiver fail-closes on a
+        // group/world-readable secret (DL-010).
+        foreach (File::allFiles($this->secretDir) as $f) {
+            chmod($f->getPathname(), 0o600);
+        }
 
         // No *.yml in the secret dir → zero subscribers, so the valid-delivery
         // path stores the event and 200s without dispatching to any agent.
@@ -117,6 +122,20 @@ class WebhookReceiveTest extends TestCase
         ]);
 
         $response->assertStatus(500)->assertSee('empty_secret_file');
+    }
+
+    public function test_insecure_secret_perms_is_500(): void
+    {
+        // DL-010: a group/world-readable secret is no boundary — fail-closed 500
+        // so kanban-board holds + redelivers once the operator chmods it.
+        chmod($this->secretDir.'/kanban/webhook-secret-scope-5', 0o644);
+        $body = $this->kanbanBody();
+
+        $response = $this->postWebhook('/webhooks/kanban?b=5', $body, [
+            'X-Kanban-Signature' => $this->sign($body, $this->kanbanSecret),
+        ]);
+
+        $response->assertStatus(500)->assertSee('secret_perms_insecure');
     }
 
     public function test_invalid_scope_is_400(): void

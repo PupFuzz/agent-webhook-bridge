@@ -91,8 +91,13 @@ class IntentLogTest extends TestCase
         $this->assertArrayHasKey('ts', $lines[0]);
     }
 
-    public function test_restage_same_id_is_a_noop_no_duplicate_line(): void
+    public function test_restage_appends_with_stable_id_and_ts_deduped_on_read(): void
     {
+        // DL-012: the writer no longer scans the file before appending (that was
+        // O(file) on the hot path). A partial-staging redelivery re-appends the
+        // same id with the SAME stable ts; bridge:inbox collapses it on read
+        // (see InboxCommandTest). Full redelivery never reaches here — the
+        // processed_at gate skips the agent.
         $log = new IntentLog;
         $event = $this->event();
         $agent = $this->agent();
@@ -100,12 +105,13 @@ class IntentLogTest extends TestCase
         $log->stage($agent, $event, $this->intent('42'), 0);
         $tsFirst = $this->inboxLines()[0]['ts'];
 
-        // Re-deliver: same (delivery_id, agent, index) → no duplicate line, same ts.
         $log->stage($agent, $event, $this->intent('42'), 0);
 
         $lines = $this->inboxLines();
-        $this->assertCount(1, $lines);
-        $this->assertSame($tsFirst, $lines[0]['ts']);   // stable ts across re-stage
+        $this->assertCount(2, $lines);                          // append-only writer
+        $this->assertSame($lines[0]['id'], $lines[1]['id']);    // same stable id → read-side dedup collapses it
+        $this->assertSame($tsFirst, $lines[0]['ts']);
+        $this->assertSame($tsFirst, $lines[1]['ts']);           // stable ts across re-stage
     }
 
     public function test_distinct_indexes_get_distinct_ids(): void
@@ -154,15 +160,18 @@ class IntentLogTest extends TestCase
         $this->assertSame($this->inboxLines()[0]['id'], $this->perAgentLines()[0]['id']);
     }
 
-    public function test_per_agent_file_restage_is_idempotent(): void
+    public function test_per_agent_file_restage_appends_same_id(): void
     {
         config(['bridge.inbox_layout' => 'per-agent']);
         $event = $this->event();
         $agent = $this->agent();
 
         (new IntentLog)->stage($agent, $event, $this->intent('42'), 0);
-        (new IntentLog)->stage($agent, $event, $this->intent('42'), 0);   // redelivery
+        (new IntentLog)->stage($agent, $event, $this->intent('42'), 0);   // partial-staging redelivery
 
-        $this->assertCount(1, $this->perAgentLines());
+        // Append-only writer (DL-012); the duplicate id is collapsed by bridge:inbox on read.
+        $lines = $this->perAgentLines();
+        $this->assertCount(2, $lines);
+        $this->assertSame($lines[0]['id'], $lines[1]['id']);
     }
 }

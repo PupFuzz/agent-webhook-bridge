@@ -21,6 +21,7 @@ class ProvisionTest extends TestCase
         $this->dir = sys_get_temp_dir().'/provision-'.uniqid();
         File::ensureDirectoryExists($this->dir.'/kanban');
         File::put($this->dir.'/kanban/token', 'secret-token'); // gitleaks:allow — <secret_dir>/<provider>/token convention
+        chmod($this->dir.'/kanban/token', 0o600);   // DL-010: bridge:provision FAILs on a group/world-readable token
         File::put($this->dir.'/prod-agent.yml', "subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
         config([
             'bridge.config_dir' => $this->dir,
@@ -97,6 +98,19 @@ class ProvisionTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_insecure_token_perms_fails_the_command(): void
+    {
+        // DL-010: a group/world-readable API token is a hard failure (any
+        // co-tenant could read it and write upstream), not a silent skip.
+        chmod($this->dir.'/kanban/token', 0o644);
+        Http::fake(['*' => Http::response(['data' => []])]);
+
+        $this->artisan('bridge:provision')
+            ->expectsOutputToContain('group/world-readable')
+            ->assertExitCode(1);
+        Http::assertNothingSent();
+    }
+
     public function test_inactive_subscription_drift_is_reported_without_reconcile(): void
     {
         Http::fake(['*' => Http::response(['data' => [['id' => 3, 'url' => $this->receiverUrl, 'active' => false]]])]);
@@ -110,6 +124,7 @@ class ProvisionTest extends TestCase
     {
         File::ensureDirectoryExists($this->dir.'/kanban');
         File::put(SecretPath::for($this->dir, 'kanban', '5'), 'existing-secret-value'); // gitleaks:allow — test fixture
+        chmod(SecretPath::for($this->dir, 'kanban', '5'), 0o600);   // DL-010: reconcile refuses a group/world-readable secret
 
         Http::fake(fn (Request $r) => $r->method() === 'GET'
             ? Http::response(['data' => [['id' => 3, 'url' => $this->receiverUrl, 'active' => false]]])
@@ -122,10 +137,24 @@ class ProvisionTest extends TestCase
         Http::assertSent(fn (Request $r) => $r->method() === 'POST' && $r['secret'] === 'existing-secret-value');
     }
 
+    public function test_reconcile_refuses_an_insecure_secret(): void
+    {
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put(SecretPath::for($this->dir, 'kanban', '5'), 'existing-secret-value'); // gitleaks:allow — test fixture
+        chmod(SecretPath::for($this->dir, 'kanban', '5'), 0o644);   // group/world-readable
+
+        Http::fake(['*' => Http::response(['data' => [['id' => 3, 'url' => $this->receiverUrl, 'active' => false]]])]);
+
+        // DL-010: don't reuse + re-push a co-tenant-readable secret upstream.
+        $this->artisan('bridge:provision', ['--reconcile' => true])->assertExitCode(1);
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'DELETE' || $r->method() === 'POST');
+    }
+
     public function test_reconcile_fixes_filter_drift(): void
     {
         File::ensureDirectoryExists($this->dir.'/kanban');
         File::put(SecretPath::for($this->dir, 'kanban', '5'), 'existing-secret-value'); // gitleaks:allow — test fixture
+        chmod(SecretPath::for($this->dir, 'kanban', '5'), 0o600);   // DL-010: reconcile refuses a group/world-readable secret
 
         // config has no event_filter (= all); the live sub filters to task.* → drift.
         Http::fake(fn (Request $r) => $r->method() === 'GET'
@@ -140,6 +169,7 @@ class ProvisionTest extends TestCase
     {
         File::ensureDirectoryExists($this->dir.'/kanban');
         File::put(SecretPath::for($this->dir, 'kanban', '5'), 'existing-secret-value'); // gitleaks:allow — test fixture
+        chmod(SecretPath::for($this->dir, 'kanban', '5'), 0o600);   // DL-010: reconcile refuses a group/world-readable secret
         Http::fake(['*' => Http::response(['data' => [['id' => 3, 'url' => $this->receiverUrl, 'active' => false]]])]);
 
         $this->artisan('bridge:provision', ['--dry-run' => true, '--reconcile' => true])->assertExitCode(0);

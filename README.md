@@ -73,7 +73,7 @@ After step 7, kanban activity reaches your agent's session-start and mid-session
 
 ## Multi-agent support
 
-Two agents (e.g. `prod-agent` + `dev-agent`) each run their own bridge install (own webroot, own `.env`, own DB) on the same host. Per-agent YAML files under one config dir are all loaded by `SubscriptionRegistry`; a single webhook fans out to every subscribed agent independently. A shared `agents.json` registry maps raw user IDs to friendly agent names for echo-suppression and surface formatting. See [`docs/multi-agent.md`](docs/multi-agent.md).
+Two agents (e.g. `prod-agent` + `dev-agent`) each run their own bridge install (own webroot, own `.env`, own DB) on the same host. Per-agent YAML files under one config dir are all loaded by `SubscriptionRegistry`; a single webhook fans out to every subscribed agent independently. The agent registry — built by scanning those YAMLs' `identity` blocks (plus an optional `shared-identities.json`; there is no `agents.json`) — maps immutable user IDs to friendly agent names for echo-suppression and surface formatting. See [`docs/multi-agent.md`](docs/multi-agent.md).
 
 ## Provider support
 

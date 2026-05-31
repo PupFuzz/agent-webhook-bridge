@@ -14,21 +14,35 @@ use PHPUnit\Framework\TestCase;
 
 class HandlerRegistryTest extends TestCase
 {
-    public function test_ships_the_four_defaults(): void
+    public function test_ships_three_always_on_defaults(): void
     {
         $registry = new HandlerRegistry;
 
         $this->assertInstanceOf(LogIntentHandler::class, $registry->resolve('log_intent'));
         $this->assertInstanceOf(RegistryAppendHandler::class, $registry->resolve('registry_append'));
-        $this->assertInstanceOf(SpawnDetachedHandler::class, $registry->resolve('spawn_detached'));
         $this->assertInstanceOf(ChannelPushHandler::class, $registry->resolve('channel_push'));
+    }
+
+    public function test_spawn_detached_is_opt_in(): void
+    {
+        // Off by default (DL-011): a classifier emitting spawn_detached resolves
+        // to null → best-effort note, not execution.
+        $this->assertNull((new HandlerRegistry)->resolve('spawn_detached'));
+        $this->assertNull((new HandlerRegistry(false))->resolve('spawn_detached'));
+
+        // Registered only when explicitly enabled.
+        $this->assertInstanceOf(SpawnDetachedHandler::class, (new HandlerRegistry(true))->resolve('spawn_detached'));
     }
 
     public function test_known_is_sorted(): void
     {
         $this->assertSame(
-            ['channel_push', 'log_intent', 'registry_append', 'spawn_detached'],
+            ['channel_push', 'log_intent', 'registry_append'],
             (new HandlerRegistry)->known(),
+        );
+        $this->assertSame(
+            ['channel_push', 'log_intent', 'registry_append', 'spawn_detached'],
+            (new HandlerRegistry(true))->known(),
         );
     }
 

@@ -5,7 +5,7 @@
 | Extension | What it does | Loaded via | Default |
 |---|---|---|---|
 | **Classifier** | Maps webhook events to `Intent` (inbox) and/or `ReactionTarget` (handler) instances. | `classifier.class` in agent YAML (FQCN). | `App\Bridge\Classifiers\InboxOnlyClassifier` |
-| **Handler** | Implements `Handler` contract; dispatched by name synchronously in the same request. | `afterResolving(HandlerRegistry::class, fn ($r) => $r->register(name, instance))` in a `ServiceProvider`. | Four ship: `log_intent`, `registry_append`, `spawn_detached`, `channel_push`. |
+| **Handler** | Implements `Handler` contract; dispatched by name synchronously in the same request. | `afterResolving(HandlerRegistry::class, fn ($r) => $r->register(name, instance))` in a `ServiceProvider`. | Three always ship: `log_intent`, `registry_append`, `channel_push`. `spawn_detached` is opt-in (`BRIDGE_SPAWN_ENABLED`, DL-011). |
 
 The Python-era surface formatter (a callable swapped into `bin/inbox`) does not exist in v0.12. `bridge:inbox` ships one built-in Markdown renderer; the output format is not operator-swappable. To reshape output, post-process `bridge:inbox` stdout or read `inbox.jsonl` directly (see [`consumer-guide.md`](consumer-guide.md)).
 
@@ -13,7 +13,7 @@ Reference implementations (read these first — they're short):
 
 - `app/Bridge/Classifiers/InboxOnlyClassifier.php` — canonical classifier (~160 LOC)
 - `app/Bridge/Classifiers/EventDrivenClassifier.php` — event-driven subclass
-- `app/Bridge/Handlers/` — four shipped handlers
+- `app/Bridge/Handlers/` — shipped handlers (`log_intent`, `registry_append`, `channel_push`; `spawn_detached` opt-in)
 - `app/Bridge/Contracts/Classifier.php` + `Handler.php` — contracts your class must implement
 
 ---
@@ -322,15 +322,20 @@ The classifier emits `ReactionTarget::make(handler: 'my_handler', ...)` and the 
 
 - **`registry_append`** — appends the target to `<state_dir>/registry-<sanitized_target_id>.jsonl`. Use for per-resource activity ledgers.
 
-- **`spawn_detached`** — fires a detached child process for `payload['cmd']` (argv list). Use for slow external reactions that must not block the synchronous request. Uses `setsid` + shell backgrounding; every dynamic value is `escapeshellarg`'d.
+- **`spawn_detached`** — fires a detached child process for `payload['cmd']` (argv list). Use for slow external reactions that must not block the synchronous request. **Opt-in + allowlisted (DL-011):** it is the highest-blast-radius handler (RCE as the install user), so it is *not registered* unless `BRIDGE_SPAWN_ENABLED=true`, and the program (`cmd[0]`) must be one of `BRIDGE_SPAWN_ALLOWLIST` (absolute paths). Execution is **shell-free** — `proc_open` with the argv array execs the program directly (no `/bin/sh -c`, so no shell-metacharacter surface), and `setsid -f` detaches it. `cwd`/`env` are passed as `proc_open` parameters, not a shell prefix. A `spawn_detached` target on an install where it is disabled (or whose `cmd[0]` is not allowlisted) is a recorded best-effort note, not an execution.
+
+  > ⚠ **Allowlist a fixed-purpose wrapper, never an interpreter or flag-flexible tool** (`php`, `bash`, `env`, `git`, `find`, `awk`, `ssh`, …). The allowlist only constrains `cmd[0]`; the classifier still supplies `cmd[1..]`, so a single allowlisted `/usr/bin/php` or `/usr/bin/git` lets attacker-influenced arguments run arbitrary code (`php -r …`, `git -c core.sshCommand=…`) — reopening the exact RCE this guards. Point the allowlist at a script that does one thing and takes no code-bearing arguments.
 
   ```php
+  // Requires BRIDGE_SPAWN_ENABLED=true and cmd[0] in BRIDGE_SPAWN_ALLOWLIST.
+  // cmd[0] is a fixed-purpose wrapper (e.g. sync-board.sh runs the board sync) —
+  // NOT an interpreter; see the warning above.
   ReactionTarget::make(
       handler: 'spawn_detached',
       targetId: 'board:5',
       debounceSeconds: 30,
       payload: [
-          'cmd' => ['php', '/home/agent/scripts/sync.php', '--board', '5'],  // required: list<string>
+          'cmd' => ['/usr/local/bin/sync-board.sh', '5'],  // required: list<string>; cmd[0] must be an allowlisted ABSOLUTE path
           'log_path' => '/var/log/agent/sync-board5.log',  // optional; defaults to <state_dir>/spawn-<sanitized-target>.log
           'env' => ['KANBAN_BOARD_ID' => '5'],             // optional: merged over inherited env
           'cwd' => '/home/agent/scripts',                  // optional
@@ -480,7 +485,7 @@ Provider order does not matter — `afterResolving` is a resolution-time hook re
 
 ### Handler discipline
 
-- **Handlers run synchronously in the webhook request.** If your handler makes an external HTTP call or shells out to a command taking more than ~1 second, use `spawn_detached` instead — it absorbs `setsid` / log-rotation / env-merge in one place.
+- **Handlers run synchronously in the webhook request.** If your handler makes an external HTTP call or shells out to a command taking more than ~1 second, use `spawn_detached` instead (enable it + allowlist the program first — see above) — it absorbs detachment (`setsid -f`) / log redirection / env-merge in one place, shell-free.
 - **Failures are recorded, not retried automatically.** A handler throw writes `done-with-note` to `agent_dispatches`. The intent is already durable in `inbox.jsonl`. To retry: `php artisan bridge:replay <N>`. Treatment C: one agent's handler failing does not fail the delivery or affect other agents.
 - **Same-event coalescing is handled by the dispatcher, not the handler.** `ReactionTarget::$debounceKey` (defaults to `targetId`) collapses targets sharing a key within one `ClassifyResult` (last-wins) so the handler fires once. `$debounceSeconds` is **advisory metadata only** — the synchronous bridge carries it to the handler/handler-log but does NOT enforce a cross-delivery time window (no drain pass; redelivery dedup is the `webhook_events` UNIQUE gate, see DL-003).
 - **`$agent` is for context, not mutation.** `AgentConfig` is the parsed YAML for the agent being dispatched. Read from it; do not write or cache mutable state on it.

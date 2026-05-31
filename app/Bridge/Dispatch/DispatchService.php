@@ -155,7 +155,7 @@ final class DispatchService
             // subject; it coalesces per subject like EventDrivenClassifier. (Pair
             // route_intents with a plain inbox classifier, not EventDriven, or you
             // get two pushes per event.)
-            if ($agent->channelRouteIntents) {
+            if ($agent->channel->routeIntents) {
                 foreach ($result->intents as $intent) {
                     $routed = ReactionTarget::make(
                         handler: 'channel_push',

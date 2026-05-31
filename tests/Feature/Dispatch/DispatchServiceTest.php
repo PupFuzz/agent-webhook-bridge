@@ -332,6 +332,33 @@ class DispatchServiceTest extends TestCase
         $this->assertNull(AgentDispatch::firstOrFail()->error_message);
     }
 
+    public function test_route_intents_attaches_bearer_token_and_never_persists_it(): void
+    {
+        Http::fake(['*' => Http::response('ok', 202)]);
+
+        $tokenValue = 'tok-'.bin2hex(random_bytes(8));
+        $tokenFile = $this->dir.'/channel-token';
+        File::put($tokenFile, $tokenValue);
+        chmod($tokenFile, 0o600);
+
+        File::put($this->dir.'/prod-agent.yml',
+            "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."classifier:\n  class: '".LogIntentClassifier::class."'\n"
+            ."channel:\n  url: http://127.0.0.1:8788/\n  route_intents: true\n"
+            ."  auth:\n    token_path: {$tokenFile}\n");
+
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $this->payload());
+
+        // The token rides the Authorization header on the routed push...
+        Http::assertSent(fn ($r) => $r->hasHeader('Authorization', "Bearer {$tokenValue}"));
+
+        // ...but never lands in any serializable/logged structure (DL-008 invariant).
+        $inbox = File::get($this->dir.'/state/inbox.jsonl');
+        $this->assertStringNotContainsString($tokenValue, $inbox, 'token leaked into inbox.jsonl');
+        $ledger = AgentDispatch::all()->toJson();
+        $this->assertStringNotContainsString($tokenValue, $ledger, 'token leaked into agent_dispatches');
+    }
+
     public function test_shared_github_id_is_not_pre_suppressed_so_dl005_can_reattribute(): void
     {
         // pm shares a github account (declared in shared-identities.json). pm's

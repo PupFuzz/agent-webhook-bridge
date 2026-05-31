@@ -47,9 +47,7 @@ final class AgentConfig
         public readonly array $subscriptions,
         public readonly EchoSuppressionConfig $echoSuppression,
         public readonly string $classifierClass,
-        public readonly ?string $channelSocket,
-        public readonly ?string $channelUrl,
-        public readonly bool $channelRouteIntents,
+        public readonly ChannelConfig $channel,
         public readonly array $tokenPathOverrides,
         public readonly bool $surfaceSilentDropWarnings,
         public readonly array $raw,
@@ -129,7 +127,7 @@ final class AgentConfig
 
         $classifierClass = self::resolveClassifierClass(self::requireMapping($raw, 'classifier'));
 
-        [$channelSocket, $channelUrl, $channelRouteIntents] = self::resolveChannel(self::requireMapping($raw, 'channel'));
+        $channel = self::resolveChannel(self::requireMapping($raw, 'channel'));
 
         return new self(
             agentName: $agentName,
@@ -139,9 +137,7 @@ final class AgentConfig
             subscriptions: $subscriptions,
             echoSuppression: $echo,
             classifierClass: $classifierClass,
-            channelSocket: $channelSocket,
-            channelUrl: $channelUrl,
-            channelRouteIntents: $channelRouteIntents,
+            channel: $channel,
             tokenPathOverrides: self::resolveTokenOverrides(self::section($raw, 'api')),
             surfaceSilentDropWarnings: $silentDrop,
             raw: $raw,
@@ -188,9 +184,8 @@ final class AgentConfig
 
     /**
      * @param  array<mixed>  $channel
-     * @return array{?string, ?string, bool}
      */
-    private static function resolveChannel(array $channel): array
+    private static function resolveChannel(array $channel): ChannelConfig
     {
         $socketStr = null;
         $socket = $channel['socket'] ?? null;
@@ -226,7 +221,41 @@ final class AgentConfig
             throw new ConfigException('channel.route_intents requires channel.socket or channel.url (nowhere to route)');
         }
 
-        return [$socketStr, $urlStr, $routeIntents];
+        // channel.auth.token_path (DL-008): file holding the Bearer token the
+        // dispatcher attaches on a routed push over the HTTP transport (the
+        // cross-user / SSH-tunnel case where loopback-bind is not the trust
+        // boundary). Nested under `auth` so a future non-Bearer scheme is an
+        // additive key, not a breaking rename. Shape-validated here; the file is
+        // read fail-closed (incl. a 0600 perms check) at push time by
+        // ChannelToken, the single source of truth.
+        $tokenPath = null;
+        $auth = $channel['auth'] ?? null;
+        if ($auth !== null) {
+            if (! is_array($auth)) {
+                throw new ConfigException('channel.auth must be a mapping');
+            }
+            $raw = $auth['token_path'] ?? null;
+            if ($raw !== null) {
+                if (! is_string($raw) || $raw === '') {
+                    throw new ConfigException('channel.auth.token_path must be a non-empty path');
+                }
+                $tokenPath = PathHelper::expandUser($raw);
+            }
+        }
+        // A Bearer token is meaningful only on the HTTP transport (channel.url);
+        // a UDS channel's trust boundary is its 0600 filesystem perms. Reject the
+        // socket+token (or token-without-endpoint) combo rather than silently
+        // ignore it — fail-closed config posture, and matches the docs.
+        if ($tokenPath !== null && $urlStr === null) {
+            throw new ConfigException('channel.auth.token_path requires the HTTP transport (channel.url) — a UDS channel uses filesystem permissions, not a Bearer token');
+        }
+
+        return new ChannelConfig(
+            socket: $socketStr,
+            url: $urlStr,
+            routeIntents: $routeIntents,
+            tokenPath: $tokenPath,
+        );
     }
 
     /**

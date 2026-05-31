@@ -34,6 +34,8 @@ class WebhookDispatchTest extends TestCase
         File::ensureDirectoryExists($this->dir.'/github');
         File::put($this->dir.'/kanban/webhook-secret-scope-5', $this->secret);
         File::put($this->dir.'/github/webhook-secret-scope-acme-corp%2Fwidget', $this->githubSecret);
+        chmod($this->dir.'/kanban/webhook-secret-scope-5', 0o600);   // DL-010: receiver fail-closes on group/world-readable
+        chmod($this->dir.'/github/webhook-secret-scope-acme-corp%2Fwidget', 0o600);
         File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
             ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
 

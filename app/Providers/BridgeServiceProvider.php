@@ -16,19 +16,25 @@ use Illuminate\Support\ServiceProvider;
  * handlers against the exact instance the dispatcher uses —
  * afterResolving(HandlerRegistry::class, fn ($r) => $r->register('x', new XHandler))
  * in a ServiceProvider (see docs/customization.md). It carries no per-request
- * state (the four shipped handlers are stateless), so a per-process instance is
+ * state (the shipped handlers are stateless), so a per-process instance is
  * correct and saves rebuilding them each request.
  *
  * DispatchService is bound (not a singleton) because its other registries are
  * built per request from the current config('bridge.config_dir') — the
- * per-agent YAMLs + agents.json are read fresh each request (FPM-worker caching
- * is a future optimisation).
+ * per-agent YAMLs (+ optional shared-identities.json) are read fresh each
+ * request (FPM-worker caching is a future optimisation).
  */
 class BridgeServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        $this->app->singleton(HandlerRegistry::class);
+        // spawn_detached is opt-in (DL-011): register it only when the install
+        // explicitly enables it. Singleton closure so config is read once per
+        // process, matching the registry's per-process-singleton lifetime (DL-004).
+        $this->app->singleton(
+            HandlerRegistry::class,
+            fn (): HandlerRegistry => new HandlerRegistry((bool) config('bridge.spawn.enabled')),
+        );
 
         $this->app->bind(DispatchService::class, function (): DispatchService {
             $configDir = (string) config('bridge.config_dir');

@@ -156,6 +156,102 @@ class ChannelPushHandlerTest extends TestCase
             && $request->data() === ['intent' => ['kind' => 'new_card', 'subject_id' => '42']]);
     }
 
+    private function agentWithUrlAndToken(string $tokenPath): AgentConfig
+    {
+        return AgentConfig::fromArray('prod-agent', [
+            'identity' => ['kanban_user_id' => 137],
+            'subscriptions' => [],
+            'channel' => ['url' => 'http://127.0.0.1:8789/', 'auth' => ['token_path' => $tokenPath]],
+        ]);
+    }
+
+    public function test_config_token_attached_as_bearer_on_fallback_push(): void
+    {
+        Http::fake(['*' => Http::response('ok', 202)]);
+        $tokenFile = tempnam(sys_get_temp_dir(), 'chtok');   // tempnam → 0600
+        file_put_contents($tokenFile, "s3cr3t-value\n");     // trailing newline trimmed
+        try {
+            // Payload omits socket+url → endpoint AND auth come from agent config.
+            (new ChannelPushHandler)->handle(
+                ReactionTarget::make('channel_push', '42', payload: ['kind' => 'new_card', 'subject_id' => '42']),
+                $this->agentWithUrlAndToken($tokenFile),
+            );
+            Http::assertSent(fn ($request) => $request->hasHeader('Authorization', 'Bearer s3cr3t-value')
+                // Secret rides the header only — never the JSON body.
+                && $request->data() === ['intent' => ['kind' => 'new_card', 'subject_id' => '42']]);
+        } finally {
+            @unlink($tokenFile);
+        }
+    }
+
+    public function test_config_token_not_attached_to_classifier_supplied_url(): void
+    {
+        Http::fake(['*' => Http::response('ok', 202)]);
+        $tokenFile = tempnam(sys_get_temp_dir(), 'chtok');
+        file_put_contents($tokenFile, 'should-not-be-sent');
+        try {
+            // Payload sets its OWN url → not the agent-config endpoint, so the
+            // agent's token must NOT ride along (it wasn't minted for this url).
+            (new ChannelPushHandler)->handle(
+                ReactionTarget::make('channel_push', '42', payload: ['url' => 'http://localhost:8788/', 'kind' => 'x']),
+                $this->agentWithUrlAndToken($tokenFile),
+            );
+            Http::assertSent(fn ($request) => ! $request->hasHeader('Authorization'));
+        } finally {
+            @unlink($tokenFile);
+        }
+    }
+
+    public function test_config_token_overrides_case_variant_payload_authorization(): void
+    {
+        Http::fake(['*' => Http::response('ok', 202)]);
+        $tokenFile = tempnam(sys_get_temp_dir(), 'chtok');
+        file_put_contents($tokenFile, 's3cr3t-value');
+        try {
+            // A classifier-emitted fallback target (no url/socket) that tries to
+            // smuggle its own lowercase Authorization must NOT ride alongside the
+            // config token — config auth is authoritative.
+            (new ChannelPushHandler)->handle(
+                ReactionTarget::make('channel_push', '42', payload: [
+                    'kind' => 'x',
+                    'headers' => ['authorization' => 'Bearer attacker'],
+                ]),
+                $this->agentWithUrlAndToken($tokenFile),
+            );
+            Http::assertSent(function ($request) {
+                return $request->header('Authorization') === ['Bearer s3cr3t-value']
+                    && ! str_contains(implode(',', $request->header('Authorization')), 'attacker');
+            });
+        } finally {
+            @unlink($tokenFile);
+        }
+    }
+
+    public function test_group_readable_token_file_rejected_fail_closed(): void
+    {
+        $tokenFile = tempnam(sys_get_temp_dir(), 'chtok');
+        file_put_contents($tokenFile, 'secret');
+        chmod($tokenFile, 0o640);   // group-readable → boundary defeated
+        try {
+            $this->expectException(HandlerException::class);
+            (new ChannelPushHandler)->handle(
+                ReactionTarget::make('channel_push', '42', payload: ['kind' => 'x']),
+                $this->agentWithUrlAndToken($tokenFile),
+            );
+        } finally {
+            @unlink($tokenFile);
+        }
+    }
+
+    public function test_missing_token_file_rejected_fail_closed(): void
+    {
+        $this->expectException(HandlerException::class);
+        (new ChannelPushHandler)->handle(
+            ReactionTarget::make('channel_push', '42', payload: ['kind' => 'x']),
+            $this->agentWithUrlAndToken('/nonexistent/'.uniqid().'.token'),
+        );
+    }
+
     public function test_non_array_body_rejected(): void
     {
         $this->expectException(HandlerException::class);

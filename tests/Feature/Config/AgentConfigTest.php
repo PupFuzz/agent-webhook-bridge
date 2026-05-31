@@ -40,9 +40,10 @@ class AgentConfigTest extends TestCase
         $this->assertSame('5', $cfg->subscriptions[0]->scopeId);
         $this->assertSame(['137'], $cfg->echoSuppression->treatAsEchoIds);   // auto-seeded from identity
         $this->assertSame(InboxOnlyClassifier::class, $cfg->classifierClass);  // default
-        $this->assertNull($cfg->channelSocket);
-        $this->assertNull($cfg->channelUrl);
-        $this->assertFalse($cfg->channelRouteIntents);
+        $this->assertNull($cfg->channel->socket);
+        $this->assertNull($cfg->channel->url);
+        $this->assertFalse($cfg->channel->routeIntents);
+        $this->assertNull($cfg->channel->tokenPath);
         $this->assertTrue($cfg->surfaceSilentDropWarnings);
     }
 
@@ -117,7 +118,7 @@ class AgentConfigTest extends TestCase
     public function test_channel_socket_validated(): void
     {
         $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => '/run/user/1000/x.sock']]));
-        $this->assertSame('/run/user/1000/x.sock', $cfg->channelSocket);
+        $this->assertSame('/run/user/1000/x.sock', $cfg->channel->socket);
     }
 
     public function test_channel_socket_relative_throws(): void
@@ -129,8 +130,8 @@ class AgentConfigTest extends TestCase
     public function test_channel_url_parsed(): void
     {
         $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => ['url' => 'http://127.0.0.1:8788/']]));
-        $this->assertSame('http://127.0.0.1:8788/', $cfg->channelUrl);
-        $this->assertNull($cfg->channelSocket);
+        $this->assertSame('http://127.0.0.1:8788/', $cfg->channel->url);
+        $this->assertNull($cfg->channel->socket);
     }
 
     public function test_channel_url_with_whitespace_throws(): void
@@ -148,13 +149,45 @@ class AgentConfigTest extends TestCase
     public function test_channel_route_intents_defaults_false(): void
     {
         $cfg = AgentConfig::fromArray('a', $this->raw());
-        $this->assertFalse($cfg->channelRouteIntents);
+        $this->assertFalse($cfg->channel->routeIntents);
     }
 
     public function test_channel_route_intents_parsed_with_socket(): void
     {
         $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => '/run/user/1000/x.sock', 'route_intents' => true]]));
-        $this->assertTrue($cfg->channelRouteIntents);
+        $this->assertTrue($cfg->channel->routeIntents);
+    }
+
+    public function test_channel_auth_token_path_parsed_and_expanded(): void
+    {
+        $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => [
+            'url' => 'http://127.0.0.1:8789/',
+            'auth' => ['token_path' => '~/secrets/channel-token'],
+        ]]));
+        $home = getenv('HOME');
+        $this->assertSame($home.'/secrets/channel-token', $cfg->channel->tokenPath);
+    }
+
+    public function test_channel_auth_token_path_empty_throws(): void
+    {
+        $this->expectException(ConfigException::class);
+        AgentConfig::fromArray('a', $this->raw(['channel' => ['url' => 'http://127.0.0.1:8789/', 'auth' => ['token_path' => '']]]));
+    }
+
+    public function test_channel_auth_non_mapping_throws(): void
+    {
+        $this->expectException(ConfigException::class);
+        AgentConfig::fromArray('a', $this->raw(['channel' => ['url' => 'http://127.0.0.1:8789/', 'auth' => 'nope']]));
+    }
+
+    public function test_channel_auth_token_path_requires_url_not_socket(): void
+    {
+        // A Bearer token is for the HTTP transport; a UDS uses filesystem perms.
+        $this->expectException(ConfigException::class);
+        AgentConfig::fromArray('a', $this->raw(['channel' => [
+            'socket' => '/run/user/1000/x.sock',
+            'auth' => ['token_path' => '~/secrets/channel-token'],
+        ]]));
     }
 
     public function test_channel_route_intents_non_bool_throws(): void

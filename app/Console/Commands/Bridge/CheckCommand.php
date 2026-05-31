@@ -5,8 +5,10 @@ namespace App\Console\Commands\Bridge;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Support\ChannelToken;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\InstallGuard;
+use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\UrlValidator;
@@ -125,6 +127,8 @@ class CheckCommand extends Command
                         $secretPath = SecretPath::for((string) $secretDir, $sub->provider, $sub->scopeId);
                         if (! is_file($secretPath)) {
                             $this->warn("agent {$name}: {$sub->provider}:{$sub->scopeId} has no secret at {$secretPath} — run bridge:provision");
+                        } elseif (SecretFile::isInsecure($secretPath)) {
+                            $this->warn("agent {$name}: ".SecretFile::permsMessage($secretPath).' — the receiver will 500 (secret_perms_insecure) until fixed');
                         }
                     }
                     // API token presence per provider (the token bridge:provision
@@ -134,7 +138,20 @@ class CheckCommand extends Command
                         $tokenPath = $cfg->tokenPath((string) $secretDir, $provider);
                         if (! is_file($tokenPath) || ! is_readable($tokenPath)) {
                             $this->warn("agent {$name}: {$provider} API token not readable at {$tokenPath} — bridge:provision will SKIP {$provider} scopes");
+                        } elseif (SecretFile::isInsecure($tokenPath)) {
+                            $this->warn("agent {$name}: ".SecretFile::permsMessage($tokenPath).' — bridge:provision will FAIL until fixed');
                         }
+                    }
+                }
+
+                // channel.auth.token_path readability + perms (DL-008). Path is
+                // explicit (not under secret_dir), so checked independent of it.
+                // Warn at preflight; the handler is fail-closed at push time.
+                if ($cfg->channel->tokenPath !== null) {
+                    try {
+                        ChannelToken::read($cfg->channel->tokenPath);
+                    } catch (Throwable $e) {
+                        $this->warn("agent {$name}: ".$e->getMessage().' — channel_push will FAIL until fixed');
                     }
                 }
             }

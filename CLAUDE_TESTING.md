@@ -27,7 +27,7 @@ vendor/bin/pint                                      # fix in place
 | `tests/Unit/Adapters/` | `KanbanAdapter`, `GitHubAdapter` — envelope parsing + HMAC shape | Unit; pure PHP, no DB, no HTTP, extends `PHPUnit\Framework\TestCase` |
 | `tests/Unit/Classifiers/` | `InboxOnlyClassifier`, `EventDrivenClassifier` — classify output + intent shapes | Unit; pure PHP |
 | `tests/Unit/Dispatch/` | Plain value objects — `Intent`, `ReactionTarget`, `Actor`, `ClassifyResult` | Unit; pure PHP |
-| `tests/Unit/Validation/` | Format validators (`ProviderName`, `ScopeId`, `ChannelName`, etc.) | Unit; pure PHP |
+| `tests/Unit/Validation/` | Format validators (`ProviderName`, `ScopeId`, `SocketPath`) | Unit; pure PHP |
 | `tests/Feature/Webhook/` | End-to-end HTTP status contract through the real middleware + adapter stack | Feature; `RefreshDatabase`; uses `$this->call()` |
 | `tests/Feature/Dispatch/` | `DispatchService` + `AgentRegistry` + echo/signal logic | Feature; `RefreshDatabase`; tmp config dir |
 | `tests/Feature/Config/` | `SubscriptionRegistry`, `AgentConfig`, `InstallGuard`, `ClassifierResolver` | Feature; tmp filesystem or env override |
@@ -202,7 +202,7 @@ docker rm -f bridge-test-mariadb
 
 ## Adding a test file
 
-1. Match the source structure: `app/Bridge/Foo/Bar.php` → `tests/Unit/Foo/BarTest.php` (pure) or `tests/Feature/Foo/BarTest.php` (needs DB or HTTP).
+1. Match the source structure: `app/Bridge/<Area>/<Class>.php` → `tests/Unit/<Area>/<Class>Test.php` (pure) or `tests/Feature/<Area>/<Class>Test.php` (needs DB or HTTP).
 2. Use `PHPUnit\Framework\TestCase` for unit tests; `Tests\TestCase` for feature tests.
 3. Add `use Illuminate\Foundation\Testing\RefreshDatabase;` only when the test touches the database.
 4. Verify locally with the full suite (`vendor/bin/phpunit`) before pushing — catches cross-test interactions that focused runs miss.
