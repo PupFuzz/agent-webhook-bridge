@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Bridge\Adapters\WebhookAdapterFactory;
+use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
 use App\Bridge\Validation\ProviderName;
 use App\Bridge\Validation\ScopeId;
@@ -84,6 +85,18 @@ class VerifyHmacSignature
 
         // Shared path shape (see SecretPath) — the contract provisioning writes to.
         $secretPath = SecretPath::for($secretDir, $provider, $scopeId);
+
+        // Fail-closed on a group/world-readable secret (DL-010): a co-tenant who
+        // can read it forges valid signatures, so a leaked-perms secret is no
+        // boundary. 500 (not 401) so kanban-board holds + redelivers once fixed,
+        // rather than the secret being silently trusted. Checked before the read
+        // so an *absent* secret still 401s (unknown_scope) — isInsecure is false
+        // for a missing file.
+        if (SecretFile::isInsecure($secretPath)) {
+            $error = $this->fail('secret_perms_insecure', 500);
+
+            return null;
+        }
 
         $raw = @file_get_contents($secretPath);
         if ($raw === false) {

@@ -2,12 +2,13 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\Exceptions\InsecureSecretPermsException;
 use App\Bridge\Provision\KanbanProvisionClient;
 use App\Bridge\Provision\ProvisionResult;
 use App\Bridge\Provision\WebhookProvisioner;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SubscriptionRegistry;
-use App\Bridge\Support\TokenFile;
 use Throwable;
 
 /**
@@ -65,7 +66,16 @@ class ProvisionCommand extends BridgeCommand
                     continue;
                 }
 
-                $token = $this->readToken($agent, $sub->provider, $secretDir);
+                try {
+                    $token = $this->readToken($agent, $sub->provider, $secretDir);
+                } catch (InsecureSecretPermsException $e) {
+                    // A group/world-readable token is a hard failure, not a skip:
+                    // any co-tenant can read it and write upstream (DL-010).
+                    $this->error("{$label} FAIL — ".$e->getMessage());
+                    $rc = self::FAILURE;
+
+                    continue;
+                }
                 if ($token === null) {
                     $this->warn("{$label} SKIP — token unreadable ({$agent->tokenPath($secretDir, $sub->provider)})");
                     $rc = self::FAILURE;
@@ -111,7 +121,7 @@ class ProvisionCommand extends BridgeCommand
 
     private function readToken(AgentConfig $agent, string $provider, string $secretDir): ?string
     {
-        return TokenFile::readTrimmed($agent->tokenPath($secretDir, $provider));
+        return SecretFile::read($agent->tokenPath($secretDir, $provider));
     }
 
     private function reportResult(string $label, ProvisionResult $result, string $url): void

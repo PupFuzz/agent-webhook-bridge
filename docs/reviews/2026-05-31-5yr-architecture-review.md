@@ -31,6 +31,8 @@ The pipeline is typed one-way: `Classifier → Intent/ReactionTarget`, `Handler:
 - Correlation ("which card is this PR?") stays in classifier/agent business logic — the bridge provides the *primitive*, not a workflow engine.
 
 ### B-2. Unify secret-file 0600 enforcement at point-of-use (Security M1)
+> **✅ Addressed (2026-05-31): DL-010.** `SecretFile::isInsecure`/`read` is the single `mode & 0o077` gate; the HMAC receiver (500 `secret_perms_insecure`), `bridge:provision` (command FAIL), and `ChannelToken` all consult it; `bridge:check` warns on all three. Gate reads live perms (`clearstatcache`).
+
 DL-008 enforces `mode & 0o077 == 0` on the channel token — but the two **higher-value** secrets don't get it: the per-(provider,scope) **HMAC secret** (`VerifyHmacSignature::loadSecret`, ~`:88`, bare `@file_get_contents`) and the **kanban API token** (`TokenFile::readTrimmed:23`, used with `Http::withToken`). A co-tenant who can *read* the HMAC secret forges perfectly-valid signed webhooks (→ `channel_push` into a live session, → `spawn_detached`); reading the API token gives direct upstream write access. The provisioner *writes* 0600 but nothing *enforces* it on read (a `cp`/`umask` accident leaves it 0644).
 **Fix:** hoist the perms check into a shared `SecretFile::read` and apply to all three readers, fail-closed (HMAC → 500 `secret_perms_insecure`; token → command error). Extend `bridge:check` to warn on perms for all three.
 

@@ -157,6 +157,20 @@ If the guard fires unexpectedly in a test: verify `phpunit.xml` has this stanza 
 
 ---
 
+## G-016 — A group/world-readable secret fails closed: receiver 500 `secret_perms_insecure`, `bridge:provision` FAIL
+
+**Symptom:** The receiver returns **500 `secret_perms_insecure`** for a scope whose HMAC secret exists and is otherwise correct; or `bridge:provision` prints `FAIL — … group/world-readable` and exits non-zero for a provider whose token file is present. Looks like a broken secret/token; the file content is fine — the **perms** are the problem.
+
+**Cause:** DL-010 enforces the SSH-style `mode & 0o077 == 0` gate at point-of-use on all three secret readers (HMAC secret, API token, channel token) via `SecretFile::isInsecure`. A secret left `0644`/`0640` (a `cp`/`umask` accident — the provisioner writes `0600`, but a hand-placed file may not be) is treated as no boundary at all and refused fail-closed: the receiver 500s (kanban-board holds + redelivers), provisioning fails the command rather than using a co-tenant-readable token.
+
+**Fix:** `chmod 600` the secret/token file. `php artisan bridge:check` warns on insecure perms for all three secret kinds at preflight, naming the runtime consequence — run it after placing any secret by hand. The check reads live perms (`clearstatcache`), so it reflects the current mode.
+
+**Discovery:** 2026-05-31 5-year architecture review item B-2 (DL-010) — extends DL-008's channel-token perms posture to the two higher-value secrets.
+
+**Related:** `app/Bridge/Support/SecretFile.php` (`isInsecure`/`read`), `app/Http/Middleware/VerifyHmacSignature.php` (`loadSecret`), `app/Bridge/Support/ChannelToken.php`, `app/Console/Commands/Bridge/{Provision,Check}Command.php`, `CLAUDE_DECISIONS.md` DL-010 / DL-008.
+
+---
+
 ## How to add an entry
 
 1. New `G-NNN` (next available number).

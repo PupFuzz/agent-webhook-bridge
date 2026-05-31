@@ -8,6 +8,7 @@ use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelToken;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\InstallGuard;
+use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\UrlValidator;
@@ -126,6 +127,8 @@ class CheckCommand extends Command
                         $secretPath = SecretPath::for((string) $secretDir, $sub->provider, $sub->scopeId);
                         if (! is_file($secretPath)) {
                             $this->warn("agent {$name}: {$sub->provider}:{$sub->scopeId} has no secret at {$secretPath} — run bridge:provision");
+                        } elseif (SecretFile::isInsecure($secretPath)) {
+                            $this->warn("agent {$name}: ".SecretFile::permsMessage($secretPath).' — the receiver will 500 (secret_perms_insecure) until fixed');
                         }
                     }
                     // API token presence per provider (the token bridge:provision
@@ -135,6 +138,8 @@ class CheckCommand extends Command
                         $tokenPath = $cfg->tokenPath((string) $secretDir, $provider);
                         if (! is_file($tokenPath) || ! is_readable($tokenPath)) {
                             $this->warn("agent {$name}: {$provider} API token not readable at {$tokenPath} — bridge:provision will SKIP {$provider} scopes");
+                        } elseif (SecretFile::isInsecure($tokenPath)) {
+                            $this->warn("agent {$name}: ".SecretFile::permsMessage($tokenPath).' — bridge:provision will FAIL until fixed');
                         }
                     }
                 }
