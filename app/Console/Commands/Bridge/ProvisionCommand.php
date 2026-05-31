@@ -7,6 +7,7 @@ use App\Bridge\Provision\ProvisionResult;
 use App\Bridge\Provision\WebhookProvisioner;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\SubscriptionRegistry;
+use App\Bridge\Support\TokenFile;
 use Throwable;
 
 /**
@@ -110,13 +111,7 @@ class ProvisionCommand extends BridgeCommand
 
     private function readToken(AgentConfig $agent, string $provider, string $secretDir): ?string
     {
-        $path = $agent->tokenPath($secretDir, $provider);
-        if (! is_file($path)) {
-            return null;
-        }
-        $token = trim((string) file_get_contents($path));
-
-        return $token !== '' ? $token : null;
+        return TokenFile::readTrimmed($agent->tokenPath($secretDir, $provider));
     }
 
     private function reportResult(string $label, ProvisionResult $result, string $url): void

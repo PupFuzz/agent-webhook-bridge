@@ -4,8 +4,10 @@ namespace App\Bridge\Handlers;
 
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Exceptions\ChannelTokenException;
 use App\Bridge\Exceptions\HandlerException;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\ChannelToken;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -23,6 +25,16 @@ use Illuminate\Support\Facades\Http;
  * is recorded — the durable inbox backstop already holds the intent. The short
  * timeout keeps the synchronous webhook response under kanban-board's delivery
  * timeout.
+ *
+ * Auth (DL-008): when the endpoint comes from the agent's own config (the
+ * fallback branch), the agent's channel.auth.token_path — if set — is read
+ * fail-closed and attached as `Authorization: Bearer <token>`. The token is
+ * read at point-of-use and never placed in the payload (which is staged to
+ * inbox.jsonl and the dispatch ledger), keeping the secret out of every
+ * serializable/logged structure. A classifier-emitted target that sets its OWN
+ * url does NOT get the agent's token — the predicate is "endpoint is agent-
+ * config-sourced", so a credential minted for the agent's endpoint never rides
+ * a target the classifier pointed elsewhere (it carries its own `headers`).
  */
 final class ChannelPushHandler implements Handler
 {
@@ -51,11 +63,14 @@ final class ChannelPushHandler implements Handler
         // agent's configured channel.socket wins; channel.url is the fallback
         // for the SSH-tunneled remote-host case (they're mutually exclusive in
         // config, so at most one is non-null).
+        $usedAgentChannel = false;
         if (! array_key_exists('socket', $payload) && ! array_key_exists('url', $payload)) {
-            if ($agent->channelSocket !== null) {
-                $socket = $agent->channelSocket;
-            } elseif ($agent->channelUrl !== null) {
-                $url = $agent->channelUrl;
+            if ($agent->channel->socket !== null) {
+                $socket = $agent->channel->socket;
+                $usedAgentChannel = true;
+            } elseif ($agent->channel->url !== null) {
+                $url = $agent->channel->url;
+                $usedAgentChannel = true;
             }
         }
 
@@ -77,6 +92,25 @@ final class ChannelPushHandler implements Handler
         $timeout = $this->resolveTimeout($payload['timeout_seconds'] ?? 2.0);
         $body = $this->buildBody($payload);
         $headers = $this->buildHeaders($payload);
+
+        // Attach the agent's configured Bearer token ONLY when the endpoint came
+        // from agent config (never a classifier-supplied url — see class doc).
+        if ($usedAgentChannel && $agent->channel->tokenPath !== null) {
+            try {
+                $token = ChannelToken::read($agent->channel->tokenPath);
+            } catch (ChannelTokenException $e) {
+                throw new HandlerException('channel_push: '.$e->getMessage());
+            }
+            // Config auth is authoritative: drop any payload-supplied Authorization
+            // (case-insensitively — PSR-7/Guzzle merge same-name headers, so a
+            // lowercase 'authorization' would otherwise ride alongside ours).
+            foreach (array_keys($headers) as $name) {
+                if (strcasecmp((string) $name, 'Authorization') === 0) {
+                    unset($headers[$name]);
+                }
+            }
+            $headers['Authorization'] = 'Bearer '.$token;
+        }
 
         if ($socketSet) {
             /** @var string $socket */
