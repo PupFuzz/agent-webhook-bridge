@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console;
 
+use App\Bridge\Support\BridgePaths;
 use App\Console\Commands\Bridge\InboxCommand;
 use App\Models\AgentDispatch;
 use App\Models\WebhookEvent;
@@ -54,6 +55,103 @@ class BridgeCommandsTest extends TestCase
     {
         config(['bridge.secret_dir' => null]);
         $this->artisan('bridge:check')->assertExitCode(1);
+    }
+
+    public function test_inbox_collapses_duplicate_ids_on_read(): void
+    {
+        // DL-012: the writer is append-only, so a partial-staging redelivery can
+        // leave two lines with the same id — bridge:inbox must surface it once.
+        File::ensureDirectoryExists($this->dir.'/state');
+        File::put($this->dir.'/state/inbox.jsonl',
+            json_encode(['id' => 'e:agent:0', 'ts' => 1.0, 'kind' => 'new_card', 'summary' => 'dup'])."\n".
+            json_encode(['id' => 'e:agent:0', 'ts' => 1.0, 'kind' => 'new_card', 'summary' => 'dup'])."\n",
+        );
+
+        $this->artisan('bridge:inbox', ['--hook-format' => 'plain'])
+            ->expectsOutputToContain('new_card')
+            ->assertExitCode(0);
+
+        // Surfaced once → cursor records exactly one id; a second run is silent.
+        $this->assertSame(['e:agent:0'], json_decode((string) File::get($this->dir.'/state/inbox-seen.json'), true));
+        $this->artisan('bridge:inbox', ['--hook-format' => 'plain'])->doesntExpectOutputToContain('new_card')->assertExitCode(0);
+    }
+
+    public function test_prune_deletes_events_and_dispatches_older_than(): void
+    {
+        $old = $this->event();
+        $old->received_at = now()->subDays(40);
+        $old->save();
+        AgentDispatch::create(['webhook_event_id' => $old->id, 'agent_name' => 'prod-agent']);
+
+        $recent = WebhookEvent::create([
+            'delivery_id' => 'evt-2', 'provider' => 'kanban', 'scope_id' => '5',
+            'event_type' => 'task.created', 'actor_id' => '1', 'payload' => ['x' => 1],
+        ]);
+
+        $this->artisan('bridge:prune', ['--older-than' => '30d'])->assertExitCode(0);
+
+        $this->assertNull(WebhookEvent::find($old->id));                 // deleted
+        $this->assertSame(0, AgentDispatch::where('webhook_event_id', $old->id)->count());   // cascade
+        $this->assertNotNull(WebhookEvent::find($recent->id));           // recent kept
+    }
+
+    public function test_prune_nulls_payloads_older_than_keeping_the_row(): void
+    {
+        $e = $this->event();
+        $e->received_at = now()->subDays(10);
+        $e->save();
+
+        $this->artisan('bridge:prune', ['--null-payloads-older-than' => '7d'])->assertExitCode(0);
+
+        $e->refresh();
+        $this->assertNotNull($e->id);          // row kept (dedup gate + audit)
+        $this->assertNull($e->payload);        // body shed
+    }
+
+    public function test_prune_trims_inbox_lines_and_seen_cursor(): void
+    {
+        File::ensureDirectoryExists($this->dir.'/state');
+        $oldTs = (float) now()->subDays(40)->format('U.u');
+        $newTs = (float) now()->format('U.u');
+        File::put($this->dir.'/state/inbox.jsonl',
+            json_encode(['id' => 'old:0', 'ts' => $oldTs, 'kind' => 'x', 'summary' => 'old'])."\n".
+            json_encode(['id' => 'new:0', 'ts' => $newTs, 'kind' => 'x', 'summary' => 'new'])."\n",
+        );
+        File::put($this->dir.'/state/inbox-seen.json', json_encode(['old:0', 'new:0']));
+
+        $this->artisan('bridge:prune', ['--older-than' => '30d'])->assertExitCode(0);
+
+        $remaining = array_column(BridgePaths::readJsonl($this->dir.'/state/inbox.jsonl'), 'id');
+        $this->assertSame(['new:0'], $remaining);                        // old line trimmed
+        $this->assertSame(['new:0'], json_decode((string) File::get($this->dir.'/state/inbox-seen.json'), true));   // seen bounded
+    }
+
+    public function test_prune_dry_run_changes_nothing(): void
+    {
+        $old = $this->event();
+        $old->received_at = now()->subDays(40);
+        $old->save();
+
+        $this->artisan('bridge:prune', ['--older-than' => '30d', '--dry-run' => true])->assertExitCode(0);
+
+        $this->assertNotNull(WebhookEvent::find($old->id));   // still there
+    }
+
+    public function test_prune_requires_a_window(): void
+    {
+        $this->artisan('bridge:prune')->assertExitCode(1);
+    }
+
+    public function test_prune_rejects_an_absurd_window_without_deleting(): void
+    {
+        // A 20-digit value would overflow now()->subDays() into a FUTURE cutoff
+        // and wipe everything — it must be rejected, changing nothing.
+        $old = $this->event();
+        $old->received_at = now()->subDays(40);
+        $old->save();
+
+        $this->artisan('bridge:prune', ['--older-than' => '99999999999999999999d'])->assertExitCode(1);
+        $this->assertNotNull(WebhookEvent::find($old->id));
     }
 
     public function test_check_fails_on_invalid_inbox_layout(): void

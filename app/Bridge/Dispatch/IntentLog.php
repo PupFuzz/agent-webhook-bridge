@@ -18,14 +18,20 @@ use App\Models\WebhookEvent;
  *  - per-agent → state/inbox-<agent>.jsonl (one file per serving agent)
  *  - both      → both
  *
- * Idempotent across redelivery (implementation requirement 3):
- *  - write side: each line carries a stable id "{delivery_id}:{agent}:{index}"
- *    (the intent's array index — always unique within an event, unlike
- *    (subject_id, kind) which a multi-intent classifier may repeat). Re-staging
- *    an existing id is a true no-op per file (no duplicate line).
- *  - read side: the line's ts is derived from the event's received_at + index
- *    (NOT a fresh clock), so a re-stage produces the identical ts and can't
- *    re-surface an already-consumed card.
+ * Idempotent across redelivery (implementation requirement 3) — WITHOUT an
+ * O(file) read-before-write on the synchronous hot path (DL-012):
+ *  - full redelivery is gated upstream: DispatchService skips an agent whose
+ *    AgentDispatch.processed_at is already set, so stage() is never re-called
+ *    for a completed dispatch (the authoritative dedup).
+ *  - a PARTIAL-staging redelivery (a treatment-B IO failure mid-loop leaves
+ *    processed_at null, so re-staging re-writes already-written ids) is deduped
+ *    on the READ side: each line carries a stable id "{delivery_id}:{agent}:
+ *    {index}" and bridge:inbox collapses duplicate ids, so a re-staged line
+ *    surfaces at most once.
+ *  - the line's ts derives from the event's received_at + index (NOT a fresh
+ *    clock), so a re-stage produces the identical ts (stable ordering + lets
+ *    bridge:prune age it deterministically).
+ * Appends are O(1); growth is bounded by bridge:prune, not a per-intent scan.
  */
 class IntentLog
 {
@@ -42,9 +48,10 @@ class IntentLog
         $line = array_merge(['id' => $id, 'ts' => $ts, 'agent' => $agent->agentName], $intent->toArray());
 
         foreach ($this->targetPaths($agent->agentName) as $path) {
-            if (BridgePaths::jsonlContainsId($path, $id)) {
-                continue;   // idempotent: already staged on a prior delivery
-            }
+            // No read-before-write dedup: the per-intent file scan was O(file)
+            // on the synchronous hot path and grew with calendar time. Dedup is
+            // upstream (processed_at) + read-side (bridge:inbox by id); see the
+            // class docblock (DL-012).
             BridgePaths::appendJsonl($path, $line);
             if ($path !== $this->sharedPath()) {
                 BridgePaths::applyInboxPerms($path);   // per-agent files get the cross-user mode/group

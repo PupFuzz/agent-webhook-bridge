@@ -43,7 +43,7 @@ BRIDGE_KANBAN_API_BASE_URL=https://kanban.example.com/api/v3   # upstream API ba
 
 The API token is read by convention from `<secret_dir>/<provider>/token` (e.g. `$BRIDGE_DIR/kanban/token`, chmod 600); set a per-agent `api.<provider>.token_path` override in the YAML only when an agent authenticates as a distinct account.
 
-There is **no** queue worker, scheduler, crontab, or systemd unit to install.
+There is **no** queue worker, scheduler, or systemd unit to install. The **one** optional periodic job is `bridge:prune` (retention — see Commands); nothing on the dispatch path depends on it, and skipping it only lets the stores grow.
 
 ## Pre-flight (per host)
 
@@ -167,7 +167,10 @@ php artisan bridge:inspect {id}                       # one webhook event + its 
 php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an event
 php artisan bridge:inbox [--hook-format=auto|claude-code|plain]              # surface unseen inbox intents
 php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile]   # ensure kanban subscriptions (--reconcile fixes drift)
+php artisan bridge:prune --older-than=30d [--null-payloads-older-than=7d] [--dry-run]   # retention (the one optional cron)
 ```
+
+`bridge:prune` is the only periodic maintenance job (the design is otherwise daemonless). `--older-than=Nd` deletes `webhook_events` (cascading `agent_dispatches`) and trims `inbox*.jsonl` lines older than the cutoff; `--null-payloads-older-than=Md` (use `M < N`) nulls the stored payload past the replay window while keeping the row's dedup-gate + audit metadata; `--dry-run` reports counts only. Idempotent — safe to re-run. Schedule it per install (e.g. a daily cron); nothing breaks if it never runs except unbounded growth. See `CLAUDE_DECISIONS.md` DL-012.
 
 `bridge:replay` re-runs the `processed_at`-guarded dispatch loop: errored rows (`processed_at` null) re-run; **already-succeeded rows are skipped** so a sibling's already-delivered push / `spawn_detached` is never re-fired. `--agent` scopes to one agent. `--force` clears `processed_at` first so done rows (incl. handler-note rows) re-run too — use it to re-attempt a missed channel push once the agent is back.
 
