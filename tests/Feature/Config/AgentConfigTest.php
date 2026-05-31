@@ -33,8 +33,8 @@ class AgentConfigTest extends TestCase
         $cfg = AgentConfig::fromArray('prod-agent', $this->raw());
 
         $this->assertSame('prod-agent', $cfg->agentName);
-        $this->assertSame(137, $cfg->kanbanUserId);
-        $this->assertNull($cfg->githubUserId);
+        $this->assertSame(137, $cfg->identity->kanbanUserId);
+        $this->assertNull($cfg->identity->githubUserId);
         $this->assertCount(1, $cfg->subscriptions);
         $this->assertSame('kanban', $cfg->subscriptions[0]->provider);
         $this->assertSame('5', $cfg->subscriptions[0]->scopeId);
@@ -53,9 +53,9 @@ class AgentConfigTest extends TestCase
             'identity' => ['kanban_user_id' => 100, 'github_user_id' => 9001, 'github_login' => 'pm-bot'],
         ]));
 
-        $this->assertSame(100, $cfg->kanbanUserId);
-        $this->assertSame(9001, $cfg->githubUserId);
-        $this->assertSame('pm-bot', $cfg->githubLogin);
+        $this->assertSame(100, $cfg->identity->kanbanUserId);
+        $this->assertSame(9001, $cfg->identity->githubUserId);
+        $this->assertSame('pm-bot', $cfg->identity->githubLogin);
     }
 
     public function test_self_echo_ids_are_auto_seeded_from_identity(): void
@@ -260,7 +260,7 @@ class AgentConfigTest extends TestCase
 
         $cfg = AgentConfig::load('prod-agent', $dir);
         $this->assertSame('prod-agent', $cfg->agentName);
-        $this->assertSame(137, $cfg->kanbanUserId);
+        $this->assertSame(137, $cfg->identity->kanbanUserId);
         $this->assertSame('5', $cfg->subscriptions[0]->scopeId);
 
         File::deleteDirectory($dir);
