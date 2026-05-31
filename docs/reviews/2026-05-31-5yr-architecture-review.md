@@ -18,6 +18,8 @@ A genuinely well-built, deliberately-small codebase (~4.4k LOC app, ~4k LOC test
 ## MUST-FIX (redraw before they calcify)
 
 ### B-1. Writeback needs a durable-reaction class + an authz/injection model — design it now (Scalability M2 + Security M3)
+> **✅ Addressed (2026-05-31): DL-009** captures the seam (design-only; no code). Durability-on-the-handler marker, durable-first loop ordering with treatment-B propagation, dedicated least-privilege writeback token, operator-config repo→board mapping, GitHub-controlled-field gating, and a new global echo seam for the writeback identity. Gates FR #2016 (the implementation).
+
 The pipeline is typed one-way: `Classifier → Intent/ReactionTarget`, `Handler::handle(): void`, and the only outbound client is `KanbanProvisionClient` (provisioning-scoped). A card-move writeback is **side-effectful, not loss-tolerant, and attacker-influenced** — the opposite of treatment-C (`DispatchService.php:170-183`, "connection-refused is NORMAL, swallow as a note"). If bolted on as a normal handler it inherits treatment-C → a failed move silently acks 200, never retries (violates DL-001 treatment-B). Security inversion: an attacker-controllable GitHub PR title/branch would drive a privileged kanban WRITE via the API token.
 **Design (capture as a DL before any code):**
 - A reaction class for **durable side effects** whose failure escalates to 5xx-and-retry (treatment B), not note-and-continue — tag `ReactionTarget`/handler `durable` vs `best_effort`; route durable failures into the propagate branch.
