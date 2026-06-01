@@ -108,9 +108,9 @@ final class AgentRegistry
         $agents = array_map(
             fn (AgentConfig $c): RegisteredAgent => new RegisteredAgent(
                 name: $c->agentName,
-                kanbanUserId: $c->kanbanUserId,
-                githubUserId: $c->githubUserId,
-                githubLogin: $c->githubLogin,
+                kanbanUserId: $c->identity->kanbanUserId,
+                githubUserId: $c->identity->githubUserId,
+                githubLogin: $c->identity->githubLogin,
             ),
             $configs,
         );

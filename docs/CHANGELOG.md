@@ -10,6 +10,32 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.19.0] - 2026-05-31
+
+**The architecture-review hardening tail (B-13…B-19 + the B-9/B-10 partials) — security tightenings, CI gates, a config reference, and cleanups.** No migration; the only operator-facing change is one new opt-in env (see Security).
+
+### Security
+
+- **DL-014.** Three fail-closed tightenings: `ProviderName`/`ScopeId` gain the `D` regex anchor (a trailing-newline can't slip a second line past `$`); a **classifier-supplied** `channel_push` socket must sit under `BRIDGE_CHANNEL_ALLOWED_SOCKET_DIR` (refused when unset — an agent's own `channel.socket` is exempt); and `bridge:check` warns when the config / secret dir is group/world-accessible. ⚠ A custom classifier that hand-emits a `channel_push` with its own `socket:` now needs `BRIDGE_CHANNEL_ALLOWED_SOCKET_DIR` set — the no-classifier `route_intents` path and the reference installs are unaffected. (#39)
+
+### Added
+
+- **DL-015.** `bridge:check` fails if a configured provider has no adapter (`config.providers ⊆ WebhookAdapterFactory::SUPPORTED`); a `composer audit --locked` CI job (every PR + nightly) reds the build on a known dependency CVE. (#40)
+- **`docs/config-schema.md` (B-11)** — a current-state config reference: every per-agent YAML key + every `BRIDGE_*` env, with type, default, and fail-closed-vs-warn behaviour. The *what*, to the decision log's *why*. (#43)
+
+### Changed
+
+- **DL-017.** `AgentConfig`'s identity triple (`kanban_user_id`/`github_user_id`/`github_login`) is grouped into an `IdentityConfig` DTO (the DTO idiom of `EchoSuppressionConfig`/`ChannelConfig`); the constructor drops 11→9 args. No runtime change. (#42)
+- **DL-016.** One `BridgePaths::ensureDir` (0700) replaces four inline `mkdir` sites so the mode can't drift; `CheckCommand` extends `BridgeCommand` (completing the base-class consolidation); trimmed dead Python-provenance docstrings; documented the deliberate no-`TrustProxies` posture. No runtime change. (#41)
+
+### Docs
+
+- Architecture review marked up end-to-end (every B-item ✅ Addressed / ⚠ Partial / Declined) with a **Deferred / declined (with justification)** section for the speculative/churn items not taken (B-7, B-8, B-12, B-20, and the B-9 file-splits / B-10 validator-extraction). (#44, #42)
+
+### Verification
+
+- PHPUnit **272/272** (SQLite + MariaDB 10.6/11) · Pint clean · PHPStan level 7 0 errors · doc-refs guard + `composer audit --locked` green. Every item passed an adversarial review loop before merge.
+
 ## [0.18.0] - 2026-05-31
 
 **The architecture-review hardening pass (B-1…B-6) + config-level channel auth.** ⚠ **Breaking — fail-closed tightening on secrets + `spawn_detached`, and a DB migration; see Security/Changed below.**

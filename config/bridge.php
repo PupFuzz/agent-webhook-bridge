@@ -130,4 +130,24 @@ return [
         )),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | channel_push — classifier-supplied socket constraint (DL-014)
+    |--------------------------------------------------------------------------
+    |
+    | An agent's own `channel.socket` (operator-authored YAML) is trusted. But a
+    | CUSTOM classifier can also emit a channel_push target with its own `socket`
+    | path in the payload — attacker-influenced, same trust class as
+    | spawn_detached's argv. Without a constraint, such a socket could point at
+    | another tenant's UDS. allowed_socket_dir (BRIDGE_CHANNEL_ALLOWED_SOCKET_DIR)
+    | is the absolute prefix a classifier-supplied socket must sit under; when
+    | unset, classifier-supplied sockets are refused outright (fail-closed). The
+    | agent-config socket path is exempt either way.
+    |
+    */
+
+    'channel' => [
+        'allowed_socket_dir' => env('BRIDGE_CHANNEL_ALLOWED_SOCKET_DIR'),
+    ],
+
 ];

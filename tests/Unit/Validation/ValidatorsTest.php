@@ -55,6 +55,17 @@ class ValidatorsTest extends TestCase
         $this->assertFalse(ProviderName::matches(''));
     }
 
+    public function test_trailing_newline_rejected_dollar_endonly(): void
+    {
+        // DL-014 (`D` modifier): `$` must not match before a trailing "\n", or a
+        // second line could slip past the anchor.
+        $this->assertFalse(ProviderName::matches("github\n"));
+        $this->assertFalse(ProviderName::matches("github\nevil"));
+        $this->assertFalse(ScopeId::matches("5\n"));
+        $this->assertFalse(ScopeId::matches("org/repo\n"));
+        $this->assertFalse(ScopeId::matches("5\n../etc/passwd"));
+    }
+
     public function test_socket_path_validation(): void
     {
         $this->assertTrue(SocketPath::isValid('/run/user/1000/agent-webhook-bridge.sock'));

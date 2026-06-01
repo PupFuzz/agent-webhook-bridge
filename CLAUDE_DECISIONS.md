@@ -241,4 +241,70 @@
 
 ---
 
+## DL-014 — Security tail of the architecture review: regex `D`-anchor, classifier-socket prefix gate, config-dir perms warning (B-13 + B-14 + B-17)
+
+- **Date:** 2026-05-31
+- **Context:** Three lower-severity security findings from the architecture review, bundled because each is a small, fail-closed tightening:
+  - **B-13 (regex anchor):** `ProviderName` (`^[a-z0-9_]+$`) and `ScopeId` matched with `preg_match` but **without the `D` modifier**, so `$` also matches *before* a trailing `\n` — `"github\n…"` / `"5\n…"` could slip a second line past the anchor. Low exploitability (provider comes from the route, scope is re-checked vs the body), but `ScopeId` is also the path-traversal boundary for the per-scope secret filename.
+  - **B-14 (classifier-supplied socket):** `channel_push`'s `url` transport is loopback-SSRF-gated, but a **classifier-supplied `socket`** (payload, attacker-influenceable — same trust class as `spawn_detached`'s argv, DL-011) had no path constraint. A custom passthrough classifier could point the push at another tenant's UDS. (No shipped classifier supplies a payload socket — `EventDrivenClassifier` leaves the transport to the agent's config — so this is a guard against custom classifiers, not a live bug.)
+  - **B-17 (config-dir perms):** the config dir holds the HMAC secrets + tokens but nothing warned if it was left group/world-traversable on a multi-tenant host.
+- **Decision:**
+  - **B-13:** add the `D` (PCRE_DOLLAR_ENDONLY) modifier to both validators' `matches()`. The `PATTERN` constants are unchanged (so the published-pattern tests stand); only the match call tightens.
+  - **B-14:** a classifier-supplied socket (the `! $usedAgentChannel` branch in `ChannelPushHandler`) must sit under a configured absolute prefix `bridge.channel.allowed_socket_dir` (`BRIDGE_CHANNEL_ALLOWED_SOCKET_DIR`); when that is unset, a classifier-supplied socket is **refused outright** (fail-closed, mirroring DL-011's opt-in posture). The path is first run through `SocketPath::isValid` (rejects `..`), so the `str_starts_with` prefix compare can't be escaped via `/allowed/../other.sock`. The **agent's own `channel.socket`** (operator-authored YAML) is exempt — the gate only constrains the attacker-influenceable payload path.
+  - **B-17:** `bridge:check` **warns** (not fails) when a secret-holding dir is group/world-accessible (`mode & 0o077 != 0`) — the config dir, **and** `secret_dir` when split to a different path (a shared `warnIfDirInsecure` helper covers both). Warn, not fail, because perms are operator-owned and the per-secret `0600` gate (DL-010) is the hard backstop — this is the preflight nudge.
+- **Alternatives considered:**
+  - **B-13 via `\z` in the PATTERN constant instead of the `D` modifier.** Rejected: changing the constant would ripple into the "pattern matches the provisioner" tests and the path-traversal doc; the `D` flag is the localized, behavior-only fix.
+  - **B-14: allow any classifier socket, rely on the existing `..`/symlink/filetype checks.** Rejected: those stop traversal and TOCTOU but not *which directory* — an absolute `/run/user/<other>/x.sock` passes them all. The prefix gate is the missing "whose socket" constraint, and fail-closed-when-unset matches how DL-011 treats the analogous `spawn_detached` surface.
+  - **B-14: a global on/off flag instead of a dir prefix.** Rejected: the prefix both enables the capability and bounds it in one value, the same shape as `spawn_allowlist`.
+  - **B-17: fail (not warn) on a non-0700 config dir.** Rejected: it would brick existing installs whose dir is `0750`/`0755` but whose individual secrets are `0600` (already enforced, DL-010); the directory perm is defense-in-depth, so a warning is proportionate.
+- **Consequences:** New config `bridge.channel.allowed_socket_dir` (`BRIDGE_CHANNEL_ALLOWED_SOCKET_DIR`, default null). **Behavior change:** a classifier that hand-emits a `channel_push` with its own `socket` now requires that env to be set (and the socket under it) — the no-classifier `route_intents` path and agent-config sockets are unaffected. `ProviderName`/`ScopeId` reject trailing-newline inputs. `bridge:check` gains a config-dir perms warning. Files: `app/Bridge/Validation/{ProviderName,ScopeId}.php`, `app/Bridge/Handlers/ChannelPushHandler.php`, `config/bridge.php`, `app/Console/Commands/Bridge/CheckCommand.php`, `.env.example`, tests across validators/handler/console.
+
+---
+
+## DL-015 — Single-source the provider list (assert in `bridge:check`) + `composer audit` CI (B-15 + B-16)
+
+- **Date:** 2026-05-31
+- **Context:** Two NICE-TO-HAVE hygiene items from the architecture review. **B-15:** the supported-provider set lives in two independent places — `WebhookAdapterFactory::SUPPORTED` (`['kanban','github']`, the providers with an adapter that can *receive* webhooks) and `config('bridge.providers')` (per-provider API base URLs the bridge *calls*). They can silently drift: an `api_base_url` configured for a provider with no adapter is dead config the receiver would `400 unknown_provider` on. **B-16:** Composer dependency CVEs were only surfaced by dependabot (its own cadence); nothing failed a build on a known-vulnerable dep at PR time.
+- **Decision:**
+  - **B-15 — assert, don't merge the lists.** `bridge:check` now **fails** if any `config('bridge.providers')` key is not in `WebhookAdapterFactory::SUPPORTED`. The two lists keep their distinct meanings (adapter-set vs API-base-set), but the *containment* invariant (every configured provider has an adapter) is enforced at preflight. Chosen over deriving one list from the other because they answer different questions — not every supported provider needs an `api_base_url` (a webhook-only provider doesn't), so `config.providers ⊆ SUPPORTED` is the real constraint, not equality.
+  - **B-16 — `composer audit` CI job** in `security.yml` (alongside gitleaks; runs on every PR + the existing nightly schedule). It reads `composer.lock` (no full install), so it's fast. A known CVE in a dependency now reds the build at PR time instead of waiting for a dependabot alert.
+- **Alternatives considered:**
+  - **B-15: derive `config('bridge.providers')` keys from `SUPPORTED` (or vice versa) at runtime.** Rejected: they encode different facts (which providers can be received vs which have a configured API base), so collapsing them would force a config entry for webhook-only providers or an adapter assumption for API-only ones. The containment assertion catches the real drift (a typo'd / orphan provider key) without conflating the two.
+  - **B-15: warn instead of fail.** Rejected: a configured provider with no adapter can never work (the receiver 400s it) — a definite misconfig, so fail-closed matches the project posture, unlike the secret-perms *warnings* (DL-014) which are defense-in-depth over a hard backstop.
+  - **B-16: rely on dependabot alone.** Rejected (the review's point): dependabot is asynchronous and easy to let lapse; a CI gate makes a vulnerable dep block the PR that introduces/keeps it.
+- **Consequences:** `bridge:check` gains one provider-containment assertion (uses `WebhookAdapterFactory::supports`). New `composer-audit` CI job. Both are low-churn drift/CVE guards. Files: `app/Console/Commands/Bridge/CheckCommand.php`, `.github/workflows/security.yml`, `tests/Feature/Console/BridgeCommandsTest.php`.
+
+---
+
+## DL-016 — Cleanups: one `ensureDir`, `CheckCommand extends BridgeCommand`, trimmed Python-provenance docstrings, documented no-`TrustProxies` (B-18 + B-19 + B-10/S3)
+
+- **Date:** 2026-05-31
+- **Context:** Three NICE-TO-HAVE/maintainability tail items from the architecture review:
+  - **B-19:** four call sites created a state/secret-adjacent directory with an inline `if (! is_dir) mkdir($dir, 0700, true)` — the mode (`0700`) was duplicated and could drift per site. Also (Sec N4): the no-`TrustProxies` posture was undocumented.
+  - **B-18:** several docblocks carried bare "mirrors the v0.11.x Python contract" provenance — archaeology that adds noise without explaining a behavior (the Python tree is long gone, DL-001).
+  - **B-10/S3:** `CheckCommand` still extended `Illuminate\Console\Command` directly, leaving the DL-007 `BridgeCommand` base-class consolidation incomplete.
+- **Decision:**
+  - **B-19:** add `BridgePaths::ensureDir(string $dir)` (the one place a `0700` dir is created) and route all four call sites (`appendJsonl`, `WebhookProvisioner::writeSecret`, `InboxCommand::writeSeen`, `SpawnDetachedHandler`) through it, so the mode can't drift. **Document the no-`TrustProxies` posture** in `CLAUDE_ARCHITECTURE.md`: the app never trusts `X-Forwarded-*` (HMAC is over the raw body, scope from the URL re-checked vs the body, the loopback gate uses the configured URL) — nothing reads a forwardable header, so registering `TrustProxies` would only widen the trust surface.
+  - **B-18:** trim the bare Python-provenance docstrings (`Classifier` signature note, `PathHelper::expandUser`, the `appendJsonl` ksort note's Python parenthetical) to state the *behavior/contract* instead. KEEP the ones that justify a real PHP behavior — `ChannelPushHandler`'s `parse_url`-vs-`urlparse` gotcha and `DispatchService`'s `23000`-handling reference (an internal cross-ref, not Python).
+  - **B-10/S3:** `CheckCommand extends BridgeCommand` (dropping the direct `Command` import) — completing the base-class consolidation. No behavior change (it uses no options; `self::SUCCESS/FAILURE` come through the base).
+- **Alternatives considered:**
+  - **B-19: a configurable dir mode.** Rejected: every bridge-created dir holds (or sits beside) secrets and must be `0700`; a knob would invite a non-0700 value. One hardcoded `0700` helper is the safe shape.
+  - **B-18: delete the docblocks entirely.** Rejected: the *contract/behavior* parts are useful (the classifier signature is a real contract); only the Python archaeology is noise.
+  - **B-10/S3: leave `CheckCommand` on `Command`.** Rejected: it's the one `bridge:*` command not on the shared base — a small consistency gap the review flagged; aligning it is zero-risk.
+- **Consequences:** New `BridgePaths::ensureDir`; the four `mkdir(0700)` sites collapse to it. `CheckCommand` is on `BridgeCommand`. Docstring noise trimmed. `CLAUDE_ARCHITECTURE.md` documents the no-`TrustProxies` posture. No runtime behavior change. Files: `app/Bridge/Support/BridgePaths.php`, `app/Bridge/Provision/WebhookProvisioner.php`, `app/Console/Commands/Bridge/{InboxCommand,CheckCommand}.php`, `app/Bridge/Handlers/SpawnDetachedHandler.php`, `app/Bridge/Contracts/Classifier.php`, `app/Bridge/Support/PathHelper.php`, `CLAUDE_ARCHITECTURE.md`.
+
+---
+
+## DL-017 — Group AgentConfig's identity triple into an `IdentityConfig` DTO (B-9, partial)
+
+- **Date:** 2026-05-31
+- **Context:** `AgentConfig`'s constructor carried three loose identity args (`?int $kanbanUserId, ?int $githubUserId, ?string $githubLogin`) inline — the largest remaining flat-field cluster in an otherwise DTO-grouped shape (`EchoSuppressionConfig`, `ChannelConfig` are already sub-DTOs). The architecture review (B-9) flagged the constructor's positional-arg count and proposed grouping the identity fields, "the same medicine DL-008 applied to the channel tuple."
+- **Decision:** Extract `App\Bridge\Support\IdentityConfig` (`kanbanUserId`, `githubUserId`, `githubLogin` + a `selfIds()` helper for echo-seeding + a `fromArray()` parser), and hold it as a single `AgentConfig::$identity` prop. `AgentConfig::fromArray` builds it via `IdentityConfig::fromArray(section('identity'))`; the two readers (`AgentRegistry::fromAgentConfigs`, the `AgentConfig` tests) go through `$cfg->identity->…`. Mirrors the `EchoSuppressionConfig`/`ChannelConfig` idiom so the YAML `identity:` block has a 1:1 typed shape.
+- **Alternatives considered:**
+  - **The full B-9 (also split `BridgePaths` into `BridgePaths` + `JsonlStore` + `InboxLayout`, and extract an `AgentConfigParser` from `AgentConfig`).** **Declined** (see "Deferred / declined" in the review doc): those are line-count-driven splits of cohesive, well-tested classes with broad call-site churn and no correctness gain — the kind of "while I'm here" restructure the project's right-sizing posture resists. The identity grouping is the one concrete smell (a related-field cluster begging for a DTO); the file splits are deferred until a real second reason to touch those files appears.
+  - **Leave the three args inline.** Rejected: they are conceptually one thing (the agent's identity), map 1:1 to the YAML `identity:` block, and grouping them removes a positional-mismatch hazard at construction — a proportionate, idiom-consistent change.
+- **Consequences:** New `app/Bridge/Support/IdentityConfig.php`; `AgentConfig`'s constructor drops from 11 to 9 args; `$cfg->kanbanUserId` → `$cfg->identity->kanbanUserId` at the two read sites. No runtime behavior change (the YAML schema is unchanged). Files: `app/Bridge/Support/{IdentityConfig,AgentConfig,AgentRegistry}.php`, `tests/Feature/Config/AgentConfigTest.php`, `tests/Unit/Support/IdentityConfigTest.php`, `CLAUDE_ARCHITECTURE.md`.
+
+---
+
 > **How to add a DL entry.** Use the next available `DL-NNN`. Lead with Date + Context (what made the decision necessary), then Decision (what was chosen), then Alternatives considered (with one-line rejections), then Consequences (what this enables or constrains downstream). Cite specific files/lines when load-bearing. If correcting a prior DL, write a new one titled "Correction to DL-NNN" and leave the original frozen.

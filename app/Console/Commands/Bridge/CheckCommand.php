@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\Adapters\WebhookAdapterFactory;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
@@ -12,7 +13,6 @@ use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\UrlValidator;
-use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 
@@ -20,7 +20,7 @@ use Throwable;
  * Validate the install: config/secret dirs, DB connectivity, and that every
  * per-agent YAML parses. Run before going live (and in the cutover runbook).
  */
-class CheckCommand extends Command
+class CheckCommand extends BridgeCommand
 {
     protected $signature = 'bridge:check';
 
@@ -39,6 +39,7 @@ class CheckCommand extends Command
             $ok = false;
         } else {
             $this->info("config dir: {$configDir}");
+            $this->warnIfDirInsecure('config dir', $configDir);
         }
 
         $secretDir = config('bridge.secret_dir');
@@ -47,6 +48,11 @@ class CheckCommand extends Command
             $ok = false;
         } else {
             $this->info("secret dir: {$secretDir}");
+            // Cover a split layout: when secret_dir is a different path, IT is the
+            // dir holding the secrets — warn on its perms too (DL-014).
+            if ($secretDir !== $configDir) {
+                $this->warnIfDirInsecure('secret dir', $secretDir);
+            }
         }
 
         try {
@@ -85,6 +91,21 @@ class CheckCommand extends Command
             } catch (Throwable $e) {
                 $this->error($e->getMessage());
                 $ok = false;
+            }
+        }
+
+        // Every configured provider must have a registered adapter (B-15): the
+        // two provider lists (config('bridge.providers') and
+        // WebhookAdapterFactory::SUPPORTED) are otherwise independent and drift —
+        // an api_base_url for a provider with no adapter is a dead config the
+        // receiver would 400 (unknown_provider) on.
+        $providers = config('bridge.providers');
+        if (is_array($providers)) {
+            foreach (array_keys($providers) as $provider) {
+                if (is_string($provider) && ! WebhookAdapterFactory::supports($provider)) {
+                    $this->error("bridge.providers.{$provider} is configured but has no adapter (WebhookAdapterFactory::SUPPORTED = ".implode(', ', WebhookAdapterFactory::SUPPORTED).')');
+                    $ok = false;
+                }
             }
         }
 
@@ -187,5 +208,21 @@ class CheckCommand extends Command
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * Warn (not fail) when a secret-holding dir is group/world-accessible (DL-014).
+     * On a multi-tenant host these dirs must be owner-only (0700); a co-tenant who
+     * can traverse one can read the HMAC secrets / tokens in it. Warn, not fail —
+     * perms are operator-owned and the per-secret 0600 gate (DL-010) is the hard
+     * backstop enforced fail-closed at point-of-use regardless of dir perms.
+     */
+    private function warnIfDirInsecure(string $label, string $dir): void
+    {
+        clearstatcache(true, $dir);
+        $perms = fileperms($dir);
+        if ($perms !== false && ($perms & 0o077) !== 0) {
+            $this->warn(sprintf('%s %s is group/world-accessible (mode %04o) — chmod 700 (it holds secrets)', $label, $dir, $perms & 0o777));
+        }
     }
 }
