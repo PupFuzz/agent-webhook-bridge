@@ -47,6 +47,7 @@ php artisan bridge:stats                 # event / dispatch counts
 | [`CLAUDE_DEPLOYMENT.md`](CLAUDE_DEPLOYMENT.md) | Install + update + cutover runbook, runtime ops (status contract, done-vs-errored, log/state locations, `bridge:*` commands, replay), diagnose, rollback, second-agent | Installing, operating, or diagnosing an install |
 | [`CLAUDE_GOTCHAS.md`](CLAUDE_GOTCHAS.md) | Surprising behaviors + "looked like X but actually Y" notes (raw-body HMAC capture, MariaDB timestamp formats, dedupCreate races, scope_id traversal, etc.) | When hitting an unexpected error, or before touching the receiver / dispatch path |
 | [`VERSIONING.md`](VERSIONING.md) | Version bump rules, release tagging, `docs/CHANGELOG.md` update flow | Before tagging a release |
+| [`docs/config-schema.md`](docs/config-schema.md) | Current-state config reference: every per-agent YAML key + `BRIDGE_*` env, type, default, fail-closed-vs-warn | Writing/validating a config; onboarding a new operator |
 | [`docs/customization.md`](docs/customization.md) | Writing custom classifiers + handlers + surface formatters (PHP) | Adding agent-specific behavior |
 | [`docs/provider-adapters.md`](docs/provider-adapters.md) | Adding a third upstream provider (HMAC header, envelope shape, `WebhookAdapter`) | Integrating GitLab / Jira / etc. |
 | [`docs/multi-agent.md`](docs/multi-agent.md) | Running parallel agents on the bridge | Onboarding a second agent |
