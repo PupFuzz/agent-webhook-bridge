@@ -5,6 +5,7 @@ namespace Tests\Feature\Handlers;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Handlers\ChannelPushHandler;
+use App\Bridge\Handlers\KanbanMoveCardHandler;
 use App\Bridge\Handlers\LogIntentHandler;
 use App\Bridge\Handlers\RegistryAppendHandler;
 use App\Bridge\Handlers\SpawnDetachedHandler;
@@ -14,13 +15,14 @@ use PHPUnit\Framework\TestCase;
 
 class HandlerRegistryTest extends TestCase
 {
-    public function test_ships_three_always_on_defaults(): void
+    public function test_ships_four_always_on_defaults(): void
     {
         $registry = new HandlerRegistry;
 
         $this->assertInstanceOf(LogIntentHandler::class, $registry->resolve('log_intent'));
         $this->assertInstanceOf(RegistryAppendHandler::class, $registry->resolve('registry_append'));
         $this->assertInstanceOf(ChannelPushHandler::class, $registry->resolve('channel_push'));
+        $this->assertInstanceOf(KanbanMoveCardHandler::class, $registry->resolve('kanban_move_card'));
     }
 
     public function test_spawn_detached_is_opt_in(): void
@@ -37,11 +39,11 @@ class HandlerRegistryTest extends TestCase
     public function test_known_is_sorted(): void
     {
         $this->assertSame(
-            ['channel_push', 'log_intent', 'registry_append'],
+            ['channel_push', 'kanban_move_card', 'log_intent', 'registry_append'],
             (new HandlerRegistry)->known(),
         );
         $this->assertSame(
-            ['channel_push', 'log_intent', 'registry_append', 'spawn_detached'],
+            ['channel_push', 'kanban_move_card', 'log_intent', 'registry_append', 'spawn_detached'],
             (new HandlerRegistry(true))->known(),
         );
     }

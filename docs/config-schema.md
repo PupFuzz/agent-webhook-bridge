@@ -99,6 +99,8 @@ Unknown top-level keys (outside `identity`/`subscriptions`/`echo_suppression`/`s
 | `<secret_dir>/<provider>/webhook-secret-scope-<scope>` | `0600` | Per-(provider,scope) HMAC secret. Group/world-readable → receiver **500 `secret_perms_insecure`** (DL-010). `<scope>`'s `/` is `%2F`-encoded. |
 | `<secret_dir>/<provider>/token` | `0600` | Per-provider API token (`bridge:provision`). Insecure perms → provision **fails** (DL-010). |
 | `<config_dir>/shared-identities.json` | `0600` | Optional. `{ "shared_identities": [ {github_user_id, github_login?, agents: [...]} ] }` — one declaration for a GitHub account shared by multiple agents (DL-002). Resolves to `Actor.name = null` so a classifier re-attributes. |
+| `<config_dir>/writeback.json` | `0600` | Optional (absent ⇒ writeback off, DL-009/019). `{ "identity_id": <kanban user>, "mappings": { "owner/repo": { "board_id": N, "stages": { "opened"\|"merged"\|"merged_to_main"\|"closed_unmerged": <stage_id> } } } }`. Per-install policy → config dir, not tracked config. Malformed → `bridge:check` **fails** / move handler 5xx. `identity_id` is auto-seeded into the global echo set so the writeback's own `card_updated` doesn't loop. |
+| `<secret_dir>/<provider>/writeback-token` | `0600` | Optional. The **dedicated least-privilege** token the card-move writeback authenticates with — distinct from `/token` (DL-009). Place a kanban token scoped to card-moves on the mapped boards. Absent/insecure → `bridge:check` **warns** + the move fails. |
 | `<state_dir>/inbox.jsonl` / `inbox-<agent>.jsonl` | — | Staged intents (the durable pull-backstop). Trimmed by `bridge:prune` (DL-012). |
 | `<state_dir>/inbox-seen[-<agent>].json` | — | Per-reader seen cursor. |
 

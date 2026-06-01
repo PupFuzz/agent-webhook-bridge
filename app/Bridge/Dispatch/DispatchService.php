@@ -3,6 +3,7 @@
 namespace App\Bridge\Dispatch;
 
 use App\Bridge\Adapters\EventDto;
+use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
@@ -136,7 +137,7 @@ final class DispatchService
                 $this->intentLog->stage($agent, $event, $intent, $index);
             }
 
-            // (C) handlers — best-effort; a failure is a recorded note, not a 5xx.
+            // (C) handlers — durable-first, then best-effort (DL-009).
             // Same-event coalescing: collapse targets sharing a debounceKey
             // (last-wins) so a classifier emitting duplicate buckets fires each
             // handler once. No cross-delivery debounce in the synchronous model
@@ -166,9 +167,33 @@ final class DispatchService
                     $targets[$routed->debounceKey] = $routed;
                 }
             }
-            $note = null;
+            // Partition by durability (DL-009). A DurableReaction handler performs
+            // a non-loss-tolerant side effect (e.g. a card-move writeback); its
+            // failure must PROPAGATE (treatment B → 5xx → redelivery), not be
+            // swallowed as a best-effort note. Durable handlers run FIRST so a
+            // durable throw short-circuits BEFORE any best-effort handler fires —
+            // redelivery then re-runs the whole dispatch (durable handlers MUST be
+            // idempotent) without re-amplifying best-effort pushes.
+            $durable = [];
+            $bestEffort = [];
             foreach ($targets as $target) {
                 $handler = $this->handlers->resolve($target->handler);
+                if ($handler instanceof DurableReaction) {
+                    $durable[] = [$target, $handler];
+                } else {
+                    $bestEffort[] = [$target, $handler];
+                }
+            }
+
+            // Durable: uncaught → propagate → 5xx; the dispatch stays unprocessed
+            // (processed_at null) and is redelivered.
+            foreach ($durable as [$durableTarget, $durableHandler]) {
+                $durableHandler->handle($durableTarget, $agent);
+            }
+
+            // Best-effort: a throw is a recorded note, not a delivery failure.
+            $note = null;
+            foreach ($bestEffort as [$target, $handler]) {
                 try {
                     if ($handler === null) {
                         throw new \RuntimeException("unknown handler '{$target->handler}'");
@@ -198,11 +223,29 @@ final class DispatchService
             fn (string $id) => ! $this->agents->isSharedGithubId($id),
         ));
 
+        // Global echo ids (DL-009): the bridge's own machine-write identities —
+        // e.g. the kanban user a card-move writeback acts as — are never a signal
+        // for ANY agent, or the resulting card_updated webhook loops back. This is
+        // the one non-per-agent echo input, unioned on top of the per-agent self
+        // ids. Populated from the writeback identity when the writeback ships.
         return EchoSuppression::default(
             $agent->agentName,
             $agent->echoSuppression->treatAsEcho,
-            $echoIds,
+            array_values(array_unique([...$echoIds, ...self::globalEchoIds()])),
         )->isEcho($actor);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function globalEchoIds(): array
+    {
+        $ids = config('bridge.global_echo_ids', []);
+
+        return array_values(array_map('strval', array_filter(
+            is_array($ids) ? $ids : [],
+            fn ($id): bool => is_string($id) || is_int($id),
+        )));
     }
 
     private function isSignal(AgentConfig $agent, Actor $actor): bool

@@ -18,4 +18,15 @@ final class TokenPath
     {
         return sprintf('%s/%s/token', rtrim($secretDir, '/'), $provider);
     }
+
+    /**
+     * The DEDICATED writeback token path (DL-009): <secret_dir>/<provider>/
+     * writeback-token. Distinct from for() on purpose — the writeback token is
+     * least-privilege (card-move scope only), so it must NOT collide with the
+     * broad provisioning token at the same (secret_dir, provider) key.
+     */
+    public static function forWriteback(string $secretDir, string $provider): string
+    {
+        return sprintf('%s/%s/writeback-token', rtrim($secretDir, '/'), $provider);
+    }
 }

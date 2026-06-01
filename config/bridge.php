@@ -150,4 +150,22 @@ return [
         'allowed_socket_dir' => env('BRIDGE_CHANNEL_ALLOWED_SOCKET_DIR'),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Global echo identities (DL-009)
+    |--------------------------------------------------------------------------
+    |
+    | Provider actor ids whose events are NEVER a signal for ANY agent — the
+    | bridge's own machine-write identities (e.g. the kanban user a future
+    | card-move writeback acts as), whose resulting card_updated webhook would
+    | otherwise loop back into the bridge. Unioned into every agent's echo set.
+    | Comma-separated in BRIDGE_GLOBAL_ECHO_IDS.
+    |
+    */
+
+    'global_echo_ids' => array_values(array_filter(
+        array_map('trim', explode(',', (string) env('BRIDGE_GLOBAL_ECHO_IDS', ''))),
+        fn (string $id) => $id !== '',
+    )),
+
 ];
