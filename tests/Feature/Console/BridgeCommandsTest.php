@@ -68,6 +68,27 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(1);
     }
 
+    public function test_check_warns_on_missing_writeback_token(): void
+    {
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('writeback token')
+            ->assertExitCode(0);   // warn, not fail
+    }
+
+    public function test_check_fails_on_malformed_writeback_json(): void
+    {
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', 'not json {');
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('writeback.json')
+            ->assertExitCode(1);
+    }
+
     public function test_check_warns_on_group_accessible_config_dir(): void
     {
         // DL-014: the config dir holds secrets → warn (not fail) if it's not 0700.

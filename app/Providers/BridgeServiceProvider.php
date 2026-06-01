@@ -7,6 +7,8 @@ use App\Bridge\Dispatch\IntentLog;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\SubscriptionRegistry;
+use App\Bridge\Writeback\WritebackConfig;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
 
 /**
@@ -44,6 +46,27 @@ class BridgeServiceProvider extends ServiceProvider
             // here too (→ 5xx → upstream redelivers once fixed), not a silent
             // degrade. shared-identities.json is the only separate file.
             $subscriptions = new SubscriptionRegistry($configDir);
+
+            // Seed the writeback identity into the global echo set (DL-018/019) so
+            // the card_updated webhook the bridge's own card-move produces is never
+            // a signal for any agent. This is best-effort wiring, NOT the
+            // fail-closed gate: DispatchService is constructor-injected (e.g. into
+            // ReplayCommand), so it's built at console boot too — a malformed
+            // writeback.json must surface as a bridge:check error / a treatment-B
+            // 5xx in the move handler, not crash every CLI invocation. On a bad
+            // file the seeding is skipped (the writeback won't run, so there's no
+            // identity to echo-suppress anyway).
+            try {
+                $writeback = WritebackConfig::load($configDir);
+                if ($writeback !== null && $writeback->identityId !== null) {
+                    config(['bridge.global_echo_ids' => array_values(array_unique([
+                        ...(array) config('bridge.global_echo_ids', []),
+                        (string) $writeback->identityId,
+                    ]))]);
+                }
+            } catch (\Throwable $e) {
+                Log::warning('bridge: writeback.json could not be loaded for echo-seeding; bridge:check will report it', ['error' => $e->getMessage()]);
+            }
 
             return new DispatchService(
                 $subscriptions,
