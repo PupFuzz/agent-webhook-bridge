@@ -5,11 +5,8 @@ namespace App\Bridge\Handlers;
 use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
-use App\Bridge\Exceptions\HandlerException;
 use App\Bridge\Support\AgentConfig;
-use App\Bridge\Support\SecretFile;
-use App\Bridge\Support\TokenPath;
-use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
@@ -85,7 +82,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             return;
         }
 
-        $client = $this->client();   // throws (→ 5xx) on a missing/insecure token
+        $client = WritebackClientFactory::make();   // throws (→ 5xx) on a missing/insecure token or base url
 
         // A kanban 4xx (deleted card, a stage that doesn't exist on the card's
         // board) is PERMANENT — log + no-op, never 5xx-retry it. Only a 5xx /
@@ -140,25 +137,5 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         $status = $e->response->status();
 
         return $status >= 400 && $status < 500;
-    }
-
-    /**
-     * Build the writeback client with the DEDICATED least-privilege token
-     * (TokenPath::forWriteback). A missing/insecure token throws (→ 5xx → the
-     * operator places it and the redelivery succeeds), like the HMAC-secret gate.
-     */
-    private function client(): KanbanClient
-    {
-        $secretDir = (string) config('bridge.secret_dir');
-        $baseUrl = (string) config('bridge.providers.kanban.api_base_url');
-        if ($baseUrl === '') {
-            throw new HandlerException('kanban_move_card: bridge.providers.kanban.api_base_url is not configured');
-        }
-        $token = SecretFile::read(TokenPath::forWriteback($secretDir, 'kanban'));   // throws on insecure perms
-        if ($token === null) {
-            throw new HandlerException('kanban_move_card: no kanban writeback token at '.TokenPath::forWriteback($secretDir, 'kanban').' (chmod 600)');
-        }
-
-        return new KanbanClient($baseUrl, $token);
     }
 }

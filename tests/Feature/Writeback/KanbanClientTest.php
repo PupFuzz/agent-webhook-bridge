@@ -44,4 +44,22 @@ class KanbanClientTest extends TestCase
         $this->expectException(RequestException::class);
         $this->client()->moveCard(5, 52);
     }
+
+    public function test_find_card_by_dl_number_matches_on_numeric_part(): void
+    {
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 7, 'payload' => ['dl_number' => '042']],     // leading-zero form → numeric 42
+            ['id' => 5, 'payload' => ['dl_number' => 'DL-9']],
+            ['id' => 9, 'payload' => ['dl_number' => ['oops']]],  // non-scalar → skipped, not fatal
+        ]])]);
+
+        $c = $this->client();
+        $this->assertSame(7, $c->findCardByDlNumber(8, 'DL-42'));   // "042" == 42 (leading zero)
+        $this->assertSame(5, $c->findCardByDlNumber(8, 'dl-9'));    // case-insensitive token
+        $this->assertNull($c->findCardByDlNumber(8, 'DL-420'));     // exact numeric, not substring
+        $this->assertNull($c->findCardByDlNumber(8, 'no-digits'));
+        Http::assertSent(fn (Request $r) => str_contains($r->url(), '/tasks/search.json')
+            && str_contains(urldecode($r->url()), 'board_id=8')
+            && str_contains(urldecode($r->url()), 'limit=200'));
+    }
 }
