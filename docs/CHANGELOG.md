@@ -10,6 +10,12 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.21.0] - 2026-06-01
+
+### Changed
+
+- **BREAKING — `Classifier::classify()` gains a required final `AgentConfig $agent` parameter (DL-022).** The dispatcher already invokes `classify()` once per subscribed agent; now it passes that serving agent, so a classifier can make **per-agent (recipient-aware)** decisions — e.g. drop an event not addressed to the serving agent (keyed on `$agent->agentName` / `$agent->identity`). **Every custom classifier must add the parameter** to its `classify()` signature (and thread it through any `parent::classify()` call) or it fatals on load (`Declaration … must be compatible`) — a default cannot avoid the break (PHP rejects a narrower implementor signature). The three in-tree classifiers + all docs are updated. Keeps recipient-addressing *policy* in the operator's classifier rather than the bridge core (option 1 over a dispatcher-side label filter). See `docs/customization.md` § Per-agent (recipient-aware) classification.
+
 ## [0.20.0] - 2026-06-01
 
 **The GitHub-PR → kanban card-move writeback (FR #2016) — the bridge's first writeback, otherwise still surface-only/one-way.** Opt-in; **off by default** (absent `writeback.json` ⇒ no-op, no behaviour change).

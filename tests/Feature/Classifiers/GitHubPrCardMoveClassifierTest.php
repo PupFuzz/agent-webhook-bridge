@@ -5,6 +5,7 @@ namespace Tests\Feature\Classifiers;
 use App\Bridge\Classifiers\GitHubPrCardMoveClassifier;
 use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyResult;
+use App\Bridge\Support\AgentConfig;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -12,6 +13,8 @@ use Tests\TestCase;
 class GitHubPrCardMoveClassifierTest extends TestCase
 {
     private string $dir;
+
+    private AgentConfig $agent;
 
     protected function setUp(): void
     {
@@ -31,6 +34,7 @@ class GitHubPrCardMoveClassifierTest extends TestCase
             'bridge.secret_dir' => $this->dir,
             'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
         ]);
+        $this->agent = AgentConfig::fromArray('test-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]);
     }
 
     protected function tearDown(): void
@@ -48,6 +52,7 @@ class GitHubPrCardMoveClassifierTest extends TestCase
             new Actor('999'),
             'github',
             $repo,
+            $this->agent,
         );
     }
 
@@ -123,7 +128,7 @@ class GitHubPrCardMoveClassifierTest extends TestCase
     public function test_non_pull_request_event_is_noop(): void
     {
         Http::fake();
-        $r = (new GitHubPrCardMoveClassifier)->classify('push', [], new Actor('1'), 'github', 'owner/repo');
+        $r = (new GitHubPrCardMoveClassifier)->classify('push', [], new Actor('1'), 'github', 'owner/repo', $this->agent);
         $this->assertSame([], $r->targets);
     }
 

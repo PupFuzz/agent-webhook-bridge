@@ -6,6 +6,7 @@ use App\Bridge\Contracts\Classifier;
 use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Support\AgentConfig;
 
 /**
  * Emits three log_intent targets in ONE result: two share a debounceKey
@@ -14,7 +15,7 @@ use App\Bridge\Dispatch\ReactionTarget;
  */
 class CoalescingTargetsClassifier implements Classifier
 {
-    public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId): ClassifyResult
+    public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId, AgentConfig $agent): ClassifyResult
     {
         return new ClassifyResult(
             targets: [

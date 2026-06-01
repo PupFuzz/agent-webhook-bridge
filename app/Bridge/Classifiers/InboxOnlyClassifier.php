@@ -6,6 +6,7 @@ use App\Bridge\Contracts\Classifier;
 use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
+use App\Bridge\Support\AgentConfig;
 
 /**
  * Canonical default classifier: surfaces kanban activity to the agent inbox
@@ -37,6 +38,7 @@ class InboxOnlyClassifier implements Classifier
         Actor $actor,
         string $provider,
         string $scopeId,
+        AgentConfig $agent,
     ): ClassifyResult {
         $intent = match (true) {
             $eventType === 'task.created' => $this->newCardIntent($payload, $actor, $provider),

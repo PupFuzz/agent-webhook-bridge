@@ -6,6 +6,7 @@ use App\Bridge\Contracts\Classifier;
 use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
+use App\Bridge\Support\AgentConfig;
 
 /**
  * Test-only classifier that emits exactly one intent for ANY event type
@@ -19,7 +20,7 @@ use App\Bridge\Dispatch\Intent;
  */
 class AlwaysIntentClassifier implements Classifier
 {
-    public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId): ClassifyResult
+    public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId, AgentConfig $agent): ClassifyResult
     {
         $who = $actor->name ?? $actor->id ?? '?';
 
