@@ -45,4 +45,43 @@ final class KanbanClient
     {
         $this->http()->patch("/tasks/{$cardId}.json", ['task' => ['workflow_stage_id' => $stageId]])->throw();
     }
+
+    /**
+     * Find the card on a board whose `dl_number` custom field matches a DL token
+     * (correlation, DL-021). Matches on the numeric part so "DL-9" / "9" / "dl-9"
+     * compare equal. Returns the card id, or null when no card matches (a PR with
+     * no tracked card → the writeback gracefully no-ops). Reads the board via the
+     * task-search endpoint and filters client-side, so it doesn't depend on the
+     * search DSL's custom-field syntax.
+     */
+    public function findCardByDlNumber(int $boardId, string $dl): ?int
+    {
+        $want = self::digits($dl);
+        if ($want === '') {
+            return null;
+        }
+        // limit=200 is the endpoint max; the server-side board_id filter keeps the
+        // result to one board, so 200 covers any realistic active board. (A board
+        // with >200 live cards would need paging — out of scope for now.)
+        $cards = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId}", 'limit' => 200])->throw()->json('data');
+        foreach (is_array($cards) ? $cards : [] as $card) {
+            if (! is_array($card)) {
+                continue;
+            }
+            $cardDl = $card['payload']['dl_number'] ?? null;
+            // Compare on the numeric value (int) so "DL-42" / "42" / "042" all
+            // match. Skip a non-scalar dl_number (defensive — payload is free-form).
+            if (is_scalar($cardDl) && self::digits((string) $cardDl) !== '' && (int) self::digits((string) $cardDl) === (int) $want
+                && isset($card['id']) && is_numeric($card['id'])) {
+                return (int) $card['id'];
+            }
+        }
+
+        return null;
+    }
+
+    private static function digits(string $s): string
+    {
+        return preg_replace('/\D+/', '', $s) ?? '';
+    }
 }

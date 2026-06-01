@@ -3,7 +3,7 @@
 namespace Tests\Feature\Handlers;
 
 use App\Bridge\Dispatch\ReactionTarget;
-use App\Bridge\Exceptions\HandlerException;
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Handlers\KanbanMoveCardHandler;
 use App\Bridge\Support\AgentConfig;
 use Illuminate\Http\Client\Request;
@@ -138,7 +138,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->writeWriteback();
         // No token written.
         Http::fake();
-        $this->expectException(HandlerException::class);
+        $this->expectException(ConfigException::class);   // propagates → 5xx, same as before
         $this->handle($this->payload());
     }
 

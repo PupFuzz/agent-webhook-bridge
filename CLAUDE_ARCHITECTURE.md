@@ -86,7 +86,9 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 | `app/Bridge/Contracts/Classifier.php` | Classifier contract: `classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId): ClassifyResult` |
 | `app/Bridge/Classifiers/InboxOnlyClassifier.php` | Reference classifier — surfaces lifecycle/activity events as intents; no dispatched targets |
 | `app/Bridge/Classifiers/EventDrivenClassifier.php` | Reference event-driven classifier — emits `channel_push` targets paired with intents |
-| `app/Bridge/Contracts/Handler.php` + `app/Bridge/Handlers/*` | Reaction handlers: `LogIntentHandler`, `ChannelPushHandler`, `RegistryAppendHandler`, `SpawnDetachedHandler` |
+| `app/Bridge/Classifiers/GitHubPrCardMoveClassifier.php` | Correlation classifier for the writeback — a `pull_request` event → a `kanban_move_card` target (FR #2016, `docs/writeback.md`) |
+| `app/Bridge/Contracts/Handler.php` + `app/Bridge/Handlers/*` | Reaction handlers: `LogIntentHandler`, `ChannelPushHandler`, `RegistryAppendHandler`, `KanbanMoveCardHandler` (the durable card-move writeback), `SpawnDetachedHandler` (opt-in) |
+| `app/Bridge/Contracts/DurableReaction.php` + `app/Bridge/Writeback/*` | The writeback: `DurableReaction` marker, `WritebackConfig`/`WritebackMapping` (`writeback.json` policy), `KanbanClient` + `WritebackClientFactory` (the card-move write, DL-009/018-021) |
 | `app/Bridge/Support/HandlerRegistry.php` / `ClassifierResolver.php` | Resolve the agent-configured handler/classifier names → instances |
 
 ### Config, identity, secrets
