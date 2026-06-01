@@ -12,7 +12,9 @@ use App\Bridge\Support\InstallGuard;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\SignalAllowlist;
+use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
+use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 
@@ -205,6 +207,32 @@ class CheckCommand extends BridgeCommand
         if (is_string($configDir) && is_file(rtrim($configDir, '/').'/shared-identities.json')) {
             $shared = AgentRegistry::loadSharedIdentities($configDir);
             $this->info('shared-identities.json: '.count($shared).' shared account(s)');
+        }
+
+        // writeback.json is optional (absent ⇒ writeback off). A malformed file
+        // is fail-closed (load throws) — catch it as a preflight failure. When
+        // present, warn if the dedicated writeback token is missing/insecure or
+        // the writeback identity is unset (the resulting card_updated would loop).
+        if (is_string($configDir) && is_file(rtrim($configDir, '/').'/writeback.json')) {
+            try {
+                $writeback = WritebackConfig::load($configDir);
+                $count = $writeback !== null ? count($writeback->mappings) : 0;
+                $this->info("writeback.json: {$count} repo mapping(s)");
+                if ($writeback !== null && $writeback->identityId === null) {
+                    $this->warn('writeback.json: no identity_id — set it so the writeback card_updated webhook is auto echo-suppressed (else it loops back)');
+                }
+                if ($hasSecretDir && $writeback !== null && $writeback->mappings !== []) {
+                    $tokenPath = TokenPath::forWriteback((string) $secretDir, 'kanban');
+                    if (! is_file($tokenPath)) {
+                        $this->warn("writeback: no kanban writeback token at {$tokenPath} — the move will fail until you place a least-privilege token (chmod 600)");
+                    } elseif (SecretFile::isInsecure($tokenPath)) {
+                        $this->warn('writeback: '.SecretFile::permsMessage($tokenPath).' — the move will fail until fixed');
+                    }
+                }
+            } catch (Throwable $e) {
+                $this->error('writeback.json: '.$e->getMessage());
+                $ok = false;
+            }
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;
