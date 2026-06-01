@@ -316,6 +316,8 @@ public function handle(ReactionTarget $target, AgentConfig $agent): void;
 
 The classifier emits `ReactionTarget::make(handler: 'my_handler', ...)` and the dispatcher looks it up by name in `HandlerRegistry`. A handler throw is recorded as a best-effort note on that agent's dispatch row but does **not** fail the webhook or affect other agents (treatment C — the intent is already durable in the inbox).
 
+> **Durable handlers (DL-009).** If your handler performs a side effect that must **not** be silently dropped (a writeback, an external state change), also implement the marker interface `App\Bridge\Contracts\DurableReaction`. Such a handler runs **before** the best-effort handlers, and its throw **propagates** (→ 5xx → upstream redelivers) instead of becoming a note — so the side effect is retried, not lost. **Contract: a `DurableReaction` handler must be idempotent** (redelivery re-runs the whole dispatch). Durability is a property of the handler, never of the `ReactionTarget`, so the classify path can't spoof it.
+
 ### Default shipped handlers
 
 - **`log_intent`** — appends the target (JSON line) to `<state_dir>/handler-log.jsonl`. Forensic log only; not read by `bridge:inbox`.
