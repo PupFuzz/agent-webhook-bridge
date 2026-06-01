@@ -10,6 +10,28 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.20.0] - 2026-06-01
+
+**The GitHub-PR → kanban card-move writeback (FR #2016) — the bridge's first writeback, otherwise still surface-only/one-way.** Opt-in; **off by default** (absent `writeback.json` ⇒ no-op, no behaviour change).
+
+### Added
+
+- **The card-move writeback (DL-009 design → DL-018/019/020/021).** A GitHub `pull_request` webhook deterministically moves a kanban card to a stage — no agent in the loop:
+  - **`DurableReaction` contract + durable-first dispatch (DL-018).** A handler whose side effect must not be silently dropped runs before the best-effort handlers, and its failure propagates (→ 5xx → redelivery) instead of becoming a note. Plus a global-echo seam (`BRIDGE_GLOBAL_ECHO_IDS`) so the bridge's own machine writes never loop back.
+  - **`writeback.json` policy + `KanbanClient` + a dedicated least-privilege writeback token (DL-019).** Per-install repo→board+stage mapping in the config dir (not tracked config); the move authenticates with a `0600` `writeback-token` distinct from the broad provisioning token.
+  - **`KanbanMoveCardHandler` (DL-020)** — durable, **idempotent** (no-op if already in stage), with a **belongs-to-mapped-board** security guard and a transient-vs-permanent failure split (a kanban 5xx retries; a 4xx / refusal / malformed payload logs + no-ops, never 5xx-storms).
+  - **`GitHubPrCardMoveClassifier` (DL-021)** — derives the move outcome from **GitHub-controlled fields only** (`action` + `pull_request.merged` + `base.ref`, never the title) and correlates the card by the `DL-NNN` token in the PR title/branch.
+  - **`docs/writeback.md`** — the operator runbook (token, `writeback.json`, the classifier agent, the repo webhook).
+- `bridge:check` validates `writeback.json` + the writeback token. New: `BRIDGE_GLOBAL_ECHO_IDS` env; `<config_dir>/writeback.json`; `<secret_dir>/<provider>/writeback-token`.
+
+### Operator notes
+
+- **Writeback is OFF until configured** — no migration, no change for existing installs. To enable, see `docs/writeback.md`: place `writeback.json` + a least-privilege token (whose kanban user is a member of the mapped board), run a github-subscribed agent with `classifier.class: …\GitHubPrCardMoveClassifier`, and add the repo webhook. **First outward-facing write — a real-install soak is recommended before relying on it.**
+
+### Verification
+
+- PHPUnit **310/310** (SQLite + MariaDB 10.6/11) · Pint clean · PHPStan level 7 0 errors · doc-refs + `composer audit --locked` green. Every phase passed an adversarial security review (ground-truthed against the kanban-board source) before merge.
+
 ## [0.19.0] - 2026-05-31
 
 **The architecture-review hardening tail (B-13…B-19 + the B-9/B-10 partials) — security tightenings, CI gates, a config reference, and cleanups.** No migration; the only operator-facing change is one new opt-in env (see Security).
