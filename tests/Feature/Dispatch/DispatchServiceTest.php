@@ -18,8 +18,12 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 use Tests\Fixtures\CoalescingTargetsClassifier;
+use Tests\Fixtures\DualTargetClassifier;
+use Tests\Fixtures\HandlerRecorder;
 use Tests\Fixtures\LogIntentClassifier;
 use Tests\Fixtures\ReattributingClassifier;
+use Tests\Fixtures\RecordingDurableHandler;
+use Tests\Fixtures\RecordingHandler;
 use Tests\Fixtures\ThrowingClassifier;
 use Tests\Fixtures\UnknownHandlerClassifier;
 use Tests\TestCase;
@@ -34,6 +38,7 @@ class DispatchServiceTest extends TestCase
     {
         parent::setUp();
         ClassifierResolver::flush();
+        HandlerRecorder::reset();
         $this->dir = sys_get_temp_dir().'/dispatch-'.uniqid();
         File::ensureDirectoryExists($this->dir);
         config(['bridge.config_dir' => $this->dir]);
@@ -67,14 +72,14 @@ class DispatchServiceTest extends TestCase
         File::put($this->dir."/{$name}.yml", $yaml);
     }
 
-    private function dispatcher(?IntentLog $intentLog = null): DispatchService
+    private function dispatcher(?IntentLog $intentLog = null, ?HandlerRegistry $handlers = null): DispatchService
     {
         $subs = new SubscriptionRegistry($this->dir);
 
         return new DispatchService(
             $subs,
             AgentRegistry::fromAgentConfigs($subs->agentConfigs(), AgentRegistry::loadSharedIdentities($this->dir)),
-            new HandlerRegistry,
+            $handlers ?? new HandlerRegistry,
             $intentLog ?? new IntentLog,
         );
     }
@@ -240,6 +245,56 @@ class DispatchServiceTest extends TestCase
         $this->assertNotNull($dispatch->processed_at);              // done
         $this->assertStringContainsString('does_not_exist', (string) $dispatch->error_message);   // note preserved
         $this->assertSame(1, $this->inboxCount());                 // intent staged before handler ran (B before C)
+    }
+
+    public function test_durable_target_runs_before_best_effort(): void
+    {
+        // DL-009: durable runs FIRST even though the classifier emits `be` before
+        // `dur`, and the dispatch acks (processed) when both succeed.
+        $this->writeAgent('prod-agent', DualTargetClassifier::class);
+        $registry = new HandlerRegistry;
+        $registry->register('be', new RecordingHandler('be'));
+        $registry->register('dur', new RecordingDurableHandler('dur'));
+
+        $this->dispatcher(handlers: $registry)->dispatch('kanban', '5', $this->dto(), $this->payload());
+
+        $this->assertSame(['dur', 'be'], HandlerRecorder::$calls);   // durable-first reorder
+        $this->assertNotNull(AgentDispatch::firstOrFail()->processed_at);
+    }
+
+    public function test_durable_failure_propagates_and_short_circuits_best_effort(): void
+    {
+        // DL-009: a durable handler's throw is NOT swallowed (treatment B → 5xx);
+        // it short-circuits BEFORE the best-effort handler runs, and the dispatch
+        // is left unprocessed so redelivery resumes it.
+        $this->writeAgent('prod-agent', DualTargetClassifier::class);
+        $registry = new HandlerRegistry;
+        $registry->register('be', new RecordingHandler('be'));
+        $registry->register('dur', new RecordingDurableHandler('dur', throw: true));
+
+        try {
+            $this->dispatcher(handlers: $registry)->dispatch('kanban', '5', $this->dto(), $this->payload());
+            $this->fail('expected the durable failure to propagate');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('dur failed', $e->getMessage());
+        }
+
+        $this->assertSame(['dur'], HandlerRecorder::$calls);          // best-effort never ran
+        $this->assertNull(AgentDispatch::firstOrFail()->processed_at);   // unprocessed → redelivered
+    }
+
+    public function test_global_echo_id_is_suppressed_for_every_agent(): void
+    {
+        // DL-009 global echo seam: an id in bridge.global_echo_ids is echo for
+        // ANY agent (its own self ids don't include it) — suppressed pre-classify.
+        config(['bridge.global_echo_ids' => ['137']]);
+        $this->writeAgent('prod-agent', ThrowingClassifier::class, kanbanUserId: 999);   // would throw if classified
+
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(actorId: '137'), $this->payload());
+
+        $dispatch = AgentDispatch::firstOrFail();
+        $this->assertNotNull($dispatch->processed_at);   // filtered-out → marked done, no classify
+        $this->assertSame(0, $this->inboxCount());       // nothing staged
     }
 
     public function test_intent_staging_failure_propagates_case_b(): void
