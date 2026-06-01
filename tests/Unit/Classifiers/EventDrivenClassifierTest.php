@@ -4,15 +4,19 @@ namespace Tests\Unit\Classifiers;
 
 use App\Bridge\Classifiers\EventDrivenClassifier;
 use App\Bridge\Dispatch\Actor;
+use App\Bridge\Support\AgentConfig;
 use PHPUnit\Framework\TestCase;
 
 class EventDrivenClassifierTest extends TestCase
 {
     private EventDrivenClassifier $classifier;
 
+    private AgentConfig $agent;
+
     protected function setUp(): void
     {
         $this->classifier = new EventDrivenClassifier;
+        $this->agent = AgentConfig::fromArray('test-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]);
     }
 
     /**
@@ -20,7 +24,7 @@ class EventDrivenClassifierTest extends TestCase
      */
     private function classify(string $eventType, array $payload)
     {
-        return $this->classifier->classify($eventType, $payload, new Actor(id: '1', name: 'alice'), 'kanban', '5');
+        return $this->classifier->classify($eventType, $payload, new Actor(id: '1', name: 'alice'), 'kanban', '5', $this->agent);
     }
 
     public function test_pairs_each_intent_with_a_channel_push_target(): void

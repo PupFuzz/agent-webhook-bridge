@@ -29,6 +29,7 @@ public function classify(
     Actor $actor,
     string $provider,
     string $scopeId,
+    AgentConfig $agent,
 ): ClassifyResult;
 ```
 
@@ -39,6 +40,7 @@ public function classify(
 - `$actor` — `Actor` resolved against the registry (built by scanning the per-agent YAMLs' `identity` blocks). `$actor->name` is the friendly name (null if unknown); `$actor->isKnownAgent` is true only for registry entries; `$actor->id` is the raw provider id; `$actor->rawEnvelope` holds raw actor fields from the adapter. **Echo suppression has already happened** — do not re-filter inside `classify`.
 - `$provider` — upstream system id (`"kanban"`, `"github"`, etc.). Pass through to every `Intent` you construct.
 - `$scopeId` — receiver-extracted scope id (kanban `board_id` stringified, GitHub `repository.full_name`, etc.).
+- `$agent` — the **serving agent's** `AgentConfig` (the dispatcher calls `classify()` once per subscribed agent). Use `$agent->agentName` / `$agent->identity` to make **per-agent (recipient-aware)** decisions — e.g. drop an event not addressed to this agent. See [Per-agent (recipient-aware) classification](#per-agent-recipient-aware-classification). One classifier instance is cached + shared across agents, so read `$agent` as a method-local; never stash it on the instance.
 
 **Output:** a `ClassifyResult` with either or both lists (both may be empty):
 
@@ -60,6 +62,7 @@ use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Support\AgentConfig;
 
 final class MyClassifier implements Classifier
 {
@@ -69,6 +72,7 @@ final class MyClassifier implements Classifier
         Actor $actor,
         string $provider,
         string $scopeId,
+        AgentConfig $agent,
     ): ClassifyResult {
         if ($eventType === 'task.created') {
             $name = ($payload['payload']['name'] ?? null) ?: '<unnamed>';
@@ -142,6 +146,7 @@ use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Support\AgentConfig;
 
 final class MyEventDrivenClassifier extends InboxOnlyClassifier
 {
@@ -151,8 +156,9 @@ final class MyEventDrivenClassifier extends InboxOnlyClassifier
         Actor $actor,
         string $provider,
         string $scopeId,
+        AgentConfig $agent,
     ): ClassifyResult {
-        $result = parent::classify($eventType, $payload, $actor, $provider, $scopeId);
+        $result = parent::classify($eventType, $payload, $actor, $provider, $scopeId, $agent);
 
         if ($result->intents === []) {
             return $result;
@@ -187,7 +193,7 @@ Echo suppression runs **before** `classify()`, matching the resolved `Actor` aga
 `ClassifyResult::$reattributedActor` closes that gap. A classifier that recovers the true author from a secondary signal (a `FROM:` line in the event body, repo scope → agent mapping, etc.) returns it on the result; **after** `classify`, the dispatcher re-runs the **same** per-agent echo check on the reattributed actor and drops the event only when it is the serving agent's own write:
 
 ```php
-public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId): ClassifyResult
+public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId, AgentConfig $agent): ClassifyResult
 {
     // Shared account → Actor.name is null. Recover the author from your own
     // convention (here: a "FROM: <agent>" first line in a comment body).
@@ -206,11 +212,49 @@ public function classify(string $eventType, array $payload, Actor $actor, string
 }
 ```
 
-- **You report *who*; the dispatcher decides *is that me?*.** The classifier doesn't know which agent it's serving (one cached instance serves all of them) and **must not filter** — it just names the author. The dispatcher applies each agent's own name / `treat_as_echo`, so the same classifier yields per-agent self-echo across all the agents sharing the account.
+- **You report *who*; the dispatcher decides *is that me?*.** Although `classify()` now receives the serving `$agent`, for shared-identity *echo* you still just **name the author** and let the dispatcher apply that agent's own name / `treat_as_echo` — reusing the canonical echo logic rather than reimplementing it per classifier. The same classifier then yields per-agent self-echo across all the agents sharing the account. (One cached instance serves all agents — read `$agent` as a local, never stash it.)
 - **A different shared-id agent's write still surfaces** — its recovered name isn't the serving agent's own name, so it isn't an echo for that agent.
 - **Leave it `null` when you didn't recover an author** (or there's nothing to recover) — the result dispatches unchanged. Every shipped classifier leaves it null, so this is a no-op unless you opt in.
 
 This is the completion of the `shared_identities` design (DL-002): the registry preserves the null name on purpose so this recovery layer can re-attribute. See [`multi-agent.md`](multi-agent.md) § Path C for the full shared-identity walkthrough.
+
+### Per-agent (recipient-aware) classification
+
+`classify()` receives the **serving agent** as its final argument (`AgentConfig $agent`). On a single install fanning out to several agents, the dispatcher invokes `classify()` **once per subscribed agent** — so the classifier can make decisions that differ per recipient: most usefully, **dropping an event that isn't addressed to this agent** (DL-022).
+
+The classic case: several agents share a coordination scope (one repo / board) where messages are addressed with `to:<agent>` / `to:all` labels, and each agent should act only on what's addressed to it. Before `$agent` existed, a shared classifier couldn't tell *which* agent it was serving, so every agent saw every coordination message. Now it can filter:
+
+```php
+public function classify(
+    string $eventType,
+    array $payload,
+    Actor $actor,
+    string $provider,
+    string $scopeId,
+    AgentConfig $agent,
+): ClassifyResult {
+    // Recipient filter ONLY on the shared coordination repo; own-repo events
+    // and broadcasts pass through untouched.
+    if ($scopeId === 'your-org/coordination') {
+        $labels = $this->labels($payload);                 // e.g. ['to:backend', 'from:pm']
+        $me = $agent->agentName;                            // 'backend'
+        $forMe = in_array("to:{$me}", $labels, true)
+            || in_array('to:all', $labels, true)
+            || in_array("from:{$me}", $labels, true);
+        if (! $forMe) {
+            return new ClassifyResult;                      // not addressed to me → drop
+        }
+    }
+
+    // ... normal surfacing / reactions ...
+    return new ClassifyResult(intents: [/* ... */]);
+}
+```
+
+- **`classify()` runs once per serving agent** — returning an empty `ClassifyResult` for one agent doesn't affect the others; each agent's dispatch is independent.
+- **The instance is cached + shared across agents** (`ClassifierResolver` keys by class). Read `$agent` as a method-local; **never** stash it on an instance field — the next agent in the same dispatch loop would see stale state.
+- **`$agent` carries the agent's own config** — `agentName` (the YAML filename), `identity` (`kanban_user_id` / `github_user_id`), `subscriptions`, etc. — so recipient logic can key on whatever the addressing convention uses.
+- **Addressing is operator policy, not bridge policy.** The bridge hands you the serving agent; what `to:`/`from:` labels mean is yours to define in the classifier. (This is why the seam is a classify param, not a built-in label filter.)
 
 ### Constructing the data shapes
 
@@ -275,6 +319,7 @@ Mirror `tests/Feature/Classifiers/InboxOnlyClassifierTest.php`:
 
 use App\Bridge\Classifiers\MyClassifier;
 use App\Bridge\Dispatch\Actor;
+use App\Bridge\Support\AgentConfig;
 
 it('emits new_card intent for task.created', function () {
     $actor = new Actor(id: '99', name: 'alice', isKnownAgent: false);
@@ -294,6 +339,7 @@ it('emits new_card intent for task.created', function () {
         actor: $actor,
         provider: 'kanban',
         scopeId: '5',
+        agent: AgentConfig::fromArray('my-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
     );
 
     expect($result->intents)->toHaveCount(1);

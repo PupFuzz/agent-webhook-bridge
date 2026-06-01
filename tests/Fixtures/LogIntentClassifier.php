@@ -7,11 +7,12 @@ use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Support\AgentConfig;
 
 /** Emits one Intent + one cheap log_intent ReactionTarget (happy-path handler). */
 class LogIntentClassifier implements Classifier
 {
-    public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId): ClassifyResult
+    public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId, AgentConfig $agent): ClassifyResult
     {
         $subjectId = (string) ($payload['subject_id'] ?? '0');
 

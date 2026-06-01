@@ -6,6 +6,7 @@ use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Support\AgentConfig;
 
 /**
  * inbox_only + a paired channel_push ReactionTarget per Intent — the canonical
@@ -25,8 +26,9 @@ class EventDrivenClassifier extends InboxOnlyClassifier
         Actor $actor,
         string $provider,
         string $scopeId,
+        AgentConfig $agent,
     ): ClassifyResult {
-        $result = parent::classify($eventType, $payload, $actor, $provider, $scopeId);
+        $result = parent::classify($eventType, $payload, $actor, $provider, $scopeId, $agent);
 
         if ($result->intents === []) {
             return $result;
