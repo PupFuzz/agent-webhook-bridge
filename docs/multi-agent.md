@@ -365,6 +365,7 @@ namespace YourOrg\KanbanBridge;
 use App\Bridge\Contracts\Classifier;
 use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyResult;
+use App\Bridge\Support\AgentConfig;
 
 class MyClassifier implements Classifier
 {
@@ -374,7 +375,7 @@ class MyClassifier implements Classifier
         'myorg/acme-inventory' => 'inventory',
     ];
 
-    public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId): ClassifyResult
+    public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId, AgentConfig $agent): ClassifyResult
     {
         $reattributed = null;
         if ($provider === 'github' && $actor->name === null && isset(self::REPO_TO_AGENT[$scopeId])) {

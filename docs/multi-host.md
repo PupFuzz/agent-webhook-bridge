@@ -162,6 +162,7 @@ use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Support\AgentConfig;
 
 class MyClassifier implements Classifier
 {
@@ -171,6 +172,7 @@ class MyClassifier implements Classifier
         Actor $actor,
         string $provider,
         string $scopeId,
+        AgentConfig $agent,
     ): ClassifyResult {
         if ($eventType !== 'card.updated') {
             return new ClassifyResult;

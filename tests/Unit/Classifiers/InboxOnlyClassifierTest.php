@@ -4,6 +4,7 @@ namespace Tests\Unit\Classifiers;
 
 use App\Bridge\Classifiers\InboxOnlyClassifier;
 use App\Bridge\Dispatch\Actor;
+use App\Bridge\Support\AgentConfig;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -13,10 +14,13 @@ class InboxOnlyClassifierTest extends TestCase
 
     private Actor $actor;
 
+    private AgentConfig $agent;
+
     protected function setUp(): void
     {
         $this->classifier = new InboxOnlyClassifier;
         $this->actor = new Actor(id: '137', name: 'alice');
+        $this->agent = AgentConfig::fromArray('test-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]);
     }
 
     /**
@@ -24,7 +28,7 @@ class InboxOnlyClassifierTest extends TestCase
      */
     private function classify(string $eventType, array $payload)
     {
-        return $this->classifier->classify($eventType, $payload, $this->actor, 'kanban', '5');
+        return $this->classifier->classify($eventType, $payload, $this->actor, 'kanban', '5', $this->agent);
     }
 
     public function test_task_created_yields_new_card_intent(): void
