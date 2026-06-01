@@ -5,7 +5,7 @@
 | Extension | What it does | Loaded via | Default |
 |---|---|---|---|
 | **Classifier** | Maps webhook events to `Intent` (inbox) and/or `ReactionTarget` (handler) instances. | `classifier.class` in agent YAML (FQCN). | `App\Bridge\Classifiers\InboxOnlyClassifier` |
-| **Handler** | Implements `Handler` contract; dispatched by name synchronously in the same request. | `afterResolving(HandlerRegistry::class, fn ($r) => $r->register(name, instance))` in a `ServiceProvider`. | Three always ship: `log_intent`, `registry_append`, `channel_push`. `spawn_detached` is opt-in (`BRIDGE_SPAWN_ENABLED`, DL-011). |
+| **Handler** | Implements `Handler` contract; dispatched by name synchronously in the same request. | `afterResolving(HandlerRegistry::class, fn ($r) => $r->register(name, instance))` in a `ServiceProvider`. | Four always ship: `log_intent`, `registry_append`, `channel_push`, `kanban_move_card` (the writeback; inert without `writeback.json`, DL-020). `spawn_detached` is opt-in (`BRIDGE_SPAWN_ENABLED`, DL-011). |
 
 The Python-era surface formatter (a callable swapped into `bin/inbox`) does not exist in v0.12. `bridge:inbox` ships one built-in Markdown renderer; the output format is not operator-swappable. To reshape output, post-process `bridge:inbox` stdout or read `inbox.jsonl` directly (see [`consumer-guide.md`](consumer-guide.md)).
 
@@ -13,7 +13,7 @@ Reference implementations (read these first — they're short):
 
 - `app/Bridge/Classifiers/InboxOnlyClassifier.php` — canonical classifier (~160 LOC)
 - `app/Bridge/Classifiers/EventDrivenClassifier.php` — event-driven subclass
-- `app/Bridge/Handlers/` — shipped handlers (`log_intent`, `registry_append`, `channel_push`; `spawn_detached` opt-in)
+- `app/Bridge/Handlers/` — shipped handlers (`log_intent`, `registry_append`, `channel_push`, `kanban_move_card`; `spawn_detached` opt-in)
 - `app/Bridge/Contracts/Classifier.php` + `Handler.php` — contracts your class must implement
 
 ---
