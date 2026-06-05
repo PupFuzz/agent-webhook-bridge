@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# promote-released-cards — move a release's tracking cards to a "released" stage.
+#
+# Generic across repos (sibling to release-pr-body). Board / stage / API base come
+# from `.release-pr.json` (`.promote` block); the API token comes from
+# $KANBAN_WRITEBACK_TOKEN. Correlates each shipped ref token (DL-NNN by default) to
+# a card by its `payload.dl_number` and PATCHes the card's stage. Idempotent (skips
+# a card already at the target), best-effort per card. Designed to run in release CI
+# on merge-to-main, or by hand to backfill.
+#
+# Shipped refs: from `--dls "DL-1,DL-2"`, else from `git log <base>..<head>` via
+# `ref_token_regex`. FAILS LOUDLY if the token can't see the board (0 visible cards)
+# — a misconfigured/unauthorized token, NOT "no card".
+#
+# Usage: promote-released-cards [--dls LIST] [--base REF] [--head REF] [--dry-run] [--config PATH]
+set -euo pipefail
+
+die() { echo "promote-released-cards: $*" >&2; exit 2; }
+for c in jq curl git; do command -v "$c" >/dev/null || die "$c is required"; done
+
+CONFIG=".release-pr.json"; DLS_IN=""; BASE=""; HEAD_REF=""; DRY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dls)     DLS_IN="$2"; shift 2;;
+    --base)    BASE="$2"; shift 2;;
+    --head)    HEAD_REF="$2"; shift 2;;
+    --dry-run) DRY=1; shift;;
+    --config)  CONFIG="$2"; shift 2;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0;;
+    *) die "unknown arg '$1'";;
+  esac
+done
+
+[ -f "$CONFIG" ] || die "no $CONFIG in this repo"
+cfg() { jq -r "$1 // empty" "$CONFIG"; }
+BOARD="$(cfg '.promote.board_id')"
+STAGE="$(cfg '.promote.released_stage_id')"
+API="$(cfg '.promote.api_base')"
+REF_RE="$(cfg '.ref_token_regex')"; REF_RE="${REF_RE:-DL-[0-9]+}"
+[ -n "$BOARD" ] && [ -n "$STAGE" ] && [ -n "$API" ] \
+  || die ".promote.{board_id,released_stage_id,api_base} are required in $CONFIG"
+TOKEN="${KANBAN_WRITEBACK_TOKEN:-}"
+[ -n "$TOKEN" ] || die "KANBAN_WRITEBACK_TOKEN is not set"
+API="${API%/}"
+
+# --- resolve the shipped ref tokens -----------------------------------------
+norm() { grep -oiE "$REF_RE" | tr '[:lower:]' '[:upper:]' | awk '!seen[$0]++'; }
+if [ -n "$DLS_IN" ]; then
+  DLS="$(printf '%s' "$DLS_IN" | tr ',' '\n' | norm || true)"
+else
+  HEAD_REF="${HEAD_REF:-HEAD}"
+  [ -n "$BASE" ] || BASE="$(git describe --tags --abbrev=0 "${HEAD_REF}^" 2>/dev/null || true)"
+  RANGE="${BASE:+$BASE..}$HEAD_REF"
+  DLS="$(git log "$RANGE" --no-merges --format='%s' 2>/dev/null | norm || true)"
+fi
+[ -n "$DLS" ] || { echo "promote-released-cards: no shipped refs in range — nothing to do."; exit 0; }
+
+# --- read the board ----------------------------------------------------------
+api() { curl -fsS -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" "$@"; }
+RESP="$(api "$API/tasks/search.json?q=board_id=$BOARD&limit=200")" \
+  || die "board $BOARD read failed (HTTP error) — check the token and api_base ($API)"
+N="$(printf '%s' "$RESP" | jq '.data | length')"
+# THE FIX: 0 visible cards almost always means the token's user can't see this board
+# (not a member, or wrong instance) — refuse rather than silently report every ref
+# as "no card" (which is how a misconfigured token hid itself once).
+[ "${N:-0}" -gt 0 ] \
+  || die "board $BOARD returned 0 visible cards — the token's user is likely not a member of board $BOARD (or wrong instance). Refusing."
+[ "$N" -ge 200 ] && echo "promote-released-cards: WARNING — board $BOARD hit the 200-card page cap; cards beyond it may be missed (needs paging)." >&2
+
+# numeric-dl => {id, stage}
+MAP="$(printf '%s' "$RESP" | jq -c '
+  [ .data[]
+    | select(.payload.dl_number != null)
+    | { key: (.payload.dl_number|tostring|gsub("[^0-9]";"")), value: {id, stage: .workflow_stage_id} }
+    | select(.key != "") ] | from_entries')"
+
+moved=0; skipped=0; missing=0; failed=0
+while IFS= read -r dl; do
+  [ -n "$dl" ] || continue
+  key="$(printf '%s' "$dl" | grep -oE '[0-9]+')"
+  entry="$(printf '%s' "$MAP" | jq -c --arg k "$key" '.[$k] // empty')"
+  if [ -z "$entry" ]; then echo "  · $dl: no card on board $BOARD"; missing=$((missing+1)); continue; fi
+  id="$(printf '%s' "$entry" | jq '.id')"; cur="$(printf '%s' "$entry" | jq '.stage')"
+  if [ "$cur" = "$STAGE" ]; then echo "  = $dl (#$id): already released"; skipped=$((skipped+1)); continue; fi
+  if [ "$DRY" = 1 ]; then echo "  → $dl (#$id): would move $cur → $STAGE"; moved=$((moved+1)); continue; fi
+  if api -X PATCH -H "Content-Type: application/json" -d "{\"task\":{\"workflow_stage_id\":$STAGE}}" "$API/tasks/$id.json" >/dev/null; then
+    echo "  ✓ $dl (#$id): moved $cur → $STAGE"; moved=$((moved+1))
+  else
+    echo "  ✗ $dl (#$id): move failed (left in place)" >&2; failed=$((failed+1))
+  fi
+done <<< "$DLS"
+
+echo "promote-released-cards: $moved moved, $skipped already-released, $missing no-card, $failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
+# Systemic failure only (every attempted move failed) is a non-zero exit; an
+# isolated card hiccup never fails the release.
+if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; fi
+exit 0
