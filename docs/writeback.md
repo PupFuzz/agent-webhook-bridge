@@ -33,15 +33,14 @@ The writeback acts as this token's kanban user — note that user's `user_id`. *
         "merged": 52,                  // Shipped to dev
         "merged_to_main": 53,          // Released to main
         "closed_unmerged": 49          // In Progress
-      },
-      "create_dependabot_cards": true  // optional, default false — see below (DL-024)
+      }
     }
   }
 }
 ```
 Absent ⇒ writeback off. Malformed ⇒ fail-closed (`bridge:check` reports it). Every stage id must be a real stage **on that board** (a cross-board id is refused by kanban and logged, not retried).
 
-**`create_dependabot_cards`** (optional, default `false`, DL-024) — when `true`, a **dependabot** PR (head ref `dependabot/*`), which carries no `DL-NNN` and has no pre-existing card, gets a card **created on open** and **moved on close**, keyed by **PR number** (the same `stages` map drives the lifecycle). New cards are tagged `dependencies` + `triaged`. Idempotent on `payload.pr_number`; a `closed_unmerged` for a PR never tracked is skipped. The writeback token's kanban user must be able to **create** tasks on the board (it already needs write + board membership for moves).
+> A mapping can also opt into **dependabot cards** (`create_dependabot_cards`) so dependency-update PRs auto-create cards — see the **Optional: dependabot cards** section below.
 
 ### 3. A github-subscribed agent using the classifier
 ```yaml
@@ -67,6 +66,51 @@ The bridge does **not** provision GitHub webhooks (no repo-admin token by design
 php artisan bridge:check        # validates writeback.json + the writeback token
 ```
 Open/merge a PR whose title or branch carries `DL-NNN` matching a card's `payload.dl_number` (the card's `dl_number` custom field, populated by your board automation when the card is created); the card moves. `php artisan bridge:inspect <event_id>` shows the dispatch + any logged refusal/no-op.
+
+## Optional: dependabot cards (DL-024)
+
+By default the writeback only **moves an existing card** correlated by a `DL-NNN`. Dependabot PRs carry no `DL-NNN` and have no card, so dependency updates never appear on the board. Set **`create_dependabot_cards: true`** on a mapping and the bridge will **create a card when a dependabot PR opens** and carry it through the same lifecycle on close — keyed by **PR number** (no DL needed). It builds on the base setup above (token, the repo webhook subscribed to *Pull requests*, the classifier agent); it just adds the one flag.
+
+```jsonc
+// $BRIDGE_DIR/writeback.json
+{
+  "identity_id": 4242,
+  "mappings": {
+    "your-org/your-repo": {
+      "board_id": 8,
+      "stages": {
+        "opened": 50,                  // ← a created dependabot card lands here
+        "merged": 52,
+        "merged_to_main": 53,
+        "closed_unmerged": 49
+      },
+      "create_dependabot_cards": true  // opt-in (default false)
+    }
+  }
+}
+```
+
+**Detection.** A PR is treated as dependabot when its head branch is in dependabot's own namespace (`dependabot/*`) — a GitHub-controlled field, never the title.
+
+**Lifecycle** — the same `stages` map drives it, correlated on `payload.pr_number`:
+
+| PR event | Card exists? | Action |
+| --- | --- | --- |
+| opened / reopened | no | **create** at the `opened` stage |
+| merged to `dev` | yes | move to `merged` |
+| merged to `main` | yes | move to `merged_to_main` |
+| closed, not merged | yes | move to `closed_unmerged` |
+| any | already at target | no-op (idempotent) |
+| merged / merged_to_main | no (open was missed) | create at that stage |
+| closed, not merged | no | **skip** — don't mint a card just to close one we never tracked |
+
+**New cards** are tagged `dependencies` + `triaged` (so routine dependency churn doesn't flood a triage sweep) and carry `payload.pr_number`, `payload.pr_url`, and `payload.origin = "dependabot"`.
+
+**Token.** The writeback user must be able to **create** tasks on the board — i.e. write access + board membership, the same it already needs for moves. No extra config beyond the flag.
+
+**Idempotency.** Correlation is by `payload.pr_number`, so a redelivered or reopened event never duplicates a card. (A rare *concurrent* duplicate `opened` delivery could create two — there's no unique constraint on `pr_number`; acceptable at dependabot's rate.)
+
+**Worked example.** With the mapping above, dependabot opens `chore(deps): Bump x from 1 to 2` (PR #77, head `dependabot/composer/x-2.0`) → a card *"chore(deps): Bump x from 1 to 2"* appears on board 8 in **In Review** (50), tagged `dependencies`/`triaged`, with `payload.pr_number: 77`. When it auto-merges to `dev`, the card moves to **Shipped to dev** (52). `php artisan bridge:inspect <event_id>` shows each create/move.
 
 ## Failure behaviour (what retries vs not)
 
