@@ -80,6 +80,48 @@ final class KanbanClient
         return null;
     }
 
+    /**
+     * The id of the card on a board whose `payload.pr_number` matches, or null.
+     * The idempotency key for PR-origin cards (dependabot) that carry no DL.
+     */
+    public function findCardByPrNumber(int $boardId, int $prNumber): ?int
+    {
+        $cards = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId}", 'limit' => 200])->throw()->json('data');
+        foreach (is_array($cards) ? $cards : [] as $card) {
+            if (! is_array($card)) {
+                continue;
+            }
+            $pr = $card['payload']['pr_number'] ?? null;
+            if (is_numeric($pr) && (int) $pr === $prNumber && isset($card['id']) && is_numeric($card['id'])) {
+                return (int) $card['id'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Create a card on a board at a stage; returns the new card id.
+     *
+     * @param  array<string, mixed>  $payload
+     * @param  list<string>  $tags
+     */
+    public function createCard(int $boardId, int $stageId, string $name, array $payload, array $tags): int
+    {
+        $data = $this->http()->post('/tasks.json', ['task' => [
+            'board_id' => $boardId,
+            'workflow_stage_id' => $stageId,
+            'name' => $name,
+            'payload' => $payload,
+            'tags' => $tags,
+        ]])->throw()->json('data');
+        if (! is_array($data) || ! isset($data['id']) || ! is_numeric($data['id'])) {
+            throw new \RuntimeException('kanban createCard: response carried no task id');
+        }
+
+        return (int) $data['id'];
+    }
+
     private static function digits(string $s): string
     {
         return preg_replace('/\D+/', '', $s) ?? '';
