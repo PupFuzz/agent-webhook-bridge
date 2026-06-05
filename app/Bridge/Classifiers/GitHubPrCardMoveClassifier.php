@@ -45,6 +45,28 @@ class GitHubPrCardMoveClassifier implements Classifier
             return new ClassifyResult;   // repo not configured for writeback
         }
 
+        // Dependabot PRs carry no DL and have no pre-existing card. When opted in
+        // (per-mapping `create_dependabot_cards`), emit a create-or-move target
+        // keyed by PR NUMBER — the durable handler creates the card on open and
+        // moves it on close. Detected by dependabot's own branch namespace.
+        if ($mapping->createDependabotCards && $this->isDependabot($payload)) {
+            $prNumber = $this->prNumber($payload);
+            if ($prNumber === null) {
+                return new ClassifyResult;
+            }
+            $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
+
+            return new ClassifyResult(targets: [
+                ReactionTarget::make('kanban_dependabot_card', "pr-{$prNumber}", payload: [
+                    'repo' => $repo,
+                    'outcome' => $outcome,
+                    'pr_number' => $prNumber,
+                    'pr_title' => is_string($pr['title'] ?? null) ? $pr['title'] : "Dependabot PR #{$prNumber}",
+                    'pr_url' => is_string($pr['html_url'] ?? null) ? $pr['html_url'] : '',
+                ]),
+            ]);
+        }
+
         $dl = $this->dlToken($payload);
         if ($dl === null) {
             return new ClassifyResult;   // no DL-NNN in the PR → un-linked, no-op
@@ -105,5 +127,31 @@ class GitHubPrCardMoveClassifier implements Classifier
         }
 
         return null;
+    }
+
+    /**
+     * A dependabot PR, detected by its own branch namespace (`dependabot/*`).
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function isDependabot(array $payload): bool
+    {
+        $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
+        $head = is_array($pr['head'] ?? null) && is_string($pr['head']['ref'] ?? null) ? $pr['head']['ref'] : '';
+
+        return str_starts_with($head, 'dependabot/');
+    }
+
+    /**
+     * The PR number (the dependabot-card correlation key), or null.
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function prNumber(array $payload): ?int
+    {
+        $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
+        $n = $pr['number'] ?? null;
+
+        return is_numeric($n) ? (int) $n : null;
     }
 }

@@ -33,12 +33,15 @@ The writeback acts as this token's kanban user — note that user's `user_id`. *
         "merged": 52,                  // Shipped to dev
         "merged_to_main": 53,          // Released to main
         "closed_unmerged": 49          // In Progress
-      }
+      },
+      "create_dependabot_cards": true  // optional, default false — see below (DL-024)
     }
   }
 }
 ```
 Absent ⇒ writeback off. Malformed ⇒ fail-closed (`bridge:check` reports it). Every stage id must be a real stage **on that board** (a cross-board id is refused by kanban and logged, not retried).
+
+**`create_dependabot_cards`** (optional, default `false`, DL-024) — when `true`, a **dependabot** PR (head ref `dependabot/*`), which carries no `DL-NNN` and has no pre-existing card, gets a card **created on open** and **moved on close**, keyed by **PR number** (the same `stages` map drives the lifecycle). New cards are tagged `dependencies` + `triaged`. Idempotent on `payload.pr_number`; a `closed_unmerged` for a PR never tracked is skipped. The writeback token's kanban user must be able to **create** tasks on the board (it already needs write + board membership for moves).
 
 ### 3. A github-subscribed agent using the classifier
 ```yaml

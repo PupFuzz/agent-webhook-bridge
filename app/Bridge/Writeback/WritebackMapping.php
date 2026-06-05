@@ -14,10 +14,14 @@ final class WritebackMapping
 {
     /**
      * @param  array<string, int>  $stages  outcome => workflow_stage_id
+     * @param  bool  $createDependabotCards  opt-in: a dependabot PR (head `dependabot/*`)
+     *                                       with no tracking card gets one created on
+     *                                       open and moved on close (keyed by PR number)
      */
     public function __construct(
         public readonly int $boardId,
         public readonly array $stages,
+        public readonly bool $createDependabotCards = false,
     ) {}
 
     /** The configured stage id for a GitHub-PR outcome, or null when unmapped. */

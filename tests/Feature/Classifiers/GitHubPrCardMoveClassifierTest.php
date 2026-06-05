@@ -139,4 +139,47 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame([], $r->targets);
         Http::assertNothingSent();
     }
+
+    private function enableDependabot(): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => [
+                'opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49,
+            ], 'create_dependabot_cards' => true]],
+        ]));
+    }
+
+    public function test_dependabot_pr_emits_create_or_move_target_when_opted_in(): void
+    {
+        $this->enableDependabot();
+        Http::fake();   // no correlation read on this path
+
+        $r = $this->classify('pull_request.opened', [
+            'title' => 'chore(deps): Bump x from 1 to 2',
+            'number' => 77,
+            'head' => ['ref' => 'dependabot/composer/x-2.0'],
+            'html_url' => 'https://github.com/owner/repo/pull/77',
+        ]);
+
+        $this->assertCount(1, $r->targets);
+        $t = $r->targets[0];
+        $this->assertSame('kanban_dependabot_card', $t->handler);
+        $this->assertSame('owner/repo', $t->payload['repo']);
+        $this->assertSame('opened', $t->payload['outcome']);
+        $this->assertSame(77, $t->payload['pr_number']);
+        Http::assertNothingSent();   // create/move decided by the durable handler, not here
+    }
+
+    public function test_dependabot_pr_falls_through_when_not_opted_in(): void
+    {
+        // setUp's config has no create_dependabot_cards → no dependabot branch;
+        // a dependabot PR has no DL, so the normal path is a no-op.
+        Http::fake();
+        $r = $this->classify('pull_request.opened', [
+            'title' => 'chore(deps): Bump x', 'number' => 77, 'head' => ['ref' => 'dependabot/composer/x-2.0'],
+        ]);
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
+    }
 }
