@@ -1,8 +1,11 @@
-name: Auto-tag v<version> on merge to main
+name: Auto-tag + GitHub Release on merge to main
 
 # Fires on every push to main (release-PR merges). Reads the version
-# string from the VERSION file at repo root and creates a v<version>
-# git tag at the merge commit. Idempotent: tag-already-at-this-SHA → skip.
+# string from the VERSION file at repo root, creates a v<version> git
+# tag at the merge commit, AND publishes a GitHub Release whose notes are
+# that version's docs/CHANGELOG.md section (so the Releases page matches
+# the tags — a bare tag is invisible there). Idempotent: tag/release
+# already present → skip.
 # Tag-already-at-different-SHA → fail loud (two releases claimed the
 # same version; release PR forgot to bump VERSION). Eliminates the
 # manual `git tag -a v<X> <SHA> && git push --tags` step in the
@@ -68,3 +71,29 @@ jobs:
             echo "Open a follow-up PR that bumps VERSION + CHANGELOG + CLAUDE.md, then re-merge."
             exit 1
           fi
+
+      - name: Create GitHub Release from the CHANGELOG section (idempotent)
+        # The tag alone is invisible on the repo's Releases page — a consumer
+        # reading "the latest release" sees nothing. Publish a Release object
+        # whose notes are this version's docs/CHANGELOG.md section, so the
+        # Releases page matches the tags. Idempotent: skip if it already exists.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          TAG="v${VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping."
+            exit 0
+          fi
+          # Notes = this version's section: "## [x.y.z]" up to the next "## [".
+          awk -v v="$VERSION" '
+            $0 ~ ("^## \\[" v "\\]") {flag=1; print; next}
+            flag && /^## \[/ {exit}
+            flag {print}' docs/CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "WARNING: no docs/CHANGELOG.md section for [$VERSION]; using a generated note."
+            printf 'Release %s. See docs/CHANGELOG.md.\n' "$TAG" > release-notes.md
+          fi
+          gh release create "$TAG" --title "$TAG" --notes-file release-notes.md --verify-tag
+          echo "Created GitHub Release $TAG"

@@ -10,6 +10,22 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.22.0] - 2026-06-05
+
+**Release card-promotion for board 8 + the auto-tag workflow now publishes a GitHub Release.** PRs #59, #62 since v0.21.0.
+
+### Added
+
+- **Release card-promotion to "released" for board 8 (DL-023, #62).** On merge to `main`, a new isolated workflow (`release-promote-cards.yml`) derives the shipped `DL-NNN` set deterministically from `git log <prev-tag>..HEAD` and moves each tracking card to the "released to main" stage (53) via `bin/promote-released-cards` — a generic, framework-free script (bash + curl + jq) shared with kanban-board. Closes the gap where a bundled release PR carries no single DL token, so the bridge's own webhook writeback couldn't advance these cards. Idempotent, best-effort per card, with a loud empty-board guard (refuses if the token can't see the board). Per-repo config in `.release-pr.json` `.promote`.
+
+### Changed
+
+- **The auto-tag workflow also publishes a GitHub Release (#59).** On merge to `main` it now creates a GitHub Release from the version's `docs/CHANGELOG.md` section, not just the tag — so the repo's Releases page matches the tags.
+
+### Operator notes
+
+- **Board-8 promotion requires a `KANBAN_WRITEBACK_TOKEN` Actions secret** whose kanban user is a **member of board 8**; without it the step refuses loudly (never a silent no-op). No migration, no new runtime env keys. The promote job needs no PHP/composer (`jq`/`curl`/`git` only).
+
 ## [0.21.0] - 2026-06-01
 
 ### Changed
