@@ -20,6 +20,11 @@ class StatsCommand extends BridgeCommand
 
     public function handle(): int
     {
+        return $this->guardDatabase($this->handleGuarded(...));
+    }
+
+    private function handleGuarded(): int
+    {
         $agent = $this->strOption('agent');
 
         $dispatches = AgentDispatch::query();

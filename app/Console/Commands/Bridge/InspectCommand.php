@@ -15,6 +15,11 @@ class InspectCommand extends BridgeCommand
 
     public function handle(): int
     {
+        return $this->guardDatabase($this->handleGuarded(...));
+    }
+
+    private function handleGuarded(): int
+    {
         $event = WebhookEvent::query()->with('dispatches')->find((int) $this->argument('id'));
         if ($event === null) {
             $this->error("no webhook_event with id {$this->argument('id')}");

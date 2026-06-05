@@ -32,6 +32,11 @@ class PruneCommand extends BridgeCommand
 
     public function handle(): int
     {
+        return $this->guardDatabase($this->handleGuarded(...));
+    }
+
+    private function handleGuarded(): int
+    {
         $olderThan = $this->strOption('older-than');
         $nullOlderThan = $this->strOption('null-payloads-older-than');
         if ($olderThan === null && $nullOlderThan === null) {

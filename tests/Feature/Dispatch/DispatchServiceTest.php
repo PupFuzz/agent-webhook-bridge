@@ -231,6 +231,7 @@ class DispatchServiceTest extends TestCase
         $dispatch = AgentDispatch::firstOrFail();
         $this->assertNull($dispatch->processed_at);                 // errored → replayable
         $this->assertStringContainsString('classifier boom', (string) $dispatch->error_message);
+        $this->assertStringNotContainsString('Stack trace', (string) $dispatch->error_message);   // class+message only, no trace/paths (#2057)
         $this->assertSame(0, $this->inboxCount());
     }
 
@@ -244,6 +245,7 @@ class DispatchServiceTest extends TestCase
         $dispatch = AgentDispatch::firstOrFail();
         $this->assertNotNull($dispatch->processed_at);              // done
         $this->assertStringContainsString('does_not_exist', (string) $dispatch->error_message);   // note preserved
+        $this->assertStringNotContainsString('Stack trace', (string) $dispatch->error_message);   // class+message only, no trace/paths (#2057)
         $this->assertSame(1, $this->inboxCount());                 // intent staged before handler ran (B before C)
     }
 
