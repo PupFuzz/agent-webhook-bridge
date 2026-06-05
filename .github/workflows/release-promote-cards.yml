@@ -1,0 +1,55 @@
+name: Promote released cards on merge to main
+
+# When a release merges to main, move each shipped DL's tracking card (board 8,
+# the bridge's tracking board) to "released to main" (stage 53). The DL set is
+# derived DETERMINISTICALLY from git (`git log <prev-tag>..HEAD`) by
+# bin/promote-released-cards — a generic, framework-free script shared with
+# kanban-board (see the release-automation toolkit). Closes the gap where a
+# bundled release PR carries no single DL token. Board/stage/api come from
+# .release-pr.json (.promote). Isolated so a card hiccup never blocks the release.
+#
+# workflow_dispatch lets an operator exercise the path on demand — dry-run by
+# default, so it moves nothing.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dls:
+        description: 'DLs to promote (comma-separated). Blank = derive from the git range.'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run — report only, move nothing.'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-promote-cards-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with tags)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Promote tracking cards
+        env:
+          KANBAN_WRITEBACK_TOKEN: ${{ secrets.KANBAN_WRITEBACK_TOKEN }}
+          INPUT_DLS: ${{ github.event.inputs.dls }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          args=()
+          [ -n "$INPUT_DLS" ] && args+=(--dls "$INPUT_DLS")
+          [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
+          bin/promote-released-cards "${args[@]}"

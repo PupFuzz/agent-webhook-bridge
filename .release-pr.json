@@ -1,0 +1,18 @@
+{
+  "main_branch": "main",
+  "dev_branch": "dev",
+  "version_file": "VERSION",
+  "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+",
+  "ref_token_regex": "DL-[0-9]+",
+  "title_prefix": "Release",
+  "artifacts": [
+    "VERSION → {{version}}",
+    "docs/CHANGELOG.md → [{{version}}] section",
+    "CLAUDE.md § Recent releases row"
+  ],
+  "promote": {
+    "board_id": 8,
+    "released_stage_id": 53,
+    "api_base": "https://kanban.bwtekmed.com/api/v3"
+  }
+}
