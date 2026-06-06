@@ -9,6 +9,7 @@ use App\Models\AgentDispatch;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class BridgeCommandsTest extends TestCase
@@ -76,9 +77,13 @@ class BridgeCommandsTest extends TestCase
             'identity_id' => 4242,
             'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
         ]));
+        // The board-visibility probe (DL-026) is reachable here; with no token the
+        // factory throws before any HTTP, but fake to harden against a real call.
+        Http::fake();
         $this->artisan('bridge:check')
             ->expectsOutputToContain('writeback token')
             ->assertExitCode(0);   // warn, not fail
+        Http::assertNothingSent();
     }
 
     public function test_check_fails_on_malformed_writeback_json(): void
@@ -88,6 +93,81 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:check')
             ->expectsOutputToContain('writeback.json')
             ->assertExitCode(1);
+    }
+
+    private function writeWritebackWithToken(): void
+    {
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+    }
+
+    public function test_check_warns_when_the_writeback_token_sees_zero_cards(): void
+    {
+        // DL-026: a 200 + empty board read = blind/degraded token (user not a
+        // board member / wrong board_id). bridge:check must surface it LOUDLY at
+        // config time, but stay a warning (exit 0) — an empty new board is legit.
+        $this->writeWritebackWithToken();
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('sees 0 cards on board 8')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_reports_visible_card_count_when_token_can_see_the_board(): void
+    {
+        $this->writeWritebackWithToken();
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 1, 'payload' => []],
+            ['id' => 2, 'payload' => []],
+        ]])]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('sees 2 card(s) on board 8')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warns_when_the_board_read_fails(): void
+    {
+        $this->writeWritebackWithToken();
+        Http::fake(['*/tasks/search.json*' => Http::response(['error' => 'forbidden'], 403)]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('could not read board 8')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_skips_the_board_probe_without_a_base_url_and_makes_no_request(): void
+    {
+        // Guard-lock (S3): the probe block IS reached (writeback.json + mapping),
+        // but with no api_base_url the factory throws → the probe self-skips and
+        // must make NO stray network call. Locks the base-url guard so a refactor
+        // that drops it fails here.
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        // Explicitly unset api_base_url (the dev .env populates it) → the factory
+        // throws ConfigException → the probe self-skips, no network call.
+        config(['bridge.providers.kanban.api_base_url' => null]);
+        Http::fake();
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('skipped board-visibility probe')
+            ->assertExitCode(0);
+
+        Http::assertNothingSent();
     }
 
     public function test_check_warns_on_group_accessible_config_dir(): void
