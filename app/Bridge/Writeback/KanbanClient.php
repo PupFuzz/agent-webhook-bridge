@@ -21,8 +21,11 @@ use Illuminate\Support\Facades\Log;
  */
 final class KanbanClient
 {
-    /** Endpoint max for /tasks/search.json; a board with more live cards needs paging (DL-026). */
+    /** Endpoint max rows per /tasks/search.json page; a board with more live cards is read across pages (DL-028). */
     public const SEARCH_LIMIT = 200;
+
+    /** Safety ceiling on the page walk: at most MAX_PAGES × SEARCH_LIMIT live cards are read (DL-028). */
+    public const MAX_PAGES = 50;
 
     public function __construct(
         private string $baseUrl,
@@ -99,14 +102,18 @@ final class KanbanClient
         return null;
     }
 
-    /** Number of cards the writeback token can see on a board — the bridge:check visibility probe (DL-026). */
-    public function boardCardCount(int $boardId): int
+    /**
+     * The board's cards + truncation flag for the bridge:check visibility probe
+     * (DL-026/028). PURE (no logging): `correlationCards` owns the runtime
+     * degraded-state warnings; `bridge:check` prints its own lines from this.
+     */
+    public function boardVisibility(int $boardId): BoardRead
     {
-        return count($this->searchBoardCards($boardId));
+        return $this->readBoard($boardId);
     }
 
     /**
-     * The board's cards for correlation, WITH the degraded-state guard (DL-026).
+     * The board's cards for correlation, WITH the degraded-state guards (DL-026/028).
      *
      * `null` from a finder otherwise conflates "N cards, none matched" (a genuine
      * no-op) with "0 cards" — which means the token's user lost board membership
@@ -115,34 +122,58 @@ final class KanbanClient
      * dependabot create path, duplicates a card). Make those two non-erroring
      * degradations LOUD here, at the single read both finders share — never as a
      * 5xx (that would retry-storm a genuinely-blind board). A genuine no-match
-     * (N>0, none matched) logs nothing.
+     * (N>0, none matched) logs nothing. Truncation past the MAX_PAGES ceiling is
+     * the same class of silent loss and is warned the same way.
      *
      * @return list<array<string, mixed>>
      */
     private function correlationCards(int $boardId): array
     {
-        $cards = $this->searchBoardCards($boardId);
-        if ($cards === []) {
+        $read = $this->readBoard($boardId);
+        if ($read->cards === []) {
             Log::warning('writeback correlation: board read returned 0 cards — the writeback token\'s user is likely not a member of this board (or board_id/instance is wrong); every card-move correlation will silently no-op until fixed', ['board_id' => $boardId]);
-        } elseif (count($cards) >= self::SEARCH_LIMIT) {
-            Log::warning('writeback correlation: board read hit the '.self::SEARCH_LIMIT.'-card cap — cards beyond the cap are invisible to correlation; paging is needed', ['board_id' => $boardId, 'cap' => self::SEARCH_LIMIT]);
+        } elseif ($read->truncated) {
+            Log::warning('writeback correlation: board read hit the '.self::MAX_PAGES.'-page safety ceiling ('.(self::MAX_PAGES * self::SEARCH_LIMIT).' cards) — any cards beyond it are invisible to correlation', ['board_id' => $boardId, 'ceiling' => self::MAX_PAGES * self::SEARCH_LIMIT]);
         }
 
-        return $cards;
+        return $read->cards;
     }
 
     /**
      * Read a board's cards via the task-search endpoint (server-side board_id
-     * filter), filtered to array rows. Pure: no logging — `correlationCards`
-     * owns the degraded-state warnings, and `bridge:check` prints its own lines.
+     * filter), paging until a short page (DL-028). The search response is a bare
+     * `{data:[...]}` with no total/meta, so the stop condition is "page until a
+     * page returns fewer than SEARCH_LIMIT rows"; a hard MAX_PAGES ceiling bounds
+     * a pathological/non-paging upstream. Pure: no logging.
      *
-     * @return list<array<string, mixed>>
+     * Both the short-page break and the `$truncated` flag are decided on the RAW
+     * batch length (rows kanban returned), NOT the array-filtered/merged count —
+     * a non-array row would otherwise desync the decision (a missed-truncation
+     * false negative, the DL-026 silent-loss class). The break MUST stay
+     * `< SEARCH_LIMIT` (continue while `>=`): an `=== SEARCH_LIMIT` test would
+     * loop forever against an upstream that ever returned an over-full page. The
+     * truncation flag assumes kanban honors `page` (it does — server-side
+     * `forPage` over a total `id`-desc order, so pages don't skip/dup).
      */
-    private function searchBoardCards(int $boardId): array
+    private function readBoard(int $boardId): BoardRead
     {
-        $cards = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId}", 'limit' => self::SEARCH_LIMIT])->throw()->json('data');
+        $cards = [];
+        for ($page = 1; $page <= self::MAX_PAGES; $page++) {
+            $batch = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId}", 'limit' => self::SEARCH_LIMIT, 'page' => $page])->throw()->json('data');
+            $rows = is_array($batch) ? $batch : [];
+            foreach ($rows as $row) {
+                if (is_array($row)) {
+                    $cards[] = $row;
+                }
+            }
+            if (count($rows) < self::SEARCH_LIMIT) {
+                return new BoardRead($cards, false);   // short/empty page ⇒ fully read
+            }
+        }
 
-        return array_values(array_filter(is_array($cards) ? $cards : [], 'is_array'));
+        // Ran all MAX_PAGES pages and every one came back full ⇒ the board is at
+        // or beyond the ceiling and cards past it were not read.
+        return new BoardRead($cards, true);
     }
 
     /**

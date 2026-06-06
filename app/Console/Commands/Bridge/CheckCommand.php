@@ -254,11 +254,12 @@ class CheckCommand extends BridgeCommand
                         $client = WritebackClientFactory::make();
                         foreach ($writeback->mappings as $repo => $mapping) {
                             try {
-                                $n = $client->boardCardCount($mapping->boardId);
+                                $read = $client->boardVisibility($mapping->boardId);
+                                $n = count($read->cards);
                                 if ($n === 0) {
                                     $this->warn("writeback: token sees 0 cards on board {$mapping->boardId} ({$repo}) — its user is likely not a member of that board, or board_id is wrong; the writeback will SILENTLY no-op every move until fixed");
-                                } elseif ($n >= KanbanClient::SEARCH_LIMIT) {
-                                    $this->warn("writeback: board {$mapping->boardId} ({$repo}) returned the ".KanbanClient::SEARCH_LIMIT.'-card cap — correlations beyond the cap will be missed; paging is needed');
+                                } elseif ($read->truncated) {
+                                    $this->warn("writeback: board {$mapping->boardId} ({$repo}) exceeds the ".(KanbanClient::SEARCH_LIMIT * KanbanClient::MAX_PAGES).'-card safety ceiling — correlations beyond it will be missed');
                                 } else {
                                     $this->info("writeback: token sees {$n} card(s) on board {$mapping->boardId} ({$repo})");
                                 }
