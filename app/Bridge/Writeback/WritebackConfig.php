@@ -18,7 +18,9 @@ use App\Bridge\Exceptions\ConfigException;
  *     "mappings": {
  *       "owner/repo": {
  *         "board_id": 8,
- *         "stages": { "opened": 50, "merged": 52, "merged_to_main": 53, "closed_unmerged": 49 }
+ *         "stages": { "opened": 50, "merged": 52, "merged_to_main": 53, "closed_unmerged": 49 },
+ *         "create_dependabot_cards": false,        // optional (DL-024)
+ *         "swimlane_id": 31                         // optional — lane for CREATED cards (DL-027)
  *       }
  *     }
  *   }
@@ -80,7 +82,18 @@ final class WritebackConfig
                 $stages[$outcome] = (int) $stageId;
             }
             $createDependabotCards = ($m['create_dependabot_cards'] ?? false) === true;
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards);
+            // Optional lane for CREATED cards (DL-027). Strict like board_id/stages —
+            // a non-numeric swimlane_id THROWS rather than silently dropping to null
+            // (which would land cards in the default lane with no error, the fail-quiet
+            // trap DL-026 fought). Absent ⇒ null ⇒ POST omits swimlane_id (today's behavior).
+            $swimlaneId = null;
+            if (array_key_exists('swimlane_id', $m) && $m['swimlane_id'] !== null) {
+                if (! is_numeric($m['swimlane_id'])) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} swimlane_id must be a numeric swimlane id");
+                }
+                $swimlaneId = (int) $m['swimlane_id'];
+            }
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId);
         }
 
         return new self($identityId, $mappings);

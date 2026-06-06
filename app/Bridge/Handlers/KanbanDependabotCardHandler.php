@@ -85,8 +85,8 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 'pr_number' => $prNumber,
                 'pr_url' => $url,
                 'origin' => 'dependabot',
-            ], ['dependencies', 'triaged']);
-            Log::info('kanban_dependabot_card: created', ['card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $stageId, 'outcome' => $outcome, 'pr' => $prNumber]);
+            ], ['dependencies', 'triaged'], $mapping->swimlaneId);
+            Log::info('kanban_dependabot_card: created', ['card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $stageId, 'swimlane' => $mapping->swimlaneId, 'outcome' => $outcome, 'pr' => $prNumber]);
         } catch (RequestException $e) {
             // A kanban 4xx is permanent (log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
             if ($this->isPermanent($e)) {

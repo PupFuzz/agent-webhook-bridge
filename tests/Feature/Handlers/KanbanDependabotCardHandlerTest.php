@@ -70,6 +70,42 @@ class KanbanDependabotCardHandlerTest extends TestCase
             && in_array('triaged', $r['task']['tags'], true));
     }
 
+    public function test_mapping_swimlane_id_is_applied_to_a_created_card(): void
+    {
+        // DL-027: a per-mapping swimlane_id lands the created card in that lane.
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => [
+                'board_id' => 8, 'swimlane_id' => 31,
+                'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49],
+                'create_dependabot_cards' => true,
+            ]],
+        ]));
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle('opened');
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && ($r['task']['swimlane_id'] ?? null) === 31);
+    }
+
+    public function test_no_swimlane_id_omits_the_key_from_the_create(): void
+    {
+        // setUp's mapping has no swimlane_id → the POST must not carry the key at all.
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle('opened');
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && ! array_key_exists('swimlane_id', $r['task']));
+    }
+
     public function test_existing_card_is_moved_not_recreated(): void
     {
         Http::fake([

@@ -53,6 +53,28 @@ class WritebackConfigTest extends TestCase
         $this->assertSame(53, $mapping->stageFor('merged_to_main'));
         $this->assertNull($mapping->stageFor('unmapped_outcome'));
         $this->assertNull($cfg->mappingFor('other/repo'));
+        $this->assertNull($mapping->swimlaneId);   // DL-027: absent ⇒ null
+    }
+
+    public function test_loads_optional_swimlane_id(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'swimlane_id' => 31, 'stages' => ['opened' => 50]],
+        ]]));
+
+        $this->assertSame(31, WritebackConfig::load($this->dir)->mappingFor('o/r')->swimlaneId);
+    }
+
+    public function test_non_numeric_swimlane_id_throws(): void
+    {
+        // Strict like board_id/stages (not the identity_id silent-null pattern) —
+        // a typo must NOT fail-quiet into the default lane (DL-027).
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'swimlane_id' => 'lane-a', 'stages' => ['opened' => 50]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
     }
 
     public function test_malformed_json_is_fail_closed(): void
