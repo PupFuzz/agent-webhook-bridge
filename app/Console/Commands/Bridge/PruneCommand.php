@@ -171,7 +171,7 @@ class PruneCommand extends BridgeCommand
         foreach ($lines as $line) {
             $body .= json_encode($line, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n";
         }
-        file_put_contents($path, $body, LOCK_EX);
+        BridgePaths::writeFile($path, $body, LOCK_EX);
     }
 
     /**
@@ -187,6 +187,6 @@ class PruneCommand extends BridgeCommand
             array_values(array_filter($decoded, 'is_string')),
             $keepIds,
         ));
-        file_put_contents($seenPath, (string) json_encode($keep, JSON_UNESCAPED_SLASHES), LOCK_EX);
+        BridgePaths::writeFile($seenPath, (string) json_encode($keep, JSON_UNESCAPED_SLASHES), LOCK_EX);
     }
 }

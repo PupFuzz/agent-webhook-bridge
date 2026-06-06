@@ -162,7 +162,7 @@ class InboxCommand extends BridgeCommand
     private function writeSeen(string $path, array $ids): void
     {
         BridgePaths::ensureDir(dirname($path));
-        file_put_contents($path, (string) json_encode($ids, JSON_UNESCAPED_SLASHES), LOCK_EX);
+        BridgePaths::writeFile($path, (string) json_encode($ids, JSON_UNESCAPED_SLASHES), LOCK_EX);
     }
 
     private function readHookEvent(): ?string
