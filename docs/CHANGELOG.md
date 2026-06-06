@@ -10,6 +10,14 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.24.0] - 2026-06-06
+
+**Release-automation robustness (sibling to kanban-board DL-143).** Release-tooling only — no change to the bridge runtime, receiver, or any app code. PR #75 since v0.23.0.
+
+### Changed
+
+- **`bin/promote-released-cards` correlates by PR-number in addition to DL (sibling to kanban-board DL-143).** A tracking card is promoted to "released" if its `payload.dl_number` matches a shipped `DL-NNN` **or** its `payload.pr_number` matches a shipped PR number (from each commit's trailing `(#NNN)`). Previously DL-only, so PR-only cards (bug/chore cards with no DL) were **silently** left in "shipped-to-dev" each release — observed live on v0.23.0 (five PR-only cards + one missed-DL card sat un-promoted until reconciled by hand). Also: the script now **pages the whole board** (no silent 200-card truncation), **refuses an empty base range** (no full-history sweep), warns on an unstamped shipped DL, and numeric-validates the board/stage config. Same "a degraded-but-not-erroring read must be loud" rule as the writeback (DL-026). The script is shared byte-identical with kanban-board.
+
 ## [0.23.0] - 2026-06-06
 
 **BREAKING classifier-interface change + writeback robustness + opt-in dependabot cards.** PRs #60, #61, #66–#71 since v0.22.0.
