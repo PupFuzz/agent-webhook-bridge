@@ -54,6 +54,7 @@ php artisan bridge:stats                 # event / dispatch counts
 | [`docs/multi-host.md`](docs/multi-host.md) | Running agents across multiple hosts | Scaling beyond one box |
 | [`docs/consumer-guide.md`](docs/consumer-guide.md) | Agent-author's guide to consuming staged intents (inbox shape, hook wiring) | Building the agent that reads the bridge |
 | [`docs/writeback.md`](docs/writeback.md) | The GitHub-PR → card-move writeback (the only writeback): `writeback.json`, the least-privilege token, the correlation classifier, the repo-webhook setup | Setting up / operating the card-move writeback (FR #2016) |
+| [`docs/kanban-integration-contract.md`](docs/kanban-integration-contract.md) | The kanban-board ↔ bridge seam: inbound webhook envelope/HMAC, outbound v3 API surface the bridge calls, correlation keys, load-bearing invariants, change protocol | Before changing either side of the kanban↔bridge boundary (search/custom-fields/webhooks, or `KanbanAdapter`/`KanbanClient`/`GitHubAdapter`) |
 
 > Subfiles are **always** referenced from this index. If you add a new top-level doc, add it here too. If a topic doesn't have its own subfile yet, it lives in the most relevant existing one or doesn't need to be documented yet.
 
