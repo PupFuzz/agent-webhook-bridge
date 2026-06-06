@@ -3,17 +3,22 @@
 namespace Tests\Fixtures;
 
 use App\Bridge\Contracts\Classifier;
-use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
-use App\Bridge\Support\AgentConfig;
 
 /** Emits one Intent + one cheap log_intent ReactionTarget (happy-path handler). */
 class LogIntentClassifier implements Classifier
 {
-    public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId, AgentConfig $agent): ClassifyResult
+    public function classify(ClassifyContext $ctx): ClassifyResult
     {
+        $eventType = $ctx->eventType;
+        $payload = $ctx->payload;
+        $actor = $ctx->actor;
+        $provider = $ctx->provider;
+        $scopeId = $ctx->scopeId;
+        $agent = $ctx->agent;
         $subjectId = (string) ($payload['subject_id'] ?? '0');
 
         return new ClassifyResult(

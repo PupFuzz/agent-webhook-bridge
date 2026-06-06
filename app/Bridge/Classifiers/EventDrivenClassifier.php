@@ -2,11 +2,10 @@
 
 namespace App\Bridge\Classifiers;
 
-use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
-use App\Bridge\Support\AgentConfig;
 
 /**
  * inbox_only + a paired channel_push ReactionTarget per Intent — the canonical
@@ -20,15 +19,9 @@ use App\Bridge\Support\AgentConfig;
  */
 class EventDrivenClassifier extends InboxOnlyClassifier
 {
-    public function classify(
-        string $eventType,
-        array $payload,
-        Actor $actor,
-        string $provider,
-        string $scopeId,
-        AgentConfig $agent,
-    ): ClassifyResult {
-        $result = parent::classify($eventType, $payload, $actor, $provider, $scopeId, $agent);
+    public function classify(ClassifyContext $ctx): ClassifyResult
+    {
+        $result = parent::classify($ctx);
 
         if ($result->intents === []) {
             return $result;

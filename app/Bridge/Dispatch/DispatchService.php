@@ -110,7 +110,8 @@ final class DispatchService
 
             // (A) classify — application error → record + continue (no 5xx)
             try {
-                $result = ClassifierResolver::for($agent)->classify($dto->eventType, $payload, $actor, $provider, $scopeId, $agent);
+                $ctx = new ClassifyContext($dto->eventType, $payload, $actor, $provider, $scopeId, $agent);
+                $result = ClassifierResolver::for($agent)->classify($ctx);
             } catch (Throwable $e) {
                 $this->recordError($dispatch, $e);
 

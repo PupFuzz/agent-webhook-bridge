@@ -4,9 +4,9 @@ namespace App\Bridge\Classifiers;
 
 use App\Bridge\Contracts\Classifier;
 use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
-use App\Bridge\Support\AgentConfig;
 
 /**
  * Canonical default classifier: surfaces kanban activity to the agent inbox
@@ -32,14 +32,13 @@ class InboxOnlyClassifier implements Classifier
         'task.unarchived' => ['unarchived', 'card_unarchived'],
     ];
 
-    public function classify(
-        string $eventType,
-        array $payload,
-        Actor $actor,
-        string $provider,
-        string $scopeId,
-        AgentConfig $agent,
-    ): ClassifyResult {
+    public function classify(ClassifyContext $ctx): ClassifyResult
+    {
+        $eventType = $ctx->eventType;
+        $payload = $ctx->payload;
+        $actor = $ctx->actor;
+        $provider = $ctx->provider;
+
         $intent = match (true) {
             $eventType === 'task.created' => $this->newCardIntent($payload, $actor, $provider),
             $eventType === 'task.moved' => $this->moveIntent($payload, $actor, $provider),
