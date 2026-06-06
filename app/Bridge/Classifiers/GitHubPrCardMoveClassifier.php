@@ -3,10 +3,9 @@
 namespace App\Bridge\Classifiers;
 
 use App\Bridge\Contracts\Classifier;
-use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
-use App\Bridge\Support\AgentConfig;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 
@@ -26,8 +25,13 @@ use App\Bridge\Writeback\WritebackConfig;
  */
 class GitHubPrCardMoveClassifier implements Classifier
 {
-    public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId, AgentConfig $agent): ClassifyResult
+    public function classify(ClassifyContext $ctx): ClassifyResult
     {
+        $eventType = $ctx->eventType;
+        $payload = $ctx->payload;
+        $provider = $ctx->provider;
+        $scopeId = $ctx->scopeId;
+
         if ($provider !== 'github' || ! str_starts_with($eventType, 'pull_request.')) {
             return new ClassifyResult;
         }

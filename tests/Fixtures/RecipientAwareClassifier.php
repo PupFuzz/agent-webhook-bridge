@@ -3,10 +3,9 @@
 namespace Tests\Fixtures;
 
 use App\Bridge\Contracts\Classifier;
-use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
-use App\Bridge\Support\AgentConfig;
 
 /**
  * Per-agent (recipient-aware) classifier fixture. Records the serving agent's
@@ -26,14 +25,14 @@ class RecipientAwareClassifier implements Classifier
         self::$seenAgents = [];
     }
 
-    public function classify(
-        string $eventType,
-        array $payload,
-        Actor $actor,
-        string $provider,
-        string $scopeId,
-        AgentConfig $agent,
-    ): ClassifyResult {
+    public function classify(ClassifyContext $ctx): ClassifyResult
+    {
+        $eventType = $ctx->eventType;
+        $payload = $ctx->payload;
+        $actor = $ctx->actor;
+        $provider = $ctx->provider;
+        $scopeId = $ctx->scopeId;
+        $agent = $ctx->agent;
         self::$seenAgents[] = $agent->agentName;
 
         $to = is_string($payload['to'] ?? null) ? $payload['to'] : '';

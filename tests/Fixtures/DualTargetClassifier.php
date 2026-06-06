@@ -3,10 +3,9 @@
 namespace Tests\Fixtures;
 
 use App\Bridge\Contracts\Classifier;
-use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
-use App\Bridge\Support\AgentConfig;
 
 /**
  * Emits two reaction targets — a best-effort `be` and a durable `dur` — so a
@@ -17,8 +16,15 @@ use App\Bridge\Support\AgentConfig;
  */
 class DualTargetClassifier implements Classifier
 {
-    public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId, AgentConfig $agent): ClassifyResult
+    public function classify(ClassifyContext $ctx): ClassifyResult
     {
+        $eventType = $ctx->eventType;
+        $payload = $ctx->payload;
+        $actor = $ctx->actor;
+        $provider = $ctx->provider;
+        $scopeId = $ctx->scopeId;
+        $agent = $ctx->agent;
+
         return new ClassifyResult(
             targets: [
                 ReactionTarget::make('be', 'be-x'),    // distinct debounceKeys so neither

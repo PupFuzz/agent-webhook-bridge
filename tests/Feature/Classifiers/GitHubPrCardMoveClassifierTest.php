@@ -4,6 +4,7 @@ namespace Tests\Feature\Classifiers;
 
 use App\Bridge\Classifiers\GitHubPrCardMoveClassifier;
 use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Support\AgentConfig;
 use Illuminate\Support\Facades\File;
@@ -46,14 +47,14 @@ class GitHubPrCardMoveClassifierTest extends TestCase
     /** @param array<mixed> $pr */
     private function classify(string $eventType, array $pr, string $repo = 'owner/repo'): ClassifyResult
     {
-        return (new GitHubPrCardMoveClassifier)->classify(
+        return (new GitHubPrCardMoveClassifier)->classify(new ClassifyContext(
             $eventType,
             ['pull_request' => $pr, 'repository' => ['full_name' => $repo]],
             new Actor('999'),
             'github',
             $repo,
             $this->agent,
-        );
+        ));
     }
 
     private function fakeBoardCards(): void
@@ -128,7 +129,7 @@ class GitHubPrCardMoveClassifierTest extends TestCase
     public function test_non_pull_request_event_is_noop(): void
     {
         Http::fake();
-        $r = (new GitHubPrCardMoveClassifier)->classify('push', [], new Actor('1'), 'github', 'owner/repo', $this->agent);
+        $r = (new GitHubPrCardMoveClassifier)->classify(new ClassifyContext('push', [], new Actor('1'), 'github', 'owner/repo', $this->agent));
         $this->assertSame([], $r->targets);
     }
 

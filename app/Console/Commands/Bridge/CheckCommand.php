@@ -129,8 +129,18 @@ class CheckCommand extends BridgeCommand
                 $configs[] = $cfg;
 
                 // The classifier FQCN is only resolved at dispatch time, where a
-                // bad value is an uncaught 5xx (→ upstream retry storm). Resolve
-                // it here so a typo surfaces as a preflight failure instead.
+                // bad value is an uncaught 5xx (→ upstream retry storm). Validate
+                // it here so a typo / stale signature surfaces as a preflight
+                // failure instead. Probe OUT OF PROCESS first — an out-of-date
+                // classify() signature is an uncatchable E_COMPILE_ERROR that would
+                // otherwise kill bridge:check ITSELF (#2053); the subprocess
+                // isolates the load. Only once it passes is for() safe to call here.
+                if (($err = ClassifierResolver::probeLoadable($cfg->classifierClass)) !== null) {
+                    $this->error("agent {$name}: {$err}");
+                    $ok = false;
+
+                    continue;
+                }
                 try {
                     ClassifierResolver::for($cfg);
                 } catch (Throwable $e) {

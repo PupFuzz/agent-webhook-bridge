@@ -4,6 +4,7 @@ namespace Tests\Unit\Classifiers;
 
 use App\Bridge\Classifiers\EventDrivenClassifier;
 use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Support\AgentConfig;
 use PHPUnit\Framework\TestCase;
 
@@ -24,7 +25,7 @@ class EventDrivenClassifierTest extends TestCase
      */
     private function classify(string $eventType, array $payload)
     {
-        return $this->classifier->classify($eventType, $payload, new Actor(id: '1', name: 'alice'), 'kanban', '5', $this->agent);
+        return $this->classifier->classify(new ClassifyContext($eventType, $payload, new Actor(id: '1', name: 'alice'), 'kanban', '5', $this->agent));
     }
 
     public function test_pairs_each_intent_with_a_channel_push_target(): void
