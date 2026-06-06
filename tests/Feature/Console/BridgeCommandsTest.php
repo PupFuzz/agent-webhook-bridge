@@ -4,6 +4,7 @@ namespace Tests\Feature\Console;
 
 use App\Bridge\Support\BridgePaths;
 use App\Console\Commands\Bridge\InboxCommand;
+use App\Console\Commands\Bridge\ReplayCommand;
 use App\Models\AgentDispatch;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -417,5 +418,19 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('hookSpecificOutput', $cmd->buildOutput($lines, 'auto', 'SessionStart'));
         $this->assertStringNotContainsString('hookSpecificOutput', $cmd->buildOutput($lines, 'auto', 'Stop'));
         $this->assertStringNotContainsString('hookSpecificOutput', $cmd->buildOutput($lines, 'auto', null));
+    }
+
+    public function test_replay_command_constructs_without_resolving_dispatch_service(): void
+    {
+        // #2054: ReplayCommand must NOT constructor-inject DispatchService — its
+        // bind reads every agent YAML and console bootstrap instantiates every
+        // command, so injecting it would make one malformed YAML crash EVERY
+        // artisan command (incl. bridge:check). Constructing the command must
+        // not touch the config / resolve DispatchService.
+        config(['bridge.config_dir' => '/nonexistent-'.uniqid()]);
+
+        $cmd = new ReplayCommand;
+
+        $this->assertInstanceOf(ReplayCommand::class, $cmd);
     }
 }

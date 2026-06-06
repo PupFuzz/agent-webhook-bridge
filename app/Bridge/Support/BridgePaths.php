@@ -220,11 +220,31 @@ final class BridgePaths
     public static function appendJsonl(string $path, array $entry): void
     {
         self::ensureDir(dirname($path));
-        file_put_contents(
+        self::writeFile(
             $path,
             json_encode(self::ksortRecursive($entry), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)."\n",
             FILE_APPEND | LOCK_EX,
         );
+    }
+
+    /**
+     * file_put_contents that THROWS on a write-syscall failure (ENOSPC / EROFS /
+     * EACCES) instead of returning false silently (#2055). For a durability write
+     * (intent staging via appendJsonl) the throw propagates → treatment-B → 5xx →
+     * upstream redelivers, rather than dropping the intent with a false 200. For
+     * the cursor/inbox rewrites it surfaces a partial-write failure instead of
+     * silently corrupting state. The single write primitive for the package.
+     */
+    public static function writeFile(string $path, string $contents, int $flags = 0): void
+    {
+        // Suppress the native warning (we raise a clear exception instead) but
+        // capture its reason so the operator sees ENOSPC/EROFS/EACCES, not a bare
+        // "write failed".
+        if (@file_put_contents($path, $contents, $flags) === false) {
+            $reason = error_get_last()['message'] ?? 'disk full / read-only fs / permissions?';
+
+            throw new \RuntimeException("bridge: failed to write {$path} ({$reason})");
+        }
     }
 
     /**
