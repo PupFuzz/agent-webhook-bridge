@@ -26,7 +26,7 @@ Implement `App\Bridge\Contracts\Classifier`:
 public function classify(ClassifyContext $ctx): ClassifyResult;
 ```
 
-The single `ClassifyContext` parameter (DL-025) replaced a positional signature, because a parameter object is **extensible without breaking implementors** — adding a field to `ClassifyContext` never changes this method's signature, so it can never again cause the uncatchable `E_COMPILE_ERROR` that earlier positional additions did. It is the **last breaking change** to `classify()`.
+The single `ClassifyContext` parameter (DL-025) replaced a positional signature, because a parameter object is **extensible without breaking implementors** — adding a field to `ClassifyContext` never changes this method's signature, so it can never again cause the uncatchable `E_COMPILE_ERROR` that earlier positional additions did. It is the **last breaking change** to `classify()`. **Operators updating an existing install with a custom classifier:** an old signature fatals the receiver on the next live delivery — migrate your class *in the same step as `git pull`* and run `bridge:check` before serving. See [`CLAUDE_DEPLOYMENT.md`](../CLAUDE_DEPLOYMENT.md) § Update an existing install (the "Running a custom classifier?" callout).
 
 **`ClassifyContext` fields:**
 

@@ -189,6 +189,20 @@ Runtime `config()` overrides the env-derived value, and tests that exercise a no
 
 ---
 
+## G-018 — `401 scope_mismatch` means the event body's scope source ≠ the `?b=<scope>` query param (per-adapter)
+
+**Symptom:** A hand-crafted / smoke-test signed delivery returns `401 scope_mismatch`. The HMAC verified fine; the body is rejected afterwards on the payload-scope vs URL-scope double-check.
+
+**Cause:** The receiver re-derives the scope **from the body** via the provider adapter and requires it to equal `?b=<scope>` (`WebhookController.php:16,50` — the payload-scope vs URL-scope check returns 401). The body-scope source is **per-adapter**: GitHub = `repository.full_name` (`GitHubAdapter.php:48` — `nestedScalar(..., 'repository', 'full_name') ?? ''`), kanban = `board_id`. A test payload that omits that source yields scope `''` → mismatch → 401. This is intentional — it stops a delivery signed for scope A from being processed as scope B.
+
+**Fix:** make the body's scope source equal `?b=`. For a GitHub smoke test, include `"repository":{"full_name":"<org/repo>"}` and POST to `?b=<org/repo>`. Full signed recipe in [`CLAUDE_DEPLOYMENT.md`](CLAUDE_DEPLOYMENT.md) § Smoke-test the receiver with a signed delivery.
+
+**Discovery:** operator doc feedback (v0.21→v0.24 update) — a reverse-engineered smoke test that omitted `repository` hit `scope_mismatch` with no troubleshooting entry mapping the code to a cause.
+
+**Related:** `app/Http/Controllers/Webhook/WebhookController.php:50`, `app/Bridge/Adapters/GitHubAdapter.php:48`, `app/Http/Middleware/VerifyHmacSignature.php:49` (`?b=`), G-004 (scope_id *format* — distinct from this scope *match*).
+
+---
+
 ## How to add an entry
 
 1. New `G-NNN` (next available number).
