@@ -6,6 +6,7 @@ use App\Bridge\Writeback\KanbanClient;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 class KanbanClientTest extends TestCase
@@ -61,5 +62,73 @@ class KanbanClientTest extends TestCase
         Http::assertSent(fn (Request $r) => str_contains($r->url(), '/tasks/search.json')
             && str_contains(urldecode($r->url()), 'board_id=8')
             && str_contains(urldecode($r->url()), 'limit=200'));
+    }
+
+    public function test_blind_token_zero_cards_logs_a_warning_and_returns_null(): void
+    {
+        // DL-026: a 0-card board read (token's user not a board member / wrong
+        // board_id) is a degraded-but-not-erroring state — make it LOUD, but still
+        // return null (the caller's no-op path is unchanged).
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+        Log::spy();
+
+        $this->assertNull($this->client()->findCardByDlNumber(8, 'DL-42'));
+
+        Log::shouldHaveReceived('warning')->once()
+            ->withArgs(fn (string $msg) => str_contains($msg, '0 cards'));
+    }
+
+    public function test_blind_token_warning_also_fires_on_the_dependabot_pr_finder(): void
+    {
+        // M1: findCardByPrNumber (the dependabot create/move path) shares the
+        // primitive, so the same 0-card guard covers it — there a blind token would
+        // otherwise CREATE a duplicate card, not just no-op.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+        Log::spy();
+
+        $this->assertNull($this->client()->findCardByPrNumber(8, 77));
+
+        Log::shouldHaveReceived('warning')->once()
+            ->withArgs(fn (string $msg) => str_contains($msg, '0 cards'));
+    }
+
+    public function test_page_cap_truncation_logs_a_warning(): void
+    {
+        // A board returning the 200-card cap means correlations beyond it are
+        // silently missed — warn (DL-026).
+        $cards = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1, 200));
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => $cards])]);
+        Log::spy();
+
+        // 999 isn't in 1..200 → no match, but the cap warning must still fire.
+        $this->assertNull($this->client()->findCardByDlNumber(8, 'DL-999'));
+
+        Log::shouldHaveReceived('warning')->once()
+            ->withArgs(fn (string $msg) => str_contains($msg, 'cap'));
+    }
+
+    public function test_genuine_no_match_logs_nothing(): void
+    {
+        // N>0 cards, none matched → a real "PR has no card" — must stay QUIET.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 7, 'payload' => ['dl_number' => '11']],
+            ['id' => 8, 'payload' => ['dl_number' => '12']],
+        ]])]);
+        Log::spy();
+
+        $this->assertNull($this->client()->findCardByDlNumber(8, 'DL-42'));
+
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    public function test_board_card_count_returns_the_visible_count(): void
+    {
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 1, 'payload' => []],
+            ['id' => 2, 'payload' => []],
+            'not-an-array-row',   // filtered out
+        ]])]);
+
+        $this->assertSame(2, $this->client()->boardCardCount(8));
     }
 }

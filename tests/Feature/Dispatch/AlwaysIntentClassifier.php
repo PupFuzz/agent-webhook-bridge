@@ -4,9 +4,9 @@ namespace Tests\Feature\Dispatch;
 
 use App\Bridge\Contracts\Classifier;
 use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
-use App\Bridge\Support\AgentConfig;
 
 /**
  * Test-only classifier that emits exactly one intent for ANY event type
@@ -20,8 +20,14 @@ use App\Bridge\Support\AgentConfig;
  */
 class AlwaysIntentClassifier implements Classifier
 {
-    public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId, AgentConfig $agent): ClassifyResult
+    public function classify(ClassifyContext $ctx): ClassifyResult
     {
+        $eventType = $ctx->eventType;
+        $payload = $ctx->payload;
+        $actor = $ctx->actor;
+        $provider = $ctx->provider;
+        $scopeId = $ctx->scopeId;
+        $agent = $ctx->agent;
         $who = $actor->name ?? $actor->id ?? '?';
 
         return new ClassifyResult(intents: [new Intent(

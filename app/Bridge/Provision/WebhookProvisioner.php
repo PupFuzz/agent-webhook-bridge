@@ -163,7 +163,7 @@ final class WebhookProvisioner
     private function writeSecret(string $path, string $secret): void
     {
         BridgePaths::ensureDir(dirname($path));
-        file_put_contents($path, $secret, LOCK_EX);
+        BridgePaths::writeFile($path, $secret, LOCK_EX);
         chmod($path, 0600);
     }
 }

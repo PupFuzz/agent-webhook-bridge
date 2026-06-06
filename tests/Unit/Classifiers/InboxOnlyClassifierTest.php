@@ -4,6 +4,7 @@ namespace Tests\Unit\Classifiers;
 
 use App\Bridge\Classifiers\InboxOnlyClassifier;
 use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Support\AgentConfig;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -28,7 +29,7 @@ class InboxOnlyClassifierTest extends TestCase
      */
     private function classify(string $eventType, array $payload)
     {
-        return $this->classifier->classify($eventType, $payload, $this->actor, 'kanban', '5', $this->agent);
+        return $this->classifier->classify(new ClassifyContext($eventType, $payload, $this->actor, 'kanban', '5', $this->agent));
     }
 
     public function test_task_created_yields_new_card_intent(): void

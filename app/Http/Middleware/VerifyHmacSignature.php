@@ -19,9 +19,16 @@ use Symfony\Component\HttpFoundation\Response;
  * the controller. Preserves the exact status contract so kanban-board's retry
  * behaviour is unchanged (it retries 5xx/429, not other 4xx):
  *
+ *   body_too_large (EnvelopeSizeLimit, BEFORE this)      → 413
  *   invalid_provider / unknown_provider / invalid_scope → 400
  *   unknown_scope (no secret file) / sig_mismatch       → 401
  *   config_secret_dir_* / empty_secret_file             → 500
+ *
+ * 413 is a deterministic 4xx (a body over `bridge.max_body_bytes`, 256 KB default
+ * — which "covers every real provider" per config/bridge.php). kanban-board does
+ * NOT retry it, so an over-limit delivery is dropped — correct, since a retry of
+ * the same too-big body can't succeed. Realistic payloads (a 50–100 KB GitHub
+ * push diff) sit well under the ceiling.
  *
  * On success it stashes the resolved adapter + raw body + scope + provider on
  * the request so the controller doesn't re-resolve or re-read them.

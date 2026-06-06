@@ -4,6 +4,7 @@ namespace App\Bridge\Support;
 
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Handlers\ChannelPushHandler;
+use App\Bridge\Handlers\KanbanDependabotCardHandler;
 use App\Bridge\Handlers\KanbanMoveCardHandler;
 use App\Bridge\Handlers\LogIntentHandler;
 use App\Bridge\Handlers\RegistryAppendHandler;
@@ -37,6 +38,7 @@ final class HandlerRegistry
             'registry_append' => new RegistryAppendHandler,
             'channel_push' => new ChannelPushHandler,
             'kanban_move_card' => new KanbanMoveCardHandler,
+            'kanban_dependabot_card' => new KanbanDependabotCardHandler,
         ];
         if ($spawnDetachedEnabled) {
             $this->handlers['spawn_detached'] = new SpawnDetachedHandler;

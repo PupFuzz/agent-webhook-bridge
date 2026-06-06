@@ -83,7 +83,7 @@ final class SpawnDetachedHandler implements Handler
             }
         }
 
-        file_put_contents(
+        BridgePaths::writeFile(
             $logPath,
             "\n=== ".microtime(true).' spawn target_id='.$target->targetId." ===\n",
             FILE_APPEND | LOCK_EX,

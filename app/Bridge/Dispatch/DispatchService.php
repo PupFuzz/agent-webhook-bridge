@@ -110,7 +110,8 @@ final class DispatchService
 
             // (A) classify — application error → record + continue (no 5xx)
             try {
-                $result = ClassifierResolver::for($agent)->classify($dto->eventType, $payload, $actor, $provider, $scopeId, $agent);
+                $ctx = new ClassifyContext($dto->eventType, $payload, $actor, $provider, $scopeId, $agent);
+                $result = ClassifierResolver::for($agent)->classify($ctx);
             } catch (Throwable $e) {
                 $this->recordError($dispatch, $e);
 
@@ -200,9 +201,13 @@ final class DispatchService
                     }
                     $handler->handle($target, $agent);
                 } catch (Throwable $e) {
-                    $note = (string) $e;
+                    // Store class + message only — NOT (string) $e, which is the full
+                    // trace + absolute server paths and would leak into the
+                    // operator-readable error_message. The trace stays in the log.
+                    $note = $e::class.': '.$e->getMessage();
                     Log::warning('bridge dispatch: handler failed', [
-                        'agent' => $agent->agentName, 'handler' => $target->handler, 'error' => $note,
+                        'agent' => $agent->agentName, 'handler' => $target->handler,
+                        'error' => $note, 'exception' => $e,
                     ]);
                 }
             }
@@ -260,9 +265,12 @@ final class DispatchService
 
     private function recordError(AgentDispatch $dispatch, Throwable $e): void
     {
-        $dispatch->update(['error_message' => (string) $e]);
+        // class + message only (no trace/paths) in the stored, operator-readable
+        // field; the full trace stays in the log.
+        $message = $e::class.': '.$e->getMessage();
+        $dispatch->update(['error_message' => $message]);
         Log::warning('bridge dispatch: classifier failed', [
-            'agent' => $dispatch->agent_name, 'error' => (string) $e,
+            'agent' => $dispatch->agent_name, 'error' => $message, 'exception' => $e,
         ]);
     }
 

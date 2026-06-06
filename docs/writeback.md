@@ -18,7 +18,7 @@ Create a kanban API token scoped to **card moves on the mapped boards** (NOT the
 ```bash
 install -m 600 /dev/stdin "$BRIDGE_DIR/kanban/writeback-token" <<<'<the-token>'
 ```
-The writeback acts as this token's kanban user — note that user's `user_id`. **That user MUST be a member/owner of every mapped board** — kanban-board scopes card search/read to the token-user's accessible boards, so a writeback user not on the board makes correlation silently return nothing.
+The writeback acts as this token's kanban user — note that user's `user_id`. **That user MUST be a member/owner of every mapped board** — kanban-board scopes card search/read to the token-user's accessible boards, so a writeback user not on the board makes correlation silently return nothing. This used to fail invisibly; as of DL-026 it's caught: `bridge:check` probes that the token can see each mapped board (0 cards ⇒ a loud warning), and at runtime a 0-card board read logs a `warning` instead of silently no-opping.
 
 ### 2. `writeback.json` (in the config dir)
 ```jsonc
@@ -39,6 +39,8 @@ The writeback acts as this token's kanban user — note that user's `user_id`. *
 }
 ```
 Absent ⇒ writeback off. Malformed ⇒ fail-closed (`bridge:check` reports it). Every stage id must be a real stage **on that board** (a cross-board id is refused by kanban and logged, not retried).
+
+> A mapping can also opt into **dependabot cards** (`create_dependabot_cards`) so dependency-update PRs auto-create cards — see the **Optional: dependabot cards** section below.
 
 ### 3. A github-subscribed agent using the classifier
 ```yaml
@@ -61,14 +63,69 @@ The bridge does **not** provision GitHub webhooks (no repo-admin token by design
 
 ### 5. Verify
 ```bash
-php artisan bridge:check        # validates writeback.json + the writeback token
+php artisan bridge:check        # validates writeback.json + the writeback token,
+                                # and probes that the token can SEE each mapped board
 ```
+`bridge:check` reads each mapped board with the writeback token: it reports the visible card count, and warns loudly if it sees **0 cards** (the token's user is likely not a board member, or `board_id` is wrong — the writeback would silently no-op) or hits the **200-card cap** (correlations beyond it are missed; paging needed). All warn-level — a genuinely-empty new board won't fail the check.
+
 Open/merge a PR whose title or branch carries `DL-NNN` matching a card's `payload.dl_number` (the card's `dl_number` custom field, populated by your board automation when the card is created); the card moves. `php artisan bridge:inspect <event_id>` shows the dispatch + any logged refusal/no-op.
+
+## Optional: dependabot cards (DL-024)
+
+By default the writeback only **moves an existing card** correlated by a `DL-NNN`. Dependabot PRs carry no `DL-NNN` and have no card, so dependency updates never appear on the board. Set **`create_dependabot_cards: true`** on a mapping and the bridge will **create a card when a dependabot PR opens** and carry it through the same lifecycle on close — keyed by **PR number** (no DL needed). It builds on the base setup above (token, the repo webhook subscribed to *Pull requests*, the classifier agent); it just adds the one flag.
+
+```jsonc
+// $BRIDGE_DIR/writeback.json
+{
+  "identity_id": 4242,
+  "mappings": {
+    "your-org/your-repo": {
+      "board_id": 8,
+      "stages": {
+        "opened": 50,                  // ← a created dependabot card lands here
+        "merged": 52,
+        "merged_to_main": 53,
+        "closed_unmerged": 49
+      },
+      "create_dependabot_cards": true  // opt-in (default false)
+    }
+  }
+}
+```
+
+**Detection.** A PR is treated as dependabot when its head branch is in dependabot's own namespace (`dependabot/*`) — a GitHub-controlled field, never the title.
+
+**Lifecycle** — the same `stages` map drives it, correlated on `payload.pr_number`:
+
+| PR event | Card exists? | Action |
+| --- | --- | --- |
+| opened / reopened | no | **create** at the `opened` stage |
+| merged to `dev` | yes | move to `merged` |
+| merged to `main` | yes | move to `merged_to_main` |
+| closed, not merged | yes | move to `closed_unmerged` |
+| any | already at target | no-op (idempotent) |
+| merged / merged_to_main | no (open was missed) | create at that stage |
+| closed, not merged | no | **skip** — don't mint a card just to close one we never tracked |
+
+**New cards** are tagged `dependencies` + `triaged` (so routine dependency churn doesn't flood a triage sweep) and carry `payload.pr_number`, `payload.pr_url`, and `payload.origin = "dependabot"`.
+
+**Token.** The writeback user must be able to **create** tasks on the board — i.e. write access + board membership, the same it already needs for moves. No extra config beyond the flag.
+
+**Idempotency.** Correlation is by `payload.pr_number`, so a redelivered or reopened event never duplicates a card. (A rare *concurrent* duplicate `opened` delivery could create two — there's no unique constraint on `pr_number`; acceptable at dependabot's rate.)
+
+**Worked example.** With the mapping above, dependabot opens `chore(deps): Bump x from 1 to 2` (PR #77, head `dependabot/composer/x-2.0`) → a card *"chore(deps): Bump x from 1 to 2"* appears on board 8 in **In Review** (50), tagged `dependencies`/`triaged`, with `payload.pr_number: 77`. When it auto-merges to `dev`, the card moves to **Shipped to dev** (52). `php artisan bridge:inspect <event_id>` shows each create/move.
 
 ## Failure behaviour (what retries vs not)
 
 - **Transient** (kanban 5xx/timeout, a not-yet-placed token) → the webhook **5xx**s and kanban-board redelivers; the move retries once it's fixed.
 - **Permanent** (no mapping, no stage, a malformed payload, a kanban **4xx** like a deleted card or a cross-board stage, or the card isn't on the mapped board) → **logged + no-op**, the webhook acks 200 (a refused/un-actionable move is not a delivery failure — it would only retry-storm).
+
+### Diagnosing a silent writeback (DL-026)
+
+A writeback that "has no agent in the loop" can fail in two ways that **don't** error — they look identical to "nothing to do" — so the bridge now makes them loud (not as a 5xx; a genuine no-match still stays quiet):
+
+- **Blind / degraded token (0 visible cards).** If the writeback token's user loses board membership (token rotation) or `writeback.json` has a wrong `board_id`/instance, kanban answers `200` with empty data. Every correlation then resolves to "no card" → moves silently no-op, **and** for `create_dependabot_cards` mappings the handler would *create a duplicate card* (it can't see the existing one). Caught both at config time (`bridge:check` 0-card probe) and at runtime (a `warning` log on the 0-card read).
+- **Page-cap truncation (≥200 cards).** The board read caps at 200 cards; beyond that, correlations can be silently missed. Both `bridge:check` and the runtime read now `warning` when a board returns the cap. (Actual paging is not yet implemented — the warning is the signal to split the board or prune terminal cards.)
 
 ## Security notes
 

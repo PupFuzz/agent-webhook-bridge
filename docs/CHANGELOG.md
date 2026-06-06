@@ -10,6 +10,34 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.23.0] - 2026-06-06
+
+**BREAKING classifier-interface change + writeback robustness + opt-in dependabot cards.** PRs #60, #61, #66–#71 since v0.22.0.
+
+### Added
+
+- **Dependabot cards, opt-in per repo (DL-024, #66/#67).** Set `create_dependabot_cards: true` on a writeback mapping and a dependabot PR (head `dependabot/*`, no `DL-NNN`) gets a card **created on open** and carried through the same lifecycle on close — correlated by **PR number** (no DL needed). New cards are tagged `dependencies`/`triaged` and carry `payload.pr_number`/`pr_url`/`origin`. Builds on the existing writeback setup; default `false` (no behaviour change). See `docs/writeback.md` § Optional: dependabot cards.
+
+### Changed
+
+- **BREAKING — `Classifier::classify()` now takes a single `ClassifyContext $ctx` (DL-025, #70).** Replaces the prior positional parameter list (`eventType`/`payload`/`actor`/`provider`/`scopeId`/`agent`) with one readonly DTO. **Adding future context is now non-breaking — this is the LAST breaking change to `classify()`.** Every custom classifier must migrate to `classify(ClassifyContext $ctx): ClassifyResult` (read inputs from `$ctx->*`, thread `$ctx` through any `parent::classify()`). Also adds an **out-of-process `bridge:check` pre-flight** that loads each classifier in a child php process, so an incompatible-signature `E_COMPILE_ERROR` surfaces as a named check failure instead of crashing the command/request. The 3 in-tree classifiers + `docs/customization.md` are updated.
+
+### Fixed
+
+- **Writeback fails loudly on a blind/degraded token + page-cap truncation (DL-026, #71).** A writeback token that returns **0 cards** (its user lost board membership, or a wrong `board_id`/instance — kanban answers `200` + empty data, so no HTTP error) no longer **silently no-ops every move** (or, for `create_dependabot_cards` mappings, **creates a duplicate card** each redelivery). A runtime `warning` on the shared board read **and** a `bridge:check` board-visibility probe surface it; a read hitting the **200-card cap** is warned too. Non-transient (never a 5xx retry-storm); a genuine no-match stays quiet.
+- **Durable write-or-throw + boot-safe replay (#69 / #2055, #2054).** The durable-reaction write path propagates failures (write-or-throw) so a lost write becomes a retryable 5xx rather than a silent drop; `bridge:replay` is hardened to run boot-safe.
+- **Backlog hygiene (#68 / #2057, #2056, #2058).** Stored exception text is redacted, DB errors are surfaced cleanly, and the 413 envelope-size-limit response is documented.
+
+### Dependencies
+
+- Bump `gitleaks/gitleaks-action` 2.3.9 → 3.0.0 (#60).
+- Bump `laravel/pao` (dev) 1.0.6 → 1.1.0 (#61).
+
+### Operator notes
+
+- **BREAKING — migrate custom classifiers** to the `ClassifyContext` signature before updating (in-tree usage is already migrated). After updating, run **`php artisan bridge:check`** — it now validates each classifier's signature out-of-process and names a stale one instead of fataling. **No DB migration.**
+- `bridge:check` now also **probes that the writeback token can see each mapped board** (0 cards / 200-cap ⇒ a loud warning, never a check failure). Opt-in posture unchanged: no `writeback.json` ⇒ writeback off.
+
 ## [0.22.0] - 2026-06-05
 
 **Release card-promotion for board 8 + the auto-tag workflow now publishes a GitHub Release.** PRs #59, #62 since v0.21.0.

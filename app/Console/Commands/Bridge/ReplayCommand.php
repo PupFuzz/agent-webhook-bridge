@@ -4,6 +4,7 @@ namespace App\Console\Commands\Bridge;
 
 use App\Bridge\Adapters\EventDto;
 use App\Bridge\Dispatch\DispatchService;
+use App\Bridge\Exceptions\ConfigException;
 use App\Models\WebhookEvent;
 
 /**
@@ -11,6 +12,11 @@ use App\Models\WebhookEvent;
  * re-run; succeeded rows are skipped — so replay never re-fires an
  * already-delivered channel_push / spawn_detached. --agent scopes to one agent;
  * --force clears processed_at first so succeeded rows re-run too.
+ *
+ * DispatchService is resolved LAZILY in handle(), NOT constructor-injected — the
+ * bind reads every agent YAML, and console bootstrap instantiates every command,
+ * so injecting it here would make one malformed YAML crash EVERY artisan command
+ * (incl. bridge:check, the pre-flight). #2054.
  */
 class ReplayCommand extends BridgeCommand
 {
@@ -18,12 +24,12 @@ class ReplayCommand extends BridgeCommand
 
     protected $description = 'Re-dispatch a stored webhook event (recovery for errored/missed dispatches)';
 
-    public function __construct(private DispatchService $dispatcher)
+    public function handle(): int
     {
-        parent::__construct();
+        return $this->guardDatabase($this->handleGuarded(...));
     }
 
-    public function handle(): int
+    private function handleGuarded(): int
     {
         $event = WebhookEvent::query()->find((int) $this->argument('id'));
         if ($event === null) {
@@ -49,8 +55,18 @@ class ReplayCommand extends BridgeCommand
             eventType: $event->event_type,
             actorId: $event->actor_id,
         );
+        // Resolve here (not at construction) so a malformed config surfaces as a
+        // clean message on THIS command only, never a boot-time crash of all.
+        try {
+            $dispatcher = app(DispatchService::class);
+        } catch (ConfigException $e) {
+            $this->error('config error — run `php artisan bridge:check` to diagnose ('.$e->getMessage().')');
+
+            return self::FAILURE;
+        }
+
         $payload = $event->payload;
-        $this->dispatcher->dispatch($event->provider, $event->scope_id, $dto, is_array($payload) ? $payload : [], $onlyAgent);
+        $dispatcher->dispatch($event->provider, $event->scope_id, $dto, is_array($payload) ? $payload : [], $onlyAgent);
 
         $this->info("replayed event {$event->id}".($onlyAgent !== null ? " for agent {$onlyAgent}" : ''));
 

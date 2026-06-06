@@ -39,11 +39,11 @@ class HandlerRegistryTest extends TestCase
     public function test_known_is_sorted(): void
     {
         $this->assertSame(
-            ['channel_push', 'kanban_move_card', 'log_intent', 'registry_append'],
+            ['channel_push', 'kanban_dependabot_card', 'kanban_move_card', 'log_intent', 'registry_append'],
             (new HandlerRegistry)->known(),
         );
         $this->assertSame(
-            ['channel_push', 'kanban_move_card', 'log_intent', 'registry_append', 'spawn_detached'],
+            ['channel_push', 'kanban_dependabot_card', 'kanban_move_card', 'log_intent', 'registry_append', 'spawn_detached'],
             (new HandlerRegistry(true))->known(),
         );
     }

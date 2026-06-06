@@ -4,9 +4,9 @@ namespace Tests\Fixtures;
 
 use App\Bridge\Contracts\Classifier;
 use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
-use App\Bridge\Support\AgentConfig;
 
 /**
  * Models a shared-upstream-identity classifier (DL-005). The registry could not
@@ -19,8 +19,14 @@ use App\Bridge\Support\AgentConfig;
  */
 class ReattributingClassifier implements Classifier
 {
-    public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId, AgentConfig $agent): ClassifyResult
+    public function classify(ClassifyContext $ctx): ClassifyResult
     {
+        $eventType = $ctx->eventType;
+        $payload = $ctx->payload;
+        $actor = $ctx->actor;
+        $provider = $ctx->provider;
+        $scopeId = $ctx->scopeId;
+        $agent = $ctx->agent;
         $subjectId = (string) ($payload['subject_id'] ?? '0');
         $trueAuthor = $payload['reattributed_to'] ?? null;
 

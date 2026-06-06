@@ -79,7 +79,8 @@ final class WritebackConfig
                 }
                 $stages[$outcome] = (int) $stageId;
             }
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages);
+            $createDependabotCards = ($m['create_dependabot_cards'] ?? false) === true;
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards);
         }
 
         return new self($identityId, $mappings);

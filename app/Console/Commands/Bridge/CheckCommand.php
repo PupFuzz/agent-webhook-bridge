@@ -14,6 +14,8 @@ use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
+use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Support\Facades\DB;
 use Throwable;
@@ -129,8 +131,18 @@ class CheckCommand extends BridgeCommand
                 $configs[] = $cfg;
 
                 // The classifier FQCN is only resolved at dispatch time, where a
-                // bad value is an uncaught 5xx (→ upstream retry storm). Resolve
-                // it here so a typo surfaces as a preflight failure instead.
+                // bad value is an uncaught 5xx (→ upstream retry storm). Validate
+                // it here so a typo / stale signature surfaces as a preflight
+                // failure instead. Probe OUT OF PROCESS first — an out-of-date
+                // classify() signature is an uncatchable E_COMPILE_ERROR that would
+                // otherwise kill bridge:check ITSELF (#2053); the subprocess
+                // isolates the load. Only once it passes is for() safe to call here.
+                if (($err = ClassifierResolver::probeLoadable($cfg->classifierClass)) !== null) {
+                    $this->error("agent {$name}: {$err}");
+                    $ok = false;
+
+                    continue;
+                }
                 try {
                     ClassifierResolver::for($cfg);
                 } catch (Throwable $e) {
@@ -227,6 +239,35 @@ class CheckCommand extends BridgeCommand
                         $this->warn("writeback: no kanban writeback token at {$tokenPath} — the move will fail until you place a least-privilege token (chmod 600)");
                     } elseif (SecretFile::isInsecure($tokenPath)) {
                         $this->warn('writeback: '.SecretFile::permsMessage($tokenPath).' — the move will fail until fixed');
+                    }
+                }
+
+                // Probe that the writeback token can actually SEE each mapped
+                // board. A token whose user lost board membership (or a drifted
+                // board_id) gets a 200 with 0 cards — NOT an HTTP error — so the
+                // writeback silently no-ops every move (or duplicates a dependabot
+                // card). Catch that degraded-but-not-erroring state HERE, at config
+                // time. All warn-level: a temporarily-unreachable kanban or a
+                // genuinely-empty new board must not FAIL the install check (DL-026).
+                if ($writeback !== null && $writeback->mappings !== []) {
+                    try {
+                        $client = WritebackClientFactory::make();
+                        foreach ($writeback->mappings as $repo => $mapping) {
+                            try {
+                                $n = $client->boardCardCount($mapping->boardId);
+                                if ($n === 0) {
+                                    $this->warn("writeback: token sees 0 cards on board {$mapping->boardId} ({$repo}) — its user is likely not a member of that board, or board_id is wrong; the writeback will SILENTLY no-op every move until fixed");
+                                } elseif ($n >= KanbanClient::SEARCH_LIMIT) {
+                                    $this->warn("writeback: board {$mapping->boardId} ({$repo}) returned the ".KanbanClient::SEARCH_LIMIT.'-card cap — correlations beyond the cap will be missed; paging is needed');
+                                } else {
+                                    $this->info("writeback: token sees {$n} card(s) on board {$mapping->boardId} ({$repo})");
+                                }
+                            } catch (Throwable $e) {
+                                $this->warn("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".$e->getMessage());
+                            }
+                        }
+                    } catch (Throwable $e) {
+                        $this->warn('writeback: skipped board-visibility probe — '.$e->getMessage());
                     }
                 }
             } catch (Throwable $e) {
