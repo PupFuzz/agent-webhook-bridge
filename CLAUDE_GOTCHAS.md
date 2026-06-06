@@ -171,6 +171,24 @@ If the guard fires unexpectedly in a test: verify `phpunit.xml` has this stanza 
 
 ---
 
+## G-017 — An operator's `BRIDGE_INBOX_LAYOUT=per-agent` shell export turns the suite red on their host while CI stays green
+
+**Symptom:** A clean `v0.24.0` checkout reports ~26 failures (22 fail + 4 error), all in `tests/Feature/Dispatch/*` + the inbox console tests, sharing one symptom — `IntentLog::stage()` persists 0 readable lines (`Failed asserting that actual size 0 matches expected size 1`, `Undefined array key 0`). CI is green; the running bridge is fine. **Not reproducible** on a maintainer host with the same code/deps/OS/locale — until you export `BRIDGE_INBOX_LAYOUT=per-agent`.
+
+**Cause:** A real per-agent deployment exports `BRIDGE_INBOX_LAYOUT=per-agent` (and may export `BRIDGE_STATE_DIR`) in its shell. Laravel's Dotenv does **not** override an already-set shell var, so the export reaches `config('bridge.inbox_layout')`. Under `per-agent`, `IntentLog::stage()` writes to the per-agent file (`inbox-<agent>.jsonl`), but the tests read the **shared** `inbox.jsonl` — so they see 0 lines. The tests isolate `bridge.config_dir` in `setUp` but not the layout, so the operator's env bleeds in. Same class as G-013 (ambient env wins over the suite).
+
+**Fix:** A `phpunit.xml` `<env … force="true">` does **NOT** fix it — `env()` reads the `getenv()` layer where the shell export lives, which phpunit's `<env>` doesn't reach (verified: forcing `BRIDGE_INBOX_LAYOUT=shared` in `phpunit.xml` still failed). The authoritative fix is a **runtime `config()` pin in the base `Tests\TestCase::setUp()`**:
+```php
+config(['bridge.inbox_layout' => 'shared', 'bridge.state_dir' => null]);
+```
+Runtime `config()` overrides the env-derived value, and tests that exercise a non-shared layout set `bridge.inbox_layout` *after* `parent::setUp()`, so they still win. Validated: 340/340 with `BRIDGE_INBOX_LAYOUT=per-agent BRIDGE_STATE_DIR=… BRIDGE_DIR=…` all exported.
+
+**Discovery:** Integrator bug report on a clean `v0.24.0` install; root-caused via a probe (`probe-intentlog.php`) that printed `inbox_layout = per-agent` on their host vs `shared` on the maintainer's, then reproduced by exporting the var (card #2145).
+
+**Related:** `tests/TestCase.php`, `app/Bridge/Dispatch/IntentLog.php`, `app/Bridge/Support/BridgePaths.php` (`stateDir`/`inboxLayout`/`targetPaths`), G-013 (sibling: `phpunit.xml` `BRIDGE_INSTALL_SUFFIX`).
+
+---
+
 ## How to add an entry
 
 1. New `G-NNN` (next available number).
