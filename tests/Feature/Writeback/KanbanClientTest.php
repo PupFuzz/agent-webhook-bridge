@@ -92,19 +92,55 @@ class KanbanClientTest extends TestCase
             ->withArgs(fn (string $msg) => str_contains($msg, '0 cards'));
     }
 
-    public function test_page_cap_truncation_logs_a_warning(): void
+    public function test_finds_a_card_beyond_the_first_page(): void
     {
-        // A board returning the 200-card cap means correlations beyond it are
-        // silently missed — warn (DL-026).
-        $cards = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1, 200));
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => $cards])]);
+        // DL-028: a card past #200 must still correlate. Page 1 is a full 200
+        // non-matching cards; the match sits on page 2.
+        $page1 = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1, 200));
+        $page2 = [['id' => 7777, 'payload' => ['dl_number' => '9999']]];
+        Http::fakeSequence('*/tasks/search.json*')
+            ->push(['data' => $page1])
+            ->push(['data' => $page2]);
         Log::spy();
 
-        // 999 isn't in 1..200 → no match, but the cap warning must still fire.
-        $this->assertNull($this->client()->findCardByDlNumber(8, 'DL-999'));
+        $this->assertSame(7777, $this->client()->findCardByDlNumber(8, 'DL-9999'));
+        // Fully read across pages, no degradation → silent.
+        Log::shouldNotHaveReceived('warning');
+    }
 
+    public function test_truncation_warning_fires_at_the_max_pages_ceiling(): void
+    {
+        // Every page comes back full ⇒ the page walk hits the MAX_PAGES ceiling;
+        // cards beyond it are unread — the DL-026 silent-loss class, warned (DL-028).
+        $full = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1, KanbanClient::SEARCH_LIMIT));
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => $full])]);
+        Log::spy();
+
+        $this->assertNull($this->client()->findCardByDlNumber(8, 'DL-99999'));   // no match in 1..200
+
+        Http::assertSentCount(KanbanClient::MAX_PAGES);   // stopped at the ceiling, didn't run away
         Log::shouldHaveReceived('warning')->once()
-            ->withArgs(fn (string $msg) => str_contains($msg, 'cap'));
+            ->withArgs(fn (string $msg) => str_contains($msg, 'ceiling'));
+    }
+
+    public function test_short_page_break_keys_on_raw_batch_length_not_the_filtered_count(): void
+    {
+        // Lock the must-fix: a non-array row on a FULL page must not desync the
+        // short-page break — 200 RAW rows (199 arrays + 1 junk) is still "full",
+        // so page 2 is fetched; the read is complete (not truncated).
+        $page1 = array_map(fn (int $i) => ['id' => $i, 'payload' => []], range(1, KanbanClient::SEARCH_LIMIT - 1));
+        $page1[] = 'not-an-array-row';   // 200th raw row, filtered out of the result
+        Http::fakeSequence('*/tasks/search.json*')
+            ->push(['data' => $page1])
+            ->push(['data' => [['id' => 5000, 'payload' => []]]]);   // short page ⇒ stop
+        Log::spy();
+
+        $read = $this->client()->boardVisibility(8);
+
+        $this->assertSame(200, count($read->cards));   // 199 + 1
+        $this->assertFalse($read->truncated);
+        Http::assertSentCount(2);
+        Log::shouldNotHaveReceived('warning');
     }
 
     public function test_genuine_no_match_logs_nothing(): void
@@ -121,7 +157,7 @@ class KanbanClientTest extends TestCase
         Log::shouldNotHaveReceived('warning');
     }
 
-    public function test_board_card_count_returns_the_visible_count(): void
+    public function test_board_visibility_returns_filtered_cards_and_no_truncation(): void
     {
         Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
             ['id' => 1, 'payload' => []],
@@ -129,7 +165,10 @@ class KanbanClientTest extends TestCase
             'not-an-array-row',   // filtered out
         ]])]);
 
-        $this->assertSame(2, $this->client()->boardCardCount(8));
+        $read = $this->client()->boardVisibility(8);
+
+        $this->assertSame(2, count($read->cards));
+        $this->assertFalse($read->truncated);   // 3 raw rows < 200 ⇒ single page, complete
     }
 
     public function test_create_card_with_swimlane_sends_swimlane_id(): void

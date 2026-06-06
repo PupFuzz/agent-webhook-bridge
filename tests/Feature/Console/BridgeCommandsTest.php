@@ -3,6 +3,7 @@
 namespace Tests\Feature\Console;
 
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Writeback\KanbanClient;
 use App\Console\Commands\Bridge\InboxCommand;
 use App\Console\Commands\Bridge\ReplayCommand;
 use App\Models\AgentDispatch;
@@ -131,6 +132,21 @@ class BridgeCommandsTest extends TestCase
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('sees 2 card(s) on board 8')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warns_when_a_board_exceeds_the_paging_safety_ceiling(): void
+    {
+        // DL-028: every page comes back full ⇒ the walk hits the MAX_PAGES ceiling.
+        // bridge:check surfaces it (warn, not fail — a >10k-card board is exotic but real).
+        $this->writeWritebackWithToken();
+        $full = array_fill(0, KanbanClient::SEARCH_LIMIT, ['id' => 1, 'payload' => []]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => $full])]);
+
+        // Assert on the early, wrap-safe token; the full message is "… exceeds
+        // the 10000-card safety ceiling …" (console line-wrap can split the tail).
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('exceeds the')
             ->assertExitCode(0);
     }
 

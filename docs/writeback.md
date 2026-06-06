@@ -66,7 +66,7 @@ The bridge does **not** provision GitHub webhooks (no repo-admin token by design
 php artisan bridge:check        # validates writeback.json + the writeback token,
                                 # and probes that the token can SEE each mapped board
 ```
-`bridge:check` reads each mapped board with the writeback token: it reports the visible card count, and warns loudly if it sees **0 cards** (the token's user is likely not a board member, or `board_id` is wrong — the writeback would silently no-op) or hits the **200-card cap** (correlations beyond it are missed; paging needed). If a mapping pins a `swimlane_id`, it also checks the lane actually exists on that board. All warn-level — a genuinely-empty new board won't fail the check.
+`bridge:check` reads each mapped board with the writeback token (paging the full board): it reports the visible card count, and warns loudly if it sees **0 cards** (the token's user is likely not a board member, or `board_id` is wrong — the writeback would silently no-op) or if the board **exceeds the paging safety ceiling** (`MAX_PAGES × 200` = 10,000 live cards; correlations beyond it are missed). If a mapping pins a `swimlane_id`, it also checks the lane actually exists on that board. All warn-level — a genuinely-empty new board won't fail the check.
 
 Open/merge a PR whose title or branch carries `DL-NNN` matching a card's `payload.dl_number` (the card's `dl_number` custom field, populated by your board automation when the card is created); the card moves. `php artisan bridge:inspect <event_id>` shows the dispatch + any logged refusal/no-op.
 
@@ -141,7 +141,7 @@ It is **strict** like `board_id`/`stages`: a non-numeric value fails `writeback.
 A writeback that "has no agent in the loop" can fail in two ways that **don't** error — they look identical to "nothing to do" — so the bridge now makes them loud (not as a 5xx; a genuine no-match still stays quiet):
 
 - **Blind / degraded token (0 visible cards).** If the writeback token's user loses board membership (token rotation) or `writeback.json` has a wrong `board_id`/instance, kanban answers `200` with empty data. Every correlation then resolves to "no card" → moves silently no-op, **and** for `create_dependabot_cards` mappings the handler would *create a duplicate card* (it can't see the existing one). Caught both at config time (`bridge:check` 0-card probe) and at runtime (a `warning` log on the 0-card read).
-- **Page-cap truncation (≥200 cards).** The board read caps at 200 cards; beyond that, correlations can be silently missed. Both `bridge:check` and the runtime read now `warning` when a board returns the cap. (Actual paging is not yet implemented — the warning is the signal to split the board or prune terminal cards.)
+- **Large boards are paged (DL-028).** The board read walks `/tasks/search.json` page by page (200 at a time) until a short page, so a board with more than 200 live cards is fully correlated — a card past #200 no longer silently misses a move or duplicates a dependabot card. A hard **safety ceiling** of `MAX_PAGES` (50) pages bounds a pathological or non-paging upstream; if every page comes back full up to the ceiling (>10,000 live cards), both `bridge:check` and the runtime read `warning` that cards beyond it are unread. The read is eager-full (all pages, then match), so each correlation costs ≈ ⌈live-cards ÷ 200⌉ GETs — negligible at real board sizes (1–2 pages).
 
 ## Security notes
 
