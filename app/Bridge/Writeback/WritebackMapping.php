@@ -17,11 +17,16 @@ final class WritebackMapping
      * @param  bool  $createDependabotCards  opt-in: a dependabot PR (head `dependabot/*`)
      *                                       with no tracking card gets one created on
      *                                       open and moved on close (keyed by PR number)
+     * @param  ?int  $swimlaneId  optional lane for CREATED cards only (DL-027) — on a
+     *                            lane-per-repo board the per-repo mapping IS the lane
+     *                            discriminator. Applied at create (incl. create-on-missed);
+     *                            never on move, so a human re-laning a card survives.
      */
     public function __construct(
         public readonly int $boardId,
         public readonly array $stages,
         public readonly bool $createDependabotCards = false,
+        public readonly ?int $swimlaneId = null,
     ) {}
 
     /** The configured stage id for a GitHub-PR outcome, or null when unmapped. */
