@@ -262,6 +262,16 @@ class CheckCommand extends BridgeCommand
                                 } else {
                                     $this->info("writeback: token sees {$n} card(s) on board {$mapping->boardId} ({$repo})");
                                 }
+                                // DL-027: a mapping's swimlane_id (created-card lane) must exist on
+                                // its board, else card creation 422s and the handler SILENTLY no-ops
+                                // (permanent-4xx). A static typo never self-resolves, so name it here.
+                                if ($mapping->swimlaneId !== null) {
+                                    if (! in_array($mapping->swimlaneId, $client->boardSwimlaneIds($mapping->boardId), true)) {
+                                        $this->warn("writeback: swimlane_id {$mapping->swimlaneId} not found on board {$mapping->boardId} ({$repo}) — created cards will 422 and SILENTLY no-op until fixed (a deleted lane, or a lane on a different board)");
+                                    } else {
+                                        $this->info("writeback: swimlane_id {$mapping->swimlaneId} ok on board {$mapping->boardId} ({$repo})");
+                                    }
+                                }
                             } catch (Throwable $e) {
                                 $this->warn("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".$e->getMessage());
                             }

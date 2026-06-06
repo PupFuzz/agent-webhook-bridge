@@ -80,14 +80,42 @@ sudo systemctl reload apache2 php8.3-fpm
 ```bash
 cd ~/agent-webhook-bridge-<agent>
 git pull --ff-only
+# ⚠ Running a CUSTOM classifier/handler under app/Bridge/? Migrate it IN THIS STEP
+# if you're crossing a contract change — see the callout below.
 composer install --no-dev --optimize-autoloader
 php artisan migrate --force                       # no-op if no new migrations
 php artisan optimize:clear && php artisan optimize
+php artisan bridge:check                           # VALIDATE BEFORE serving — names a stale custom classifier / config drift; STOP if non-zero
 sudo systemctl reload php8.3-fpm                  # recycle workers so they re-read config + agent YAMLs
-php artisan bridge:check
 ```
 
+> **⚠ Running a custom classifier or handler?** A custom class under `app/Bridge/Classifiers/` (per [`docs/customization.md`](docs/customization.md) § Loading your classifier) is **untracked but not gitignored**, so `git pull` preserves your *old* file unchanged into the new release. **Check [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for a `classify()`/contract change in the versions you're crossing and migrate your class in the SAME step as the pull.** `classify()` has had two breaking changes (DL-022 added `AgentConfig $agent`; DL-025 collapsed to a single `classify(ClassifyContext $ctx)` — the **last** such break). An old signature is an uncatchable `E_COMPILE_ERROR` that fatals the receiver on the next live delivery — and with `opcache.validate_timestamps=On` the new contract is picked up within `revalidate_freq` of the pull, **before** the FPM reload, so the failure window opens at pull time. This is why `bridge:check` is ordered **before** the reload above: its out-of-process classifier load (DL-025) names a stale class instead of letting it fatal a request — but that only helps if you migrate-and-check, not pull-and-serve.
+
 > **No `sudo`?** The FPM reload is for a clean worker recycle; it's not strictly required. With PHP's default `opcache.validate_timestamps=On`, FPM workers pick up changed `.php` / cached-config files within `revalidate_freq` (a couple of seconds) on their own. After a code/`.env` change, `optimize:clear && optimize` + a healthy `bridge:check` and `/up` 200 confirm the new state is live; reload when you can for a deterministic recycle.
+
+### Smoke-test the receiver with a signed delivery
+
+The real-surface post-update check: fire **one signed synthetic delivery** at the live receiver, exercising the actual HMAC → adapt → classify → dispatch path without polluting the upstream board/repo. The signature is over the **raw body** (G-011); the body's scope source **must equal** the `?b=<scope>` query param or the receiver returns `401 scope_mismatch` (G-018) — for GitHub that source is `repository.full_name`, for kanban it's `board_id`.
+
+```bash
+SCOPE='<org/repo>'                                 # GitHub: equals repository.full_name AND ?b=
+SECRET=$(cat "<secret_dir>/github/webhook-secret-scope-${SCOPE}")
+BODY='{"action":"created",
+       "repository":{"full_name":"'"$SCOPE"'"},
+       "issue":{"number":1,"title":"smoke","labels":[]},
+       "comment":{"body":"smoke","html_url":"https://example.invalid/x"},
+       "sender":{"id":<sender-id>,"login":"x"}}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -hex | awk '{print $NF}')
+curl -X POST \
+  -H "X-Hub-Signature-256: sha256=$SIG" \
+  -H "X-GitHub-Event: issue_comment" \
+  -H "X-GitHub-Delivery: smoke-$(date +%s)" \
+  --data-binary "$BODY" \
+  "$BRIDGE_RECEIVER_BASE_URL/github?b=${SCOPE}"     # BRIDGE_RECEIVER_BASE_URL ends in /webhooks → POST /webhooks/github
+# then: php artisan bridge:stats   (expect errored=0) ; php artisan bridge:inspect <N>
+```
+
+A `401 scope_mismatch` almost always means the body omitted (or mismatched) `repository.full_name` vs `?b=` — not an HMAC problem (G-018).
 
 ## Upgrading an existing install to v0.16 (config schema v2)
 

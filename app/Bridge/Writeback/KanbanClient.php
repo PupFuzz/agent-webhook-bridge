@@ -146,25 +146,52 @@ final class KanbanClient
     }
 
     /**
-     * Create a card on a board at a stage; returns the new card id.
+     * Create a card on a board at a stage; returns the new card id. An optional
+     * $swimlaneId places it in a lane (DL-027) — omitted from the POST entirely
+     * when null (the board then assigns its default lane, today's behavior).
      *
      * @param  array<string, mixed>  $payload
      * @param  list<string>  $tags
      */
-    public function createCard(int $boardId, int $stageId, string $name, array $payload, array $tags): int
+    public function createCard(int $boardId, int $stageId, string $name, array $payload, array $tags, ?int $swimlaneId = null): int
     {
-        $data = $this->http()->post('/tasks.json', ['task' => [
+        $task = [
             'board_id' => $boardId,
             'workflow_stage_id' => $stageId,
             'name' => $name,
             'payload' => $payload,
             'tags' => $tags,
-        ]])->throw()->json('data');
+        ];
+        if ($swimlaneId !== null) {
+            $task['swimlane_id'] = $swimlaneId;
+        }
+        $data = $this->http()->post('/tasks.json', ['task' => $task])->throw()->json('data');
         if (! is_array($data) || ! isset($data['id']) || ! is_numeric($data['id'])) {
             throw new \RuntimeException('kanban createCard: response carried no task id');
         }
 
         return (int) $data['id'];
+    }
+
+    /**
+     * The swimlane ids defined on a board — for the bridge:check validation that
+     * a mapping's `swimlane_id` (DL-027) exists on its board. Uses the lightweight
+     * preload endpoint (carries swimlanes, NOT every task) — never the task-heavy
+     * GET /boards/{id}.json.
+     *
+     * @return list<int>
+     */
+    public function boardSwimlaneIds(int $boardId): array
+    {
+        $swimlanes = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data.swimlanes');
+        $ids = [];
+        foreach (is_array($swimlanes) ? $swimlanes : [] as $s) {
+            if (is_array($s) && isset($s['id']) && is_numeric($s['id'])) {
+                $ids[] = (int) $s['id'];
+            }
+        }
+
+        return $ids;
     }
 
     private static function digits(string $s): string

@@ -144,6 +144,51 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_confirms_a_mapping_swimlane_id_that_exists_on_the_board(): void
+    {
+        // DL-027: when a mapping pins a swimlane_id, bridge:check validates it
+        // against the board's lanes so a deleted/wrong lane is caught at config
+        // time rather than as a silent 422-no-op on the first created card.
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'swimlane_id' => 31, 'stages' => ['merged' => 52]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            '*/boards/8/preload.json' => Http::response(['data' => ['swimlanes' => [['id' => 31], ['id' => 32]]]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('swimlane_id 31 ok on board 8')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warns_when_a_mapping_swimlane_id_is_not_on_the_board(): void
+    {
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'swimlane_id' => 99, 'stages' => ['merged' => 52]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            '*/boards/8/preload.json' => Http::response(['data' => ['swimlanes' => [['id' => 31], ['id' => 32]]]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('swimlane_id 99 not found on board 8')
+            ->assertExitCode(0);
+    }
+
     public function test_check_skips_the_board_probe_without_a_base_url_and_makes_no_request(): void
     {
         // Guard-lock (S3): the probe block IS reached (writeback.json + mapping),

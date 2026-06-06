@@ -131,4 +131,34 @@ class KanbanClientTest extends TestCase
 
         $this->assertSame(2, $this->client()->boardCardCount(8));
     }
+
+    public function test_create_card_with_swimlane_sends_swimlane_id(): void
+    {
+        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 7]], 201)]);
+
+        $this->client()->createCard(8, 50, 'x', ['pr_number' => 1], ['dependencies'], 31);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && ($r['task']['swimlane_id'] ?? null) === 31);
+    }
+
+    public function test_create_card_without_swimlane_omits_the_key(): void
+    {
+        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 7]], 201)]);
+
+        $this->client()->createCard(8, 50, 'x', [], []);   // no swimlane
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && ! array_key_exists('swimlane_id', $r['task']));
+    }
+
+    public function test_board_swimlane_ids_reads_the_preload_endpoint(): void
+    {
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['swimlanes' => [
+            ['id' => 31, 'name' => 'repo-a'], ['id' => 32, 'name' => 'repo-b'], 'bad-row',
+        ]]])]);
+
+        $this->assertSame([31, 32], $this->client()->boardSwimlaneIds(8));
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/boards/8/preload.json'));
+    }
 }

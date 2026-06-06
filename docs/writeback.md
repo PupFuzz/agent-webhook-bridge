@@ -66,7 +66,7 @@ The bridge does **not** provision GitHub webhooks (no repo-admin token by design
 php artisan bridge:check        # validates writeback.json + the writeback token,
                                 # and probes that the token can SEE each mapped board
 ```
-`bridge:check` reads each mapped board with the writeback token: it reports the visible card count, and warns loudly if it sees **0 cards** (the token's user is likely not a board member, or `board_id` is wrong — the writeback would silently no-op) or hits the **200-card cap** (correlations beyond it are missed; paging needed). All warn-level — a genuinely-empty new board won't fail the check.
+`bridge:check` reads each mapped board with the writeback token: it reports the visible card count, and warns loudly if it sees **0 cards** (the token's user is likely not a board member, or `board_id` is wrong — the writeback would silently no-op) or hits the **200-card cap** (correlations beyond it are missed; paging needed). If a mapping pins a `swimlane_id`, it also checks the lane actually exists on that board. All warn-level — a genuinely-empty new board won't fail the check.
 
 Open/merge a PR whose title or branch carries `DL-NNN` matching a card's `payload.dl_number` (the card's `dl_number` custom field, populated by your board automation when the card is created); the card moves. `php artisan bridge:inspect <event_id>` shows the dispatch + any logged refusal/no-op.
 
@@ -87,7 +87,8 @@ By default the writeback only **moves an existing card** correlated by a `DL-NNN
         "merged_to_main": 53,
         "closed_unmerged": 49
       },
-      "create_dependabot_cards": true  // opt-in (default false)
+      "create_dependabot_cards": true, // opt-in (default false)
+      "swimlane_id": 31                // optional — lane for CREATED cards (see below)
     }
   }
 }
@@ -110,6 +111,21 @@ By default the writeback only **moves an existing card** correlated by a `DL-NNN
 **New cards** are tagged `dependencies` + `triaged` (so routine dependency churn doesn't flood a triage sweep) and carry `payload.pr_number`, `payload.pr_url`, and `payload.origin = "dependabot"`.
 
 **Token.** The writeback user must be able to **create** tasks on the board — i.e. write access + board membership, the same it already needs for moves. No extra config beyond the flag.
+
+## Optional: pin created cards to a swimlane (DL-027)
+
+Add **`swimlane_id`** to a mapping to land every card the writeback *creates* in a specific lane (e.g. one swimlane per source repo on a shared board). It applies **at creation only** — it never moves an existing card between lanes, so a human re-lane is preserved and a re-delivery won't yank a card back. Absent ⇒ the board assigns its default lane (today's behavior, unchanged).
+
+```jsonc
+"your-org/your-repo": {
+  "board_id": 8,
+  "swimlane_id": 31,                 // created cards go in this lane
+  "stages": { "opened": 50, "merged": 52, "merged_to_main": 53, "closed_unmerged": 49 },
+  "create_dependabot_cards": true
+}
+```
+
+It is **strict** like `board_id`/`stages`: a non-numeric value fails `writeback.json` closed (no silent fallback to the default lane). `bridge:check` validates it against the board's actual lanes — a deleted lane, or one that lives on a *different* board, warns that created cards would `422` and silently no-op until fixed. (Only the dependabot-card path creates cards today; a DL-correlated card is created by your board automation, not the writeback.)
 
 **Idempotency.** Correlation is by `payload.pr_number`, so a redelivered or reopened event never duplicates a card. (A rare *concurrent* duplicate `opened` delivery could create two — there's no unique constraint on `pr_number`; acceptable at dependabot's rate.)
 
