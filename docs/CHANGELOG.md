@@ -10,6 +10,22 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.25.0] - 2026-06-06
+
+**Per-mapping writeback swimlane + test/doc hardening.** One opt-in runtime addition (swimlane on created cards); the rest is test-hermeticity and operator docs. PRs #79, #80, #81 since v0.24.0. No DB migration.
+
+### Added
+
+- **Per-mapping `swimlane_id` for writeback-created cards (DL-027, #81 / #2148).** A writeback `mappings` entry may declare an optional `swimlane_id`; cards the bridge **creates** (today, the `create_dependabot_cards` path) land in that lane — the lane-per-repo-on-a-shared-board case. Applied at **create only, never on a move** (a move stays a column-only `workflow_stage_id` PATCH, so a human re-laning a card survives and a redelivery can't yank it back). Strict-numeric and fail-closed (a non-numeric value throws `ConfigException`, never silently drops to the default lane — the DL-026 posture); absent ⇒ the POST omits the key ⇒ byte-identical to prior behaviour. `bridge:check` validates a pinned lane against the board's actual swimlanes (via the lightweight `GET /boards/{id}/preload.json`) and **warns** (never fails) when it's missing. Opt-in and backward-compatible; existing `writeback.json` is unaffected. See `docs/writeback.md` § Optional: pin created cards to a swimlane.
+
+### Fixed
+
+- **Test suite is hermetic against an operator's ambient `BRIDGE_*` env (G-017, #79).** A shell with `BRIDGE_INBOX_LAYOUT=per-agent` (or `BRIDGE_STATE_DIR`) exported leaked into the suite and reproduced as ~26 failures on the operator's host while CI stayed green — `env()` reads the `getenv()` layer the shell export lives in, which a phpunit `<env force="true">` does **not** override. The base `TestCase` now pins these via a runtime `config()` call in `setUp`, so the suite resolves the same config regardless of the host shell.
+
+### Documentation
+
+- **Operator-update doc gaps closed (#80).** `CLAUDE_DEPLOYMENT.md` gains the custom-classifier migration step, a `bridge:check`-before-serving note, and a signed smoke-test recipe; `CLAUDE_GOTCHAS.md` adds G-018 (401 `scope_mismatch`); `docs/customization.md` + `docs/config-schema.md` cross-links and the writeback-token warning are clarified.
+
 ## [0.24.0] - 2026-06-06
 
 **Release-automation robustness (sibling to kanban-board DL-143).** Release-tooling only — no change to the bridge runtime, receiver, or any app code. PR #75 since v0.23.0.
