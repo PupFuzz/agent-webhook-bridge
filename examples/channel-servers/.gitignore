@@ -1,0 +1,2 @@
+# `npm ci` installs here; the committed package-lock.json is the source of truth.
+node_modules/

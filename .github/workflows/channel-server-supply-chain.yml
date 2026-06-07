@@ -1,0 +1,54 @@
+name: Channel-server supply chain
+
+# Guards the committed examples/channel-servers/ dependency tree (the reference
+# Claude Code channel MCP server that reads a bearer token + accepts loopback
+# POSTs as the agent's OS user — a real trust boundary, so a pinned + reviewed
+# tree matters). Two checks:
+#   1. `npm ci` — fails if package.json and package-lock.json have drifted
+#      (the committed lockfile must stay reproducible: lock regenerated whenever
+#      the dep range changes).
+#   2. `npm audit` — FAILS loudly on a high/critical CVE in the pinned tree, so a
+#      vulnerable-but-pinned dependency can't rot silently (the "degraded states
+#      must be loud" posture). You then bump the dep + re-commit the lock.
+#
+# Cost-scoped on purpose: only fires when the example actually changes (PR path
+# filter) plus a weekly cron to catch newly-disclosed CVEs without a code change.
+
+on:
+  pull_request:
+    paths:
+      - 'examples/channel-servers/**'
+      - '.github/workflows/channel-server-supply-chain.yml'
+  schedule:
+    - cron: "23 5 * * 1"   # Mondays 05:23 UTC (off-peak; offset from the other crons)
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  channel-server-deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: examples/channel-servers
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Node 20
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: examples/channel-servers/package-lock.json
+
+      - name: Reproducible install (fails on package.json/lock drift)
+        run: npm ci --ignore-scripts
+
+      - name: Audit the pinned tree (fail on high/critical CVE)
+        run: npm audit --audit-level=high

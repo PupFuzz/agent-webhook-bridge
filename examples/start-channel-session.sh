@@ -31,9 +31,10 @@ if [ -S "$SOCK" ]; then
 fi
 
 # One-time channel-server deps (node_modules is gitignored — absent after clone).
+# `npm ci` installs the exact pinned tree from the committed package-lock.json.
 if [ -d "$SERVER_DIR" ] && [ ! -d "$SERVER_DIR/node_modules" ]; then
-    echo "Installing channel-server deps (one-time)…"
-    (cd "$SERVER_DIR" && npm install)
+    echo "Installing channel-server deps (one-time, pinned via npm ci)…"
+    (cd "$SERVER_DIR" && npm ci)
 fi
 
 cd "$HOME"   # so a home-rooted ~/.mcp.json is loaded
