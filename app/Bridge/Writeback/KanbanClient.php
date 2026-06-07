@@ -30,6 +30,7 @@ final class KanbanClient
     public function __construct(
         private string $baseUrl,
         private string $token,
+        private string $correlation = 'scan',
     ) {}
 
     private function http(): PendingRequest
@@ -60,56 +61,111 @@ final class KanbanClient
     }
 
     /**
-     * Find the card on a board whose `dl_number` custom field matches a DL token
-     * (correlation, DL-021). Matches on the numeric part so "DL-9" / "9" / "dl-9"
-     * compare equal. Returns the card id, or null when no card matches (a PR with
-     * no tracked card → the writeback gracefully no-ops). Reads the board via the
-     * task-search endpoint and filters client-side, so it doesn't depend on the
-     * search DSL's custom-field syntax.
+     * The card ids on a board correlated to a DL token (DL-029). Returns ALL
+     * matches — a bundled PR/DL legitimately tracks multiple cards (DL-148) — so
+     * the writeback moves every one; an empty list is a graceful no-op.
+     *
+     * `correlation = 'ref'` (DL-147/148): one indexed `by-ref` query, server-side
+     * canonicalized. `'scan'` (fallback): download the board and digit-match
+     * `payload.dl_number` client-side ("DL-9"/"9"/"dl-9" compare equal).
+     *
+     * @return list<int>
      */
-    public function findCardByDlNumber(int $boardId, string $dl): ?int
+    public function correlateDl(int $boardId, string $dl): array
     {
+        if ($this->correlation === 'ref') {
+            return $this->findCardsByRef($boardId, 'dl', $dl);
+        }
+
         $want = self::digits($dl);
         if ($want === '') {
-            return null;
+            return [];
         }
+        $ids = [];
         foreach ($this->correlationCards($boardId) as $card) {
             $cardDl = $card['payload']['dl_number'] ?? null;
-            // Compare on the numeric value (int) so "DL-42" / "42" / "042" all
-            // match. Skip a non-scalar dl_number (defensive — payload is free-form).
             if (is_scalar($cardDl) && self::digits((string) $cardDl) !== '' && (int) self::digits((string) $cardDl) === (int) $want
                 && isset($card['id']) && is_numeric($card['id'])) {
-                return (int) $card['id'];
+                $ids[] = (int) $card['id'];
             }
         }
 
-        return null;
+        return $ids;
     }
 
     /**
-     * The id of the card on a board whose `payload.pr_number` matches, or null.
-     * The idempotency key for PR-origin cards (dependabot) that carry no DL.
+     * The card ids on a board whose `pr_number` matches (DL-029) — the dependabot
+     * idempotency key. Collection for the same N:1 reason as {@see correlateDl}.
+     *
+     * @return list<int>
      */
-    public function findCardByPrNumber(int $boardId, int $prNumber): ?int
+    public function correlatePr(int $boardId, int $prNumber): array
     {
+        if ($this->correlation === 'ref') {
+            return $this->findCardsByRef($boardId, 'github_pr', (string) $prNumber);
+        }
+
+        $ids = [];
         foreach ($this->correlationCards($boardId) as $card) {
             $pr = $card['payload']['pr_number'] ?? null;
             if (is_numeric($pr) && (int) $pr === $prNumber && isset($card['id']) && is_numeric($card['id'])) {
-                return (int) $card['id'];
+                $ids[] = (int) $card['id'];
             }
         }
 
-        return null;
+        return $ids;
     }
 
     /**
-     * The board's cards + truncation flag for the bridge:check visibility probe
-     * (DL-026/028). PURE (no logging): `correlationCards` owns the runtime
-     * degraded-state warnings; `bridge:check` prints its own lines from this.
+     * Card ids correlated to a `(system, ref)` via the kanban by-ref lookup
+     * (DL-147/148): `GET /boards/{b}/tasks/by-ref.json` — server canonicalizes
+     * the ref and returns the live cards as a collection (N:1). Indexed, O(1),
+     * no board scan/paging. Pure: a genuine no-match is an empty list, not an error.
+     *
+     * @return list<int>
      */
-    public function boardVisibility(int $boardId): BoardRead
+    public function findCardsByRef(int $boardId, string $system, string $ref): array
     {
-        return $this->readBoard($boardId);
+        $data = $this->http()->get("/boards/{$boardId}/tasks/by-ref.json", [
+            'system' => $system,
+            'ref' => $ref,
+        ])->throw()->json('data');
+
+        $ids = [];
+        foreach (is_array($data) ? $data : [] as $card) {
+            if (is_array($card) && isset($card['id']) && is_numeric($card['id'])) {
+                $ids[] = (int) $card['id'];
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Cheap board-visibility probe for `bridge:check` (DL-029): a single
+     * `limit=1` search — answers "can this token see the board, and how big is
+     * it?" without the full correlation read, independent of the correlation
+     * mode. A blind/non-member token gets a 200 with no rows (the DL-026 signal);
+     * an HTTP error throws.
+     *
+     * Prefers the DL-146 pagination `meta.total` (exact size). Against a
+     * pre-DL-146 kanban (no `meta`) it falls back to the returned row count for
+     * the 0-vs-nonzero blind-token signal only — `exact:false`, size unknown —
+     * so a healthy older board is NOT misreported as a blind token.
+     *
+     * @return array{total: int, exact: bool}
+     */
+    public function visibility(int $boardId): array
+    {
+        $body = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId}", 'limit' => 1])->throw()->json();
+        $meta = is_array($body) && is_array($body['meta'] ?? null) ? $body['meta'] : null;
+        if ($meta !== null && isset($meta['total']) && is_numeric($meta['total'])) {
+            return ['total' => (int) $meta['total'], 'exact' => true];
+        }
+
+        $data = is_array($body) && is_array($body['data'] ?? null) ? $body['data'] : [];
+
+        return ['total' => count($data), 'exact' => false];
     }
 
     /**

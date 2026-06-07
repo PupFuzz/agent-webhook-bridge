@@ -11,9 +11,9 @@ use Tests\TestCase;
 
 class KanbanClientTest extends TestCase
 {
-    private function client(): KanbanClient
+    private function client(string $correlation = 'scan'): KanbanClient
     {
-        return new KanbanClient('https://kanban.example.com/api/v3', 'wb-token');
+        return new KanbanClient('https://kanban.example.com/api/v3', 'wb-token', $correlation);
     }
 
     public function test_get_card_returns_the_data_envelope(): void
@@ -46,130 +46,173 @@ class KanbanClientTest extends TestCase
         $this->client()->moveCard(5, 52);
     }
 
-    public function test_find_card_by_dl_number_matches_on_numeric_part(): void
+    // ---- scan mode (default) ----
+
+    public function test_scan_correlate_dl_matches_on_numeric_part_returns_all(): void
     {
         Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
             ['id' => 7, 'payload' => ['dl_number' => '042']],     // leading-zero form → numeric 42
+            ['id' => 11, 'payload' => ['dl_number' => 'DL-42']],  // SAME canonical → N:1, both returned
             ['id' => 5, 'payload' => ['dl_number' => 'DL-9']],
             ['id' => 9, 'payload' => ['dl_number' => ['oops']]],  // non-scalar → skipped, not fatal
         ]])]);
 
         $c = $this->client();
-        $this->assertSame(7, $c->findCardByDlNumber(8, 'DL-42'));   // "042" == 42 (leading zero)
-        $this->assertSame(5, $c->findCardByDlNumber(8, 'dl-9'));    // case-insensitive token
-        $this->assertNull($c->findCardByDlNumber(8, 'DL-420'));     // exact numeric, not substring
-        $this->assertNull($c->findCardByDlNumber(8, 'no-digits'));
+        $this->assertEqualsCanonicalizing([7, 11], $c->correlateDl(8, 'DL-42'));   // ALL matches (DL-148)
+        $this->assertSame([5], $c->correlateDl(8, 'dl-9'));     // case-insensitive token
+        $this->assertSame([], $c->correlateDl(8, 'DL-420'));    // exact numeric, not substring
+        $this->assertSame([], $c->correlateDl(8, 'no-digits'));
         Http::assertSent(fn (Request $r) => str_contains($r->url(), '/tasks/search.json')
             && str_contains(urldecode($r->url()), 'board_id=8')
             && str_contains(urldecode($r->url()), 'limit=200'));
     }
 
-    public function test_blind_token_zero_cards_logs_a_warning_and_returns_null(): void
+    public function test_scan_blind_token_zero_cards_logs_a_warning_and_returns_empty(): void
     {
         // DL-026: a 0-card board read (token's user not a board member / wrong
         // board_id) is a degraded-but-not-erroring state — make it LOUD, but still
-        // return null (the caller's no-op path is unchanged).
+        // return [] (the caller's no-op path is unchanged).
         Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
         Log::spy();
 
-        $this->assertNull($this->client()->findCardByDlNumber(8, 'DL-42'));
+        $this->assertSame([], $this->client()->correlateDl(8, 'DL-42'));
 
         Log::shouldHaveReceived('warning')->once()
             ->withArgs(fn (string $msg) => str_contains($msg, '0 cards'));
     }
 
-    public function test_blind_token_warning_also_fires_on_the_dependabot_pr_finder(): void
+    public function test_scan_blind_token_warning_also_fires_on_the_dependabot_pr_finder(): void
     {
-        // M1: findCardByPrNumber (the dependabot create/move path) shares the
-        // primitive, so the same 0-card guard covers it — there a blind token would
-        // otherwise CREATE a duplicate card, not just no-op.
         Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
         Log::spy();
 
-        $this->assertNull($this->client()->findCardByPrNumber(8, 77));
+        $this->assertSame([], $this->client()->correlatePr(8, 77));
 
         Log::shouldHaveReceived('warning')->once()
             ->withArgs(fn (string $msg) => str_contains($msg, '0 cards'));
     }
 
-    public function test_finds_a_card_beyond_the_first_page(): void
+    public function test_scan_finds_a_card_beyond_the_first_page(): void
     {
         // DL-028: a card past #200 must still correlate. Page 1 is a full 200
-        // non-matching cards; the match sits on page 2.
-        $page1 = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1, 200));
+        // non-matching cards (incl. a junk row so the raw-batch-length break is
+        // exercised); the match sits on page 2.
+        $page1 = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1, KanbanClient::SEARCH_LIMIT - 1));
+        $page1[] = 'not-an-array-row';   // 200th raw row → still a full page
         $page2 = [['id' => 7777, 'payload' => ['dl_number' => '9999']]];
-        Http::fakeSequence('*/tasks/search.json*')
-            ->push(['data' => $page1])
-            ->push(['data' => $page2]);
+        Http::fakeSequence('*/tasks/search.json*')->push(['data' => $page1])->push(['data' => $page2]);
         Log::spy();
 
-        $this->assertSame(7777, $this->client()->findCardByDlNumber(8, 'DL-9999'));
-        // Fully read across pages, no degradation → silent.
-        Log::shouldNotHaveReceived('warning');
+        $this->assertSame([7777], $this->client()->correlateDl(8, 'DL-9999'));
+        Http::assertSentCount(2);
+        Log::shouldNotHaveReceived('warning');   // fully read across pages → silent
     }
 
-    public function test_truncation_warning_fires_at_the_max_pages_ceiling(): void
+    public function test_scan_truncation_warning_fires_at_the_max_pages_ceiling(): void
     {
-        // Every page comes back full ⇒ the page walk hits the MAX_PAGES ceiling;
-        // cards beyond it are unread — the DL-026 silent-loss class, warned (DL-028).
         $full = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1, KanbanClient::SEARCH_LIMIT));
         Http::fake(['*/tasks/search.json*' => Http::response(['data' => $full])]);
         Log::spy();
 
-        $this->assertNull($this->client()->findCardByDlNumber(8, 'DL-99999'));   // no match in 1..200
+        $this->assertSame([], $this->client()->correlateDl(8, 'DL-99999'));   // no match in 1..200
 
         Http::assertSentCount(KanbanClient::MAX_PAGES);   // stopped at the ceiling, didn't run away
         Log::shouldHaveReceived('warning')->once()
             ->withArgs(fn (string $msg) => str_contains($msg, 'ceiling'));
     }
 
-    public function test_short_page_break_keys_on_raw_batch_length_not_the_filtered_count(): void
+    public function test_scan_genuine_no_match_logs_nothing(): void
     {
-        // Lock the must-fix: a non-array row on a FULL page must not desync the
-        // short-page break — 200 RAW rows (199 arrays + 1 junk) is still "full",
-        // so page 2 is fetched; the read is complete (not truncated).
-        $page1 = array_map(fn (int $i) => ['id' => $i, 'payload' => []], range(1, KanbanClient::SEARCH_LIMIT - 1));
-        $page1[] = 'not-an-array-row';   // 200th raw row, filtered out of the result
-        Http::fakeSequence('*/tasks/search.json*')
-            ->push(['data' => $page1])
-            ->push(['data' => [['id' => 5000, 'payload' => []]]]);   // short page ⇒ stop
-        Log::spy();
-
-        $read = $this->client()->boardVisibility(8);
-
-        $this->assertSame(200, count($read->cards));   // 199 + 1
-        $this->assertFalse($read->truncated);
-        Http::assertSentCount(2);
-        Log::shouldNotHaveReceived('warning');
-    }
-
-    public function test_genuine_no_match_logs_nothing(): void
-    {
-        // N>0 cards, none matched → a real "PR has no card" — must stay QUIET.
         Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
             ['id' => 7, 'payload' => ['dl_number' => '11']],
             ['id' => 8, 'payload' => ['dl_number' => '12']],
         ]])]);
         Log::spy();
 
-        $this->assertNull($this->client()->findCardByDlNumber(8, 'DL-42'));
+        $this->assertSame([], $this->client()->correlateDl(8, 'DL-42'));
 
         Log::shouldNotHaveReceived('warning');
     }
 
-    public function test_board_visibility_returns_filtered_cards_and_no_truncation(): void
+    // ---- ref mode (DL-029 cutover) ----
+
+    public function test_ref_correlate_dl_queries_by_ref_and_returns_collection(): void
     {
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
-            ['id' => 1, 'payload' => []],
-            ['id' => 2, 'payload' => []],
-            'not-an-array-row',   // filtered out
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['data' => [
+            ['id' => 42], ['id' => 43],   // N:1 — a bundled DL tracks two cards
         ]])]);
 
-        $read = $this->client()->boardVisibility(8);
+        $ids = $this->client('ref')->correlateDl(8, 'DL-28');
 
-        $this->assertSame(2, count($read->cards));
-        $this->assertFalse($read->truncated);   // 3 raw rows < 200 ⇒ single page, complete
+        $this->assertSame([42, 43], $ids);
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET'
+            && str_contains($r->url(), '/boards/8/tasks/by-ref.json')
+            && str_contains(urldecode($r->url()), 'system=dl')
+            && str_contains(urldecode($r->url()), 'ref=DL-28'));   // raw token; server canonicalizes
     }
+
+    public function test_ref_correlate_pr_queries_by_ref_with_github_pr_system(): void
+    {
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['data' => [['id' => 99]]])]);
+
+        $this->assertSame([99], $this->client('ref')->correlatePr(8, 85));
+        Http::assertSent(fn (Request $r) => str_contains(urldecode($r->url()), 'system=github_pr')
+            && str_contains(urldecode($r->url()), 'ref=85'));
+    }
+
+    public function test_ref_no_match_returns_empty(): void
+    {
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['data' => []])]);
+
+        $this->assertSame([], $this->client('ref')->correlateDl(8, 'DL-1'));
+    }
+
+    public function test_ref_mode_does_not_scan_the_board(): void
+    {
+        Http::fake([
+            '*/boards/8/tasks/by-ref.json*' => Http::response(['data' => [['id' => 1]]]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+        ]);
+
+        $this->client('ref')->correlateDl(8, 'DL-1');
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/tasks/search.json'));
+    }
+
+    // ---- visibility probe (bridge:check) ----
+
+    public function test_visibility_reads_pagination_total_with_a_single_row(): void
+    {
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 137]])]);
+
+        $this->assertSame(['total' => 137, 'exact' => true], $this->client()->visibility(8));
+        Http::assertSent(fn (Request $r) => str_contains($r->url(), '/tasks/search.json')
+            && str_contains(urldecode($r->url()), 'board_id=8')
+            && str_contains(urldecode($r->url()), 'limit=1'));   // cheap — one row
+    }
+
+    public function test_visibility_blind_token_reports_zero_total(): void
+    {
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [], 'meta' => ['total' => 0]])]);
+
+        $this->assertSame(['total' => 0, 'exact' => true], $this->client()->visibility(8));
+    }
+
+    public function test_visibility_without_meta_falls_back_to_row_count_for_a_healthy_board(): void
+    {
+        // Pre-DL-146 kanban (no meta): a healthy board (>=1 row) must NOT be
+        // misreported as blind — fall back to the row count, exact=false.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]]])]);
+        $this->assertSame(['total' => 1, 'exact' => false], $this->client()->visibility(8));
+    }
+
+    public function test_visibility_without_meta_reports_zero_for_a_blind_or_empty_board(): void
+    {
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+        $this->assertSame(['total' => 0, 'exact' => false], $this->client()->visibility(8));
+    }
+
+    // ---- create / swimlane (unchanged) ----
 
     public function test_create_card_with_swimlane_sends_swimlane_id(): void
     {

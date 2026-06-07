@@ -27,7 +27,8 @@ Auth: **Sanctum bearer token**. The card-move writeback uses a **dedicated least
 
 | Endpoint | The bridge uses it to | Load-bearing assumption |
 | --- | --- | --- |
-| `GET /api/v3/tasks/search.json?q=board_id=N&limit=200&page=P` | Read a board's cards for correlation | **Caps at 200 rows per page; page-based (`?page`, ignores `offset`); returns a bare `{data:[...]}` with NO `total`/`meta`/`links`.** This is *the* fragile assumption — see §3 + the open FRs. |
+| `GET /api/v3/boards/{b}/tasks/by-ref.json?system=&ref=` | **Correlate a PR → card(s)** in `ref` mode (DL-029, the default-soon path) | Server-canonicalizes the ref; returns a **collection** `{data:[…]}` (one-to-many — kanban DL-148); indexed/O(1). Requires kanban v0.17.2+ with `task_external_references` backfilled. |
+| `GET /api/v3/tasks/search.json?q=board_id=N&limit=200&page=P` | Correlate in `scan` mode (fallback) + the `bridge:check` `limit=1` visibility probe | Page-based (`?page`); returns the DL-146 `{data, meta, links}` envelope (`meta.total` powers the probe). Scan walks pages to `MAX_PAGES`. |
 | `GET /api/v3/tasks/{id}.json` | Read a card's `board_id` + `workflow_stage_id` | Belongs-to-mapped-board guard + idempotent already-in-stage check |
 | `POST /api/v3/tasks.json` | Create a card (dependabot path) | Body `{board_id, workflow_stage_id, name, payload, tags, swimlane_id?}`. **Unknown `payload` keys 422** — payload keys must be registered custom fields on the board. (DL-024 / DL-027) |
 | `PATCH /api/v3/tasks/{id}.json` | Move a card | Body `{task:{workflow_stage_id}}` **only** — column-only, never touches `payload`/lane, so a human re-laning survives (DL-020). (`_action: delete\|archive\|undelete\|unarchive` exists but the bridge uses move only.) |
@@ -36,13 +37,14 @@ Auth: **Sanctum bearer token**. The card-move writeback uses a **dedicated least
 **Correlation keys (how a PR finds its card):**
 - `payload.dl_number` — a **registered numeric custom field**; correlates a `DL-NNN`-tagged PR to its card (DL-021). The bridge normalizes `DL-42` / `42` / `042` to the same numeric value.
 - `payload.pr_number` — the **dependabot idempotency key** (DL-024).
-- **Both must be registered, queryable custom fields on the tracking board** (else `POST` 422s and they can't be queried). kanban exposes them via the search DSL `custom_field_<key>` against an indexed side table (DL-029). The bridge **currently reads the whole board and filters client-side** (paged, DL-028) rather than querying directly — #2160 proposes switching to the targeted query.
+- **Both must be registered custom fields on the tracking board** for the dependabot create path (`POST` 422s on unknown payload keys). For *correlation*, kanban derives them into the first-class `task_external_references` table and the bridge looks them up via `by-ref` (`ref` mode, DL-029/kanban DL-147/148) — server-canonicalized, indexed, returns all matching cards. `scan` mode (fallback) still reads the board and digit-matches client-side. The digit-normalization (`DL-42`/`42`/`042`) now lives once, server-side, in kanban's `ExternalReferenceNormalizer`.
 
 ## 3. Load-bearing invariants (break these → break the bridge)
 
 | Invariant | Owner | What breaks if it changes | Tracked |
 | --- | --- | --- | --- |
-| Task-search caps at 200/page, page-based, **no `total`/`has_more`** | kanban | Bridge must page and **guess** whether more exist; can't size the board | kanban FR **#2161** (add `meta`/`links`) |
+| Task-search returns a `{data, meta, links}` envelope (`meta.total`, `links.next`); page-based | kanban | The `bridge:check` visibility probe reads `meta.total` (a pre-DL-146 kanban without it → row-count fallback). Scan mode still pages. | kanban DL-146 (shipped, v0.17.0) |
+| Correlation `by-ref` returns ALL cards for a `(system, ref)` — one-to-many | kanban | Writeback must move EVERY matched card (a bundled PR tracks several); moving only the first under-delivers | kanban DL-148 / bridge DL-029 |
 | `payload.dl_number` / `pr_number` are **registered queryable custom fields** | kanban (board config) + bridge | Correlation can't find cards; `POST` 422s | bridge **#2160** (targeted query), **#2162** (orphaned-mapping guard) |
 | Move = **`workflow_stage_id`-only** PATCH | bridge | A move that touched lane/payload would clobber human edits / break idempotency | DL-020 / DL-027 |
 | HMAC over **raw body**; envelope `board_id` (or GitHub `repository.full_name`) must match the `?b=` scope | kanban + bridge | `401 scope_mismatch` | G-018 |
@@ -57,5 +59,5 @@ The card-move writeback is **triggered by GitHub PR webhooks**, not kanban event
 
 - **Prefer additive, backward-compatible changes.** Example done right: kanban FR #2161 adds `meta`/`links` *alongside* the unchanged `data` array — no consumer breaks.
 - **When you change a §2/§3 row, update this doc in the same change** and check the downstream side. A kanban API change isn't "done" until the bridge's assumption here is re-verified.
-- **Open seam FRs:** #2160 (bridge: targeted indexed correlation query), #2161 (kanban: pagination metadata — the upstream root that simplifies the bridge), #2162 (bridge: orphaned-writeback-mapping guard). These are the live evolution of this contract.
+- **Seam evolution:** #2161 (kanban pagination `meta`/`links`, DL-146) ✅; the correlation primitive — kanban `task_external_references` + `by-ref` (DL-147/148) ✅ and the bridge cutover (DL-029) ✅; #2162 (bridge: orphaned-writeback-mapping guard) — remaining.
 - **Authoritative sources:** kanban Scribe `/docs` (live API shapes) · bridge `KanbanClient` / `KanbanAdapter` / `GitHubAdapter` · `docs/writeback.md` · kanban `WebhookEvents` (event vocabulary).

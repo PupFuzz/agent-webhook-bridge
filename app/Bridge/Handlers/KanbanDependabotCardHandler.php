@@ -67,13 +67,16 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
 
         $client = WritebackClientFactory::make();   // throws (→ 5xx) on a missing/insecure token
         try {
-            $cardId = $client->findCardByPrNumber($mapping->boardId, $prNumber);
-            if ($cardId !== null) {
-                // Idempotent: move only when not already in the target stage.
-                $card = $client->getCard($cardId);
-                if (($card['workflow_stage_id'] ?? null) !== $stageId) {
-                    $client->moveCard($cardId, $stageId);
-                    Log::info('kanban_dependabot_card: moved', ['card_id' => $cardId, 'stage' => $stageId, 'outcome' => $outcome, 'pr' => $prNumber]);
+            $cardIds = $client->correlatePr($mapping->boardId, $prNumber);
+            if ($cardIds !== []) {
+                // Idempotent: move each existing card only when not already in the
+                // target stage. A PR may map to >1 card (DL-148) — move them all.
+                foreach ($cardIds as $cardId) {
+                    $card = $client->getCard($cardId);
+                    if (($card['workflow_stage_id'] ?? null) !== $stageId) {
+                        $client->moveCard($cardId, $stageId);
+                        Log::info('kanban_dependabot_card: moved', ['card_id' => $cardId, 'stage' => $stageId, 'outcome' => $outcome, 'pr' => $prNumber]);
+                    }
                 }
 
                 return;
