@@ -23,13 +23,15 @@ Per the [channels reference](https://code.claude.com/docs/en/channels-reference)
 
 ## Install
 
+**Requires Node ≥ 20.** Provision the right runtime before installing (an older Node only warns `EBADENGINE`, then can resolve a different tree).
+
 ```bash
 # from your deployment directory (copy or symlink this directory):
 cd examples/channel-servers
-npm install
+npm ci
 ```
 
-That installs `@modelcontextprotocol/sdk`. Node 20+ required.
+`npm ci` installs the **exact pinned tree** from the committed `package-lock.json` (and fails if it has drifted from `package.json`) — a reproducible install for this copied-and-run reference, instead of `npm install` re-resolving a fresh dependency tree per host. The channel server reads a bearer token and accepts loopback POSTs as the agent's OS user, so a pinned, reviewed tree is the right control at that trust boundary.
 
 ---
 
@@ -77,7 +79,7 @@ Custom channels aren't on the [approved allowlist](https://code.claude.com/docs/
 claude --dangerously-load-development-channels server:kanbanboard-agent
 ```
 
-This flag is **CLI-only every session** — there is no `settings.json`/`.mcp.json` way to auto-load a development channel (it deliberately bypasses the allowlist). The convenience launcher [`../start-channel-session.sh`](../start-channel-session.sh) wraps this command and also clears a stale socket and runs `npm install` on first use.
+This flag is **CLI-only every session** — there is no `settings.json`/`.mcp.json` way to auto-load a development channel (it deliberately bypasses the allowlist). The convenience launcher [`../start-channel-session.sh`](../start-channel-session.sh) wraps this command and also clears a stale socket and runs `npm ci` (pinned install) on first use.
 
 Claude Code spawns `agent-webhook-bridge-channel.mjs` as a subprocess, the server binds the UDS, and you'll see:
 
