@@ -10,6 +10,24 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.26.0] - 2026-06-06
+
+**Writeback correlation cutover to the kanban `by-ref` lookup + orphaned-mapping guard.** PRs #85, #86, #87, #88 since v0.25.0. No DB migration.
+
+### Added
+
+- **Indexed `by-ref` correlation + move-ALL-matching cards (DL-029, #87 / #2160).** Correlation now dispatches on **`BRIDGE_WRITEBACK_CORRELATION`** (default `scan`): `ref` does one indexed `GET /boards/{b}/tasks/by-ref.json` per key (kanban DL-147/148 — server-canonicalized, O(1), no paging/ceiling); `scan` is the existing board-scan fallback. A PR/DL is **one-to-many** (kanban DL-148), so both modes return **all** matching card ids — the classifier emits one `kanban_move_card` target per card (distinct `targetId`, no coalesce) and the dependabot handler moves every match. Default `scan` ⇒ upgrading the bridge is **inert**; flip an install to `ref` after its kanban is on v0.17.2+ and `task_external_references` is backfilled (`bridge:check` confirms). The blind/degraded-token probe is decoupled into a cheap `KanbanClient::visibility()` (`limit=1` read of the kanban DL-146 `meta.total`, row-count fallback for a pre-DL-146 kanban).
+- **`bridge:check` flags an orphaned writeback mapping (DL-030, #88 / #2162).** A `writeback.json` mapping is inert unless some agent runs a writeback-emitting classifier subscribed to its github scope; `bridge:check` now warns when none does. Detection uses a marker interface `App\Bridge\Contracts\EmitsWritebackReactions` (implemented by `GitHubPrCardMoveClassifier`) checked **out of process** (`ClassifierResolver::probeImplements`, DL-025) and runs independently of the board-visibility probe.
+- **Writeback correlation paging stopgap (DL-028, #85 / #2151).** The scan-mode board read pages past 200 cards (superseded as the primary path by DL-029's `ref` mode, retained as the `scan` fallback).
+
+### Documentation
+
+- **The kanban-board ↔ bridge integration contract (#86).** `docs/kanban-integration-contract.md` pins the seam (inbound webhook envelope/HMAC, outbound v3 surface, correlation keys, load-bearing invariants, change protocol); updated for `by-ref` correlation. `docs/customization.md` notes that a custom writeback-emitting classifier must implement the `EmitsWritebackReactions` marker.
+
+### Operator notes
+
+- **No DB migration, no required config change.** `BRIDGE_WRITEBACK_CORRELATION` is additive (absent ⇒ `scan`, today's behavior). To activate the indexed path on an install whose kanban is v0.17.2+ **and** backfilled: set `BRIDGE_WRITEBACK_CORRELATION=ref` and run `bridge:check`.
+
 ## [0.25.0] - 2026-06-06
 
 **Per-mapping writeback swimlane + test/doc hardening.** One opt-in runtime addition (swimlane on created cards); the rest is test-hermeticity and operator docs. PRs #79, #80, #81 since v0.24.0. No DB migration.
