@@ -76,20 +76,26 @@ class GitHubPrCardMoveClassifier implements Classifier
             return new ClassifyResult;   // no DL-NNN in the PR → un-linked, no-op
         }
 
-        // Correlation read (deterministic key → card id). A transient failure here
-        // is a classify error (treatment A: recorded, ack 200, bridge:replay).
-        $cardId = WritebackClientFactory::make()->findCardByDlNumber($mapping->boardId, $dl);
-        if ($cardId === null) {
+        // Correlation read (deterministic key → card id(s)). A transient failure
+        // here is a classify error (treatment A: recorded, ack 200, bridge:replay).
+        // A DL/PR can track MULTIPLE cards (bundled PR — DL-148), so move them ALL:
+        // one target per card, each with the card id as its distinct target_id so
+        // they don't coalesce (DL-003).
+        $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl);
+        if ($cardIds === []) {
             return new ClassifyResult;   // no card tracks this PR → no-op
         }
 
-        return new ClassifyResult(targets: [
-            ReactionTarget::make('kanban_move_card', (string) $cardId, payload: [
+        $targets = [];
+        foreach ($cardIds as $cardId) {
+            $targets[] = ReactionTarget::make('kanban_move_card', (string) $cardId, payload: [
                 'card_id' => $cardId,
                 'repo' => $repo,
                 'outcome' => $outcome,
-            ]),
-        ]);
+            ]);
+        }
+
+        return new ClassifyResult(targets: $targets);
     }
 
     /**

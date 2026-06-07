@@ -125,28 +125,26 @@ class BridgeCommandsTest extends TestCase
     public function test_check_reports_visible_card_count_when_token_can_see_the_board(): void
     {
         $this->writeWritebackWithToken();
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
-            ['id' => 1, 'payload' => []],
-            ['id' => 2, 'payload' => []],
-        ]])]);
+        // DL-029: the visibility probe reads the DL-146 pagination meta.total.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 2]])]);
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('sees 2 card(s) on board 8')
             ->assertExitCode(0);
     }
 
-    public function test_check_warns_when_a_board_exceeds_the_paging_safety_ceiling(): void
+    public function test_check_warns_when_a_board_exceeds_the_scan_ceiling_in_scan_mode(): void
     {
-        // DL-028: every page comes back full ⇒ the walk hits the MAX_PAGES ceiling.
-        // bridge:check surfaces it (warn, not fail — a >10k-card board is exotic but real).
+        // DL-029: in scan mode (default), a board larger than the scan ceiling would
+        // silently miss correlations — bridge:check surfaces it (warn, not fail) and
+        // points at BRIDGE_WRITEBACK_CORRELATION=ref. The probe reads meta.total, so
+        // there's no need to fake thousands of rows.
         $this->writeWritebackWithToken();
-        $full = array_fill(0, KanbanClient::SEARCH_LIMIT, ['id' => 1, 'payload' => []]);
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => $full])]);
+        $over = KanbanClient::SEARCH_LIMIT * KanbanClient::MAX_PAGES + 1;
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => $over]])]);
 
-        // Assert on the early, wrap-safe token; the full message is "… exceeds
-        // the 10000-card safety ceiling …" (console line-wrap can split the tail).
         $this->artisan('bridge:check')
-            ->expectsOutputToContain('exceeds the')
+            ->expectsOutputToContain('beyond the scan ceiling')
             ->assertExitCode(0);
     }
 

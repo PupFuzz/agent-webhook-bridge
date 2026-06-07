@@ -254,14 +254,19 @@ class CheckCommand extends BridgeCommand
                         $client = WritebackClientFactory::make();
                         foreach ($writeback->mappings as $repo => $mapping) {
                             try {
-                                $read = $client->boardVisibility($mapping->boardId);
-                                $n = count($read->cards);
-                                if ($n === 0) {
+                                // Cheap visibility probe (DL-029): one limit=1 read,
+                                // preferring meta.total — independent of correlation mode.
+                                $vis = $client->visibility($mapping->boardId);
+                                if ($vis['total'] === 0) {
                                     $this->warn("writeback: token sees 0 cards on board {$mapping->boardId} ({$repo}) — its user is likely not a member of that board, or board_id is wrong; the writeback will SILENTLY no-op every move until fixed");
-                                } elseif ($read->truncated) {
-                                    $this->warn("writeback: board {$mapping->boardId} ({$repo}) exceeds the ".(KanbanClient::SEARCH_LIMIT * KanbanClient::MAX_PAGES).'-card safety ceiling — correlations beyond it will be missed');
+                                } elseif (! $vis['exact']) {
+                                    // Pre-DL-146 kanban: confirmed non-blind, exact size unknown.
+                                    $this->info("writeback: token can see board {$mapping->boardId} ({$repo}) (exact card count unavailable — kanban predates pagination meta)");
                                 } else {
-                                    $this->info("writeback: token sees {$n} card(s) on board {$mapping->boardId} ({$repo})");
+                                    $this->info("writeback: token sees {$vis['total']} card(s) on board {$mapping->boardId} ({$repo})");
+                                    if (config('bridge.writeback.correlation') !== 'ref' && $vis['total'] > KanbanClient::SEARCH_LIMIT * KanbanClient::MAX_PAGES) {
+                                        $this->warn("writeback: board {$mapping->boardId} ({$repo}) has {$vis['total']} cards, beyond the scan ceiling — correlations beyond it will be missed; switch BRIDGE_WRITEBACK_CORRELATION=ref");
+                                    }
                                 }
                                 // DL-027: a mapping's swimlane_id (created-card lane) must exist on
                                 // its board, else card creation 422s and the handler SILENTLY no-ops
