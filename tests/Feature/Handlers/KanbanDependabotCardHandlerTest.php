@@ -32,6 +32,8 @@ class KanbanDependabotCardHandlerTest extends TestCase
             'bridge.config_dir' => $this->dir,
             'bridge.secret_dir' => $this->dir,
             'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            // Fakes the scan correlation path; pin scan (default is now `ref`, DL-031).
+            'bridge.writeback.correlation' => 'scan',
         ]);
     }
 

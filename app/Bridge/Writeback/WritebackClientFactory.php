@@ -29,7 +29,7 @@ final class WritebackClientFactory
             throw new ConfigException("kanban writeback: no token at {$tokenPath} (place a least-privilege token, chmod 600)");
         }
 
-        $correlation = (string) config('bridge.writeback.correlation', 'scan');
+        $correlation = (string) config('bridge.writeback.correlation', 'ref');
 
         return new KanbanClient($baseUrl, $token, $correlation);
     }
