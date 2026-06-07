@@ -34,6 +34,10 @@ class GitHubPrCardMoveClassifierTest extends TestCase
             'bridge.config_dir' => $this->dir,
             'bridge.secret_dir' => $this->dir,
             'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            // These tests fake the scan correlation path (board search); pin scan
+            // (the default is now `ref`, DL-031). Ref correlation is covered in
+            // KanbanClientTest; this suite verifies classifier target emission.
+            'bridge.writeback.correlation' => 'scan',
         ]);
         $this->agent = AgentConfig::fromArray('test-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]);
     }

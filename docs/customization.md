@@ -242,6 +242,35 @@ public function classify(ClassifyContext $ctx): ClassifyResult
 - **`$ctx->agent` carries the agent's own config** — `agentName` (the YAML filename), `identity` (`kanban_user_id` / `github_user_id`), `subscriptions`, etc. — so recipient logic can key on whatever the addressing convention uses.
 - **Addressing is operator policy, not bridge policy.** The bridge hands you the serving agent; what `to:`/`from:` labels mean is yours to define in the classifier. (This is why the seam is a classify param, not a built-in label filter.)
 
+#### Comment-level recipient filtering (the `TO:` line, DL-032)
+
+Issue/card **labels** address a whole thread, so on a multi-recipient thread (`to:agentA, to:agentB, to:agentC`) *every* comment wakes *all three* — including comments whose **body** is addressed to just one (`TO: agentB`). To filter at the **comment** level, parse the comment body's `TO:` line with the shipped `App\Bridge\Support\RecipientAddressing` helper (so you don't re-implement the parse — the *policy* still lives here in your classifier, per DL-022):
+
+```php
+use App\Bridge\Support\RecipientAddressing;
+
+public function classify(ClassifyContext $ctx): ClassifyResult
+{
+    if (str_starts_with($ctx->eventType, 'comment.')) {
+        $body = (string) ($ctx->payload['comment']['body'] ?? '');   // your provider's body path
+        $addressed = RecipientAddressing::addresses($body, $ctx->agent->agentName);
+        // true  → a TO: line names me (or `all`)
+        // false → a TO: line names others, not me  → drop
+        // null  → no TO: line → fall back to the issue/card label behavior above
+        if ($addressed === false) {
+            return new ClassifyResult;                 // addressed to someone else → don't wake me
+        }
+        // $addressed === true  → addressed to me, proceed.
+        // $addressed === null  → no TO: line; fall through to your existing
+        //                        issue/card label check (don't suppress here).
+    }
+    // ... normal surfacing / reactions ...
+    return new ClassifyResult(intents: [/* ... */]);
+}
+```
+
+The three-state return is the contract: `true` wake, `false` skip, **`null` = no `TO:` line → fall back to labels** (a bare/empty `TO:` is treated as absent, so a typo can't silently suppress everyone). Matching is case-insensitive; the first `TO:` line wins; `all` addresses every agent. **Issue/card** events (opened/closed/labeled) keep using labels — only comment bodies carry a `TO:` line. Net: zero false-negatives (every addressed comment still delivered), no more cross-agent wake-noise on a shared thread.
+
 ### Constructing the data shapes
 
 **`Intent`** — a signal surfaced to the agent's conversation context:

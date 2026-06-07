@@ -106,7 +106,13 @@ class BridgeCommandsTest extends TestCase
         File::ensureDirectoryExists($this->dir.'/kanban');
         File::put($this->dir.'/kanban/writeback-token', 'wb-token');
         chmod($this->dir.'/kanban/writeback-token', 0o600);
-        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            // These visibility/swimlane/orphan checks fake the scan path; pin scan
+            // (default is now `ref`, DL-031). The ref by-ref reachability probe has
+            // its own dedicated tests.
+            'bridge.writeback.correlation' => 'scan',
+        ]);
     }
 
     public function test_check_warns_when_the_writeback_token_sees_zero_cards(): void
@@ -158,6 +164,37 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_confirms_by_ref_reachable_in_ref_mode(): void
+    {
+        // DL-031: ref is the default; bridge:check probes by-ref reachability.
+        $this->writeWritebackWithToken();
+        config(['bridge.writeback.correlation' => 'ref']);
+        Http::fake([
+            '*/tasks/by-ref.json*' => Http::response(['data' => []]),                       // route exists
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('by-ref reachable')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warns_when_ref_mode_but_kanban_lacks_by_ref(): void
+    {
+        // DL-031: the safety net for the ref default — a kanban predating by-ref
+        // (404 on the route) would 404 every correlation. Warn loudly (exit 0).
+        $this->writeWritebackWithToken();
+        config(['bridge.writeback.correlation' => 'ref']);
+        Http::fake([
+            '*/tasks/by-ref.json*' => Http::response(['message' => 'Not Found'], 404),       // route missing
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('by-ref returned 404')
+            ->assertExitCode(0);
+    }
+
     public function test_check_warns_on_an_orphaned_writeback_mapping(): void
     {
         // #2162: a writeback.json mapping with no agent running a writeback-emitting
@@ -204,7 +241,10 @@ class BridgeCommandsTest extends TestCase
         File::ensureDirectoryExists($this->dir.'/kanban');
         File::put($this->dir.'/kanban/writeback-token', 'wb');
         chmod($this->dir.'/kanban/writeback-token', 0o600);
-        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+        ]);
         Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])]);
 
         $this->artisan('bridge:check')
@@ -225,7 +265,10 @@ class BridgeCommandsTest extends TestCase
         File::ensureDirectoryExists($this->dir.'/kanban');
         File::put($this->dir.'/kanban/writeback-token', 'wb-token');
         chmod($this->dir.'/kanban/writeback-token', 0o600);
-        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+        ]);
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/preload.json' => Http::response(['data' => ['swimlanes' => [['id' => 31], ['id' => 32]]]]),
@@ -246,7 +289,10 @@ class BridgeCommandsTest extends TestCase
         File::ensureDirectoryExists($this->dir.'/kanban');
         File::put($this->dir.'/kanban/writeback-token', 'wb-token');
         chmod($this->dir.'/kanban/writeback-token', 0o600);
-        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+        ]);
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/preload.json' => Http::response(['data' => ['swimlanes' => [['id' => 31], ['id' => 32]]]]),
