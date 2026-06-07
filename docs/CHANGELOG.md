@@ -10,6 +10,22 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.27.0] - 2026-06-07
+
+**Writeback correlation defaults to `ref` (DL-031).** PR #92 since v0.26.0. No DB migration.
+
+### Changed
+
+- **`BRIDGE_WRITEBACK_CORRELATION` now defaults to `ref`** (correction to DL-029's `scan` default). An undefined env uses the indexed `by-ref` lookup; set **`BRIDGE_WRITEBACK_CORRELATION=scan`** for backwards compatibility or a kanban that predates `by-ref`. Flipped across all three layers (config env default, `WritebackClientFactory` fallback, `KanbanClient` constructor default).
+
+### Added
+
+- **`bridge:check` by-ref reachability probe (DL-031).** Safety net for the `ref` default: in `ref` mode, `bridge:check` actively verifies the kanban exposes `by-ref` (`KanbanClient::byRefAvailable`) and warns loudly — naming a pre-DL-147 kanban *or* an inaccessible board — instead of letting every correlation 404 silently.
+
+### Operator notes
+
+- **⚠ Upgrading:** a `ref`-default bridge requires its kanban to be **v0.17.2+ and backfilled** (`php artisan kanban:backfill-external-references`). If yours isn't, set `BRIDGE_WRITEBACK_CORRELATION=scan` before/at upgrade. `bridge:check` will name the problem before traffic. No DB migration; no other config change.
+
 ## [0.26.0] - 2026-06-06
 
 **Writeback correlation cutover to the kanban `by-ref` lookup + orphaned-mapping guard.** PRs #85, #86, #87, #88 since v0.25.0. No DB migration.
