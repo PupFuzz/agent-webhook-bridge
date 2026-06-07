@@ -10,6 +10,22 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.28.0] - 2026-06-07
+
+**Supply-chain + integration-docs hardening — no app code, no DB migration.** PRs #98, #99 since v0.27.0; both prompted by peer integrators (AIMLA PM).
+
+### Added
+
+- **Pinned dependency tree for `examples/channel-servers/` (DL-033, #99).** Commits a `package-lock.json` (lockfileVersion 3) for the reference channel MCP server — it reads a bearer token and accepts loopback POSTs as the agent's OS user, a real trust boundary — and switches the README + `start-channel-session.sh` launcher from `npm install` to **`npm ci`** (installs the exact pinned tree; fails on `package.json`/lock drift). **Node ≥ 20** is now stated up front. A cost-scoped CI gate (`channel-server-supply-chain.yml`) keeps the pin *watched*: `npm ci --ignore-scripts` (drift) + `npm audit --audit-level=high` (fails loud on a high/critical CVE), path-filtered to `examples/channel-servers/**` plus a weekly cron. Chose the audit-flag over dependabot auto-bumps for a single-dep example — loud-on-CVE + deliberate manual bump, lowest CI cost.
+
+### Documentation
+
+- **Canonical board-read pattern in the kanban↔consumer integration contract (#98).** Documents the scale-safe full-board read — **structure** from `GET /boards/{id}/preload.json`, the **card list** from paged `GET /tasks/search.json` (`board_id=N`, stop on `links.next`), **fail loud** on a non-200 mid-page (a partial read must never look like a shorter board) — so consumers stop re-deriving it per integration. Also corrects a misconception: the kanban board GET is **complete-but-heavy**, not silently truncated.
+
+### Operator notes
+
+- No DB migration, no config change. Adopters of the reference channel server should re-install with `npm ci` (the committed lockfile is now the source of truth); existing installs are unaffected.
+
 ## [0.27.0] - 2026-06-07
 
 **Writeback correlation defaults to `ref` (DL-031) + comment-level recipient helper (DL-032).** PRs #92, #95 since v0.26.0. No DB migration.

@@ -39,6 +39,20 @@ Auth: **Sanctum bearer token**. The card-move writeback uses a **dedicated least
 - `payload.pr_number` — the **dependabot idempotency key** (DL-024).
 - **Both must be registered custom fields on the tracking board** for the dependabot create path (`POST` 422s on unknown payload keys). For *correlation*, kanban derives them into the first-class `task_external_references` table and the bridge looks them up via `by-ref` (`ref` mode, DL-029/kanban DL-147/148) — server-canonicalized, indexed, returns all matching cards. `scan` mode (fallback) still reads the board and digit-matches client-side. The digit-normalization (`DL-42`/`42`/`042`) now lives once, server-side, in kanban's `ExternalReferenceNormalizer`.
 
+### Reading a board's full card list — use `preload` + paged `search`, not the board GET
+
+`GET /api/v3/boards/{id}.json` returns the board **with all its non-archived tasks**, and that list is **complete** — kanban does **not** cap or silently truncate it (`BoardsController::show` loads tasks with no `limit()`; `BoardResource` renders the whole collection). But it eager-loads every task plus its subtasks and attachments, so it is **heavy at scale** and is the wrong tool for a full-board sync. Any consumer enumerating a board's cards (the bridge's `scan` mode, **and any external sync client**) should instead read:
+
+1. **Structure** from `GET /api/v3/boards/{id}/preload.json` — workflows / stages / swimlanes / card-types, **tasks excluded by design** (kanban DL-040). Bounded and cheap.
+2. **Cards** from `GET /api/v3/tasks/search.json?q=board_id=N&limit=200&page=P`, paging the `{data, meta, links}` envelope (kanban DL-146) **until `links.next === null`**. `limit` caps at the server max (200).
+
+Rules — the "degraded states must be loud" posture (same as the bridge's blind-token guard, DL-026):
+- **A non-200 on any page must raise, never return a partial list.** A truncated read must never silently look like a shorter board: on an apply/reconcile pass an invisible-but-still-existing card reads as "missing" → a destructive create / duplicate.
+- Include a **runaway page guard** (refuse past N pages).
+- Stop on **`links.next === null`** (authoritative). A short/empty last page is a weaker heuristic that costs one extra request when the total is an exact multiple of `limit`.
+
+> **Don't read structure from the full board GET and then re-page the cards** — that loads the entire (heavy) task set once and discards it. Use `preload` for structure; it's purpose-built (no tasks). The board GET's `tasks[]` is complete today but unbounded: a large board makes it slow/memory-heavy and it can fail *loudly* (5xx/timeout), but it never returns fewer valid tasks with a 200. `preload` + paged `search` is the bounded, scale-safe read every growing board should rely on.
+
 ## 3. Load-bearing invariants (break these → break the bridge)
 
 | Invariant | Owner | What breaks if it changes | Tracked |
