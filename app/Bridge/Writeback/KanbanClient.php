@@ -30,7 +30,7 @@ final class KanbanClient
     public function __construct(
         private string $baseUrl,
         private string $token,
-        private string $correlation = 'scan',
+        private string $correlation = 'ref',
     ) {}
 
     private function http(): PendingRequest
@@ -166,6 +166,25 @@ final class KanbanClient
         $data = is_array($body) && is_array($body['data'] ?? null) ? $body['data'] : [];
 
         return ['total' => count($data), 'exact' => false];
+    }
+
+    /**
+     * Whether the kanban instance exposes the `by-ref` lookup (DL-031). Since
+     * `ref` is the default correlation mode, a kanban that predates by-ref
+     * (< v0.17.2) would 404 EVERY correlation silently — `bridge:check` calls
+     * this to catch that before traffic. by-ref returns 200 `{data:[]}` on a
+     * no-match (never 404), so a 404 means the ROUTE isn't registered. Any other
+     * non-2xx is a real error and re-throws.
+     */
+    public function byRefAvailable(int $boardId): bool
+    {
+        $resp = $this->http()->get("/boards/{$boardId}/tasks/by-ref.json", ['system' => 'dl', 'ref' => '0']);
+        if ($resp->status() === 404) {
+            return false;   // route not registered → kanban predates by-ref
+        }
+        $resp->throw();
+
+        return true;
     }
 
     /**

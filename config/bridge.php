@@ -44,20 +44,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Writeback correlation mode (DL-029)
+    | Writeback correlation mode (DL-029; default 'ref' since DL-031)
     |--------------------------------------------------------------------------
     | How the card-move writeback finds the tracking card(s) for a PR:
-    |   'scan' — download the board and digit-match payload.dl_number/pr_number
-    |            client-side (the original behavior; works against any kanban).
     |   'ref'  — one indexed `GET /boards/{b}/tasks/by-ref.json` per key (kanban
-    |            DL-147/148). O(1), no paging — requires the kanban instance to
-    |            expose by-ref AND its task_external_references to be backfilled.
-    | Default 'scan' so upgrading the bridge is inert until an operator opts an
-    | install into 'ref' after confirming that install's kanban is backfilled.
+    |            DL-147/148). O(1), no paging. THE DEFAULT. Requires the kanban
+    |            instance to expose by-ref (v0.17.2+) AND its
+    |            task_external_references to be backfilled.
+    |   'scan' — download the board and digit-match payload.dl_number/pr_number
+    |            client-side (the legacy fallback; works against any kanban,
+    |            incl. one that predates by-ref). Set BRIDGE_WRITEBACK_CORRELATION=scan
+    |            for backwards compatibility / an un-backfilled kanban.
+    | `bridge:check` probes by-ref reachability in 'ref' mode and warns loudly if
+    | the kanban can't serve it (so a wrong default surfaces before traffic).
     | Both modes correlate to ALL matching cards (a PR/DL can track several — DL-148).
     */
     'writeback' => [
-        'correlation' => env('BRIDGE_WRITEBACK_CORRELATION', 'scan'),
+        'correlation' => env('BRIDGE_WRITEBACK_CORRELATION', 'ref'),
     ],
 
     /*

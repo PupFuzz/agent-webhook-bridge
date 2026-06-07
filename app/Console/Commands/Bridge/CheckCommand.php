@@ -282,6 +282,26 @@ class CheckCommand extends BridgeCommand
 
                     try {
                         $client = WritebackClientFactory::make();
+
+                        // DL-031: `ref` is the default correlation mode — but a kanban
+                        // that predates by-ref (< v0.17.2) would 404 EVERY correlation
+                        // silently. Probe reachability once (instance-wide) against the
+                        // first mapped board and warn loudly to set scan / upgrade kanban.
+                        // Same defaulted read as WritebackClientFactory so the gate
+                        // and the client's actual mode can never diverge (DL-031).
+                        if (config('bridge.writeback.correlation', 'ref') === 'ref') {
+                            $firstBoard = (int) array_values($writeback->mappings)[0]->boardId;
+                            try {
+                                if (! $client->byRefAvailable($firstBoard)) {
+                                    $this->warn("writeback: correlation=ref but by-ref returned 404 on board {$firstBoard} — either this kanban predates by-ref (< v0.17.2) or board {$firstBoard} isn't accessible to the token; EVERY correlation will 404 and no card will move. Upgrade kanban / fix board_id+membership, or set BRIDGE_WRITEBACK_CORRELATION=scan");
+                                } else {
+                                    $this->info('writeback: by-ref reachable (correlation=ref)');
+                                }
+                            } catch (Throwable $e) {
+                                $this->warn('writeback: could not probe by-ref reachability — '.$e->getMessage());
+                            }
+                        }
+
                         foreach ($writeback->mappings as $repo => $mapping) {
                             try {
                                 // Cheap visibility probe (DL-029): one limit=1 read,
@@ -294,7 +314,7 @@ class CheckCommand extends BridgeCommand
                                     $this->info("writeback: token can see board {$mapping->boardId} ({$repo}) (exact card count unavailable — kanban predates pagination meta)");
                                 } else {
                                     $this->info("writeback: token sees {$vis['total']} card(s) on board {$mapping->boardId} ({$repo})");
-                                    if (config('bridge.writeback.correlation') !== 'ref' && $vis['total'] > KanbanClient::SEARCH_LIMIT * KanbanClient::MAX_PAGES) {
+                                    if (config('bridge.writeback.correlation', 'ref') !== 'ref' && $vis['total'] > KanbanClient::SEARCH_LIMIT * KanbanClient::MAX_PAGES) {
                                         $this->warn("writeback: board {$mapping->boardId} ({$repo}) has {$vis['total']} cards, beyond the scan ceiling — correlations beyond it will be missed; switch BRIDGE_WRITEBACK_CORRELATION=ref");
                                     }
                                 }

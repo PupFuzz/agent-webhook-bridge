@@ -212,6 +212,29 @@ class KanbanClientTest extends TestCase
         $this->assertSame(['total' => 0, 'exact' => false], $this->client()->visibility(8));
     }
 
+    public function test_by_ref_available_true_on_200(): void
+    {
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['data' => []])]);
+        $this->assertTrue($this->client()->byRefAvailable(8));
+    }
+
+    public function test_by_ref_available_false_on_404_route_missing(): void
+    {
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['message' => 'Not Found'], 404)]);
+        $this->assertFalse($this->client()->byRefAvailable(8));   // pre-by-ref kanban
+    }
+
+    public function test_default_correlation_mode_is_ref(): void
+    {
+        // DL-031: constructed without an explicit mode → ref (hits by-ref, not scan).
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['data' => [['id' => 9]]])]);
+
+        $c = new KanbanClient('https://kanban.example.com/api/v3', 'wb-token');   // no 3rd arg
+        $this->assertSame([9], $c->correlateDl(8, 'DL-9'));
+        Http::assertSent(fn (Request $r) => str_contains($r->url(), '/tasks/by-ref.json'));
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/tasks/search.json'));
+    }
+
     // ---- create / swimlane (unchanged) ----
 
     public function test_create_card_with_swimlane_sends_swimlane_id(): void
