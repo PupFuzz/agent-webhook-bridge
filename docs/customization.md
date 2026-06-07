@@ -126,6 +126,10 @@ The class needs to be autoloaded by Composer:
 
 After adding or moving a class, run `composer dump-autoload`.
 
+### Emitting writeback reactions from a custom classifier (#2162)
+
+If your classifier emits writeback `ReactionTarget`s (`kanban_move_card` / `kanban_dependabot_card`) to drive a `writeback.json` mapping, **also implement the marker interface `App\Bridge\Contracts\EmitsWritebackReactions`** (it has no methods). `bridge:check` uses it to detect an *orphaned* mapping — one whose repo scope no agent's classifier drives — and warn that the mapping is inert. A subclass of `GitHubPrCardMoveClassifier` inherits the marker automatically; a from-scratch classifier must add it, or `bridge:check` will (falsely) report its mappings as orphaned.
+
 ### Extending a shipped classifier (subclass pattern)
 
 For agents wanting `InboxOnlyClassifier` behavior plus extra targets, subclass rather than copy. This is exactly what `EventDrivenClassifier` does:

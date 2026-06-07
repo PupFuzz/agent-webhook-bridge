@@ -87,6 +87,29 @@ final class ClassifierResolver
     }
 
     /**
+     * Does a classifier class implement $interface? Checked OUT OF PROCESS for
+     * the same reason as {@see probeLoadable} (DL-025): an in-process load of a
+     * stale/incompatible classifier is an uncatchable E_COMPILE_ERROR. Used by
+     * bridge:check to detect a writeback mapping with no driving classifier
+     * (#2162). Returns false on any load failure (loadability is probeLoadable's
+     * to report — call this only after that has passed).
+     */
+    public static function probeImplements(string $class, string $interface): bool
+    {
+        $script = <<<'PHP'
+            require $argv[1];
+            $c = $argv[2]; $i = $argv[3];
+            if (!class_exists($c)) { exit(2); }
+            exit(in_array($i, class_implements($c) ?: [], true) ? 0 : 1);
+            PHP;
+
+        $proc = new Process([PHP_BINARY, '-r', $script, base_path('vendor/autoload.php'), $class, $interface]);
+        $proc->run();
+
+        return $proc->getExitCode() === 0;
+    }
+
+    /**
      * Clear the per-process instance cache (test isolation).
      */
     public static function flush(): void

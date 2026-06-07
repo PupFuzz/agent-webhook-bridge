@@ -3,6 +3,7 @@
 namespace App\Bridge\Classifiers;
 
 use App\Bridge\Contracts\Classifier;
+use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
@@ -23,7 +24,7 @@ use App\Bridge\Writeback\WritebackConfig;
  * with no parseable card reference, a repo with no `writeback.json` mapping, or
  * no matching card → empty result (graceful no-op).
  */
-class GitHubPrCardMoveClassifier implements Classifier
+class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
 {
     public function classify(ClassifyContext $ctx): ClassifyResult
     {
