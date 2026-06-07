@@ -3,6 +3,7 @@
 namespace App\Console\Commands\Bridge;
 
 use App\Bridge\Adapters\WebhookAdapterFactory;
+use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
@@ -115,6 +116,10 @@ class CheckCommand extends BridgeCommand
 
         $agentNames = [];
         $configs = [];
+        // github scopes (repo full_names) covered by SOME agent running a
+        // writeback-emitting classifier — used to flag orphaned writeback
+        // mappings below (#2162). Keyed by scope for O(1) lookup.
+        $writebackEmittingScopes = [];
         $hasSecretDir = is_string($secretDir) && str_starts_with($secretDir, '/');
         if (is_string($configDir) && is_dir($configDir)) {
             foreach (glob(rtrim($configDir, '/').'/*.yml') ?: [] as $file) {
@@ -153,6 +158,19 @@ class CheckCommand extends BridgeCommand
                 }
 
                 $this->info("agent config ok: {$name}");
+
+                // Record which github scopes this agent DRIVES the writeback for:
+                // its classifier must emit writeback reactions (#2162). Detected
+                // out-of-process (DL-025) — probeLoadable already passed above, so
+                // this child loads cleanly. Used after the loop to flag orphaned
+                // writeback.json mappings (a mapping no classifier drives).
+                if (ClassifierResolver::probeImplements($cfg->classifierClass, EmitsWritebackReactions::class)) {
+                    foreach ($cfg->subscriptions as $sub) {
+                        if ($sub->provider === 'github') {
+                            $writebackEmittingScopes[$sub->scopeId] = true;
+                        }
+                    }
+                }
 
                 // Secret presence per subscription — a missing secret means the
                 // receiver 401s the delivery (unknown_scope), invisible until
@@ -250,6 +268,18 @@ class CheckCommand extends BridgeCommand
                 // time. All warn-level: a temporarily-unreachable kanban or a
                 // genuinely-empty new board must not FAIL the install check (DL-026).
                 if ($writeback !== null && $writeback->mappings !== []) {
+                    // #2162: a writeback.json mapping is INERT unless some agent runs
+                    // a writeback-emitting classifier subscribed to its github scope.
+                    // INDEPENDENT of the network probe below — it must fire even when
+                    // the writeback client can't be constructed (no token / base URL),
+                    // which is exactly the half-configured install where an orphan is
+                    // most likely. Reads only the in-memory emitting-scope set.
+                    foreach ($writeback->mappings as $repo => $mapping) {
+                        if (! isset($writebackEmittingScopes[$repo])) {
+                            $this->warn("writeback: mapping for {$repo} is ORPHANED — no agent runs a writeback-emitting classifier (App\\Bridge\\Contracts\\EmitsWritebackReactions) subscribed to github:{$repo}; the mapping is inert (no card will ever move) until an agent subscribes to it with that classifier");
+                        }
+                    }
+
                     try {
                         $client = WritebackClientFactory::make();
                         foreach ($writeback->mappings as $repo => $mapping) {
