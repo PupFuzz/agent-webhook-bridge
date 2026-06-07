@@ -12,7 +12,7 @@ _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
 ## [0.27.0] - 2026-06-07
 
-**Writeback correlation defaults to `ref` (DL-031).** PR #92 since v0.26.0. No DB migration.
+**Writeback correlation defaults to `ref` (DL-031) + comment-level recipient helper (DL-032).** PRs #92, #95 since v0.26.0. No DB migration.
 
 ### Changed
 
@@ -21,6 +21,7 @@ _(empty after each tagged release; accumulates as feature PRs land on dev)_
 ### Added
 
 - **`bridge:check` by-ref reachability probe (DL-031).** Safety net for the `ref` default: in `ref` mode, `bridge:check` actively verifies the kanban exposes `by-ref` (`KanbanClient::byRefAvailable`) and warns loudly — naming a pre-DL-147 kanban *or* an inaccessible board — instead of letting every correlation 404 silently.
+- **`RecipientAddressing` helper for comment-level `TO:` filtering (DL-032, #95 / #2173).** A reusable parser, `App\Bridge\Support\RecipientAddressing::addresses($commentBody, $agentName): ?bool`, for custom classifiers that filter channel pushes by a comment body's `TO:` line (so a multi-recipient thread doesn't wake every recipient on every comment). Three-state: `true` (names the agent or `all`), `false` (names others → drop), `null` (no/empty `TO:` line → caller falls back to issue/card labels). Case-insensitive; first `TO:` line wins. Recipient *policy* stays in the operator's classifier (DL-022) — this is just the shared parse; nothing wired into the runtime. New `docs/customization.md` § Comment-level recipient filtering recipe.
 
 ### Operator notes
 
