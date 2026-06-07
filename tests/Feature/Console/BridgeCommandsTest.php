@@ -3,6 +3,7 @@
 namespace Tests\Feature\Console;
 
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Writeback\KanbanClient;
 use App\Console\Commands\Bridge\InboxCommand;
 use App\Console\Commands\Bridge\ReplayCommand;
 use App\Models\AgentDispatch;
@@ -124,13 +125,26 @@ class BridgeCommandsTest extends TestCase
     public function test_check_reports_visible_card_count_when_token_can_see_the_board(): void
     {
         $this->writeWritebackWithToken();
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
-            ['id' => 1, 'payload' => []],
-            ['id' => 2, 'payload' => []],
-        ]])]);
+        // DL-029: the visibility probe reads the DL-146 pagination meta.total.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 2]])]);
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('sees 2 card(s) on board 8')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warns_when_a_board_exceeds_the_scan_ceiling_in_scan_mode(): void
+    {
+        // DL-029: in scan mode (default), a board larger than the scan ceiling would
+        // silently miss correlations — bridge:check surfaces it (warn, not fail) and
+        // points at BRIDGE_WRITEBACK_CORRELATION=ref. The probe reads meta.total, so
+        // there's no need to fake thousands of rows.
+        $this->writeWritebackWithToken();
+        $over = KanbanClient::SEARCH_LIMIT * KanbanClient::MAX_PAGES + 1;
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => $over]])]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('beyond the scan ceiling')
             ->assertExitCode(0);
     }
 
@@ -141,6 +155,60 @@ class BridgeCommandsTest extends TestCase
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('could not read board 8')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warns_on_an_orphaned_writeback_mapping(): void
+    {
+        // #2162: a writeback.json mapping with no agent running a writeback-emitting
+        // classifier subscribed to its github scope is inert — warn (exit 0). The
+        // default writeAgent() only subscribes to kanban, so owner/repo is orphaned.
+        $this->writeWritebackWithToken();
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('mapping for owner/repo is ORPHANED')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warns_on_orphaned_mapping_even_without_a_writeback_client(): void
+    {
+        // M1 regression: orphan detection must be INDEPENDENT of the board probe —
+        // it must fire even when the writeback client can't be constructed (no
+        // api_base_url / token), the half-configured install where it matters most.
+        $this->writeAgent();   // kanban-only agent → owner/repo is orphaned
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        Http::fake();   // no token, no api_base_url → make() throws before any HTTP
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('mapping for owner/repo is ORPHANED')
+            ->assertExitCode(0);
+        Http::assertNothingSent();   // never reached the probe, yet still warned
+    }
+
+    public function test_check_no_orphan_warning_when_an_emitting_agent_is_subscribed(): void
+    {
+        // An agent running GitHubPrCardMoveClassifier (EmitsWritebackReactions)
+        // subscribed to github:owner/repo DRIVES the mapping → not orphaned.
+        File::put($this->dir.'/wb-agent.yml',
+            "identity:\n  github_user_id: 41000\n"
+            ."subscriptions:\n  - provider: github\n    scopes: [\"owner/repo\"]\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier\n");
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])]);
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('ORPHANED')
             ->assertExitCode(0);
     }
 

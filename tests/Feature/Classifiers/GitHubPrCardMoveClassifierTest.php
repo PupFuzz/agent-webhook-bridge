@@ -126,6 +126,28 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame([], $r->targets);
     }
 
+    public function test_bundled_dl_emits_one_move_target_per_matching_card(): void
+    {
+        // DL-148: a DL can track multiple cards (bundled PR) — move them ALL,
+        // one target each with the card id as a distinct target_id (no coalesce).
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 5, 'payload' => ['dl_number' => 'DL-42']],
+            ['id' => 6, 'payload' => ['dl_number' => '042']],   // same canonical 42
+            ['id' => 7, 'payload' => ['dl_number' => 'DL-9']],  // different DL, not matched
+        ]])]);
+
+        $r = $this->classify('pull_request.closed', ['title' => 'DL-42', 'merged' => true, 'base' => ['ref' => 'main']]);
+
+        $this->assertCount(2, $r->targets);
+        $ids = array_map(fn ($t) => $t->payload['card_id'], $r->targets);
+        $this->assertEqualsCanonicalizing([5, 6], $ids);
+        $this->assertEqualsCanonicalizing(['5', '6'], array_map(fn ($t) => $t->targetId, $r->targets));   // distinct target ids
+        foreach ($r->targets as $t) {
+            $this->assertSame('kanban_move_card', $t->handler);
+            $this->assertSame('merged_to_main', $t->payload['outcome']);
+        }
+    }
+
     public function test_non_pull_request_event_is_noop(): void
     {
         Http::fake();
