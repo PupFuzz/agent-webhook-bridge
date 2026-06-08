@@ -10,6 +10,27 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.29.0] - 2026-06-08
+
+**Dispatch outcome ledger + operator-diagnostics polish — three peer-integrator FRs.** PRs #103, #104 since v0.28.0. ⚠ One non-destructive DB migration (FR-2).
+
+### Added
+
+- **Dispatch outcome ledger (DL-036, #104 / FR-2).** `agent_dispatches` gains a nullable `outcome` (`delivered` | `dropped` | `errored`) + `reason`, recorded at each terminal in `DispatchService`. A deliberate **gate-drop** (echo of the agent's own write / actor-not-a-signal / classifier-emitted-no-reactions) and a real **delivery** were previously byte-identical in the ledger (both `processed_at` set, `error_message` null), so `bridge:inspect` couldn't tell them apart and `bridge:replay` without `--force` silently no-op'd the gate-dropped rows it should re-run after a gate fix. `bridge:inspect` now shows the `outcome` + `reason / error`; `bridge:replay` (no `--force`) reports how many skipped rows were gate-DROPPED and that `--force` re-runs them. Each terminal write nulls the inapplicable satellite field, so a `--force` replay outcome *transition* can't leave a stale reason/error.
+- **`RecipientAddressing::author()` — symmetric `FROM:` parser (DL-035, #103 / FR-3).** Mirrors `recipients()`: the first `FROM:` line of a comment body, lowercased + trimmed, or `null` (bare/empty `FROM:` is absent; `FROMAGE:` doesn't match). For custom classifiers routing shared-identity threads; recipient/author *policy* still lives in the operator's classifier (DL-022/DL-032).
+
+### Changed
+
+- **`bridge:check` 0-card writeback warning no longer asserts non-membership (DL-034, #103 / FR-1).** 0 cards on a 200 board read is ambiguous (empty board vs membership gap); the warning now presents **both** possibilities instead of claiming the token's user is "likely not a member." True inaccessibility is already caught separately by the `ref`-mode by-ref reachability probe (DL-031). Message-only; still warn-level, per mapped board.
+
+### Documentation
+
+- **Reply-direction footgun callout + role-reversal example in `docs/customization.md` (DL-035).** Route a comment by the comment's OWN `TO:`/`FROM:`, never the parent issue's frozen labels (those silently drop a reversed-direction reply); use labels only as the `null` fallback. The shared-identity echo example now dogfoods `author()` instead of a hand-rolled `preg_match`.
+
+### Operator notes
+
+- **⚠ Run `php artisan migrate`** — FR-2 adds nullable `outcome` + `reason` columns to `agent_dispatches`. Non-destructive, no backfill: pre-migration rows read `outcome=null` and every reader falls back to the legacy `processed_at`/`error_message` inference (`bridge:inspect` shows `done (pre-DL036)`). No config change.
+
 ## [0.28.0] - 2026-06-07
 
 **Supply-chain + integration-docs hardening — no app code, no DB migration.** PRs #98, #99 since v0.27.0; both prompted by peer integrators (AIMLA PM).

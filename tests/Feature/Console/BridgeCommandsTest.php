@@ -9,6 +9,7 @@ use App\Console\Commands\Bridge\ReplayCommand;
 use App\Models\AgentDispatch;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -671,5 +672,43 @@ class BridgeCommandsTest extends TestCase
         $cmd = new ReplayCommand;
 
         $this->assertInstanceOf(ReplayCommand::class, $cmd);
+    }
+
+    // --- DL-036: outcome surfaced in inspect + replay reports skipped/gate-dropped ---
+
+    public function test_inspect_shows_the_dispatch_outcome_and_reason(): void
+    {
+        $event = $this->event();
+        AgentDispatch::create([
+            'webhook_event_id' => $event->id, 'agent_name' => 'prod-agent',
+            'processed_at' => now(), 'outcome' => AgentDispatch::OUTCOME_DROPPED, 'reason' => 'echo: own write',
+        ]);
+
+        // Capture via Artisan::output() — robust for table/warn output that
+        // expectsOutputToContain doesn't reliably match.
+        $code = Artisan::call('bridge:inspect', ['id' => $event->id]);
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('dropped', $out);            // the outcome column
+        $this->assertStringContainsString('echo: own write', $out);    // the reason column
+    }
+
+    public function test_replay_reports_skipped_processed_rows_and_counts_gate_drops(): void
+    {
+        $this->writeAgent();
+        $event = $this->event();
+        // A gate-dropped row (processed + dropped) — exactly what a replay-after-a-
+        // gate-fix wants to re-run, but plain replay skips it (it's marked processed).
+        AgentDispatch::create([
+            'webhook_event_id' => $event->id, 'agent_name' => 'prod-agent',
+            'processed_at' => now(), 'outcome' => AgentDispatch::OUTCOME_DROPPED, 'reason' => 'echo',
+        ]);
+
+        $code = Artisan::call('bridge:replay', ['id' => $event->id]);
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('skipping 1 already-processed', $out);
+        $this->assertStringContainsString('gate-DROPPED', $out);   // names the recoverable class
+        $this->assertStringContainsString('--force', $out);
     }
 }

@@ -102,8 +102,14 @@ final class DispatchService
 
             $actor = $this->agents->actorFromEvent($provider, $dto->actorId, $payload);
 
-            if ($this->isEcho($agent, $actor) || ! $this->isSignal($agent, $actor)) {
-                $this->markDone($dispatch);   // filtered out → done, no work
+            // Filtered out before classify → a gate-drop, not a delivery (DL-036).
+            if ($this->isEcho($agent, $actor)) {
+                $this->markDropped($dispatch, 'echo: own write');
+
+                continue;
+            }
+            if (! $this->isSignal($agent, $actor)) {
+                $this->markDropped($dispatch, 'actor is not a signal');
 
                 continue;
             }
@@ -126,7 +132,7 @@ final class DispatchService
             // different shared-id agent's write has a non-self name and stays).
             // No-op when the classifier left reattributedActor null.
             if ($result->reattributedActor !== null && $this->isEcho($agent, $result->reattributedActor)) {
-                $this->markDone($dispatch);
+                $this->markDropped($dispatch, 'echo: own write (reattributed author)');
 
                 continue;
             }
@@ -212,7 +218,14 @@ final class DispatchService
                 }
             }
 
-            $this->markDone($dispatch, $note);
+            // A classifier that emitted no intents AND no targets (e.g. a recipient
+            // filter dropped this agent) did no work — record a gate-drop, not a
+            // delivery, so the ledger / inspect / replay can tell them apart (DL-036).
+            if ($result->intents === [] && $targets === []) {
+                $this->markDropped($dispatch, 'classifier emitted no reactions');
+            } else {
+                $this->markDelivered($dispatch, $note);
+            }
         }
     }
 
@@ -258,17 +271,46 @@ final class DispatchService
         return SignalAllowlist::default($agent->echoSuppression->treatAsSignal, $this->agents)->isSignal($actor);
     }
 
-    private function markDone(AgentDispatch $dispatch, ?string $note = null): void
+    private function markDelivered(AgentDispatch $dispatch, ?string $note = null): void
     {
-        $dispatch->update(['processed_at' => now(), 'error_message' => $note]);
+        $dispatch->update([
+            'processed_at' => now(),
+            'outcome' => AgentDispatch::OUTCOME_DELIVERED,
+            'error_message' => $note,   // a best-effort handler failure, if any
+            'reason' => null,           // clear a prior pass's drop reason (--force replay transition)
+        ]);
+        // Info-level so the healthy live path is observable (it otherwise logs
+        // nothing — only failures logged at WARNING) — DL-036.
+        Log::info('bridge dispatch: delivered', array_filter([
+            'agent' => $dispatch->agent_name,
+            'event' => $dispatch->webhook_event_id,
+            'handler_note' => $note,
+        ], static fn ($v) => $v !== null));
+    }
+
+    private function markDropped(AgentDispatch $dispatch, string $reason): void
+    {
+        $dispatch->update([
+            'processed_at' => now(),
+            'outcome' => AgentDispatch::OUTCOME_DROPPED,
+            'reason' => $reason,
+            'error_message' => null,   // clear a prior pass's error (--force replay transition)
+        ]);
+        Log::info('bridge dispatch: dropped at gate', [
+            'agent' => $dispatch->agent_name, 'event' => $dispatch->webhook_event_id, 'reason' => $reason,
+        ]);
     }
 
     private function recordError(AgentDispatch $dispatch, Throwable $e): void
     {
         // class + message only (no trace/paths) in the stored, operator-readable
-        // field; the full trace stays in the log.
+        // field; the full trace stays in the log. processed_at stays null →
+        // the row is replayable (an errored dispatch must re-run).
         $message = $e::class.': '.$e->getMessage();
-        $dispatch->update(['error_message' => $message]);
+        // reason => null clears a prior pass's drop reason on a --force replay
+        // transition; processed_at is deliberately left untouched (null) so the
+        // row stays replayable.
+        $dispatch->update(['error_message' => $message, 'outcome' => AgentDispatch::OUTCOME_ERRORED, 'reason' => null]);
         Log::warning('bridge dispatch: classifier failed', [
             'agent' => $dispatch->agent_name, 'error' => $message, 'exception' => $e,
         ]);
