@@ -5,6 +5,7 @@ namespace App\Console\Commands\Bridge;
 use App\Bridge\Adapters\EventDto;
 use App\Bridge\Dispatch\DispatchService;
 use App\Bridge\Exceptions\ConfigException;
+use App\Models\AgentDispatch;
 use App\Models\WebhookEvent;
 
 /**
@@ -47,6 +48,27 @@ class ReplayCommand extends BridgeCommand
             }
             $cleared = $query->update(['processed_at' => null]);
             $this->warn("--force: cleared processed_at on {$cleared} dispatch row(s)");
+        } else {
+            // Without --force, dispatch() skips rows already marked processed_at —
+            // INCLUDING gate-dropped ones (a drop is marked processed, DL-036). A
+            // replay-after-gate-fix would then silently no-op for exactly the rows
+            // you want to re-run. Surface the skip + how many were gate-dropped.
+            $processed = AgentDispatch::query()
+                ->where('webhook_event_id', $event->id)
+                ->whereNotNull('processed_at')
+                ->when($onlyAgent !== null, fn ($q) => $q->where('agent_name', $onlyAgent))
+                ->count();
+            if ($processed > 0) {
+                $dropped = AgentDispatch::query()
+                    ->where('webhook_event_id', $event->id)
+                    ->whereNotNull('processed_at')
+                    ->where('outcome', AgentDispatch::OUTCOME_DROPPED)
+                    ->when($onlyAgent !== null, fn ($q) => $q->where('agent_name', $onlyAgent))
+                    ->count();
+                $this->warn("skipping {$processed} already-processed dispatch row(s)"
+                    .($dropped > 0 ? " — {$dropped} were gate-DROPPED (recoverable after a gate fix)" : '')
+                    .'; pass --force to re-run them.');
+            }
         }
 
         $dto = new EventDto(

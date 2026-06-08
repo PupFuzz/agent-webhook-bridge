@@ -47,11 +47,14 @@ class InspectCommand extends BridgeCommand
 
         $rows = $dispatches->map(fn ($d) => [
             $d->agent_name,
-            $d->processed_at !== null ? 'done' : 'errored/pending',
+            // DL-036: a delivery and a gate-drop both have processed_at set — show
+            // the recorded outcome so they're distinguishable. Pre-DL-036 rows have
+            // no outcome → fall back to a legacy label.
+            $d->outcome ?? ($d->processed_at !== null ? 'done (pre-DL036)' : ($d->error_message !== null ? 'errored' : 'pending')),
             (string) $d->processed_at,
-            $d->error_message !== null ? mb_strimwidth((string) $d->error_message, 0, 60, '…') : '',
+            mb_strimwidth((string) ($d->reason ?? $d->error_message ?? ''), 0, 60, '…'),
         ])->values()->all();
-        $this->table(['agent', 'status', 'processed_at', 'error'], $rows);
+        $this->table(['agent', 'outcome', 'processed_at', 'reason / error'], $rows);
 
         return self::SUCCESS;
     }
