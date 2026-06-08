@@ -121,6 +121,38 @@ class KanbanClientTest extends TestCase
             ->withArgs(fn (string $msg) => str_contains($msg, 'ceiling'));
     }
 
+    public function test_scan_stops_on_links_next_null_when_the_kanban_serves_links(): void
+    {
+        // DL-146: when the kanban serves pagination `links`, scan stops on
+        // links.next === null rather than the short-page heuristic. A FULL first
+        // page carrying a next link pages on; the second page's null next stops it.
+        $page1 = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1, KanbanClient::SEARCH_LIMIT));
+        $page2 = [['id' => 7777, 'payload' => ['dl_number' => '9999']]];
+        Http::fakeSequence('*/tasks/search.json*')
+            ->push(['data' => $page1, 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=2']])
+            ->push(['data' => $page2, 'links' => ['next' => null]]);
+        Log::spy();
+
+        $this->assertSame([7777], $this->client()->correlateDl(8, 'DL-9999'));
+        Http::assertSentCount(2);
+        Log::shouldNotHaveReceived('warning');   // fully read across pages → silent
+    }
+
+    public function test_scan_full_page_with_null_next_stops_without_an_extra_request(): void
+    {
+        // A board sized at an exact multiple of SEARCH_LIMIT: links.next === null on
+        // a FULL page stops immediately — no wasted extra request, and no false
+        // truncation warning (the short-page heuristic alone couldn't distinguish
+        // this from a truncated read).
+        $full = array_map(fn (int $i) => ['id' => $i, 'payload' => ['dl_number' => (string) $i]], range(1, KanbanClient::SEARCH_LIMIT));
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => $full, 'links' => ['next' => null]])]);
+        Log::spy();
+
+        $this->assertSame([42], $this->client()->correlateDl(8, 'DL-42'));
+        Http::assertSentCount(1);                // stopped on links.next, no page 2
+        Log::shouldNotHaveReceived('warning');   // full page + null next ⇒ not truncated
+    }
+
     public function test_scan_genuine_no_match_logs_nothing(): void
     {
         Http::fake(['*/tasks/search.json*' => Http::response(['data' => [

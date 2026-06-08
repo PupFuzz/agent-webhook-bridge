@@ -149,6 +149,10 @@ return [
             array_map('trim', explode(',', (string) env('BRIDGE_SPAWN_ALLOWLIST', ''))),
             fn (string $p) => $p !== '',
         )),
+        // Absolute path to the `setsid` launcher. Null ⇒ auto-detect
+        // (/usr/bin/setsid, /bin/setsid). Pinned absolute so a payload env PATH
+        // can't redirect which setsid runs (allowlist bypass otherwise).
+        'setsid_path' => env('BRIDGE_SPAWN_SETSID_PATH'),
     ],
 
     /*

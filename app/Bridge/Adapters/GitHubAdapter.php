@@ -35,7 +35,6 @@ final class GitHubAdapter extends AbstractWebhookAdapter
         if (! is_string($eventName) || $eventName === '') {
             throw new InvalidEnvelopeException('missing_header:X-GitHub-Event');
         }
-        $this->assertDeliveryIdLength($deliveryId);
 
         $decoded = $this->decodeJson($body);
 
@@ -48,7 +47,10 @@ final class GitHubAdapter extends AbstractWebhookAdapter
         $scopeId = $this->nestedScalar($decoded, 'repository', 'full_name') ?? '';
         $actorId = $this->nestedScalar($decoded, 'sender', 'id');
 
-        return new EventDto($deliveryId, $scopeId, $eventType, $actorId);
+        $event = new EventDto($deliveryId, $scopeId, $eventType, $actorId);
+        $this->assertFieldLengths($event);
+
+        return $event;
     }
 
     public function isPing(EventDto $event): bool
