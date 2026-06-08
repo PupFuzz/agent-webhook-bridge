@@ -25,6 +25,7 @@ use Tests\Fixtures\ReattributingClassifier;
 use Tests\Fixtures\RecipientAwareClassifier;
 use Tests\Fixtures\RecordingDurableHandler;
 use Tests\Fixtures\RecordingHandler;
+use Tests\Fixtures\SameKeyDistinctHandlersClassifier;
 use Tests\Fixtures\ThrowingClassifier;
 use Tests\Fixtures\UnknownHandlerClassifier;
 use Tests\TestCase;
@@ -365,6 +366,25 @@ class DispatchServiceTest extends TestCase
         }
         $this->assertSame('B', $byKey['bucket-x']);   // last-wins within the shared bucket
         $this->assertSame('C', $byKey['bucket-y']);
+    }
+
+    public function test_targets_with_one_key_but_distinct_handlers_both_run(): void
+    {
+        // Coalescing keys on (handler, debounceKey): two targets sharing a
+        // debounceKey but routed to DIFFERENT handlers must NOT collapse — keying
+        // on debounceKey alone would silently drop one (the default debounceKey is
+        // the targetId, so two handlers reacting to the same subject would clash).
+        HandlerRecorder::$calls = [];
+        $this->writeAgent('prod-agent', SameKeyDistinctHandlersClassifier::class);
+        $registry = new HandlerRegistry;
+        $registry->register('h1', new RecordingHandler('h1'));
+        $registry->register('h2', new RecordingHandler('h2'));
+
+        $this->dispatcher(handlers: $registry)->dispatch('kanban', '5', $this->dto(), $this->payload());
+
+        $calls = HandlerRecorder::$calls;
+        sort($calls);
+        $this->assertSame(['h1', 'h2'], $calls);   // both ran; neither coalesced away
     }
 
     public function test_channel_route_intents_pushes_each_staged_intent(): void

@@ -215,6 +215,9 @@ class CheckCommand extends BridgeCommand
         // unknown name is fail-closed at dispatch (5xx), so catch it here.
         if ($configs !== [] && is_string($configDir)) {
             $registry = AgentRegistry::fromAgentConfigs($configs, AgentRegistry::loadSharedIdentities($configDir));
+            foreach ($registry->collisions() as $warning) {
+                $this->warn($warning);
+            }
             foreach ($configs as $cfg) {
                 try {
                     SignalAllowlist::default($cfg->echoSuppression->treatAsSignal, $registry);

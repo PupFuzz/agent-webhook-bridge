@@ -24,15 +24,15 @@ final class KanbanAdapter extends AbstractWebhookAdapter
     {
         $decoded = $this->decodeJson($body);
 
-        $deliveryId = $this->requireScalar($decoded, 'delivery_id');
-        $this->assertDeliveryIdLength($deliveryId);
-
-        return new EventDto(
-            deliveryId: $deliveryId,
+        $event = new EventDto(
+            deliveryId: $this->requireScalar($decoded, 'delivery_id'),
             scopeId: $this->requireScalar($decoded, 'board_id'),
             eventType: $this->requireScalar($decoded, 'event'),
             actorId: $this->optionalScalar($decoded, 'user_id'),
         );
+        $this->assertFieldLengths($event);
+
+        return $event;
     }
 
     public function isPing(EventDto $event): bool

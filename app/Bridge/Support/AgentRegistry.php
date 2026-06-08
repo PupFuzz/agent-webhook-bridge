@@ -49,6 +49,9 @@ final class AgentRegistry
     /** @var array<string, bool> dedup guard so a drifted login warns once per registry instance */
     private array $driftWarned = [];
 
+    /** @var list<string> id-collision warnings accumulated at construction, for bridge:check to surface */
+    private array $collisions = [];
+
     /**
      * @param  list<RegisteredAgent>  $agents
      * @param  list<SharedIdentity>  $sharedIdentities
@@ -184,7 +187,7 @@ final class AgentRegistry
                 }
             }
             sort($shared);
-            Log::warning(sprintf(
+            $message = sprintf(
                 'agent registry: %s %s is shared by multiple agents (%s); attribution '.
                 'will be bypassed for events from this identity — Actor.name will be null '.
                 'and the raw id surfaces. %s',
@@ -192,8 +195,23 @@ final class AgentRegistry
                 (string) $value,
                 implode(', ', $shared),
                 $guidance,
-            ));
+            );
+            $this->collisions[] = $message;
+            Log::warning($message);
         }
+    }
+
+    /**
+     * Id-collision warnings accumulated at construction (empty when every
+     * kanban/github id is distinct). bridge:check renders these to the operator
+     * console — they otherwise only reach the log, where a silent
+     * mis-attribution misconfig goes unnoticed.
+     *
+     * @return list<string>
+     */
+    public function collisions(): array
+    {
+        return $this->collisions;
     }
 
     /**

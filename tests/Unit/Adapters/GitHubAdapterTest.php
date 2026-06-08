@@ -84,6 +84,27 @@ class GitHubAdapterTest extends TestCase
         (new GitHubAdapter)->parse($this->request($body, ['X-GitHub-Delivery' => 'd']), $body);
     }
 
+    public function test_over_length_delivery_id_throws(): void
+    {
+        // The X-GitHub-Delivery header is the delivery_id (64-char column). The
+        // length check now runs on the built DTO (post-decode); pin that a 65-char
+        // header still rejects with a deterministic 400.
+        $body = (string) json_encode(['repository' => ['full_name' => 'acme-corp/widget']]);
+        $headers = ['X-GitHub-Delivery' => str_repeat('a', 65), 'X-GitHub-Event' => 'push'];
+
+        $this->expectException(InvalidEnvelopeException::class);
+        (new GitHubAdapter)->parse($this->request($body, $headers), $body);
+    }
+
+    public function test_over_length_scope_id_throws(): void
+    {
+        // repository.full_name → scope_id (128-char column).
+        $body = (string) json_encode(['repository' => ['full_name' => str_repeat('r', 129)]]);
+
+        $this->expectException(InvalidEnvelopeException::class);
+        (new GitHubAdapter)->parse($this->request($body, $this->defaultHeaders()), $body);
+    }
+
     public function test_undecodable_body_throws(): void
     {
         $this->expectException(InvalidEnvelopeException::class);

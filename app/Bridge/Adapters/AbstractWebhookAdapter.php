@@ -10,10 +10,10 @@ use Illuminate\Http\Request;
  * Shared behaviour for the sha256=<hex> HMAC providers (kanban + GitHub use
  * an identical signing convention; only the header name differs). Keeping the
  * single hash_equals path here means there is exactly one constant-time
- * compare to audit. delivery_id length is asserted here too: the
- * webhook_events.delivery_id column is 64 chars, and a longer opaque id would
- * silently truncate into a false dedup-collision, so an over-length id is a
- * deterministic 400 rather than a DB-side surprise.
+ * compare to audit. Envelope field lengths are asserted here too
+ * (assertFieldLengths): every value written to webhook_events must fit its
+ * column, so an over-length field is a deterministic 400 rather than a DB-side
+ * "data too long" 5xx the upstream would redeliver forever.
  */
 abstract class AbstractWebhookAdapter implements WebhookAdapter
 {
@@ -35,10 +35,25 @@ abstract class AbstractWebhookAdapter implements WebhookAdapter
         return hash_equals($expected, $provided);
     }
 
-    protected function assertDeliveryIdLength(string $deliveryId): void
+    /**
+     * Assert every envelope field fits its webhook_events column, so an
+     * over-length value is a deterministic 400 (InvalidEnvelope) rather than a
+     * DB-side "data too long" 5xx the upstream would redeliver forever (the same
+     * rationale as delivery_id, applied to the siblings that flow through the
+     * same INSERT). Widths mirror 2026_05_29_000001_create_webhook_events_table.
+     */
+    protected function assertFieldLengths(EventDto $event): void
     {
-        if (strlen($deliveryId) > 64) {
-            throw new InvalidEnvelopeException('delivery_id_too_long');
+        $limits = [
+            'delivery_id' => [$event->deliveryId, 64],
+            'scope_id' => [$event->scopeId, 128],
+            'event_type' => [$event->eventType, 64],
+            'actor_id' => [$event->actorId, 64],
+        ];
+        foreach ($limits as $field => [$value, $max]) {
+            if ($value !== null && strlen($value) > $max) {
+                throw new InvalidEnvelopeException("{$field}_too_long");
+            }
         }
     }
 

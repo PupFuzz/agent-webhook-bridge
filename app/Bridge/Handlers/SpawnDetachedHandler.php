@@ -90,8 +90,11 @@ final class SpawnDetachedHandler implements Handler
         );
 
         // `setsid -f` (util-linux) detaches the child; proc_open with the argv
-        // ARRAY execs it directly — no shell anywhere on the path.
-        $argv = array_merge(['setsid', '-f'], $cmd);
+        // ARRAY execs it directly — no shell anywhere on the path. setsid is
+        // resolved to an ABSOLUTE path (resolveSetsid) so a payload-supplied env
+        // PATH can't redirect WHICH setsid binary runs — that would sidestep the
+        // cmd[0] absolute-path allowlist, since the launcher execs cmd.
+        $argv = array_merge([$this->resolveSetsid(), '-f'], $cmd);
         $descriptors = [
             0 => ['file', '/dev/null', 'r'],
             1 => ['file', $logPath, 'a'],
@@ -102,6 +105,30 @@ final class SpawnDetachedHandler implements Handler
             throw new HandlerException('spawn_detached: proc_open failed for '.$cmd[0]);
         }
         proc_close($proc);   // setsid -f has already forked + detached → returns at once
+    }
+
+    /**
+     * Resolve the `setsid` launcher to an ABSOLUTE path. The launcher itself must
+     * not be PATH-resolved: it execs the (already absolute, allowlisted) cmd, so a
+     * caller who could redirect `setsid` via a payload env PATH would run an
+     * arbitrary binary before the allowlist ever applied. Operator-overridable via
+     * BRIDGE_SPAWN_SETSID_PATH; fail-closed (HandlerException) if none is found.
+     */
+    private function resolveSetsid(): string
+    {
+        $configured = config('bridge.spawn.setsid_path');
+        $candidates = is_string($configured) && $configured !== ''
+            ? [$configured]
+            : ['/usr/bin/setsid', '/bin/setsid'];
+        foreach ($candidates as $path) {
+            if (is_file($path) && is_executable($path)) {
+                return $path;
+            }
+        }
+        throw new HandlerException(
+            'spawn_detached: setsid not found ('.implode(' / ', $candidates).
+            '); set BRIDGE_SPAWN_SETSID_PATH to its absolute path'
+        );
     }
 
     /**
