@@ -22,6 +22,7 @@ use Tests\Fixtures\DualTargetClassifier;
 use Tests\Fixtures\HandlerRecorder;
 use Tests\Fixtures\LogIntentClassifier;
 use Tests\Fixtures\ReattributingClassifier;
+use Tests\Fixtures\RecipientAwareClassifier;
 use Tests\Fixtures\RecordingDurableHandler;
 use Tests\Fixtures\RecordingHandler;
 use Tests\Fixtures\ThrowingClassifier;
@@ -455,5 +456,121 @@ class DispatchServiceTest extends TestCase
 
         $this->assertNull($already->fresh()->error_message);
         $this->assertSame(1, WebhookEvent::count());   // deduped, no second event row
+    }
+
+    // --- DL-036: terminal outcome (delivered / dropped / errored) is recorded ---
+    // A gate-drop and a delivery were byte-identical in the ledger (both: processed_at
+    // set, no error). These pin the per-path outcome so inspect/replay can tell them apart.
+
+    public function test_delivered_outcome_is_recorded(): void
+    {
+        $this->writeAgent('prod-agent', LogIntentClassifier::class);
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $this->payload());
+
+        $d = AgentDispatch::firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DELIVERED, $d->outcome);
+        $this->assertNull($d->reason);
+        $this->assertNotNull($d->processed_at);
+    }
+
+    public function test_echo_drop_records_dropped_outcome_with_reason(): void
+    {
+        $this->writeAgent('prod-agent', ThrowingClassifier::class, treatAsEchoIds: ['137']);
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(actorId: '137'), $this->payload());
+
+        $d = AgentDispatch::firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DROPPED, $d->outcome);
+        $this->assertStringContainsString('echo', (string) $d->reason);
+        $this->assertNotNull($d->processed_at);   // a drop is still processed (won't redeliver)
+    }
+
+    public function test_non_signal_drop_records_dropped_outcome(): void
+    {
+        // prod-agent restricts signals to [peer-agent]. The default actor (999) is
+        // NOT prod-agent's own id (200 → not echo) and NOT peer-agent (not in the
+        // allowlist) → dropped at the signal gate, reason 'not a signal'.
+        $this->writeAgent('peer-agent', LogIntentClassifier::class, scopes: [99]);
+        $this->writeAgent('prod-agent', ThrowingClassifier::class, treatAsSignal: ['peer-agent'], kanbanUserId: 200);
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $this->payload());   // actor 999
+
+        $d = AgentDispatch::where('agent_name', 'prod-agent')->firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DROPPED, $d->outcome);
+        $this->assertStringContainsString('signal', (string) $d->reason);
+    }
+
+    public function test_empty_classify_result_records_dropped_not_delivered(): void
+    {
+        // The exact operator case (FR-2): a recipient-aware classifier returns an
+        // empty ClassifyResult for an agent it isn't addressed to → DROPPED, not a
+        // (byte-identical-looking) delivery.
+        RecipientAwareClassifier::reset();
+        $this->writeAgent('prod-agent', RecipientAwareClassifier::class);
+        $payload = ['subject_id' => 42, 'board_id' => 5, 'to' => 'someone-else', 'payload' => ['name' => 'x']];
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $payload);
+
+        $d = AgentDispatch::firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DROPPED, $d->outcome);
+        $this->assertStringContainsString('no reactions', (string) $d->reason);
+        $this->assertSame(0, $this->inboxCount());
+    }
+
+    public function test_addressed_event_via_recipient_classifier_is_delivered(): void
+    {
+        RecipientAwareClassifier::reset();
+        $this->writeAgent('prod-agent', RecipientAwareClassifier::class);
+        $payload = ['subject_id' => 42, 'board_id' => 5, 'to' => 'prod-agent', 'payload' => ['name' => 'x']];
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $payload);
+
+        $this->assertSame(AgentDispatch::OUTCOME_DELIVERED, AgentDispatch::firstOrFail()->outcome);
+    }
+
+    public function test_classifier_error_records_errored_outcome(): void
+    {
+        $this->writeAgent('prod-agent', ThrowingClassifier::class);
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $this->payload());
+
+        $d = AgentDispatch::firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_ERRORED, $d->outcome);
+        $this->assertNull($d->processed_at);   // errored → still replayable (processed_at null)
+    }
+
+    public function test_reattributed_self_echo_records_dropped(): void
+    {
+        $this->writeAgent('prod-agent', ReattributingClassifier::class);
+        $payload = ['subject_id' => 42, 'board_id' => 5, 'reattributed_to' => 'prod-agent', 'payload' => ['name' => 'x']];
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $payload);
+
+        $d = AgentDispatch::firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DROPPED, $d->outcome);
+        $this->assertStringContainsString('reattributed', (string) $d->reason);
+    }
+
+    public function test_force_replay_transition_clears_the_prior_terminal_satellite_field(): void
+    {
+        // The whole reason FR-2 exists is replay-after-a-gate-fix. `bridge:replay
+        // --force` nulls processed_at so an already-terminal row re-runs; if the
+        // outcome flips (dropped→delivered here), the prior pass's `reason` must
+        // not survive — else `bridge:inspect` (reason ?? error_message) shows a
+        // stale 'echo: own write' next to a `delivered` outcome, the exact
+        // delivered-vs-dropped confusion this feature removes.
+        $this->writeAgent('prod-agent', LogIntentClassifier::class);
+        $event = WebhookEvent::create([
+            'delivery_id' => 'evt-1', 'provider' => 'kanban', 'scope_id' => '5',
+            'event_type' => 'task.created', 'actor_id' => '999', 'payload' => $this->payload(),
+        ]);
+        // A previously-DROPPED row whose processed_at was just cleared by --force.
+        AgentDispatch::create([
+            'webhook_event_id' => $event->id, 'agent_name' => 'prod-agent',
+            'outcome' => AgentDispatch::OUTCOME_DROPPED, 'reason' => 'echo: own write',
+            'processed_at' => null,
+        ]);
+
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $this->payload());
+
+        $d = AgentDispatch::where('agent_name', 'prod-agent')->firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DELIVERED, $d->outcome);
+        $this->assertNull($d->reason);            // stale drop reason cleared
+        $this->assertNull($d->error_message);
+        $this->assertNotNull($d->processed_at);
     }
 }
