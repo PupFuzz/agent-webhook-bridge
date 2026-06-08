@@ -63,4 +63,29 @@ final class RecipientAddressing
 
         return null;
     }
+
+    /**
+     * The author named on the first `FROM:` line of a comment body, lowercased +
+     * trimmed, or `null` when there is no `FROM:` line (a bare/empty `FROM:` is
+     * treated as absent). Symmetric with {@see recipients} — together they let a
+     * classifier route a comment by the **body's own** `TO:`/`FROM:` lines, which
+     * is the authoritative direction, rather than a parent issue's labels (those
+     * freeze at thread-open and silently drop a reply that reverses direction —
+     * the single most common shared-identity routing footgun). `FROMAGE:` and
+     * other words do not match (the `:` must immediately follow `from`).
+     */
+    public static function author(string $commentBody): ?string
+    {
+        foreach (preg_split('/\R/', $commentBody) ?: [] as $line) {
+            $trimmed = strtolower(trim($line));
+            if (! str_starts_with($trimmed, 'from:')) {
+                continue;
+            }
+            $name = trim(substr($trimmed, 5));
+
+            return $name === '' ? null : $name;
+        }
+
+        return null;
+    }
 }

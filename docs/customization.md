@@ -188,12 +188,14 @@ public function classify(ClassifyContext $ctx): ClassifyResult
     $actor = $ctx->actor;
 
     // Shared account → Actor.name is null. Recover the author from your own
-    // convention (here: a "FROM: <agent>" first line in a comment body).
+    // convention (here: a "FROM: <agent>" line in a comment body) via the shipped
+    // RecipientAddressing::author() helper — no hand-rolled regex.
     $reattributed = null;
     if ($actor->name === null) {
         $body = (string) ($ctx->payload['payload']['body'] ?? '');
-        if (preg_match('/^FROM:\s*(\S+)/', $body, $m) === 1) {
-            $reattributed = new Actor(id: $actor->id, name: $m[1], isKnownAgent: true);
+        $author = RecipientAddressing::author($body);   // first FROM: line, or null
+        if ($author !== null) {
+            $reattributed = new Actor(id: $actor->id, name: $author, isKnownAgent: true);
         }
     }
 
@@ -270,6 +272,27 @@ public function classify(ClassifyContext $ctx): ClassifyResult
 ```
 
 The three-state return is the contract: `true` wake, `false` skip, **`null` = no `TO:` line → fall back to labels** (a bare/empty `TO:` is treated as absent, so a typo can't silently suppress everyone). Matching is case-insensitive; the first `TO:` line wins; `all` addresses every agent. **Issue/card** events (opened/closed/labeled) keep using labels — only comment bodies carry a `TO:` line. Net: zero false-negatives (every addressed comment still delivered), no more cross-agent wake-noise on a shared thread.
+
+> **⚠ Footgun — route a comment by the comment's OWN `TO:`/`FROM:`, never the parent issue's labels (DL-034).** A thread's issue/card labels freeze at thread-open. If you route *comments* by those labels, a reply that **reverses direction** (B answering A on a thread originally A→B) is silently dropped — the labels still say "A→B" while the reply is "B→A". This is the single most common shared-identity routing bug. Use the body's lines as authoritative: `RecipientAddressing::addresses($body, $me)` for the recipient (above) and **`RecipientAddressing::author($body)`** for the sender, with the label behavior only as the `null` fallback. Worked role-reversal case:
+>
+> ```php
+> use App\Bridge\Support\RecipientAddressing;
+>
+> // Thread opened A→B (issue labels: to:B, from:A). A later comment reverses it:
+> //   FROM: agentB
+> //   TO: agentA
+> //   ...reply body...
+> $author    = RecipientAddressing::author($body);                  // 'agentb' (the reply's real sender)
+> $addressed = RecipientAddressing::addresses($body, $ctx->agent->agentName);
+> // For agentA serving: $addressed === true  → wake A (the reply IS for A),
+> //   even though the issue's frozen labels say the thread is "to:B". Routing by
+> //   labels here would skip A and the reply would vanish.
+> // $author lets you attribute the reply to agentB (e.g. as ClassifyResult
+> // ::$reattributedActor for the shared-identity echo check — see below), instead
+> // of mis-crediting the thread opener.
+> ```
+>
+> `author()` is symmetric with `recipients()`: the first `FROM:` line, lowercased + trimmed, or `null` (a bare/empty `FROM:` is absent; `FROMAGE:` doesn't match). It replaces the per-operator hand-rolled `preg_match('/^FROM:.../')` parse.
 
 ### Constructing the data shapes
 

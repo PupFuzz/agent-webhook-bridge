@@ -75,4 +75,44 @@ class RecipientAddressingTest extends TestCase
         $this->assertTrue(RecipientAddressing::addresses("intro\r\nTO: agentB\r\nbody", 'agentB'));
         $this->assertTrue(RecipientAddressing::addresses("intro\rTO: agentB\rbody", 'agentB'));
     }
+
+    // --- author() (FROM: line) — DL-034 -------------------------------------
+
+    public function test_author_returns_the_from_line_name(): void
+    {
+        $this->assertSame('agenta', RecipientAddressing::author("FROM: agentA\nTO: agentB\nbody"));
+    }
+
+    public function test_author_is_case_insensitive_and_trimmed(): void
+    {
+        $this->assertSame('agenta', RecipientAddressing::author("  From:   AgentA  \nbody"));
+    }
+
+    public function test_author_returns_null_with_no_from_line(): void
+    {
+        $this->assertNull(RecipientAddressing::author("plain comment\nTO: agentB"));
+    }
+
+    public function test_author_bare_or_empty_from_is_absent(): void
+    {
+        $this->assertNull(RecipientAddressing::author("FROM:\nbody"));
+        $this->assertNull(RecipientAddressing::author("FROM:    \nbody"));
+    }
+
+    public function test_author_first_from_line_wins(): void
+    {
+        $this->assertSame('first', RecipientAddressing::author("FROM: first\nFROM: second"));
+    }
+
+    public function test_author_does_not_match_a_word_starting_with_from(): void
+    {
+        // The `:` must immediately follow `from` — `FROMAGE:` is not a FROM line.
+        $this->assertNull(RecipientAddressing::author("FROMAGE: cheese\nbody"));
+    }
+
+    public function test_author_splits_crlf_and_cr(): void
+    {
+        $this->assertSame('agenta', RecipientAddressing::author("intro\r\nFROM: agentA\r\nbody"));
+        $this->assertSame('agenta', RecipientAddressing::author("intro\rFROM: agentA\rbody"));
+    }
 }

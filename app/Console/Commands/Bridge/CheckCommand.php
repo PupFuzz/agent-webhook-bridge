@@ -308,7 +308,13 @@ class CheckCommand extends BridgeCommand
                                 // preferring meta.total — independent of correlation mode.
                                 $vis = $client->visibility($mapping->boardId);
                                 if ($vis['total'] === 0) {
-                                    $this->warn("writeback: token sees 0 cards on board {$mapping->boardId} ({$repo}) — its user is likely not a member of that board, or board_id is wrong; the writeback will SILENTLY no-op every move until fixed");
+                                    // 0 cards is AMBIGUOUS on a 200 read: an empty board (no
+                                    // cards created yet — fine) vs a non-member token (every
+                                    // move silently no-ops). Don't assert membership on this
+                                    // evidence alone — true inaccessibility surfaces separately
+                                    // (the by-ref reachability probe above 404s for a
+                                    // non-member board in `ref` mode). So present both.
+                                    $this->warn("writeback: token sees 0 cards on board {$mapping->boardId} ({$repo}) — EITHER the board is empty (no cards yet → fine, the writeback works once cards exist) OR the token's user isn't a member / `board_id` is wrong (then every move silently no-ops). If you expect cards on that board, verify membership + `board_id`; a genuinely-empty board is not a problem.");
                                 } elseif (! $vis['exact']) {
                                     // Pre-DL-146 kanban: confirmed non-blind, exact size unknown.
                                     $this->info("writeback: token can see board {$mapping->boardId} ({$repo}) (exact card count unavailable — kanban predates pagination meta)");
