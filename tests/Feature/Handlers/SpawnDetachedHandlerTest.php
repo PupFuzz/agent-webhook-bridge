@@ -87,6 +87,19 @@ class SpawnDetachedHandlerTest extends TestCase
         $this->spawn(['cmd' => ['touch', $this->dir.'/x']]);   // 'touch' != '/usr/bin/touch'
     }
 
+    public function test_unresolvable_setsid_fails_closed(): void
+    {
+        // setsid is resolved to an ABSOLUTE path (so a payload env PATH can't
+        // redirect which setsid runs — the launcher-execs-cmd allowlist bypass).
+        // A configured path that doesn't exist must fail closed, not fall back to
+        // a PATH-resolved bare `setsid`.
+        config(['bridge.spawn.setsid_path' => '/nonexistent/setsid']);
+
+        $this->expectException(HandlerException::class);
+        $this->expectExceptionMessage('setsid not found');
+        $this->spawn(['cmd' => [$this->touch, $this->dir.'/x']]);
+    }
+
     public function test_valid_cmd_executes_detached(): void
     {
         $marker = $this->dir.'/ran.marker';

@@ -29,6 +29,7 @@ There are three configuration surfaces:
 | `BRIDGE_MAX_BODY_BYTES` | int | `262144` (256 KB) | Envelope size cap; oversize → `413` before HMAC work. |
 | `BRIDGE_SPAWN_ENABLED` | bool | `false` | Registers the `spawn_detached` handler. Off ⇒ a `spawn_detached` target is a best-effort note, never an execution (DL-011). |
 | `BRIDGE_SPAWN_ALLOWLIST` | comma-sep abs paths | `''` | `cmd[0]` must be in it. Empty ⇒ nothing runs. **Allowlist fixed-purpose wrappers, never interpreters** (DL-011). |
+| `BRIDGE_SPAWN_SETSID_PATH` | abs path | _(auto)_ | Absolute path to the `setsid` launcher. Unset ⇒ auto-detect (`/usr/bin/setsid`, `/bin/setsid`). Pinned absolute so a payload `env` PATH can't redirect which `setsid` runs (DL-037); fail-closed if none is found. |
 | `BRIDGE_CHANNEL_ALLOWED_SOCKET_DIR` | abs path | — | Prefix a **classifier-supplied** `channel_push` socket must sit under; unset ⇒ classifier sockets **refused** (DL-014). Agent-config sockets exempt. |
 
 DB connection (`DB_CONNECTION` / `DB_*`) and `APP_*` are standard Laravel. The DB password lives in `.env` (`DB_PASSWORD`), never in the YAMLs.

@@ -711,4 +711,44 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('gate-DROPPED', $out);   // names the recoverable class
         $this->assertStringContainsString('--force', $out);
     }
+
+    public function test_replay_force_resets_the_full_terminal_tuple_not_just_processed_at(): void
+    {
+        // --force must clear outcome/reason/error_message too: a re-run can exit via
+        // a non-terminal path (durable-handler throw / config throw → 5xx) that
+        // reaches no mark*() stamper, which would otherwise leave the prior pass's
+        // outcome next to a now-null processed_at — the DL-036 inconsistency.
+        // Asserted on an orphan row (an agent no longer in config) so --force resets
+        // it but dispatch() never re-stamps it, exposing the raw reset.
+        $this->writeAgent();
+        $event = $this->event();
+        AgentDispatch::create([
+            'webhook_event_id' => $event->id, 'agent_name' => 'gone-agent',
+            'processed_at' => now(), 'outcome' => AgentDispatch::OUTCOME_DELIVERED,
+            'error_message' => 'stale handler note',
+        ]);
+
+        $this->artisan('bridge:replay', ['id' => $event->id, '--force' => true])->assertExitCode(0);
+
+        $d = AgentDispatch::where('agent_name', 'gone-agent')->firstOrFail();
+        $this->assertNull($d->processed_at);
+        $this->assertNull($d->outcome);
+        $this->assertNull($d->reason);
+        $this->assertNull($d->error_message);
+    }
+
+    public function test_check_surfaces_an_id_collision_on_the_console(): void
+    {
+        // Two agents sharing a kanban_user_id silently bypasses attribution (DL-007
+        // warn). bridge:check must surface it to the operator console, not only to
+        // the log where it goes unnoticed. Warn-level (exit 0), not a failure.
+        $yaml = "identity:\n  kanban_user_id: 500\nsubscriptions:\n  - provider: kanban\n    scopes: [5]\n";
+        File::put($this->dir.'/agent-a.yml', $yaml);
+        File::put($this->dir.'/agent-b.yml', $yaml);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('shared by multiple agents', $out);
+    }
 }

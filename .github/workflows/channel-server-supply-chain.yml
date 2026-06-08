@@ -3,13 +3,18 @@ name: Channel-server supply chain
 # Guards the committed examples/channel-servers/ dependency tree (the reference
 # Claude Code channel MCP server that reads a bearer token + accepts loopback
 # POSTs as the agent's OS user — a real trust boundary, so a pinned + reviewed
-# tree matters). Two checks:
+# tree matters). Three checks:
 #   1. `npm ci` — fails if package.json and package-lock.json have drifted
 #      (the committed lockfile must stay reproducible: lock regenerated whenever
 #      the dep range changes).
 #   2. `npm audit` — FAILS loudly on a high/critical CVE in the pinned tree, so a
 #      vulnerable-but-pinned dependency can't rot silently (the "degraded states
 #      must be loud" posture). You then bump the dep + re-commit the lock.
+#   3. version-bump-guard — consumers COPY this dir into their own deployment
+#      (per the README), so a downstream snapshot drifts silently when these
+#      files change. FAILS a PR that touches a shipped channel-server file
+#      without bumping package.json `version` — the one field a snapshot can
+#      compare to detect drift (DL-038).
 #
 # Cost-scoped on purpose: only fires when the example actually changes (PR path
 # filter) plus a weekly cron to catch newly-disclosed CVEs without a code change.
@@ -52,3 +57,39 @@ jobs:
 
       - name: Audit the pinned tree (fail on high/critical CVE)
         run: npm audit --audit-level=high
+
+  version-bump-guard:
+    # Consumers copy examples/channel-servers/ into a per-deployment (often
+    # per-agent) snapshot, so a change to a shipped file drifts every copy with
+    # no detectable signal. Require a package.json `version` bump on any shipped
+    # change, so a snapshot can detect staleness by comparing one field (DL-038).
+    # PR-only: the cron / workflow_dispatch runs have no base ref to diff against.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0   # need the merge-base to diff base..head
+
+      - name: Require a package.json version bump when shipped files change
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # Shipped files only: exclude the gitignored node_modules (never copied)
+          # and the CI workflow itself (not part of the downstream snapshot).
+          changed=$(git diff --name-only "$BASE_SHA"...HEAD -- examples/channel-servers/ \
+            | grep -v '/node_modules/' || true)
+          if [ -z "$changed" ]; then
+            echo "No shipped channel-server files changed — version bump not required."
+            exit 0
+          fi
+          echo "Changed channel-server files:"; printf '  %s\n' $changed
+          old=$(git show "$BASE_SHA:examples/channel-servers/package.json" 2>/dev/null | jq -r '.version' || echo '')
+          new=$(jq -r '.version' examples/channel-servers/package.json)
+          if [ "$old" = "$new" ]; then
+            echo "::error::examples/channel-servers/ changed but package.json version is still '$new'. Bump it so downstream snapshots can detect drift (DL-038): cd examples/channel-servers && npm version <next> --no-git-tag-version"
+            exit 1
+          fi
+          echo "package.json version bumped: '$old' -> '$new' ✓"

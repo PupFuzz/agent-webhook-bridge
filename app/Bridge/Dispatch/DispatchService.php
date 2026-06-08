@@ -145,13 +145,16 @@ final class DispatchService
             }
 
             // (C) handlers — durable-first, then best-effort (DL-009).
-            // Same-event coalescing: collapse targets sharing a debounceKey
-            // (last-wins) so a classifier emitting duplicate buckets fires each
-            // handler once. No cross-delivery debounce in the synchronous model
-            // (debounceSeconds is advisory metadata, not enforced here).
+            // Same-event coalescing: collapse targets sharing a (handler,
+            // debounceKey) (last-wins) so a classifier emitting duplicate buckets
+            // fires each handler once. The handler is part of the key so two
+            // DISTINCT handlers sharing a debounceKey (default debounceKey is the
+            // targetId) don't clobber each other — e.g. a channel_push and a
+            // log_intent for the same subject both run. No cross-delivery debounce
+            // in the synchronous model (debounceSeconds is advisory metadata).
             $targets = [];
             foreach ($result->targets as $t) {
-                $targets[$t->debounceKey] = $t;
+                $targets[$t->handler.'|'.$t->debounceKey] = $t;
             }
 
             // Per-agent channel routing (DL-006): channel.route_intents pushes
@@ -171,7 +174,7 @@ final class DispatchService
                         debounceKey: 'channel_push:'.$intent->subjectId,
                         payload: $intent->toArray(),
                     );
-                    $targets[$routed->debounceKey] = $routed;
+                    $targets[$routed->handler.'|'.$routed->debounceKey] = $routed;
                 }
             }
             // Partition by durability (DL-009). A DurableReaction handler performs

@@ -216,15 +216,19 @@ final class KanbanClient
 
     /**
      * Read a board's cards via the task-search endpoint (server-side board_id
-     * filter), paging until a short page (DL-028). The search response is a bare
-     * `{data:[...]}` with no total/meta, so the stop condition is "page until a
-     * page returns fewer than SEARCH_LIMIT rows"; a hard MAX_PAGES ceiling bounds
-     * a pathological/non-paging upstream. Pure: no logging.
+     * filter), paging to completion (DL-028). The stop condition follows the
+     * documented board-read contract: a DL-146 kanban serves `links.next`, so we
+     * stop when it's null (authoritative — no extra request even when the total is
+     * an exact multiple of SEARCH_LIMIT). A pre-DL-146 kanban omits `links` ⇒ fall
+     * back to the short-page heuristic (a page shorter than SEARCH_LIMIT is the
+     * last). A hard MAX_PAGES ceiling bounds a pathological/non-paging upstream.
+     * (The default correlation path is `ref`, DL-031 — this scan read is the
+     * fallback.) Pure: no logging.
      *
-     * Both the short-page break and the `$truncated` flag are decided on the RAW
+     * The short-page fallback and the `$truncated` flag are decided on the RAW
      * batch length (rows kanban returned), NOT the array-filtered/merged count —
      * a non-array row would otherwise desync the decision (a missed-truncation
-     * false negative, the DL-026 silent-loss class). The break MUST stay
+     * false negative, the DL-026 silent-loss class). The fallback MUST stay
      * `< SEARCH_LIMIT` (continue while `>=`): an `=== SEARCH_LIMIT` test would
      * loop forever against an upstream that ever returned an over-full page. The
      * truncation flag assumes kanban honors `page` (it does — server-side
@@ -234,20 +238,27 @@ final class KanbanClient
     {
         $cards = [];
         for ($page = 1; $page <= self::MAX_PAGES; $page++) {
-            $batch = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId}", 'limit' => self::SEARCH_LIMIT, 'page' => $page])->throw()->json('data');
+            $json = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId}", 'limit' => self::SEARCH_LIMIT, 'page' => $page])->throw()->json();
+            $batch = is_array($json) ? ($json['data'] ?? null) : null;
             $rows = is_array($batch) ? $batch : [];
             foreach ($rows as $row) {
                 if (is_array($row)) {
                     $cards[] = $row;
                 }
             }
-            if (count($rows) < self::SEARCH_LIMIT) {
-                return new BoardRead($cards, false);   // short/empty page ⇒ fully read
+
+            $links = is_array($json) ? ($json['links'] ?? null) : null;
+            if (is_array($links) && array_key_exists('next', $links)) {
+                if ($links['next'] === null) {
+                    return new BoardRead($cards, false);   // DL-146: no next page ⇒ fully read
+                }
+            } elseif (count($rows) < self::SEARCH_LIMIT) {
+                return new BoardRead($cards, false);   // pre-DL-146 fallback: short/empty page ⇒ fully read
             }
         }
 
-        // Ran all MAX_PAGES pages and every one came back full ⇒ the board is at
-        // or beyond the ceiling and cards past it were not read.
+        // Ran all MAX_PAGES pages and never hit a stop ⇒ the board is at or beyond
+        // the ceiling and cards past it were not read.
         return new BoardRead($cards, true);
     }
 

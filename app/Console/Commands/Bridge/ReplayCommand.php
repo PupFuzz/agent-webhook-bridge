@@ -46,8 +46,18 @@ class ReplayCommand extends BridgeCommand
             if ($onlyAgent !== null) {
                 $query->where('agent_name', $onlyAgent);
             }
-            $cleared = $query->update(['processed_at' => null]);
-            $this->warn("--force: cleared processed_at on {$cleared} dispatch row(s)");
+            // Reset the WHOLE terminal tuple, not just processed_at: the re-run can
+            // exit via a non-terminal path (durable-handler throw / config throw →
+            // 5xx) that reaches no mark*() stamper, which would otherwise leave the
+            // prior pass's outcome/reason/error_message next to the now-null
+            // processed_at — the exact inconsistency DL-036 exists to prevent.
+            $cleared = $query->update([
+                'processed_at' => null,
+                'outcome' => null,
+                'reason' => null,
+                'error_message' => null,
+            ]);
+            $this->warn("--force: reset {$cleared} dispatch row(s) for re-run");
         } else {
             // Without --force, dispatch() skips rows already marked processed_at —
             // INCLUDING gate-dropped ones (a drop is marked processed, DL-036). A

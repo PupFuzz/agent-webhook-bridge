@@ -81,6 +81,32 @@ class KanbanAdapterTest extends TestCase
         (new KanbanAdapter)->parse($this->request($body), $body);
     }
 
+    public function test_over_length_scope_id_throws(): void
+    {
+        // scope_id column is 128 — an over-length board_id is a deterministic 400,
+        // not a DB "data too long" 5xx the upstream would redeliver forever.
+        $body = $this->body(['board_id' => str_repeat('9', 129)]);
+
+        $this->expectException(InvalidEnvelopeException::class);
+        (new KanbanAdapter)->parse($this->request($body), $body);
+    }
+
+    public function test_over_length_event_type_throws(): void
+    {
+        $body = $this->body(['event' => str_repeat('e', 65)]);   // event_type column is 64
+
+        $this->expectException(InvalidEnvelopeException::class);
+        (new KanbanAdapter)->parse($this->request($body), $body);
+    }
+
+    public function test_over_length_actor_id_throws(): void
+    {
+        $body = $this->body(['user_id' => str_repeat('7', 65)]);   // actor_id column is 64
+
+        $this->expectException(InvalidEnvelopeException::class);
+        (new KanbanAdapter)->parse($this->request($body), $body);
+    }
+
     public function test_kanban_never_pings(): void
     {
         $event = (new KanbanAdapter)->parse($this->request($this->body()), $this->body());
