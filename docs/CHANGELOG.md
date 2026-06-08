@@ -10,6 +10,33 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.30.0] - 2026-06-08
+
+**Adversarial bug-hunt sweep (DL-037) + channel-server snapshot drift signal (DL-038).** PRs #108, #109 since v0.29.0. No DB migration. No app code in DL-038 (example + CI + docs).
+
+### Security
+
+- **`spawn_detached` resolves `setsid` to an absolute path (DL-037).** `setsid` was exec'd by bare name, so a classifier-payload `env.PATH` could redirect which `setsid` binary ran — sidestepping the `cmd[0]` absolute-path allowlist (the launcher execs `cmd`). Now resolved to an absolute path (`BRIDGE_SPAWN_SETSID_PATH`, auto-detected, fail-closed). Opt-in surface (`BRIDGE_SPAWN_ENABLED`), but a real allowlist bypass.
+
+### Changed
+
+- **Receiver rejects an over-length envelope field with a deterministic 400, not a 5xx (DL-037).** Only `delivery_id` length was asserted; an over-length `scope_id`/`event_type`/`actor_id` hit the DB column as a `QueryException` → 5xx → an upstream retry-storm of a deterministically-bad body. `assertFieldLengths` now guards every field written to `webhook_events` (fix the primitive). **The one receiver accept/reject change in this release** — realistic kanban/GitHub values are well under the column limits.
+- **Same-event target coalescing keys on `(handler, debounceKey)`, not `debounceKey` alone (DL-037).** Two targets for one subject routed to different handlers (default `debounceKey` is the `targetId`) no longer collide last-wins and silently drop one. No shipped classifier triggers it; a custom-classifier footgun.
+- **`KanbanClient::readBoard` scan stops on `links.next === null` per the documented board-read contract (DL-037).** Was a short-page heuristic while the contract specified `links.next`; the in-house consumer is now consistent with the rule the bridge wrote down (short-page fallback retained for a pre-DL-146 kanban that serves no `links`). Not a data-loss fix — contract alignment + no wasted extra request at an exact page multiple.
+
+### Fixed
+
+- **`bridge:replay --force` resets the whole terminal tuple (DL-037).** `--force` nulled only `processed_at`; a re-run exiting via a non-terminal path (durable/config throw → 5xx) left the prior `outcome`/`error_message` next to a now-null `processed_at` — the inconsistency DL-036 exists to prevent. Now nulls `outcome`/`reason`/`error_message` too.
+- **`bridge:check` surfaces id-collisions to the operator console (DL-037).** A duplicate `kanban_user_id`/`github_user_id` (silent attribution bypass) was `Log::warning`-only despite a comment claiming preflight surfaces it; now rendered warn-level (exit unchanged).
+
+### Added
+
+- **Channel-server snapshot drift signal + CI bump-gate (DL-038).** Consumers copy `examples/channel-servers/` per deployment, so a snapshot drifts silently on a bridge update (DL-033's package.json was never bumped — it sat at `0.1.0` since the first commit). `package.json` `version` is now the drift signal (bumped to `0.2.0`); a PR-only `version-bump-guard` job in `channel-server-supply-chain.yml` **fails the build** when a shipped file under `examples/channel-servers/**` changes without a version bump. README § Staying in sync added.
+
+### Operator notes
+
+- **No DB migration.** New optional env **`BRIDGE_SPAWN_SETSID_PATH`** (absolute path to `setsid`; auto-detected when unset — most installs need nothing). The receiver now returns **400** (was 5xx) for a hostile/malformed over-length envelope field. Adopters of the reference channel server: compare your copy's `package.json` `version` against canonical to detect drift (a symlink never drifts).
+
 ## [0.29.0] - 2026-06-08
 
 **Dispatch outcome ledger + operator-diagnostics polish — three peer-integrator FRs.** PRs #103, #104 since v0.28.0. ⚠ One non-destructive DB migration (FR-2).
