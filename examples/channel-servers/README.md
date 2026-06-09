@@ -52,7 +52,14 @@ The name propagates everywhere automatically. Match `[a-z0-9_-]+` (lowercase let
 
 Two references, ONE name — and the same name appears in the `channel.socket` path you set in `<agent>.yml` (next step).
 
-**Important — socket path alignment.** The Node channel server derives its bind path from `$XDG_RUNTIME_DIR/agent-webhook-bridge-channel-${BRIDGE_CHANNEL_NAME}.sock`. **The bridge does NOT compute that path** — it requires an explicit `channel.socket` in your `<agent>.yml` pointing at exactly the same path the channel server binds. There is no `channel.name` field (it was removed); the `<channel source="...">` label comes from `BRIDGE_CHANNEL_NAME`. On systemd Linux + per-user environment, set `channel.socket` in YAML to `/run/user/<uid>/agent-webhook-bridge-channel-<NAME>.sock`. On macOS / containers without `$XDG_RUNTIME_DIR`, set BOTH `channel.socket` in YAML AND `BRIDGE_CHANNEL_SOCKET` in `.mcp.json` env to the same explicit path.
+**Important — socket path alignment.** The Node channel server derives its bind path from `$XDG_RUNTIME_DIR/agent-webhook-bridge-channel-${BRIDGE_CHANNEL_NAME}.sock`. The bridge does not auto-derive the path when `channel.socket` is omitted (it has no channel name — there is no `channel.name` field; the `<channel source="...">` label comes from `BRIDGE_CHANNEL_NAME`), but it **does expand `${XDG_RUNTIME_DIR}` / `${uid}` placeholders** in `channel.socket` (DL-039). So on systemd Linux, set `channel.socket` in YAML to the **uid-agnostic** literal:
+
+```yaml
+channel:
+  socket: ${XDG_RUNTIME_DIR}/agent-webhook-bridge-channel-<NAME>.sock
+```
+
+This is the same path the server binds, with the uid kept out of config — so restoring the install on a host where the OS uid changed just works (a literal `/run/user/<uid>/…` would silently no-op live-wake; `bridge:check` warns if the resolved parent dir is missing). `${XDG_RUNTIME_DIR}` resolves to `$XDG_RUNTIME_DIR` or `/run/user/<uid>` when unset. On macOS / containers without a `/run/user`, set BOTH an explicit `channel.socket` in YAML AND the same `BRIDGE_CHANNEL_SOCKET` in `.mcp.json` env.
 
 ### 2. Drop `.mcp.json` in your project root
 

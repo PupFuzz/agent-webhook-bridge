@@ -44,6 +44,49 @@ class ChannelPushHandlerTest extends TestCase
         $this->push(['intent' => ['kind' => 'new_card']]);
     }
 
+    public function test_missing_socket_parent_dir_names_the_uid_mismatch(): void
+    {
+        // DL-039: a channel.socket whose PARENT dir is gone is the classic
+        // uid-mismatch-after-restore break (the path pins /run/user/<uid>). The
+        // error must name it, not the misleading "start the channel server first".
+        try {
+            $this->push(['intent' => ['kind' => 'new_card']], '/run/user/999999/nonexistent-dir/x.sock');
+            $this->fail('expected HandlerException');
+        } catch (HandlerException $e) {
+            $this->assertStringContainsString('parent dir', $e->getMessage());
+            $this->assertStringContainsString('uid mismatch', $e->getMessage());
+        }
+    }
+
+    public function test_missing_socket_with_existing_parent_dir_says_start_the_server(): void
+    {
+        // Parent dir exists but no socket → the server just isn't up; the message
+        // must point there, NOT at a uid mismatch (DL-039).
+        try {
+            $this->push(['intent' => ['kind' => 'new_card']], sys_get_temp_dir().'/chan-absent-'.uniqid().'.sock');
+            $this->fail('expected HandlerException');
+        } catch (HandlerException $e) {
+            $this->assertStringContainsString('start the channel server first', $e->getMessage());
+            $this->assertStringNotContainsString('uid mismatch', $e->getMessage());
+        }
+    }
+
+    public function test_classifier_socket_missing_parent_dir_uses_generic_message(): void
+    {
+        // A CLASSIFIER-supplied socket missing its parent dir must NOT be blamed on
+        // a uid restore / channel.socket — that narrative only fits the operator's
+        // agent socket (DL-039, canon #10 honest attribution).
+        config(['bridge.channel.allowed_socket_dir' => '/run']);
+        try {
+            $this->push(['socket' => '/run/user/999999/nonexistent-dir/x.sock', 'intent' => ['kind' => 'new_card']]);
+            $this->fail('expected HandlerException');
+        } catch (HandlerException $e) {
+            $this->assertStringContainsString('parent dir', $e->getMessage());
+            $this->assertStringNotContainsString('uid mismatch', $e->getMessage());
+            $this->assertStringNotContainsString('channel.socket', $e->getMessage());
+        }
+    }
+
     public function test_non_localhost_url_rejected_ssrf(): void
     {
         $this->expectException(HandlerException::class);

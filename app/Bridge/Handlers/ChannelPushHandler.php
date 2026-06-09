@@ -123,7 +123,7 @@ final class ChannelPushHandler implements Handler
                 // channel.socket is operator-authored and exempt.
                 $this->assertClassifierSocketAllowed($socket);
             }
-            $this->validateSocketPath($socket);
+            $this->validateSocketPath($socket, $usedAgentChannel);
             $request = Http::connectTimeout(1)->timeout($timeout)
                 ->withOptions(['curl' => [CURLOPT_UNIX_SOCKET_PATH => $socket]])
                 ->withHeaders($headers);
@@ -217,13 +217,27 @@ final class ChannelPushHandler implements Handler
         }
     }
 
-    private function validateSocketPath(string $path): void
+    private function validateSocketPath(string $path, bool $isAgentSocket = true): void
     {
         if (! str_starts_with($path, '/')) {
             throw new HandlerException("channel_push: payload.socket must be an absolute path (got {$path})");
         }
         clearstatcache(true, $path);
         if (! file_exists($path) && ! is_link($path)) {
+            // Distinguish a missing PARENT dir (the path pins /run/user/<uid> and
+            // the uid changed — a host restore, DL-039) from a missing socket (the
+            // channel server just isn't up). The first is a config bug needing a
+            // repoint; the second resolves itself when the server starts. The old
+            // single "start the server first" message misdiagnosed the uid case.
+            // The uid-restore narrative only fits the operator's channel.socket —
+            // a classifier-supplied socket gets the plain parent-dir message so we
+            // never misattribute its missing dir to a config/uid problem (canon #10).
+            if (! is_dir(dirname($path))) {
+                if ($isAgentSocket) {
+                    throw new HandlerException('channel_push: socket parent dir '.dirname($path)." does not exist — likely a uid mismatch after a host restore (the path pins /run/user/<uid>); repoint channel.socket or derive it with \${XDG_RUNTIME_DIR}: {$path}");
+                }
+                throw new HandlerException('channel_push: socket parent dir '.dirname($path)." does not exist: {$path}");
+            }
             throw new HandlerException("channel_push: payload.socket does not exist (start the channel server first): {$path}");
         }
         // lstat-based: a symlink at the socket path is a TOCTOU vector (a
