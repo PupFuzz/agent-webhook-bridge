@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Support;
 
+use App\Bridge\Exceptions\ConfigException;
+
 final class PathHelper
 {
     /**
@@ -21,6 +23,62 @@ final class PathHelper
         }
 
         return $home.substr($path, 1);
+    }
+
+    /**
+     * Expand runtime placeholders in a channel.socket path (DL-039) so an
+     * operator can write a uid-agnostic literal instead of pinning
+     * `/run/user/<uid>` — which silently breaks when the install is restored on a
+     * host where the OS uid changed:
+     *   ${XDG_RUNTIME_DIR} → $XDG_RUNTIME_DIR, or `/run/user/<uid>` when the env
+     *                        is unset (its systemd-canonical value; PHP-FPM
+     *                        usually doesn't inherit XDG_RUNTIME_DIR, so deriving
+     *                        from the running uid is the robust resolution).
+     *   ${uid}             → the running process uid.
+     * Returns the path unchanged when it contains no `${` token. Throws (fail-
+     * closed) when a token is present but unresolvable, so a uid-agnostic config
+     * never silently resolves to an empty/wrong path.
+     */
+    public static function expandRuntimeTokens(string $path): string
+    {
+        if (! str_contains($path, '${')) {
+            return $path;
+        }
+
+        $uid = function_exists('posix_getuid') ? posix_getuid() : null;
+        $replacements = [];
+
+        if (str_contains($path, '${XDG_RUNTIME_DIR}')) {
+            $xdg = getenv('XDG_RUNTIME_DIR');
+            if ($xdg === false || $xdg === '') {
+                if ($uid === null) {
+                    throw new ConfigException('channel.socket uses ${XDG_RUNTIME_DIR} but it is unset and the uid is undeterminable (no posix extension) — set channel.socket to an explicit path');
+                }
+                $xdg = '/run/user/'.$uid;
+            }
+            $replacements['${XDG_RUNTIME_DIR}'] = rtrim($xdg, '/');
+        }
+
+        if (str_contains($path, '${uid}')) {
+            if ($uid === null) {
+                throw new ConfigException('channel.socket uses ${uid} but the running uid is undeterminable (no posix extension) — set channel.socket to an explicit path');
+            }
+            $replacements['${uid}'] = (string) $uid;
+        }
+
+        // strtr does ONE simultaneous left-to-right pass, so a token that appears
+        // INSIDE a substituted value (e.g. an XDG_RUNTIME_DIR env that itself
+        // contains '${uid}') is left literal, never re-expanded.
+        $path = strtr($path, $replacements);
+
+        // Fail-closed on any unconsumed token (a typo like ${XDG_RUNTIME}) rather
+        // than letting it ride as a literal directory name to a confusing later
+        // error — matches the fail-closed config posture.
+        if (str_contains($path, '${')) {
+            throw new ConfigException("channel.socket has an unrecognized \${...} placeholder (only \${XDG_RUNTIME_DIR} and \${uid} are supported): {$path}");
+        }
+
+        return $path;
     }
 
     /**

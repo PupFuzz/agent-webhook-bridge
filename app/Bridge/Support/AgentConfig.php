@@ -180,6 +180,11 @@ final class AgentConfig
         $socket = $channel['socket'] ?? null;
         if ($socket !== null) {
             $socketStr = is_scalar($socket) ? (string) $socket : '';
+            // Expand ${XDG_RUNTIME_DIR}/${uid} first (DL-039) so a uid-agnostic
+            // literal resolves to the concrete path the rest of the pipeline
+            // validates + stores — the uid drops out of config, surviving a
+            // host/uid restore. Throws on an unresolvable token (fail-closed).
+            $socketStr = PathHelper::expandRuntimeTokens($socketStr);
             if (! SocketPath::isValid($socketStr)) {
                 throw new ConfigException("channel.socket '{$socketStr}' must be an absolute path with no '..' segment or null byte");
             }

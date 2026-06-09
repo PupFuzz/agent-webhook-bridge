@@ -127,6 +127,54 @@ class AgentConfigTest extends TestCase
         AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => 'relative/x.sock']]));
     }
 
+    public function test_channel_socket_expands_xdg_runtime_dir_token(): void
+    {
+        // DL-039: a uid-agnostic literal resolves to the concrete path the rest of
+        // the pipeline stores, so the uid drops out of config (survives a restore).
+        $orig = getenv('XDG_RUNTIME_DIR');
+        putenv('XDG_RUNTIME_DIR=/run/user/4242');
+        try {
+            $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => '${XDG_RUNTIME_DIR}/agent-webhook-bridge-channel-x.sock']]));
+            $this->assertSame('/run/user/4242/agent-webhook-bridge-channel-x.sock', $cfg->channel->socket);
+        } finally {
+            $orig === false ? putenv('XDG_RUNTIME_DIR') : putenv('XDG_RUNTIME_DIR='.$orig);
+        }
+    }
+
+    public function test_channel_socket_xdg_token_falls_back_to_run_user_uid_when_env_unset(): void
+    {
+        // PHP-FPM usually doesn't inherit XDG_RUNTIME_DIR, so the bridge derives
+        // /run/user/<uid> from the running uid — the robust resolution (DL-039).
+        if (! function_exists('posix_getuid')) {
+            $this->markTestSkipped('posix extension required');
+        }
+        $orig = getenv('XDG_RUNTIME_DIR');
+        putenv('XDG_RUNTIME_DIR');   // unset
+        try {
+            $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => '${XDG_RUNTIME_DIR}/x.sock']]));
+            $this->assertSame('/run/user/'.posix_getuid().'/x.sock', $cfg->channel->socket);
+        } finally {
+            $orig === false ? putenv('XDG_RUNTIME_DIR') : putenv('XDG_RUNTIME_DIR='.$orig);
+        }
+    }
+
+    public function test_channel_socket_expands_uid_token(): void
+    {
+        if (! function_exists('posix_getuid')) {
+            $this->markTestSkipped('posix extension required');
+        }
+        $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => '/run/user/${uid}/x.sock']]));
+        $this->assertSame('/run/user/'.posix_getuid().'/x.sock', $cfg->channel->socket);
+    }
+
+    public function test_channel_socket_unrecognized_placeholder_throws(): void
+    {
+        // A typo'd token (e.g. ${XDG_RUNTIME} missing _DIR) fails closed at load,
+        // not as a confusing literal-dir error at push time (DL-039).
+        $this->expectException(ConfigException::class);
+        AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => '${XDG_RUNTIME}/x.sock']]));
+    }
+
     public function test_channel_url_parsed(): void
     {
         $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => ['url' => 'http://127.0.0.1:8788/']]));
