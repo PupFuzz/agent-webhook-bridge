@@ -751,4 +751,22 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(0, $code);
         $this->assertStringContainsString('shared by multiple agents', $out);
     }
+
+    public function test_check_warns_when_channel_socket_parent_dir_is_missing(): void
+    {
+        // DL-039: a channel.socket whose parent dir doesn't exist makes live-wake
+        // silently no-op — classically a uid mismatch after a host restore. bridge:
+        // check must surface it at preflight (warn, not fail — the socket itself is
+        // the channel server's to create).
+        File::put($this->dir.'/prod-agent.yml',
+            "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."channel:\n  socket: /run/user/999999/nonexistent-dir/x.sock\n");
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('channel.socket parent dir', $out);
+        $this->assertStringContainsString('does not exist', $out);
+    }
 }

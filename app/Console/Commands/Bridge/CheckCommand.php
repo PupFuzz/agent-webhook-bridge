@@ -207,6 +207,23 @@ class CheckCommand extends BridgeCommand
                         $this->warn("agent {$name}: ".$e->getMessage().' — channel_push will FAIL until fixed');
                     }
                 }
+
+                // channel.socket parent-dir reachability (DL-039). The socket
+                // itself may be absent at preflight (channel server not started
+                // yet — fine), but a MISSING or non-writable PARENT dir is a real
+                // misconfig that makes live-wake silently no-op — classically a
+                // uid mismatch after a host restore (the path pins /run/user/<uid>).
+                // Surface it loudly; warn, don't fail (the socket is the channel
+                // server's to create).
+                if ($cfg->channel->socket !== null) {
+                    $dir = dirname($cfg->channel->socket);
+                    if (! is_dir($dir)) {
+                        $this->warn("agent {$name}: channel.socket parent dir {$dir} does not exist — live-wake will silently no-op. On systemd Linux this is /run/user/<uid>; a uid change (host restore) breaks it. Repoint channel.socket, or write it uid-agnostically as \${XDG_RUNTIME_DIR}/…");
+                    } elseif (! is_writable($dir)) {
+                        $uid = function_exists('posix_getuid') ? (string) posix_getuid() : '?';
+                        $this->warn("agent {$name}: channel.socket parent dir {$dir} is not writable by this user (uid {$uid}) — live-wake will fail. Likely a uid mismatch after a host restore.");
+                    }
+                }
             }
         }
 

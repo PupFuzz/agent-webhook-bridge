@@ -80,8 +80,15 @@ subscriptions:
 # token the channel server validates (BRIDGE_CHANNEL_TOKEN). Required on a
 # cross-user / multi-tenant host where loopback-bind is not the trust boundary;
 # read fail-closed at push time (must be 0600, non-empty). UDS needs no token.
+# On systemd Linux, prefer the uid-agnostic ${XDG_RUNTIME_DIR} form below over a
+# literal /run/user/<uid>/… path: the uid drops out of config, so restoring the
+# install on a host where the OS uid changed just works (a literal uid path would
+# silently no-op live-wake; bridge:check warns if the parent dir is missing).
+# ${XDG_RUNTIME_DIR} resolves to $XDG_RUNTIME_DIR or /run/user/<uid> when unset;
+# ${uid} → the running uid. On macOS / containers without a /run/user, set an
+# explicit path here AND the same BRIDGE_CHANNEL_SOCKET in the channel server env.
 # channel:
-#   socket: /run/user/1000/agent-webhook-bridge-channel-your-agent.sock
+#   socket: ${XDG_RUNTIME_DIR}/agent-webhook-bridge-channel-your-agent.sock
 #   # url: http://127.0.0.1:8788/
 #   # auth:
 #   #   token_path: ~/.config/agent-webhook-bridge/secrets/channel/your-agent-token
