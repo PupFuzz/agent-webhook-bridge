@@ -10,6 +10,23 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.31.0] - 2026-06-09
+
+**Uid-agnostic `channel.socket` + loud uid-mismatch errors (DL-039).** PR #115 since v0.30.0. No DB migration, no new `.env` keys.
+
+### Added
+
+- **`${XDG_RUNTIME_DIR}` / `${uid}` placeholder expansion in `channel.socket` (DL-039).** An agent's `channel.socket` may now be written uid-agnostically — `${XDG_RUNTIME_DIR}/agent-webhook-bridge-channel-<name>.sock` — instead of pinning a literal `/run/user/<uid>/…`. Expanded at config-load (before validation): `${XDG_RUNTIME_DIR}` → `$XDG_RUNTIME_DIR`, or `/run/user/<uid>` when the env is unset (PHP-FPM usually doesn't inherit it, so the bridge derives it from the running uid); `${uid}` → the running uid. So restoring an install on a host where the OS uid changed just works — previously the literal path silently broke live-wake. An unrecognized/typo'd token fails closed at load. Mirrors the channel server's existing `$XDG_RUNTIME_DIR` derivation; the `0600` UDS trust model and the macOS/container explicit-path escape hatch are unchanged.
+
+### Changed
+
+- **`channel_push` no longer misdiagnoses a uid mismatch as a stopped server (DL-039).** A stale socket whose parent dir is gone now reports *"socket parent dir … does not exist — likely a uid mismatch after a host restore … repoint channel.socket or derive it with `${XDG_RUNTIME_DIR}`"* instead of the misleading *"start the channel server first"* (the server may be fine). The uid-restore wording is used only for the operator's agent socket, not a classifier-supplied one.
+- **`bridge:check` now validates `channel.socket` reachability (DL-039).** Warns (doesn't fail — the socket is the channel server's to create) when a configured `channel.socket`'s parent dir is missing or non-writable, surfacing the uid mismatch at preflight instead of a silent runtime no-op.
+
+### Operator notes
+
+- **No DB migration, no new `.env` keys.** Optional adoption: on systemd Linux, rewrite `channel.socket` from `/run/user/<uid>/…` to `${XDG_RUNTIME_DIR}/…` so a future host/uid restore needs no edit. Existing literal paths keep working. The reference channel server example bumped to `0.3.0` (README guidance; copied snapshots should re-sync per DL-038).
+
 ## [0.30.0] - 2026-06-08
 
 **Adversarial bug-hunt sweep (DL-037) + channel-server snapshot drift signal (DL-038).** PRs #108, #109 since v0.29.0. No DB migration. No app code in DL-038 (example + CI + docs).
