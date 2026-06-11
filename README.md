@@ -10,7 +10,7 @@ A webhook receiver, event classifier, and CLI for AI agents (or operators) integ
 
 ## What this is
 
-A single **Laravel 13 app** (PHP 8.3, MariaDB 10.6+ in prod, SQLite for tests). A webhook arrives, and receive → classify → stage → dispatch all happen **synchronously in that one HTTP request**. There is no queue worker, no consumer cron, no daemon.
+A single **Laravel 13 app** (PHP 8.5, MariaDB 10.6+ in prod, SQLite for tests). A webhook arrives, and receive → classify → stage → dispatch all happen **synchronously in that one HTTP request**. There is no queue worker, no consumer cron, no daemon.
 
 ```
 Upstream system (kanban-board, GitHub, ...)

@@ -1,6 +1,6 @@
 # Deployment & ops
 
-How to install, update, operate, and diagnose a v0.12 bridge install. The model is deliberately small: **a single Laravel app on Apache + PHP-FPM 8.3 that does all its work synchronously in the webhook request** — no queue, no consumer cron, no scheduler, no daemon, no systemd unit. Operating it is operating a normal PHP-FPM web app. There is no "queue not draining" failure mode because there is no queue.
+How to install, update, operate, and diagnose a v0.12 bridge install. The model is deliberately small: **a single Laravel app on Apache + PHP-FPM 8.5 that does all its work synchronously in the webhook request** — no queue, no consumer cron, no scheduler, no daemon, no systemd unit. Operating it is operating a normal PHP-FPM web app. There is no "queue not draining" failure mode because there is no queue.
 
 One install per agent: its own webroot, `.env`, DB, base dir, and (ideally) PHP-FPM pool. The canonical reference host runs `prod-agent` + `dev-agent` side by side.
 
@@ -47,12 +47,12 @@ There is **no** queue worker, scheduler, or systemd unit to install. The **one**
 
 ## Pre-flight (per host)
 
-`sudo` access needed for: `systemctl reload apache2 php8.3-fpm` (post-deploy reload) and a DB superuser (create the database). The bridge runs no services of its own.
+`sudo` access needed for: `systemctl reload apache2 php8.5-fpm` (post-deploy reload) and a DB superuser (create the database). The bridge runs no services of its own.
 
 ```bash
 sudo apache2ctl -M | grep proxy_fcgi          # expect proxy_fcgi_module (PHP-FPM, NOT mod_php)
 sudo apache2ctl -M | grep php                  # expect NOTHING
-php -v && composer --version                    # PHP 8.3.x, Composer 2.x
+php -v && composer --version                    # PHP 8.5.x, Composer 2.x
 sudo apache2ctl -S | grep <host>                # vhost routes /webhooks/* to the install's public/ dir
 # FPM pool php.ini: post_max_size ≳ BRIDGE_MAX_BODY_BYTES (e.g. 512K) — defense-in-depth bound on EnvelopeSizeLimit
 ```
@@ -72,7 +72,7 @@ php artisan bridge:check                          # validate .env, dirs, DB conn
 php artisan migrate --force
 php artisan optimize                              # config/route cache
 php artisan bridge:provision                      # register kanban webhook subscriptions (idempotent)
-sudo systemctl reload apache2 php8.3-fpm
+sudo systemctl reload apache2 php8.5-fpm
 ```
 
 ## Update an existing install
@@ -86,7 +86,7 @@ composer install --no-dev --optimize-autoloader
 php artisan migrate --force                       # no-op if no new migrations
 php artisan optimize:clear && php artisan optimize
 php artisan bridge:check                           # VALIDATE BEFORE serving — names a stale custom classifier / config drift; STOP if non-zero
-sudo systemctl reload php8.3-fpm                  # recycle workers so they re-read config + agent YAMLs
+sudo systemctl reload php8.5-fpm                  # recycle workers so they re-read config + agent YAMLs
 ```
 
 > **⚠ Running a custom classifier or handler?** A custom class under `app/Bridge/Classifiers/` (per [`docs/customization.md`](docs/customization.md) § Loading your classifier) is **untracked but not gitignored**, so `git pull` preserves your *old* file unchanged into the new release. **Check [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for a `classify()`/contract change in the versions you're crossing and migrate your class in the SAME step as the pull.** `classify()` has had two breaking changes (DL-022 added `AgentConfig $agent`; DL-025 collapsed to a single `classify(ClassifyContext $ctx)` — the **last** such break). An old signature is an uncatchable `E_COMPILE_ERROR` that fatals the receiver on the next live delivery — and with `opcache.validate_timestamps=On` the new contract is picked up within `revalidate_freq` of the pull, **before** the FPM reload, so the failure window opens at pull time. This is why `bridge:check` is ordered **before** the reload above: its out-of-process classifier load (DL-025) names a stale class instead of letting it fatal a request — but that only helps if you migrate-and-check, not pull-and-serve.
@@ -140,7 +140,7 @@ FPM workers are long-lived and `php artisan optimize` caches `.env`. After editi
 
 ```bash
 php artisan optimize:clear && php artisan optimize   # MANDATORY after .env edits
-sudo systemctl reload php8.3-fpm                     # recycle workers so they re-read the agent YAMLs
+sudo systemctl reload php8.5-fpm                     # recycle workers so they re-read the agent YAMLs
 ```
 
 Forget `optimize:clear` and the app silently uses the cached old values — no error surfaces it.
@@ -213,9 +213,9 @@ php artisan bridge:prune --older-than=30d [--null-payloads-older-than=7d] [--dry
 
 ## Diagnose
 
-- **`bridge:stats` shows errored dispatches.** A classifier threw. `bridge:inspect <id>` (or `storage/logs/laravel.log`) for detail → fix → `optimize:clear && reload php8.3-fpm` → `bridge:replay <id>`.
+- **`bridge:stats` shows errored dispatches.** A classifier threw. `bridge:inspect <id>` (or `storage/logs/laravel.log`) for detail → fix → `optimize:clear && reload php8.5-fpm` → `bridge:replay <id>`.
 - **Idle agent — channel pushes "failing".** Connection-refused with no Claude Code session up is NORMAL: row is **done with a note**, intent is in `inbox.jsonl` for the next `bridge:inbox`. Not an incident; `--force` re-attempts the push.
-- **A config edit "didn't take".** The optimize trap above — `optimize:clear && optimize && reload php8.3-fpm`.
+- **A config edit "didn't take".** The optimize trap above — `optimize:clear && optimize && reload php8.5-fpm`.
 - **kanban-board webhook auto-deactivated.** A short reinstall won't trip it (transient 5xx are mid-curve, not fully-failed). `curl …/api/v3/webhooks | jq '.data[] | select(.board_id==5) | .active'`; if `false`, re-run `bridge:provision`.
 - **`413` on legitimate payloads.** Raise `BRIDGE_MAX_BODY_BYTES` and the FPM pool's `post_max_size` together.
 

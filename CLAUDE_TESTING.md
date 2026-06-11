@@ -154,7 +154,7 @@ Classifier that emits a target naming a handler that doesn't exist. Used to veri
 
 **Job 1 — `PHPUnit + Pint + PHPStan (PHP 8.3, SQLite)`:**
 - Push to `main`/`dev`; pull requests to `main`/`dev`
-- PHP 8.3, `pdo_sqlite` + `pdo_mysql` extensions installed
+- Runs on **PHP 8.5** (via the `setup-app` composite action), `pdo_sqlite` + `pdo_mysql` extensions installed. The job **label** still reads "PHP 8.3" — it's a required-status-check identifier pinned in `dev`/`main` branch protection, so renaming it must be done together with a `gh api` branch-protection contexts update (see DL-040), not in a routine PR.
 - Pint style check, PHPStan level 7 on `app/Bridge`, then PHPUnit against SQLite `:memory:`
 
 **Job 2 — `PHPUnit (MariaDB ${{ matrix.mariadb }})` (matrix: `["10.6", "11"]`):**
