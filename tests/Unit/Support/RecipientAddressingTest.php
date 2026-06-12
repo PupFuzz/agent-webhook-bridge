@@ -115,4 +115,20 @@ class RecipientAddressingTest extends TestCase
         $this->assertSame('agenta', RecipientAddressing::author("intro\r\nFROM: agentA\r\nbody"));
         $this->assertSame('agenta', RecipientAddressing::author("intro\rFROM: agentA\rbody"));
     }
+
+    public function test_author_trims_a_decorated_from_to_the_first_token(): void
+    {
+        // #2202: a decorated FROM line must still match `author($body) === $agent`
+        // — return the first token, not the verbatim tail.
+        $this->assertSame('alice', RecipientAddressing::author('FROM: alice (pls review)'));
+        $this->assertSame('alice', RecipientAddressing::author("FROM: alice\tsenior\nbody"));
+    }
+
+    public function test_author_takes_the_first_name_of_a_multi_name_from(): void
+    {
+        // A FROM line names ONE author; a comma list collapses to the first
+        // (symmetric with recipients() tokenizing on commas).
+        $this->assertSame('alice', RecipientAddressing::author('FROM: alice, bob'));
+        $this->assertSame('alice', RecipientAddressing::author('FROM: ,alice'));
+    }
 }
