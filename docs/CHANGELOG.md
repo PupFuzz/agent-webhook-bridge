@@ -10,6 +10,23 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.32.0] - 2026-06-12
+
+**Make a deaf/duplicate channel connector visible (DL-154) + addressing/contract polish (#2202) + PHP 8.5 standardization (DL-153).** PRs #119, #120, #121 since v0.31.0. No DB migration, no new `.env` keys.
+
+### Added
+
+- **Visible bind-failure marker + single-session guardrail + `bridge:check` liveness ping for deaf/duplicate channel sessions (FR #2444, DL-154).** When an agent runs two Claude Code sessions, the active one's channel connector can lose the socket-bind race (`EADDRINUSE` → `exit(2)`) — and because Claude Code swallows MCP-server startup stderr, that session came up **deaf to live-wake invisibly** while the bridge kept delivering `HTTP 202` to the other session's connector and logging `delivered`. Three composing guards now surface it (no cron, no daemon): (1) the reference connector writes a visible **`<socket>.FAILED` marker** (timestamp + pid + reason) on `EADDRINUSE` and the connector that *successfully* binds clears it — surfaced by `bridge:check` for the UDS transport; (2) **`start-channel-session.sh`** refuses to launch if a `claude … server:<channel>` process already holds the channel (a `pgrep` guardrail — the connector's refusal is the backstop) and clears a stale marker on start; (3) **`bridge:check`** adds an on-demand **socket liveness ping** (distinguishes a live, listening session from a stale socket) and reports any `.FAILED` marker. The reference channel server example is bumped to **0.4.0** (re-sync copied snapshots per DL-038).
+
+### Changed
+
+- **`RecipientAddressing::author()` returns the first `FROM:` token, not the verbatim tail (#2202).** A decorated/multi-name FROM line (`FROM: alice (pls review)`, `FROM: alice, bob`) used to return the whole tail verbatim, so a classifier doing `author($body) === $agentName` silently failed to match. It now tokenizes to the first whitespace/comma-delimited token (symmetric with `recipients()`), so both yield `alice`. Behavior change to a helper for operator classifiers; `author()` is new (v0.29.0 / DL-035) and no internal consumer depended on the verbatim tail. The kanban integration contract now also pins the by-ref `system` enum (`{dl, github_pr}`).
+- **Standardize on PHP 8.5 (DL-153).** `composer.json` requires `^8.5`; CI runners pinned to 8.5 (the validated surface now matches the deployed runtime). An install on PHP <8.5 fails the `composer install` platform check — intentional. No app-logic change.
+
+### Operator notes
+
+- **No DB migration, no new `.env` keys.** Re-sync any copied channel-server snapshot to example `0.4.0` (DL-038). The launcher single-session guardrail also applies to a hand-rolled `~/start-claude.sh` (operational sync, outside the repo). PHP <8.5 installs must upgrade PHP before `composer install`.
+
 ## [0.31.0] - 2026-06-09
 
 **Uid-agnostic `channel.socket` + loud uid-mismatch errors (DL-039).** PR #115 since v0.30.0. No DB migration, no new `.env` keys.
