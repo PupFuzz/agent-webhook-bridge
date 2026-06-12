@@ -802,12 +802,15 @@ class BridgeCommandsTest extends TestCase
         $pid = pcntl_fork();
         if ($pid === 0) {
             $server = @stream_socket_server('unix://'.$sock, $errno, $errstr);
-            if ($server === false) {
-                exit(1);
+            if ($server !== false) {
+                @stream_socket_accept($server, 3); // accept the liveness probe
             }
-            @stream_socket_accept($server, 3); // accept the liveness probe, then go
-            @fclose($server);
-            exit(0);
+            // Hard-exit: a graceful exit runs PHP's shutdown, which closes the DB
+            // connection inherited over fork by sending COM_QUIT on the shared
+            // socket — the PARENT then errors "MySQL server has gone away" under a
+            // real MySQL/MariaDB driver (CI), though it's invisible under the local
+            // SQLite-in-memory driver.
+            posix_kill(posix_getpid(), SIGKILL);
         }
         $deadline = microtime(true) + 3.0;
         while (! file_exists($sock) && microtime(true) < $deadline) {
@@ -832,11 +835,12 @@ class BridgeCommandsTest extends TestCase
         $pid = pcntl_fork();
         if ($pid === 0) {
             $server = @stream_socket_server('unix://'.$sock, $errno, $errstr);
-            if ($server === false) {
-                exit(1);
+            if ($server !== false) {
+                sleep(30); // hold the bind; the parent SIGKILLs us mid-sleep
             }
-            sleep(30); // hold the bind; the parent SIGKILLs us, leaving a stale socket file
-            exit(0);
+            // Hard-exit (see the liveness test) so the failure path can't COM_QUIT
+            // the fork-inherited DB connection either.
+            posix_kill(posix_getpid(), SIGKILL);
         }
         $deadline = microtime(true) + 3.0;
         while (! file_exists($sock) && microtime(true) < $deadline) {
