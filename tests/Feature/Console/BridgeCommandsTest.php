@@ -769,4 +769,93 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('channel.socket parent dir', $out);
         $this->assertStringContainsString('does not exist', $out);
     }
+
+    private function writeAgentWithChannelSocket(string $socket): void
+    {
+        File::put($this->dir.'/prod-agent.yml',
+            "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."channel:\n  socket: {$socket}\n");
+    }
+
+    public function test_check_surfaces_channel_bind_failure_marker(): void
+    {
+        // FR #2444: a session whose connector lost the bind race leaves a visible
+        // .FAILED marker (the swallowed stderr never showed it). bridge:check
+        // surfaces it loudly (warn, not fail).
+        $sock = $this->dir.'/x.sock';
+        File::put($sock.'.FAILED', "2026-06-12T00:00:00Z pid=1 prod-agent: EADDRINUSE binding unix:{$sock} — another session holds the channel\n");
+        $this->writeAgentWithChannelSocket($sock);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('bind-FAILURE marker', $out);
+    }
+
+    public function test_check_reports_channel_socket_live_when_a_session_listens(): void
+    {
+        if (! function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl required for the UDS liveness listener');
+        }
+        $sock = $this->dir.'/live.sock';
+        $pid = pcntl_fork();
+        if ($pid === 0) {
+            $server = @stream_socket_server('unix://'.$sock, $errno, $errstr);
+            if ($server !== false) {
+                @stream_socket_accept($server, 3); // accept the liveness probe
+            }
+            // Hard-exit: a graceful exit runs PHP's shutdown, which closes the DB
+            // connection inherited over fork by sending COM_QUIT on the shared
+            // socket — the PARENT then errors "MySQL server has gone away" under a
+            // real MySQL/MariaDB driver (CI), though it's invisible under the local
+            // SQLite-in-memory driver.
+            posix_kill(posix_getpid(), SIGKILL);
+        }
+        $deadline = microtime(true) + 3.0;
+        while (! file_exists($sock) && microtime(true) < $deadline) {
+            usleep(20_000);
+        }
+        $this->writeAgentWithChannelSocket($sock);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        pcntl_waitpid($pid, $status);
+
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('channel socket live', $out);
+    }
+
+    public function test_check_warns_when_channel_socket_is_stale_with_no_listener(): void
+    {
+        if (! function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl required for the UDS stale-socket listener');
+        }
+        $sock = $this->dir.'/stale.sock';
+        $pid = pcntl_fork();
+        if ($pid === 0) {
+            $server = @stream_socket_server('unix://'.$sock, $errno, $errstr);
+            if ($server !== false) {
+                sleep(30); // hold the bind; the parent SIGKILLs us mid-sleep
+            }
+            // Hard-exit (see the liveness test) so the failure path can't COM_QUIT
+            // the fork-inherited DB connection either.
+            posix_kill(posix_getpid(), SIGKILL);
+        }
+        $deadline = microtime(true) + 3.0;
+        while (! file_exists($sock) && microtime(true) < $deadline) {
+            usleep(20_000);
+        }
+        // Kill the listener: the UDS inode persists on disk but nothing listens now.
+        posix_kill($pid, SIGKILL);
+        pcntl_waitpid($pid, $status);
+        clearstatcache();
+        $this->assertFileExists($sock);
+        $this->writeAgentWithChannelSocket($sock);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('nothing is listening', $out);
+    }
 }

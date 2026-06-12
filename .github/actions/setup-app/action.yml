@@ -1,6 +1,6 @@
 name: Set up PHP + app
 description: >-
-  PHP 8.3 + Composer install + .env prep, shared by the Laravel test jobs so
+  PHP 8.5 + Composer install + .env prep, shared by the Laravel test jobs so
   the runtime setup has a single source of truth (no drift between the SQLite
   and MariaDB jobs). The caller must run actions/checkout BEFORE this — a
   local composite action only exists in the workspace once the repo is checked
@@ -8,10 +8,10 @@ description: >-
 runs:
   using: composite
   steps:
-    - name: Set up PHP 8.3
+    - name: Set up PHP 8.5
       uses: shivammathur/setup-php@7c071dfe9dc99bdf297fa79cb49ea005b9fcadbc  # 2.37.1
       with:
-        php-version: '8.3'
+        php-version: '8.5'
         extensions: pdo, pdo_sqlite, pdo_mysql, mbstring, bcmath, intl, dom, fileinfo
         coverage: none
         tools: composer

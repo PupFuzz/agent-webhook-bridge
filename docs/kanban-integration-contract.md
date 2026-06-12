@@ -27,7 +27,7 @@ Auth: **Sanctum bearer token**. The card-move writeback uses a **dedicated least
 
 | Endpoint | The bridge uses it to | Load-bearing assumption |
 | --- | --- | --- |
-| `GET /api/v3/boards/{b}/tasks/by-ref.json?system=&ref=` | **Correlate a PR → card(s)** in `ref` mode (DL-029, the default-soon path) | Server-canonicalizes the ref; returns a **collection** `{data:[…]}` (one-to-many — kanban DL-148); indexed/O(1). Requires kanban v0.17.2+ with `task_external_references` backfilled. |
+| `GET /api/v3/boards/{b}/tasks/by-ref.json?system=&ref=` | **Correlate a PR → card(s)** in `ref` mode (DL-029, the default-soon path) | `system` ∈ {`dl`, `github_pr`} — a **hard cross-system enum** (kanban DL-147/148): `KanbanClient` sends `system=dl`/`system=github_pr` and `byRefAvailable` probes `system=dl`, so a rename/addition on the kanban side is drift that breaks correlation silently. Server-canonicalizes the ref; returns a **collection** `{data:[…]}` (one-to-many — kanban DL-148); indexed/O(1). Requires kanban v0.17.2+ with `task_external_references` backfilled. |
 | `GET /api/v3/tasks/search.json?q=board_id=N&limit=200&page=P` | Correlate in `scan` mode (fallback) + the `bridge:check` `limit=1` visibility probe | Page-based (`?page`); returns the DL-146 `{data, meta, links}` envelope (`meta.total` powers the probe). Scan walks pages to `MAX_PAGES`. |
 | `GET /api/v3/tasks/{id}.json` | Read a card's `board_id` + `workflow_stage_id` | Belongs-to-mapped-board guard + idempotent already-in-stage check |
 | `POST /api/v3/tasks.json` | Create a card (dependabot path) | Body `{board_id, workflow_stage_id, name, payload, tags, swimlane_id?}`. **Unknown `payload` keys 422** — payload keys must be registered custom fields on the board. (DL-024 / DL-027) |

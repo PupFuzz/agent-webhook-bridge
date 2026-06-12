@@ -56,6 +56,47 @@ const SERVER_PORT = Number(process.env.BRIDGE_CHANNEL_PORT || 8788);
 const SERVER_HOST = '127.0.0.1';
 const SOCKET_PATH = process.env.BRIDGE_CHANNEL_SOCKET || defaultSocketPath();
 
+// A bind failure exits the process with a stderr message Claude Code SWALLOWS
+// (it does not surface MCP-server startup stderr), so a session whose connector
+// loses the bind race comes up DEAF to live-wake invisibly. Leave a VISIBLE
+// marker file in addition to stderr (FR #2444). The connector that SUCCESSFULLY
+// binds owns the channel and clears any stale marker, so the signal reflects the
+// current holder, not a week-old failure.
+//
+// Transport-aware path: the UNIX marker is the socket's sibling `<socket>.FAILED`
+// — the path `bridge:check` derives from the agent's `channel.socket`, so it is
+// surfaced on demand there. The HTTP transport has no `channel.socket` (the agent
+// config carries `url`), so `bridge:check` CANNOT derive/surface its marker —
+// keep the HTTP marker keyed by name+port (never masquerading as a socket
+// failure), where the stderr + exit(2) + this file are the operator's signal.
+function markerPath() {
+  if (TRANSPORT === 'unix' && SOCKET_PATH) {
+    return `${SOCKET_PATH}.FAILED`;
+  }
+  const xdg = process.env.XDG_RUNTIME_DIR || '/tmp';
+  return path.join(xdg, `agent-webhook-bridge-channel-${SERVER_NAME}.http-${SERVER_PORT}.FAILED`);
+}
+
+function writeFailureMarker(reason) {
+  try {
+    fs.writeFileSync(
+      markerPath(),
+      `${new Date().toISOString()} pid=${process.pid} ${SERVER_NAME}: ${reason}\n`,
+      { mode: 0o600 },
+    );
+  } catch {
+    // Best-effort — the stderr message is still emitted regardless.
+  }
+}
+
+function clearFailureMarker() {
+  try {
+    fs.rmSync(markerPath(), { force: true });
+  } catch {
+    // Best-effort.
+  }
+}
+
 if (TRANSPORT === 'unix' && !SOCKET_PATH) {
   console.error(
     `[${SERVER_NAME}] BRIDGE_CHANNEL_TRANSPORT=unix but BRIDGE_CHANNEL_SOCKET is unset and ` +
@@ -167,6 +208,10 @@ if (TRANSPORT === 'unix') {
   // operator error per the README "One server per session" note.
   server.on('error', (err) => {
     if (err && err.code === 'EADDRINUSE') {
+      writeFailureMarker(
+        `EADDRINUSE binding unix:${SOCKET_PATH} — another session already holds ` +
+          `the channel, so THIS Claude Code session is deaf to live-wake`,
+      );
       console.error(
         `[${SERVER_NAME}] socket file already exists at ${SOCKET_PATH}; ` +
           `another Claude Code session may have it bound. Close the other ` +
@@ -192,6 +237,9 @@ if (TRANSPORT === 'unix') {
     process.umask(previousUmask);
   });
   server.listen(SOCKET_PATH, () => {
+    // We own the channel now — clear any stale FAILED marker a previous deaf
+    // session left, so the marker reflects the current holder (FR #2444).
+    clearFailureMarker();
     // Restore umask for any subsequent file ops the runtime might do.
     process.umask(previousUmask);
     // Defense-in-depth: belt-and-suspenders chmod even though umask
@@ -211,7 +259,22 @@ if (TRANSPORT === 'unix') {
     }
   });
 } else {
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      writeFailureMarker(
+        `EADDRINUSE binding http://${SERVER_HOST}:${SERVER_PORT} — another process ` +
+          `holds the port, so THIS Claude Code session is deaf to live-wake`,
+      );
+      console.error(
+        `[${SERVER_NAME}] port ${SERVER_PORT} already in use; another Claude Code ` +
+          `session may have it bound. Close it, or set BRIDGE_CHANNEL_PORT to a different port.`,
+      );
+      process.exit(2);
+    }
+    throw err;
+  });
   server.listen(SERVER_PORT, SERVER_HOST, () => {
+    clearFailureMarker();
     console.error(`[${SERVER_NAME}] listening on http://${SERVER_HOST}:${SERVER_PORT}`);
     if (SHARED_TOKEN) {
       console.error(`[${SERVER_NAME}] bearer-token gating active`);

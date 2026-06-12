@@ -19,6 +19,23 @@ CHANNEL_KEY="${1:-${BRIDGE_CHANNEL_NAME:-kanbanboard-agent}}"
 SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-webhook-bridge-channel-${CHANNEL_KEY}.sock"
 SERVER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/channel-servers"
 
+# Process-level single-session guard (FR #2444). The socket check below only
+# catches a LIVE socket; it misses a session started OUTSIDE this wrapper (raw
+# `claude --dangerously-load-development-channels server:<key>`) and the HTTP
+# topology that has no socket to collide on. If a Claude Code session is already
+# running THIS channel, refuse — a second one's connector would lose the bind
+# race, exit, and leave that session deaf to live-wake. This is a guardrail (a
+# pgrep on the command line), not a hard guarantee: the connector's own
+# EADDRINUSE refusal + visible FAILED marker is the backstop the wrapper can't be.
+if pgrep -f -- "--dangerously-load-development-channels[[:space:]]+server:${CHANNEL_KEY}([[:space:]]|\$)" >/dev/null 2>&1; then
+    echo "A Claude Code session is already running channel '${CHANNEL_KEY}'. Refusing to start a second — it would come up deaf to live-wake. Close the other session first (or use a different BRIDGE_CHANNEL_NAME)." >&2
+    exit 1
+fi
+
+# A previous session that came up deaf leaves a visible FAILED marker (FR #2444);
+# clear it now that we're (re)starting a real session for this channel.
+rm -f "${SOCK}.FAILED"
+
 # The channel server refuses to bind if the socket file already exists. Remove a
 # stale one (no listener); abort if a live session already holds it.
 if [ -S "$SOCK" ]; then
