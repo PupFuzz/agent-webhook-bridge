@@ -65,14 +65,18 @@ final class RecipientAddressing
     }
 
     /**
-     * The author named on the first `FROM:` line of a comment body, lowercased +
-     * trimmed, or `null` when there is no `FROM:` line (a bare/empty `FROM:` is
-     * treated as absent). Symmetric with {@see recipients} — together they let a
-     * classifier route a comment by the **body's own** `TO:`/`FROM:` lines, which
-     * is the authoritative direction, rather than a parent issue's labels (those
-     * freeze at thread-open and silently drop a reply that reverses direction —
-     * the single most common shared-identity routing footgun). `FROMAGE:` and
-     * other words do not match (the `:` must immediately follow `from`).
+     * The author named on the first `FROM:` line of a comment body — the **first
+     * whitespace/comma-delimited token**, lowercased — or `null` when there is no
+     * `FROM:` line (a bare/empty `FROM:` is treated as absent). Symmetric with
+     * {@see recipients} (which tokenizes its names too): `FROM: alice (pls review)`
+     * and `FROM: alice, bob` both yield `alice`, so a classifier doing
+     * `author($body) === $agentName` matches a decorated/multi FROM line instead
+     * of silently failing on the verbatim tail (#2202). Together TO:/FROM: let a
+     * classifier route a comment by the **body's own** lines — the authoritative
+     * direction — rather than a parent issue's labels (those freeze at thread-open
+     * and silently drop a reply that reverses direction — the single most common
+     * shared-identity routing footgun). `FROMAGE:` and other words do not match
+     * (the `:` must immediately follow `from`).
      */
     public static function author(string $commentBody): ?string
     {
@@ -81,9 +85,11 @@ final class RecipientAddressing
             if (! str_starts_with($trimmed, 'from:')) {
                 continue;
             }
-            $name = trim(substr($trimmed, 5));
+            // First token only — a `FROM:` line names one author, so strip any
+            // decoration/extra recipients after it (symmetric with recipients()).
+            $tokens = preg_split('/[\s,]+/', trim(substr($trimmed, 5)), -1, PREG_SPLIT_NO_EMPTY);
 
-            return $name === '' ? null : $name;
+            return ($tokens === false || $tokens === []) ? null : $tokens[0];
         }
 
         return null;
