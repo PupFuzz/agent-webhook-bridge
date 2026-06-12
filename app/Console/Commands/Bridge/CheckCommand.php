@@ -223,6 +223,39 @@ class CheckCommand extends BridgeCommand
                         $uid = function_exists('posix_getuid') ? (string) posix_getuid() : '?';
                         $this->warn("agent {$name}: channel.socket parent dir {$dir} is not writable by this user (uid {$uid}) — live-wake will fail. Likely a uid mismatch after a host restore.");
                     }
+
+                    // Visible bind-FAILURE marker (FR #2444). A session whose
+                    // connector loses the socket-bind race exits with a stderr
+                    // message Claude Code swallows, leaving that session deaf to
+                    // live-wake invisibly. The connector now drops a marker file;
+                    // surface it here so the silent failure is loud on demand.
+                    $marker = $cfg->channel->socket.'.FAILED';
+                    clearstatcache(true, $marker);
+                    if (is_file($marker)) {
+                        $detail = trim((string) @file_get_contents($marker));
+                        $this->warn("agent {$name}: channel bind-FAILURE marker at {$marker}".($detail !== '' ? " ({$detail})" : '').' — a Claude Code session came up DEAF: its connector could not bind, so another session holds the channel and this one receives nothing. Close the duplicate session, restart the intended one, then rm the marker.');
+                    }
+
+                    // Liveness ping (FR #2444). A present socket file does NOT mean
+                    // a live session is consuming it — a crash can leave a stale
+                    // socket, and the bridge would still deliver HTTP 202 to a
+                    // dead/duplicate endpoint and log `delivered`. Probe whether
+                    // anything is actually listening: distinguishes "a session is
+                    // attached" from "stale socket / no live session". Warn, never
+                    // fail — at preflight the server legitimately may not be up yet.
+                    clearstatcache(true, $cfg->channel->socket);
+                    if (is_dir($dir) && file_exists($cfg->channel->socket)
+                        && ! is_link($cfg->channel->socket)
+                        && filetype($cfg->channel->socket) === 'socket'
+                    ) {
+                        $conn = @stream_socket_client('unix://'.$cfg->channel->socket, $errno, $errstr, 0.5);
+                        if ($conn !== false) {
+                            fclose($conn);
+                            $this->info("agent {$name}: channel socket live — a session is listening on {$cfg->channel->socket}");
+                        } else {
+                            $this->warn("agent {$name}: channel socket {$cfg->channel->socket} exists but nothing is listening (stale socket / no live session) — live-wake no-ops until a session starts. If a session IS running, its connector may have come up deaf (look for a .FAILED marker).");
+                        }
+                    }
                 }
             }
         }
