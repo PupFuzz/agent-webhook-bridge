@@ -75,7 +75,7 @@ Non-array `subscriptions`, or an entry that isn't a mapping, throws at load. Onl
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `socket` | abs path | `null` | Local UDS. Absolute, no `..`, no null byte (else throws). **Mutually exclusive** with `url`. **`${XDG_RUNTIME_DIR}` / `${uid}` expand at load (DL-039)** so you can write a uid-agnostic literal — e.g. `${XDG_RUNTIME_DIR}/agent-webhook-bridge-channel-<name>.sock` — instead of pinning `/run/user/<uid>/…` (which silently breaks live-wake when the install is restored on a host where the uid changed). `${XDG_RUNTIME_DIR}` resolves to `$XDG_RUNTIME_DIR`, or `/run/user/<uid>` when unset (PHP-FPM usually doesn't inherit it). An unresolvable token throws. `bridge:check` warns if the resolved parent dir is missing/non-writable. |
-| `url` | loopback http URL | `null` | e.g. an SSH-tunnel endpoint. Non-empty, no whitespace (else throws); the loopback/SSRF check is the handler's. |
+| `url` | loopback http URL | `null` | e.g. an SSH-tunnel endpoint. Non-empty, no whitespace (else throws); the loopback/SSRF check is the handler's. `bridge:check` **liveness-probes** the `host:port` (a TCP connect — reaches the remote connector through the reverse tunnel) and surfaces an HTTP `.FAILED` marker best-effort when run on the agent host (DL-156). |
 | `route_intents` | bool | `false` | Dispatcher auto-pushes every staged intent here. **Requires** `socket` or `url` (else throws). Pair with a plain classifier, not `EventDrivenClassifier`, or it double-pushes. |
 | `auth.token_path` | abs path to a file | `null` | Bearer token for the **HTTP transport** (`url`). **Rejected at load unless `url` is set** (DL-008). Read fail-closed at push: must be `0600`, non-empty (else the push errors, inbox backstops it). |
 

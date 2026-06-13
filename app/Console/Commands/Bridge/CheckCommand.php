@@ -256,6 +256,51 @@ class CheckCommand extends BridgeCommand
                             $this->warn("agent {$name}: channel socket {$cfg->channel->socket} exists but nothing is listening (stale socket / no live session) — live-wake no-ops until a session starts. If a session IS running, its connector may have come up deaf (look for a .FAILED marker).");
                         }
                     }
+                } elseif ($cfg->channel->url !== null) {
+                    // HTTP transport (channel.url set, no socket — the multi-host /
+                    // SSH-tunnel topology). The deaf-session failure mode here is a
+                    // TCP-port bind race, not a socket-file collision, so DL-154/155's
+                    // surfacing must be rendered for HTTP too (it was UDS-only before).
+                    //
+                    // Topology caveat: bridge:check runs on the RECEIVER host. For a
+                    // remote/tunneled agent the connector AND its `…http-<port>.FAILED`
+                    // marker live on the AGENT host — unreachable from here — so the
+                    // launcher surfaces that marker on the agent host (FR-1). What IS
+                    // meaningful cross-host is the liveness probe: a TCP connect to the
+                    // loopback endpoint (the local end of the reverse tunnel) reaches the
+                    // remote listener. We also surface the marker best-effort for the
+                    // co-located same-host-HTTP case.
+                    $parts = parse_url($cfg->channel->url);
+                    $host = is_array($parts) && isset($parts['host']) ? $parts['host'] : '127.0.0.1';
+                    $port = is_array($parts) && isset($parts['port']) ? (int) $parts['port'] : null;
+
+                    if ($port === null) {
+                        $this->warn("agent {$name}: channel.url {$cfg->channel->url} has no explicit port — cannot liveness-probe the HTTP channel.");
+                    } else {
+                        // Best-effort local marker (same-host HTTP only). The server's
+                        // HTTP markerPath() keys on BRIDGE_CHANNEL_NAME + port; the agent
+                        // name is the best proxy we have here. A miss is harmless — the
+                        // launcher surfaces it authoritatively on the agent host.
+                        $xdg = getenv('XDG_RUNTIME_DIR');
+                        $xdgDir = is_string($xdg) && $xdg !== '' ? $xdg : '/tmp';
+                        $httpMarker = $xdgDir.'/agent-webhook-bridge-channel-'.$name.'.http-'.$port.'.FAILED';
+                        clearstatcache(true, $httpMarker);
+                        if (is_file($httpMarker)) {
+                            $detail = trim((string) @file_get_contents($httpMarker));
+                            $this->warn("agent {$name}: channel bind-FAILURE marker at {$httpMarker}".($detail !== '' ? " ({$detail})" : '').' — a Claude Code session came up DEAF on the HTTP transport (a TCP-port bind race). Close the duplicate session, restart the intended one, then rm the marker.');
+                        }
+
+                        // Liveness ping: distinguishes a live, listening connector (or a
+                        // healthy reverse tunnel) from a dead/absent one. Warn, never
+                        // fail — at preflight the session legitimately may not be up.
+                        $conn = @stream_socket_client("tcp://{$host}:{$port}", $errno, $errstr, 0.5);
+                        if ($conn !== false) {
+                            fclose($conn);
+                            $this->info("agent {$name}: channel HTTP endpoint live — something is listening on {$host}:{$port} (the connector, or the reverse-tunnel local end).");
+                        } else {
+                            $this->warn("agent {$name}: channel HTTP endpoint {$host}:{$port} not answering".($errstr !== '' ? " ({$errstr})" : '').' — no live session, or the reverse tunnel is down. live-wake no-ops until it is up.');
+                        }
+                    }
                 }
             }
         }
