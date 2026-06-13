@@ -82,6 +82,9 @@ cd ~/agent-webhook-bridge-<agent>
 git pull --ff-only
 # ⚠ Running a CUSTOM classifier/handler under app/Bridge/? Migrate it IN THIS STEP
 # if you're crossing a contract change — see the callout below.
+# ⚠ Files COPIED/hand-derived out of examples/ at install (the session launcher,
+# and on some hosts the channel-server .mjs) live OUTSIDE the repo — git pull
+# CANNOT update them. Reconcile each: see "Reconcile out-of-repo copies" below.
 composer install --no-dev --optimize-autoloader
 php artisan migrate --force                       # no-op if no new migrations
 php artisan optimize:clear && php artisan optimize
@@ -92,6 +95,27 @@ sudo systemctl reload php8.5-fpm                  # recycle workers so they re-r
 > **⚠ Running a custom classifier or handler?** A custom class under `app/Bridge/Classifiers/` (per [`docs/customization.md`](docs/customization.md) § Loading your classifier) is **untracked but not gitignored**, so `git pull` preserves your *old* file unchanged into the new release. **Check [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for a `classify()`/contract change in the versions you're crossing and migrate your class in the SAME step as the pull.** `classify()` has had two breaking changes (DL-022 added `AgentConfig $agent`; DL-025 collapsed to a single `classify(ClassifyContext $ctx)` — the **last** such break). An old signature is an uncatchable `E_COMPILE_ERROR` that fatals the receiver on the next live delivery — and with `opcache.validate_timestamps=On` the new contract is picked up within `revalidate_freq` of the pull, **before** the FPM reload, so the failure window opens at pull time. This is why `bridge:check` is ordered **before** the reload above: its out-of-process classifier load (DL-025) names a stale class instead of letting it fatal a request — but that only helps if you migrate-and-check, not pull-and-serve.
 
 > **No `sudo`?** The FPM reload is for a clean worker recycle; it's not strictly required. With PHP's default `opcache.validate_timestamps=On`, FPM workers pick up changed `.php` / cached-config files within `revalidate_freq` (a couple of seconds) on their own. After a code/`.env` change, `optimize:clear && optimize` + a healthy `bridge:check` and `/up` 200 confirm the new state is live; reload when you can for a deterministic recycle.
+
+### Reconcile out-of-repo copies (session launcher + channel server)
+
+`git pull` only touches the repo. Two things the **live-wake channel** depends on are **copied or hand-derived out of `examples/` at install time** and live OUTSIDE the repo, so a pull can't update them and they drift silently from the refreshed samples. After every update, reconcile each against its sample — **diff-and-port; these are operator-customized, never blind-overwrite.** None of this trips `bridge:check` (the launcher and the `.mjs` run inside the Claude Code *session*, not the Laravel app), so the diff is the **only** drift signal — and a stale connector is exactly how a session comes up **deaf to live-wake** ([`CLAUDE_DECISIONS.md`](CLAUDE_DECISIONS.md) DL-154/DL-155).
+
+1. **The session launcher** — always a hand-rolled copy (the operator names it, e.g. `~/start-claude.sh`), derived from [`examples/start-channel-session.sh`](examples/start-channel-session.sh). `diff` them and port any new guardrails/fixes by hand; the copy hardcodes its channel name + paths, so it won't merge cleanly.
+
+2. **The channel MCP server (`agent-webhook-bridge-channel.mjs`)** — find where it actually loads from: the `args` path of the channel server in **`~/.mcp.json`** (the entry keyed by the channel name, e.g. `kanbanboard-agent`). Two topologies:
+   - **Loaded directly from a checked-out repo's `examples/channel-servers/`** (e.g. `…/agent-webhook-bridge-<agent>/examples/channel-servers/…`) — the pull already updated it; just run `npm ci` in that dir if its `package-lock.json` changed (DL-033).
+   - **A standalone COPY** (multi-agent hosts commonly snapshot it per agent, e.g. `*-coordination/OUTBOUND/<agent>/channel-setup/agent-webhook-bridge-channel.mjs`) — it drifts. Compare the copy's sibling `package.json` `version` to [`examples/channel-servers/package.json`](examples/channel-servers/package.json) `version`: that field is the **drift signal**, bumped on every shipped change to the server (DL-038). If the sample is newer, re-copy the dir and `npm ci`.
+
+3. **Multi-agent hosts** — every agent has its own launcher and its own `~/.mcp.json` pointing at its own `.mjs`. Reconcile **each** agent's copies, not just the one whose session you're in.
+
+Locate every copy so none is missed (run from the updated repo):
+
+```bash
+find ~ -name 'agent-webhook-bridge-channel.mjs' -not -path '*/node_modules/*'              # all channel-server copies
+find ~ -maxdepth 4 \( -name 'start-claude.sh' -o -name 'start-channel-session.sh' \) -not -path '*/node_modules/*'
+# per .mjs copy, the one-field drift check (non-empty output ⇒ re-sync that copy + npm ci):
+diff <(jq -r .version <copy-dir>/package.json) <(jq -r .version examples/channel-servers/package.json)
+```
 
 ### Smoke-test the receiver with a signed delivery
 
