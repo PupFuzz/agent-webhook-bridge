@@ -12,7 +12,7 @@ _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
 ## [0.32.0] - 2026-06-12
 
-**Make a deaf/duplicate channel connector visible (DL-154) + addressing/contract polish (#2202) + PHP 8.5 standardization (DL-153).** PRs #119, #120, #121 since v0.31.0. No DB migration, no new `.env` keys.
+**Make a deaf/duplicate channel connector visible (DL-154) + addressing/contract polish (#2202) + PHP 8.5 standardization (DL-040).** PRs #119, #120, #121 since v0.31.0. No DB migration, no new `.env` keys.
 
 ### Added
 
@@ -21,7 +21,7 @@ _(empty after each tagged release; accumulates as feature PRs land on dev)_
 ### Changed
 
 - **`RecipientAddressing::author()` returns the first `FROM:` token, not the verbatim tail (#2202).** A decorated/multi-name FROM line (`FROM: alice (pls review)`, `FROM: alice, bob`) used to return the whole tail verbatim, so a classifier doing `author($body) === $agentName` silently failed to match. It now tokenizes to the first whitespace/comma-delimited token (symmetric with `recipients()`), so both yield `alice`. Behavior change to a helper for operator classifiers; `author()` is new (v0.29.0 / DL-035) and no internal consumer depended on the verbatim tail. The kanban integration contract now also pins the by-ref `system` enum (`{dl, github_pr}`).
-- **Standardize on PHP 8.5 (DL-153).** `composer.json` requires `^8.5`; CI runners pinned to 8.5 (the validated surface now matches the deployed runtime). An install on PHP <8.5 fails the `composer install` platform check — intentional. No app-logic change.
+- **Standardize on PHP 8.5 (DL-040).** `composer.json` requires `^8.5`; CI runners pinned to 8.5 (the validated surface now matches the deployed runtime). An install on PHP <8.5 fails the `composer install` platform check — intentional. No app-logic change.
 
 ### Operator notes
 
