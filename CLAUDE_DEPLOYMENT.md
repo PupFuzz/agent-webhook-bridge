@@ -100,11 +100,11 @@ sudo systemctl reload php8.5-fpm                  # recycle workers so they re-r
 
 `git pull` only touches the repo. Two things the **live-wake channel** depends on are **copied or hand-derived out of `examples/` at install time** and live OUTSIDE the repo, so a pull can't update them and they drift silently from the refreshed samples. After every update, reconcile each against its sample — **diff-and-port; these are operator-customized, never blind-overwrite.** None of this trips `bridge:check` (the launcher and the `.mjs` run inside the Claude Code *session*, not the Laravel app), so the diff is the **only** drift signal — and a stale connector is exactly how a session comes up **deaf to live-wake** ([`CLAUDE_DECISIONS.md`](CLAUDE_DECISIONS.md) DL-154/DL-155).
 
-1. **The session launcher** — always a hand-rolled copy (the operator names it, e.g. `~/start-claude.sh`), derived from [`examples/start-channel-session.sh`](examples/start-channel-session.sh). `diff` them and port any new guardrails/fixes by hand; the copy hardcodes its channel name + paths, so it won't merge cleanly.
+1. **The session launcher.** The canonical [`examples/start-channel-session.sh`](examples/start-channel-session.sh) (bash, Linux UDS+HTTP) and [`examples/start-claude.ps1`](examples/start-claude.ps1) + [`examples/start-claude.bat`](examples/start-claude.bat) (Windows HTTP-tunnel) are **self-resolving** (see "The canonical channel launcher" below) — one copy serves any agent with no per-agent hardcoding, so a verbatim copy doesn't drift the way a hand-edited one did. After a pull, `diff` each deployed launcher against its sample and port any new guardrails. (A launcher predating DL-157 is hand-rolled + channel-pinned — replace it with the self-resolving one rather than re-porting.)
 
 2. **The channel MCP server (`agent-webhook-bridge-channel.mjs`)** — find where it actually loads from: the `args` path of the channel server in **`~/.mcp.json`** (the entry keyed by the channel name, e.g. `kanbanboard-agent`). Two topologies:
    - **Loaded directly from a checked-out repo's `examples/channel-servers/`** (e.g. `…/agent-webhook-bridge-<agent>/examples/channel-servers/…`) — the pull already updated it; just run `npm ci` in that dir if its `package-lock.json` changed (DL-033).
-   - **A standalone COPY** (multi-agent hosts commonly snapshot it per agent, e.g. `*-coordination/OUTBOUND/<agent>/channel-setup/agent-webhook-bridge-channel.mjs`) — it drifts. Compare the copy's sibling `package.json` `version` to [`examples/channel-servers/package.json`](examples/channel-servers/package.json) `version`: that field is the **drift signal**, bumped on every shipped change to the server (DL-038). If the sample is newer, re-copy the dir and `npm ci`.
+   - **A standalone COPY** (multi-agent hosts commonly snapshot it per agent, e.g. `*-coordination/OUTBOUND/<agent>/channel-setup/agent-webhook-bridge-channel.mjs`) — it drifts. See **"Multi-agent channel-server distribution"** below for the canonical git-tag reconcile.
 
 3. **Multi-agent hosts** — every agent has its own launcher and its own `~/.mcp.json` pointing at its own `.mjs`. Reconcile **each** agent's copies, not just the one whose session you're in.
 
@@ -112,10 +112,24 @@ Locate every copy so none is missed (run from the updated repo):
 
 ```bash
 find ~ -name 'agent-webhook-bridge-channel.mjs' -not -path '*/node_modules/*'              # all channel-server copies
-find ~ -maxdepth 4 \( -name 'start-claude.sh' -o -name 'start-channel-session.sh' \) -not -path '*/node_modules/*'
+find ~ -maxdepth 4 \( -name 'start-claude.sh' -o -name 'start-channel-session.sh' \
+   -o -name 'start-claude.ps1' -o -name 'start-claude.bat' \) -not -path '*/node_modules/*'
 # per .mjs copy, the one-field drift check (non-empty output ⇒ re-sync that copy + npm ci):
 diff <(jq -r .version <copy-dir>/package.json) <(jq -r .version examples/channel-servers/package.json)
 ```
+
+#### Multi-agent channel-server distribution (uniform provenance)
+
+A multi-agent host snapshots `examples/channel-servers/` once **per agent**, and those snapshots freeze at install version and drift silently — we've found copies several minor versions stale. This is **not an access problem** (agents can pull): the only catch is that **`gh` CLI auth ≠ git-credential auth**, so a `gh`-based reachability test can mislead — use plain `git`. The canonical reconcile, run per snapshot:
+
+```bash
+# in the repo checkout, pin to the release the fleet should run (NOT a moving branch):
+git fetch --tags && git checkout v<version>     # git, not gh — uniform provenance = every agent on the SAME tag
+cp -a examples/channel-servers/. <snapshot-dir>/ # overwrite the snapshot from the pinned tree
+( cd <snapshot-dir> && npm ci )                  # pinned lockfile (DL-033)
+```
+
+Do this **at a session boundary** (Claude Code not running for that agent): a live connector holds the old `.mjs` in memory, and swapping it mid-session risks live-wake. `package.json` `version` is the drift signal (DL-038) — if a snapshot's version is behind the tag's, it's stale.
 
 ### Smoke-test the receiver with a signed delivery
 
@@ -140,6 +154,40 @@ curl -X POST \
 ```
 
 A `401 scope_mismatch` almost always means the body omitted (or mismatched) `repository.full_name` vs `?b=` — not an HMAC problem (G-018).
+
+## The canonical channel launcher (UDS / HTTP / Windows)
+
+The shipped launchers are **self-resolving and transport-aware** — one copy serves any agent across the whole fleet with no per-agent hardcoding (DL-157), so they no longer drift the way hand-rolled per-agent copies did:
+
+- [`examples/start-channel-session.sh`](examples/start-channel-session.sh) — **Linux**, both **UDS** (same-host, topology A) and **HTTP** over an SSH reverse tunnel (separate Linux hosts, topology B).
+- [`examples/start-claude.ps1`](examples/start-claude.ps1) + [`examples/start-claude.bat`](examples/start-claude.bat) — **Windows** (topology C): HTTP-tunnel transport, and the launcher owns the tunnel lifecycle. The `.bat` is a one-line `ExecutionPolicy Bypass` shim; the `.ps1` is native end-to-end (`ConvertFrom-Json`, `Get-NetTCPConnection`, PID-tree teardown) — do **not** hand-port the bash to cmd (a wrong edit silently breaks live-wake).
+
+**Identity resolution (first hit wins), shared by both launchers:**
+
+1. `--channel <name>` (bash) / `$Channel` (ps1)
+2. `$BRIDGE_CHANNEL_NAME` (exported env)
+3. `settings.local.json` `.env.BRIDGE_CHANNEL_NAME`
+4. `"<namespace>-<agent>"` from `$COORD_CONFIG`'s `.bridge.channel_namespace` + `$COORD_AGENT`
+
+> **Why `settings.local.json` is in the chain (the #1 "can't resolve channel" cause):** the launcher runs in the **login shell**, which does **not** inherit the env Claude Code injects into a *session* (the `.env` block of `~/.claude/settings.local.json`). A launcher that trusts exported env alone silently fails to resolve. So the launchers read the keys straight from that file (jq on Linux, `ConvertFrom-Json` on Windows). On Windows a `COORD_CONFIG` stored Git-Bash-style (`/c/Users/…`) is converted to `<drive>:/…` before reading.
+
+`COORD_CONFIG` is a JSON file with at least:
+
+```json
+{ "bridge": { "channel_namespace": "<your-namespace>" } }
+```
+
+so agent `foo` resolves to channel `<your-namespace>-foo`.
+
+**Transport** is UDS unless `BRIDGE_CHANNEL_TRANSPORT=http` (then `BRIDGE_CHANNEL_PORT` is required); `uds` is accepted as an alias for the server's `unix`. The launcher **exports the resolved `BRIDGE_CHANNEL_NAME` / `BRIDGE_CHANNEL_TRANSPORT` / `BRIDGE_CHANNEL_PORT` (and `BRIDGE_CHANNEL_SOCKET` for UDS) before `exec`** — so the channel server binds **exactly** the endpoint the launcher just guarded, instead of re-deriving its own from `~/.mcp.json` (a divergence there silently guards one path while the server binds another — a deaf-session footgun).
+
+**Deaf-session guards (FR #2444 / DL-154/155/156), rendered for both transports:**
+
+- **Single-session refusal** — `pgrep` (bash) / `Get-NetTCPConnection` (ps1) on the channel argv / listening port; a second session would come up deaf, so it's refused.
+- **Stale-listener guard** — UDS: a socket-curl probe + stale-socket removal; HTTP: a TCP-port listener probe.
+- **Marker surfacing (never clear)** — a prior `<socket>.FAILED` / `…http-<port>.FAILED` marker is printed loudly; the channel server owns clearing it on the next successful bind. The HTTP marker base is `os.tmpdir()` (`%TEMP%` on Windows, `/tmp`/`$TMPDIR` on Linux) so the Windows launcher and the server agree (DL-156).
+
+> **Windows tunnel lifecycle (don't regress):** the `.ps1` spawns the reverse tunnel as a **`-WindowStyle Hidden`** side process and tears it down **by PID tree** on exit. `Minimized` is *not* equivalent — `SW_SHOWMINIMIZED` activates the window, and a delayed child then steals focus seconds after launch (the user's first keystroke restores it). Hidden has no taskbar window to steal.
 
 ## Upgrading an existing install to v0.16 (config schema v2)
 
