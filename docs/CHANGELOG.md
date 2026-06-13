@@ -10,6 +10,23 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.34.0] - 2026-06-13
+
+**Multi-topology channel live-wake: HTTP-aware `bridge:check` (DL-156) + a canonical self-resolving cross-platform launcher (DL-157).** PRs #132–#133 since v0.33.0. Examples + docs + one diagnostic command; **no receiver/handler/schema/migration/`.env` change.** Channel-server example → **0.4.2**. Closes a peer integrator's (Sola PM) FR-1/2/3 for the multi-agent, multi-host (HTTP-over-SSH-tunnel) + Windows topology.
+
+### Added
+
+- **Canonical self-resolving, transport-aware channel launcher (DL-157, FR-1).** `examples/start-channel-session.sh` is rewritten and `examples/start-claude.ps1` + `examples/start-claude.bat` are added, so **one launcher per OS** serves any agent with no per-agent hardcoding (killing the hand-rolled-copy drift). Identity self-resolves `--channel` → `$BRIDGE_CHANNEL_NAME` → `settings.local.json` `.env` → `<namespace>-<agent>` from `$COORD_CONFIG` + `$COORD_AGENT` (the launcher runs in the login shell, which can't see Claude Code's session-injected env — the #1 "can't resolve channel" cause). Transport-aware guards for **UDS and HTTP** (socket-curl/`pgrep` vs TCP-port probe), DL-154/155 marker surfacing rendered for both, and the resolved identity is **exported before `exec`** so the channel server binds exactly the endpoint the launcher guarded. Windows half (PowerShell + a `.bat` ExecutionPolicy shim) owns the SSH-reverse-tunnel lifecycle (hidden side process, PID-tree teardown).
+- **`bridge:check` HTTP-transport awareness (DL-156, FR-2).** For an HTTP-transport agent (`channel.url`, no `channel.socket` — the SSH-tunnel topology), `bridge:check` now **TCP-probes** the loopback/tunnel `host:port` for liveness (reaches the remote connector through the tunnel) and surfaces an HTTP `.FAILED` marker best-effort when run on the agent host. DL-154/155's deaf-session surfacing was UDS-only before. Warn/info only, never fails the check.
+
+### Changed
+
+- **Channel server `markerPath()` HTTP base `'/tmp'` → `os.tmpdir()` (DL-156).** A literal `/tmp` resolved to `C:\tmp` under Node on Windows and never matched the Windows launcher's `%TEMP%` lookup, so the HTTP marker was unfindable there; `os.tmpdir()` is `%TEMP%` on Windows and `/tmp`/`$TMPDIR` on Linux. Example → **0.4.2** (DL-038 drift signal).
+
+### Docs
+
+- **`CLAUDE_DEPLOYMENT.md`: "The canonical channel launcher" + "Multi-agent channel-server distribution" (FR-3).** The launcher's resolution chain, `COORD_CONFIG` shape, transport selection, and Windows tunnel lifecycle; plus the canonical per-snapshot reconcile — pin the **release tag via `git` (not `gh` — auth mismatch misleads)**, copy `examples/channel-servers/`, `npm ci`, **at a session boundary**, uniform provenance = the same tag on every agent. `docs/config-schema.md` `channel.url` row notes the new probe.
+
 ## [0.33.0] - 2026-06-13
 
 **Channel launcher fail-loud fix (DL-155) + update-runbook & doc-citation hardening.** Commits since v0.32.0. No app code, no DB migration, no new `.env` keys. Channel-server example → **0.4.1**.
