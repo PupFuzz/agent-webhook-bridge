@@ -826,6 +826,71 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('channel socket live', $out);
     }
 
+    private function writeAgentWithChannelUrl(string $url): void
+    {
+        File::put($this->dir.'/prod-agent.yml',
+            "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."channel:\n  url: {$url}\n");
+    }
+
+    public function test_check_reports_channel_http_endpoint_live_when_listener_present(): void
+    {
+        // FR-2: on an HTTP-transport agent (channel.url, no socket) the liveness
+        // signal is a TCP connect to the loopback/tunnel port — not a UDS probe.
+        // A bound, listening TCP socket completes the connect handshake even
+        // without accept(), so no fork is needed.
+        $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+        $this->assertNotFalse($server, 'could not bind a TCP listener');
+        $port = (int) explode(':', (string) stream_socket_get_name($server, false))[1];
+        $this->writeAgentWithChannelUrl("http://127.0.0.1:{$port}/");
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        fclose($server);
+
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('channel HTTP endpoint live', $out);
+    }
+
+    public function test_check_warns_when_channel_http_endpoint_not_answering(): void
+    {
+        // Bind then close to get a port that is free at probe time.
+        $tmp = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+        $this->assertNotFalse($tmp);
+        $port = (int) explode(':', (string) stream_socket_get_name($tmp, false))[1];
+        fclose($tmp);
+        $this->writeAgentWithChannelUrl("http://127.0.0.1:{$port}/");
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('not answering', $out);
+    }
+
+    public function test_check_surfaces_http_channel_bind_failure_marker(): void
+    {
+        // The HTTP marker the server writes is $XDG_RUNTIME_DIR (or os.tmpdir())
+        // /agent-webhook-bridge-channel-<name>.http-<port>.FAILED. bridge:check
+        // surfaces it best-effort when run on the agent host. Pin XDG to the temp
+        // dir so the test controls the base, and restore it after.
+        $prevXdg = getenv('XDG_RUNTIME_DIR');
+        putenv('XDG_RUNTIME_DIR='.$this->dir);
+        try {
+            $port = 8790;
+            File::put($this->dir."/agent-webhook-bridge-channel-prod-agent.http-{$port}.FAILED",
+                "2026-06-13T00:00:00Z pid=1 prod-agent: EADDRINUSE binding http://127.0.0.1:{$port} — another process holds the port\n");
+            $this->writeAgentWithChannelUrl("http://127.0.0.1:{$port}/");
+
+            $code = Artisan::call('bridge:check');
+            $out = Artisan::output();
+            $this->assertSame(0, $code);
+            $this->assertStringContainsString('bind-FAILURE marker', $out);
+        } finally {
+            $prevXdg === false ? putenv('XDG_RUNTIME_DIR') : putenv('XDG_RUNTIME_DIR='.$prevXdg);
+        }
+    }
+
     public function test_check_warns_when_channel_socket_is_stale_with_no_listener(): void
     {
         if (! function_exists('pcntl_fork')) {

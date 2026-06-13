@@ -35,6 +35,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 
 const SERVER_NAME = process.env.BRIDGE_CHANNEL_NAME || 'agent-webhook-bridge';
 const TRANSPORT = (process.env.BRIDGE_CHANNEL_TRANSPORT || 'unix').toLowerCase();
@@ -64,16 +65,19 @@ const SOCKET_PATH = process.env.BRIDGE_CHANNEL_SOCKET || defaultSocketPath();
 // current holder, not a week-old failure.
 //
 // Transport-aware path: the UNIX marker is the socket's sibling `<socket>.FAILED`
-// — the path `bridge:check` derives from the agent's `channel.socket`, so it is
-// surfaced on demand there. The HTTP transport has no `channel.socket` (the agent
-// config carries `url`), so `bridge:check` CANNOT derive/surface its marker —
-// keep the HTTP marker keyed by name+port (never masquerading as a socket
-// failure), where the stderr + exit(2) + this file are the operator's signal.
+// — the path `bridge:check` derives from the agent's `channel.socket`. The HTTP
+// marker is keyed by name+port (never masquerading as a socket failure); the
+// launcher surfaces it on the agent host, and `bridge:check` does too when run
+// there (best-effort) while its cross-host signal is the liveness probe of the
+// loopback/tunnel port. Base dir: $XDG_RUNTIME_DIR when set (Linux), else
+// os.tmpdir() — $TMPDIR or /tmp on Linux/macOS, %TEMP% on Windows — so the
+// Windows launcher's $env:TEMP lookup and this path agree (a literal '/tmp'
+// would resolve to C:\tmp under Node on Windows and never match).
 function markerPath() {
   if (TRANSPORT === 'unix' && SOCKET_PATH) {
     return `${SOCKET_PATH}.FAILED`;
   }
-  const xdg = process.env.XDG_RUNTIME_DIR || '/tmp';
+  const xdg = process.env.XDG_RUNTIME_DIR || os.tmpdir();
   return path.join(xdg, `agent-webhook-bridge-channel-${SERVER_NAME}.http-${SERVER_PORT}.FAILED`);
 }
 
