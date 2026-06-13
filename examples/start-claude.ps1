@@ -72,7 +72,7 @@ function Resolve-Channel {
   }
   return $null
 }
-$Channel = Resolve-Channel
+if (-not $Channel) { $Channel = Resolve-Channel }   # -Channel arg wins (mirrors bash --channel)
 if (-not $Channel) {
   Write-Error "cannot resolve channel name -- set BRIDGE_CHANNEL_NAME, or settings.local.json .env.BRIDGE_CHANNEL_NAME, or .env.COORD_AGENT + COORD_CONFIG .bridge.channel_namespace."
   exit 1

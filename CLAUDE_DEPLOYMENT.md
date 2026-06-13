@@ -185,7 +185,7 @@ so agent `foo` resolves to channel `<your-namespace>-foo`.
 
 - **Single-session refusal** — `pgrep` (bash) / `Get-NetTCPConnection` (ps1) on the channel argv / listening port; a second session would come up deaf, so it's refused.
 - **Stale-listener guard** — UDS: a socket-curl probe + stale-socket removal; HTTP: a TCP-port listener probe.
-- **Marker surfacing (never clear)** — a prior `<socket>.FAILED` / `…http-<port>.FAILED` marker is printed loudly; the channel server owns clearing it on the next successful bind. The HTTP marker base is `os.tmpdir()` (`%TEMP%` on Windows, `/tmp`/`$TMPDIR` on Linux) so the Windows launcher and the server agree (DL-156).
+- **Marker surfacing (never clear)** — a prior `<socket>.FAILED` / `…http-<port>.FAILED` marker is printed loudly; the channel server owns clearing it on the next successful bind. Both launchers derive the HTTP marker base as the server does — `XDG_RUNTIME_DIR` else `os.tmpdir()` (`$TMPDIR`/`/tmp` on Linux, `%TEMP%` on Windows) — so launcher and server look at the same path even when `XDG_RUNTIME_DIR` is unset (DL-156).
 
 > **Windows tunnel lifecycle (don't regress):** the `.ps1` spawns the reverse tunnel as a **`-WindowStyle Hidden`** side process and tears it down **by PID tree** on exit. `Minimized` is *not* equivalent — `SW_SHOWMINIMIZED` activates the window, and a delayed child then steals focus seconds after launch (the user's first keystroke restores it). Hidden has no taskbar window to steal.
 

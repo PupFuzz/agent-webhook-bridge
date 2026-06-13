@@ -75,7 +75,12 @@ SOCK="${SOCK:-$RUNTIME/agent-webhook-bridge-channel-${CHANNEL}.sock}"
 # HTTP = $RUNTIME/agent-webhook-bridge-channel-<channel>.http-<port>.FAILED.
 if [ "$TRANSPORT" = "http" ]; then
     [ -n "$PORT" ] || { echo "HTTP transport needs BRIDGE_CHANNEL_PORT (env or settings.local.json .env)." >&2; exit 1; }
-    MARKER="$RUNTIME/agent-webhook-bridge-channel-${CHANNEL}.http-${PORT}.FAILED"
+    # Mirror the server's HTTP marker base exactly: XDG_RUNTIME_DIR || os.tmpdir()
+    # (= $TMPDIR or /tmp on Linux). NOT $RUNTIME's /run/user/<uid> fallback — when
+    # XDG is unset (ssh 'cmd' / headless, common on the tunnel topology) that would
+    # look in the wrong dir and never find the server's marker.
+    HTTP_BASE="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+    MARKER="${HTTP_BASE%/}/agent-webhook-bridge-channel-${CHANNEL}.http-${PORT}.FAILED"
 else
     MARKER="${SOCK}.FAILED"
 fi
