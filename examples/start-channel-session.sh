@@ -32,9 +32,15 @@ if pgrep -f -- "--dangerously-load-development-channels[[:space:]]+server:${CHAN
     exit 1
 fi
 
-# A previous session that came up deaf leaves a visible FAILED marker (FR #2444);
-# clear it now that we're (re)starting a real session for this channel.
-rm -f "${SOCK}.FAILED"
+# A previous session that came up deaf leaves a visible FAILED marker (FR #2444).
+# Surface it — do NOT clear it here: the channel server owns the marker lifecycle
+# and clears it on the next successful bind (which this launch triggers). A silent
+# rm would destroy the deaf-session signal before the operator ever sees it.
+if [ -f "${SOCK}.FAILED" ]; then
+    echo "WARNING: a previous session for channel '${CHANNEL_KEY}' came up DEAF to live-wake:" >&2
+    sed 's/^/  /' "${SOCK}.FAILED" >&2 || true   # surfacing is best-effort, never blocks launch
+    echo "  (the imminent bind clears this marker if it succeeds.)" >&2
+fi
 
 # The channel server refuses to bind if the socket file already exists. Remove a
 # stale one (no listener); abort if a live session already holds it.
