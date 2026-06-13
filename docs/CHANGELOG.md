@@ -10,6 +10,20 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.33.0] - 2026-06-13
+
+**Channel launcher fail-loud fix (DL-155) + update-runbook & doc-citation hardening.** Commits since v0.32.0. No app code, no DB migration, no new `.env` keys. Channel-server example → **0.4.1**.
+
+### Fixed
+
+- **`start-channel-session.sh` surfaces the `<socket>.FAILED` marker instead of silently clearing it (DL-155, correction to DL-154).** The launcher `rm -f`'d the deaf-session marker *before* binding — wiping the durable fail-loud signal FR #2444 created, at the exact moment (a relaunch) an operator should see it. The connector already clears the marker unconditionally on a successful bind (which the launch triggers moments later), so the launcher clear was both redundant and silent. The launcher now prints the prior deaf-session's marker (timestamp + pid + reason) to stderr and leaves the connector as the **sole** clearer; surfacing is best-effort (`|| true`) so a stray unreadable marker can never block a session start. The deployed `~/start-claude.sh` gets the same change (operational sync, outside the repo).
+- **Channel-server example bumped 0.4.0 → 0.4.1** for the README lifecycle-note doc-sync (DL-038 snapshot-drift signal). Also corrects the `package-lock.json` `version` field left at 0.3.0 when v0.32.0 bumped `package.json` to 0.4.0 (`npm ci` doesn't validate the top-level version field).
+
+### Changed (docs only)
+
+- **Update runbook: reconcile out-of-repo copies after a pull (`CLAUDE_DEPLOYMENT.md`).** Explicit instructions for a Claude Code agent to reconcile the files copied/hand-derived out of `examples/` at install time — the session launcher and, depending on topology, the channel-server `.mjs` (loaded directly from the repo on single-agent hosts vs. snapshotted into a per-agent `*-coordination/OUTBOUND/<agent>/channel-setup/` dir on multi-agent hosts) — which `git pull` can't update and which never trip `bridge:check`. Includes the `~/.mcp.json` topology check, the `package.json` `version` drift signal (DL-038), and a `find` recipe so no per-agent copy is missed.
+- **Corrected the v0.32.0 PHP 8.5 DL citation: DL-040, not DL-153.** The v0.32.0 release notes cited the *kanban* lockstep decision (DL-153) where the bridge's own decision is **DL-040** (the registry in `CLAUDE_DECISIONS.md`); fixed in `CLAUDE.md` + `docs/CHANGELOG.md`. The "kanban DL-153" cross-reference in DL-040's context line is correct and left intact.
+
 ## [0.32.0] - 2026-06-12
 
 **Make a deaf/duplicate channel connector visible (DL-154) + addressing/contract polish (#2202) + PHP 8.5 standardization (DL-040).** PRs #119, #120, #121 since v0.31.0. No DB migration, no new `.env` keys.
