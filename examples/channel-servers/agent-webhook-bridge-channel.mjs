@@ -205,6 +205,43 @@ const server = http.createServer((req, res) => {
   });
 });
 
+// Lifecycle cleanup. The UNIX socket is a filesystem-pathname AF_UNIX socket, so
+// a leftover file makes the NEXT direct bind() fail EADDRINUSE on Linux even with
+// no listener behind it — which the launcher's stale-socket guard recovers from,
+// but only after a <socket>.FAILED marker that misreads as a live concurrency
+// collision. Node only runs the SIGTERM handler's cleanup by default, so terminal
+// close (SIGHUP), Ctrl-C (SIGINT), and parent-pipe close (stdin EOF) leak the
+// socket. Route every ordinary-quit path through one idempotent shutdown that
+// unlinks explicitly. SIGKILL / hard crash can't run this — that's exactly what
+// the launcher's stale-socket guard + the marker backstop are for (DL-154/155/157).
+let cleanedUp = false;
+let bound = false; // true once WE own the socket (set in the unix listen callback)
+function shutdown(code) {
+  if (cleanedUp) {
+    return;
+  }
+  cleanedUp = true;
+  try {
+    server.close();
+  } catch {
+    // never listened / already closed
+  }
+  // Explicit synchronous unlink: server.close() drains open connections and
+  // unlinks ASYNCHRONOUSLY, but process.exit() below is synchronous — so on a
+  // SIGTERM with an in-flight bridge connection the process can exit before
+  // close()'s unlink runs (the FR's "clean path" race). unlinkSync removes it
+  // deterministically. Gated on `bound` so a signal during the EADDRINUSE
+  // failure window never removes a stale socket we didn't create.
+  if (TRANSPORT === 'unix' && SOCKET_PATH && bound) {
+    try {
+      fs.unlinkSync(SOCKET_PATH);
+    } catch {
+      // best-effort: already gone
+    }
+  }
+  process.exit(code);
+}
+
 if (TRANSPORT === 'unix') {
   // Bind directly. On EADDRINUSE, refuse to start with an operator-actionable
   // message — no auto-unlink, no liveness-probe race.
@@ -243,6 +280,7 @@ if (TRANSPORT === 'unix') {
   server.listen(SOCKET_PATH, () => {
     // We own the channel now — clear any stale FAILED marker a previous deaf
     // session left, so the marker reflects the current holder (FR #2444).
+    bound = true; // shutdown() may now unlink this socket — it's ours
     clearFailureMarker();
     // Restore umask for any subsequent file ops the runtime might do.
     process.umask(previousUmask);
@@ -291,7 +329,17 @@ if (TRANSPORT === 'unix') {
   });
 }
 
-process.on('SIGTERM', () => {
-  server.close();
-  process.exit(0);
-});
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+  process.on(sig, () => shutdown(0));
+}
+
+// Parent-death without a signal: when Claude Code closes the stdio pipe on
+// session teardown, this child's stdin reaches EOF. The MCP SDK keeps stdin
+// flowing (it has a 'data' listener) but does NOT surface EOF via onclose, so
+// listen for 'end' directly — a separate event from 'data', so no conflict with
+// the SDK's reader, and no resume() needed (the SDK already put stdin in flowing
+// mode). Without this an orphaned server lingers holding the socket, and the
+// launcher's liveness probe then gets a live response and aborts.
+process.stdin.on('end', () => shutdown(0));
+// Defense-in-depth: if the MCP layer itself closes the transport, clean up too.
+mcp.onclose = () => shutdown(0);
