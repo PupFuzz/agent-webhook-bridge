@@ -10,6 +10,15 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.35.0] - 2026-06-14
+
+**Canonical GitHub-issue-comment classifier reference + custom-classifier reconcile step (DL-158).** PR #137 since v0.34.0. **Docs only — no app code, classifier, schema, migration, or `.env` change; no behavior change to any shipped class.** Closes the canonicalization follow-on to a peer integrator's (Sola PM) FR (#2514); the consumer-side issue was already resolved in the integrator's own classifier.
+
+### Docs
+
+- **`docs/customization.md`: "Surfacing GitHub issue comments to a channel (forward the comment identity)" (DL-158).** A minimal worked-example custom classifier that turns `issue_comment.created` into a `github_issue_comment` Intent forwarding the **comment identity** — `comment_id` + `comment_created_at` + `comment_html_url` — paired with a `channel_push` (`target_id == subject_id`). It lets a consumer **exact-fetch** the triggering comment (`GET /repos/<repo>/issues/comments/<comment_id>`) and de-dup replays **by id**, instead of re-reading the whole thread and positionally guessing the newest comment — GitHub's issue-comments endpoint paginates 30/page oldest-first with no `sort`/`direction` param, so a naive `.[-1]` returns the 30th comment, not the newest. The shared-identity/recipient machinery is cross-referenced as an **optional** layer, kept out of the base; the shape generalizes to PR review comments.
+- **`CLAUDE_DEPLOYMENT.md`: "Reconcile out-of-repo copies" now covers the custom classifier (DL-158).** A custom classifier lives in the install's `app/Bridge/Classifiers/` and survives `git pull` untouched — so it freezes at the reference it was copied from. New installs start from the `customization.md` reference; each update **diff-merges** improvements (e.g. the `comment_id` forwarding) while preserving deployment-specific extensions, never blind-replacing. `bridge:check` confirms the classifier *loads*, not that it's *current*.
+
 ## [0.34.0] - 2026-06-13
 
 **Multi-topology channel live-wake: HTTP-aware `bridge:check` (DL-156) + a canonical self-resolving cross-platform launcher (DL-157).** PRs #132–#133 since v0.33.0. Examples + docs + one diagnostic command; **no receiver/handler/schema/migration/`.env` change.** Channel-server example → **0.4.2**. Closes a peer integrator's (Sola PM) FR-1/2/3 for the multi-agent, multi-host (HTTP-over-SSH-tunnel) + Windows topology.
