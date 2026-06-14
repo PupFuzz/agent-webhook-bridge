@@ -10,6 +10,14 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.36.0] - 2026-06-14
+
+**Channel-server example cleans up its UNIX socket on every ordinary quit (DL-159).** PR #141 since v0.35.0. **Example + docs only — no app code, classifier, schema, migration, or `.env` change.** Channel-server example → **0.4.3**. Server-side counterpart to DL-154/155/157; closes a peer integrator's (Sola PM) report (#2533).
+
+### Fixed
+
+- **`examples/channel-servers/agent-webhook-bridge-channel.mjs` unlinks its socket on `SIGINT`/`SIGHUP`/stdin-EOF, not just `SIGTERM` (DL-159).** The server had one signal handler (`SIGTERM`) and no explicit `unlink`, so terminal-close (`SIGHUP`), Ctrl-C (`SIGINT`), and parent-pipe close (stdin EOF) leaked the pathname AF_UNIX socket — and a leftover pathname socket makes the next direct `bind()` fail `EADDRINUSE` on Linux **regardless of any listener**, so the server wrote a `<socket>.FAILED` "another session already holds the channel" deaf marker when zero sessions ran. Now one idempotent `shutdown()` handles `SIGTERM`/`SIGINT`/`SIGHUP` and unlinks **synchronously** (`server.close()` unlinks asynchronously while `process.exit()` is synchronous, so an in-flight connection at `SIGTERM` could leak even on the "clean" path). The unlink is gated on a `bound` flag set at listen-success, so a signal during the `EADDRINUSE` failure window never removes a live peer's socket. Parent-death self-exit uses `process.stdin.on('end')` — the MCP SDK's `StdioServerTransport` registers stdin `'data'`/`'error'` but no `'end'`/`'close'`, so it doesn't surface EOF via `onclose`; a bare `'end'` listener is the correct hook (no `resume()` needed, the SDK already flows stdin), with `mcp.onclose` wired as defense-in-depth. `SIGKILL` and hard crashes still leak by design — that's what the launcher's stale-socket guard + the `.FAILED` marker backstop are for. Example → **0.4.3** (DL-038 drift signal).
+
 ## [0.35.0] - 2026-06-14
 
 **Canonical GitHub-issue-comment classifier reference + custom-classifier reconcile step (DL-158).** PR #137 since v0.34.0. **Docs only — no app code, classifier, schema, migration, or `.env` change; no behavior change to any shipped class.** Closes the canonicalization follow-on to a peer integrator's (Sola PM) FR (#2514); the consumer-side issue was already resolved in the integrator's own classifier.
