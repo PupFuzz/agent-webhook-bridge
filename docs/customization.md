@@ -176,6 +176,95 @@ final class MyEventDrivenClassifier extends InboxOnlyClassifier
 
 Point `classifier.class` at `EventDrivenClassifier` directly if it fits, or subclass it further.
 
+### Surfacing GitHub issue comments to a channel (forward the comment identity)
+
+The shipped classifiers surface **kanban** events; the only GitHub handling in the box is the PR→card-move **writeback** (`GitHubPrCardMoveClassifier`), which emits no agent-facing Intent. To wake an agent live on a new GitHub **issue comment**, write a custom classifier. The one rule worth getting right is **what you put in the payload**: forward the *comment identity*, not just the thread.
+
+> **Why `comment_id` matters (the footgun this avoids).** If the Intent carries only the issue number, a consumer that wants to see *what was just posted* must re-read the whole thread and **guess which comment is new**. GitHub's REST issue-comments endpoint paginates **30/page, oldest-first, with no `sort`/`direction` param**, so a naive `--jq '.[-1]'` on an un-paginated fetch returns the **30th** comment — not the newest — on any thread with >30 comments (new replies then look like stale replays and get dropped). The webhook body already carries the full `comment` object, so forwarding `comment.id` lets the consumer do **one exact fetch** — `GET /repos/<repo>/issues/comments/<comment_id>` — and de-dup replays **by id**. Purely additive: a consumer that ignores the fields can still fall back to a (fully paginated) thread read.
+
+```php
+<?php
+// app/Bridge/Classifiers/GitHubIssueCommentClassifier.php
+//
+// OPERATOR-AUTHORED reference — NOT shipped or autoloaded by the bridge. Copy it
+// into your install; after each bridge update, reconcile it against THIS section
+// (CLAUDE_DEPLOYMENT.md -> "Reconcile out-of-repo copies") — a git pull never
+// touches a class the bridge doesn't ship.
+
+namespace App\Bridge\Classifiers;
+
+use App\Bridge\Contracts\Classifier;
+use App\Bridge\Dispatch\ClassifyContext;
+use App\Bridge\Dispatch\ClassifyResult;
+use App\Bridge\Dispatch\Intent;
+use App\Bridge\Dispatch\ReactionTarget;
+
+final class GitHubIssueCommentClassifier implements Classifier
+{
+    public function classify(ClassifyContext $ctx): ClassifyResult
+    {
+        if ($ctx->provider !== 'github' || $ctx->eventType !== 'issue_comment.created') {
+            return new ClassifyResult;   // not a new issue comment — skip
+        }
+
+        $payload = $ctx->payload;
+        $issue = is_array($payload['issue'] ?? null) ? $payload['issue'] : [];
+        $comment = is_array($payload['comment'] ?? null) ? $payload['comment'] : [];
+
+        $number = $issue['number'] ?? null;
+        if (! is_scalar($number)) {
+            return new ClassifyResult;   // malformed — no thread to address
+        }
+
+        // subject_id = the THREAD (owner/repo#N); the comment identity rides in
+        // the payload. The channel_push target_id must equal this subject_id
+        // (the silent-drop guard pairs them).
+        $subjectId = $ctx->scopeId.'#'.$number;
+        $who = $ctx->actor->name ?? $ctx->actor->id ?? '?';
+
+        $intent = new Intent(
+            kind: 'github_issue_comment',
+            subjectId: $subjectId,
+            provider: $ctx->provider,
+            actor: $ctx->actor,
+            summary: "issue comment on {$subjectId} by {$who}",
+            payload: [
+                'repo' => $ctx->scopeId,
+                'number' => $number,
+                // Comment identity — already in the webhook body; forward it so the
+                // consumer can exact-fetch + de-dup by id. Absent fields (older or
+                // synthesized events without a source comment) fall back to null.
+                'comment_id' => $comment['id'] ?? null,
+                'comment_created_at' => isset($comment['created_at']) && is_scalar($comment['created_at'])
+                    ? (string) $comment['created_at']
+                    : null,
+                'comment_html_url' => isset($comment['html_url']) && is_scalar($comment['html_url'])
+                    ? (string) $comment['html_url']
+                    : null,
+            ],
+        );
+
+        // Pair the Intent with a live channel_push (no socket/url in the payload
+        // ⇒ the handler uses this agent's configured channel endpoint).
+        // debounceSeconds: 0 — each comment is its own webhook/request under the
+        // synchronous dispatch model, so per-comment pushes never coalesce.
+        return new ClassifyResult(
+            intents: [$intent],
+            targets: [ReactionTarget::make(
+                handler: 'channel_push',
+                targetId: $intent->subjectId,
+                debounceSeconds: 0,
+                payload: $intent->toArray(),
+            )],
+        );
+    }
+}
+```
+
+The same shape generalizes to the other comment-bearing events — PR review comments (`pull_request_review_comment.created`) and review threads — by reading the triggering entity's own `id` + `created_at` from its payload object and forwarding them identically.
+
+**Optional addressing layer.** The example above wakes *every* subscribed agent on *every* new comment. If several agents share one upstream GitHub account (so `sender.id` can't disambiguate them), or you want a comment's `TO:` line to narrow recipients, layer the recipient-aware and shared-identity patterns on top — see [Per-agent echo for a shared upstream identity](#per-agent-echo-for-a-shared-upstream-identity), [Per-agent (recipient-aware) classification](#per-agent-recipient-aware-classification), and the [`TO:`-line helper](#comment-level-recipient-filtering-the-to-line-dl-032). Keep them out of the base classifier unless your deployment actually needs them.
+
 ### Per-agent echo for a shared upstream identity
 
 Echo suppression runs **before** `classify()`, matching the resolved `Actor` against the agent's own name (auto-seeded from its `identity` ids) + `treat_as_echo` (by name) and `treat_as_echo_ids` (by raw id). That works when each agent has its own upstream account. But when several agents **share one** upstream account (declared once in `shared-identities.json` — see [`multi-agent.md`](multi-agent.md)), the registry deliberately resolves `Actor.name = null` (it can't pick one agent), so the only echo lever left is `treat_as_echo_ids` on the raw id — and that is **all-or-nothing**: it either suppresses the shared account for *every* agent (killing the whole inbox) or for none (so each agent sees its own writes echoed back). There is no per-agent middle ground pre-classify, because the true author isn't known yet.
