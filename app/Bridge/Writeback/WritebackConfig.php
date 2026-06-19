@@ -18,7 +18,8 @@ use App\Bridge\Exceptions\ConfigException;
  *     "mappings": {
  *       "owner/repo": {
  *         "board_id": 8,
- *         "stages": { "opened": 50, "merged": 52, "merged_to_main": 53, "closed_unmerged": 49 },
+ *         "stages": { "started": 49, "opened": 50, "merged": 52, "merged_to_main": 53, "closed_unmerged": 49 },
+ *         "started_from_stages": [46, 47],          // optional (DL-160) — promote-from guard for `started`
  *         "create_dependabot_cards": false,        // optional (DL-024)
  *         "swimlane_id": 31                         // optional — lane for CREATED cards (DL-027)
  *       }
@@ -30,7 +31,7 @@ use App\Bridge\Exceptions\ConfigException;
  */
 final class WritebackConfig
 {
-    public const OUTCOMES = ['opened', 'merged', 'merged_to_main', 'closed_unmerged'];
+    public const OUTCOMES = ['started', 'opened', 'merged', 'merged_to_main', 'closed_unmerged'];
 
     /**
      * @param  array<string, WritebackMapping>  $mappings  keyed by "owner/repo"
@@ -81,6 +82,32 @@ final class WritebackConfig
                 }
                 $stages[$outcome] = (int) $stageId;
             }
+            // Optional promote-from guard for the `started` outcome (DL-160): the
+            // list of workflow_stage_ids the branch-create `started` move is
+            // allowed to promote a card FROM (the board's Backlog/Prioritized
+            // stages). The handler refuses to advance a card whose current stage
+            // isn't in this list, so re-creating/force-pushing an old branch can't
+            // drag an already-In-Review/Shipped/Released card backward. Strict like
+            // board_id/stages — a present non-list, or a non-numeric element,
+            // THROWS (fail-closed) rather than silently disabling the guard.
+            // Absent ⇒ null ⇒ a `started` move is refused (the guard can't know
+            // what's safe to promote from), logged by the handler.
+            $startedFromStages = null;
+            if (array_key_exists('started_from_stages', $m) && $m['started_from_stages'] !== null) {
+                if (! is_array($m['started_from_stages']) || ! array_is_list($m['started_from_stages'])) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} started_from_stages must be a list of workflow_stage_ids");
+                }
+                if ($m['started_from_stages'] === []) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} started_from_stages must be non-empty (an empty list silently disables the `started` move; omit the key to disable instead)");
+                }
+                $startedFromStages = [];
+                foreach ($m['started_from_stages'] as $sid) {
+                    if (! is_numeric($sid)) {
+                        throw new ConfigException("writeback.json: mapping for {$repo} started_from_stages must contain only numeric workflow_stage_ids");
+                    }
+                    $startedFromStages[] = (int) $sid;
+                }
+            }
             $createDependabotCards = ($m['create_dependabot_cards'] ?? false) === true;
             // Optional lane for CREATED cards (DL-027). Strict like board_id/stages —
             // a non-numeric swimlane_id THROWS rather than silently dropping to null
@@ -93,7 +120,7 @@ final class WritebackConfig
                 }
                 $swimlaneId = (int) $m['swimlane_id'];
             }
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId);
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages);
         }
 
         return new self($identityId, $mappings);
