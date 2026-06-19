@@ -77,6 +77,54 @@ class WritebackConfigTest extends TestCase
         WritebackConfig::load($this->dir);
     }
 
+    public function test_loads_started_outcome_and_promote_from_stages(): void
+    {
+        // DL-160: `started` is a valid outcome and `started_from_stages` is parsed
+        // as a numeric list.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'started_from_stages' => [46, 47]],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
+        $this->assertSame(49, $mapping->stageFor('started'));
+        $this->assertSame([46, 47], $mapping->startedFromStages);
+    }
+
+    public function test_absent_started_from_stages_is_null(): void
+    {
+        $this->write(json_encode(['mappings' => ['o/r' => ['board_id' => 8, 'stages' => ['started' => 49]]]]));
+        $this->assertNull(WritebackConfig::load($this->dir)->mappingFor('o/r')->startedFromStages);
+    }
+
+    public function test_non_list_started_from_stages_throws(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'started_from_stages' => ['a' => 46]],
+        ]]));
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_empty_started_from_stages_throws(): void
+    {
+        // An empty list would silently disable the `started` move (fail-closed but
+        // invisible); reject it so the operator omits the key to disable instead.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'started_from_stages' => []],
+        ]]));
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_non_numeric_started_from_stages_element_throws(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'started_from_stages' => [46, 'backlog']],
+        ]]));
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
+
     public function test_malformed_json_is_fail_closed(): void
     {
         $this->write('not json {');

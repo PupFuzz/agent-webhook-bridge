@@ -1,15 +1,15 @@
 # GitHub-PR → kanban card-move writeback (FR #2016)
 
-The bridge can keep a kanban card in sync with its PR's lifecycle **deterministically, with no agent in the loop** — a GitHub `pull_request` webhook moves the card to a stage. This is the bridge's only *writeback* (it is otherwise surface-only / one-way). Design + rationale: `CLAUDE_DECISIONS.md` DL-009 (the seam) → DL-018/019/020/021 (the implementation).
+The bridge can keep a kanban card in sync with its PR's lifecycle **deterministically, with no agent in the loop** — a GitHub `pull_request` webhook moves the card to a stage, and a branch-create `push` promotes the card to In Progress (DL-160). This is the bridge's only *writeback* (it is otherwise surface-only / one-way). Design + rationale: `CLAUDE_DECISIONS.md` DL-009 (the seam) → DL-018/019/020/021 (the implementation) → DL-160 (the branch-create → In-Progress trigger).
 
 ## How it works
 
-1. GitHub POSTs a `pull_request` webhook → the bridge's github receiver (HMAC-verified like any event).
+1. GitHub POSTs a `pull_request` **or `push`** webhook → the bridge's github receiver (HMAC-verified like any event).
 2. A github-subscribed agent runs `GitHubPrCardMoveClassifier`, which:
-   - derives the **outcome** from GitHub-controlled fields (`opened`/`reopened` → `opened`; `closed`+merged to `main` → `merged_to_main`; `closed`+merged to another base → `merged`; `closed`+not-merged → `closed_unmerged`) — never the PR title;
-   - finds the card by the `DL-NNN` token in the PR title / head branch, matched against the mapped board's `dl_number`;
-   - emits a `kanban_move_card` durable reaction (or no-ops if the repo is unmapped / no `DL-NNN` / no matching card).
-3. `KanbanMoveCardHandler` (durable) moves the card — board + stage come **only** from your `writeback.json` (keyed on the outcome), it **refuses** a card not on the mapped board, and it is idempotent (no-op if already there).
+   - **`pull_request`** → derives the **outcome** from GitHub-controlled fields (`opened`/`reopened` → `opened`; `closed`+merged to `main` → `merged_to_main`; `closed`+merged to another base → `merged`; `closed`+not-merged → `closed_unmerged`) — never the PR title; finds the card by the `DL-NNN` token in the PR title / head branch.
+   - **`push` that CREATED a branch** (`payload.created === true`) whose ref carries a `DL-NNN` → outcome **`started`** (codifies "work has begun" from the artifact — the branch). Fires once on branch creation (a later push to the same branch is a no-op); a `dependabot/*` branch or a ref with no `DL-NNN` is ignored. The card is found by that `DL-NNN`, matched against the mapped board's `dl_number`.
+   - emits a `kanban_move_card` durable reaction per correlated card (or no-ops if the repo is unmapped / no `DL-NNN` / no matching card).
+3. `KanbanMoveCardHandler` (durable) moves the card — board + stage come **only** from your `writeback.json` (keyed on the outcome), it **refuses** a card not on the mapped board, and it is idempotent (no-op if already there). The `started` outcome additionally enforces a **no-regression guard** (see below): it only promotes a card currently in one of the mapping's `started_from_stages` (Backlog/Prioritized), never dragging an already-progressed card backward.
 
 ## Setup (operator)
 
@@ -29,16 +29,29 @@ The writeback acts as this token's kanban user — note that user's `user_id`. *
     "your-org/your-repo": {
       "board_id": 8,
       "stages": {                      // outcome → workflow_stage_id (on board_id)
+        "started": 49,                 // In Progress (branch-create push, DL-160)
         "opened": 50,                  // In Review
         "merged": 52,                  // Shipped to dev
         "merged_to_main": 53,          // Released to main
         "closed_unmerged": 49          // In Progress
-      }
+      },
+      "started_from_stages": [46, 47]  // DL-160 — Backlog/Prioritized stage ids the
+                                       //   `started` move may promote a card FROM
     }
   }
 }
 ```
 Absent ⇒ writeback off. Malformed ⇒ fail-closed (`bridge:check` reports it). Every stage id must be a real stage **on that board** (a cross-board id is refused by kanban and logged, not retried).
+
+### Branch-create → In Progress (DL-160)
+
+A GitHub `push` that **creates a branch** whose ref carries a `DL-NNN` (e.g. `feat/DL-160-x`) promotes the correlated card to the **`started`** stage — "work has begun" derived from the artifact, no agent involved. It is gated three ways so it can only ever advance a card forward:
+
+- **Fires once, on creation** (`payload.created === true`) — a subsequent push to the same branch is a no-op.
+- **No-regression guard.** The move is applied **only** when the card's current stage is in the mapping's **`started_from_stages`** (the board's Backlog/Prioritized stage ids). A card already in In-Review/Shipped/Released is left untouched, so re-creating or force-pushing an old branch never drags it backward. `started_from_stages` is parsed strictly (a numeric list — a non-list / non-numeric element fails the config closed). **If `started_from_stages` is absent, a `started` move is refused** (the guard can't know what's safe to promote from) — set it to enable the trigger.
+- A `dependabot/*` branch, or a ref with no `DL-NNN`, emits no target.
+
+To use it you must (a) map a `started` stage **and** set `started_from_stages`, and (b) subscribe the repo webhook to **push** events (see step 4).
 
 > A mapping can also opt into **dependabot cards** (`create_dependabot_cards`) so dependency-update PRs auto-create cards — see the **Optional: dependabot cards** section below.
 
@@ -55,11 +68,11 @@ classifier:
 ```
 
 ### 4. The repo webhook (one-time, in GitHub)
-The bridge does **not** provision GitHub webhooks (no repo-admin token by design). In the repo's **Settings → Webhooks**, add a webhook:
+The bridge does **not** provision GitHub webhooks — `bridge:provision` manages only the `kanban` provider's subscriptions (it skips GitHub by design: no repo-admin token). So the repo webhook, **including which events it sends**, is configured by hand in GitHub and is the operator's responsibility. In the repo's **Settings → Webhooks**, add a webhook:
 - **Payload URL:** `<BRIDGE_RECEIVER_BASE_URL>/webhooks/github?b=your-org/your-repo`
 - **Content type:** `application/json`
 - **Secret:** the per-scope HMAC secret at `$BRIDGE_DIR/github/webhook-secret-scope-your-org%2Fyour-repo`
-- **Events:** Pull requests
+- **Events:** **Pull requests** — and, to enable the branch-create → In-Progress trigger (DL-160), **Pushes** as well. (Choose "Let me select individual events" and tick both. A webhook subscribed to *Pull requests* only will silently never fire the `started` move.)
 
 ### 5. Verify
 ```bash
@@ -149,5 +162,6 @@ A writeback that "has no agent in the loop" can fail in two ways that **don't** 
 ## Security notes
 
 - Board + stage are **operator config only**, keyed on GitHub-controlled fields — the webhook body can't choose a board or stage. The worst an attacker-influenced PR can do (via title correlation) is nudge a card *that genuinely sits on the mapped board* to a *config-mapped stage* — bounded, reversible, logged.
+- The `started` trigger (DL-160) keys on `payload.created` + `payload.ref` (GitHub-controlled, not body-spoofable to the bridge — they ride a HMAC-verified delivery), and the move is **doubly bounded**: it only ever advances a card *that sits on the mapped board* *from a configured `started_from_stages`* to the *config-mapped `started` stage*. Worst case from a maliciously-named branch is the same bounded, reversible forward nudge as the PR path — and only for a card already in Backlog/Prioritized.
 - The writeback token is least-privilege, `0600`, read fail-closed at point-of-use, never logged.
 - The writeback identity is auto echo-suppressed (its `card_updated` webhook doesn't loop back).

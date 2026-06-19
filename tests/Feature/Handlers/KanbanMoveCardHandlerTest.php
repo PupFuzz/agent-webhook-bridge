@@ -34,11 +34,11 @@ class KanbanMoveCardHandlerTest extends TestCase
         parent::tearDown();
     }
 
-    private function writeWriteback(array $stages = ['merged' => 52]): void
+    private function writeWriteback(array $stages = ['merged' => 52], array $extra = []): void
     {
         File::put($this->dir.'/writeback.json', (string) json_encode([
             'identity_id' => 4242,
-            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => $stages]],
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => $stages] + $extra],
         ]));
     }
 
@@ -195,6 +195,63 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->expectException(RequestException::class);
         $this->handle($this->payload());
+    }
+
+    public function test_started_promotes_card_from_an_allowed_backlog_stage(): void
+    {
+        // DL-160: branch-create push → `started`. The card sits in Backlog (46),
+        // an allowed promote-from stage → move it to In Progress (49).
+        $this->writeWriteback(['started' => 49], ['started_from_stages' => [46, 47]]);
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 46]])   // GET (Backlog)
+                ->push(['data' => ['id' => 5]]),                                                // PATCH
+        ]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && str_contains($r->url(), '/tasks/5.json')
+            && $r['task'] === ['workflow_stage_id' => 49]);
+    }
+
+    public function test_started_does_not_regress_an_already_progressed_card(): void
+    {
+        // The card is In Review (50), NOT a promote-from stage → no move (a
+        // re-created/force-pushed old branch must not drag it backward).
+        $this->writeWriteback(['started' => 49], ['started_from_stages' => [46, 47]]);
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 50]])]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');   // no regression
+    }
+
+    public function test_started_is_refused_when_no_promote_from_stages_configured(): void
+    {
+        // Fail-closed: with no `started_from_stages` we can't know what's safe to
+        // promote from, so a `started` move is refused (log + no-op).
+        $this->writeWriteback(['started' => 49]);
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 46]])]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_started_already_in_progress_is_idempotent_noop(): void
+    {
+        // Already at the target In-Progress stage → idempotent no-op (guard never reached).
+        $this->writeWriteback(['started' => 49], ['started_from_stages' => [46, 47]]);
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 
     public function test_payload_board_id_is_ignored_config_is_authoritative(): void

@@ -33,7 +33,19 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         $provider = $ctx->provider;
         $scopeId = $ctx->scopeId;
 
-        if ($provider !== 'github' || ! str_starts_with($eventType, 'pull_request.')) {
+        if ($provider !== 'github') {
+            return new ClassifyResult;
+        }
+
+        // Branch-create push → `started` (DL-160). A `push` that CREATED a branch
+        // whose ref carries a DL-NNN means work has begun on that card; promote it
+        // to In Progress. Separate from the pull_request lifecycle below — the PR
+        // path stays byte-identical.
+        if ($eventType === 'push') {
+            return $this->classifyPush($payload, $scopeId);
+        }
+
+        if (! str_starts_with($eventType, 'pull_request.')) {
             return new ClassifyResult;
         }
 
@@ -93,6 +105,63 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
                 'card_id' => $cardId,
                 'repo' => $repo,
                 'outcome' => $outcome,
+            ]);
+        }
+
+        return new ClassifyResult(targets: $targets);
+    }
+
+    /**
+     * Branch-create push → `started` move target(s) (DL-160). Fires ONCE on the
+     * creation of a branch (`payload.created === true`) whose ref carries a
+     * `DL-NNN`, so it codifies "work has begun" from the artifact (the branch),
+     * not from any agent. Uses `created === true` so a subsequent push to the same
+     * branch is a no-op (the move would otherwise re-fire on every push). The
+     * handler's promote-from guard (`started_from_stages`) makes a re-create /
+     * force-push of an old branch a no-op too. Correlates DL→card exactly as the
+     * PR path. No target when: not a created-branch push, a dependabot branch, no
+     * DL in the ref, the repo is unmapped, or no card tracks the DL.
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function classifyPush(array $payload, string $scopeId): ClassifyResult
+    {
+        if (($payload['created'] ?? null) !== true) {
+            return new ClassifyResult;   // not a branch creation → no-op (don't re-fire on every push)
+        }
+        $ref = is_string($payload['ref'] ?? null) ? $payload['ref'] : '';
+        if (! str_starts_with($ref, 'refs/heads/')) {
+            return new ClassifyResult;   // a tag or other ref, not a branch
+        }
+        $branch = substr($ref, strlen('refs/heads/'));
+        if (str_starts_with($branch, 'dependabot/')) {
+            return new ClassifyResult;   // dependabot branches carry no DL and track no card
+        }
+
+        $repo = $scopeId;
+        $configDir = (string) config('bridge.config_dir');
+        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $mapping = $writeback?->mappingFor($repo);
+        if ($mapping === null) {
+            return new ClassifyResult;   // repo not configured for writeback
+        }
+
+        if (preg_match('/\bDL-(\d+)/i', $branch, $m) !== 1) {
+            return new ClassifyResult;   // no DL in the branch ref → un-linked, no-op
+        }
+        $dl = 'DL-'.$m[1];
+
+        $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl);
+        if ($cardIds === []) {
+            return new ClassifyResult;   // no card tracks this DL → no-op
+        }
+
+        $targets = [];
+        foreach ($cardIds as $cardId) {
+            $targets[] = ReactionTarget::make('kanban_move_card', (string) $cardId, payload: [
+                'card_id' => $cardId,
+                'repo' => $repo,
+                'outcome' => 'started',
             ]);
         }
 
