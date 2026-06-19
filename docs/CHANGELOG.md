@@ -10,6 +10,20 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.37.0] - 2026-06-19
+
+**Branch-create push → card "In Progress": derive work-begun from the artifact (DL-160).** PR #150 since v0.36.0. **App code — no DB migration; opt-in and OFF until configured.** Closes the gap where a card sat in Backlog/Prioritized through the whole first stretch of work and only advanced at PR-open. Adds a fifth writeback outcome, `started`, driven by the GitHub `push` that **creates** a feature branch — "work has begun" derived from the branch, no agent in the loop, consistent with the writeback's machine-only posture. **Requires the operator to (a) map a `started` stage + set `started_from_stages` in `writeback.json`, and (b) subscribe the repo webhook to `push` events** — an upgraded install with neither is inert. See [`docs/writeback.md`](writeback.md) § *Branch-create → In Progress*.
+
+### Added
+
+- **`started` writeback outcome — branch-create push promotes the correlated card to In Progress (DL-160, #2650).** `GitHubPrCardMoveClassifier` now classifies the already-parsed `push` event (previously ignored): a push that **created a branch** (`payload.created === true`) whose `refs/heads/…` ref carries a `DL-NNN` emits a `kanban_move_card` target with `outcome: 'started'`, correlating DL→card exactly as the PR path. Fires **once at branch birth** (not on subsequent pushes to the same branch); a `dependabot/*` branch, a tag ref, or a DL-less ref is a no-op. Which board+stage `started` maps to is operator config (`writeback.json` `stages.started`), never hard-coded. The four existing PR outcomes and their tests are byte-identical.
+- **No-stage-regression guard via `started_from_stages` (the load-bearing safety decision).** A `started` move must only ever **promote** a card — never drag an already-In-Review/Shipped/Released card backward (re-creating or force-pushing an old branch re-fires `push`+`created`). `KanbanMoveCardHandler` reads the card's current `workflow_stage_id` and applies the `started` move **only** when that stage is in the mapping's new optional **`started_from_stages`** (the board's Backlog/Prioritized stage ids), parsed strictly like `board_id`/`stages` (a non-list or non-numeric element fails the config closed). **Absent `started_from_stages` ⇒ the `started` move is refused** (fail-closed — the guard can't know what's safe to promote from; logged + no-op), so the trigger can't silently regress a card. Idempotent: the already-in-target-stage short-circuit still applies first.
+
+### Operator action required
+
+- **Subscribe the repo webhook to `push` events** (in addition to *Pull requests*). `bridge:provision` does **not** manage GitHub webhooks (no repo-admin token, by design) — set this by hand in the repo's **Settings → Webhooks**. A webhook left on *Pull requests* only will silently never fire the `started` move.
+- **Map a `started` stage and set `started_from_stages`** in `writeback.json`. Both are required to enable the trigger; neither set ⇒ inert (no behavior change on upgrade).
+
 ## [0.36.0] - 2026-06-14
 
 **Channel-server example cleans up its UNIX socket on every ordinary quit (DL-159).** PR #141 since v0.35.0. **Example + docs only — no app code, classifier, schema, migration, or `.env` change.** Channel-server example → **0.4.3**. Server-side counterpart to DL-154/155/157; closes a peer integrator's (Sola PM) report (#2533).

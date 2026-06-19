@@ -152,10 +152,99 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         }
     }
 
-    public function test_non_pull_request_event_is_noop(): void
+    public function test_non_pull_request_non_push_event_is_noop(): void
     {
         Http::fake();
-        $r = (new GitHubPrCardMoveClassifier)->classify(new ClassifyContext('push', [], new Actor('1'), 'github', 'owner/repo', $this->agent));
+        $r = (new GitHubPrCardMoveClassifier)->classify(new ClassifyContext('issues.opened', [], new Actor('1'), 'github', 'owner/repo', $this->agent));
+        $this->assertSame([], $r->targets);
+    }
+
+    /** @param array<mixed> $payload */
+    private function classifyPush(array $payload, string $repo = 'owner/repo'): ClassifyResult
+    {
+        return (new GitHubPrCardMoveClassifier)->classify(new ClassifyContext(
+            'push',
+            $payload + ['repository' => ['full_name' => $repo]],
+            new Actor('999'),
+            'github',
+            $repo,
+            $this->agent,
+        ));
+    }
+
+    public function test_branch_create_push_with_dl_emits_started_target(): void
+    {
+        $this->fakeBoardCards();
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/DL-42-thing']);
+
+        $this->assertCount(1, $r->targets);
+        $t = $r->targets[0];
+        $this->assertSame('kanban_move_card', $t->handler);
+        $this->assertSame(['card_id' => 5, 'repo' => 'owner/repo', 'outcome' => 'started'], $t->payload);
+        $this->assertSame([], $r->intents);
+    }
+
+    public function test_bundled_dl_branch_create_emits_one_started_target_per_card(): void
+    {
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 5, 'payload' => ['dl_number' => 'DL-42']],
+            ['id' => 6, 'payload' => ['dl_number' => '042']],
+            ['id' => 7, 'payload' => ['dl_number' => 'DL-9']],
+        ]])]);
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/DL-42-bundle']);
+
+        $this->assertEqualsCanonicalizing([5, 6], array_map(fn ($t) => $t->payload['card_id'], $r->targets));
+        foreach ($r->targets as $t) {
+            $this->assertSame('started', $t->payload['outcome']);
+        }
+    }
+
+    public function test_push_to_existing_branch_is_noop(): void
+    {
+        Http::fake();
+        $r = $this->classifyPush(['created' => false, 'ref' => 'refs/heads/feat/DL-42-thing']);
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();   // not a branch creation → no correlation read
+    }
+
+    public function test_branch_create_push_without_dl_is_noop(): void
+    {
+        Http::fake();
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/no-card-ref']);
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
+    }
+
+    public function test_dependabot_branch_create_push_is_noop(): void
+    {
+        Http::fake();
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/dependabot/composer/DL-1-x']);
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
+    }
+
+    public function test_tag_create_push_is_noop(): void
+    {
+        Http::fake();
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/tags/DL-42-v1']);
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
+    }
+
+    public function test_branch_create_push_unmapped_repo_is_noop(): void
+    {
+        Http::fake();
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/DL-42-x'], repo: 'other/repo');
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
+    }
+
+    public function test_branch_create_push_no_matching_card_is_noop(): void
+    {
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9']]]])]);
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/DL-42-x']);
         $this->assertSame([], $r->targets);
     }
 

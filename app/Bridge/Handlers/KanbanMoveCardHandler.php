@@ -34,6 +34,11 @@ use Illuminate\Support\Facades\Log;
  * Payload: card_id (int), repo ("owner/repo"), outcome (one of
  * WritebackConfig::OUTCOMES). Any payload board_id/stage_id is IGNORED — the
  * config mapping is authoritative.
+ *
+ * The `started` outcome (branch-create push, DL-160) additionally carries a
+ * no-regression guard: it only promotes a card whose current stage is in the
+ * mapping's `started_from_stages` (the board's Backlog/Prioritized stages), so a
+ * re-created/force-pushed old branch can't drag a progressed card backward.
  */
 final class KanbanMoveCardHandler implements DurableReaction, Handler
 {
@@ -112,6 +117,26 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
         if (($card['workflow_stage_id'] ?? null) === $stageId) {
             return;   // idempotent: already in the target stage
+        }
+
+        // No-stage-regression guard for the branch-create `started` outcome
+        // (DL-160). A `started` move must only PROMOTE a card from the board's
+        // Backlog/Prioritized stages — never drag an already-progressed
+        // (In-Review/Shipped/Released) card backward. Re-creating or force-pushing
+        // an old branch re-fires the push event; this keeps that a no-op. The
+        // allowed source stages are operator config (`started_from_stages`); with
+        // none set we can't know what's safe to promote from, so we refuse
+        // (fail-closed, mirroring the DL-026 "don't silently do the wrong thing").
+        if ($outcome === 'started') {
+            $allowed = $mapping->startedFromStages;
+            $current = $card['workflow_stage_id'] ?? null;
+            if ($allowed === null || $allowed === [] || ! in_array($current, $allowed, true)) {
+                Log::info('kanban_move_card: started move skipped — card is not in an allowed promote-from stage (no regression)', [
+                    'card_id' => $cardId, 'repo' => $repo, 'current_stage' => $current, 'started_from_stages' => $allowed,
+                ]);
+
+                return;
+            }
         }
 
         try {
