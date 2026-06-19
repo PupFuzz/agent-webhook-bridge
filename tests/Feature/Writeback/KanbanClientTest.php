@@ -46,6 +46,28 @@ class KanbanClientTest extends TestCase
         $this->client()->moveCard(5, 52);
     }
 
+    public function test_archive_card_sends_the_action_verb_not_a_field_write(): void
+    {
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'archived_at' => '2026-06-19T00:00:00+00:00']])]);
+
+        $this->assertTrue($this->client()->archiveCard(5));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && str_contains($r->url(), '/tasks/5.json')
+            && $r['_action'] === 'archive'      // top-level lifecycle verb, NOT task.archived_at
+            && ! isset($r['task']));
+    }
+
+    public function test_archive_card_returns_false_when_the_response_shows_it_did_not_archive(): void
+    {
+        // A 200 with a null archived_at is the silent-no-op contract break (the
+        // field-write trap). archiveCard reports it (false) rather than throwing —
+        // a deterministic failure must not 5xx-storm; the caller logs + no-ops.
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'archived_at' => null]])]);
+
+        $this->assertFalse($this->client()->archiveCard(5));
+    }
+
     // ---- scan mode (default) ----
 
     public function test_scan_correlate_dl_matches_on_numeric_part_returns_all(): void

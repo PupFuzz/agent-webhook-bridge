@@ -61,6 +61,27 @@ final class KanbanClient
     }
 
     /**
+     * Archive (retire) a card via the kanban lifecycle verb (DL-161). Archiving
+     * is a TOP-LEVEL `_action`, NOT a field write: a `{"task":{"archived_at":…}}`
+     * PATCH returns 200 but silently no-ops, so we send `{"_action":"archive"}`.
+     * Returns whether the response CONFIRMS the archive (`data.archived_at` set):
+     * `false` is a 200-that-didn't-archive — a wrong-verb / contract break the
+     * caller must surface, NOT swallow. It's returned (not thrown) because that
+     * failure is deterministic, so 5xx-ing it would retry-storm an unfixable
+     * event for ~11 days (the DL-020 / DispatchService anti-pattern) — the caller
+     * treats it as permanent (log + no-op). A real HTTP error still throws via
+     * `->throw()` (transient 5xx → retry, 4xx → permanent), as the move path does.
+     * Caller idempotency: an already-archived card is excluded from by-ref/search
+     * correlation, so it is never re-presented here on a redelivered close.
+     */
+    public function archiveCard(int $cardId): bool
+    {
+        $data = $this->http()->patch("/tasks/{$cardId}.json", ['_action' => 'archive'])->throw()->json('data');
+
+        return is_array($data) && ($data['archived_at'] ?? null) !== null;
+    }
+
+    /**
      * The card ids on a board correlated to a DL token (DL-029). Returns ALL
      * matches — a bundled PR/DL legitimately tracks multiple cards (DL-148) — so
      * the writeback moves every one; an empty list is a graceful no-op.
