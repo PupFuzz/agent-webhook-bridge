@@ -53,6 +53,8 @@ A GitHub `push` that **creates a branch** whose ref carries a `DL-NNN` (e.g. `fe
 
 To use it you must (a) map a `started` stage **and** set `started_from_stages`, and (b) subscribe the repo webhook to **push** events (see step 4).
 
+> **⚠ Upgrade ordering — deploy the v0.37.0+ code BEFORE adding `started` to `writeback.json`.** `started` is an outcome a pre-v0.37.0 bridge does not recognize: its `WritebackConfig` rejects an **unknown stage outcome**, which is a *malformed-config* error — and a malformed `writeback.json` fails **closed for every mapping in the file**, not just the one you edited. So adding `started` while an older bridge is still serving (e.g. between `git pull` and an FPM reload, or on a host where you edited config first) silently disables your *entire* writeback until the new code is running. Sequence it: deploy + reload → `bridge:check` green → *then* edit `writeback.json` → `bridge:check` again.
+
 > A mapping can also opt into **dependabot cards** (`create_dependabot_cards`) so dependency-update PRs auto-create cards — see the **Optional: dependabot cards** section below.
 
 ### 3. A github-subscribed agent using the classifier
