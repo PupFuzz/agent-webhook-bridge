@@ -7,6 +7,7 @@ use App\Bridge\Handlers\KanbanDependabotCardHandler;
 use App\Bridge\Support\AgentConfig;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 class KanbanDependabotCardHandlerTest extends TestCase
@@ -140,6 +141,76 @@ class KanbanDependabotCardHandlerTest extends TestCase
         $this->handle('closed_unmerged');
 
         Http::assertNotSent(fn ($r) => in_array($r->method(), ['PATCH', 'POST'], true));
+    }
+
+    public function test_closed_unmerged_archives_an_existing_card_not_moves_it(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => '2026-06-19T00:00:00+00:00']]),
+        ]);
+
+        $this->handle('closed_unmerged');   // DL-161: dependabot close-unmerged retires the card
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['_action'] === 'archive');
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && isset($r['task']['workflow_stage_id']));   // archived, not moved
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST');
+    }
+
+    public function test_closed_unmerged_archives_even_with_no_closed_unmerged_stage_mapped(): void
+    {
+        // The fix's load-bearing case: archive needs no stage mapping, so a card
+        // is retired on close even when the operator never mapped closed_unmerged.
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => [
+                'board_id' => 8,
+                'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53],   // NO closed_unmerged
+                'create_dependabot_cards' => true,
+            ]],
+        ]));
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => '2026-06-19T00:00:00+00:00']]),
+        ]);
+
+        $this->handle('closed_unmerged');
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['_action'] === 'archive');
+    }
+
+    public function test_closed_unmerged_archive_not_confirmed_logs_and_noops_does_not_throw(): void
+    {
+        // A 200 whose archived_at is null (wrong-verb / contract break) is
+        // deterministic — it must NOT propagate into a ~5xx retry storm. The
+        // handler logs LOUD (error) and no-ops.
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => null]]),
+        ]);
+        Log::spy();
+
+        $this->handle('closed_unmerged');   // must not throw
+
+        Log::shouldHaveReceived('error')->once()->withArgs(fn (string $msg) => str_contains($msg, 'not archived'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST');
+    }
+
+    public function test_closed_unmerged_archives_all_matching_cards(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => '2026-06-19T00:00:00+00:00']]),
+            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'archived_at' => '2026-06-19T00:00:00+00:00']]),
+        ]);
+
+        $this->handle('closed_unmerged');
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['_action'] === 'archive');
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/8.json') && $r['_action'] === 'archive');
     }
 
     public function test_opt_out_mapping_ignores_the_target(): void
