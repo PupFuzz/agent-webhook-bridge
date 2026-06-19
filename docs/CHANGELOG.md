@@ -10,7 +10,14 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
-## [0.37.0] - 2026-06-19
+## [0.37.1] - 2026-06-19
+
+**Docs: warn that the DL-160 `started` outcome must be added to `writeback.json` AFTER deploying v0.37.0+ (#2658).** Docs only — no app code, classifier, schema, migration, or `.env` change; no behavior change. Follow-up to v0.37.0 (DL-160), surfaced during the prod activation.
+
+### Docs
+
+- **`docs/writeback.md` § Branch-create → In Progress: upgrade-ordering warning.** Adding `started` to `writeback.json` while a pre-v0.37.0 bridge is still serving fails **closed for every mapping in the file** — a pre-v0.37.0 `WritebackConfig` rejects the unknown `started` outcome as a *malformed config*, which disables the whole writeback (all repos), not just the edited mapping. Documented the required sequence: deploy + reload → `bridge:check` green → *then* edit config → `bridge:check` again.
+- **`CLAUDE_DEPLOYMENT.md` § Update an existing install: same ordering callout, generalized** to any newer-version writeback outcome (deploy code first, edit `writeback.json` second), cross-linked to the `started` config + required `push` webhook event.
 
 **Branch-create push → card "In Progress": derive work-begun from the artifact (DL-160).** PR #150 since v0.36.0. **App code — no DB migration; opt-in and OFF until configured.** Closes the gap where a card sat in Backlog/Prioritized through the whole first stretch of work and only advanced at PR-open. Adds a fifth writeback outcome, `started`, driven by the GitHub `push` that **creates** a feature branch — "work has begun" derived from the branch, no agent in the loop, consistent with the writeback's machine-only posture. **Requires the operator to (a) map a `started` stage + set `started_from_stages` in `writeback.json`, and (b) subscribe the repo webhook to `push` events** — an upgraded install with neither is inert. See [`docs/writeback.md`](writeback.md) § *Branch-create → In Progress*.
 
