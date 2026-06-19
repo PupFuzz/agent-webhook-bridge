@@ -10,6 +10,18 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.38.0] - 2026-06-19
+
+**Dependabot writeback archives the card when its PR closes unmerged (DL-160-sibling, DL-161).** PR #155 since v0.37.1. App code — no DB migration, no new config. **Behavior change, scoped to the dependabot-card path** (`create_dependabot_cards: true`); the DL-tracked move path is byte-identical. Closes a peer-integrator (Sola PM) FR (#2659).
+
+### Changed
+
+- **A closed-unmerged dependabot PR now ARCHIVES its card instead of moving it (DL-161).** Dependabot routinely closes its own PRs (a newer bump supersedes an older one, or a maintainer closes it), so the old behavior — `moveCard` to the `closed_unmerged` stage — left dead cards accumulating on the board (the reporter had 7 stale cards sitting in Backlog 8–11 days after their PRs closed). `KanbanDependabotCardHandler` now archives every correlated card on `closed_unmerged`, which needs **no `closed_unmerged` stage mapping** for the dependabot path. "No card on close → skip" is unchanged.
+
+### Added
+
+- **`KanbanClient::archiveCard()`** — issues the kanban lifecycle verb `PATCH {"_action":"archive"}` (a `{"task":{"archived_at":…}}` *field* PATCH returns 200 but silently no-ops) and returns whether the response confirms the archive (`data.archived_at` set). An unconfirmed archive is **deterministic**, so the handler logs an `error` and no-ops rather than 5xx-ing into a ~11-day redelivery storm (the DL-020 anti-pattern); a genuine HTTP error still throws (transient 5xx → retry, 4xx → permanent). Idempotent for free: kanban excludes archived cards from by-ref/search correlation, so a redelivered close finds nothing.
+
 ## [0.37.1] - 2026-06-19
 
 **Docs: warn that the DL-160 `started` outcome must be added to `writeback.json` AFTER deploying v0.37.0+ (#2658).** Docs only — no app code, classifier, schema, migration, or `.env` change; no behavior change. Follow-up to v0.37.0 (DL-160), surfaced during the prod activation.
