@@ -118,10 +118,12 @@ By default the writeback only **moves an existing card** correlated by a `DL-NNN
 | opened / reopened | no | **create** at the `opened` stage |
 | merged to `dev` | yes | move to `merged` |
 | merged to `main` | yes | move to `merged_to_main` |
-| closed, not merged | yes | move to `closed_unmerged` |
-| any | already at target | no-op (idempotent) |
+| closed, not merged | yes | **archive** the card (DL-161) |
+| any move | already at target | no-op (idempotent) |
 | merged / merged_to_main | no (open was missed) | create at that stage |
 | closed, not merged | no | **skip** — don't mint a card just to close one we never tracked |
+
+**Closed-unmerged dependabot PRs archive the card (DL-161).** Dependabot routinely closes its own PRs (a newer bump supersedes an older one, or a maintainer closes it), so a closed-unmerged dependabot card is dead weight. It is **archived** (retired off the board), not moved to a column — so it needs **no `closed_unmerged` stage mapping** (that key is ignored for the dependabot path). Archiving uses the kanban lifecycle verb (`PATCH {"_action":"archive"}`), and the bridge checks the response confirms it (a field-write `archived_at` PATCH silently no-ops); a 200-that-didn't-archive is logged loudly and skipped (never retried — that failure is deterministic). Idempotent: an archived card is excluded from correlation, so a redelivered close finds nothing and no-ops. (The DL-tracked move path is unchanged — a closed-unmerged *DL* PR still just moves, since work there typically continues.)
 
 **New cards** are tagged `dependencies` + `triaged` (so routine dependency churn doesn't flood a triage sweep) and carry `payload.pr_number`, `payload.pr_url`, and `payload.origin = "dependabot"`.
 
