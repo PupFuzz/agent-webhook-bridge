@@ -6,10 +6,13 @@ use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
+use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
  * Move a kanban card to a workflow stage — the bridge's first WRITEBACK
@@ -35,10 +38,18 @@ use Illuminate\Support\Facades\Log;
  * WritebackConfig::OUTCOMES). Any payload board_id/stage_id is IGNORED — the
  * config mapping is authoritative.
  *
- * The `started` outcome (branch-create push, DL-160) additionally carries a
- * no-regression guard: it only promotes a card whose current stage is in the
- * mapping's `started_from_stages` (the board's Backlog/Prioritized stages), so a
- * re-created/force-pushed old branch can't drag a progressed card backward.
+ * The `started` outcome (branch-create push, DL-160) carries its own no-regression
+ * guard: it only promotes a card whose current stage is in the mapping's
+ * `started_from_stages` (the board's Backlog/Prioritized stages).
+ *
+ * The four PR outcomes (opened / merged / merged_to_main / closed_unmerged) carry a
+ * generalized no-regression guard (#2935, DL-163): a stale or redelivered
+ * pull_request event — or a release PR whose title carries a card's DL-NNN — must
+ * not drag a card backward (e.g. opened→In-Review on a card already Released). The
+ * board's workflow-stage ORDER (positions, read from preload) is the authority;
+ * `closed_unmerged` is the lone legitimately-backward outcome and is allowed to
+ * regress UNLESS the card has reached a terminal (Shipped/Released) stage. Fail-open
+ * when the order can't be read, so the guard never breaks the writeback.
  */
 final class KanbanMoveCardHandler implements DurableReaction, Handler
 {
@@ -139,6 +150,28 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             }
         }
 
+        // No-regression guard for the four PR-driven outcomes (#2935), generalizing
+        // the DL-160 `started` guard above. A stale / redelivered pull_request event
+        // — or a RELEASE PR whose title carries a card's DL-NNN — can re-fire an
+        // outcome on a card that has already advanced past it, dragging it backward
+        // (e.g. opened→In-Review on a card already Released). The board's workflow
+        // stage ORDER (positions) is the authority. `closed_unmerged` is the lone
+        // legitimately-backward outcome (In-Review→In-Progress when a PR is
+        // abandoned), so it is allowed to regress UNLESS the card has already
+        // reached a terminal (Shipped/Released) stage — a stale close must not
+        // resurrect a shipped card. Fail-open: when the order can't be read (preload
+        // down, or a stage not on the board) the move proceeds as it did pre-guard.
+        if (in_array($outcome, ['opened', 'merged', 'merged_to_main', 'closed_unmerged'], true)) {
+            $current = $card['workflow_stage_id'] ?? null;
+            if (is_int($current) && $this->isRegressiveMove($outcome, $current, $stageId, $mapping, $client)) {
+                Log::info('kanban_move_card: move skipped — would regress the card to an earlier stage (no regression)', [
+                    'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome, 'current_stage' => $current, 'target_stage' => $stageId,
+                ]);
+
+                return;
+            }
+        }
+
         try {
             $client->moveCard($cardId, $stageId);
         } catch (RequestException $e) {
@@ -154,6 +187,65 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             throw $e;   // transient → 5xx → retry
         }
         Log::info('kanban_move_card: moved', ['card_id' => $cardId, 'board' => $mapping->boardId, 'stage' => $stageId, 'outcome' => $outcome]);
+    }
+
+    /**
+     * Whether applying $outcome would regress the card to an earlier workflow stage
+     * in a way the no-regression guard (#2935) refuses. Fail-open (false) whenever
+     * the board order can't be determined — the guard never blocks a move on missing
+     * order data, only on a definite backward step.
+     */
+    private function isRegressiveMove(string $outcome, int $currentStage, int $targetStage, WritebackMapping $mapping, KanbanClient $client): bool
+    {
+        try {
+            $order = $client->boardStageOrder($mapping->boardId);
+        } catch (Throwable $e) {
+            Log::warning('kanban_move_card: could not read board stage order for the no-regression guard — allowing the move', [
+                'board' => $mapping->boardId, 'error' => $e->getMessage(),
+            ]);
+
+            return false;   // fail-open: a diagnostic guard must not break the writeback
+        }
+
+        $currentPos = $order[$currentStage] ?? null;
+        $targetPos = $order[$targetStage] ?? null;
+        if ($currentPos === null || $targetPos === null) {
+            return false;   // a stage isn't on the board (config drift) → can't order → allow
+        }
+
+        if ($outcome === 'closed_unmerged') {
+            // Legitimately backward (In-Review → In-Progress). Refuse ONLY once the
+            // card has reached a terminal (Shipped/Released) stage, so a stale close
+            // can't resurrect a shipped/released card. No terminal stage configured
+            // ⇒ no terminal concept on this board ⇒ allow the backward move.
+            $terminalFloor = $this->terminalFloor($mapping, $order);
+
+            return $terminalFloor !== null && $currentPos >= $terminalFloor;
+        }
+
+        // Forward outcomes (opened / merged / merged_to_main): refuse any move to a
+        // stage earlier than the card's current one.
+        return $targetPos < $currentPos;
+    }
+
+    /**
+     * The earliest board position among the mapping's terminal ("done") targets —
+     * the `merged` (Shipped) and `merged_to_main` (Released) stages. Null when the
+     * mapping configures neither (no terminal concept on this board).
+     *
+     * @param  array<int, float>  $order
+     */
+    private function terminalFloor(WritebackMapping $mapping, array $order): ?float
+    {
+        $positions = [];
+        foreach (['merged', 'merged_to_main'] as $terminalOutcome) {
+            $stage = $mapping->stageFor($terminalOutcome);
+            if ($stage !== null && isset($order[$stage])) {
+                $positions[] = $order[$stage];
+            }
+        }
+
+        return $positions === [] ? null : min($positions);
     }
 
     /** A 4xx is a permanent refusal (don't retry); 5xx/timeout/connection is transient. */

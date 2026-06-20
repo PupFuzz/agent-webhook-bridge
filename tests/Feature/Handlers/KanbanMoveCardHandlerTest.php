@@ -271,4 +271,101 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 52]);
     }
+
+    // --- #2935: no-regression guard for the four PR-driven outcomes ---
+
+    private function writeAllOutcomes(): void
+    {
+        $this->writeWriteback(['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49]);
+        $this->writeToken();
+    }
+
+    /** Board-8 order for the guard: In-Progress 49 < In-Review 50 < Shipped 52 < Released 53. */
+    private function fakeStageOrderAndCard(int $currentStage): void
+    {
+        Http::fake([
+            '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['id' => 11, 'stages' => [
+                ['id' => 49, 'position' => 3072.0],
+                ['id' => 50, 'position' => 4096.0],
+                ['id' => 52, 'position' => 5120.0],
+                ['id' => 53, 'position' => 6144.0],
+            ]]]]]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => $currentStage]]),
+        ]);
+    }
+
+    public function test_opened_does_not_regress_a_released_card(): void
+    {
+        // The core reported bug: a release PR whose title carries the card's DL-NNN
+        // (or a redelivered `opened`) fires opened→In-Review on a card already at
+        // Released — must be refused (no backward move), not silently applied.
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(53);   // Released
+
+        $this->handle($this->payload(['outcome' => 'opened']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_opened_still_promotes_a_card_forward(): void
+    {
+        // The guard must NOT block a legitimate forward move.
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(49);   // In-Progress → In-Review (50)
+
+        $this->handle($this->payload(['outcome' => 'opened']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 50]);
+    }
+
+    public function test_merged_does_not_regress_a_released_card(): void
+    {
+        // A redelivered `merged` (PR merged to a non-main base) on an already-Released
+        // card would drag Released(53)→Shipped(52) — refused.
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(53);
+
+        $this->handle($this->payload(['outcome' => 'merged']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_closed_unmerged_returns_an_in_review_card_to_in_progress(): void
+    {
+        // closed_unmerged is the ONE legitimately-backward outcome: an abandoned PR
+        // returns its In-Review card to In-Progress. The guard must allow it.
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(50);   // In-Review → In-Progress (49)
+
+        $this->handle($this->payload(['outcome' => 'closed_unmerged']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 49]);
+    }
+
+    public function test_closed_unmerged_does_not_resurrect_a_released_card(): void
+    {
+        // ...but a stale PR closing long after the card shipped/released must NOT
+        // pull it back to In-Progress (current stage is at/past the terminal floor).
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(53);   // Released
+
+        $this->handle($this->payload(['outcome' => 'closed_unmerged']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_no_regression_guard_fails_open_when_stage_order_is_unavailable(): void
+    {
+        // The guard is a safety net layered on the existing behavior — it must never
+        // BREAK the writeback. When the board order can't be read, the move proceeds.
+        $this->writeAllOutcomes();
+        Http::fake([
+            '*/boards/8/preload.json' => Http::response('upstream error', 500),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 53]]),
+        ]);
+
+        $this->handle($this->payload(['outcome' => 'opened']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 50]);
+    }
 }

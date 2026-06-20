@@ -68,7 +68,11 @@ class KanbanDependabotCardHandlerTest extends TestCase
             && $r['task']['board_id'] === 8
             && $r['task']['workflow_stage_id'] === 50
             && $r['task']['payload']['pr_number'] === 42
+            && $r['task']['payload']['pr_url'] === 'https://github.com/owner/repo/pull/42'
             && $r['task']['payload']['origin'] === 'dependabot'
+            // Lock the payload key SET to the constant bridge:check validates (#2949),
+            // so the create payload and the check's required-key list can't drift.
+            && array_keys($r['task']['payload']) === KanbanDependabotCardHandler::CREATE_PAYLOAD_KEYS
             && in_array('dependencies', $r['task']['tags'], true)
             && in_array('triaged', $r['task']['tags'], true));
     }

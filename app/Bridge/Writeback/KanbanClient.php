@@ -332,6 +332,56 @@ final class KanbanClient
         return $ids;
     }
 
+    /**
+     * The custom-field keys registered on a board — for the bridge:check validation
+     * (#2949) that a `create_dependabot_cards` mapping's board defines every key the
+     * create payload sets (pr_number, pr_url, origin). Kanban does NOT carry custom
+     * fields on the lightweight preload (it carries swimlanes/stages only), so this
+     * reads the dedicated GET /boards/{id}/custom_fields.json. A board's payload keys
+     * are its custom-field `key`s (kanban 422s any unregistered key — DL-028 upstream).
+     *
+     * @return list<string>
+     */
+    public function boardCustomFieldKeys(int $boardId): array
+    {
+        $fields = $this->http()->get("/boards/{$boardId}/custom_fields.json")->throw()->json('data');
+        $keys = [];
+        foreach (is_array($fields) ? $fields : [] as $f) {
+            if (is_array($f) && isset($f['key']) && is_string($f['key'])) {
+                $keys[] = $f['key'];
+            }
+        }
+
+        return $keys;
+    }
+
+    /**
+     * The board's workflow stages as `[stage_id => position]` (#2935) — the order
+     * source for the writeback no-regression guard, read from the lightweight
+     * preload endpoint (carries `workflows[].stages[]`, NOT every task). Position
+     * is kanban's fractional ordering double; a card and its move-target are always
+     * on the same workflow, so comparing their positions orders them correctly even
+     * though the map is flattened across a board's workflows. Empty when the read
+     * carries no stages — the caller treats "can't order" as fail-open.
+     *
+     * @return array<int, float>
+     */
+    public function boardStageOrder(int $boardId): array
+    {
+        $workflows = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data.workflows');
+        $order = [];
+        foreach (is_array($workflows) ? $workflows : [] as $wf) {
+            $stages = is_array($wf) && is_array($wf['stages'] ?? null) ? $wf['stages'] : [];
+            foreach ($stages as $s) {
+                if (is_array($s) && isset($s['id'], $s['position']) && is_numeric($s['id']) && is_numeric($s['position'])) {
+                    $order[(int) $s['id']] = (float) $s['position'];
+                }
+            }
+        }
+
+        return $order;
+    }
+
     private static function digits(string $s): string
     {
         return preg_replace('/\D+/', '', $s) ?? '';

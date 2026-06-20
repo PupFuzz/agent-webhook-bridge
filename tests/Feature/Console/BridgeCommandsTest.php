@@ -304,6 +304,155 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_warns_when_a_dependabot_mapping_board_lacks_the_create_payload_custom_fields(): void
+    {
+        // #2949: create_dependabot_cards=true but the board is missing a custom
+        // field the create payload sets (here pr_url) → every create 422s and is
+        // silently swallowed. bridge:check names it at config time (DL-026 posture).
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'create_dependabot_cards' => true, 'stages' => ['merged' => 52]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+        ]);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            // Board has pr_number + origin but NOT pr_url.
+            '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'pr_number'], ['key' => 'origin']]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('create_dependabot_cards is on for owner/repo but board 8 is MISSING the custom field(s) pr_url')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_confirms_a_dependabot_mapping_board_with_all_create_payload_custom_fields(): void
+    {
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'create_dependabot_cards' => true, 'stages' => ['merged' => 52]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+        ]);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'pr_number'], ['key' => 'pr_url'], ['key' => 'origin']]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('create_dependabot_cards custom fields ok on board 8')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_skips_the_dependabot_custom_field_probe_when_the_flag_is_off(): void
+    {
+        // create_dependabot_cards absent → the mapping never creates cards, so the
+        // custom-field requirement does not apply and the probe must not fire.
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+        ]);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('create_dependabot_cards custom fields')
+            ->assertExitCode(0);
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), 'custom_fields.json'));
+    }
+
+    public function test_check_warns_when_started_stage_is_set_without_started_from_stages(): void
+    {
+        // #2652: the DL-160 `started` trigger needs BOTH; with only stages.started
+        // it's silently inert (refused for lack of a promote-from set).
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['started' => 49]]],
+        ]));
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3', 'bridge.writeback.correlation' => 'scan']);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('sets stages.started but not started_from_stages')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warns_when_started_from_stages_is_set_without_started_stage(): void
+    {
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52], 'started_from_stages' => [46, 47]]],
+        ]));
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3', 'bridge.writeback.correlation' => 'scan']);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('sets started_from_stages but not stages.started')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_no_started_half_config_warning_when_both_are_set(): void
+    {
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['started' => 49], 'started_from_stages' => [46, 47]]],
+        ]));
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3', 'bridge.writeback.correlation' => 'scan']);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('the branch-create `started` trigger (DL-160) needs BOTH')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warns_on_a_mapped_stage_id_not_on_the_board(): void
+    {
+        // #2652: a typo'd stage id silently 422s the move / never matches the guard.
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52, 'opened' => 9999]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3', 'bridge.writeback.correlation' => 'scan']);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
+                ['id' => 49, 'position' => 1024.0], ['id' => 50, 'position' => 2048.0], ['id' => 52, 'position' => 3072.0],
+            ]]]]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('references workflow stage id(s) 9999 not on board 8')
+            ->assertExitCode(0);
+    }
+
     public function test_check_skips_the_board_probe_without_a_base_url_and_makes_no_request(): void
     {
         // Guard-lock (S3): the probe block IS reached (writeback.json + mapping),

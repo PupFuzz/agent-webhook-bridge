@@ -10,6 +10,23 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.39.0] - 2026-06-20
+
+**Writeback no-regression guard generalized to all four PR outcomes (DL-163) + a `bridge:check` guard for silently-misconfigured dependabot cards (DL-162).** PRs #159–#160 since v0.38.0, plus dependency bumps. No DB migration, no new config. The writeback change is the load-bearing one: it stops released/shipped cards being dragged backward by stale or redelivered `pull_request` events — **deploy this to halt the recurring board drift** that the prior writeback left unguarded.
+
+### Fixed
+
+- **No-regression guard on the four PR-move outcomes (DL-163, #2935).** DL-160 added a backward-move guard only to the `started` outcome; the original four — `opened` / `merged` / `merged_to_main` / `closed_unmerged` — still moved the card **unconditionally**, so a stale or redelivered `pull_request` event, or a **release PR whose title carries a card's `DL-NNN`**, could drag an already-Released card back to In-Review (seen live: cards #2650/#2659 drifted Released→In-Review repeatedly). `KanbanMoveCardHandler` now refuses any PR-move that would regress a card to an earlier stage, using the board's workflow-stage **order** (read from the lightweight preload via `KanbanClient::boardStageOrder`). `closed_unmerged` — the one legitimately-backward outcome (an abandoned PR returns its In-Review card to In-Progress) — is allowed to regress **unless** the card has already reached a terminal (Shipped/Released) stage, so a stale close can't resurrect a shipped card. **Fail-open:** when the order can't be read, the move proceeds as before, so the guard never breaks the writeback. One extra lightweight preload GET per PR-move event.
+
+### Added
+
+- **`bridge:check` flags a `create_dependabot_cards` mapping whose board lacks the create-payload custom fields (DL-162, #2949).** A mapping with `create_dependabot_cards: true` POSTs a card with the payload keys `pr_number` / `pr_url` / `origin`; kanban 422s any unregistered payload key and the handler treats the 4xx as permanent (logs + no-ops), so a board missing even one field drops **every** dependabot-card create silently (200 delivery, no card — found live on board 8 with no `pr_url`). `bridge:check` now reads the board's registered custom-field keys (`GET /boards/{id}/custom_fields.json`) and warns loudly, naming the missing field(s), when the flag is on but the board lacks them — warn-never-fail, the create-path twin of the DL-027 swimlane check. The required-key list is `KanbanDependabotCardHandler::CREATE_PAYLOAD_KEYS`, now the authoritative single source (the create payload is built from it, so the check can't drift). Diagnostics only — no delivery-path change.
+
+### Dependencies
+
+- Bump `laravel/framework` 13.12.0 → 13.16.1 (#149), `phpunit/phpunit` 12.5.28 → 13.2.1 (#148), `symfony/yaml` 7.4.13 → 8.1.0 (#147), `shivammathur/setup-php` 2.37.1 → 2.37.2 (#145), `laravel/pao` 1.1.0 → 1.1.1 (#146), `actions/checkout` 6.0.2 → 6.0.3 (#113).
+- **Security:** bump `hono` 4.12.23 → 4.12.26 in `examples/channel-servers` (#165) — fixes the high-severity path-traversal advisory GHSA-wwfh-h76j-fc44 (`serve-static` on Windows via encoded backslash). Channel-server example → **0.4.4**.
+
 ## [0.38.0] - 2026-06-19
 
 **Dependabot writeback archives the card when its PR closes unmerged (DL-160-sibling, DL-161).** PR #155 since v0.37.1. App code — no DB migration, no new config. **Behavior change, scoped to the dependabot-card path** (`create_dependabot_cards: true`); the DL-tracked move path is byte-identical. Closes a peer-integrator (Sola PM) FR (#2659).
