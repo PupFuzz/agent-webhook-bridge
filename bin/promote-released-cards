@@ -16,6 +16,10 @@
 #   - 0 visible cards on page 1 => FAIL (token's user not a board member / wrong instance).
 #   - Reads the WHOLE board by paging (`page=N`), so a board >200 cards is not truncated.
 #   - A shipped ref that matched NO card is reported at the end (a card may be unstamped).
+#   - Shipped refs derived but 0 cards promoted (0 moved AND 0 already-released) => exit 2,
+#     not silent green (#2446). Usual cause: a SQUASH-merged release PR collapses the per-PR
+#     commit subjects this reads, losing the per-card refs — use a MERGE commit for
+#     release/sync PRs (VERSIONING.md). Other cause: a release with no tracked cards.
 #
 # Usage: promote-released-cards [--dls LIST] [--base REF] [--head REF] [--dry-run] [--config PATH]
 set -euo pipefail
@@ -138,4 +142,17 @@ echo "promote-released-cards: $moved moved, $skipped already-released, $nmiss no
 # Systemic failure only (every attempted move failed) is a non-zero exit; an
 # isolated card hiccup never fails the release.
 if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; fi
+# #2446: we only reach here because the shipped-ref set was NON-EMPTY (an empty set
+# exits "nothing to do" earlier). Promoting NOTHING — 0 moved AND 0 already-released —
+# means every derived ref missed every card. The usual cause is a SQUASH-MERGED
+# release PR: squash collapses the per-PR commit subjects this script reads
+# (`git log --no-merges`), so the per-card refs are lost (use a MERGE commit, not
+# squash, for release/sync PRs — VERSIONING.md). The other cause is a release that
+# genuinely ships no board-tracked cards. Either way this must NOT pass silently
+# green (the v0.32.0 incident: 2 cards left unpromoted, job green). Exit non-zero so
+# the release-promote job surfaces it; the operator verifies + promotes manually.
+if [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then
+  echo "promote-released-cards: FAILED — derived $nmiss shipped ref(s) but promoted 0 cards. Likely a squash-merged release PR (per-PR refs lost; use a merge commit) or a release with no tracked cards. Verify and promote manually if needed." >&2
+  exit 2
+fi
 exit 0
