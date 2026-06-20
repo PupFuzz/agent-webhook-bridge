@@ -377,6 +377,19 @@ class CheckCommand extends BridgeCommand
                         if (! isset($writebackEmittingScopes[$repo])) {
                             $this->warn("writeback: mapping for {$repo} is ORPHANED — no agent runs a writeback-emitting classifier (App\\Bridge\\Contracts\\EmitsWritebackReactions) subscribed to github:{$repo}; the mapping is inert (no card will ever move) until an agent subscribes to it with that classifier");
                         }
+                        // #2652: the DL-160 branch-create `started` trigger is fail-closed —
+                        // it needs BOTH `stages.started` AND `started_from_stages`. With
+                        // exactly one set the move is silently INERT (the `stages.started`-only
+                        // half is refused for lack of a promote-from set; the
+                        // `started_from_stages`-only half has no `started` outcome to fire).
+                        // Config-only, no board read — fires even on a half-configured install.
+                        $hasStartedStage = $mapping->stageFor('started') !== null;
+                        $hasStartedFrom = $mapping->startedFromStages !== null && $mapping->startedFromStages !== [];
+                        if ($hasStartedStage !== $hasStartedFrom) {
+                            $present = $hasStartedStage ? 'stages.started' : 'started_from_stages';
+                            $missing = $hasStartedStage ? 'started_from_stages' : 'stages.started';
+                            $this->warn("writeback: mapping for {$repo} sets {$present} but not {$missing} — the branch-create `started` trigger (DL-160) needs BOTH and is silently INERT (never fires) until {$missing} is set");
+                        }
                     }
 
                     try {
@@ -447,6 +460,25 @@ class CheckCommand extends BridgeCommand
                                         $this->warn("writeback: create_dependabot_cards is on for {$repo} but board {$mapping->boardId} is MISSING the custom field(s) ".implode(', ', $missing).' the create payload sets ('.implode(', ', $required).') — every dependabot-card create will 422 and SILENTLY no-op until they are registered (add them on the board, or set create_dependabot_cards=false)');
                                     } else {
                                         $this->info("writeback: create_dependabot_cards custom fields ok on board {$mapping->boardId} ({$repo})");
+                                    }
+                                }
+                                // #2652: every workflow stage id the mapping targets — each
+                                // `stages.*` value plus the `started_from_stages` ids — must be a
+                                // real stage on the board. A typo'd id makes the move 422 (the
+                                // forward outcomes) or the `started`/no-regression guard silently
+                                // never match. Same silent-misconfig class as the swimlane (DL-027)
+                                // and dependabot-CF (DL-162) checks; cheap via boardStageOrder (DL-163).
+                                $boardStageIds = array_keys($client->boardStageOrder($mapping->boardId));
+                                if ($boardStageIds !== []) {   // empty ⇒ no stages read; don't false-warn
+                                    $targets = array_values($mapping->stages);
+                                    foreach ($mapping->startedFromStages ?? [] as $fromId) {
+                                        $targets[] = $fromId;
+                                    }
+                                    $unknownStages = array_values(array_unique(array_diff($targets, $boardStageIds)));
+                                    if ($unknownStages !== []) {
+                                        $this->warn("writeback: mapping for {$repo} references workflow stage id(s) ".implode(', ', $unknownStages)." not on board {$mapping->boardId} — those moves will 422 (or the started/no-regression guard will silently never match) until fixed");
+                                    } else {
+                                        $this->info("writeback: all mapped stage ids exist on board {$mapping->boardId} ({$repo})");
                                     }
                                 }
                             } catch (Throwable $e) {
