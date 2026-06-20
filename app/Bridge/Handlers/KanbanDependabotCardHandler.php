@@ -6,6 +6,7 @@ use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Http\Client\RequestException;
@@ -74,20 +75,26 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
         }
         $client = WritebackClientFactory::make();   // throws (→ 5xx) on a missing/insecure token
         try {
-            $cardIds = $client->correlatePr($mapping->boardId, $prNumber);
+            // correlatePr keys on the bare PR NUMBER — kanban's `github_pr` by-ref
+            // index is not repo-qualified (DL-029) — so on a board shared across repos
+            // (DL-027, lane-per-repo) a same-numbered PR in ANOTHER repo collides.
+            // Attribute each correlated card to its repo (via its stored pr_url) and
+            // keep only THIS repo's: a co-hosted repo's card is a distinct PR, never
+            // ours to move or archive.
+            $cards = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber), $repo);
 
-            // Closed-unmerged dependabot PR → RETIRE the card (DL-161). Archive,
-            // not move: routine dependabot churn shouldn't linger in any column,
-            // and archiving needs no stage mapping. A PR may map to >1 card
-            // (DL-148) — archive them all. Empty (never tracked) → nothing to do.
+            // Closed-unmerged dependabot PR → RETIRE the card(s) (DL-161). Archive,
+            // not move: routine dependabot churn shouldn't linger in any column, and
+            // archiving needs no stage mapping. A repo+PR may map to >1 card (a create
+            // race) — archive them all. Empty (never tracked) → nothing to do.
             if ($outcome === 'closed_unmerged') {
-                foreach ($cardIds as $cardId) {
+                foreach (array_keys($cards) as $cardId) {
                     if ($client->archiveCard($cardId)) {
-                        Log::info('kanban_dependabot_card: archived (closed-unmerged)', ['card_id' => $cardId, 'pr' => $prNumber]);
+                        Log::info('kanban_dependabot_card: archived (closed-unmerged)', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber]);
                     } else {
                         // 200 but not archived = wrong-verb / kanban contract change.
                         // Deterministic ⇒ permanent: log LOUD + no-op, never 5xx-storm it (DL-020 posture).
-                        Log::error('kanban_dependabot_card: archive returned 200 but the card is not archived (archived_at null) — kanban _action:archive contract may have changed; NOT retrying', ['card_id' => $cardId, 'pr' => $prNumber]);
+                        Log::error('kanban_dependabot_card: archive returned 200 but the card is not archived (archived_at null) — kanban _action:archive contract may have changed; NOT retrying', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber]);
                     }
                 }
 
@@ -100,15 +107,14 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
 
                 return;
             }
-            if ($cardIds !== []) {
-                // Idempotent: move each existing card only when not already in the
-                // target stage. A PR may map to >1 card (DL-148) — move them all.
-                foreach ($cardIds as $cardId) {
-                    $card = $client->getCard($cardId);
-                    if (($card['workflow_stage_id'] ?? null) !== $stageId) {
-                        $client->moveCard($cardId, $stageId);
-                        Log::info('kanban_dependabot_card: moved', ['card_id' => $cardId, 'stage' => $stageId, 'outcome' => $outcome, 'pr' => $prNumber]);
-                    }
+            if ($cards !== []) {
+                // >1 card for one repo+PR is a create-race artifact (see collapseDuplicates):
+                // retire the extras and move only the survivor. Self-heals duplicates minted
+                // before this guard shipped, on the PR's next event.
+                $survivor = $this->collapseDuplicates($client, $cards, $repo, $prNumber);
+                if (($survivor['workflow_stage_id'] ?? null) !== $stageId) {
+                    $client->moveCard((int) $survivor['id'], $stageId);
+                    Log::info('kanban_dependabot_card: moved', ['card_id' => $survivor['id'], 'stage' => $stageId, 'outcome' => $outcome, 'pr' => $prNumber]);
                 }
 
                 return;
@@ -120,6 +126,19 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             $payload = array_combine(self::CREATE_PAYLOAD_KEYS, [$prNumber, $url, 'dependabot']);
             $newId = $client->createCard($mapping->boardId, $stageId, $title, $payload, ['dependencies', 'triaged'], $mapping->swimlaneId);
             Log::info('kanban_dependabot_card: created', ['card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $stageId, 'swimlane' => $mapping->swimlaneId, 'outcome' => $outcome, 'pr' => $prNumber]);
+
+            // Close the create-or-move race. The correlate→create above is not atomic
+            // across concurrent deliveries: two events for the same repo+PR (opened+
+            // reopened, or a fresh-delivery-id re-emit) can both correlate empty and both
+            // create (live: board-3 cards 2965+2968 for the same PR #289). Re-correlate,
+            // filter to this repo (the card we just wrote is indexed synchronously at the
+            // kanban TaskMutator chokepoint, so a racer's card is now visible too), and
+            // collapse any duplicate. A re-read failure flows through the same transient/
+            // permanent split below; the move-path guard self-heals it on the PR's next event.
+            $live = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber), $repo);
+            if (count($live) > 1) {
+                $this->collapseDuplicates($client, $live, $repo, $prNumber);
+            }
         } catch (RequestException $e) {
             // A kanban 4xx is permanent (log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
             if ($this->isPermanent($e)) {
@@ -129,6 +148,81 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             }
             throw $e;
         }
+    }
+
+    /**
+     * Fetch the correlated cards and keep only those belonging to $repo, as an
+     * `id => card` map. Attribution is by the `github.com/<repo>/pull/` segment of
+     * a card's stored `pr_url` (see {@see cardRepo}); a card whose repo can't be
+     * read is dropped — never moved or archived on a guess. This is the cross-repo
+     * guard: correlation is by bare PR number, so a board shared across repos can
+     * surface a foreign repo's same-numbered PR (see the call sites).
+     *
+     * @param  list<int>  $cardIds
+     * @return array<int, array<string, mixed>>
+     */
+    private function cardsForRepo(KanbanClient $client, array $cardIds, string $repo): array
+    {
+        $cards = [];
+        foreach ($cardIds as $id) {
+            $card = $client->getCard($id);
+            if ($this->cardRepo($card) === $repo) {
+                $cards[$id] = $card;
+            }
+        }
+
+        return $cards;
+    }
+
+    /**
+     * The `owner/repo` a dependabot card belongs to, parsed from its stored
+     * `pr_url` (`https://github.com/<owner>/<repo>/pull/<n>`), or null when the
+     * url is absent/unparseable.
+     *
+     * @param  array<string, mixed>  $card
+     */
+    private function cardRepo(array $card): ?string
+    {
+        $payload = $card['payload'] ?? null;
+        $url = is_array($payload) ? ($payload['pr_url'] ?? null) : null;
+        if (! is_string($url) || $url === '') {
+            return null;
+        }
+
+        return preg_match('#github\.com/([^/]+/[^/]+)/pull/#', $url, $m) === 1 ? $m[1] : null;
+    }
+
+    /**
+     * Reduce the cards for one repo+PR down to a single survivor, archiving the rest,
+     * and return the survivor's card. The survivor is the LOWEST id — a deterministic
+     * choice, so two racing workers that each observe the same set converge on the
+     * same survivor and the same archive set (no flip-flop). Archiving is idempotent
+     * (an archived card drops out of correlation, so a redelivery re-presents
+     * nothing). Assumes a non-empty map (every caller has already guarded `!== []`).
+     * The cards share an identical dependabot payload, so which one survives is
+     * immaterial — only that exactly one does.
+     *
+     * @param  non-empty-array<int, array<string, mixed>>  $cards  id => card
+     * @return array<string, mixed>
+     */
+    private function collapseDuplicates(KanbanClient $client, array $cards, string $repo, int $prNumber): array
+    {
+        ksort($cards);
+        $survivorId = array_key_first($cards);
+        foreach (array_keys($cards) as $id) {
+            if ($id === $survivorId) {
+                continue;
+            }
+            if ($client->archiveCard($id)) {
+                Log::info('kanban_dependabot_card: archived duplicate card for the same repo+PR', ['card_id' => $id, 'survivor' => $survivorId, 'repo' => $repo, 'pr' => $prNumber]);
+            } else {
+                // 200 but not archived = wrong-verb / contract change — deterministic,
+                // so log LOUD + leave it rather than 5xx-storm an unfixable event (DL-020).
+                Log::error('kanban_dependabot_card: duplicate archive returned 200 but the card is not archived (archived_at null); NOT retrying', ['card_id' => $id, 'survivor' => $survivorId, 'repo' => $repo, 'pr' => $prNumber]);
+            }
+        }
+
+        return $cards[$survivorId];
     }
 
     private function isPermanent(RequestException $e): bool

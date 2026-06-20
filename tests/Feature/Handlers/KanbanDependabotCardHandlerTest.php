@@ -117,7 +117,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
     {
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'workflow_stage_id' => 50]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
         ]);
 
         $this->handle('merged');   // existing card at 50, target stage 52
@@ -130,7 +130,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
     {
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 42]]]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'workflow_stage_id' => 52]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
         ]);
 
         $this->handle('merged');
@@ -151,7 +151,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
     {
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => '2026-06-19T00:00:00+00:00']]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
         ]);
 
         $this->handle('closed_unmerged');   // DL-161: dependabot close-unmerged retires the card
@@ -175,7 +175,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
         ]));
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => '2026-06-19T00:00:00+00:00']]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
         ]);
 
         $this->handle('closed_unmerged');
@@ -190,7 +190,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
         // handler logs LOUD (error) and no-ops.
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => null]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => null, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
         ]);
         Log::spy();
 
@@ -207,14 +207,122 @@ class KanbanDependabotCardHandlerTest extends TestCase
                 ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
                 ['id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
             ]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => '2026-06-19T00:00:00+00:00']]),
-            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'archived_at' => '2026-06-19T00:00:00+00:00']]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
         ]);
 
         $this->handle('closed_unmerged');
 
         Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['_action'] === 'archive');
         Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/8.json') && $r['_action'] === 'archive');
+    }
+
+    public function test_create_collapses_a_concurrently_created_duplicate(): void
+    {
+        // The create-or-move race (#2982): the pre-create correlate sees no card,
+        // but by the time the create returns a concurrent delivery for the same PR
+        // has also created one. The post-create re-correlate now sees BOTH → the
+        // handler keeps the lowest id (99) and archives the racer (100).
+        $prUrl = 'https://github.com/owner/repo/pull/42';
+        Http::fake([
+            '*/tasks/search.json*' => Http::sequence()
+                ->push(['data' => []])                                  // pre-create correlate: empty → create
+                ->push(['data' => [                                     // post-create re-correlate: the race surfaced
+                    ['id' => 100, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                    ['id' => 99, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ]]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+            // Both cards are attributed to THIS repo via pr_url (the cross-repo guard).
+            '*/tasks/99.json' => Http::response(['data' => ['id' => 99, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/100.json' => Http::response(['data' => ['id' => 100, 'workflow_stage_id' => 50, 'archived_at' => '2026-06-20T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+        ]);
+
+        $this->handle('opened');
+
+        // The racer (higher id) is archived; the survivor (lowest id) is never PATCH-archived.
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/100.json') && ($r['_action'] ?? null) === 'archive');
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/99.json'));
+    }
+
+    public function test_create_does_not_collapse_a_same_pr_number_card_from_another_repo(): void
+    {
+        // Cross-repo guard: on a board shared across repos, a same-numbered PR in
+        // ANOTHER repo correlates by bare PR number but is a DISTINCT card. The
+        // handler attributes each card by its pr_url and must NOT archive the
+        // foreign-repo card (id 100, repo `other/repo`).
+        Http::fake([
+            '*/tasks/search.json*' => Http::sequence()
+                ->push(['data' => []])
+                ->push(['data' => [
+                    ['id' => 100, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                    ['id' => 99, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ]]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+            '*/tasks/99.json' => Http::response(['data' => ['id' => 99, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+            '*/tasks/100.json' => Http::response(['data' => ['id' => 100, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/other/repo/pull/42']]]),
+        ]);
+
+        $this->handle('opened');   // our repo is owner/repo (setUp)
+
+        // Only our card (99) survives uncollapsed; the foreign-repo card (100) is untouched.
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/100.json'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/99.json'));
+    }
+
+    public function test_no_duplicate_after_create_archives_nothing(): void
+    {
+        // The common path: the post-create re-correlate sees only the card we made
+        // → no archive, no extra writes beyond the create.
+        Http::fake([
+            '*/tasks/search.json*' => Http::sequence()
+                ->push(['data' => []])
+                ->push(['data' => [['id' => 99, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+            '*/tasks/99.json' => Http::response(['data' => ['id' => 99, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+
+        $this->handle('opened');
+
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');   // nothing archived/moved
+    }
+
+    public function test_move_path_collapses_pre_existing_duplicates_and_moves_the_survivor(): void
+    {
+        // Self-heal: duplicates minted before this guard shipped are collapsed on
+        // the PR's next non-terminal event. merge with two correlated cards → the
+        // racer (id 8) is archived, only the survivor (id 7) advances to the stage.
+        $prUrl = 'https://github.com/owner/repo/pull/42';
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'workflow_stage_id' => 50, 'archived_at' => '2026-06-20T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+        ]);
+
+        $this->handle('merged');   // target stage 52
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/8.json') && ($r['_action'] ?? null) === 'archive');
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && ($r['task']['workflow_stage_id'] ?? null) === 52);
+        // The archived duplicate is never moved.
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/8.json') && isset($r['task']['workflow_stage_id']));
+    }
+
+    public function test_card_with_unparseable_pr_url_is_never_archived(): void
+    {
+        // Conservative contract (cross-repo guard): a card whose repo can't be
+        // attributed (absent/malformed pr_url) is DROPPED — never archived or moved
+        // on a guess. Pins cardRepo's null-drop so a future classifier that stops
+        // populating pr_url can't make the handler start archiving on a bad key.
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => '']]]),
+        ]);
+
+        $this->handle('closed_unmerged');
+
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');   // unattributable → dropped, not archived
     }
 
     public function test_opt_out_mapping_ignores_the_target(): void
