@@ -332,6 +332,29 @@ final class KanbanClient
         return $ids;
     }
 
+    /**
+     * The custom-field keys registered on a board — for the bridge:check validation
+     * (#2949) that a `create_dependabot_cards` mapping's board defines every key the
+     * create payload sets (pr_number, pr_url, origin). Kanban does NOT carry custom
+     * fields on the lightweight preload (it carries swimlanes/stages only), so this
+     * reads the dedicated GET /boards/{id}/custom_fields.json. A board's payload keys
+     * are its custom-field `key`s (kanban 422s any unregistered key — DL-028 upstream).
+     *
+     * @return list<string>
+     */
+    public function boardCustomFieldKeys(int $boardId): array
+    {
+        $fields = $this->http()->get("/boards/{$boardId}/custom_fields.json")->throw()->json('data');
+        $keys = [];
+        foreach (is_array($fields) ? $fields : [] as $f) {
+            if (is_array($f) && isset($f['key']) && is_string($f['key'])) {
+                $keys[] = $f['key'];
+            }
+        }
+
+        return $keys;
+    }
+
     private static function digits(string $s): string
     {
         return preg_replace('/\D+/', '', $s) ?? '';

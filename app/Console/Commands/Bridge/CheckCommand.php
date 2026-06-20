@@ -4,6 +4,7 @@ namespace App\Console\Commands\Bridge;
 
 use App\Bridge\Adapters\WebhookAdapterFactory;
 use App\Bridge\Contracts\EmitsWritebackReactions;
+use App\Bridge\Handlers\KanbanDependabotCardHandler;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
@@ -430,6 +431,22 @@ class CheckCommand extends BridgeCommand
                                         $this->warn("writeback: swimlane_id {$mapping->swimlaneId} not found on board {$mapping->boardId} ({$repo}) — created cards will 422 and SILENTLY no-op until fixed (a deleted lane, or a lane on a different board)");
                                     } else {
                                         $this->info("writeback: swimlane_id {$mapping->swimlaneId} ok on board {$mapping->boardId} ({$repo})");
+                                    }
+                                }
+                                // #2949: a create_dependabot_cards mapping's board MUST define every
+                                // custom field the create payload sets (pr_number, pr_url, origin),
+                                // else POST /tasks.json 422s on the unregistered key and the handler
+                                // SILENTLY no-ops (permanent-4xx, DL-020) — the create path's twin of
+                                // the DL-027 swimlane gap above. A static config/board mismatch never
+                                // self-resolves, so surface it here (DL-026 "degraded must be loud").
+                                if ($mapping->createDependabotCards) {
+                                    $required = KanbanDependabotCardHandler::CREATE_PAYLOAD_KEYS;
+                                    $present = $client->boardCustomFieldKeys($mapping->boardId);
+                                    $missing = array_values(array_diff($required, $present));
+                                    if ($missing !== []) {
+                                        $this->warn("writeback: create_dependabot_cards is on for {$repo} but board {$mapping->boardId} is MISSING the custom field(s) ".implode(', ', $missing).' the create payload sets ('.implode(', ', $required).') — every dependabot-card create will 422 and SILENTLY no-op until they are registered (add them on the board, or set create_dependabot_cards=false)');
+                                    } else {
+                                        $this->info("writeback: create_dependabot_cards custom fields ok on board {$mapping->boardId} ({$repo})");
                                     }
                                 }
                             } catch (Throwable $e) {

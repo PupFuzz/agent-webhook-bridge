@@ -127,6 +127,8 @@ By default the writeback only **moves an existing card** correlated by a `DL-NNN
 
 **New cards** are tagged `dependencies` + `triaged` (so routine dependency churn doesn't flood a triage sweep) and carry `payload.pr_number`, `payload.pr_url`, and `payload.origin = "dependabot"`.
 
+**Required board custom fields (DL-162).** A created card's payload sets the custom-field keys **`pr_number`, `pr_url`, `origin`** — every one of these must be **registered as a custom field on the target board**. Kanban 422s a payload with an unregistered key, and the handler treats that 4xx as permanent (logs + no-ops), so a board missing even one field makes **every** dependabot-card create vanish silently (delivery still returns 200). `bridge:check` verifies this up front and warns, naming the missing field(s), when `create_dependabot_cards` is on but the board lacks them — fix it by adding the fields on the board (or setting `create_dependabot_cards: false`).
+
 **Token.** The writeback user must be able to **create** tasks on the board — i.e. write access + board membership, the same it already needs for moves. No extra config beyond the flag.
 
 ## Optional: pin created cards to a swimlane (DL-027)
