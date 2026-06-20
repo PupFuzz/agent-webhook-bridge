@@ -12,7 +12,7 @@ _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
 ## [0.39.0] - 2026-06-20
 
-**Writeback no-regression guard generalized to all four PR outcomes (DL-163) + a `bridge:check` guard for silently-misconfigured dependabot cards (DL-162).** PRs #159–#160 since v0.38.0, plus dependency bumps. No DB migration, no new config. The writeback change is the load-bearing one: it stops released/shipped cards being dragged backward by stale or redelivered `pull_request` events — **deploy this to halt the recurring board drift** that the prior writeback left unguarded.
+**Writeback no-regression guard generalized to all four PR outcomes (DL-163) + a `bridge:check` guard for silently-misconfigured dependabot cards (DL-162).** PRs #159–#160 + #163 (#2652, DL-164: bridge:check started/stage-id guards) + #164 (#2446, DL-165: promote-released-cards loud-fail) since v0.38.0, plus dependency bumps. No DB migration, no new config. The writeback change is the load-bearing one: it stops released/shipped cards being dragged backward by stale or redelivered `pull_request` events — **deploy this to halt the recurring board drift** that the prior writeback left unguarded.
 
 ### Fixed
 
@@ -25,6 +25,7 @@ _(empty after each tagged release; accumulates as feature PRs land on dev)_
 ### Dependencies
 
 - Bump `laravel/framework` 13.12.0 → 13.16.1 (#149), `phpunit/phpunit` 12.5.28 → 13.2.1 (#148), `symfony/yaml` 7.4.13 → 8.1.0 (#147), `shivammathur/setup-php` 2.37.1 → 2.37.2 (#145), `laravel/pao` 1.1.0 → 1.1.1 (#146), `actions/checkout` 6.0.2 → 6.0.3 (#113).
+- **Security:** bump `hono` 4.12.23 → 4.12.26 in `examples/channel-servers` (#165) — fixes the high-severity path-traversal advisory GHSA-wwfh-h76j-fc44 (`serve-static` on Windows via encoded backslash). Channel-server example → **0.4.4**.
 
 ## [0.38.0] - 2026-06-19
 
