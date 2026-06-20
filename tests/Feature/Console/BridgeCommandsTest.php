@@ -304,6 +304,84 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_warns_when_a_dependabot_mapping_board_lacks_the_create_payload_custom_fields(): void
+    {
+        // #2949: create_dependabot_cards=true but the board is missing a custom
+        // field the create payload sets (here pr_url) → every create 422s and is
+        // silently swallowed. bridge:check names it at config time (DL-026 posture).
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'create_dependabot_cards' => true, 'stages' => ['merged' => 52]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+        ]);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            // Board has pr_number + origin but NOT pr_url.
+            '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'pr_number'], ['key' => 'origin']]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('create_dependabot_cards is on for owner/repo but board 8 is MISSING the custom field(s) pr_url')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_confirms_a_dependabot_mapping_board_with_all_create_payload_custom_fields(): void
+    {
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'create_dependabot_cards' => true, 'stages' => ['merged' => 52]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+        ]);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'pr_number'], ['key' => 'pr_url'], ['key' => 'origin']]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('create_dependabot_cards custom fields ok on board 8')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_skips_the_dependabot_custom_field_probe_when_the_flag_is_off(): void
+    {
+        // create_dependabot_cards absent → the mapping never creates cards, so the
+        // custom-field requirement does not apply and the probe must not fire.
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+        ]);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('create_dependabot_cards custom fields')
+            ->assertExitCode(0);
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), 'custom_fields.json'));
+    }
+
     public function test_check_skips_the_board_probe_without_a_base_url_and_makes_no_request(): void
     {
         // Guard-lock (S3): the probe block IS reached (writeback.json + mapping),

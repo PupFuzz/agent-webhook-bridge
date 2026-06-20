@@ -33,6 +33,16 @@ use Illuminate\Support\Facades\Log;
  */
 final class KanbanDependabotCardHandler implements DurableReaction, Handler
 {
+    /**
+     * The board custom-field keys this handler's create payload sets. Single
+     * source of truth: the create call below builds exactly these keys, and
+     * bridge:check (#2949) reads this to verify the target board registers them
+     * (an unregistered key 422s the create and is silently swallowed — DL-020).
+     *
+     * @var list<string>
+     */
+    public const CREATE_PAYLOAD_KEYS = ['pr_number', 'pr_url', 'origin'];
+
     public function handle(ReactionTarget $target, AgentConfig $agent): void
     {
         $p = $target->payload;
