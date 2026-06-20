@@ -113,11 +113,12 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
 
                 return;
             }
-            $newId = $client->createCard($mapping->boardId, $stageId, $title, [
-                'pr_number' => $prNumber,
-                'pr_url' => $url,
-                'origin' => 'dependabot',
-            ], ['dependencies', 'triaged'], $mapping->swimlaneId);
+            // Keyed by self::CREATE_PAYLOAD_KEYS so the create payload and the keys
+            // bridge:check (#2949) verifies the board registers are ONE source of
+            // truth: add a key to the constant without a value here and array_combine
+            // throws (count mismatch) — they cannot silently drift.
+            $payload = array_combine(self::CREATE_PAYLOAD_KEYS, [$prNumber, $url, 'dependabot']);
+            $newId = $client->createCard($mapping->boardId, $stageId, $title, $payload, ['dependencies', 'triaged'], $mapping->swimlaneId);
             Log::info('kanban_dependabot_card: created', ['card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $stageId, 'swimlane' => $mapping->swimlaneId, 'outcome' => $outcome, 'pr' => $prNumber]);
         } catch (RequestException $e) {
             // A kanban 4xx is permanent (log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
