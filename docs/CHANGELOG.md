@@ -12,7 +12,7 @@ _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
 ## [0.39.0] - 2026-06-20
 
-**Writeback no-regression guard generalized to all four PR outcomes (DL-163) + a `bridge:check` guard for silently-misconfigured dependabot cards (DL-162).** PRs #159–#160 since v0.38.0, plus dependency bumps. No DB migration, no new config. The writeback change is the load-bearing one: it stops released/shipped cards being dragged backward by stale or redelivered `pull_request` events — **deploy this to halt the recurring board drift** that the prior writeback left unguarded.
+**Writeback no-regression guard generalized to all four PR outcomes (DL-163) + a `bridge:check` guard for silently-misconfigured dependabot cards (DL-162).** PRs #159–#160 + #163 (#2652, DL-164: bridge:check started/stage-id guards) + #164 (#2446, DL-165: promote-released-cards loud-fail) since v0.38.0, plus dependency bumps. No DB migration, no new config. The writeback change is the load-bearing one: it stops released/shipped cards being dragged backward by stale or redelivered `pull_request` events — **deploy this to halt the recurring board drift** that the prior writeback left unguarded.
 
 ### Fixed
 
