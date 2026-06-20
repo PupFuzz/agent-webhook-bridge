@@ -10,6 +10,18 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.40.0] - 2026-06-20
+
+**Dependabot writeback card-create made idempotent on `(repo, PR)` — collapses concurrent-delivery duplicates (DL-166).** PR #168. App code — **no DB migration, no new config, no change to what the receiver accepts/rejects.** Plus the `closed_unmerged → Won't Do` operator-doc option (#167, docs only). Behavior change scoped to the dependabot-card path (`create_dependabot_cards`); the DL-tracked move path is byte-identical.
+
+### Fixed
+
+- **Dependabot card create is idempotent on `(repo, PR)` (#2982, DL-166).** Closes peer-integrator (Sola PM) report #2982 — the DL-024 dependabot writeback **double-created** a card for one PR (live: board-3 cards 2965+2968 for `actions/checkout` PR #289) and **orphaned the duplicate** in In-Review on merge. Root cause is a **check-then-create race**, not a correlation miss: `correlatePr`→`createCard` isn't atomic across concurrent deliveries (`opened`+`reopened`, or a fresh-`delivery_id` re-emit), so two parallel workers both correlate empty and both create. `KanbanDependabotCardHandler` now **collapses duplicates on the `(repo, PR)` key** — keep the lowest-id survivor (deterministic ⇒ racing workers converge), archive the rest (idempotent) — applied after create (closes the race) and on the move path (self-heals duplicates minted before this shipped). **Cross-repo guard (load-bearing):** correlation keys on the bare PR number (kanban's `github_pr` by-ref isn't repo-qualified), so on a board **shared across repos** (DL-027) a same-numbered PR in another repo collides; the handler attributes each correlated card by its `pr_url` and only ever moves/archives **this repo's** cards — a co-hosted repo's identically-numbered card is never touched (this also fixes a pre-existing cross-repo mis-*move*).
+
+### Docs
+
+- **`closed_unmerged → Won't Do` documented as a per-deployment operator option (#167, AIMLA FR Part B1).** `docs/writeback.md` now documents mapping `closed_unmerged` to a terminal "Won't Do" stage as an abandon-disposition (the default stays In Progress; the DL-163 guard already permits the terminal move; the dependabot path always archives regardless). Docs only — no app code.
+
 ## [0.39.0] - 2026-06-20
 
 **Writeback no-regression guard generalized to all four PR outcomes (DL-163) + a `bridge:check` guard for silently-misconfigured dependabot cards (DL-162).** PRs #159–#160 + #163 (#2652, DL-164: bridge:check started/stage-id guards) + #164 (#2446, DL-165: promote-released-cards loud-fail) since v0.38.0, plus dependency bumps. No DB migration, no new config. The writeback change is the load-bearing one: it stops released/shipped cards being dragged backward by stale or redelivered `pull_request` events — **deploy this to halt the recurring board drift** that the prior writeback left unguarded.
