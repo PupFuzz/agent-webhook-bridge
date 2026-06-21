@@ -13,6 +13,7 @@ Reference implementations (read these first — they're short):
 
 - `app/Bridge/Classifiers/InboxOnlyClassifier.php` — canonical classifier (~160 LOC)
 - `app/Bridge/Classifiers/EventDrivenClassifier.php` — event-driven subclass
+- `app/Bridge/Classifiers/KanbanTriageClassifier.php` — triage-wake subclass (DL-168): set `classifier.class: App\Bridge\Classifiers\KanbanTriageClassifier` on the **triage-owner agent** and subscribe it to `task.created`, and a **human-filed, untriaged** card (no `triaged`/`id:pr:*` tag, no `dl` ref — read from the kanban DL-164 `card` snapshot, no API call) wakes that agent's session via `channel_push`. Agent/bridge/dependabot-created and already-classified cards don't wake. Requires kanban **v0.22.0+**; other agents keep `InboxOnly` and never wake.
 - `app/Bridge/Handlers/` — shipped handlers (`log_intent`, `registry_append`, `channel_push`, `kanban_move_card`; `spawn_detached` opt-in)
 - `app/Bridge/Contracts/Classifier.php` + `Handler.php` — contracts your class must implement
 

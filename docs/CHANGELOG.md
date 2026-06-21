@@ -10,6 +10,14 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.42.0] - 2026-06-20
+
+**Triage-wake classifier — a human-filed, untriaged card wakes the triage-owner session in near-real-time (DL-168).** PR #176. App code — **no migration, no config schema change, no change to what the receiver accepts/rejects.** Opt-in (OFF until an agent sets `classifier.class`). Requires kanban **v0.22.0+** for the `card` snapshot (degrades to over-wake on older). Closes peer-integrator (AIMLA PM) FR #3010.
+
+### Added
+
+- **`KanbanTriageClassifier` (DL-168, #3010).** In the DL-driven board model a work item a human files **directly on the board** is untriaged (no `DL-NNN`, no `triaged` tag) and needs the PM to triage it — but today the PM discovers these only at SessionStart (session-cadence; a card filed mid-session waits for the next session). The new opt-in classifier (extends `InboxOnlyClassifier`) pairs the `new_card` Intent for a **human-filed** (`!isKnownAgent`), **untriaged** (no `triaged`/`id:pr:*` tag, no `dl` external reference) `task.created` with a `channel_push` to the triage-owner's cfg-default channel — the same live-wake transport the bridge already uses. Everything else stays inbox-only. **The filter runs entirely at classify time with NO API call and NO read token** off the kanban DL-164 `card` state snapshot the `task.created` webhook now carries — this is why the upstream snapshot was built first (it avoids the per-consumer `GET /tasks/{id}` + read-token workarounds). **No self-wake** (each automated creator is suppressed by a *different* mechanism): registered agents by `isKnownAgent`; the bridge's own dependabot-card creations carry `triaged` (DL-024) → dropped by the untriaged filter; the writeback identity is dropped pre-classify by the global-echo gate. **Degrade:** a pre-v0.22.0 kanban omits the `card` key → reads as untriaged → over-wake (never a miss; the SessionStart untriaged-snapshot is the durable backstop). **Opt-in:** set `classifier.class: App\Bridge\Classifiers\KanbanTriageClassifier` on the triage-owner agent + subscribe it to `task.created`; other agents keep `InboxOnly` and never wake.
+
 ## [0.41.0] - 2026-06-20
 
 **Source-aware correlation — the writeback passes the repo as the kanban `source` qualifier (DL-167).** PR #172. App code — **no migration, no new config.** Requires kanban **v0.21.0+** for the `source` param (degrades to any-source on older). Closes the cross-repo collision reported by both peer integrators.
