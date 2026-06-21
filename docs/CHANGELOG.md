@@ -10,6 +10,14 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.41.0] - 2026-06-20
+
+**Source-aware correlation — the writeback passes the repo as the kanban `source` qualifier (DL-167).** PR #172. App code — **no migration, no new config.** Requires kanban **v0.21.0+** for the `source` param (degrades to any-source on older). Closes the cross-repo collision reported by both peer integrators.
+
+### Fixed
+
+- **Repo-qualified by-ref correlation (DL-167).** A bare PR/DL number collides across repos on a board aggregating multiple repos (live: AIMLA board-9 `by-ref?system=github_pr&ref=33` → 4 rows across platform/magento/moodle; Sola board-3 shares 296 PR numbers across 3 repos). kanban added a `source` (repo) dimension on `by-ref` (kanban DL-163, v0.21.0); the bridge now uses it. `KanbanClient::correlatePr`/`correlateDl` take the event's repo and, in **`ref` mode** (the default, the only mode the multi-repo adopters run), pass it as the canonicalized `source` query param so the server returns only **this repo's** card(s) — for **both** the dependabot path (`KanbanDependabotCardHandler`) and the DL move path (`GitHubPrCardMoveClassifier`). Omitted repo / single-repo board ⇒ no `source` key ⇒ byte-identical to before. `scan` mode (legacy) keeps its existing `cardsForRepo` client-side guard. Closes the collision AIMLA + Sola reported — they pull this update to get repo-precise correlation.
+
 ## [0.40.0] - 2026-06-20
 
 **Dependabot writeback card-create made idempotent on `(repo, PR)` — collapses concurrent-delivery duplicates (DL-166).** PR #168. App code — **no DB migration, no new config, no change to what the receiver accepts/rejects.** Plus the `closed_unmerged → Won't Do` operator-doc option (#167, docs only). Behavior change scoped to the dependabot-card path (`create_dependabot_cards`); the DL-tracked move path is byte-identical.
