@@ -20,6 +20,7 @@ kanban POSTs events to the bridge receiver; the bridge classifies → stages →
 | **Delivery guarantee** | **At-least-once, borrowed from kanban's webhook retry.** The bridge has no queue: any internal failure → `5xx` → kanban **re-delivers**. The bridge's correctness depends on kanban actually retrying. Do not assume exactly-once. | kanban webhook-retry config (cite the live curve — do **not** hard-code a number here; verify against kanban source per [`feedback-verify-borrowed-guarantees`]) |
 | **Actor identity** | Keys on the **immutable kanban `user_id`**, never a renameable display handle. | DL-002 / DL-013 |
 | **Event vocabulary** | The bridge may receive any kanban changelog event. Families: `task.*` (created/updated/moved), card lifecycle (delete/archive/restore), `timer.*`, `comment.*`, `subtask.*`, `workflow.*`, `lane.*`, `swimlane.*`, `card_type.*`, `custom_field.*`, `board.imported`, `card_updated`. **Authoritative list = kanban's `WebhookEvents`** (don't hard-code an enumeration here — it drifts). Subscribers key on `event_type`; some events carry an `imported: true` flag (key on the flag, not the event name) — DL-114. |
+| **`task.created` `card` snapshot (event-carried state)** | `task.created` carries a **bounded** `payload.card` snapshot of the new card's classification-relevant state: `{ tags: string[], card_type_id: int\|null, card_type: string\|null (the type's `external_id`), workflow_stage_id: int, external_references: [{ system, source, ref }] }`. `external_references[].system` ∈ {`dl`, `github_pr`} — the **same cross-system enum** as the by-ref API (kanban DL-147/148); `source` is the canonicalized repo (`owner/repo`, lowercased) or `null`. It is a **scoped snapshot, not the full card** — a consumer needing more must still `GET /tasks/{id}`. Lets a classifier read triaged/ref state at classify time with **no callback + no read token** (`KanbanTriageClassifier`/DL-168). **Absent on a pre-v0.22.0 kanban ⇒ consumers must degrade safely** (e.g. read as untriaged ⇒ over-wake, never a miss). | kanban DL-164 / `CardEventSnapshot`; bridge DL-168 |
 
 ## 2. Outbound — bridge → kanban (v3 REST API)
 
@@ -64,6 +65,7 @@ Rules — the "degraded states must be loud" posture (same as the bridge's blind
 | HMAC over **raw body**; envelope `board_id` (or GitHub `repository.full_name`) must match the `?b=` scope | kanban + bridge | `401 scope_mismatch` | G-018 |
 | kanban **retries** failed deliveries | kanban | The bridge's *only* delivery guarantee evaporates → silent intent loss | — |
 | Writeback `identity_id` is echo-suppressed | bridge | The writeback's own `card_updated` loops back | DL-018 |
+| `task.created` carries a `payload.card` snapshot (`tags`, `external_references[{system,source,ref}]`, `card_type`, `workflow_stage_id`) | kanban | Classify-time triage filtering (DL-168) loses its no-token state read → must degrade to over-wake, never silently miss | kanban DL-164 / bridge DL-168 |
 
 ## 4. The GitHub provider (writeback trigger)
 
