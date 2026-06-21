@@ -221,6 +221,32 @@ class KanbanClientTest extends TestCase
         $this->assertSame([], $this->client('ref')->correlateDl(8, 'DL-1'));
     }
 
+    public function test_ref_correlate_passes_repo_as_canonical_source_qualifier(): void
+    {
+        // DL-167: on a multi-repo board, the repo is sent as the kanban `source`
+        // dimension (kanban DL-163), canonicalized (trim + lower-case), so a bare
+        // ref that collides across repos resolves to THIS repo's card only.
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['data' => [['id' => 7]]])]);
+
+        $this->client('ref')->correlatePr(8, 85, 'Octo/Web');
+        $this->client('ref')->correlateDl(8, 'DL-28', 'Octo/Web');
+
+        Http::assertSent(fn (Request $r) => str_contains(urldecode($r->url()), 'system=github_pr')
+            && str_contains(urldecode($r->url()), 'source=octo/web'));
+        Http::assertSent(fn (Request $r) => str_contains(urldecode($r->url()), 'system=dl')
+            && str_contains(urldecode($r->url()), 'source=octo/web'));
+    }
+
+    public function test_ref_correlate_omits_source_when_no_repo_given(): void
+    {
+        // Back-compat: no repo ⇒ no `source` query key (a pre-DL-163 kanban, and
+        // the single-repo case, behave exactly as before).
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['data' => []])]);
+
+        $this->client('ref')->correlatePr(8, 85);
+        Http::assertSent(fn (Request $r) => ! str_contains(urldecode($r->url()), 'source='));
+    }
+
     public function test_ref_mode_does_not_scan_the_board(): void
     {
         Http::fake([
