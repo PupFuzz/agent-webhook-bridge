@@ -75,13 +75,12 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
         }
         $client = WritebackClientFactory::make();   // throws (→ 5xx) on a missing/insecure token
         try {
-            // correlatePr keys on the bare PR NUMBER — kanban's `github_pr` by-ref
-            // index is not repo-qualified (DL-029) — so on a board shared across repos
-            // (DL-027, lane-per-repo) a same-numbered PR in ANOTHER repo collides.
-            // Attribute each correlated card to its repo (via its stored pr_url) and
-            // keep only THIS repo's: a co-hosted repo's card is a distinct PR, never
-            // ours to move or archive.
-            $cards = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber), $repo);
+            // Repo-qualified correlation (DL-167): correlatePr passes $repo, so in
+            // `ref` mode kanban's `source` dimension (kanban DL-163) already returns
+            // only THIS repo's cards. cardsForRepo stays as the `scan`-mode guard and
+            // a belt-and-suspenders confirm — it attributes each card by its pr_url
+            // and drops any foreign-repo card a bare-number scan match surfaced.
+            $cards = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber, $repo), $repo);
 
             // Closed-unmerged dependabot PR → RETIRE the card(s) (DL-161). Archive,
             // not move: routine dependabot churn shouldn't linger in any column, and
@@ -130,12 +129,12 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             // Close the create-or-move race. The correlate→create above is not atomic
             // across concurrent deliveries: two events for the same repo+PR (opened+
             // reopened, or a fresh-delivery-id re-emit) can both correlate empty and both
-            // create (live: board-3 cards 2965+2968 for the same PR #289). Re-correlate,
-            // filter to this repo (the card we just wrote is indexed synchronously at the
-            // kanban TaskMutator chokepoint, so a racer's card is now visible too), and
-            // collapse any duplicate. A re-read failure flows through the same transient/
-            // permanent split below; the move-path guard self-heals it on the PR's next event.
-            $live = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber), $repo);
+            // create (live: board-3 cards 2965+2968 for the same PR #289). Re-correlate
+            // (repo-qualified at source — the card we just wrote is indexed synchronously
+            // at the kanban TaskMutator chokepoint, so a racer's card is now visible too)
+            // and collapse any duplicate. A re-read failure flows through the same
+            // transient/permanent split below; the move-path guard self-heals it next event.
+            $live = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber, $repo), $repo);
             if (count($live) > 1) {
                 $this->collapseDuplicates($client, $live, $repo, $prNumber);
             }
@@ -152,11 +151,11 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
 
     /**
      * Fetch the correlated cards and keep only those belonging to $repo, as an
-     * `id => card` map. Attribution is by the `github.com/<repo>/pull/` segment of
-     * a card's stored `pr_url` (see {@see cardRepo}); a card whose repo can't be
-     * read is dropped — never moved or archived on a guess. This is the cross-repo
-     * guard: correlation is by bare PR number, so a board shared across repos can
-     * surface a foreign repo's same-numbered PR (see the call sites).
+     * `id => card` map. correlatePr is repo-qualified at the source in `ref` mode
+     * (DL-167 → kanban `source`, DL-163), so this is a confirm there; in `scan`
+     * mode it's the actual cross-repo guard. Attribution is by the
+     * `github.com/<repo>/pull/` segment of a card's stored `pr_url`; a card whose
+     * repo can't be read is dropped — never moved or archived on a guess.
      *
      * @param  list<int>  $cardIds
      * @return array<int, array<string, mixed>>

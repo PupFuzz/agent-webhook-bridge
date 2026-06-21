@@ -92,12 +92,14 @@ final class KanbanClient
      *
      * @return list<int>
      */
-    public function correlateDl(int $boardId, string $dl): array
+    public function correlateDl(int $boardId, string $dl, ?string $repo = null): array
     {
         if ($this->correlation === 'ref') {
-            return $this->findCardsByRef($boardId, 'dl', $dl);
+            return $this->findCardsByRef($boardId, 'dl', $dl, self::canonSource($repo));
         }
 
+        // scan (legacy): no server-side `source` filter — `ref` is the default and
+        // the only mode the multi-repo adopters (AIMLA/Sola) run.
         $want = self::digits($dl);
         if ($want === '') {
             return [];
@@ -120,12 +122,15 @@ final class KanbanClient
      *
      * @return list<int>
      */
-    public function correlatePr(int $boardId, int $prNumber): array
+    public function correlatePr(int $boardId, int $prNumber, ?string $repo = null): array
     {
         if ($this->correlation === 'ref') {
-            return $this->findCardsByRef($boardId, 'github_pr', (string) $prNumber);
+            return $this->findCardsByRef($boardId, 'github_pr', (string) $prNumber, self::canonSource($repo));
         }
 
+        // scan (legacy): no server-side `source`; the bare PR-number match is
+        // repo-disambiguated downstream (KanbanDependabotCardHandler's cardsForRepo
+        // guard). `ref` is the default and the only mode AIMLA/Sola run.
         $ids = [];
         foreach ($this->correlationCards($boardId) as $card) {
             $pr = $card['payload']['pr_number'] ?? null;
@@ -145,12 +150,17 @@ final class KanbanClient
      *
      * @return list<int>
      */
-    public function findCardsByRef(int $boardId, string $system, string $ref): array
+    public function findCardsByRef(int $boardId, string $system, string $ref, ?string $source = null): array
     {
-        $data = $this->http()->get("/boards/{$boardId}/tasks/by-ref.json", [
-            'system' => $system,
-            'ref' => $ref,
-        ])->throw()->json('data');
+        $query = ['system' => $system, 'ref' => $ref];
+        // Repo qualifier (kanban DL-163): on a board aggregating multiple repos a
+        // bare ref collides; pass the source so the server returns only this repo's
+        // cards. Omitted ⇒ the prior any-source behavior (back-compat with a kanban
+        // that predates the `source` param — it ignores the unknown query key).
+        if ($source !== null && $source !== '') {
+            $query['source'] = $source;
+        }
+        $data = $this->http()->get("/boards/{$boardId}/tasks/by-ref.json", $query)->throw()->json('data');
 
         $ids = [];
         foreach (is_array($data) ? $data : [] as $card) {
@@ -385,5 +395,21 @@ final class KanbanClient
     private static function digits(string $s): string
     {
         return preg_replace('/\D+/', '', $s) ?? '';
+    }
+
+    /**
+     * Canonicalize a repo qualifier to match the kanban server's `source`
+     * canonicalization (DL-163): trim + lower-case, null for empty. The bridge
+     * passes the canonical form so `ref`-mode (server-side) and `scan`-mode
+     * (client-side) correlation agree on the same key.
+     */
+    private static function canonSource(?string $repo): ?string
+    {
+        if ($repo === null) {
+            return null;
+        }
+        $repo = trim($repo);
+
+        return $repo === '' ? null : mb_strtolower($repo);
     }
 }
