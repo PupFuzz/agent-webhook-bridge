@@ -94,7 +94,10 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         // A DL/PR can track MULTIPLE cards (bundled PR — DL-148), so move them ALL:
         // one target per card, each with the card id as its distinct target_id so
         // they don't coalesce (DL-003).
-        $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl);
+        // Repo-qualified (DL-167): pass the event's repo so a DL number that
+        // collides across repos on a shared board (DL-027) resolves to THIS repo's
+        // card only — via kanban's `source` dimension (DL-163).
+        $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $repo);
         if ($cardIds === []) {
             return new ClassifyResult;   // no card tracks this PR → no-op
         }
@@ -151,7 +154,10 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         }
         $dl = 'DL-'.$m[1];
 
-        $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl);
+        // Repo-qualified (DL-167): pass the event's repo so a DL number that
+        // collides across repos on a shared board (DL-027) resolves to THIS repo's
+        // card only — via kanban's `source` dimension (DL-163).
+        $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $repo);
         if ($cardIds === []) {
             return new ClassifyResult;   // no card tracks this DL → no-op
         }
