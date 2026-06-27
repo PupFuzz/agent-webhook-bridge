@@ -10,6 +10,15 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.42.3] - 2026-06-27
+
+**Dependency bumps.** PRs #180, #181. **No app code, schema, migration, or `.env`; no behavior change.**
+
+### Changed
+
+- `actions/checkout` 6.0.3 → 7.0.0 across the CI workflows (#180). CI runs on github-hosted `ubuntu-latest`, so the v7 Node-24 runtime requirement is satisfied with no runner change.
+- `laravel/pint` (dev) 1.29.1 → 1.29.3 (#181). Code style unchanged (CI `pint --test` green).
+
 ## [0.42.2] - 2026-06-27
 
 **Docs: MCP-channel + upstream-reconcile is the recommended PM consumption model; `bridge:inbox` is the fallback (DL-170).** PR #185. **Docs only — no app code, classifier, schema, migration, or `.env`; no behavior change.**
