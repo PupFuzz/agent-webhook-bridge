@@ -10,6 +10,14 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.42.2] - 2026-06-27
+
+**Docs: MCP-channel + upstream-reconcile is the recommended PM consumption model; `bridge:inbox` is the fallback (DL-170).** PR #185. **Docs only — no app code, classifier, schema, migration, or `.env`; no behavior change.**
+
+### Changed
+
+- **`docs/consumer-guide.md` § Consumption patterns — canonized the PM consumption standard (DL-170).** For a live, upstream-anchored agent (a PM): **MCP channel push** for the event-based live wake + **reconcile-from-source-of-truth** (GitHub via `gh`, kanban via API) for recovery — `SessionStart` = full-dump, mid-session = a **light delta** (only new-since-watermark, silent-when-empty, throttled, sub-second; the full reconciler is ~40s and would stall an inline tool call). The bridge `inbox` is repositioned as the **fallback** — for consumers with bridge-only intents or that can't reconcile from an upstream. Validated by two independent PM implementations (Sola + AIMLA), both of which confirmed zero bridge-only intents (so the inbox is redundant for them) and built the same SessionStart-full + mid-session-delta design. DL-169's `bridge:inbox` PreToolUse guidance stays valid for the fallback path; DL-170 sets the primary recommendation above it. The open convergence item — upstreaming the GitHub+kanban delta reconcile into the shared consumer-side framework — is consumer-side, recorded for the framework maintainer.
+
 ## [0.42.1] - 2026-06-27
 
 **Docs: stress `PreToolUse` as the required mid-session `bridge:inbox` trigger (DL-169).** PR #182. **Docs + example only — no app code, classifier, schema, migration, or `.env`; no behavior change.** Prompted by a peer-integrator (Sola PM) "silently lost events" report that diagnosed to **consume-side hook wiring, not bridge code**.
