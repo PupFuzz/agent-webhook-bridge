@@ -1,6 +1,7 @@
 {
   "_comment": "agent-webhook-bridge — Claude Code hooks for surfacing the inbox into conversation context. Append to your existing ~/.claude/settings.json's 'hooks' object (or merge if the keys already exist). Point the path at YOUR install's artisan (each agent is its own Laravel install, so the install dir selects the agent — there is no --config flag).",
   "_dl072_note": "bridge:inbox auto-detects Claude Code's hook stdin JSON (parses hook_event_name) and wraps output in the {hookSpecificOutput: {hookEventName, additionalContext}} envelope for events that support context injection (SessionStart, Setup, SubagentStart, UserPromptSubmit, UserPromptExpansion, PreToolUse, PostToolUse, PostToolUseFailure, PostToolBatch). Plain stdout from those events reaches the debug log only and never the model — the v0.4.0..v0.6.0 silent surfacing bug. Stop and Notification do NOT support additionalContext per the hooks spec; bridge:inbox still fires there for the seen-dedup side effect, but surface text reaches the debug log only. Auto-detection is the default (--hook-format=auto); force with --hook-format=claude-code|plain. The id-based inbox-seen.json dedup makes re-running on every PreToolUse naturally idempotent (silent when nothing is unseen), so no throttle flag is needed.",
+  "_wiring_note": "BOTH legs are required. SessionStart recovers intents that accrued BETWEEN sessions (boundary-only — it fires once at session start). PreToolUse is the per-tool-call mid-session trigger (recommended): it re-checks the inbox before each tool call, so an intent that arrives during a long active session surfaces within that session (PostToolUse is the after-the-tool equivalent; UserPromptSubmit only fires on a user turn, so it misses a long autonomous tool-turn). SessionStart-only is the most common misconfiguration — a long-lived session that never restarts surfaces nothing new, and live channel_push is best-effort (a push during a busy turn is dropped and recovered ONLY via the inbox), so the loss looks like 'the bridge dropped my event' when it is sitting unseen in inbox-<agent>.jsonl. Keep the PreToolUse matcher '' (all tools), not 'Bash': a narrow matcher only fires before that one tool, so a long stretch of non-matching work (Read/Edit/Grep) reopens the same gap. bridge:inbox is id-deduped + silent-when-empty, so every-tool firing is idempotent and cheap-when-quiet (one short php subprocess per tool call).",
 
   "hooks": {
     "SessionStart": [
@@ -17,7 +18,7 @@
 
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "",
         "hooks": [
           {
             "type": "command",
