@@ -43,7 +43,22 @@ Both schemas are JSON Schema 2020-12 draft. Non-additive changes (renames, remov
 
 ## Consumption patterns
 
-### A. `bridge:inbox` (recommended — Claude Code hooks)
+> ### Recommended model for live agents (e.g. PM agents): **MCP channel + upstream reconcile**
+>
+> For a Claude Code agent whose events all originate in an upstream **source of truth** (GitHub issues/PRs/comments, kanban cards), this is the standard — verified by two independent PM implementations (DL-170). It has two layers; **the bridge `inbox` is neither of them** (it's the fallback below):
+>
+> 1. **Live wake = the MCP channel push** (`notifications/claude/channel`, via the channel server in `examples/channel-servers/` over a unix socket). This is the only genuinely **event-based** path — the bridge pushes the instant it processes the webhook. It's *best-effort* (a push while the session is mid-turn or disconnected is dropped), so it must be paired with the recovery layer.
+> 2. **Durable recovery = reconcile from the source of truth** (re-derive open work from GitHub via `gh` and from the kanban API) — **not** from the bridge inbox. Run it in two modes:
+>    - **SessionStart → full-dump reconcile.** Re-establish complete open state (every open `to:<you>`, every untriaged/assigned card).
+>    - **Mid-session → light *delta* reconcile.** Surface only items **new since a watermark**, **silent when nothing is new**, and **throttled** (periodic — e.g. once per 3–10 min — gated by a state-file timestamp; it hits the GitHub/kanban APIs, so it must NOT run on every tool call). It **must be a light delta (sub-second)**, not the full reconciler run inline — the full sweep can be tens of seconds and would stall the tool call. This bounds worst-case recovery latency in a long quiet turn without spamming context.
+>
+> **Why reconcile, not the inbox:** reconcile-from-truth is idempotent and drift-proof — it recovers *what is actually open now*, even if the bridge inbox drifted or was pruned. The inbox replays a notification log, which is weaker, and **redundant** for an agent whose every event is an upstream artifact (confirmed: both reference PMs subscribe only to GitHub `coord_*` + kanban `card_*` intents — zero bridge-only events).
+>
+> **Known refinement (in progress):** today the reference implementations cover **GitHub mid-session** (delta) + **kanban at SessionStart**; folding kanban into the mid-session delta — and moving the whole delta reconciler into the shared consumer-side framework so every agent runs the identical thing (with an event-aware surface envelope) — is the durable next step. The current gap (a kanban card change missed by the live push recovers only at the next SessionStart) is bounded and low-risk: card events are low-frequency board-state, and the kanban triage-wake classifier already pushes the high-value ones live.
+>
+> The patterns below (`bridge:inbox`, tail, custom handler) are the consumption **mechanisms**. For a live, upstream-anchored agent, use the model above and treat `bridge:inbox` as the **fallback** (next).
+
+### A. `bridge:inbox` (the fallback pull — Claude Code hooks)
 
 Reads `inbox.jsonl`, deduplicates on the stable per-line `id` field (NOT a wall-clock cursor), and prints only unseen intents. **Silent when there is nothing new.**
 
@@ -125,7 +140,7 @@ Write a PHP handler class implementing `App\Bridge\Contracts\Handler` that the b
 | Per-event filtering | Classifier-side | Consumer-side | Classifier-side |
 | Setup complexity | Wire hooks in `settings.json` | Just read a file | PHP class + registration |
 
-Pick A for Claude Code agents. Pick B for cross-language consumers (TypeScript MCP servers, Bun adapters, Slack notifiers). Pick C for PHP-native services that must act synchronously in the webhook request.
+For a live, upstream-anchored Claude Code agent (a PM agent), use the **MCP channel + upstream reconcile** model above; `bridge:inbox` (A) is the **fallback** — use it as the primary only when the agent has **bridge-only intents** (events with no GitHub/kanban artifact to reconcile from) or you specifically want the bridge inbox as the durable layer. Pick B (tail) for cross-language consumers (TypeScript MCP servers, Bun adapters, Slack notifiers). Pick C (custom handler) for PHP-native services that must act synchronously in the webhook request.
 
 ## Wiring `bridge:inbox` into Claude Code hooks
 
