@@ -10,6 +10,15 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.42.1] - 2026-06-27
+
+**Docs: stress `PreToolUse` as the required mid-session `bridge:inbox` trigger (DL-169).** PR #182. **Docs + example only — no app code, classifier, schema, migration, or `.env`; no behavior change.** Prompted by a peer-integrator (Sola PM) "silently lost events" report that diagnosed to **consume-side hook wiring, not bridge code**.
+
+### Changed
+
+- **Hook-wiring guidance made complete (DL-169).** The live `channel_push` is best-effort by design (DL-001); the durable inbox is the recovery road, but it only surfaces when a hook fires `bridge:inbox`, and `SessionStart` fires once per session — so a long-lived session wired on `SessionStart` only never re-checks the inbox mid-session, and an intent that arrives during a long turn sits unseen until restart (tell-tale: a `inbox-seen-<agent>.json` cursor stale for days). `docs/consumer-guide.md § Wiring` now carries a "both legs are load-bearing" callout (`SessionStart` = boundary recovery; `PreToolUse` = the recommended per-tool-call mid-session trigger, `PostToolUse` equivalent) and recommends `"matcher": ""` over `"Bash"` (a narrow matcher reopens the gap on non-matching work), with the subprocess-per-tool tradeoff stated; plus a troubleshooting entry keyed on the observable symptom. `examples/claude-code/settings.json.example`: `PreToolUse` matcher `"Bash"`→`""` + a `_wiring_note`.
+- **Fixed a pre-existing doc bug** in the same section: it claimed wiring on `Stop` *advances* the seen cursor — it does **not** (`Stop` ∉ `ADDITIONAL_CONTEXT_EVENTS` ⇒ `InboxCommand` leaves the intents unseen), contradicting the code and the correct statement earlier in the same doc.
+
 ## [0.42.0] - 2026-06-20
 
 **Triage-wake classifier — a human-filed, untriaged card wakes the triage-owner session in near-real-time (DL-168).** PR #176. App code — **no migration, no config schema change, no change to what the receiver accepts/rejects.** Opt-in (OFF until an agent sets `classifier.class`). Requires kanban **v0.22.0+** for the `card` snapshot (degrades to over-wake on older). Closes peer-integrator (AIMLA PM) FR #3010.
