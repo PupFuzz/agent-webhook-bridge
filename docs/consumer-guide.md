@@ -17,6 +17,8 @@ If `bridge:inbox` shows nothing new, the event either:
 
 It is never "the consumer hasn't caught up yet" — there is no consumer process to fall behind.
 
+**But the inbox only surfaces when a hook actually fires `bridge:inbox`.** If you are *missing addressed events during long active sessions* (they're present in `inbox-<agent>.jsonl` but never surfaced), or your `inbox-seen-<agent>.json` cursor is **stale for days while sessions keep starting**, the cause is almost always **hook wiring that has no mid-session trigger** — `bridge:inbox` wired on `SessionStart` only (or `PreToolUse` with a narrow `matcher`). `SessionStart` fires once per session, so a long-lived session that never restarts never re-checks the inbox, and a stale cursor is the tell. Fix: wire `PreToolUse` with `"matcher": ""` (see [Wiring `bridge:inbox` into Claude Code hooks](#wiring-bridgeinbox-into-claude-code-hooks)). The live `channel_push` is best-effort by design — the inbox hook is the recovery road, and it must be wired to fire mid-session.
+
 ## Where to read
 
 Each agent's inbox:
@@ -143,7 +145,7 @@ Pick A for Claude Code agents. Pick B for cross-language consumers (TypeScript M
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "",
         "hooks": [
           {
             "type": "command",
@@ -158,7 +160,13 @@ Pick A for Claude Code agents. Pick B for cross-language consumers (TypeScript M
 
 Full template at `examples/claude-code/settings.json.example`. Adjust the artisan path to match your install.
 
-On events that don't support `additionalContext` (e.g. `Stop`): wiring `bridge:inbox` there advances the cursor (marks intents seen) but text output cannot reach model context.
+> **Both legs are load-bearing — wire SessionStart AND PreToolUse.** They cover different windows, and the live `channel_push` is best-effort (an intent pushed while the session is mid-turn is dropped from the live path and recovered only via the inbox):
+> - **`SessionStart`** surfaces what accrued *between* sessions — recovery at session **boundaries** only. It fires once, at session start.
+> - **`PreToolUse`** is the **per-tool-call mid-session trigger** (recommended) — it re-checks the inbox before each tool call, so an intent that arrives *during* a long active session surfaces within that session, before the agent's next action. (`PostToolUse` is the after-the-tool equivalent; either gives mid-session coverage. `UserPromptSubmit` only fires on a user turn, so it doesn't cover a long autonomous tool-turn.) **Without a per-tool-call trigger, a long-lived session surfaces nothing new until it restarts** — and a session sitting in a long uninterrupted turn is exactly when a live `channel_push` is most likely to be missed. `SessionStart`-only is the most common misconfiguration and looks like "the bridge dropped my event" when the event is sitting unseen in the inbox.
+>
+> **Use `"matcher": ""` (all tools), not `"Bash"`, for the PreToolUse leg.** A narrow matcher only fires before *that* tool — a long stretch of non-matching work (Read/Edit/Grep/…) still surfaces nothing, the same gap one level down. `bridge:inbox` is id-deduped and silent-when-empty (DL-072), so firing before every tool is idempotent and cheap-when-quiet; the only cost is one short-lived `php artisan` subprocess per tool call. If that overhead is unacceptable on a hot host, narrow the matcher deliberately — and accept the reduced mid-session coverage.
+
+On events that don't support `additionalContext` (e.g. `Stop`, `Notification`): `bridge:inbox` prints but **does not advance the seen cursor** — the intents stay unseen so the next `SessionStart`/`PreToolUse` surfaces them. So wiring it on `Stop` is safe (it never silently eats an intent), but it is **not** a substitute for the `PreToolUse` leg: it can't inject into model context, so nothing reaches the model there.
 
 If nothing surfaces to the model after wiring: verify the hook event type is in the `ADDITIONAL_CONTEXT_EVENTS` list above, confirm the artisan command runs successfully from the shell, and check `storage/logs/laravel.log` for dispatch errors.
 
