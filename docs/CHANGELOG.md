@@ -10,6 +10,15 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.43.1] - 2026-06-28
+
+**`bin/promote-released-cards`: the "0 cards promoted" exit is now CAUSE-AWARE (squash-fail vs. cardless-warn).** PR #193, DL-172 (a correction to DL-165). **Release-tooling/CI only — no app code, schema, migration, `.env`, or receiver accept/reject change.**
+
+### Changed
+
+- The post-merge `release-promote-cards` job no longer blanket-fails when it derives shipped refs but promotes 0 cards (DL-165). It distinguishes the two root causes by the **release tip's parent count**: a MERGE-commit tip (≥2 parents) — or explicit `--dls` — means ref-derivation was complete, so 0-promoted is a **legitimately cardless** release → **WARN, exit 0**; a non-merge tip means the release PR was squash/rebase-merged and may have dropped the per-PR refs (the v0.32.0 silent-green class) → **FAIL, exit 2**. New `merge_commit_tip` helper. `skipped` is intentionally out of the fail guard so a squash with pre-promoted siblings still fails (the idempotent merge-commit re-run is exempted by the tip check).
+- Re-syncs `bin/promote-released-cards` to the shared canonical (`agent-board-toolkit`): all three consumers (toolkit, bridge, kanban-board) are now byte-identical, also picking up the `PROMOTE_PAGE_CAP` loud-on-cap pagination. GitHub can't enforce a per-PR merge method, so detection stays the guard (paired with the merge-commit-for-release-PRs convention). Adversarial review caught + fixed a `skipped>0` hole; validated on the live board across the full matrix.
+
 ## [0.43.0] - 2026-06-28
 
 **Optional `writeback.alert_channel` — a loud, deduped, best-effort live signal on a permanent writeback move-failure (FR-4, DL-171).** PR #190. App code — **no migration, no new `.env`, no change to what the receiver accepts/rejects**. Opt-in (absent `alert_channel` ⇒ unchanged log-only behavior).

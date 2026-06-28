@@ -16,16 +16,34 @@
 #   - 0 visible cards on page 1 => FAIL (token's user not a board member / wrong instance).
 #   - Reads the WHOLE board by paging (`page=N`), so a board >200 cards is not truncated.
 #   - A shipped ref that matched NO card is reported at the end (a card may be unstamped).
-#   - Shipped refs derived but 0 cards promoted (0 moved AND 0 already-released) => exit 2,
-#     not silent green (#2446). Usual cause: a SQUASH-merged release PR collapses the per-PR
-#     commit subjects this reads, losing the per-card refs — use a MERGE commit for
-#     release/sync PRs (VERSIONING.md). Other cause: a release with no tracked cards.
+#   - Nothing NEWLY promoted despite a non-empty shipped-ref set => the exit is decided
+#     by the ROOT CAUSE: a MERGE-commit release tip (or explicit --dls) means ref-derivation
+#     was COMPLETE, so the DLs are genuinely cardless => WARN (exit 0); a non-merge tip means
+#     a squash/rebase merge may have dropped the per-PR refs (the v0.32.0 silent-green class)
+#     => FAIL (exit 2). This converges two divergent prior behaviors: the bridge copy
+#     blanket-failed any 0-promoted run (DL-165), the toolkit/kanban copies exited 0
+#     silently — neither distinguished the cause.
+#   - Assumes it fires on a RELEASE merge to a protected main (push==release-merge). A plain
+#     non-merge commit pushed directly to main whose range carries cardless DLs would fail
+#     loud by the same rule — intended, given the assumption.
 #
 # Usage: promote-released-cards [--dls LIST] [--base REF] [--head REF] [--dry-run] [--config PATH]
 set -euo pipefail
 
 die() { echo "promote-released-cards: $*" >&2; exit 2; }
 for c in jq curl git; do command -v "$c" >/dev/null || die "$c is required"; done
+
+# True iff <ref> is a MERGE commit (>=2 parents). `git rev-list --parents -n1`
+# prints "<sha> <parent1> <parent2>..." → >=3 tokens ⇒ merge. A merge-commit release
+# tip means the range carries every feature/prep commit subject, so the ref-derivation
+# was COMPLETE; a non-merge tip (squash/rebase) may have collapsed it. git failure
+# (unknown ref / shallow graft) ⇒ non-merge (fail-loud-safe). CI checks out
+# fetch-depth:0, so parents are real.
+merge_commit_tip() {
+  local line
+  line="$(git rev-list --parents -n1 "$1" 2>/dev/null)" || return 1
+  [ "$(printf '%s' "$line" | wc -w)" -ge 3 ]
+}
 
 CONFIG=".release-pr.json"; DLS_IN=""; BASE=""; HEAD_REF=""; DRY=0
 while [ $# -gt 0 ]; do
@@ -90,7 +108,7 @@ while :; do
   CARDS="$(jq -c -n --argjson a "$CARDS" --argjson b "$DATA" '$a + $b')"
   [ "${n:-0}" -lt 200 ] && break
   page=$((page + 1))
-  [ "$page" -gt 50 ] && { echo "promote-released-cards: WARNING — stopped paging at 50 pages (10k cards); some cards may be unread." >&2; break; }
+  [ "$page" -gt "${PROMOTE_PAGE_CAP:-50}" ] && die "promote-released-cards: result set exceeded PROMOTE_PAGE_CAP=${PROMOTE_PAGE_CAP:-50} (page=$page) — refusing to promote on a truncated board read; raise the cap or narrow"
 done
 # Dedup by id — defends against an API that ignores `page=` (same page each loop) or
 # returns overlapping pages; otherwise a card would be PATCHed once per duplicate.
@@ -139,20 +157,23 @@ if [ "${nmiss:-0}" -gt 0 ]; then
   echo "promote-released-cards: WARNING — $nmiss shipped ref(s) matched NO card (unstamped card, or none): $(printf '%s' "$MISSING" | jq -r 'join(", ")')" >&2
 fi
 echo "promote-released-cards: $moved moved, $skipped already-released, $nmiss no-card, $failed failed$([ "$DRY" = 1 ] && printf ' (dry-run)')."
-# Systemic failure only (every attempted move failed) is a non-zero exit; an
-# isolated card hiccup never fails the release.
+# --- exit policy: a "0 promoted" run is told apart by its ROOT CAUSE ----------
+# Systemic move failure (a card matched but every PATCH errored) → exit 1.
 if [ "$failed" -gt 0 ] && [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then exit 1; fi
-# #2446: we only reach here because the shipped-ref set was NON-EMPTY (an empty set
-# exits "nothing to do" earlier). Promoting NOTHING — 0 moved AND 0 already-released —
-# means every derived ref missed every card. The usual cause is a SQUASH-MERGED
-# release PR: squash collapses the per-PR commit subjects this script reads
-# (`git log --no-merges`), so the per-card refs are lost (use a MERGE commit, not
-# squash, for release/sync PRs — VERSIONING.md). The other cause is a release that
-# genuinely ships no board-tracked cards. Either way this must NOT pass silently
-# green (the v0.32.0 incident: 2 cards left unpromoted, job green). Exit non-zero so
-# the release-promote job surfaces it; the operator verifies + promotes manually.
-if [ "$moved" = 0 ] && [ "$skipped" = 0 ]; then
-  echo "promote-released-cards: FAILED — derived $nmiss shipped ref(s) but promoted 0 cards. Likely a squash-merged release PR (per-PR refs lost; use a merge commit) or a release with no tracked cards. Verify and promote manually if needed." >&2
-  exit 2
+# Newly promoted NOTHING (moved==0) despite a non-empty shipped-ref set (an empty set
+# already exited "nothing to do"). Two distinct causes, told apart by whether ref-
+# derivation was COMPLETE:
+#   - complete (explicit --dls, or a MERGE-commit release tip whose range carries every
+#     feature/prep subject) → the derived DLs are genuinely cardless (docs-only, or tracked
+#     elsewhere) → the WARNING above suffices, exit 0. An idempotent re-run of a legit
+#     merge-commit release (everything already at target, skipped>0) lands here too.
+#   - INCOMPLETE (a non-merge tip → the release PR was squash/rebase-merged, collapsing the
+#     per-PR subjects this reads) → cards exist but went unmatched (the v0.32.0 silent-green
+#     incident) → FAIL loud so the operator verifies + promotes by hand.
+# NOTE: `skipped` is deliberately NOT in the guard — a squash release whose siblings were
+# already promoted (a partial/earlier run) still has moved==0 and must FAIL; the legit
+# merge-commit re-run is exempted by the tip check, not by skipped.
+if [ "$moved" = 0 ] && [ -z "$DLS_IN" ] && ! merge_commit_tip "$HEAD_REF"; then
+  die "FAILED — 0 cards newly promoted and the release tip (${HEAD_REF}) is not a merge commit. A squash/rebase merge of the release PR may have dropped the per-PR refs this derives from (use a MERGE commit for release/sync PRs — VERSIONING.md). Verify and promote manually."
 fi
 exit 0
