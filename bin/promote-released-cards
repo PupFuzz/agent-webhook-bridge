@@ -105,7 +105,10 @@ while :; do
   if [ "$page" -eq 1 ] && [ "${n:-0}" -eq 0 ]; then
     die "board $BOARD returned 0 visible cards — the token's user is likely not a member of board $BOARD (or wrong instance). Refusing."
   fi
-  CARDS="$(jq -c -n --argjson a "$CARDS" --argjson b "$DATA" '$a + $b')"
+  # Concatenate via STDIN, not `--argjson` — a board page can exceed MAX_ARG_STRLEN
+  # (~128KB), and passing $DATA/$CARDS as a CLI arg dies "Argument list too long"
+  # (the #3091 argv-overflow class; board 5 at ~98 cards crosses the cap).
+  CARDS="$(printf '%s\n%s\n' "$CARDS" "$DATA" | jq -c -s 'add')"
   [ "${n:-0}" -lt 200 ] && break
   page=$((page + 1))
   [ "$page" -gt "${PROMOTE_PAGE_CAP:-50}" ] && die "promote-released-cards: result set exceeded PROMOTE_PAGE_CAP=${PROMOTE_PAGE_CAP:-50} (page=$page) — refusing to promote on a truncated board read; raise the cap or narrow"
