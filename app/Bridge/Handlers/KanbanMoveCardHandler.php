@@ -7,6 +7,7 @@ use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
@@ -53,6 +54,13 @@ use Throwable;
  */
 final class KanbanMoveCardHandler implements DurableReaction, Handler
 {
+    private WritebackAlertNotifier $alerts;
+
+    public function __construct(?WritebackAlertNotifier $alerts = null)
+    {
+        $this->alerts = $alerts ?? new WritebackAlertNotifier;
+    }
+
     public function handle(ReactionTarget $target, AgentConfig $agent): void
     {
         $payload = $target->payload;
@@ -65,12 +73,14 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // classifier (the event couldn't be moved anyway — we don't know the card).
         if (! is_int($cardId) && ! (is_string($cardId) && ctype_digit($cardId))) {
             Log::warning('kanban_move_card: payload.card_id is not an integer; ignoring', ['payload' => $payload]);
+            $this->alerts->notify(is_string($repo) ? $repo : '', is_string($outcome) ? $outcome : '', null, 'card_id_not_int');
 
             return;
         }
         $cardId = (int) $cardId;
         if (! is_string($repo) || $repo === '' || ! is_string($outcome) || $outcome === '') {
             Log::warning('kanban_move_card: payload.repo and payload.outcome must be non-empty strings; ignoring', ['card_id' => $cardId]);
+            $this->alerts->notify(is_string($repo) ? $repo : '', is_string($outcome) ? $outcome : '', $cardId, 'repo_or_outcome_invalid');
 
             return;
         }
@@ -81,6 +91,10 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             // No writeback.json — the move can't be configured; a target reached
             // us anyway. Permanent: log + no-op (don't 5xx-retry a config gap).
             Log::warning('kanban_move_card: writeback is not configured (no writeback.json); ignoring move', ['card_id' => $cardId, 'repo' => $repo]);
+            // Degrades to log-only: with no writeback.json the notifier has no
+            // alert_channel to load, so this branch is inherently quiet (documented
+            // in docs/writeback.md). The call is kept for symmetry/correctness.
+            $this->alerts->notify($repo, $outcome, $cardId, 'writeback_not_configured');
 
             return;
         }
@@ -108,6 +122,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         } catch (RequestException $e) {
             if ($this->isPermanent($e)) {
                 Log::warning('kanban_move_card: getCard refused by kanban (4xx) — ignoring', ['card_id' => $cardId, 'status' => $e->response->status()]);
+                $this->alerts->notify($repo, $outcome, $cardId, 'getcard_4xx');
 
                 return;
             }
@@ -122,6 +137,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             Log::warning('kanban_move_card: REFUSED — card is not on the mapped board', [
                 'card_id' => $cardId, 'repo' => $repo, 'card_board' => $boardId, 'mapped_board' => $mapping->boardId,
             ]);
+            $this->alerts->notify($repo, $outcome, $cardId, 'card_not_on_mapped_board');
 
             return;
         }

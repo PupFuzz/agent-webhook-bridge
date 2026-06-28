@@ -10,6 +10,22 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.43.0] - 2026-06-28
+
+**Optional `writeback.alert_channel` — a loud, deduped, best-effort live signal on a permanent writeback move-failure (FR-4, DL-171).** PR #190. App code — **no migration, no new `.env`, no change to what the receiver accepts/rejects**. Opt-in (absent `alert_channel` ⇒ unchanged log-only behavior).
+
+### Added
+
+- **`writeback.alert_channel` in `writeback.json`** — when set, the 5 `Log::warning` *permanent* move-failure branches of `KanbanMoveCardHandler` (`card_id_not_int`, `repo_or_outcome_invalid`, `writeback_not_configured`, `getcard_4xx`, `card_not_on_mapped_board`) *also* push a one-line `{"type":"writeback_move_failed", repo, outcome, card_id, reason}` to the channel — **in addition to** the log (log = durable record, push = live wake). Closes the gap where a real misconfiguration (rotated/blind token → `getcard_4xx`, drifted board_id → `card_not_on_mapped_board`) was only visible by tailing logs. Shape mirrors the agent `channel`: `{"socket": "/abs"}` XOR `{"url": "http://127.0.0.1:PORT/", "auth": {"token_path": "/abs"}}`.
+- `bridge:check` now validates `alert_channel` — **warns, never fails** (both/neither socket+url, missing socket parent dir, non-loopback url).
+
+### Notes
+
+- **Quiet by design:** the 2 `Log::info` "not tracked" branches (no mapping for repo / no stage for outcome — the *normal* unmapped-event case) and the fail-open no-regression guard stay silent; the loud/quiet line is the existing warning-vs-info split. The permanent path is **not** converted to throw — no retry-storm.
+- **Best-effort, structurally non-throwing:** the entire notify body (config load, dedup claim, push) is wrapped in one `try/catch (\Throwable)` — a 5xx storm of an unmovable card is the one thing FR-4 forbids. Dedup is an atomic `O_EXCL` marker per `sha1(repo, outcome, reason)`; a failed push releases the marker so a redelivery re-attempts (a forever-silenced signature is worse than a rare double-alert). Reuses the existing channel-push transport — **no new socket/listener/timer/poll**.
+- **Branch `writeback_not_configured` degrades to log-only by construction** (no `writeback.json` ⇒ no `alert_channel` to load). `ChannelPushHandler` (security-critical) was deliberately **not** modified — the notifier does its own validated send; the socket/url validation is intentionally duplicated, flagged for a future shared extract.
+- Two adversarial review passes (caught + fixed a critical `mkdir` `E_WARNING`→`ErrorException` rethrow that could 5xx-storm, and a failed-first-push permanent-silence). pint clean; phpstan level 7 zero errors; phpunit 486/486 (16 new).
+
 ## [0.42.3] - 2026-06-27
 
 **Dependency bumps.** PRs #180, #181. **No app code, schema, migration, or `.env`; no behavior change.**
