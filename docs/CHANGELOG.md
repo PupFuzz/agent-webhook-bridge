@@ -10,6 +10,14 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.43.2] - 2026-06-28
+
+**`bin/promote-released-cards`: fix a `jq` argv-overflow on large boards (#3091 class).** PR #196. **Release-tooling/CI only — no app code, schema, migration, `.env`, or receiver change.**
+
+### Fixed
+
+- The paged-board accumulation passed the page JSON to `jq` via `--argjson` (a command-line argument). When a board's API page exceeds `MAX_ARG_STRLEN` (~128 KB) the job died `jq: Argument list too long` (exit 126). Board 8 (57 cards) is under the cap today, but board 5 (98 cards / 142 KB) hit it — the same argv-overflow class fixed in `kbcard` (#3091). Accumulation now goes through **stdin** (`printf | jq -s 'add'`). Re-syncs the shared script to the toolkit canonical. Validated on the live board.
+
 ## [0.43.1] - 2026-06-28
 
 **`bin/promote-released-cards`: the "0 cards promoted" exit is now CAUSE-AWARE (squash-fail vs. cardless-warn).** PR #193, DL-172 (a correction to DL-165). **Release-tooling/CI only — no app code, schema, migration, `.env`, or receiver accept/reject change.**
