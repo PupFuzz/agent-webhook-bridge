@@ -10,6 +10,7 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 class KanbanMoveCardHandlerTest extends TestCase
@@ -367,5 +368,150 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->handle($this->payload(['outcome' => 'opened']));
 
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 50]);
+    }
+
+    // --- FR-4: writeback.alert_channel (loud per-event signal on a permanent move-failure) ---
+
+    private const ALERT_URL = 'http://127.0.0.1:9931/';
+
+    private function writeWritebackWithAlert(array $stages = ['merged' => 52], array $extra = []): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'alert_channel' => ['url' => self::ALERT_URL],
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => $stages] + $extra],
+        ]));
+    }
+
+    private function isAlertPush(Request $r): bool
+    {
+        return $r->method() === 'POST' && str_starts_with($r->url(), self::ALERT_URL);
+    }
+
+    public function test_alert_channel_pushes_one_signal_on_a_warning_branch(): void
+    {
+        // A permanent move-failure on a Log::warning branch (card not on mapped
+        // board) emits exactly one loud signal to the configured alert channel.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 999, 'workflow_stage_id' => 49]]),
+        ]);
+
+        $this->handle($this->payload());   // card on wrong board → refused
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'card_not_on_mapped_board'
+            && $r['repo'] === 'owner/repo'
+            && $r['outcome'] === 'merged'
+            && $r['card_id'] === 5);
+        // The push is ADDITIVE to the durable log — the warning fires regardless.
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg) => str_contains($msg, 'not on the mapped board'));
+    }
+
+    public function test_alert_channel_signals_card_id_branch_with_non_scalar_repo_without_throwing(): void
+    {
+        // Branch #1 (card_id not int) passes the best-available repo/outcome — which
+        // at that point are un-validated payload values. A non-string (e.g. array)
+        // repo must NOT throw an "Array to string conversion" out of the handler.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle(['card_id' => 'nope', 'repo' => ['not' => 'a string'], 'outcome' => 'merged']);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'card_id_not_int'
+            && $r['repo'] === ''           // non-string coerced to empty, not a crash
+            && $r['card_id'] === null);
+    }
+
+    public function test_alert_channel_unset_pushes_nothing(): void
+    {
+        // No alert_channel ⇒ log-only (unchanged behavior).
+        $this->writeWriteback();   // no alert_channel key
+        $this->writeToken();
+        Http::fake([
+            '*://127.0.0.1:*/*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 999, 'workflow_stage_id' => 49]]),
+        ]);
+
+        $this->handle($this->payload());
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '127.0.0.1'));
+    }
+
+    public function test_alert_channel_silent_on_an_info_branch(): void
+    {
+        // The Log::info "not tracked" branches (#4 no mapping / #5 no stage) stay
+        // QUIET — no alert even with a channel configured.
+        $this->writeWritebackWithAlert(['merged' => 52]);   // only 'merged' mapped
+        $this->writeToken();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle($this->payload(['outcome' => 'closed_unmerged']));   // no stage for outcome (info branch)
+
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    public function test_alert_channel_dedups_repeated_identical_signatures(): void
+    {
+        // The SAME (repo, outcome, reason) firing on N events alerts exactly once
+        // (the O_EXCL dedup marker).
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 999, 'workflow_stage_id' => 49]]),
+        ]);
+
+        $this->handle($this->payload());
+        $this->handle($this->payload());
+        $this->handle($this->payload());
+
+        $alertPushes = collect(Http::recorded())->filter(fn ($pair) => $this->isAlertPush($pair[0]))->count();
+        $this->assertSame(1, $alertPushes, 'an identical (repo, outcome, reason) must alert exactly once');
+    }
+
+    public function test_alert_channel_failure_does_not_throw_out_of_the_handler(): void
+    {
+        // Best-effort: the alert push failing (HTTP 500 / connection refused) must
+        // never throw out of the handler — an unmovable card must not 5xx-storm.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response('channel down', 500),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 999, 'workflow_stage_id' => 49]]),
+        ]);
+
+        $this->handle($this->payload());   // no exception escapes
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r));   // push WAS attempted
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');   // move still a no-op
+    }
+
+    public function test_alert_channel_failed_push_releases_the_dedup_marker_for_a_retry(): void
+    {
+        // A FAILED first push must not permanently silence the signature — the
+        // marker is released so a later redelivery re-attempts (claim-before-push
+        // can't turn one dropped packet into forever-silence). First push 500s →
+        // marker released; second delivery → a second push is attempted.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::sequence()
+                ->push('channel down', 500)        // first attempt fails
+                ->push(['ok' => true], 200),       // second attempt succeeds
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 999, 'workflow_stage_id' => 49]]),
+        ]);
+
+        $this->handle($this->payload());
+        $this->handle($this->payload());
+
+        $alertPushes = collect(Http::recorded())->filter(fn ($pair) => $this->isAlertPush($pair[0]))->count();
+        $this->assertSame(2, $alertPushes, 'a failed first push must re-arm the signature for the next delivery');
     }
 }

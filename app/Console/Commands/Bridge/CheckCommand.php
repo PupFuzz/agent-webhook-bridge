@@ -16,6 +16,7 @@ use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
+use App\Bridge\Writeback\AlertChannel;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -350,6 +351,9 @@ class CheckCommand extends BridgeCommand
                 if ($writeback !== null && $writeback->identityId === null) {
                     $this->warn('writeback.json: no identity_id — set it so the writeback card_updated webhook is auto echo-suppressed (else it loops back)');
                 }
+                if ($writeback !== null && $writeback->alertChannel !== null) {
+                    $this->checkAlertChannel($writeback->alertChannel);
+                }
                 if ($hasSecretDir && $writeback !== null && $writeback->mappings !== []) {
                     $tokenPath = TokenPath::forWriteback((string) $secretDir, 'kanban');
                     if (! is_file($tokenPath)) {
@@ -496,6 +500,46 @@ class CheckCommand extends BridgeCommand
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * Validate the optional `writeback.alert_channel` (FR-4). Warn (never fail) on
+     * a malformed channel — it is an opt-in diagnostic, so a bad value must not
+     * fail the install check; at runtime a bad channel just makes the alert push
+     * fail (caught) without breaking the writeback move.
+     */
+    private function checkAlertChannel(AlertChannel $ac): void
+    {
+        $socket = $ac->socket;
+        $url = $ac->url;
+        if (($socket !== null) === ($url !== null)) {
+            $this->warn('writeback.json alert_channel: specify exactly one of socket or url — the alert push will fail (caught) until fixed; the writeback move is unaffected');
+
+            return;
+        }
+        if ($socket !== null) {
+            $dir = dirname($socket);
+            if (! is_dir($dir)) {
+                $this->warn("writeback.json alert_channel: socket parent dir {$dir} does not exist — the alert push will fail (caught) until the channel server creates the socket");
+            } else {
+                $this->info("writeback.json alert_channel: socket {$socket} (parent dir present)");
+            }
+
+            return;
+        }
+        $parts = parse_url((string) $url);
+        if (! is_array($parts) || strtolower($parts['scheme'] ?? '') !== 'http') {
+            $this->warn("writeback.json alert_channel: url must be http:// loopback (got '{$url}') — the alert push will fail (caught) until fixed");
+
+            return;
+        }
+        $host = strtolower(trim($parts['host'] ?? '', '[]'));
+        if (! in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
+            $this->warn("writeback.json alert_channel: url must point at 127.0.0.1, localhost, or [::1] (got '{$host}') — the alert push will fail (caught) until fixed");
+
+            return;
+        }
+        $this->info("writeback.json alert_channel: url {$url} (localhost)");
     }
 
     /**

@@ -155,6 +155,42 @@ It is **strict** like `board_id`/`stages`: a non-numeric value fails `writeback.
 
 **Worked example.** With the mapping above, dependabot opens `chore(deps): Bump x from 1 to 2` (PR #77, head `dependabot/composer/x-2.0`) → a card *"chore(deps): Bump x from 1 to 2"* appears on board 8 in **In Review** (50), tagged `dependencies`/`triaged`, with `payload.pr_number: 77`. When it auto-merges to `dev`, the card moves to **Shipped to dev** (52). `php artisan bridge:inspect <event_id>` shows each create/move.
 
+## Optional: a loud alert on a permanent move-failure (FR-4)
+
+By default a **permanent** move-failure (a refused/un-actionable move — see *Failure behaviour* below) is **logged + no-op**: a durable record in the log, but no live signal. Add a top-level **`alert_channel`** to `writeback.json` to ALSO emit a loud per-event signal to a local channel when that happens — log = durable record, push = live wake. Opt-in; absent ⇒ log-only (unchanged).
+
+```jsonc
+{
+  "identity_id": 4242,
+  "alert_channel": { "socket": "/run/user/1000/agent-webhook-bridge-channel-ops.sock" },
+  // ── OR ──
+  "alert_channel": { "url": "http://127.0.0.1:9931/", "auth": { "token_path": "/abs/path/to/token" } },
+  "mappings": { /* … */ }
+}
+```
+
+`socket` and `url` are **mutually exclusive** (exactly one), mirroring an agent's `channel` config. The signal body is one line: `{"type": "writeback_move_failed", "repo": <repo>, "outcome": <outcome>, "card_id": <id|null>, "reason": <reason>}`.
+
+**Which failures signal.** Only the **`Log::warning` permanent branches** — the ones that indicate a real misconfiguration or a refused move — fire a signal:
+
+| Branch | `reason` | Signals? |
+|---|---|---|
+| `payload.card_id` not an integer | `card_id_not_int` | ✅ |
+| `payload.repo`/`outcome` not non-empty strings | `repo_or_outcome_invalid` | ✅ |
+| writeback not configured (no `writeback.json`) | `writeback_not_configured` | ⚠ degrades to log-only (see below) |
+| no mapping for repo (`Log::info`) | — | ❌ (expected "not tracked") |
+| no stage mapped for outcome (`Log::info`) | — | ❌ (expected "not tracked") |
+| `getCard` refused by kanban (4xx) | `getcard_4xx` | ✅ |
+| card not on the mapped board (security refusal) | `card_not_on_mapped_board` | ✅ |
+
+The "not tracked" `Log::info` branches stay **quiet** — they're the normal case for an event the operator simply hasn't mapped, not a failure.
+
+**Branch-#3 degradation (log-only).** The `writeback_not_configured` branch fires when there is no `writeback.json` at all — so there is also no `alert_channel` to load. That branch is therefore inherently **log-only**: the notifier loads its config from the same `writeback.json` and finds nothing, so it no-ops. (Place a `writeback.json` even if you only want the alert channel and no mappings, and the other branches signal.)
+
+**Dedup — once per `(repo, outcome, reason)`.** A recurring failure (the same event redelivered, or a persistent misconfig) alerts **once**, not per delivery. Dedup is an atomic `O_EXCL` marker file under `<state_dir>/writeback-alerts/<sha1(repo, outcome, reason)>`. Remove the marker (or the directory) to re-arm a signature. A *failed* push releases the marker so a later redelivery re-attempts — a channel that was down when the first signal fired never permanently silences that signature (at the cost of a possible duplicate on a redelivery race).
+
+**Best-effort, never breaks the move.** The push is wrapped so an undeliverable alert (channel down, bad config, HTTP error) is caught and logged — it never throws, so it can't turn a permanent no-op into a 5xx redelivery storm. The log line always runs regardless of whether the push succeeds. There is **no timer/poll/watchdog** — the signal is emitted inline, event-driven, on the failing delivery only. `bridge:check` warns on a malformed `alert_channel` (both/neither of socket+url, a missing socket parent dir, or a non-loopback url).
+
 ## Failure behaviour (what retries vs not)
 
 - **Transient** (kanban 5xx/timeout, a not-yet-placed token) → the webhook **5xx**s and kanban-board redelivers; the move retries once it's fixed.

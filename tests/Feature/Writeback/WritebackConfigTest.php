@@ -161,4 +161,52 @@ class WritebackConfigTest extends TestCase
         $this->expectException(ConfigException::class);
         WritebackConfig::load($this->dir);
     }
+
+    // --- FR-4: alert_channel ---
+
+    public function test_alert_channel_absent_is_null(): void
+    {
+        $this->write(json_encode(['mappings' => ['o/r' => ['board_id' => 8, 'stages' => ['merged' => 52]]]]));
+        $this->assertNull(WritebackConfig::load($this->dir)?->alertChannel);
+    }
+
+    public function test_alert_channel_socket_parsed(): void
+    {
+        $this->write(json_encode([
+            'alert_channel' => ['socket' => '/run/alert.sock'],
+            'mappings' => ['o/r' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        $ac = WritebackConfig::load($this->dir)?->alertChannel;
+        $this->assertNotNull($ac);
+        $this->assertSame('/run/alert.sock', $ac->socket);
+        $this->assertNull($ac->url);
+        $this->assertNull($ac->tokenPath);
+    }
+
+    public function test_alert_channel_url_with_token_parsed(): void
+    {
+        $this->write(json_encode([
+            'alert_channel' => ['url' => 'http://127.0.0.1:9931/', 'auth' => ['token_path' => '/secret/tok']],
+            'mappings' => ['o/r' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        $ac = WritebackConfig::load($this->dir)?->alertChannel;
+        $this->assertNotNull($ac);
+        $this->assertSame('http://127.0.0.1:9931/', $ac->url);
+        $this->assertSame('/secret/tok', $ac->tokenPath);
+        $this->assertNull($ac->socket);
+    }
+
+    public function test_malformed_alert_channel_does_not_fail_the_config_closed(): void
+    {
+        // A malformed alert_channel (both socket+url) is an opt-in diagnostic — it
+        // must NOT disable the whole writeback; it loads, and bridge:check / the
+        // notifier surface/handle the bad channel.
+        $this->write(json_encode([
+            'alert_channel' => ['socket' => '/run/alert.sock', 'url' => 'http://127.0.0.1:9931/'],
+            'mappings' => ['o/r' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        $cfg = WritebackConfig::load($this->dir);   // does not throw
+        $this->assertNotNull($cfg);
+        $this->assertNotNull($cfg->mappingFor('o/r'));   // mappings still usable
+    }
 }

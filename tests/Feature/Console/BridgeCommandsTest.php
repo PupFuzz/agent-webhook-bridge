@@ -97,6 +97,37 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(1);
     }
 
+    public function test_check_warns_on_malformed_alert_channel(): void
+    {
+        // FR-4: alert_channel with both socket+url is malformed → warn, never fail
+        // (an opt-in diagnostic must not fail the install check).
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'alert_channel' => ['socket' => '/run/a.sock', 'url' => 'http://127.0.0.1:9931/'],
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        Http::fake();
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('alert_channel: specify exactly one')
+            ->assertExitCode(0);   // warn, not fail
+    }
+
+    public function test_check_warns_on_non_localhost_alert_channel_url(): void
+    {
+        // FR-4: a non-loopback alert url is rejected (warn).
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'alert_channel' => ['url' => 'http://example.com/'],
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        Http::fake();
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('alert_channel: url must point at')
+            ->assertExitCode(0);
+    }
+
     private function writeWritebackWithToken(): void
     {
         $this->writeAgent();
