@@ -15,6 +15,7 @@ use App\Bridge\Exceptions\ConfigException;
  * Shape:
  *   {
  *     "identity_id": 4242,                       // the kanban user_id the writeback acts as
+ *     "alert_channel": {"socket": "/abs/path"},  // optional (FR-4) — loud per-event signal on a permanent move-failure
  *     "mappings": {
  *       "owner/repo": {
  *         "board_id": 8,
@@ -39,6 +40,7 @@ final class WritebackConfig
     public function __construct(
         public readonly ?int $identityId,
         public readonly array $mappings,
+        public readonly ?AlertChannel $alertChannel = null,
     ) {}
 
     /** Load the policy, or null when `writeback.json` is absent (writeback off). */
@@ -123,7 +125,34 @@ final class WritebackConfig
             $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages);
         }
 
-        return new self($identityId, $mappings);
+        return new self($identityId, $mappings, self::parseAlertChannel($raw));
+    }
+
+    /**
+     * Parse the optional top-level `alert_channel` (FR-4). Deliberately NOT
+     * fail-closed like the mappings above: a malformed alert_channel must not
+     * disable the whole writeback (every card move would go dark for an opt-in
+     * diagnostic). A non-object / absent value ⇒ null ⇒ log-only. A mutually-
+     * exclusive socket/url violation (both or neither) is carried through as-is
+     * and surfaced by `bridge:check` (warn) / a caught runtime push failure —
+     * the notifier rejects an invalid channel before sending.
+     *
+     * @param  array<string, mixed>  $raw
+     */
+    private static function parseAlertChannel(array $raw): ?AlertChannel
+    {
+        $ac = $raw['alert_channel'] ?? null;
+        if (! is_array($ac)) {
+            return null;
+        }
+        $socket = is_string($ac['socket'] ?? null) && $ac['socket'] !== '' ? $ac['socket'] : null;
+        $url = is_string($ac['url'] ?? null) && $ac['url'] !== '' ? $ac['url'] : null;
+        $auth = $ac['auth'] ?? null;
+        $tokenPath = is_array($auth) && is_string($auth['token_path'] ?? null) && $auth['token_path'] !== ''
+            ? $auth['token_path']
+            : null;
+
+        return new AlertChannel($socket, $url, $tokenPath);
     }
 
     public function mappingFor(string $repo): ?WritebackMapping
