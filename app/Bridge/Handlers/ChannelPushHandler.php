@@ -8,6 +8,9 @@ use App\Bridge\Exceptions\ChannelTokenException;
 use App\Bridge\Exceptions\HandlerException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelToken;
+use App\Bridge\Validation\EndpointValidationException;
+use App\Bridge\Validation\LocalhostUrl;
+use App\Bridge\Validation\SocketEndpoint;
 use App\Bridge\Validation\SocketPath;
 use Illuminate\Support\Facades\Http;
 
@@ -219,52 +222,35 @@ final class ChannelPushHandler implements Handler
 
     private function validateSocketPath(string $path, bool $isAgentSocket = true): void
     {
+        // The absolute-path gate stays here (not in SocketEndpoint): the agent
+        // socket accepts a bare `/`-prefixed path while the classifier path is
+        // already `..`-gated upstream by assertClassifierSocketAllowed — sharing
+        // it would change what each surface accepts.
         if (! str_starts_with($path, '/')) {
             throw new HandlerException("channel_push: payload.socket must be an absolute path (got {$path})");
         }
-        clearstatcache(true, $path);
-        if (! file_exists($path) && ! is_link($path)) {
-            // Distinguish a missing PARENT dir (the path pins /run/user/<uid> and
-            // the uid changed — a host restore, DL-039) from a missing socket (the
-            // channel server just isn't up). The first is a config bug needing a
-            // repoint; the second resolves itself when the server starts. The old
-            // single "start the server first" message misdiagnosed the uid case.
-            // The uid-restore narrative only fits the operator's channel.socket —
-            // a classifier-supplied socket gets the plain parent-dir message so we
-            // never misattribute its missing dir to a config/uid problem (canon #10).
-            if (! is_dir(dirname($path))) {
-                if ($isAgentSocket) {
-                    throw new HandlerException('channel_push: socket parent dir '.dirname($path)." does not exist — likely a uid mismatch after a host restore (the path pins /run/user/<uid>); repoint channel.socket or derive it with \${XDG_RUNTIME_DIR}: {$path}");
-                }
-                throw new HandlerException('channel_push: socket parent dir '.dirname($path)." does not exist: {$path}");
-            }
-            throw new HandlerException("channel_push: payload.socket does not exist (start the channel server first): {$path}");
-        }
-        // lstat-based: a symlink at the socket path is a TOCTOU vector (a
-        // same-uid attacker could swap its target between check and connect).
-        if (is_link($path)) {
-            throw new HandlerException("channel_push: payload.socket must not be a symlink: {$path}");
-        }
-        if (filetype($path) !== 'socket') {
-            throw new HandlerException("channel_push: payload.socket is not a Unix domain socket: {$path}");
+        // The uid-restore narrative only fits the operator's channel.socket — a
+        // classifier-supplied socket gets the plain parent-dir message so we never
+        // misattribute its missing dir to a config/uid problem (canon #10).
+        try {
+            SocketEndpoint::assertValid(
+                $path,
+                subject: 'channel_push: payload.socket',
+                parentSubject: 'channel_push: socket',
+                configField: 'channel.socket',
+                diagnoseUidMismatch: $isAgentSocket,
+            );
+        } catch (EndpointValidationException $e) {
+            throw new HandlerException($e->getMessage(), 0, $e);
         }
     }
 
     private function validateLocalhostUrl(string $url): void
     {
-        $parts = parse_url($url);
-        // Normalize scheme + host: PHP parse_url (unlike Python urlparse) does
-        // not lowercase the scheme and keeps the brackets on an IPv6 host, so
-        // `HTTP://` and `[::1]` would otherwise miss the whitelist.
-        if ($parts === false || strtolower($parts['scheme'] ?? '') !== 'http') {
-            throw new HandlerException('channel_push: payload.url must be http:// (loopback only)');
-        }
-        if (isset($parts['user']) || isset($parts['pass'])) {
-            throw new HandlerException('channel_push: payload.url must not contain a userinfo component');
-        }
-        $host = strtolower(trim($parts['host'] ?? '', '[]'));
-        if (! in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
-            throw new HandlerException('channel_push: payload.url must point at 127.0.0.1, localhost, or [::1]');
+        try {
+            LocalhostUrl::assertValid($url, 'channel_push: payload.url');
+        } catch (EndpointValidationException $e) {
+            throw new HandlerException($e->getMessage(), 0, $e);
         }
     }
 }

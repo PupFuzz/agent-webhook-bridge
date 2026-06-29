@@ -2,8 +2,8 @@
 
 namespace App\Bridge\Provision;
 
+use App\Bridge\Support\KanbanHttpClient;
 use Illuminate\Http\Client\PendingRequest;
-use Illuminate\Support\Facades\Http;
 
 /**
  * Thin client for kanban-board's webhook API, scoped to what provisioning
@@ -20,10 +20,7 @@ final class KanbanProvisionClient
 
     private function http(): PendingRequest
     {
-        return Http::withToken($this->token)
-            ->acceptJson()
-            ->timeout(15)
-            ->baseUrl(rtrim($this->baseUrl, '/'));
+        return KanbanHttpClient::configured($this->baseUrl, $this->token);
     }
 
     /**
