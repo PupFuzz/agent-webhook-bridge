@@ -209,4 +209,40 @@ class WritebackConfigTest extends TestCase
         $this->assertNotNull($cfg);
         $this->assertNotNull($cfg->mappingFor('o/r'));   // mappings still usable
     }
+
+    public function test_alert_channel_socket_expands_runtime_tokens(): void
+    {
+        // FR-A: alert_channel.socket gets the same DL-039 ${XDG_RUNTIME_DIR}/${uid}
+        // expansion channel.socket has — applied at load, so the resolved path flows
+        // to both the runtime push and bridge:check.
+        $prev = getenv('XDG_RUNTIME_DIR');
+        putenv('XDG_RUNTIME_DIR=/tmp/xdg-fr-a');
+        try {
+            $this->write(json_encode([
+                'alert_channel' => ['socket' => '${XDG_RUNTIME_DIR}/agent-webhook-bridge-channel-x.sock'],
+                'mappings' => ['o/r' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+            ]));
+            $ac = WritebackConfig::load($this->dir)?->alertChannel;
+            $this->assertNotNull($ac);
+            $this->assertSame('/tmp/xdg-fr-a/agent-webhook-bridge-channel-x.sock', $ac->socket);
+        } finally {
+            putenv($prev === false ? 'XDG_RUNTIME_DIR' : "XDG_RUNTIME_DIR={$prev}");
+        }
+    }
+
+    public function test_alert_channel_unresolvable_socket_token_degrades_not_throws(): void
+    {
+        // DL-171 fail-OPEN: an unresolvable ${...} token in alert_channel.socket must NOT
+        // fail the whole writeback closed (unlike the fail-closed channel.socket). The
+        // expansion throw is caught; the unexpanded value is kept so SocketPath::isValid
+        // rejects it → bridge:check warns + the runtime push is caught (log-only).
+        $this->write(json_encode([
+            'alert_channel' => ['socket' => '${BOGUS}/a.sock'],
+            'mappings' => ['o/r' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        $cfg = WritebackConfig::load($this->dir);   // does not throw
+        $this->assertNotNull($cfg);
+        $this->assertNotNull($cfg->mappingFor('o/r'));                       // mappings still usable
+        $this->assertSame('${BOGUS}/a.sock', $cfg->alertChannel?->socket);   // kept unexpanded
+    }
 }
