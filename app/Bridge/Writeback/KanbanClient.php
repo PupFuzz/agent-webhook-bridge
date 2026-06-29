@@ -246,6 +246,21 @@ final class KanbanClient
     }
 
     /**
+     * Diagnostic board read for bridge:check (#3399): every card on the board plus
+     * whether the page-walk was truncated at the MAX_PAGES ceiling (so the caller
+     * doesn't give a false "all clear" on an incomplete read). Public twin of the
+     * private correlation read, without the correlation-path logging.
+     *
+     * @return array{cards: list<array<string, mixed>>, truncated: bool}
+     */
+    public function readBoardCards(int $boardId): array
+    {
+        $read = $this->readBoard($boardId);
+
+        return ['cards' => $read->cards, 'truncated' => $read->truncated];
+    }
+
+    /**
      * Read a board's cards via the task-search endpoint (server-side board_id
      * filter), paging to completion (DL-028). The stop condition follows the
      * documented board-read contract: a DL-146 kanban serves `links.next`, so we

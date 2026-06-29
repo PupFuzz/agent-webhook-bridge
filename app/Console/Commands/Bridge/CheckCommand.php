@@ -489,6 +489,13 @@ class CheckCommand extends BridgeCommand
                                 $this->warn("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".$e->getMessage());
                             }
                         }
+                        // #3399: in ref mode the correlation is repo-qualified (passes the event's
+                        // `source`), so a dl_number card whose derived source is null (no pr_url) or
+                        // matches no repo mapped to its board is EXCLUDED by the by-ref lookup and
+                        // silently never self-moves — the one writeback failure that stays invisible.
+                        if (config('bridge.writeback.correlation', 'ref') === 'ref') {
+                            $this->checkWritebackSourceCoverage($writeback, $client);
+                        }
                     } catch (Throwable $e) {
                         $this->warn('writeback: skipped board-visibility probe — '.$e->getMessage());
                     }
@@ -500,6 +507,97 @@ class CheckCommand extends BridgeCommand
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * #3399: on a ref-mode (source-qualified) writeback, the by-ref lookup filters by the
+     * event's repo `source`, which the kanban derives from a card's `pr_url`. A dl_number card
+     * with no pr_url (source=null), or a pr_url whose owner/repo matches no repo mapped to that
+     * board, is EXCLUDED by the lookup and silently never self-moves — indistinguishable from a
+     * legitimate no-match in the dispatch ledger. Warn (never fail) so it is named + actionable
+     * (root cause closed by `kbcard --pr-url` + the on-ramp docs). Per board (deduped across mappings).
+     */
+    private function checkWritebackSourceCoverage(WritebackConfig $writeback, KanbanClient $client): void
+    {
+        // repos mapped to each board, canon-lowercased to match the kanban's derived source.
+        $reposByBoard = [];
+        foreach ($writeback->mappings as $repo => $mapping) {
+            $reposByBoard[$mapping->boardId][] = mb_strtolower($repo);
+        }
+        foreach ($reposByBoard as $boardId => $repos) {
+            try {
+                $read = $client->readBoardCards($boardId);
+            } catch (Throwable $e) {
+                $this->warn("writeback: could not read board {$boardId} to check dl source coverage — ".$e->getMessage());
+
+                continue;
+            }
+            $flagged = 0;
+            foreach ($read['cards'] as $card) {
+                $payload = is_array($card['payload'] ?? null) ? $card['payload'] : [];
+                $dl = $payload['dl_number'] ?? null;
+                if (! is_scalar($dl) || (string) $dl === '') {
+                    continue;   // not a DL card
+                }
+                $id = is_scalar($card['id'] ?? null) ? (string) $card['id'] : '?';
+                $source = self::derivedSource($payload, $card['external_link'] ?? null);
+                if ($source === null) {
+                    $this->warn("writeback: card {$id} (DL {$dl}) on board {$boardId} has dl_number but source=null (no repo / pr_url / issue_url / html_url / external_link to derive it from) — the repo-qualified by-ref lookup EXCLUDES it, so it will NEVER self-move. Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).");
+                    $flagged++;
+                } elseif (! in_array($source, $repos, true)) {
+                    $this->warn("writeback: card {$id} (DL {$dl}) on board {$boardId} has source={$source}, which matches no repo mapped to that board (".implode(', ', $repos).') — no mapped event will move it.');
+                    $flagged++;
+                }
+            }
+            if ($read['truncated']) {
+                $this->warn("writeback: dl source-coverage check on board {$boardId} is INCOMPLETE — the board read hit the page ceiling; cards beyond it were not checked.");
+            } elseif ($flagged === 0) {
+                $this->info("writeback: dl_number cards on board {$boardId} all have a mapped source (self-move-eligible)");
+            }
+        }
+    }
+
+    /**
+     * MIRROR of the kanban's source derivation — `App\Services\ExternalReferenceNormalizer::sourceFor()`
+     * (kanban-board). **KEEP IN SYNC.** A card's by-ref `source` is `payload.repo` (when it carries a
+     * `/`), else the first GitHub repo parsed from `pr_url`/`issue_url`/`html_url`, else from the card's
+     * top-level `external_link`; null when none yields a repo. The bridge re-derives it (rather than
+     * reading the kanban's computed value) because `tasks/search.json` does not return external_references.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private static function derivedSource(array $payload, mixed $externalLink): ?string
+    {
+        $repo = $payload['repo'] ?? null;
+        if (is_string($repo) && trim($repo) !== '' && str_contains($repo, '/')) {
+            return self::canonSource($repo);
+        }
+        foreach (['pr_url', 'issue_url', 'html_url'] as $key) {
+            $src = self::repoFromGitHubUrl($payload[$key] ?? null);
+            if ($src !== null) {
+                return $src;
+            }
+        }
+
+        return self::repoFromGitHubUrl($externalLink);
+    }
+
+    /** github.com/<owner>/<repo>/{pull,issues,commit,tree,blob}/… → "owner/repo"; null otherwise. Mirrors ExternalReferenceNormalizer::repoFromGitHubUrl(). */
+    private static function repoFromGitHubUrl(mixed $url): ?string
+    {
+        if (is_string($url) && preg_match('#github\.com/([^/]+/[^/]+?)(?:\.git)?/(?:pull|issues|commit|tree|blob)/#i', $url, $m) === 1) {
+            return self::canonSource($m[1]);
+        }
+
+        return null;
+    }
+
+    /** trim + lowercase + cap at 255 (mirrors ExternalReferenceNormalizer::canonicalizeSource); null when empty. */
+    private static function canonSource(string $value): ?string
+    {
+        $value = trim($value);
+
+        return $value === '' ? null : mb_strtolower(mb_substr($value, 0, 255));
     }
 
     /**
