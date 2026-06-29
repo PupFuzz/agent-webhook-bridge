@@ -540,9 +540,9 @@ class CheckCommand extends BridgeCommand
                     continue;   // not a DL card
                 }
                 $id = is_scalar($card['id'] ?? null) ? (string) $card['id'] : '?';
-                $source = self::sourceFromPrUrl($payload['pr_url'] ?? null);
+                $source = self::derivedSource($payload, $card['external_link'] ?? null);
                 if ($source === null) {
-                    $this->warn("writeback: card {$id} (DL {$dl}) on board {$boardId} has dl_number but source=null (no pr_url) — the repo-qualified by-ref lookup EXCLUDES it, so it will NEVER self-move. Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).");
+                    $this->warn("writeback: card {$id} (DL {$dl}) on board {$boardId} has dl_number but source=null (no repo / pr_url / issue_url / html_url / external_link to derive it from) — the repo-qualified by-ref lookup EXCLUDES it, so it will NEVER self-move. Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).");
                     $flagged++;
                 } elseif (! in_array($source, $repos, true)) {
                     $this->warn("writeback: card {$id} (DL {$dl}) on board {$boardId} has source={$source}, which matches no repo mapped to that board (".implode(', ', $repos).') — no mapped event will move it.');
@@ -558,20 +558,46 @@ class CheckCommand extends BridgeCommand
     }
 
     /**
-     * Mirror the kanban's by-ref `source` derivation: github.com/<owner>/<repo>/pull/<N> →
-     * "owner/repo" (lowercased); null when there is no pr_url or it is not a GitHub PR URL —
-     * i.e. the card's dl by-ref source is null. (Diagnostic mirror; the kanban owns the rule.)
+     * MIRROR of the kanban's source derivation — `App\Services\ExternalReferenceNormalizer::sourceFor()`
+     * (kanban-board). **KEEP IN SYNC.** A card's by-ref `source` is `payload.repo` (when it carries a
+     * `/`), else the first GitHub repo parsed from `pr_url`/`issue_url`/`html_url`, else from the card's
+     * top-level `external_link`; null when none yields a repo. The bridge re-derives it (rather than
+     * reading the kanban's computed value) because `tasks/search.json` does not return external_references.
+     *
+     * @param  array<string, mixed>  $payload
      */
-    private static function sourceFromPrUrl(mixed $prUrl): ?string
+    private static function derivedSource(array $payload, mixed $externalLink): ?string
     {
-        if (! is_string($prUrl) || $prUrl === '') {
-            return null;
+        $repo = $payload['repo'] ?? null;
+        if (is_string($repo) && trim($repo) !== '' && str_contains($repo, '/')) {
+            return self::canonSource($repo);
         }
-        if (preg_match('#github\.com/([^/]+/[^/]+)/pull/#i', $prUrl, $m) === 1) {
-            return mb_strtolower($m[1]);
+        foreach (['pr_url', 'issue_url', 'html_url'] as $key) {
+            $src = self::repoFromGitHubUrl($payload[$key] ?? null);
+            if ($src !== null) {
+                return $src;
+            }
+        }
+
+        return self::repoFromGitHubUrl($externalLink);
+    }
+
+    /** github.com/<owner>/<repo>/{pull,issues,commit,tree,blob}/… → "owner/repo"; null otherwise. Mirrors ExternalReferenceNormalizer::repoFromGitHubUrl(). */
+    private static function repoFromGitHubUrl(mixed $url): ?string
+    {
+        if (is_string($url) && preg_match('#github\.com/([^/]+/[^/]+?)(?:\.git)?/(?:pull|issues|commit|tree|blob)/#i', $url, $m) === 1) {
+            return self::canonSource($m[1]);
         }
 
         return null;
+    }
+
+    /** trim + lowercase + cap at 255 (mirrors ExternalReferenceNormalizer::canonicalizeSource); null when empty. */
+    private static function canonSource(string $value): ?string
+    {
+        $value = trim($value);
+
+        return $value === '' ? null : mb_strtolower(mb_substr($value, 0, 255));
     }
 
     /**

@@ -265,6 +265,25 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_no_source_warning_when_dl_card_sources_via_payload_repo(): void
+    {
+        // #3399 (review): the kanban derives source from payload.repo too (not just pr_url),
+        // so a dl card with `repo` set (no pr_url) self-moves fine → NO false source=null warn.
+        $this->writeWritebackWithToken();
+        config(['bridge.writeback.correlation' => 'ref']);
+        Http::fake([
+            '*/tasks/by-ref.json*' => Http::response(['data' => []]),
+            '*/tasks/search.json*' => Http::response([
+                'data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9001', 'repo' => 'owner/repo']]],
+                'meta' => ['total' => 1],
+            ]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('source=null')
+            ->assertExitCode(0);
+    }
+
     public function test_check_warns_on_an_orphaned_writeback_mapping(): void
     {
         // #2162: a writeback.json mapping with no agent running a writeback-emitting
