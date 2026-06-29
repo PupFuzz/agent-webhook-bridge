@@ -3,6 +3,7 @@
 namespace App\Bridge\Writeback;
 
 use App\Bridge\Exceptions\ConfigException;
+use App\Bridge\Support\PathHelper;
 
 /**
  * The bridge's writeback policy (DL-009/019), loaded from
@@ -146,6 +147,19 @@ final class WritebackConfig
             return null;
         }
         $socket = is_string($ac['socket'] ?? null) && $ac['socket'] !== '' ? $ac['socket'] : null;
+        if ($socket !== null) {
+            try {
+                // Mirror DL-039 channel.socket expansion (AgentConfig), applied at LOAD so the
+                // resolved path flows to BOTH the runtime push and bridge:check's parent-dir probe.
+                $socket = PathHelper::expandRuntimeTokens($socket);
+            } catch (ConfigException) {
+                // DL-171 fail-OPEN invariant: a malformed alert_channel must only WARN, never fail
+                // the whole writeback closed (every card move would go dark over an opt-in
+                // diagnostic). channel.socket lets this throw (fail-closed); alert_channel must not.
+                // Keep the unexpanded value → SocketPath::isValid rejects it → bridge:check warns +
+                // the runtime push is caught (log-only), exactly like any other invalid alert_channel.
+            }
+        }
         $url = is_string($ac['url'] ?? null) && $ac['url'] !== '' ? $ac['url'] : null;
         $auth = $ac['auth'] ?? null;
         $tokenPath = is_array($auth) && is_string($auth['token_path'] ?? null) && $auth['token_path'] !== ''
