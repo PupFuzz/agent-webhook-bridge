@@ -2,8 +2,8 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Support\KanbanHttpClient;
 use Illuminate\Http\Client\PendingRequest;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -35,10 +35,7 @@ final class KanbanClient
 
     private function http(): PendingRequest
     {
-        return Http::withToken($this->token)
-            ->acceptJson()
-            ->timeout(15)
-            ->baseUrl(rtrim($this->baseUrl, '/'));
+        return KanbanHttpClient::configured($this->baseUrl, $this->token);
     }
 
     /**
