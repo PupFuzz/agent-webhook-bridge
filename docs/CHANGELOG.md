@@ -10,6 +10,14 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.44.0] - 2026-06-29
+
+**`bridge:check` warns on a `dl_number` card with `source=null` on a ref-mode writeback board (#3399, DL-173).** PR #202. **App code — no migration, no new `.env`, no change to what the receiver accepts/rejects.**
+
+### Added
+
+- A new `bridge:check` diagnostic (warn-never-fail) closing the one remaining *silent* writeback failure. In `ref` correlation mode the by-ref lookup is repo-qualified (`source`, which the kanban derives from a card's `payload.repo`/`pr_url`/`issue_url`/`html_url`/`external_link`), so a `dl_number` card with no source-yielding field is excluded by the lookup and **silently never self-moves** — indistinguishable from a legitimate no-match in the dispatch ledger. The check (when `correlation=ref`) enumerates each mapped board's `dl_number` cards and warns on any whose derived source is null or matches no repo mapped to that board, naming the card id + DL. Applies to single-repo boards too (correlation passes the repo unconditionally). Complements the tool-side fix (`kbcard --pr-url`, toolkit v0.8.0). New `KanbanClient::readBoardCards` (public diagnostic paged read, surfaces a `truncated` flag so an incomplete read can't give a false all-clear); `derivedSource` faithfully mirrors the kanban's `ExternalReferenceNormalizer::sourceFor()` (kept in sync). From AIMLA PM.
+
 ## [0.43.3] - 2026-06-29
 
 **`alert_channel.socket` now gets the DL-039 `${XDG_RUNTIME_DIR}`/`${uid}` expansion `channel.socket` has (FR-A).** PR #199. **App code — no migration, no new `.env`, no change to what the receiver accepts/rejects.**
