@@ -10,6 +10,14 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.43.3] - 2026-06-29
+
+**`alert_channel.socket` now gets the DL-039 `${XDG_RUNTIME_DIR}`/`${uid}` expansion `channel.socket` has (FR-A).** PR #199. **App code — no migration, no new `.env`, no change to what the receiver accepts/rejects.**
+
+### Fixed
+
+- FR-4's `alert_channel.socket` (DL-171, v0.43.0) did not inherit the DL-039 uid-agnostic expansion, so a `${XDG_RUNTIME_DIR}/…` value was rejected by `SocketPath::isValid` and the alert silently degraded to log-only on a host/uid move — the exact brittleness DL-039 removed, re-present on the alert path. `WritebackConfig::parseAlertChannel` now applies `PathHelper::expandRuntimeTokens()` at load (single-point: the resolved path flows to both the runtime push and `bridge:check`). **Fail-open preserved (DL-171):** the `ConfigException` the expansion throws on an unresolvable/typo'd token is caught and the unexpanded value kept — `bridge:check` warns, the push is caught (log-only) — rather than failing the whole writeback closed like `channel.socket` does. `${uid}` supported for free. Existing literal-absolute-path configs are byte-identical. From AIMLA PM.
+
 ## [0.43.2] - 2026-06-28
 
 **`bin/promote-released-cards`: fix a `jq` argv-overflow on large boards (#3091 class).** PR #196. **Release-tooling/CI only — no app code, schema, migration, `.env`, or receiver change.**
