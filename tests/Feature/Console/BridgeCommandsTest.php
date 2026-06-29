@@ -227,6 +227,44 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_warns_on_dl_card_with_null_source_in_ref_mode(): void
+    {
+        // #3399: in ref mode a dl_number card with no pr_url has source=null → the
+        // repo-qualified by-ref lookup excludes it → it silently never self-moves. Warn (exit 0).
+        $this->writeWritebackWithToken();
+        config(['bridge.writeback.correlation' => 'ref']);
+        Http::fake([
+            '*/tasks/by-ref.json*' => Http::response(['data' => []]),
+            '*/tasks/search.json*' => Http::response([
+                'data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9001']]],   // no pr_url → source=null
+                'meta' => ['total' => 1],
+            ]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('card 7 (DL DL-9001)')
+            ->assertExitCode(0);   // warn, never fail
+    }
+
+    public function test_check_no_source_warning_when_dl_card_has_a_mapped_pr_url(): void
+    {
+        // #3399: a dl_number card whose pr_url yields a source matching a mapped repo
+        // (owner/repo) self-moves fine → no source warning.
+        $this->writeWritebackWithToken();
+        config(['bridge.writeback.correlation' => 'ref']);
+        Http::fake([
+            '*/tasks/by-ref.json*' => Http::response(['data' => []]),
+            '*/tasks/search.json*' => Http::response([
+                'data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9001', 'pr_url' => 'https://github.com/owner/repo/pull/0']]],
+                'meta' => ['total' => 1],
+            ]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('source=null')
+            ->assertExitCode(0);
+    }
+
     public function test_check_warns_on_an_orphaned_writeback_mapping(): void
     {
         // #2162: a writeback.json mapping with no agent running a writeback-emitting
