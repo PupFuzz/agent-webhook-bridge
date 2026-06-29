@@ -6,6 +6,7 @@ use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -162,10 +163,12 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
      */
     private function cardsForRepo(KanbanClient $client, array $cardIds, string $repo): array
     {
+        $refs = new ExternalReferenceNormalizer;
+        $wantRepo = $refs->canonicalizeSource($repo);   // canon-compare: GitHub owner/repo is case-insensitive
         $cards = [];
         foreach ($cardIds as $id) {
             $card = $client->getCard($id);
-            if ($this->cardRepo($card) === $repo) {
+            if ($this->cardRepo($refs, $card) === $wantRepo) {
                 $cards[$id] = $card;
             }
         }
@@ -174,21 +177,19 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
     }
 
     /**
-     * The `owner/repo` a dependabot card belongs to, parsed from its stored
-     * `pr_url` (`https://github.com/<owner>/<repo>/pull/<n>`), or null when the
-     * url is absent/unparseable.
+     * The canonical `owner/repo` a dependabot card belongs to, parsed from its
+     * stored `pr_url` (`https://github.com/<owner>/<repo>/pull/<n>`), or null when
+     * the url is absent/unparseable. Canonicalized via the vendored normalizer so
+     * attribution matches the kanban server's `source` semantics.
      *
      * @param  array<string, mixed>  $card
      */
-    private function cardRepo(array $card): ?string
+    private function cardRepo(ExternalReferenceNormalizer $refs, array $card): ?string
     {
         $payload = $card['payload'] ?? null;
         $url = is_array($payload) ? ($payload['pr_url'] ?? null) : null;
-        if (! is_string($url) || $url === '') {
-            return null;
-        }
 
-        return preg_match('#github\.com/([^/]+/[^/]+)/pull/#', $url, $m) === 1 ? $m[1] : null;
+        return is_string($url) ? $refs->repoFromGitHubUrl($url) : null;
     }
 
     /**

@@ -10,6 +10,7 @@ use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelToken;
 use App\Bridge\Support\ClassifierResolver;
+use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\InstallGuard;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
@@ -519,10 +520,11 @@ class CheckCommand extends BridgeCommand
      */
     private function checkWritebackSourceCoverage(WritebackConfig $writeback, KanbanClient $client): void
     {
-        // repos mapped to each board, canon-lowercased to match the kanban's derived source.
+        // repos mapped to each board, canonicalized to match the kanban's derived source.
+        $refs = new ExternalReferenceNormalizer;
         $reposByBoard = [];
         foreach ($writeback->mappings as $repo => $mapping) {
-            $reposByBoard[$mapping->boardId][] = mb_strtolower($repo);
+            $reposByBoard[$mapping->boardId][] = $refs->canonicalizeSource((string) $repo);
         }
         foreach ($reposByBoard as $boardId => $repos) {
             try {
@@ -540,7 +542,8 @@ class CheckCommand extends BridgeCommand
                     continue;   // not a DL card
                 }
                 $id = is_scalar($card['id'] ?? null) ? (string) $card['id'] : '?';
-                $source = self::derivedSource($payload, $card['external_link'] ?? null);
+                $externalLink = is_string($card['external_link'] ?? null) ? $card['external_link'] : null;
+                $source = (new ExternalReferenceNormalizer)->sourceFor($payload, $externalLink);
                 if ($source === null) {
                     $this->warn("writeback: card {$id} (DL {$dl}) on board {$boardId} has dl_number but source=null (no repo / pr_url / issue_url / html_url / external_link to derive it from) — the repo-qualified by-ref lookup EXCLUDES it, so it will NEVER self-move. Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).");
                     $flagged++;
@@ -555,49 +558,6 @@ class CheckCommand extends BridgeCommand
                 $this->info("writeback: dl_number cards on board {$boardId} all have a mapped source (self-move-eligible)");
             }
         }
-    }
-
-    /**
-     * MIRROR of the kanban's source derivation — `App\Services\ExternalReferenceNormalizer::sourceFor()`
-     * (kanban-board). **KEEP IN SYNC.** A card's by-ref `source` is `payload.repo` (when it carries a
-     * `/`), else the first GitHub repo parsed from `pr_url`/`issue_url`/`html_url`, else from the card's
-     * top-level `external_link`; null when none yields a repo. The bridge re-derives it (rather than
-     * reading the kanban's computed value) because `tasks/search.json` does not return external_references.
-     *
-     * @param  array<string, mixed>  $payload
-     */
-    private static function derivedSource(array $payload, mixed $externalLink): ?string
-    {
-        $repo = $payload['repo'] ?? null;
-        if (is_string($repo) && trim($repo) !== '' && str_contains($repo, '/')) {
-            return self::canonSource($repo);
-        }
-        foreach (['pr_url', 'issue_url', 'html_url'] as $key) {
-            $src = self::repoFromGitHubUrl($payload[$key] ?? null);
-            if ($src !== null) {
-                return $src;
-            }
-        }
-
-        return self::repoFromGitHubUrl($externalLink);
-    }
-
-    /** github.com/<owner>/<repo>/{pull,issues,commit,tree,blob}/… → "owner/repo"; null otherwise. Mirrors ExternalReferenceNormalizer::repoFromGitHubUrl(). */
-    private static function repoFromGitHubUrl(mixed $url): ?string
-    {
-        if (is_string($url) && preg_match('#github\.com/([^/]+/[^/]+?)(?:\.git)?/(?:pull|issues|commit|tree|blob)/#i', $url, $m) === 1) {
-            return self::canonSource($m[1]);
-        }
-
-        return null;
-    }
-
-    /** trim + lowercase + cap at 255 (mirrors ExternalReferenceNormalizer::canonicalizeSource); null when empty. */
-    private static function canonSource(string $value): ?string
-    {
-        $value = trim($value);
-
-        return $value === '' ? null : mb_strtolower(mb_substr($value, 0, 255));
     }
 
     /**
