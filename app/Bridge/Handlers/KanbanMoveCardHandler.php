@@ -56,6 +56,23 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 {
     private WritebackAlertNotifier $alerts;
 
+    /**
+     * Per-instance memo of a board's stage order (the no-regression guard's
+     * preload read), keyed by boardId. A bundled PR/DL correlating to N cards
+     * emits N `kanban_move_card` targets that all resolve through THIS singleton
+     * handler (HandlerRegistry holds one instance) in one request — and, being on
+     * the same mapped board, would each re-fetch the identical `/preload.json`.
+     * Memoizing collapses that to one read per board. Request-scoped: the bridge
+     * runs synchronously per PHP-FPM request, so the singleton — and this memo —
+     * lives exactly one request, within which the board's stage order is stable.
+     * (This is the handler's only mutable request-state; a future Octane migration
+     * — which persists singletons across requests — would need to reset it between
+     * requests to avoid serving a stale order.)
+     *
+     * @var array<int, array<int, float>>
+     */
+    private array $stageOrderMemo = [];
+
     public function __construct(?WritebackAlertNotifier $alerts = null)
     {
         $this->alerts = $alerts ?? new WritebackAlertNotifier;
@@ -214,7 +231,9 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
     private function isRegressiveMove(string $outcome, int $currentStage, int $targetStage, WritebackMapping $mapping, KanbanClient $client): bool
     {
         try {
-            $order = $client->boardStageOrder($mapping->boardId);
+            // ??= caches only a successful read: a throw leaves the key unset so a
+            // later card retries (preserving the per-card fail-open below).
+            $order = $this->stageOrderMemo[$mapping->boardId] ??= $client->boardStageOrder($mapping->boardId);
         } catch (Throwable $e) {
             Log::warning('kanban_move_card: could not read board stage order for the no-regression guard — allowing the move', [
                 'board' => $mapping->boardId, 'error' => $e->getMessage(),

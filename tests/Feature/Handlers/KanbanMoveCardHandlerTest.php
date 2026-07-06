@@ -370,6 +370,47 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 50]);
     }
 
+    public function test_board_stage_order_preload_is_read_once_across_cards_on_one_instance(): void
+    {
+        // #3575: a bundled PR/DL moving N cards on the same board dispatches N
+        // targets through the SAME singleton handler in one request. The
+        // no-regression guard's `/preload.json` read must be memoized to one call
+        // per board, not repeated per card — while every card still moves.
+        $this->writeAllOutcomes();
+        Http::fake([
+            '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['id' => 11, 'stages' => [
+                ['id' => 49, 'position' => 3072.0],
+                ['id' => 50, 'position' => 4096.0],
+                ['id' => 52, 'position' => 5120.0],
+                ['id' => 53, 'position' => 6144.0],
+            ]]]]]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]]),
+            '*/tasks/6.json' => Http::response(['data' => ['id' => 6, 'board_id' => 8, 'workflow_stage_id' => 49]]),
+        ]);
+
+        $handler = new KanbanMoveCardHandler;
+        $agent = AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]);
+        $handler->handle(ReactionTarget::make('kanban_move_card', '5', payload: $this->payload(['card_id' => 5, 'outcome' => 'opened'])), $agent);
+        $handler->handle(ReactionTarget::make('kanban_move_card', '6', payload: $this->payload(['card_id' => 6, 'outcome' => 'opened'])), $agent);
+
+        $preloadReads = collect(Http::recorded())
+            ->filter(fn ($pair) => str_contains($pair[0]->url(), '/preload.json'))
+            ->count();
+        $this->assertSame(1, $preloadReads, 'the board stage-order preload must be read once, not once per card');
+
+        // Both cards still moved forward (49 In-Progress → 50 In-Review) — and to
+        // their OWN card URLs, not the same one twice.
+        $movedCards = collect(Http::recorded())
+            ->filter(fn ($pair) => $pair[0]->method() === 'PATCH' && $pair[0]['task'] === ['workflow_stage_id' => 50])
+            ->map(fn ($pair) => $pair[0]->url())
+            ->sort()
+            ->values()
+            ->all();
+        $this->assertCount(2, $movedCards);
+        $this->assertStringContainsString('/tasks/5', $movedCards[0]);
+        $this->assertStringContainsString('/tasks/6', $movedCards[1]);
+    }
+
     // --- FR-4: writeback.alert_channel (loud per-event signal on a permanent move-failure) ---
 
     private const ALERT_URL = 'http://127.0.0.1:9931/';
