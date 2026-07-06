@@ -4,11 +4,11 @@ namespace App\Bridge\Writeback;
 
 use App\Bridge\Exceptions\ChannelTokenException;
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Support\ChannelPushTransport;
 use App\Bridge\Support\ChannelToken;
 use App\Bridge\Validation\LocalhostUrl;
 use App\Bridge\Validation\SocketEndpoint;
 use App\Bridge\Validation\SocketPath;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -155,11 +155,7 @@ final class WritebackAlertNotifier
 
         if ($socket !== null) {
             $this->validateSocketPath($socket);
-            Http::connectTimeout(1)->timeout(2)
-                ->withOptions(['curl' => [CURLOPT_UNIX_SOCKET_PATH => $socket]])
-                ->withHeaders(['Content-Type' => 'application/json'])
-                ->post('http://localhost/', $body)
-                ->throw();
+            ChannelPushTransport::send($socket, null, 'POST', ['Content-Type' => 'application/json'], $body, 2.0);
 
             return;
         }
@@ -173,10 +169,7 @@ final class WritebackAlertNotifier
                 throw new \RuntimeException('writeback alert_channel token: '.$e->getMessage(), 0, $e);
             }
         }
-        Http::connectTimeout(1)->timeout(2)
-            ->withHeaders($headers)
-            ->post($url, $body)
-            ->throw();
+        ChannelPushTransport::send(null, $url, 'POST', $headers, $body, 2.0);
     }
 
     /**
