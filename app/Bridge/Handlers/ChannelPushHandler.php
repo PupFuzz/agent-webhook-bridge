@@ -7,12 +7,12 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Exceptions\ChannelTokenException;
 use App\Bridge\Exceptions\HandlerException;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\ChannelPushTransport;
 use App\Bridge\Support\ChannelToken;
 use App\Bridge\Validation\EndpointValidationException;
 use App\Bridge\Validation\LocalhostUrl;
 use App\Bridge\Validation\SocketEndpoint;
 use App\Bridge\Validation\SocketPath;
-use Illuminate\Support\Facades\Http;
 
 /**
  * Push the intent to a local channel endpoint so an active Claude Code session
@@ -127,20 +127,14 @@ final class ChannelPushHandler implements Handler
                 $this->assertClassifierSocketAllowed($socket);
             }
             $this->validateSocketPath($socket, $usedAgentChannel);
-            $request = Http::connectTimeout(1)->timeout($timeout)
-                ->withOptions(['curl' => [CURLOPT_UNIX_SOCKET_PATH => $socket]])
-                ->withHeaders($headers);
-            $request->send($method, 'http://localhost/', ['json' => $body])->throw();
+            ChannelPushTransport::send($socket, null, $method, $headers, $body, $timeout);
 
             return;
         }
 
         /** @var string $url */
         $this->validateLocalhostUrl($url);
-        Http::connectTimeout(1)->timeout($timeout)
-            ->withHeaders($headers)
-            ->send($method, $url, ['json' => $body])
-            ->throw();
+        ChannelPushTransport::send(null, $url, $method, $headers, $body, $timeout);
     }
 
     private function resolveTimeout(mixed $value): float
