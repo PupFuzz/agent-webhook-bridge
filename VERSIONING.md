@@ -7,7 +7,7 @@ How the bridge is versioned, released, and tagged. Mirrors the kanban-board proj
 1. **Single source of truth for the version:** the [`VERSION`](VERSION) file at the repo root, containing one semver string and a trailing newline. Read it in PHP via `trim(file_get_contents(base_path('VERSION')))`.
 2. **Version bumps happen on `dev` in a release-prep feature PR**, NOT on each feature PR. The bump + CHANGELOG update is the dedicated release act.
 3. **Every release tag `v<version>` corresponds to a `docs/CHANGELOG.md` entry** describing what bundle of merged PRs is in the release.
-4. **Tags are created on `main`, not `dev`.** After the user merges the release PR (`dev` → `main`), Claude tags the new main commit with `v<VERSION>`. The tag SHA equals the merge commit's SHA on main.
+4. **Tags are created on `main`, not `dev`, by CI.** After the user merges the release PR (`dev` → `main`), the [`auto-tag-version.yml`](.github/workflows/auto-tag-version.yml) workflow fires on the push to `main`, reads `VERSION`, tags the merge commit `v<VERSION>`, and publishes a GitHub Release from that version's `docs/CHANGELOG.md` section. **Claude does not hand-tag** — the workflow owns it (idempotent; a tag already at a *different* SHA fails the workflow loud, meaning the release PR forgot to bump `VERSION`). The tag SHA equals the merge commit's SHA on `main`.
 5. **Back-merge `main` → `dev` after every release** so the branches don't diverge (per [`feedback-auto-backmerge-after-release`](../.claude/projects/-home-kanban/memory/feedback-auto-backmerge-after-release.md)). The user's confirmation that the release PR merged to `main` IS the authorization for the back-merge sync PR — Claude opens it autonomously (no separate ask) and auto-merges on green.
 
 ## Branching model
@@ -18,14 +18,13 @@ This is the same shape as kanban-board, adopted wholesale.
 
 ## Bump sizing
 
-Pre-1.0: every change is a minor bump (`0.X.0`) — semver doesn't apply until v1.0.0. Within minor, breaking changes are allowed but call out in the changelog.
+The bridge is pre-1.0, so semver's stability guarantees don't formally apply until v1.0.0 and breaking changes are allowed within a minor (call them out in the changelog). The **effective cadence** — matching the actual tag history (e.g. v0.44.0 feature → v0.43.1/.2/.3 and v0.44.1 fix/refactor patches) — is:
 
-Post-1.0 (when stable):
-- **Patch** (`x.y.Z+1`) — bug fixes, dep bumps, refactors, docs, internal-only feature work
-- **Minor** (`x.Y+1.0`) — new user-visible additions (new provider adapter, new CLI flag)
-- **Major** (`X+1.0.0`) — breaking changes to the public surface (classifier interface, config schema, CLI flag removal, db schema migration that needs operator action)
+- **Patch** (`x.y.Z+1`) — bug fixes, dep bumps, refactors, docs, internal-only changes with no new user-visible surface.
+- **Minor** (`x.Y+1.0`) — new user-visible additions (a new provider adapter, a new CLI flag, a new writeback outcome).
+- **Major** (`X+1.0.0`) — reserved for post-1.0 breaking changes to the public surface (classifier interface, config schema, CLI flag removal, a migration needing operator action).
 
-When in doubt pre-1.0: minor-bump.
+When a release mixes a feature with fixes, lean minor; a fixes/refactors/docs-only release is a patch.
 
 ## Release flow
 
@@ -42,8 +41,8 @@ Hybrid policy: ask before opening every PR; auto-merge dev-targeted on green; on
 9. **ASK user** before opening the release PR `release/v<version>` → `main`. **CRITICAL: the PR head must be the `release/v<version>` branch, NOT `dev` directly.** GitHub's "Automatically delete head branches" repo setting auto-deletes whichever branch is the merged PR's head — if you set head=`dev`, `dev` gets deleted when the user merges. Repo settings can't reliably exclude `dev` on the free plan (branch protection rules require Pro for private repos), so the discipline lives in the branch-naming convention.
 10. Wait for ALL CI checks on the release → main PR.
 11. **Notify user it's ready to merge.** Claude does NOT run `gh pr merge` against a `main`-targeted PR regardless of CI state.
-12. **After user merges to `main` and confirms the merge to Claude:** that confirmation is the standing authorization for both the tag AND the back-merge sync PR — Claude does NOT ask again.
-13. Claude tags the merge commit with `v<VERSION>` and pushes the tag (standing authorization from the user's merge confirmation).
+12. **After user merges to `main` and confirms the merge to Claude:** that confirmation is the standing authorization for the back-merge sync PR — Claude does NOT ask again. (The tag + GitHub Release are minted automatically by `auto-tag-version.yml`; Claude does not hand-tag.)
+13. `auto-tag-version.yml` (on the push to `main`) tags the merge commit `v<VERSION>` and publishes the GitHub Release from the `docs/CHANGELOG.md` section — automatically, no Claude action. (Fallback only: if the workflow is ever absent, the user's merge confirmation is the standing authorization to tag manually.)
 14. Claude opens the back-merge sync PR `main` → `dev` (named `sync/main-to-dev-post-v<version>`) so any commits the user added directly on `main` (e.g., release-PR metadata) get back into `dev`. **No additional ask** — the user's main-merge confirmation covered it.
 15. Wait for ALL CI checks on the sync PR.
 16. **Auto-merge** the sync PR to `dev` on green (it targets `dev`).
@@ -58,4 +57,4 @@ Hybrid policy: ask before opening every PR; auto-merge dev-targeted on green; on
 
 ## Pre-1.0 status
 
-The current line is **v0.13.0**. Git history begins at v0.12.0 — the Laravel rewrite, shipped as a fresh repository (see `CLAUDE_DECISIONS.md` DL-001). Pre-1.0 semver applies: every change is a minor bump until v1.0.0. See [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for the per-version log.
+The current version is tracked in [`VERSION`](VERSION); [`docs/CHANGELOG.md`](docs/CHANGELOG.md) is the per-version log. Git history begins at v0.12.0 — the Laravel rewrite, shipped as a fresh repository (see `CLAUDE_DECISIONS.md` DL-001). Pre-1.0 semver applies (no formal stability guarantee until v1.0.0); the per-change bump follows the effective cadence in § Bump sizing.
