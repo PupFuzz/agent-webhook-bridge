@@ -10,6 +10,25 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.44.1] - 2026-07-06
+
+**Shared-code consolidation: three drifting kanban/bridge duplications collapsed to single sources (DUP audit cards #3442–#3445, #3576), a multi-card writeback stage-order memoization (#3575), and a latent dependabot repo-attribution case-sensitivity fix.** PRs #208, #209, #212, #213, #214. **App code — no migration, no new `.env`, no change to what the receiver accepts/rejects.**
+
+### Changed
+
+- **Vendored kanban's `ExternalReferenceNormalizer` as the single external-ref canonicalization authority (#209, card #3442).** Replaces the bridge's three drifting hand-written copies with one mirror at `app/Bridge/Support/ExternalReferenceNormalizer.php`; `KanbanDependabotCardHandler::cardRepo()` derives the card's `owner/repo` via the normalizer and `cardsForRepo()` compares against the canonicalized event repo. Behavior-preserving except the fix below.
+- **Extracted shared `ChannelPushTransport` (#212, card #3576).** `ChannelPushHandler` and `WritebackAlertNotifier` each independently reimplemented the UNIX-socket / loopback-URL `Http` push; the second real caller now exists, so per canon #5 the primitive is extracted. Completes the shared-transport extract the v0.43.0 changelog flagged. Behavior-preserving.
+- **Shared loopback-endpoint validator + kanban HTTP client builder (#208, cards #3443/#3444)**, plus a webhook event-vocabulary drift/contract test (#3445). Behavior-preserving.
+- **Writeback: memoized the board stage-order preload across a multi-card move (#213, card #3575).** A bundled PR/DL correlating to N cards on one board previously issued up to N serial `/boards/{id}/preload.json` reads inside a single synchronous webhook request (the no-regression `isRegressiveMove` guard fetched per card). Now memoized per board via `$this->stageOrderMemo[$boardId] ??= $client->boardStageOrder($boardId)` — **order array only**; the client/token (`WritebackClientFactory::make`) and `getCard` stay per-card. Per-card fail-open preserved: `??=` + `->throw()` leaves the key unset on a transient preload failure so a later card retries; a valid empty order is cached (fail-open allow, matching pre-change).
+
+### Fixed
+
+- **Dependabot repo attribution is now case-insensitive (#209).** Surfaced by the #209 consolidation: the previous exact-string match in `cardRepo()` dropped a card whose stored `pr_url` differed only in case from the event repo — GitHub `owner/repo` is case-insensitive, matching the kanban `source` semantics. Pinned by `test_repo_attribution_is_case_insensitive`.
+
+### Docs
+
+- Agent Board Framework solo orientation (#214).
+
 ## [0.44.0] - 2026-06-29
 
 **`bridge:check` warns on a `dl_number` card with `source=null` on a ref-mode writeback board (#3399, DL-173).** PR #202. **App code — no migration, no new `.env`, no change to what the receiver accepts/rejects.**
