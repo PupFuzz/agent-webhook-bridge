@@ -4,9 +4,11 @@ namespace App\Bridge\Writeback;
 
 use App\Bridge\Exceptions\ChannelTokenException;
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Support\ChannelPushTransport;
 use App\Bridge\Support\ChannelToken;
+use App\Bridge\Validation\LocalhostUrl;
+use App\Bridge\Validation\SocketEndpoint;
 use App\Bridge\Validation\SocketPath;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -23,9 +25,10 @@ use Illuminate\Support\Facades\Log;
  * loads writeback, and at the "writeback not configured" branch where the file is
  * absent (⇒ null ⇒ this degrades to log-only; documented in docs/writeback.md).
  *
- * The send VALIDATION is intentionally duplicated from ChannelPushHandler (the
- * socket/localhost-url checks). A future shared extract is the clean fix; it is
- * not done here to avoid touching the security-critical ChannelPushHandler.
+ * The send VALIDATION (socket/localhost-url) is shared with ChannelPushHandler
+ * via {@see SocketEndpoint} / {@see LocalhostUrl}; the alert socket is OPERATOR
+ * config, so it is exempt from the classifier-supplied `allowed_socket_dir`
+ * prefix gate the handler applies.
  */
 final class WritebackAlertNotifier
 {
@@ -152,11 +155,7 @@ final class WritebackAlertNotifier
 
         if ($socket !== null) {
             $this->validateSocketPath($socket);
-            Http::connectTimeout(1)->timeout(2)
-                ->withOptions(['curl' => [CURLOPT_UNIX_SOCKET_PATH => $socket]])
-                ->withHeaders(['Content-Type' => 'application/json'])
-                ->post('http://localhost/', $body)
-                ->throw();
+            ChannelPushTransport::send($socket, null, 'POST', ['Content-Type' => 'application/json'], $body, 2.0);
 
             return;
         }
@@ -170,48 +169,31 @@ final class WritebackAlertNotifier
                 throw new \RuntimeException('writeback alert_channel token: '.$e->getMessage(), 0, $e);
             }
         }
-        Http::connectTimeout(1)->timeout(2)
-            ->withHeaders($headers)
-            ->post($url, $body)
-            ->throw();
+        ChannelPushTransport::send(null, $url, 'POST', $headers, $body, 2.0);
     }
 
     /**
-     * Mirror of ChannelPushHandler's socket validation (duplicated by design —
-     * see the class doc). The alert socket is OPERATOR config, so it is exempt
-     * from the classifier-supplied `allowed_socket_dir` prefix gate.
+     * Format gate (absolute / no-`..`) for the alert socket, then the shared
+     * filesystem checks. The alert socket is OPERATOR config (uid-agnostic
+     * ${XDG_RUNTIME_DIR} expansion applies, DL-039/v0.43.3), so it gets the
+     * uid-mismatch diagnostic.
      */
     private function validateSocketPath(string $path): void
     {
         if (! SocketPath::isValid($path)) {
             throw new \RuntimeException("writeback alert socket is not a valid absolute path (no '..'): {$path}");
         }
-        clearstatcache(true, $path);
-        if (! file_exists($path)) {
-            throw new \RuntimeException("writeback alert socket does not exist (start the channel server first): {$path}");
-        }
-        // lstat-based: a symlink at the socket path is a TOCTOU vector.
-        if (is_link($path)) {
-            throw new \RuntimeException("writeback alert socket must not be a symlink: {$path}");
-        }
-        if (filetype($path) !== 'socket') {
-            throw new \RuntimeException("writeback alert socket is not a Unix domain socket: {$path}");
-        }
+        SocketEndpoint::assertValid(
+            $path,
+            subject: 'writeback alert socket',
+            parentSubject: 'writeback alert socket',
+            configField: 'alert_channel.socket',
+            diagnoseUidMismatch: true,
+        );
     }
 
-    /** Mirror of ChannelPushHandler::validateLocalhostUrl (duplicated by design). */
     private function validateLocalhostUrl(string $url): void
     {
-        $parts = parse_url($url);
-        if ($parts === false || strtolower($parts['scheme'] ?? '') !== 'http') {
-            throw new \RuntimeException('writeback alert_channel url must be http:// (loopback only)');
-        }
-        if (isset($parts['user']) || isset($parts['pass'])) {
-            throw new \RuntimeException('writeback alert_channel url must not contain a userinfo component');
-        }
-        $host = strtolower(trim($parts['host'] ?? '', '[]'));
-        if (! in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
-            throw new \RuntimeException('writeback alert_channel url must point at 127.0.0.1, localhost, or [::1]');
-        }
+        LocalhostUrl::assertValid($url, 'writeback alert_channel url');
     }
 }

@@ -2,8 +2,9 @@
 
 namespace App\Bridge\Writeback;
 
+use App\Bridge\Support\ExternalReferenceNormalizer;
+use App\Bridge\Support\KanbanHttpClient;
 use Illuminate\Http\Client\PendingRequest;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -35,10 +36,7 @@ final class KanbanClient
 
     private function http(): PendingRequest
     {
-        return Http::withToken($this->token)
-            ->acceptJson()
-            ->timeout(15)
-            ->baseUrl(rtrim($this->baseUrl, '/'));
+        return KanbanHttpClient::configured($this->baseUrl, $this->token);
     }
 
     /**
@@ -99,15 +97,19 @@ final class KanbanClient
         }
 
         // scan (legacy): no server-side `source` filter — `ref` is the default and
-        // the only mode the multi-repo adopters (AIMLA/Sola) run.
-        $want = self::digits($dl);
-        if ($want === '') {
+        // the only mode the multi-repo adopters (AIMLA/Sola) run. Canonicalize the
+        // `dl_number` exactly as the kanban server canonicalizes the stored ref so
+        // scan and ref mode agree on the same key ("DL-028"/"DL-28"/"28" → "28").
+        $refs = new ExternalReferenceNormalizer;
+        $want = $refs->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, $dl);
+        if ($want === null) {
             return [];
         }
         $ids = [];
         foreach ($this->correlationCards($boardId) as $card) {
             $cardDl = $card['payload']['dl_number'] ?? null;
-            if (is_scalar($cardDl) && self::digits((string) $cardDl) !== '' && (int) self::digits((string) $cardDl) === (int) $want
+            if (is_scalar($cardDl)
+                && $refs->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, (string) $cardDl) === $want
                 && isset($card['id']) && is_numeric($card['id'])) {
                 $ids[] = (int) $card['id'];
             }
@@ -407,24 +409,14 @@ final class KanbanClient
         return $order;
     }
 
-    private static function digits(string $s): string
-    {
-        return preg_replace('/\D+/', '', $s) ?? '';
-    }
-
     /**
      * Canonicalize a repo qualifier to match the kanban server's `source`
-     * canonicalization (DL-163): trim + lower-case, null for empty. The bridge
-     * passes the canonical form so `ref`-mode (server-side) and `scan`-mode
-     * (client-side) correlation agree on the same key.
+     * canonicalization (DL-163), via the vendored normalizer. The bridge passes
+     * the canonical form so `ref`-mode (server-side) and `scan`-mode (client-side)
+     * correlation agree on the same key. Null param ⇒ no qualifier (any-source).
      */
     private static function canonSource(?string $repo): ?string
     {
-        if ($repo === null) {
-            return null;
-        }
-        $repo = trim($repo);
-
-        return $repo === '' ? null : mb_strtolower($repo);
+        return $repo === null ? null : (new ExternalReferenceNormalizer)->canonicalizeSource($repo);
     }
 }

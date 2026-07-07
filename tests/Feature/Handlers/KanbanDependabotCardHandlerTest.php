@@ -126,6 +126,22 @@ class KanbanDependabotCardHandlerTest extends TestCase
         Http::assertNotSent(fn ($r) => $r->method() === 'POST');
     }
 
+    public function test_repo_attribution_is_case_insensitive(): void
+    {
+        // Parity with the kanban server's `source` semantics (GitHub owner/repo is
+        // case-insensitive): a card whose stored pr_url differs only in CASE from
+        // the event repo is still attributed to it and moved. The pre-normalizer
+        // exact-string match would have dropped it (latent bug).
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/Owner/Repo/pull/42']]]),
+        ]);
+
+        $this->handle('merged');   // event repo is owner/repo (setUp); card url is Owner/Repo
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['task']['workflow_stage_id'] === 52);
+    }
+
     public function test_already_in_target_stage_is_a_noop(): void
     {
         Http::fake([
