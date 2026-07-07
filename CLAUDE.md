@@ -118,3 +118,6 @@ Filled in by the release PR that produces each version tag. See [`docs/CHANGELOG
 - `config/bridge.php` — bridge runtime config (`BRIDGE_DIR` and its `config_dir`/`secret_dir` overrides, `install_suffix`, the receiver + provider API base URLs). `app/Bridge/Support/SecretPath.php` + `TokenPath.php` are the shared secret/token-path shapes; `BridgePaths.php` resolves `BRIDGE_DIR`; `InstallGuard.php` is the dev/prod crosstalk guard.
 
 For the system overview, see [`CLAUDE_ARCHITECTURE.md`](CLAUDE_ARCHITECTURE.md). For why anything is the way it is, see [`CLAUDE_DECISIONS.md`](CLAUDE_DECISIONS.md).
+
+## Agent Board Framework — solo orientation
+@CLAUDE_AGENTBOARD.md
