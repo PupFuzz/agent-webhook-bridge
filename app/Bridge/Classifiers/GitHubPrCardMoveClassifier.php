@@ -236,15 +236,11 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
     }
 
     /**
-     * The `DL-NNN` token from the PR title or head branch (the same convention
-     * the board automation already uses), or null.
-     *
-     * @param  array<mixed>  $payload
-     */
-    /**
      * The `card#<task-id>` token (FR-7, framework v0.2.229) from the PR title or
      * head branch — the native-kanban-task-id correlation channel for cards that
      * carry no DL. Same surface + matching style as {@see dlToken}.
+     *
+     * @param  array<mixed>  $payload
      */
     private function cardToken(array $payload): ?int
     {
@@ -258,6 +254,12 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         return null;
     }
 
+    /**
+     * The `DL-NNN` token from the PR title or head branch (the same convention
+     * the board automation already uses), or null.
+     *
+     * @param  array<mixed>  $payload
+     */
     private function dlToken(array $payload): ?string
     {
         $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];

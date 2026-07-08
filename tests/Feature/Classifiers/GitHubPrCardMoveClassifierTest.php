@@ -342,7 +342,7 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $result = $this->classify('pull_request.opened', ['title' => 'Fix flaky retry card#3410', 'head' => ['ref' => 'f']]);
 
         $this->assertCount(1, $result->targets);
-        $this->assertSame('kanban_move_card', $result->targets[0]->kind);
+        $this->assertSame('kanban_move_card', $result->targets[0]->handler);
         $this->assertSame(3410, $result->targets[0]->payload['card_id']);
         $this->assertSame('opened', $result->targets[0]->payload['outcome']);
         Http::assertNothingSent();   // native-id selection needs no classify-time kanban read
