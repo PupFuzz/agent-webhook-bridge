@@ -182,7 +182,8 @@ class WebhookDispatchTest extends TestCase
 
         $this->postGithub($body, 'gh-e2e-1')->assertStatus(200);
 
-        $event = WebhookEvent::where('delivery_id', 'gh-e2e-1')->firstOrFail();
+        // DL-176: the github dedup key is sha256 of the signed body, not the header.
+        $event = WebhookEvent::where('delivery_id', hash('sha256', $body))->firstOrFail();
         $this->assertSame('583231', $event->actor_id);   // immutable numeric sender.id, not the login
 
         // Provider-aware match resolved github_user_id 583231 → "peer", and the
@@ -209,7 +210,7 @@ class WebhookDispatchTest extends TestCase
 
         $this->postGithub($body, 'gh-e2e-2')->assertStatus(200);
 
-        $event = WebhookEvent::where('delivery_id', 'gh-e2e-2')->firstOrFail();
+        $event = WebhookEvent::where('delivery_id', hash('sha256', $body))->firstOrFail();
         $dispatch = AgentDispatch::where('webhook_event_id', $event->id)->where('agent_name', 'gh-agent')->firstOrFail();
         $this->assertNotNull($dispatch->processed_at);
         $this->assertNull($dispatch->error_message);

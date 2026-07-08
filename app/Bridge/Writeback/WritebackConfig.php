@@ -173,4 +173,23 @@ final class WritebackConfig
     {
         return $this->mappings[$repo] ?? null;
     }
+
+    /**
+     * Whether more than one repo mapping targets the given board. Repo-qualified
+     * correlation (DL-167) exists to disambiguate DL/PR-number collisions across
+     * repos SHARING a board; on a 1:1 board the qualifier protects nothing and a
+     * strict kanban `source` filter would exclude cards whose derived refs carry
+     * no source (every operator-stamped `dl_number`/`pr_number` card — DL-174).
+     */
+    public function boardIsShared(int $boardId): bool
+    {
+        $n = 0;
+        foreach ($this->mappings as $mapping) {
+            if ($mapping->boardId === $boardId && ++$n > 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }

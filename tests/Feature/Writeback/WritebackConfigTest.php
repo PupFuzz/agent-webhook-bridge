@@ -245,4 +245,20 @@ class WritebackConfigTest extends TestCase
         $this->assertNotNull($cfg->mappingFor('o/r'));                       // mappings still usable
         $this->assertSame('${BOGUS}/a.sock', $cfg->alertChannel?->socket);   // kept unexpanded
     }
+
+    public function test_board_is_shared_detects_multi_repo_boards(): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 1,
+            'mappings' => [
+                'octo/web' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+                'octo/api' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+                'octo/cli' => ['board_id' => 12, 'stages' => ['opened' => 87]],
+            ],
+        ]));
+        $cfg = WritebackConfig::load($this->dir);
+        $this->assertTrue($cfg->boardIsShared(8));
+        $this->assertFalse($cfg->boardIsShared(12));
+        $this->assertFalse($cfg->boardIsShared(999));
+    }
 }

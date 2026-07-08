@@ -5,6 +5,7 @@ namespace App\Bridge\Writeback;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\TokenPath;
+use App\Bridge\Support\UrlValidator;
 
 /**
  * Builds a KanbanClient with the dedicated least-privilege writeback token
@@ -23,6 +24,7 @@ final class WritebackClientFactory
         if ($baseUrl === '') {
             throw new ConfigException("kanban writeback: bridge.providers.{$provider}.api_base_url is not configured");
         }
+        UrlValidator::secureHttpUrl($baseUrl, "bridge.providers.{$provider}.api_base_url");
         $tokenPath = TokenPath::forWriteback($secretDir, $provider);
         $token = SecretFile::read($tokenPath);   // throws on insecure perms
         if ($token === null) {

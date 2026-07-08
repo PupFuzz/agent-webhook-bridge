@@ -31,7 +31,9 @@ return [
     | by bridge:provision to register the callback). providers.<name>.api_base_url
     | is the upstream API base for providers the bridge calls (only kanban is
     | API-provisioned today; github's API base is constant and only relevant when
-    | a github adapter needs it).
+    | a github adapter needs it). The kanban base is SECRET-BEARING (writeback
+    | bearer token + provision-time HMAC secret) — it must be https; cleartext
+    | http is rejected at every consumer except for loopback hosts (DL-175).
     |
     */
 

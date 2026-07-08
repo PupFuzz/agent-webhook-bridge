@@ -43,12 +43,34 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Inject kanban API base (kept out of the repo)
+        env:
+          # The real api_base lives in a repo variable, NOT the committed tree —
+          # .release-pr.json ships a neutral placeholder. Inject the real value here
+          # so bin/promote-released-cards (byte-identical to the vendored canonical)
+          # reads it from .promote.api_base as usual.
+          KANBAN_API_BASE: ${{ vars.KANBAN_API_BASE }}
+        run: |
+          if [ -z "$KANBAN_API_BASE" ]; then
+            echo "::error::vars.KANBAN_API_BASE is not set — refusing to promote against the .release-pr.json placeholder host. Set it with: gh variable set KANBAN_API_BASE --repo <owner>/<repo> --body 'https://<kanban-host>/api/v3'" >&2
+            exit 1
+          fi
+          jq --arg a "$KANBAN_API_BASE" '.promote.api_base = $a' .release-pr.json > .rp.tmp && mv .rp.tmp .release-pr.json
+
       - name: Promote tracking cards
         env:
           KANBAN_WRITEBACK_TOKEN: ${{ secrets.KANBAN_WRITEBACK_TOKEN }}
+          # Out-of-band host constraint bin/promote-released-cards validates the
+          # (PR-editable) .release-pr.json api_base against BEFORE sending the token —
+          # a repo variable, so a malicious api_base edit can't also relax the check.
+          KANBAN_EXPECTED_HOST: ${{ vars.KANBAN_EXPECTED_HOST }}
           INPUT_DLS: ${{ github.event.inputs.dls }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
+          if [ -z "$KANBAN_EXPECTED_HOST" ]; then
+            echo "::error::vars.KANBAN_EXPECTED_HOST is not set — promote-released-cards requires it to validate the api host before sending the writeback token" >&2
+            exit 1
+          fi
           args=()
           [ -n "$INPUT_DLS" ] && args+=(--dls "$INPUT_DLS")
           [ "$DRY_RUN" = "true" ] && args+=(--dry-run)
