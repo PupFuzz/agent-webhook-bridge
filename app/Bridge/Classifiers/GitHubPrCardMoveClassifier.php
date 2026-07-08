@@ -94,10 +94,14 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         // A DL/PR can track MULTIPLE cards (bundled PR — DL-148), so move them ALL:
         // one target per card, each with the card id as its distinct target_id so
         // they don't coalesce (DL-003).
-        // Repo-qualified (DL-167): pass the event's repo so a DL number that
-        // collides across repos on a shared board (DL-027) resolves to THIS repo's
-        // card only — via kanban's `source` dimension (DL-163).
-        $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $repo);
+        // Repo-qualified (DL-167) ONLY where ambiguity exists (DL-174): on a board
+        // SHARED by several repo mappings, the event's repo is sent as kanban's
+        // `source` dimension (DL-163) so a colliding DL number (DL-027) resolves to
+        // THIS repo's card only. On a 1:1 board the strict `source` filter would
+        // exclude cards whose derived refs carry no source (operator-stamped
+        // dl_number cards) while protecting nothing — so it is omitted.
+        $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
+        $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
         if ($cardIds === []) {
             return new ClassifyResult;   // no card tracks this PR → no-op
         }
@@ -154,10 +158,10 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         }
         $dl = 'DL-'.$m[1];
 
-        // Repo-qualified (DL-167): pass the event's repo so a DL number that
-        // collides across repos on a shared board (DL-027) resolves to THIS repo's
-        // card only — via kanban's `source` dimension (DL-163).
-        $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $repo);
+        // Repo-qualified (DL-167) only where ambiguity exists (DL-174) — same
+        // shared-board conditional as the pull_request path above.
+        $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
+        $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
         if ($cardIds === []) {
             return new ClassifyResult;   // no card tracks this DL → no-op
         }

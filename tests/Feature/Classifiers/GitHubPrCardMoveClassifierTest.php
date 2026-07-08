@@ -298,4 +298,40 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame([], $r->targets);
         Http::assertNothingSent();
     }
+
+    /** Write a writeback.json with the given mappings and pin `ref` correlation. */
+    private function useRefCorrelation(array $mappings): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => $mappings,
+        ]));
+        config(['bridge.writeback.correlation' => 'ref']);
+    }
+
+    public function test_ref_correlation_omits_source_qualifier_on_a_non_shared_board(): void
+    {
+        $this->useRefCorrelation(['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50]]]);
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['data' => [['id' => 7]]])]);
+
+        $result = $this->classify('pull_request.opened', ['title' => 'Fix DL-9 thing', 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(1, $result->targets);
+        Http::assertSent(fn ($r) => str_contains($r->url(), '/boards/8/tasks/by-ref.json')
+            && ! str_contains(urldecode($r->url()), 'source='));
+    }
+
+    public function test_ref_correlation_keeps_source_qualifier_on_a_shared_board(): void
+    {
+        $this->useRefCorrelation([
+            'owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+            'owner/other' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+        ]);
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['data' => [['id' => 7]]])]);
+
+        $result = $this->classify('pull_request.opened', ['title' => 'Fix DL-9 thing', 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(1, $result->targets);
+        Http::assertSent(fn ($r) => str_contains(urldecode($r->url()), 'source=owner/repo'));
+    }
 }

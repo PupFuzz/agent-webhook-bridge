@@ -128,12 +128,16 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
-    private function writeWritebackWithToken(): void
+    private function writeWritebackWithToken(bool $sharedBoard = false): void
     {
         $this->writeAgent();
+        $mappings = ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]];
+        if ($sharedBoard) {
+            $mappings['owner/other'] = ['board_id' => 8, 'stages' => ['merged' => 52]];
+        }
         File::put($this->dir.'/writeback.json', (string) json_encode([
             'identity_id' => 4242,
-            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+            'mappings' => $mappings,
         ]));
         File::ensureDirectoryExists($this->dir.'/kanban');
         File::put($this->dir.'/kanban/writeback-token', 'wb-token');
@@ -227,11 +231,11 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
-    public function test_check_warns_on_dl_card_with_null_source_in_ref_mode(): void
+    public function test_check_warns_on_dl_card_with_null_source_on_a_shared_board_in_ref_mode(): void
     {
-        // #3399: in ref mode a dl_number card with no pr_url has source=null → the
-        // repo-qualified by-ref lookup excludes it → it silently never self-moves. Warn (exit 0).
-        $this->writeWritebackWithToken();
+        // #3399 + DL-174: only on a SHARED board is correlation repo-qualified, so only
+        // there does a null-source dl card silently never self-move. Warn (exit 0).
+        $this->writeWritebackWithToken(sharedBoard: true);
         config(['bridge.writeback.correlation' => 'ref']);
         Http::fake([
             '*/tasks/by-ref.json*' => Http::response(['data' => []]),
@@ -244,6 +248,25 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:check')
             ->expectsOutputToContain('card 7 (DL DL-9001)')
             ->assertExitCode(0);   // warn, never fail
+    }
+
+    public function test_check_no_null_source_warning_on_a_non_shared_board(): void
+    {
+        // DL-174: on a 1:1 board the source qualifier is omitted, so a null-source
+        // dl card correlates fine — the #3399 warn must NOT fire (false alarm).
+        $this->writeWritebackWithToken();
+        config(['bridge.writeback.correlation' => 'ref']);
+        Http::fake([
+            '*/tasks/by-ref.json*' => Http::response(['data' => []]),
+            '*/tasks/search.json*' => Http::response([
+                'data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9001']]],
+                'meta' => ['total' => 1],
+            ]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('source=null')
+            ->assertExitCode(0);
     }
 
     public function test_check_no_source_warning_when_dl_card_has_a_mapped_pr_url(): void

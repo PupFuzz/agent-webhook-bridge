@@ -76,12 +76,15 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
         }
         $client = WritebackClientFactory::make();   // throws (→ 5xx) on a missing/insecure token
         try {
-            // Repo-qualified correlation (DL-167): correlatePr passes $repo, so in
-            // `ref` mode kanban's `source` dimension (kanban DL-163) already returns
-            // only THIS repo's cards. cardsForRepo stays as the `scan`-mode guard and
-            // a belt-and-suspenders confirm — it attributes each card by its pr_url
-            // and drops any foreign-repo card a bare-number scan match surfaced.
-            $cards = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber, $repo), $repo);
+            // Repo-qualified correlation (DL-167) only on a SHARED board (DL-174):
+            // there kanban's `source` dimension (kanban DL-163) returns only THIS
+            // repo's cards in `ref` mode. On a 1:1 board the qualifier is omitted so
+            // null-source refs (operator-stamped pr_number cards) still correlate.
+            // cardsForRepo stays as the `scan`-mode guard and a belt-and-suspenders
+            // confirm — it attributes each card by its pr_url and drops any
+            // foreign-repo card a bare-number match surfaced.
+            $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
+            $cards = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber, $sourceRepo), $repo);
 
             // Closed-unmerged dependabot PR → RETIRE the card(s) (DL-161). Archive,
             // not move: routine dependabot churn shouldn't linger in any column, and
@@ -135,7 +138,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             // at the kanban TaskMutator chokepoint, so a racer's card is now visible too)
             // and collapse any duplicate. A re-read failure flows through the same
             // transient/permanent split below; the move-path guard self-heals it next event.
-            $live = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber, $repo), $repo);
+            $live = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber, $sourceRepo), $repo);
             if (count($live) > 1) {
                 $this->collapseDuplicates($client, $live, $repo, $prNumber);
             }

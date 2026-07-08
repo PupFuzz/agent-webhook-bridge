@@ -490,10 +490,12 @@ class CheckCommand extends BridgeCommand
                                 $this->warn("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".$e->getMessage());
                             }
                         }
-                        // #3399: in ref mode the correlation is repo-qualified (passes the event's
-                        // `source`), so a dl_number card whose derived source is null (no pr_url) or
-                        // matches no repo mapped to its board is EXCLUDED by the by-ref lookup and
-                        // silently never self-moves — the one writeback failure that stays invisible.
+                        // #3399: in ref mode the correlation on a SHARED board is repo-qualified
+                        // (passes the event's `source`), so there a dl_number card whose derived
+                        // source is null (no pr_url) or matches no repo mapped to its board is
+                        // EXCLUDED by the by-ref lookup and silently never self-moves — the one
+                        // writeback failure that stays invisible. On a 1:1 board the qualifier is
+                        // omitted (DL-174), so null-source cards correlate fine there.
                         if (config('bridge.writeback.correlation', 'ref') === 'ref') {
                             $this->checkWritebackSourceCoverage($writeback, $client);
                         }
@@ -511,12 +513,15 @@ class CheckCommand extends BridgeCommand
     }
 
     /**
-     * #3399: on a ref-mode (source-qualified) writeback, the by-ref lookup filters by the
-     * event's repo `source`, which the kanban derives from a card's `pr_url`. A dl_number card
-     * with no pr_url (source=null), or a pr_url whose owner/repo matches no repo mapped to that
-     * board, is EXCLUDED by the lookup and silently never self-moves — indistinguishable from a
-     * legitimate no-match in the dispatch ledger. Warn (never fail) so it is named + actionable
-     * (root cause closed by `kbcard --pr-url` + the on-ramp docs). Per board (deduped across mappings).
+     * #3399: on a ref-mode writeback the by-ref lookup on a SHARED board filters by the
+     * event's repo `source`, which the kanban derives from a card's `pr_url`. There a dl_number
+     * card with no pr_url (source=null), or a pr_url whose owner/repo matches no repo mapped to
+     * that board, is EXCLUDED by the lookup and silently never self-moves — indistinguishable
+     * from a legitimate no-match in the dispatch ledger. Warn (never fail) so it is named +
+     * actionable (root cause closed by `kbcard --pr-url` + the on-ramp docs). On a NON-shared
+     * board the qualifier is omitted (DL-174) so source=null is fine and not warned; a derived
+     * source naming a repo NOT mapped to the board still warns everywhere (operator error).
+     * Per board (deduped across mappings).
      */
     private function checkWritebackSourceCoverage(WritebackConfig $writeback, KanbanClient $client): void
     {
@@ -545,8 +550,11 @@ class CheckCommand extends BridgeCommand
                 $externalLink = is_string($card['external_link'] ?? null) ? $card['external_link'] : null;
                 $source = (new ExternalReferenceNormalizer)->sourceFor($payload, $externalLink);
                 if ($source === null) {
-                    $this->warn("writeback: card {$id} (DL {$dl}) on board {$boardId} has dl_number but source=null (no repo / pr_url / issue_url / html_url / external_link to derive it from) — the repo-qualified by-ref lookup EXCLUDES it, so it will NEVER self-move. Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).");
-                    $flagged++;
+                    if ($writeback->boardIsShared((int) $boardId)) {
+                        $this->warn("writeback: card {$id} (DL {$dl}) on SHARED board {$boardId} has dl_number but source=null (no repo / pr_url / issue_url / html_url / external_link to derive it from) — the repo-qualified by-ref lookup EXCLUDES it, so it will NEVER self-move. Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).");
+                        $flagged++;
+                    }
+                    // non-shared board: the qualifier is omitted (DL-174) — null source correlates fine.
                 } elseif (! in_array($source, $repos, true)) {
                     $this->warn("writeback: card {$id} (DL {$dl}) on board {$boardId} has source={$source}, which matches no repo mapped to that board (".implode(', ', $repos).') — no mapped event will move it.');
                     $flagged++;
