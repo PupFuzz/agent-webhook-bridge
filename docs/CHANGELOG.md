@@ -10,6 +10,23 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.45.0] - 2026-07-08
+
+### Fixed
+- **#220** — repo-qualified correlation only on SHARED boards (DL-174). The `ref`-mode `source` qualifier was passed unconditionally; kanban's strict source filter therefore excluded every card whose derived refs carry `source=null` (any operator-stamped `dl_number`/`pr_number` card), silently killing all organic DL-correlated moves on 1:1 boards since DL-167. Qualify only when 2+ repo mappings share the board; the #3399 `bridge:check` null-source warn is now shared-board-scoped (it is a false alarm on 1:1 boards post-fix). Shared-board (multi-repo adopter) installs byte-identical. Board card #3692.
+
+### Security
+- **#218** — infra hostname moved out of the repo into the `KANBAN_API_BASE` repo variable + docs scrubbed (pre-session batch).
+- **#219** — `promote-released-cards` re-synced to the guarded toolkit canonical (closes the #3570 exposure; pre-session batch).
+- **#221** — secret-bearing kanban `api_base_url` requires https (DL-175). New `UrlValidator::secureHttpUrl` (cleartext http only to loopback hosts) applied fail-closed at `WritebackClientFactory`, `bridge:provision`, and `bridge:check`. Board card #3574.
+- **#222** — GitHub dedup key derives from the SIGNED body, not the unsigned `X-GitHub-Delivery` header (DL-176). A captured validly-signed delivery resent with a fresh header no longer re-dispatches; `delivery_id = sha256(raw body)`. Operator "Redeliver" now dedups — `bridge:replay <id>` is the sanctioned reprocess path. Board card #3573.
+
+### Added
+- **#223** — `card#<task-id>` correlation channel (DL-177, framework FR-7 v0.2.229). PRs whose title/head branch carries `card#<id>` move that card by native task-id — the channel for cards with no DL number. `DL-NNN` wins when both tokens appear (ignored `card#` logged). Board card #3652.
+
+### Changed
+- **#217** — `VERSIONING.md` reconciled with actual bump-sizing + auto-tag practice (docs only).
+
 ## [0.44.1] - 2026-07-06
 
 **Shared-code consolidation: three drifting kanban/bridge duplications collapsed to single sources (DUP audit cards #3442–#3445, #3576), a multi-card writeback stage-order memoization (#3575), and a latent dependabot repo-attribution case-sensitivity fix.** PRs #208, #209, #212, #213, #214. **App code — no migration, no new `.env`, no change to what the receiver accepts/rejects.**
