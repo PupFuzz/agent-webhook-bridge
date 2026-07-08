@@ -33,4 +33,25 @@ final class UrlValidator
 
         return $value;
     }
+
+    /**
+     * httpUrl + a transport floor for SECRET-BEARING endpoints (the kanban
+     * api_base_url carries the writeback bearer token and, at provision time,
+     * the freshly-minted webhook HMAC secret): cleartext http is rejected
+     * unless the host is loopback (a local dev rig — no wire exposure). No
+     * env escape hatch by design: an internal-network hostname is exactly the
+     * case where "it's private anyway" quietly ships credentials in cleartext.
+     */
+    public static function secureHttpUrl(mixed $value, string $field): string
+    {
+        $value = self::httpUrl($value, $field);
+        $parts = parse_url($value);
+        $scheme = $parts['scheme'] ?? '';
+        $host = strtolower(trim((string) ($parts['host'] ?? ''), '[]'));
+        if ($scheme === 'http' && ! in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
+            throw new ConfigException("{$field} '{$value}' must use https — this endpoint receives the bearer token/webhook secret, and cleartext http would expose them on the wire (http is allowed only for loopback hosts)");
+        }
+
+        return $value;
+    }
 }
