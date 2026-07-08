@@ -9,6 +9,7 @@ use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Correlation classifier for the GitHub-PR → card-move writeback (FR #2016 /
@@ -85,8 +86,29 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         }
 
         $dl = $this->dlToken($payload);
+        $cardToken = $this->cardToken($payload);
+        if ($dl === null && $cardToken === null) {
+            return new ClassifyResult;   // no card-first token in the PR → un-linked, no-op
+        }
+        // FR-7 precedence (framework v0.2.229): DL-NNN wins — it is the ratified,
+        // more-specific contract. The ignored card# is logged LOUDLY: a title
+        // naming two cards is almost always an operator error, and "the DL card
+        // moved but my card# didn't" must be diagnosable from the ledger.
+        if ($dl !== null && $cardToken !== null) {
+            Log::info("kanban_move_card: PR carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# token is ignored");
+        }
         if ($dl === null) {
-            return new ClassifyResult;   // no DL-NNN in the PR → un-linked, no-op
+            // card#<task-id> (FR-7): direct native-id selection — no source
+            // qualifier, no classify-time kanban read. Board+stage stay operator
+            // config; the durable handler rejects a card not on the mapped board
+            // and applies the same no-regression guards as a DL move.
+            return new ClassifyResult(targets: [
+                ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: [
+                    'card_id' => $cardToken,
+                    'repo' => $repo,
+                    'outcome' => $outcome,
+                ]),
+            ]);
         }
 
         // Correlation read (deterministic key → card id(s)). A transient failure
@@ -154,7 +176,19 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         }
 
         if (preg_match('/\bDL-(\d+)/i', $branch, $m) !== 1) {
-            return new ClassifyResult;   // no DL in the branch ref → un-linked, no-op
+            // card#<task-id> (FR-7): same surface + precedence as the PR path —
+            // a DL in the ref wins; a card# alone selects by native id, handler-guarded.
+            if (preg_match('/\bcard#(\d+)\b/i', $branch, $cm) === 1) {
+                return new ClassifyResult(targets: [
+                    ReactionTarget::make('kanban_move_card', $cm[1], payload: [
+                        'card_id' => (int) $cm[1],
+                        'repo' => $repo,
+                        'outcome' => 'started',
+                    ]),
+                ]);
+            }
+
+            return new ClassifyResult;   // no card-first token in the branch ref → un-linked, no-op
         }
         $dl = 'DL-'.$m[1];
 
@@ -199,6 +233,25 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         $base = is_array($pr['base'] ?? null) ? ($pr['base']['ref'] ?? '') : '';
 
         return $base === 'main' ? 'merged_to_main' : 'merged';
+    }
+
+    /**
+     * The `card#<task-id>` token (FR-7, framework v0.2.229) from the PR title or
+     * head branch — the native-kanban-task-id correlation channel for cards that
+     * carry no DL. Same surface + matching style as {@see dlToken}.
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function cardToken(array $payload): ?int
+    {
+        $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
+        $title = is_string($pr['title'] ?? null) ? $pr['title'] : '';
+        $head = is_array($pr['head'] ?? null) && is_string($pr['head']['ref'] ?? null) ? $pr['head']['ref'] : '';
+        if (preg_match('/\bcard#(\d+)\b/i', $title.' '.$head, $m) === 1) {
+            return (int) $m[1];
+        }
+
+        return null;
     }
 
     /**

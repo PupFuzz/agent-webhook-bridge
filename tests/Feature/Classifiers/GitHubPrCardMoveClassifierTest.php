@@ -9,6 +9,7 @@ use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Support\AgentConfig;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 class GitHubPrCardMoveClassifierTest extends TestCase
@@ -333,5 +334,57 @@ class GitHubPrCardMoveClassifierTest extends TestCase
 
         $this->assertCount(1, $result->targets);
         Http::assertSent(fn ($r) => str_contains(urldecode($r->url()), 'source=owner/repo'));
+    }
+
+    public function test_card_token_in_title_correlates_by_native_id_without_a_kanban_read(): void
+    {
+        Http::fake();
+        $result = $this->classify('pull_request.opened', ['title' => 'Fix flaky retry card#3410', 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(1, $result->targets);
+        $this->assertSame('kanban_move_card', $result->targets[0]->handler);
+        $this->assertSame(3410, $result->targets[0]->payload['card_id']);
+        $this->assertSame('opened', $result->targets[0]->payload['outcome']);
+        Http::assertNothingSent();   // native-id selection needs no classify-time kanban read
+    }
+
+    public function test_card_token_matches_case_insensitively_and_in_head_branch(): void
+    {
+        Http::fake();
+        $result = $this->classify('pull_request.opened', ['title' => 'Fix a thing', 'head' => ['ref' => 'fix/CARD#77-thing']]);
+
+        $this->assertCount(1, $result->targets);
+        $this->assertSame(77, $result->targets[0]->payload['card_id']);
+    }
+
+    public function test_dl_token_wins_over_card_token_and_the_ignored_token_is_logged(): void
+    {
+        // FR-7 precedence (framework v0.2.229): DL-NNN is the ratified, more-specific
+        // contract; when both appear the card# is ignored LOUDLY (degraded-states-loud).
+        $this->fakeBoardCards();
+        Log::spy();
+
+        $result = $this->classify('pull_request.opened', ['title' => 'Fix DL-9 thing card#3410', 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(1, $result->targets);
+        $this->assertSame(7, $result->targets[0]->payload['card_id']);   // DL-9 correlates to card 7
+        Log::shouldHaveReceived('info')->withArgs(fn ($msg) => str_contains((string) $msg, 'card#3410'))->once();
+    }
+
+    public function test_card_token_on_a_branch_create_push_emits_started(): void
+    {
+        Http::fake();
+        $result = (new GitHubPrCardMoveClassifier)->classify(new ClassifyContext(
+            'push',
+            ['created' => true, 'ref' => 'refs/heads/feature/card#88-widget', 'repository' => ['full_name' => 'owner/repo']],
+            new Actor('999'),
+            'github',
+            'owner/repo',
+            $this->agent,
+        ));
+
+        $this->assertCount(1, $result->targets);
+        $this->assertSame(88, $result->targets[0]->payload['card_id']);
+        $this->assertSame('started', $result->targets[0]->payload['outcome']);
     }
 }
