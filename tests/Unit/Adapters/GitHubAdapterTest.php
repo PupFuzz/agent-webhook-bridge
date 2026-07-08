@@ -37,7 +37,7 @@ class GitHubAdapterTest extends TestCase
 
         $event = (new GitHubAdapter)->parse($this->request($body, $this->defaultHeaders()), $body);
 
-        $this->assertSame('gh-delivery-1', $event->deliveryId);
+        $this->assertSame(hash('sha256', $body), $event->deliveryId);
         $this->assertSame('pull_request.opened', $event->eventType);
         $this->assertSame('acme-corp/widget', $event->scopeId);
         // actor_id is the immutable numeric sender.id, not the renameable login.
@@ -84,16 +84,16 @@ class GitHubAdapterTest extends TestCase
         (new GitHubAdapter)->parse($this->request($body, ['X-GitHub-Delivery' => 'd']), $body);
     }
 
-    public function test_over_length_delivery_id_throws(): void
+    public function test_over_length_delivery_header_is_harmless(): void
     {
-        // The X-GitHub-Delivery header is the delivery_id (64-char column). The
-        // length check now runs on the built DTO (post-decode); pin that a 65-char
-        // header still rejects with a deterministic 400.
+        // DL-176: the header no longer feeds delivery_id (the key is sha256 of the
+        // signed body, always 64 chars — exactly the column width), so an oversized
+        // header value cannot overflow the column and must not reject the envelope.
         $body = (string) json_encode(['repository' => ['full_name' => 'acme-corp/widget']]);
         $headers = ['X-GitHub-Delivery' => str_repeat('a', 65), 'X-GitHub-Event' => 'push'];
 
-        $this->expectException(InvalidEnvelopeException::class);
-        (new GitHubAdapter)->parse($this->request($body, $headers), $body);
+        $event = (new GitHubAdapter)->parse($this->request($body, $headers), $body);
+        $this->assertSame(64, strlen($event->deliveryId));
     }
 
     public function test_over_length_scope_id_throws(): void
@@ -123,5 +123,20 @@ class GitHubAdapterTest extends TestCase
 
         $kanbanHeader = $this->request($body, array_merge($this->defaultHeaders(), ['X-Kanban-Signature' => $sig]));
         $this->assertFalse($adapter->verifySignature($kanbanHeader, $body, $secret));
+    }
+
+    public function test_delivery_id_is_bound_to_the_signed_body_not_the_header(): void
+    {
+        // #3573 / DL-176: X-GitHub-Delivery is OUTSIDE the HMAC. A captured,
+        // validly-signed body resent with a fresh header must produce the SAME
+        // dedup key (replay collapses); a different body must produce a new one.
+        $body = (string) json_encode(['action' => 'opened', 'repository' => ['full_name' => 'o/r'], 'sender' => ['id' => 9]]);
+        $a = (new GitHubAdapter)->parse($this->request($body, ['X-GitHub-Delivery' => 'uuid-A', 'X-GitHub-Event' => 'pull_request']), $body);
+        $b = (new GitHubAdapter)->parse($this->request($body, ['X-GitHub-Delivery' => 'uuid-B', 'X-GitHub-Event' => 'pull_request']), $body);
+        $this->assertSame($a->deliveryId, $b->deliveryId);
+
+        $other = (string) json_encode(['action' => 'closed', 'repository' => ['full_name' => 'o/r'], 'sender' => ['id' => 9]]);
+        $c = (new GitHubAdapter)->parse($this->request($other, ['X-GitHub-Delivery' => 'uuid-A', 'X-GitHub-Event' => 'pull_request']), $other);
+        $this->assertNotSame($a->deliveryId, $c->deliveryId);
     }
 }

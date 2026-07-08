@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Webhook;
 
+use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Tests\TestCase;
@@ -266,5 +267,27 @@ class WebhookReceiveTest extends TestCase
     public function test_get_method_is_not_allowed(): void
     {
         $this->get('/webhooks/kanban?b=5')->assertStatus(405);
+    }
+
+    public function test_github_replay_with_fresh_delivery_header_is_deduped(): void
+    {
+        // #3573 / DL-176: the dedup key binds to the SIGNED body. Resending a
+        // captured, validly-signed delivery with a fresh X-GitHub-Delivery must
+        // NOT create a second event row / re-dispatch.
+        $body = (string) json_encode([
+            'action' => 'opened',
+            'repository' => ['full_name' => 'acme-corp/widget'],
+            'sender' => ['id' => 583231],
+        ]);
+        $headers = fn (string $uuid) => [
+            'X-Hub-Signature-256' => $this->sign($body, 'gh-secret'),
+            'X-GitHub-Delivery' => $uuid,
+            'X-GitHub-Event' => 'pull_request',
+        ];
+
+        $this->postWebhook('/webhooks/github?b=acme-corp/widget', $body, $headers('uuid-original'))->assertStatus(200);
+        $this->postWebhook('/webhooks/github?b=acme-corp/widget', $body, $headers('uuid-replayed'))->assertStatus(200);
+
+        $this->assertSame(1, WebhookEvent::query()->count());
     }
 }

@@ -259,7 +259,7 @@ Secret-ordering invariant (enforced in `WebhookProvisioner::createWithSecret`): 
 | Class | `App\Bridge\Adapters\GitHubAdapter` |
 | HMAC header | `X-Hub-Signature-256: sha256=<hex>` |
 | Algorithm | HMAC-SHA256 via `AbstractWebhookAdapter` |
-| `delivery_id` source | `X-GitHub-Delivery` request header (UUID) |
+| `delivery_id` source | `sha256(raw body)` (DL-176) — the `X-GitHub-Delivery` header is outside the HMAC, so it is required but untrusted; binding the dedup key to signed bytes collapses replayed signed bodies |
 | `event_type` source | `X-GitHub-Event` header + body `action` field, composite: `pull_request.opened`; events without an action (e.g. `push`) use the bare header value |
 | `scope_id` source | Body `repository.full_name` (e.g. `org/repo`; stored on disk as `org%2Frepo`) |
 | `actor_id` source | Body `sender.id` (the immutable numeric account id — usernames rename, so the login is never the matching key; see DL-002) |
