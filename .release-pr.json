@@ -13,6 +13,6 @@
   "promote": {
     "board_id": 8,
     "released_stage_id": 53,
-    "api_base": "https://kanban.bwtekmed.com/api/v3"
+    "api_base": "https://kanban.example.com/api/v3"
   }
 }
