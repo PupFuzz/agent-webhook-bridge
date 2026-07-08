@@ -60,9 +60,17 @@ jobs:
       - name: Promote tracking cards
         env:
           KANBAN_WRITEBACK_TOKEN: ${{ secrets.KANBAN_WRITEBACK_TOKEN }}
+          # Out-of-band host constraint bin/promote-released-cards validates the
+          # (PR-editable) .release-pr.json api_base against BEFORE sending the token —
+          # a repo variable, so a malicious api_base edit can't also relax the check.
+          KANBAN_EXPECTED_HOST: ${{ vars.KANBAN_EXPECTED_HOST }}
           INPUT_DLS: ${{ github.event.inputs.dls }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
+          if [ -z "$KANBAN_EXPECTED_HOST" ]; then
+            echo "::error::vars.KANBAN_EXPECTED_HOST is not set — promote-released-cards requires it to validate the api host before sending the writeback token" >&2
+            exit 1
+          fi
           args=()
           [ -n "$INPUT_DLS" ] && args+=(--dls "$INPUT_DLS")
           [ "$DRY_RUN" = "true" ] && args+=(--dry-run)

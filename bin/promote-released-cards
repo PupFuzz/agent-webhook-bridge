@@ -33,6 +33,22 @@ set -euo pipefail
 die() { echo "promote-released-cards: $*" >&2; exit 2; }
 for c in jq curl git; do command -v "$c" >/dev/null || die "$c is required"; done
 
+# host_ok <api_base>: true iff api_base is https:// and its host is $EXPECT_HOST or a
+# subdomain of it. Assumes $EXPECT_HOST is non-empty (the caller enforces that before
+# calling — see the required-var check below). Host is parsed per RFC 3986 (userinfo
+# before the last '@' stripped, then :port), so `https://good@evil/` (→ evil) and
+# `https://good.evil/` are both rejected. Mirrors kb_require_https_host in
+# _kb-board-lib.sh — this script is vendored standalone into consumer repos and MUST NOT
+# source that lib, so the guard is duplicated; keep the two in sync, INCLUDING the
+# required-var check. (#3570)
+host_ok() {
+  case "$1" in https://*) ;; *) return 1 ;; esac
+  local h="${1#https://}"; h="${h%%/*}"; h="${h##*@}"; h="${h%%:*}"
+  [ -n "$h" ] || return 1
+  [ "$h" = "$EXPECT_HOST" ] && return 0
+  case "$h" in *".$EXPECT_HOST") return 0 ;; *) return 1 ;; esac
+}
+
 # True iff <ref> is a MERGE commit (>=2 parents). `git rev-list --parents -n1`
 # prints "<sha> <parent1> <parent2>..." → >=3 tokens ⇒ merge. A merge-commit release
 # tip means the range carries every feature/prep commit subject, so the ref-derivation
@@ -58,6 +74,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# SECURITY: .release-pr.json is security-sensitive — .promote.api_base is where the
+# writeback token (KANBAN_WRITEBACK_TOKEN) is sent. A PR editing api_base to point at an
+# attacker host would exfiltrate the token on the next promote CI run. board_id/stage are
+# validated numeric below; api_base is host-validated (https + $EXPECT_HOST) before any
+# token is sent (#3570). Treat any api_base change in a PR as a credential-scope change.
 [ -f "$CONFIG" ] || die "no $CONFIG in this repo"
 cfg() { jq -r "$1 // empty" "$CONFIG"; }
 BOARD="$(cfg '.promote.board_id')"
@@ -71,6 +92,18 @@ case "$STAGE" in ''|*[!0-9]*) die ".promote.released_stage_id must be numeric (g
 TOKEN="${KANBAN_WRITEBACK_TOKEN:-}"
 [ -n "$TOKEN" ] || die "KANBAN_WRITEBACK_TOKEN is not set"
 API="${API%/}"
+
+# Fail-closed host guard on the config-supplied api_base BEFORE any token is sent. The
+# expected host is $KANBAN_EXPECTED_HOST — REQUIRED, no baked default: this script is
+# vendored by operators onto their own kanban hosts, so there is no host to safely assume.
+# Pin it in the promote CI env (a repo/org variable — out-of-band from the PR-editable
+# .release-pr.json, so an attacker's api_base edit can't also change the constraint). If it
+# is unset/empty we refuse BEFORE any token is sent.
+EXPECT_HOST="${KANBAN_EXPECTED_HOST:-}"
+[ -n "$EXPECT_HOST" ] \
+  || die "KANBAN_EXPECTED_HOST must be set to the expected api host before sending the writeback token; refusing to send"
+host_ok "$API" \
+  || die "refusing to send token — api_base '$API' is not https:// on '$EXPECT_HOST' (or a subdomain). A malicious .release-pr.json api_base can exfiltrate KANBAN_WRITEBACK_TOKEN; set KANBAN_EXPECTED_HOST to your kanban host."
 
 # --- resolve the shipped refs (DL tokens + PR numbers) -----------------------
 numlist() { grep -oE '[0-9]+' | sed 's/^0*\([0-9]\)/\1/' | awk 'NF && !seen[$0]++'; }
@@ -95,7 +128,11 @@ jarr() { printf '%s' "$1" | jq -R . | jq -s 'map(select(. != ""))'; }
 DLS_J="$(jarr "$DL_NUMS")"; PRS_J="$(jarr "$PR_NUMS")"
 
 # --- read the WHOLE board (paged) --------------------------------------------
-api() { curl -fsS -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" "$@"; }
+# Auth is fed OUT-OF-BAND via process substitution (-H @<(...)) so the bearer token
+# never appears in curl's argv (world-readable via `ps aux` / /proc/<pid>/cmdline on a
+# multi-user host). printf is a shell builtin, so the substitution spawns no process
+# whose argv carries the token. (#3569)
+api() { curl -fsS -H @<(printf 'Authorization: Bearer %s' "$TOKEN") -H "Accept: application/json" "$@"; }
 CARDS='[]'; page=1
 while :; do
   RESP="$(api "$API/tasks/search.json?q=board_id=$BOARD&limit=200&page=$page")" \
