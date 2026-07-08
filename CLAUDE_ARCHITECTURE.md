@@ -30,7 +30,7 @@ Upstream system (kanban-board, GitHub, ...)
  200 "ok"   (only after every subscribed agent is processed)
 ```
 
-`webhook_events` is **not** a work-queue — nothing drains it. It is the dedup gate (`UNIQUE(delivery_id)`, so kanban-board retries land idempotently) plus the durable audit/replay store. `agent_dispatches` is the per-agent, per-event outcome ledger (one row per agent that processed an event), enabling per-agent replay + isolation.
+`webhook_events` is **not** a work-queue — nothing drains it. It is the dedup gate (`UNIQUE(delivery_id)`, so kanban-board retries land idempotently; for GitHub the key is sha256 of the SIGNED body, not the unsigned `X-GitHub-Delivery` header — DL-176, so a replayed signed body dedups too) plus the durable audit/replay store. `agent_dispatches` is the per-agent, per-event outcome ledger (one row per agent that processed an event), enabling per-agent replay + isolation.
 
 ### The three-way failure treatment (load-bearing)
 

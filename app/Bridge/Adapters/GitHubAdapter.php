@@ -16,6 +16,15 @@ use Illuminate\Http\Request;
  * "<event>" (push/ping have none). scope_id → repository.full_name (org/repo),
  * actor_id → sender.id (the IMMUTABLE numeric account id — usernames rename;
  * see DL-002). A `ping` is GitHub's connectivity test.
+ *
+ * delivery_id (the at-least-once dedup key) is sha256 of the SIGNED body, NOT
+ * the X-GitHub-Delivery header (DL-176): the header is outside the HMAC, so a
+ * captured validly-signed body resent with a fresh header would otherwise mint
+ * a new dedup key and re-dispatch. Binding the key to signed bytes collapses
+ * any replay to the original row. Consequence: GitHub's operator "Redeliver"
+ * button is deduped too — the sanctioned reprocess path is `bridge:replay <id>`.
+ * The header is still REQUIRED (envelope contract) for parity with GitHub's
+ * documented delivery shape, but its value is untrusted and unused.
  */
 final class GitHubAdapter extends AbstractWebhookAdapter
 {
@@ -26,12 +35,14 @@ final class GitHubAdapter extends AbstractWebhookAdapter
 
     public function parse(Request $request, string $body): EventDto
     {
-        $deliveryId = $request->header('X-GitHub-Delivery');
+        $headerDeliveryId = $request->header('X-GitHub-Delivery');
         $eventName = $request->header('X-GitHub-Event');
 
-        if (! is_string($deliveryId) || $deliveryId === '') {
+        if (! is_string($headerDeliveryId) || $headerDeliveryId === '') {
             throw new InvalidEnvelopeException('missing_header:X-GitHub-Delivery');
         }
+        // Dedup key from the HMAC-verified body, never the unsigned header (DL-176).
+        $deliveryId = hash('sha256', $body);
         if (! is_string($eventName) || $eventName === '') {
             throw new InvalidEnvelopeException('missing_header:X-GitHub-Event');
         }
