@@ -88,14 +88,17 @@ class CheckCommand extends BridgeCommand
 
         // Per-install endpoint URLs (when set — unset is fine until provisioning).
         foreach ([
-            'receiver_base_url' => (string) config('bridge.receiver_base_url'),
-            'providers.kanban.api_base_url' => (string) config('bridge.providers.kanban.api_base_url'),
-        ] as $field => $value) {
-            if ($value === '') {
+            'receiver_base_url' => ['url' => (string) config('bridge.receiver_base_url'), 'secure' => false],
+            // secret-bearing (token + provision-time HMAC secret) — https floor (#3574)
+            'providers.kanban.api_base_url' => ['url' => (string) config('bridge.providers.kanban.api_base_url'), 'secure' => true],
+        ] as $field => $spec) {
+            if ($spec['url'] === '') {
                 continue;
             }
             try {
-                UrlValidator::httpUrl($value, "bridge.{$field}");
+                $spec['secure']
+                    ? UrlValidator::secureHttpUrl($spec['url'], "bridge.{$field}")
+                    : UrlValidator::httpUrl($spec['url'], "bridge.{$field}");
             } catch (Throwable $e) {
                 $this->error($e->getMessage());
                 $ok = false;
