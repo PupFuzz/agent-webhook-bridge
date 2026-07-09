@@ -9,7 +9,7 @@ The bridge can keep a kanban card in sync with its PR's lifecycle **deterministi
    - **`pull_request`** → derives the **outcome** from GitHub-controlled fields (`opened`/`reopened` → `opened`; `closed`+merged to `main` → `merged_to_main`; `closed`+merged to another base → `merged`; `closed`+not-merged → `closed_unmerged`) — never the PR title; finds the card by the `DL-NNN` token in the PR title / head branch.
    - **`push` that CREATED a branch** (`payload.created === true`) whose ref carries a `DL-NNN` → outcome **`started`** (codifies "work has begun" from the artifact — the branch). Fires once on branch creation (a later push to the same branch is a no-op); a `dependabot/*` branch or a ref with no `DL-NNN` is ignored. The card is found by that `DL-NNN`, matched against the mapped board's `dl_number`.
    - emits a `kanban_move_card` durable reaction per correlated card (or no-ops if the repo is unmapped / no `DL-NNN` / no matching card).
-3. `KanbanMoveCardHandler` (durable) moves the card — board + stage come **only** from your `writeback.json` (keyed on the outcome), it **refuses** a card not on the mapped board, and it is idempotent (no-op if already there). The `started` outcome additionally enforces a **no-regression guard** (see below): it only promotes a card currently in one of the mapping's `started_from_stages` (Backlog/Prioritized), never dragging an already-progressed card backward.
+3. `KanbanMoveCardHandler` (durable) moves the card — board + stage come **only** from your `writeback.json` (keyed on the outcome), it **refuses** a card not on the mapped board, and it is idempotent (no-op if already there). The `started` outcome additionally enforces a **no-regression guard** (see below): it only promotes a card currently in one of the mapping's `started_from_stages`, never dragging an already-progressed card backward — and it **refuses a pinned card** (non-empty `block_reason` or a `no-automove` tag) regardless of stage.
    - **No-regression guard on the PR outcomes too (DL-163).** A stale or redelivered `pull_request` event — or a **release PR whose title carries a card's `DL-NNN`** — can re-fire an outcome on a card that has already advanced past it. The handler refuses any move that would drag a card **backward** in the board's workflow order (e.g. `opened`→In-Review on a card already Released, or a redelivered `merged` on a Released card). `closed_unmerged` is the one **legitimately backward** outcome (an abandoned PR returns its In-Review card to In-Progress), so it is allowed to regress **unless** the card has already reached a terminal (`merged`/`merged_to_main`) stage. The order is read from the board (preload); if it can't be read, the move proceeds (fail-open — the guard never blocks the writeback on missing order data). No config needed. *Mitigation that is now belt-and-braces, not required: keeping `DL` tokens out of release-PR titles avoids the spurious `opened` move in the first place.*
 
 ## Setup (operator)
@@ -36,8 +36,10 @@ The writeback acts as this token's kanban user — note that user's `user_id`. *
         "merged_to_main": 53,          // Released to main
         "closed_unmerged": 49          // In Progress
       },
-      "started_from_stages": [46, 47]  // DL-160 — Backlog/Prioritized stage ids the
-                                       //   `started` move may promote a card FROM
+      "started_from_stages": [46, 47]  // DL-160 — stage ids the `started` move may
+                                       //   promote a card FROM. Include the board's
+                                       //   Held stage id to auto-promote a parked
+                                       //   card on branch-create (contract PR #113).
     }
   }
 }
@@ -51,7 +53,8 @@ Absent ⇒ writeback off. Malformed ⇒ fail-closed (`bridge:check` reports it).
 A GitHub `push` that **creates a branch** whose ref carries a `DL-NNN` (e.g. `feat/DL-160-x`) promotes the correlated card to the **`started`** stage — "work has begun" derived from the artifact, no agent involved. It is gated three ways so it can only ever advance a card forward:
 
 - **Fires once, on creation** (`payload.created === true`) — a subsequent push to the same branch is a no-op.
-- **No-regression guard.** The move is applied **only** when the card's current stage is in the mapping's **`started_from_stages`** (the board's Backlog/Prioritized stage ids). A card already in In-Review/Shipped/Released is left untouched, so re-creating or force-pushing an old branch never drags it backward. `started_from_stages` is parsed strictly (a numeric list — a non-list / non-numeric element fails the config closed). **If `started_from_stages` is absent, a `started` move is refused** (the guard can't know what's safe to promote from) — set it to enable the trigger.
+- **No-regression guard.** The move is applied **only** when the card's current stage is in the mapping's **`started_from_stages`** (the board's Backlog/Prioritized stage ids, and optionally **Held** — see below). A card already in In-Review/Shipped/Released is left untouched, so re-creating or force-pushing an old branch never drags it backward. `started_from_stages` is parsed strictly (a numeric list — a non-list / non-numeric element fails the config closed). **If `started_from_stages` is absent, a `started` move is refused** (the guard can't know what's safe to promote from) — set it to enable the trigger.
+- **Held auto-promote + pinned opt-out (contract PR #113).** To un-park a **Held** card automatically when a branch is created for it, add the board's Held stage id to `started_from_stages`. The `created === true` classifier gate already makes this safe against re-fires — a re-push/force-push never emits `started`, only a genuine branch birth does. The escape hatch: a card a human wants to keep parked is **never** auto-promoted if it carries a non-empty `block_reason` **or** a `no-automove` tag — the handler refuses the move (loud `warning` + an `alert_channel` signal), regardless of stage. This mirrors the toolkit `board-card-start` hook's local half of the same contract.
 - A `dependabot/*` branch, or a ref with no `DL-NNN`, emits no target.
 
 To use it you must (a) map a `started` stage **and** set `started_from_stages`, and (b) subscribe the repo webhook to **push** events (see step 4).

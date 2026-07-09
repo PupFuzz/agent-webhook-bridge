@@ -172,6 +172,21 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // none set we can't know what's safe to promote from, so we refuse
         // (fail-closed, mirroring the DL-026 "don't silently do the wrong thing").
         if ($outcome === 'started') {
+            // Pinned-card opt-out (cross-mover contract, agent-board-framework
+            // PR #113): never auto-move a card a human has parked — a non-empty
+            // block_reason OR a `no-automove` tag — regardless of its stage. This
+            // is the belt-and-suspenders escape hatch that keeps the Held-promote
+            // default (delivered via `started_from_stages` carrying the Held stage)
+            // safe. Loud so the skipped promotion is visible.
+            if ($this->isPinned($card)) {
+                Log::warning('kanban_move_card: started move refused — card is pinned (block_reason/no-automove)', [
+                    'card_id' => $cardId, 'repo' => $repo, 'current_stage' => $card['workflow_stage_id'] ?? null,
+                ]);
+                $this->alerts->notify($repo, $outcome, $cardId, 'pinned_no_automove');
+
+                return;
+            }
+
             $allowed = $mapping->startedFromStages;
             $current = $card['workflow_stage_id'] ?? null;
             if ($allowed === null || $allowed === [] || ! in_array($current, $allowed, true)) {
@@ -289,5 +304,23 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         $status = $e->response->status();
 
         return $status >= 400 && $status < 500;
+    }
+
+    /**
+     * A card a human has pinned is never auto-moved by a `started` promotion
+     * (contract PR #113): a non-empty `block_reason` OR a `no-automove` tag.
+     *
+     * @param  array<string, mixed>  $card
+     */
+    private function isPinned(array $card): bool
+    {
+        $reason = $card['block_reason'] ?? null;
+        if (is_string($reason) && trim($reason) !== '') {
+            return true;
+        }
+
+        $tags = $card['tags'] ?? [];
+
+        return is_array($tags) && in_array('no-automove', $tags, true);
     }
 }
