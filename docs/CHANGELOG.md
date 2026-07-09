@@ -10,6 +10,20 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.46.0] - 2026-07-09
+
+**Card-automation batch — the classifier now correlates a `card#` token when a DL is unresolved, plus the Held-automove pinned opt-out and a promote-tooling resilience sync.** PRs #226–#228. **App code — no migration, no new `.env`, no change to what the receiver accepts/rejects.** ⚠ **Operator: this release must be redeployed to the prod bridge (git pull → pip install → migrate → restart) for the card# fallthrough to take effect** — a tag alone does not deploy a running server.
+
+### Changed
+- **#227** — classifier resolves card-first tokens **try-in-order-with-fallback** (DL-179, framework #112). `GitHubPrCardMoveClassifier` previously committed to the `DL-NNN` path on a token's *presence*: `correlateDl()` returning `[]` was a silent no-op even with a co-present `card#<id>`, so a decision-logged-but-unstamped card could never be rescued. Now resolves on *outcome*, on both the `pull_request` and branch-create `push` paths: a resolving DL wins (co-present `card#` logged as ignored); a DL that resolves to no card **falls through** to a present `card#`; a token present but resolving to nothing is warned loudly (never a silent no-op). The `card#` fallback stays board-scoped via `KanbanMoveCardHandler`'s existing board-membership guard. Board card #3727.
+- **#226** — `KanbanMoveCardHandler` refuses a `started` promotion for a **pinned** card (DL-178, framework #113 Held-automove contract). A card with a non-empty `block_reason` or a `no-automove` tag is never auto-promoted to In Progress on a branch-create `started` event. Board card #3744.
+
+### Fixed
+- **#228** — `promote-released-cards` retries transient 5xx to ride the deploy maintenance window (re-sync to the toolkit canonical, card #3700). The merge-to-main promote job races the operator deploy's maintenance mode (HTTP 503); `curl --retry` now backs off on transient errors only (5xx/timeout/conn-refused, never 4xx), bounded by `--retry-max-time`. Byte-identical to the toolkit + kanban copies.
+
+### Changed (dependencies)
+- **#210** — `laravel/framework` 13.16.1 → 13.18.1. **#207** — `symfony/yaml` 8.1.0 → 8.1.1. **#211** — `phpunit/phpunit` 13.2.1 → 13.2.2 (dev). **#205** — `laravel/pail` 1.1.1 → 1.1.2 (dev).
+
 ## [0.45.0] - 2026-07-08
 
 ### Fixed
