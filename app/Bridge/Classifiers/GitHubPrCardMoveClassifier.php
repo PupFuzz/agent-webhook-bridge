@@ -17,13 +17,21 @@ use Illuminate\Support\Facades\Log;
  * into a `kanban_move_card` target by (a) deriving the move OUTCOME from
  * GitHub-CONTROLLED fields (the action + `pull_request.merged` + `base.ref`),
  * never the PR title; (b) correlating the card by the `DL-NNN` token in the PR
- * title or head branch against the mapped board's `dl_number`. Which board+stage
- * the move targets is decided by the durable handler from operator config — this
- * classifier only supplies which card + outcome.
+ * title or head branch against the mapped board's `dl_number`, OR the native-id
+ * `card#<task-id>` token (FR-7). Which board+stage the move targets is decided by
+ * the durable handler from operator config — this classifier only supplies which
+ * card + outcome.
+ *
+ * Token resolution is try-in-order-with-fallback (framework #112), keyed on the
+ * OUTCOME of a token not its presence: a `DL-NNN` that resolves wins (a co-present
+ * `card#` is logged as ignored); a `DL-NNN` that resolves to no card falls through
+ * to a present `card#`; a token present but resolving to nothing is warned loudly
+ * (a decision-logged-but-unstamped card — never a silent no-op). The card# fallback
+ * stays board-scoped via the durable handler's existing board-membership guard.
  *
  * Emits NO intents (the writeback is machine-only, "no agent in the loop"). A PR
- * with no parseable card reference, a repo with no `writeback.json` mapping, or
- * no matching card → empty result (graceful no-op).
+ * with no parseable card reference, or a repo with no `writeback.json` mapping →
+ * empty result (graceful no-op).
  */
 class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
 {
@@ -90,44 +98,72 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         if ($dl === null && $cardToken === null) {
             return new ClassifyResult;   // no card-first token in the PR → un-linked, no-op
         }
-        // FR-7 precedence (framework v0.2.229): DL-NNN wins — it is the ratified,
-        // more-specific contract. The ignored card# is logged LOUDLY: a title
-        // naming two cards is almost always an operator error, and "the DL card
-        // moved but my card# didn't" must be diagnosable from the ledger.
-        if ($dl !== null && $cardToken !== null) {
-            Log::info("kanban_move_card: PR carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# token is ignored");
-        }
-        if ($dl === null) {
-            // card#<task-id> (FR-7): direct native-id selection — no source
-            // qualifier, no classify-time kanban read. Board+stage stay operator
-            // config; the durable handler rejects a card not on the mapped board
-            // and applies the same no-regression guards as a DL move.
-            return new ClassifyResult(targets: [
-                ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: [
-                    'card_id' => $cardToken,
-                    'repo' => $repo,
-                    'outcome' => $outcome,
-                ]),
-            ]);
+
+        // FR-7 try-in-order-with-fallback (framework #112): resolve on the OUTCOME
+        // of a token, not its mere presence. (1) DL resolves → use it. (2) DL
+        // unresolved → fall through to a present card#. (4) a token was present but
+        // nothing resolved → a high-value miss, warn loudly. The board-scope guard
+        // for the card# fallback lives in KanbanMoveCardHandler (it already gates
+        // DL and card# moves identically), so the classifier stays classify-time-
+        // read-free on that path.
+        if ($dl !== null) {
+            // Correlation read (deterministic key → card id(s)). A transient failure
+            // here is a classify error (treatment A: recorded, ack 200, bridge:replay).
+            // A DL/PR can track MULTIPLE cards (bundled PR — DL-148), so move them ALL:
+            // one target per card, each with the card id as its distinct target_id so
+            // they don't coalesce (DL-003).
+            // Repo-qualified (DL-167) ONLY where ambiguity exists (DL-174): on a board
+            // SHARED by several repo mappings, the event's repo is sent as kanban's
+            // `source` dimension (DL-163) so a colliding DL number (DL-027) resolves to
+            // THIS repo's card only. On a 1:1 board the strict `source` filter would
+            // exclude cards whose derived refs carry no source (operator-stamped
+            // dl_number cards) while protecting nothing — so it is omitted.
+            $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
+            $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
+            if ($cardIds !== []) {
+                // (1)/(3) DL resolved → it wins. A present card# is ignored LOUDLY:
+                // a PR naming two cards is almost always an operator error, and "the
+                // DL card moved but my card# didn't" must be diagnosable from the ledger.
+                if ($cardToken !== null) {
+                    Log::info("kanban_move_card: PR carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# token is ignored");
+                }
+
+                return new ClassifyResult(targets: $this->moveTargets($cardIds, $repo, $outcome));
+            }
+            // (4) DL present but nothing resolved and no card# fallback → a
+            // high-value miss (a decision-logged-but-unstamped card is the live
+            // footgun this fallback exists for). Warn loudly; never silent no-op.
+            if ($cardToken === null) {
+                Log::warning("kanban_move_card: PR carries {$dl} but no card tracks it and no card# fallback token is present — no move (FR-7 high-value miss)");
+
+                return new ClassifyResult;
+            }
+            // (2) DL unresolved → fall through to the present card#.
+            Log::info("kanban_move_card: {$dl} resolved to no card — falling through to card#{$cardToken} (FR-7 try-in-order)");
         }
 
-        // Correlation read (deterministic key → card id(s)). A transient failure
-        // here is a classify error (treatment A: recorded, ack 200, bridge:replay).
-        // A DL/PR can track MULTIPLE cards (bundled PR — DL-148), so move them ALL:
-        // one target per card, each with the card id as its distinct target_id so
-        // they don't coalesce (DL-003).
-        // Repo-qualified (DL-167) ONLY where ambiguity exists (DL-174): on a board
-        // SHARED by several repo mappings, the event's repo is sent as kanban's
-        // `source` dimension (DL-163) so a colliding DL number (DL-027) resolves to
-        // THIS repo's card only. On a 1:1 board the strict `source` filter would
-        // exclude cards whose derived refs carry no source (operator-stamped
-        // dl_number cards) while protecting nothing — so it is omitted.
-        $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
-        $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
-        if ($cardIds === []) {
-            return new ClassifyResult;   // no card tracks this PR → no-op
-        }
+        // card#<task-id> (FR-7): direct native-id selection — reached when DL is
+        // absent, or present-but-unresolved with a card# fallback. Board+stage stay
+        // operator config; the durable handler rejects a card not on the mapped
+        // board and applies the same no-regression guards as a DL move.
+        return new ClassifyResult(targets: [
+            ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: [
+                'card_id' => $cardToken,
+                'repo' => $repo,
+                'outcome' => $outcome,
+            ]),
+        ]);
+    }
 
+    /**
+     * Build one `kanban_move_card` target per resolved card id — each with the card
+     * id as its distinct target_id so they don't coalesce (DL-003/DL-148).
+     *
+     * @param  list<int>  $cardIds
+     * @return list<ReactionTarget>
+     */
+    private function moveTargets(array $cardIds, string $repo, string $outcome): array
+    {
         $targets = [];
         foreach ($cardIds as $cardId) {
             $targets[] = ReactionTarget::make('kanban_move_card', (string) $cardId, payload: [
@@ -137,7 +173,7 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
             ]);
         }
 
-        return new ClassifyResult(targets: $targets);
+        return $targets;
     }
 
     /**
@@ -175,41 +211,44 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
             return new ClassifyResult;   // repo not configured for writeback
         }
 
-        if (preg_match('/\bDL-(\d+)/i', $branch, $m) !== 1) {
-            // card#<task-id> (FR-7): same surface + precedence as the PR path —
-            // a DL in the ref wins; a card# alone selects by native id, handler-guarded.
-            if (preg_match('/\bcard#(\d+)\b/i', $branch, $cm) === 1) {
-                return new ClassifyResult(targets: [
-                    ReactionTarget::make('kanban_move_card', $cm[1], payload: [
-                        'card_id' => (int) $cm[1],
-                        'repo' => $repo,
-                        'outcome' => 'started',
-                    ]),
-                ]);
-            }
-
+        $hasDl = preg_match('/\bDL-(\d+)/i', $branch, $m) === 1;
+        $cardToken = preg_match('/\bcard#(\d+)\b/i', $branch, $cm) === 1 ? (int) $cm[1] : null;
+        if (! $hasDl && $cardToken === null) {
             return new ClassifyResult;   // no card-first token in the branch ref → un-linked, no-op
         }
-        $dl = 'DL-'.$m[1];
 
-        // Repo-qualified (DL-167) only where ambiguity exists (DL-174) — same
-        // shared-board conditional as the pull_request path above.
-        $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
-        $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
-        if ($cardIds === []) {
-            return new ClassifyResult;   // no card tracks this DL → no-op
+        // FR-7 try-in-order-with-fallback (framework #112): same resolution order as
+        // the pull_request path — resolve on the OUTCOME of the DL, not its presence.
+        if ($hasDl) {
+            $dl = 'DL-'.$m[1];
+            // Repo-qualified (DL-167) only where ambiguity exists (DL-174) — same
+            // shared-board conditional as the pull_request path above.
+            $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
+            $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
+            if ($cardIds !== []) {
+                if ($cardToken !== null) {
+                    Log::info("kanban_move_card: branch carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# token is ignored");
+                }
+
+                return new ClassifyResult(targets: $this->moveTargets($cardIds, $repo, 'started'));
+            }
+            if ($cardToken === null) {
+                Log::warning("kanban_move_card: branch carries {$dl} but no card tracks it and no card# fallback token is present — no move (FR-7 high-value miss)");
+
+                return new ClassifyResult;
+            }
+            Log::info("kanban_move_card: {$dl} resolved to no card — falling through to card#{$cardToken} (FR-7 try-in-order)");
         }
 
-        $targets = [];
-        foreach ($cardIds as $cardId) {
-            $targets[] = ReactionTarget::make('kanban_move_card', (string) $cardId, payload: [
-                'card_id' => $cardId,
+        // card#<task-id> (FR-7): native-id selection — DL absent, or present-but-
+        // unresolved with a card# fallback. Handler-guarded on board membership.
+        return new ClassifyResult(targets: [
+            ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: [
+                'card_id' => $cardToken,
                 'repo' => $repo,
                 'outcome' => 'started',
-            ]);
-        }
-
-        return new ClassifyResult(targets: $targets);
+            ]),
+        ]);
     }
 
     /**

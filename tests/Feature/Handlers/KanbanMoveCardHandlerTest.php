@@ -255,6 +255,73 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 
+    // --- Contract PR #113: Held promote-from + pinned-card opt-out on `started` ---
+
+    public function test_started_promotes_a_held_card_when_held_is_in_promote_from(): void
+    {
+        // The Held-promote default is delivered by carrying the Held stage (51) in
+        // started_from_stages — the mechanism is unchanged, only the config default.
+        $this->writeWriteback(['started' => 49], ['started_from_stages' => [46, 47, 51]]);
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 51]])   // GET (Held)
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 49]);
+    }
+
+    public function test_started_refused_when_card_has_a_block_reason(): void
+    {
+        // Pinned opt-out: a non-empty block_reason blocks the promotion regardless
+        // of the card being in an allowed promote-from stage.
+        $this->writeWriteback(['started' => 49], ['started_from_stages' => [46, 47, 51]]);
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => [
+            'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 51, 'block_reason' => 'waiting on upstream',
+        ]])]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_started_refused_when_card_has_no_automove_tag(): void
+    {
+        // Pinned opt-out via the `no-automove` tag — a human-pinned card is never
+        // auto-promoted even from an allowed stage.
+        $this->writeWriteback(['started' => 49], ['started_from_stages' => [46, 47, 51]]);
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => [
+            'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 51, 'tags' => ['triaged', 'no-automove'],
+        ]])]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_started_promotes_a_held_card_with_non_pinning_tags_and_blank_block_reason(): void
+    {
+        // Boundary: a whitespace-only block_reason must NOT pin (the trim guard), and a
+        // tag list without `no-automove` must NOT pin (the exact-match guard). One case
+        // pins both against a regression to "any non-null string" / substring/any-tag.
+        $this->writeWriteback(['started' => 49], ['started_from_stages' => [46, 47, 51]]);
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 51, 'block_reason' => '   ', 'tags' => ['triaged']]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 49]);
+    }
+
     public function test_payload_board_id_is_ignored_config_is_authoritative(): void
     {
         // A payload board_id that disagrees with config must NOT change the
