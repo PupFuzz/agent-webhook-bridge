@@ -387,4 +387,53 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame(88, $result->targets[0]->payload['card_id']);
         $this->assertSame('started', $result->targets[0]->payload['outcome']);
     }
+
+    public function test_unresolved_dl_falls_through_to_a_present_card_token(): void
+    {
+        // FR-7 #112 step (2): DL-42 tracks no card (board has only DL-9), but the
+        // PR also carries card#3410 — the resolver must NOT dead-end on the DL; it
+        // falls through to the native-id path and moves card 3410.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9']]]])]);
+        Log::spy();
+
+        $result = $this->classify('pull_request.opened', ['title' => 'Fix DL-42 thing card#3410', 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(1, $result->targets);
+        $this->assertSame(3410, $result->targets[0]->payload['card_id']);
+        $this->assertSame('opened', $result->targets[0]->payload['outcome']);
+        Log::shouldHaveReceived('info')->withArgs(fn ($msg) => str_contains((string) $msg, 'falling through to card#3410'))->once();
+    }
+
+    public function test_unresolved_dl_with_no_card_token_warns_loudly_and_noops(): void
+    {
+        // FR-7 #112 step (4): DL-42 tracks no card and there is no card# fallback —
+        // a high-value miss (a decision-logged-but-unstamped card). No move, but a
+        // loud warning rather than a silent no-op.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9']]]])]);
+        Log::spy();
+
+        $result = $this->classify('pull_request.opened', ['title' => 'DL-42 only']);
+
+        $this->assertSame([], $result->targets);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'DL-42') && str_contains((string) $msg, 'high-value miss'))->once();
+    }
+
+    public function test_unresolved_dl_falls_through_to_card_token_on_a_branch_create_push(): void
+    {
+        // FR-7 #112 fallthrough on the push (started) path.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9']]]])]);
+
+        $result = (new GitHubPrCardMoveClassifier)->classify(new ClassifyContext(
+            'push',
+            ['created' => true, 'ref' => 'refs/heads/feat/dl-42-card#3410-widget', 'repository' => ['full_name' => 'owner/repo']],
+            new Actor('999'),
+            'github',
+            'owner/repo',
+            $this->agent,
+        ));
+
+        $this->assertCount(1, $result->targets);
+        $this->assertSame(3410, $result->targets[0]->payload['card_id']);
+        $this->assertSame('started', $result->targets[0]->payload['outcome']);
+    }
 }
