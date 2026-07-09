@@ -132,7 +132,15 @@ DLS_J="$(jarr "$DL_NUMS")"; PRS_J="$(jarr "$PR_NUMS")"
 # never appears in curl's argv (world-readable via `ps aux` / /proc/<pid>/cmdline on a
 # multi-user host). printf is a shell builtin, so the substitution spawns no process
 # whose argv carries the token. (#3569)
-api() { curl -fsS -H @<(printf 'Authorization: Bearer %s' "$TOKEN") -H "Accept: application/json" "$@"; }
+# --retry rides through a transient prod outage: the merge-to-main promote job
+# races the operator's `bin/deploy.sh`, which drops prod into maintenance mode
+# (HTTP 503) for the seconds-long deploy window (#3700). curl's --retry backs off
+# exponentially on a transient error only — HTTP 408/429/5xx, a timeout, or (with
+# --retry-connrefused) a refused connection — never a 4xx, so a genuine 401/404
+# still fails fast. Bounded by --retry-max-time so a truly-down prod still exits.
+# Card moves are idempotent (set stage N) and a 503 applies nothing, so retrying
+# a PATCH is safe.
+api() { curl -fsS --retry 5 --retry-connrefused --retry-max-time 60 -H @<(printf 'Authorization: Bearer %s' "$TOKEN") -H "Accept: application/json" "$@"; }
 CARDS='[]'; page=1
 while :; do
   RESP="$(api "$API/tasks/search.json?q=board_id=$BOARD&limit=200&page=$page")" \
