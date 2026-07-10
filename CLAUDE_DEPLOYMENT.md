@@ -272,11 +272,14 @@ php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an e
 php artisan bridge:inbox [--hook-format=auto|claude-code|plain]              # surface unseen inbox intents
 php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile]   # ensure kanban subscriptions (--reconcile fixes drift)
 php artisan bridge:prune --older-than=30d [--null-payloads-older-than=7d] [--dry-run]   # retention (the one optional cron)
+php artisan bridge:reconcile [--fix] [--repo=owner/repo] [--max-moves=20]     # board-vs-GitHub drift reconciler (report-only unless --fix)
 ```
 
 `bridge:prune` is the only periodic maintenance job (the design is otherwise daemonless). `--older-than=Nd` deletes `webhook_events` (cascading `agent_dispatches`) and trims `inbox*.jsonl` lines older than the cutoff; `--null-payloads-older-than=Md` (use `M < N`) nulls the stored payload past the replay window while keeping the row's dedup-gate + audit metadata; `--dry-run` reports counts only. Idempotent — safe to re-run. Schedule it per install (e.g. a daily cron); nothing breaks if it never runs except unbounded growth. See `CLAUDE_DECISIONS.md` DL-012.
 
 `bridge:replay` re-runs the `processed_at`-guarded dispatch loop: errored rows (`processed_at` null) re-run; **already-succeeded rows are skipped** so a sibling's already-delivered push / `spawn_detached` is never re-fired. `--agent` scopes to one agent. `--force` clears `processed_at` first so done rows (incl. handler-note rows) re-run too — use it to re-attempt a missed channel push once the agent is back.
+
+`bridge:reconcile` is the **rerunnable backstop for the event-driven writeback** (DL-183): GitHub delivers each webhook once with no retry, so a bridge outage during a PR event silently strands that card. It recomputes each tracked card's expected stage from GitHub PR ground truth and reports the drift (report-only by default; `--fix` applies the *forward* moves). It **never** moves a card backward or out of the promote-owned `released_to_main` stage, skips pinned cards, aborts a partial (truncated) board read, and caps a run at `--max-moves` (default 20). Needs a github read token at `<secret_dir>/github/token` (the kanban repo is private). No new cron — schedule it from host cron or the session-close ritual (start report-only). See [`docs/writeback.md`](docs/writeback.md) § *Reconciliation*.
 
 ## Smoke test
 
