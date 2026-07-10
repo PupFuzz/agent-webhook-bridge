@@ -8,6 +8,16 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-07-10
+
+**Minor — the writeback stamps a `card#` fallback card's `dl_number`/`pr_number` add-if-missing, so it correlates for release-promote instead of stranding (DL-187).** 2 PRs since v0.48.1 (#248 app code + #246 docs). **No migration, no new `.env`, no change to what the receiver accepts/rejects, no writeback-token scope bump.**
+
+### Added
+- **#248** — the GitHub-PR/branch writeback now **stamps a moved card's correlation refs** (`payload.dl_number`/`pr_number`) **add-if-missing** (DL-187), as a step distinct from the column-only move. A card moved via the `card#<id>` native-id fallback (DL-177/179) carried neither ref — the exact keys `promote-released-cards` correlates released cards by — so it stranded in Shipped-to-Dev at release time (seen live on cards 3792/3841/3858; the pre-fix workaround was `kbcard --dl` at decision-time). Scoped tightly per a fresh-adversarial design review: **only the `card#` fallback path stamps** (a DL-resolved card already carries the `dl_number` that resolved it, and stamping `pr_number` there could poison a feature card from a release PR naming its DL); the `dl_number` is stamped **only when exactly one `DL-NNN`** appears in the title+branch (a bundled/release-shaped PR with 2+ DLs, or a foreign DL, stamps `pr_number` only — never a wrong DL), stored canonical zero-padded (`DL-%04d`); **never overwrites** an existing/human value; placed **after** the reject-guards and in the already-in-stage self-heal branch (a stale/regressive event never stamps); best-effort with the move's transient/permanent split (a 4xx like "board has no such field" is logged + skipped; a 5xx **propagates** so redelivery re-stamps — closing the window where a swallowed transient failure would strand the card forever). Relies on the kanban per-key `task.payload` merge (kanban #2180) — a delta PATCH, no read-merge-write; `KanbanClient::moveCard` stays column-only, the new `stampCorrelationRefs` is the distinct write verb. The backstop (a `promote-released-cards` WARN on a released DL with no card) was already present. New `titleAndHead` primitive collapses the duplicated title+branch extraction (`dlToken`/`cardToken` refactored onto it). 13 new tests; one design-review + one impl-review pass. Card #3866.
+
+### Changed
+- **#246** — synced the solo-agent orientation doc (`CLAUDE_AGENTBOARD.md`) across the repo to coord v0.2.253 (finish-to-next self-drive guidance). Docs only.
+
 ## [0.48.1] - 2026-07-10
 
 **Patch — `bridge:reconcile` token diagnosability (DL-186): name the resolved leg + preflight validity probe + upgrade-shadow docs.** 1 PR since v0.48.0 (#244), from two peer integrators (AIMLA + Sola PMs) who both hit the same upgrade-shadow. **No precedence behavior change; no migration, no new `.env`, no change to what the receiver accepts/rejects.**
