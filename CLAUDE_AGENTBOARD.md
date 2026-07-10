@@ -63,7 +63,7 @@ between sessions; verify the board state reflects actual PR state before proceed
 **Canonical docs to orient from** (wherever `coord:init-solo` placed your config —
 `~/.config/coord/` by default — or in the plugin's own `docs/` directory):
 
-- **Engineering canon** — `~/.claude/CLAUDE.md` (seeded per machine at user level). The 16
+- **Engineering canon** — `~/.claude/CLAUDE.md` (seeded per machine at user level). The 17
   senior-engineer principles. Always on.
 - **`design-review-loop.md`** — the pre-implementation review-to-zero-findings discipline
   you run on your own plan before opening a non-trivial PR.
@@ -144,10 +144,37 @@ merge-button intent) using each repo's own conventions. Use it whenever cutting 
 
 ---
 
-## Staying continuously busy — the bounded self-drive loop
+## Staying continuously busy — finish-to-next + the bounded self-drive loop
 
-Two failure modes keep you from working your queue without being poked for every unit. Fix
-both.
+**At every task boundary — finish-to-next (canon #17).** Completing an item ends by pulling
+the next unblocked one from your cross-repo queue (§ Your work loop), not by waiting to be
+prompted:
+
+- **Merged + card state confirmed → pull the next unblocked card.** Nothing in the flow waits
+  on a human post between items.
+- **Next item's precondition unmet →** note the blocker on its issue/card, then start the
+  next-runnable item instead of idling on it.
+- **Nothing runnable →** say so where your human will see it (*"idle: nothing runnable,
+  waiting on X"* — session note or board comment). Idle-with-reason beats silent idle; silent
+  idle with runnable work queued is a defect. **Verify each named trigger is still unlanded
+  when you post** — read the board/repo, don't recall (an idle note is a state claim; canon
+  #8); a trigger pointing at an already-landed event never fires. **And confirm the landing
+  will actually wake you** (a subscribed event / a board signal you receive) — a
+  future-but-unwakeable trigger idles forever; if the landing is silent for you, note that you
+  must **re-check it at your next work-loop boundary** (an in-session check — never a standing
+  poll/cron; the no-standing-daemon invariant holds) rather than expect a wake.
+- **Complete a wake-initiated action's protocol step in the same turn** — never halt between
+  merging and confirming the card / closing its issue; an unrecorded action leaves the board one step
+  behind reality, with no event left to wake you into fixing it.
+- **Check your context weight at each boundary** (§ Context budget) — momentum never skips a
+  boundary reset.
+
+Bounded, not a license: roll-on **never crosses an ask-first gate** (§ Ask-first gates) — it
+changes pacing, not authority — and an item whose design is still unsettled doesn't roll; it
+gets the design-review loop first.
+
+That covers pacing *within* a live session. Two further failure modes keep you from working
+your queue across turns, without being poked for every unit. Fix both.
 
 **1 — the autonomy mandate must live in always-loaded context.** *"Drive autonomously; after
 finishing a unit of work, pull the next unblocked item across all your boards and keep going
@@ -166,10 +193,12 @@ run a self-paced loop (a self-pacing `/loop`, or whatever your harness uses to r
 recurring prompt). Specify it **behaviorally**, not as a frozen command. **Each cycle:**
 
 1. Pull your highest-priority unblocked item across all boards.
-2. Implement it to a PR — or to a reviewable WIP push.
-3. **Push WIP each cycle** (load-bearing for detection — a stall is visible as "no new
-   commits").
-4. Immediately continue to the next unblocked item.
+2. Implement it to a reviewable diff.
+3. **Push WIP — before you dispatch or await any long-running step** (test suite, subagent
+   build, CI). Load-bearing for detection: an un-pushed branch is indistinguishable from no
+   work; the push precedes the wait, never follows it, so a halt during the wait leaves
+   commits, not silence.
+4. Then await verification / open the PR, and continue to the next unblocked item.
 
 **Bounds — load-bearing. An unbounded self-loop runs away** (opens dozens of PRs, burns
 tokens, self-merges risky changes overnight). The bounds make it self-limiting:

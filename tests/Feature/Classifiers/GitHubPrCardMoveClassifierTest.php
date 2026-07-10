@@ -436,4 +436,78 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame(3410, $result->targets[0]->payload['card_id']);
         $this->assertSame('started', $result->targets[0]->payload['outcome']);
     }
+
+    // --- FR #3866: the card# fallback target carries correlation-key stamp hints ---
+
+    public function test_card_fallback_stamps_pr_number_and_no_dl_when_only_a_card_token_is_present(): void
+    {
+        // card# only (no DL) → stamp the PR number so release-promote can correlate;
+        // there is no DL to stamp.
+        Http::fake();
+        $result = $this->classify('pull_request.opened', ['title' => 'Fix a thing card#3410', 'head' => ['ref' => 'f'], 'number' => 77]);
+
+        $p = $result->targets[0]->payload;
+        $this->assertSame(3410, $p['card_id']);
+        $this->assertSame(77, $p['stamp_pr']);
+        $this->assertArrayNotHasKey('stamp_dl', $p);
+    }
+
+    public function test_card_fallback_stamps_the_sole_unresolved_dl(): void
+    {
+        // The core #3866 case: a card created before its DL — the DL is now in the
+        // title but resolves to no card (unstamped), so we fall through to card# AND
+        // stamp that single DL so the next event correlates by DL.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9']]]])]);
+        $result = $this->classify('pull_request.opened', ['title' => 'DL-42 thing card#3410', 'head' => ['ref' => 'f'], 'number' => 88]);
+
+        $p = $result->targets[0]->payload;
+        $this->assertSame(3410, $p['card_id']);
+        $this->assertSame('DL-42', $p['stamp_dl']);
+        $this->assertSame(88, $p['stamp_pr']);
+    }
+
+    public function test_card_fallback_does_not_stamp_a_dl_when_two_or_more_are_present(): void
+    {
+        // Foreign-DL guard: a bundled / release-shaped PR carrying 2+ DLs must NOT
+        // stamp one onto the card# card (it could be a foreign DL). pr_number still stamps.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);   // neither DL resolves
+        $result = $this->classify('pull_request.opened', ['title' => 'Release DL-42 and DL-43 card#3410', 'head' => ['ref' => 'f'], 'number' => 90]);
+
+        $p = $result->targets[0]->payload;
+        $this->assertSame(3410, $p['card_id']);
+        $this->assertArrayNotHasKey('stamp_dl', $p);
+        $this->assertSame(90, $p['stamp_pr']);
+    }
+
+    public function test_dl_resolved_target_carries_no_stamp_refs(): void
+    {
+        // Finding #1: a DL-resolved card already carries dl_number, so stamping it
+        // delivers nothing — and threading pr_number there would poison a feature
+        // card from a release PR whose title names its DL. The DL path stamps NOTHING.
+        $this->fakeBoardCards();
+        $result = $this->classify('pull_request.opened', ['title' => 'DL-42 ship it', 'number' => 77]);
+
+        $p = $result->targets[0]->payload;
+        $this->assertSame(5, $p['card_id']);
+        $this->assertArrayNotHasKey('stamp_dl', $p);
+        $this->assertArrayNotHasKey('stamp_pr', $p);
+    }
+
+    public function test_push_card_fallback_stamps_the_sole_branch_dl_and_no_pr(): void
+    {
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);   // DL unresolved
+        $result = (new GitHubPrCardMoveClassifier)->classify(new ClassifyContext(
+            'push',
+            ['created' => true, 'ref' => 'refs/heads/feat/DL-55-card#88-widget', 'repository' => ['full_name' => 'owner/repo']],
+            new Actor('999'),
+            'github',
+            'owner/repo',
+            $this->agent,
+        ));
+
+        $p = $result->targets[0]->payload;
+        $this->assertSame(88, $p['card_id']);
+        $this->assertSame('DL-55', $p['stamp_dl']);
+        $this->assertArrayNotHasKey('stamp_pr', $p);   // no PR on a push
+    }
 }

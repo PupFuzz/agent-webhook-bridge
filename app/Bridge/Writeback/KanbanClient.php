@@ -59,6 +59,21 @@ final class KanbanClient
     }
 
     /**
+     * Stamp correlation refs (dl_number / pr_number) onto a card's payload — a DELTA
+     * PATCH that relies on the kanban per-key payload merge (kanban #2180): only the
+     * keys in $refs are written; every other custom field is left as-is (and a
+     * concurrent edit to one survives). Distinct from {@see moveCard}, which stays
+     * column-only — the add-if-missing decision is the caller's (from the card it
+     * already read); this is the thin write verb. Throws on non-2xx.
+     *
+     * @param  array<string, string|int>  $refs
+     */
+    public function stampCorrelationRefs(int $cardId, array $refs): void
+    {
+        $this->http()->patch("/tasks/{$cardId}.json", ['task' => ['payload' => $refs]])->throw();
+    }
+
+    /**
      * Archive (retire) a card via the kanban lifecycle verb (DL-161). Archiving
      * is a TOP-LEVEL `_action`, NOT a field write: a `{"task":{"archived_at":…}}`
      * PATCH returns 200 but silently no-ops, so we send `{"_action":"archive"}`.
