@@ -10,6 +10,16 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
+## [0.46.1] - 2026-07-10
+
+**Patch — card-movement writeback reliability: promote via a SHA-pinned toolkit action + a PR-title correlation lint.** 2 net PRs since v0.46.0 (#232, #233). **CI/tooling only — no app code, no migration, no new `.env`, no change to what the receiver accepts/rejects.** Bridge mirror of kanban-board v0.29.1.
+
+### Added
+- **#233** — `.github/workflows/pr-title-lint.yml` (DL-182). A PR whose head branch follows the `<type>/<card-id>-slug` convention must carry a `card#<id>` or `DL-NNNN` token in its title — the only correlation key the GitHub-PR→card-move writeback has. Converts a silently-unmoved card into a loud red check. Injection-safe (event payload reaches the script via `env:` only, never inline `${{ }}`), token bounded on both sides, `shell: bash` pinned, `ubuntu-latest` runner. Not a required status check (teeth = the all-workflows-green merge rule). Mirrored in kanban-board (DL-197).
+
+### Changed
+- **#232** — `.github/workflows/release-promote-cards.yml` now consumes `promote-released-cards` as the SHA-pinned `agent-board-toolkit` composite action (`uses: PupFuzz/agent-board-toolkit/promote@<sha>  # v0.11.0`) instead of a vendored copy (DL-181, correcting DL-180). Drift becomes structurally impossible, presence is guaranteed, and dependabot's github-actions ecosystem bumps the pin. Retires the vendored `bin/promote-released-cards`, the `.agent-board-toolkit-version` stamp, and the `toolkit-drift.yml` gate that #231 (DL-180) had added earlier in this cycle — net effect on `main` is the composite-action consumption with no vendored script. Mirrored in kanban-board (DL-196).
+
 ## [0.46.0] - 2026-07-09
 
 **Card-automation batch — the classifier now correlates a `card#` token when a DL is unresolved, plus the Held-automove pinned opt-out and a promote-tooling resilience sync.** PRs #226–#228. **App code — no migration, no new `.env`, no change to what the receiver accepts/rejects.** ⚠ **Operator: this release must be redeployed to the prod bridge (git pull → pip install → migrate → restart) for the card# fallthrough to take effect** — a tag alone does not deploy a running server.
