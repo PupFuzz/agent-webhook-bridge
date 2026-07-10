@@ -5,6 +5,7 @@ namespace App\Console\Commands\Bridge;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Writeback\GitHubReadClient;
+use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrOutcome;
@@ -68,6 +69,9 @@ class ReconcileCommand extends BridgeCommand
     /** Canonical owner/repo → whether the startup auth probe confirmed the token can read it. */
     private array $repoUsable = [];
 
+    /** Canonical owner/repo → the per-repo read client (token resolved per repo, DL-185). */
+    private array $clients = [];
+
     public function handle(): int
     {
         $fix = (bool) $this->option('fix');
@@ -109,35 +113,37 @@ class ReconcileCommand extends BridgeCommand
 
             return self::FAILURE;
         }
-        try {
-            $github = GitHubReadClient::fromConfig();
-        } catch (Throwable $e) {   // insecure perms
-            $this->error('github token: '.$e->getMessage());
-
-            return self::FAILURE;
-        }
-        if ($github === null) {
-            $tokenPath = GitHubReadClient::tokenPath();
-            $source = GitHubReadClient::hasTokenPathOverride()
-                ? "no github token at the configured token_path {$tokenPath}"
-                : "no github token at {$tokenPath} and GH_TOKEN is unset";
-            $this->error("{$source} — bridge:reconcile reads PR state from GitHub (the kanban-board repo is private, so a read-only token is required). Place a token file (chmod 600) or export GH_TOKEN, or set bridge.providers.github.token_path (BRIDGE_GITHUB_TOKEN_PATH) to reuse a centralized credential.");
-
-            return self::FAILURE;
-        }
+        $resolver = new GitHubTokenResolver;
 
         $this->info($fix ? 'bridge:reconcile --fix (applying forward moves)' : 'bridge:reconcile (report-only; pass --fix to apply)');
 
         $refs = new ExternalReferenceNormalizer;
 
-        // Startup auth/scope probe per mapped repo — fail LOUDLY (non-zero exit)
-        // when the token can't read a repo, rather than every per-card getPull
-        // silently 404-ing while the run exits 0 (the wholesale-degradation trap).
-        // A per-repo failure skips only that repo's cards; other repos still run.
+        // Per-repo token resolution + startup auth/scope probe. The token is
+        // resolved per repo (DL-185: the store map routes each repo to its own
+        // least-privilege PAT), then the probe fails LOUDLY (non-zero exit) when a
+        // token can't read its repo, rather than every per-card getPull silently
+        // 404-ing while the run exits 0 (the wholesale-degradation trap). A per-repo
+        // failure — an unresolvable token OR an unreadable repo — skips only that
+        // repo's cards; other repos still run. The RAW mapping key is passed to the
+        // resolver ([git-credential-map] is case-sensitive); repoUsable/clients are
+        // keyed by the canonical form (how cards resolve their repo).
         foreach ($mappings as $repo => $mapping) {
             $canon = $refs->canonicalizeSource((string) $repo) ?? (string) $repo;
+
+            $resolution = $resolver->resolveFor((string) $repo);
+            if (! $resolution->ok()) {
+                $this->error("github token for {$repo}: {$resolution->problem} — bridge:reconcile reads PR state from GitHub (the repo is private, so a read-only token is required); its cards will be SKIPPED. Place a token file (chmod 600), map the repo in the coordination store's [git-credential-map], or export GH_TOKEN.");
+                $this->repoUsable[$canon] = false;
+                $this->hadError = true;
+
+                continue;
+            }
+            $client = new GitHubReadClient((string) $resolution->token);
+            $this->clients[$canon] = $client;
+
             try {
-                $github->probeRepo($repo);
+                $client->probeRepo($repo);
                 $this->repoUsable[$canon] = true;
             } catch (RequestException $e) {
                 $status = $e->response->status();
@@ -161,7 +167,7 @@ class ReconcileCommand extends BridgeCommand
         }
 
         foreach ($byBoard as $boardId => $boardMappings) {
-            $this->reconcileBoard((int) $boardId, $boardMappings, $writeback, $kanban, $github, $refs);
+            $this->reconcileBoard((int) $boardId, $boardMappings, $writeback, $kanban, $refs);
         }
 
         return $this->finish($fix, $maxMoves, $kanban);
@@ -170,7 +176,7 @@ class ReconcileCommand extends BridgeCommand
     /**
      * @param  array<string, WritebackMapping>  $boardMappings
      */
-    private function reconcileBoard(int $boardId, array $boardMappings, WritebackConfig $writeback, KanbanClient $kanban, GitHubReadClient $github, ExternalReferenceNormalizer $refs): void
+    private function reconcileBoard(int $boardId, array $boardMappings, WritebackConfig $writeback, KanbanClient $kanban, ExternalReferenceNormalizer $refs): void
     {
         $repoList = implode(', ', array_keys($boardMappings));
         try {
@@ -211,7 +217,7 @@ class ReconcileCommand extends BridgeCommand
         }
 
         foreach ($read['cards'] as $card) {
-            $this->reconcileCard(is_array($card) ? $card : [], $boardId, $boardMappings, $byCanonRepo, $isShared, $order, $github, $refs);
+            $this->reconcileCard(is_array($card) ? $card : [], $boardId, $boardMappings, $byCanonRepo, $isShared, $order, $refs);
         }
     }
 
@@ -221,7 +227,7 @@ class ReconcileCommand extends BridgeCommand
      * @param  array<string, array{repo: string, mapping: WritebackMapping}>  $byCanonRepo
      * @param  array<int, float>  $order
      */
-    private function reconcileCard(array $card, int $boardId, array $boardMappings, array $byCanonRepo, bool $isShared, array $order, GitHubReadClient $github, ExternalReferenceNormalizer $refs): void
+    private function reconcileCard(array $card, int $boardId, array $boardMappings, array $byCanonRepo, bool $isShared, array $order, ExternalReferenceNormalizer $refs): void
     {
         $cardId = is_numeric($card['id'] ?? null) ? (int) $card['id'] : null;
         if ($cardId === null) {
@@ -270,7 +276,8 @@ class ReconcileCommand extends BridgeCommand
         }
 
         try {
-            $pr = $github->getPull($cardRepo, $prNumber);
+            // repoUsable[$cardRepo] === true above guarantees a probed client here.
+            $pr = $this->clients[$cardRepo]->getPull($cardRepo, $prNumber);
         } catch (RequestException $e) {
             $status = $e->response->status();
             // The startup probe already confirmed the token can read this repo, so a

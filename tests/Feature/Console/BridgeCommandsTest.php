@@ -25,7 +25,13 @@ class BridgeCommandsTest extends TestCase
         parent::setUp();
         $this->dir = sys_get_temp_dir().'/cli-'.uniqid();
         File::ensureDirectoryExists($this->dir);
-        config(['bridge.config_dir' => $this->dir, 'bridge.secret_dir' => $this->dir]);
+        config([
+            'bridge.config_dir' => $this->dir,
+            'bridge.secret_dir' => $this->dir,
+            // Neutralize the store-native reconcile-token leg (this host has a real
+            // git-credential-coord on PATH) so bridge:check is deterministic.
+            'bridge.providers.github.credential_helper' => $this->dir.'/no-store-helper',
+        ]);
     }
 
     protected function tearDown(): void
