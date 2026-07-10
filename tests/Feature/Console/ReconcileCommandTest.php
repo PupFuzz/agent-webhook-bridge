@@ -343,6 +343,23 @@ class ReconcileCommandTest extends TestCase
             && $r->hasHeader('Authorization', 'Bearer tok:owner/repo'));
     }
 
+    public function test_auth_probe_failure_names_the_resolved_leg(): void
+    {
+        // DL-186: a 401 on the startup auth probe must name WHICH leg resolved the
+        // token (here the conventional file, from setUp), so a stale shadowing file
+        // is obvious instead of an un-actionable bare "401".
+        $this->writeWriteback();
+        Http::fake([
+            '*preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
+            '*tasks/search.json*' => Http::response(['data' => [], 'links' => ['next' => null]]),
+            'https://api.github.com/*' => Http::response(['message' => 'Bad credentials'], 401),
+        ]);
+
+        $this->artisan('bridge:reconcile')
+            ->expectsOutputToContain('token from token file')
+            ->assertExitCode(1);
+    }
+
     public function test_no_writeback_config_fails(): void
     {
         // no writeback.json written

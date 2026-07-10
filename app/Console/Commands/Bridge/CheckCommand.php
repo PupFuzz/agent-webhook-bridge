@@ -18,10 +18,12 @@ use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
 use App\Bridge\Writeback\AlertChannel;
+use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 
@@ -380,6 +382,23 @@ class CheckCommand extends BridgeCommand
                         $resolution = $ghResolver->resolveFor((string) $repo);
                         if (! $resolution->ok()) {
                             $this->warn("reconcile: {$repo}: {$resolution->problem} — bridge:reconcile will FAIL for this repo until you place a read-only token (chmod 600), map it in the coordination store's [git-credential-map], or export GH_TOKEN; the event-driven writeback is unaffected");
+
+                            continue;
+                        }
+                        // Resolvability ≠ validity (DL-186). A resolved-but-expired
+                        // token — classically a stale <secret_dir>/github/token from
+                        // the single-token era that SHADOWS the store map — passes the
+                        // check above but 401s every repo at reconcile time. Probe it
+                        // HERE (warn-never-fail, DL-026), naming the resolved leg so a
+                        // stale shadow surfaces at preflight, not on the first run. A
+                        // network blip is NOT a token problem → stay silent on it.
+                        try {
+                            (new GitHubReadClient((string) $resolution->token))->probeRepo((string) $repo);
+                        } catch (RequestException $e) {
+                            $status = $e->response->status();
+                            $this->warn("reconcile: {$repo}: token from {$resolution->source} → HTTP {$status} — bridge:reconcile will SKIP this repo. If the source is a <secret_dir>/github/token or BRIDGE_GITHUB_TOKEN_PATH file, it SHADOWS the [git-credential-map] store (a stale single-token-era file is the common upgrade cause) — remove it so each repo resolves its own store token.");
+                        } catch (Throwable) {
+                            // network/timeout — not a token-validity signal; ignore.
                         }
                     }
                 }
