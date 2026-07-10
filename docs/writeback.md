@@ -213,6 +213,39 @@ A writeback that "has no agent in the loop" can fail in two ways that **don't** 
   - `ref`: one indexed `GET /boards/{b}/tasks/by-ref.json` per key (kanban DL-147/148) — server-canonicalized, O(1), no paging/ceiling. **Requires the kanban instance to expose `by-ref` AND its `task_external_references` to be backfilled** (`php artisan kanban:backfill-external-references`). Flip an install to `ref` only after confirming both (`bridge:check`).
 - **One PR/DL can track multiple cards (kanban DL-148).** `by-ref` returns a collection and the scan returns all matches, so the writeback moves **every** correlated card (e.g. two FRs bundled in one PR). Each is a separate move target keyed by card id.
 
+## Reconciliation — `bridge:reconcile` (DL-183)
+
+The writeback is **event-driven**, and GitHub delivers each webhook **exactly once with no auto-retry**. So if the bridge is down during a PR event (a deploy, an outage), that card's move is lost and nothing re-drives it — the only backstop was the manual `board-session-close`. `bridge:reconcile` is the **rerunnable backstop**: it recomputes each tracked card's *expected* stage from **GitHub ground truth** (GET the PR, read its state/merged/base) and reports — or, with `--fix`, applies — the drift. This makes card movement **eventually consistent** (closes RC-B from the 2026-06-05 writeback-drift RCA).
+
+```bash
+php artisan bridge:reconcile                     # REPORT-ONLY: one line per drifted card + summary counts (exit 0)
+php artisan bridge:reconcile --fix               # apply the forward moves
+php artisan bridge:reconcile --repo owner/repo   # reconcile only one writeback.json mapping
+php artisan bridge:reconcile --fix --max-moves=20   # safety cap (default 20)
+```
+
+**Reads PR state from GitHub → needs a github token.** It uses the general per-provider token at `<secret_dir>/github/token` (the same convention `bridge:provision` uses — **not** the dedicated kanban writeback token). The **kanban-board repo is private**, so a `repo`-scoped read token is required in practice; without it the command fails with a clear message, and `bridge:check` warns when writeback is configured but the token is absent/insecure.
+
+**What it reconciles.** Only cards carrying a resolvable `(repo, PR)`: a `payload.pr_url` (yields both repo + number) or a `payload.pr_number` on a **1:1 board** (the mapping supplies the repo). A `dl_number`-only card is **skipped with an info line** — DL→PR resolution needs a GitHub search, out of v1 scope. A bare `pr_number` on a **shared** board is ambiguous (no repo) and skipped. The expected stage is derived from the PR state with the **same** outcome mapping as the event path (`open → opened`, `closed+merged` to the integration branch `→ merged`, to `main → merged_to_main`, `closed+unmerged → closed_unmerged`).
+
+**Safety posture** — it reuses the event-path guards rather than inventing new ones, and keeps read-side degradations LOUD (never a false-green):
+
+- **Startup auth probe.** Before touching any card it does one `GET /repos/{owner}/{repo}` per mapped repo. A failure (401 = expired/revoked token, 403/404 = the token can't see that private repo) is reported loudly, that repo's cards are skipped, and the run exits non-zero — so an under-scoped or dead token can't silently 404 every card while the run exits 0.
+- **Never moves a card backward** (DL-163 stage order). Backward drift is *reported*, not applied. When the board order can't be read, the drift is reported as *unorderable*, left alone (a batch mover must not guess direction), and the run exits non-zero (a drift left unreconciled for lack of order data is a degraded run, not a clean one).
+- **Never moves a pinned card** (DL-178 `block_reason` / `no-automove`).
+- **Release-promotion is out of scope.** The `released_to_main` stage is treated as **terminal**: a card there is never moved out, and a merge-to-`main` PR (outcome `merged_to_main`) is never moved *in* — the `release-promote-cards` workflow is that stage's rerunnable owner.
+- **A truncated board read aborts that board** (never reconciles a partial view) and fails the run loudly.
+- **`--max-moves` (default 20) caps a run:** more planned moves than the cap **aborts before applying ANY** — mass movement means a bug, not drift. Raise the cap deliberately if a large legitimate backlog of drift is expected.
+- **A per-card GitHub error after the probe:** a **404** is a genuinely deleted PR → warn + skip that card (the run continues, exit unaffected); a **401/403** means the token was revoked mid-run → the run exits non-zero. A timeout/connection error warns + skips that one card.
+
+**Not reconciled in v1 (documented gaps):**
+
+- **`dl_number`-only cards** and a **bare `pr_number` on a shared board** — no resolvable `(repo, PR)`; skipped with an info line.
+- **The branch-create `started` outcome** (a card promoted to In-Progress by a `push` that created a branch, DL-160) — there is no PR to GET, so a dropped `push` event is *not* recovered here; it self-heals on the card's next PR event.
+- **`closed_unmerged` (abandoned-PR) regression** — this is legitimately *backward* (In-Review → In-Progress) and the event handler applies it, but the reconciler declines all backward moves, so a dropped `pull_request.closed`-unmerged event is **reported** (with an accurate label) but not auto-fixed. It is left to the event path (redelivery) or a human in v1.
+
+**Scheduling.** The command ships with **no new cron** — the daemonless design accepts exactly one periodic job (`bridge:prune`). Run `bridge:reconcile` from a host cron (e.g. hourly, report-only; `--fix` less often or after review), or wire a report-only pass into the session-close ritual. Automating `--fix` is an operator choice; start report-only and add `--fix` once the report is boring. (A dedicated scheduling follow-up is a separate card if wanted.)
+
 ## Security notes
 
 - Board + stage are **operator config only**, keyed on GitHub-controlled fields — the webhook body can't choose a board or stage. The worst an attacker-influenced PR can do (via title correlation) is nudge a card *that genuinely sits on the mapped board* to a *config-mapped stage* — bounded, reversible, logged.
