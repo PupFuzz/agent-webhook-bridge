@@ -231,7 +231,9 @@ php artisan bridge:reconcile --fix --max-moves=20   # safety cap (default 20)
 3. **store-native — `git-credential-coord` + `[git-credential-map]`** (DL-185) — the default when no explicit token file is placed. `bridge:reconcile` calls the framework credential helper (`bridge.providers.github.credential_helper`, env `BRIDGE_GITHUB_CREDENTIAL_HELPER`, default `git-credential-coord`) with the repo's `host/owner/repo`; the store's `[git-credential-map]` (most-specific-first) selects the `[github]` key → a per-repo, least-privilege PAT with no second token copy to rotate. An **unmapped** repo (empty result) falls through to `GH_TOKEN`; a `REPLACE_ME` placeholder, an unreadable `*_file`, or a helper crash **fail loud** (never a silent fall-through to a wrong-scoped token). The helper is spawned inheriting the reconcile CLI env, so it needs `HOME`/`COORD_CREDENTIALS` to locate the store — fine for an interactive operator run (if you ever wire reconcile to a timer, set them in the unit). Set `credential_helper` empty to disable this leg. **A placed token file (leg 1 or 2) short-circuits the store map** — use a file *or* the store map for a repo, not both.
 4. **`GH_TOKEN` env** — the last leg, used only when no override/file is set and the store returns nothing. It is present in an operator shell (`~/.bashrc`) but **not** in the webhook-spawned receiver, so it self-scopes to the reconcile CLI; it can never shadow a store-mapped token.
 
-Without any usable source the command fails with a clear message naming the resolved path, and `bridge:check` warns when writeback is configured but no token resolves (or a file source is insecure).
+Without any usable source the command fails with a clear message naming the resolved path. On an auth failure, the per-repo probe error **names the resolved leg** — e.g. `github: cannot read repo owner/repo — HTTP 401 (token expired/revoked) (token from token file /path)` — so you can see *which* source won without instrumenting it (DL-186); `bridge:reconcile -v` prints the resolved leg per repo even on success. `bridge:check` warns when writeback is configured but no token resolves (or a file source is insecure), **and probes the resolved token's validity** against each mapped repo — a resolved-but-expired token gets a warn naming the leg at preflight, not a silent 401 on the first run.
+
+> **⚠ UPGRADING to store-native per-repo tokens (DL-185)?** A pre-existing conventional `<secret_dir>/github/token` file — or `BRIDGE_GITHUB_TOKEN_PATH` — from the single-token era **short-circuits the `[git-credential-map]` store** (leg 1/2 beat leg 3), so every repo resolves that one file's token instead of its own per-repo PAT. On an upgraded install that file is frequently **stale** (nothing was rotating it once the store took over), which surfaces as *every repo 401s* on the first `bridge:reconcile` run despite a correctly-populated store map. **Fix:** remove the file (`ls <secret_dir>/github/token`; back it up, then `rm`/`mv`) so each repo resolves its own least-privilege token — or keep it deliberately if you *want* one shared token. `bridge:check` now flags this at preflight (the validity probe above names the shadowing leg).
 
 **What it reconciles.** Only cards carrying a resolvable `(repo, PR)`: a `payload.pr_url` (yields both repo + number) or a `payload.pr_number` on a **1:1 board** (the mapping supplies the repo). A `dl_number`-only card is **skipped with an info line** — DL→PR resolution needs a GitHub search, out of v1 scope. A bare `pr_number` on a **shared** board is ambiguous (no repo) and skipped. The expected stage is derived from the PR state with the **same** outcome mapping as the event path (`open → opened`, `closed+merged` to the integration branch `→ merged`, to `main → merged_to_main`, `closed+unmerged → closed_unmerged`).
 
@@ -251,7 +253,22 @@ Without any usable source the command fails with a clear message naming the reso
 - **The branch-create `started` outcome** (a card promoted to In-Progress by a `push` that created a branch, DL-160) — there is no PR to GET, so a dropped `push` event is *not* recovered here; it self-heals on the card's next PR event.
 - **`closed_unmerged` (abandoned-PR) regression** — this is legitimately *backward* (In-Review → In-Progress) and the event handler applies it, but the reconciler declines all backward moves, so a dropped `pull_request.closed`-unmerged event is **reported** (with an accurate label) but not auto-fixed. It is left to the event path (redelivery) or a human in v1.
 
-**Scheduling.** The command ships with **no new cron** — the daemonless design accepts exactly one periodic job (`bridge:prune`). Run `bridge:reconcile` from a host cron (e.g. hourly, report-only; `--fix` less often or after review), or wire a report-only pass into the session-close ritual. Automating `--fix` is an operator choice; start report-only and add `--fix` once the report is boring. (A dedicated scheduling follow-up is a separate card if wanted.)
+**Scheduling.** The command ships with **no new cron** — the daemonless design accepts exactly one periodic job (`bridge:prune`). Run `bridge:reconcile` from a host cron (e.g. hourly, report-only; `--fix` less often or after review), or wire a report-only pass into the session-close ritual. Automating `--fix` is an operator choice; start report-only and add `--fix` once the report is boring.
+
+### Running reconcile unattended (worked example)
+
+Reconcile is **operator maintenance** (like `bridge:prune`), *not* an agent poll — it's a periodic backstop that catches the drift a dropped webhook left behind. The one non-obvious requirement: a cron/systemd context has a **stripped environment**, and the store-native token leg spawns `git-credential-coord`, which needs `HOME` (and `COORD_CREDENTIALS` if the store isn't at `~/.config/coord/`) to find the store, plus the helper on `PATH`. Set them explicitly:
+
+```cron
+# hourly report-only; a daily --fix pass with a circuit-breaker. Adjust to taste.
+HOME=/home/<user>
+PATH=/home/<user>/.local/bin:/usr/local/bin:/usr/bin:/bin
+BRIDGE_DIR=/home/<user>/.config/agent-webhook-bridge-prod
+17 * * * *  cd /home/<user>/agent-webhook-bridge-prod && php artisan bridge:reconcile           >> "$HOME/reconcile.log" 2>&1
+23 4 * * *  cd /home/<user>/agent-webhook-bridge-prod && php artisan bridge:reconcile --fix --max-moves=20 >> "$HOME/reconcile.log" 2>&1
+```
+
+`--max-moves` is the **circuit-breaker**: a run planning MORE than the cap aborts before applying *any* move (mass movement means a bug, not drift — re-run manually with a higher cap once you've explained it). Start report-only for a few days; add the `--fix` line once the report is consistently boring. If the store-native leg is in use, first confirm the unit's env resolves the token: `HOME=… PATH=… php artisan bridge:reconcile -v` should print `github: <repo> — readable (token from store …)` per repo.
 
 ## Security notes
 

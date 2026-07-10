@@ -20,6 +20,8 @@ class BridgeCommandsTest extends TestCase
 
     private string $dir;
 
+    private string|false $origGhToken;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -32,10 +34,20 @@ class BridgeCommandsTest extends TestCase
             // git-credential-coord on PATH) so bridge:check is deterministic.
             'bridge.providers.github.credential_helper' => $this->dir.'/no-store-helper',
         ]);
+        // Hermetic: the host/CI may export GH_TOKEN, now a reconcile-token leg — clear
+        // it so the reconcile-token check resolves deterministically (a test that
+        // asserts no HTTP must not have GH_TOKEN silently satisfy the validity probe).
+        $this->origGhToken = getenv('GH_TOKEN');
+        putenv('GH_TOKEN');
     }
 
     protected function tearDown(): void
     {
+        if ($this->origGhToken === false) {
+            putenv('GH_TOKEN');
+        } else {
+            putenv('GH_TOKEN='.$this->origGhToken);
+        }
         File::deleteDirectory($this->dir);
         parent::tearDown();
     }
@@ -155,6 +167,27 @@ class BridgeCommandsTest extends TestCase
             // its own dedicated tests.
             'bridge.writeback.correlation' => 'scan',
         ]);
+    }
+
+    public function test_check_warns_when_the_resolved_reconcile_token_is_invalid(): void
+    {
+        // DL-186: a resolved-but-expired reconcile token (classically a stale
+        // <secret_dir>/github/token shadowing the store map) passes resolvability
+        // but 401s every repo at reconcile time. bridge:check probes VALIDITY and
+        // warns (never fails), naming the resolved leg so the shadow surfaces at
+        // preflight rather than on the first reconcile run.
+        $this->writeWritebackWithToken();
+        File::ensureDirectoryExists($this->dir.'/github');
+        File::put($this->dir.'/github/token', 'stale-token');
+        chmod($this->dir.'/github/token', 0o600);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            'https://api.github.com/*' => Http::response(['message' => 'Bad credentials'], 401),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('token from token file')
+            ->assertExitCode(0);
     }
 
     public function test_check_warns_when_the_writeback_token_sees_zero_cards(): void
