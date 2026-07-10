@@ -32,6 +32,11 @@ class ReconcileCommandTest extends TestCase
             'bridge.secret_dir' => $this->dir,
             'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
             'bridge.writeback.correlation' => 'ref',
+            // Neutralize the store-native leg (this host has a real
+            // git-credential-coord on PATH) so these tests exercise the file /
+            // GH_TOKEN legs deterministically; per-repo store resolution is covered
+            // by GitHubTokenResolverTest and the dedicated store test below.
+            'bridge.providers.github.credential_helper' => $this->dir.'/no-store-helper',
         ]);
         $this->writeToken($this->dir.'/kanban/writeback-token');
         $this->writeToken($this->dir.'/github/token');
@@ -316,6 +321,26 @@ class ReconcileCommandTest extends TestCase
         $this->artisan('bridge:reconcile')
             ->expectsOutputToContain('configured token_path')
             ->assertExitCode(1);
+    }
+
+    public function test_store_native_token_is_used_per_repo(): void
+    {
+        // DL-185: no file token; credential_helper resolves a per-repo token from
+        // the store (the stub echoes a token derived from the requested path). The
+        // GitHub calls must carry that store-derived token, not a file/env one.
+        $this->writeWriteback();
+        File::delete($this->dir.'/github/token');
+        $stub = $this->dir.'/gcc-stub';
+        File::put($stub, "#!/bin/sh\npath=\$(sed -n 's/^path=//p')\nprintf 'password=tok:%s\\n' \"\$path\"\n");
+        chmod($stub, 0o755);
+        config(['bridge.providers.github.credential_helper' => $stub]);
+        // in-sync card (stage 50, open PR → 50): no move, just proves auth wiring.
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => $this->openPr()]);
+
+        $this->artisan('bridge:reconcile')->assertExitCode(0);
+
+        Http::assertSent(fn (Request $r) => str_starts_with($r->url(), 'https://api.github.com/')
+            && $r->hasHeader('Authorization', 'Bearer tok:owner/repo'));
     }
 
     public function test_no_writeback_config_fails(): void

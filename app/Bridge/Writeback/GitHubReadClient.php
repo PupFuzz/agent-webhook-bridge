@@ -2,9 +2,6 @@
 
 namespace App\Bridge\Writeback;
 
-use App\Bridge\Support\PathHelper;
-use App\Bridge\Support\SecretFile;
-use App\Bridge\Support\TokenPath;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 
@@ -15,10 +12,10 @@ use Illuminate\Support\Facades\Http;
  * its current state/merged/base. That closes RC-B (a webhook dropped during a
  * bridge outage is never re-delivered — GitHub fires each once).
  *
- * Uses the general per-provider token convention (<secret_dir>/github/token), NOT
- * the dedicated least-privilege writeback token — this is a github credential, not
- * a kanban one, and the kanban-board repo is private so a `repo`-scoped read token
- * is required in practice. The 0600 posture (DL-010) is enforced on read.
+ * Token-agnostic: constructed with an already-resolved token by the caller. The
+ * reconciler resolves one token PER REPO (GitHubTokenResolver, DL-185) — the store
+ * map routes each repo to its own least-privilege PAT — so the client is built per
+ * repo rather than owning resolution itself.
  *
  * Verb-only + throws on non-2xx: the caller (ReconcileCommand) decides that a
  * per-card 4xx/5xx is warn + skip, never abort the whole run.
@@ -31,66 +28,6 @@ final class GitHubReadClient
     public const TIMEOUT_SECONDS = 15;
 
     public function __construct(private string $token) {}
-
-    /**
-     * The token file path bridge:reconcile reads (DL-184): an explicit
-     * `bridge.providers.github.token_path` override (e.g. a centralized
-     * credential like ~/.config/coord/github-pat — reused without a per-install
-     * symlink), else the conventional <secret_dir>/github/token. Used for the
-     * operator-facing "no token at <path>" message and by bridge:check.
-     */
-    public static function tokenPath(): string
-    {
-        $override = config('bridge.providers.github.token_path');
-        if (is_string($override) && trim($override) !== '') {
-            return PathHelper::expandUser(trim($override));
-        }
-
-        return TokenPath::for((string) config('bridge.secret_dir'), 'github');
-    }
-
-    /** True when an explicit token_path override is configured (authoritative — no env fallback). */
-    public static function hasTokenPathOverride(): bool
-    {
-        $override = config('bridge.providers.github.token_path');
-
-        return is_string($override) && trim($override) !== '';
-    }
-
-    /**
-     * Build from the resolved github token, or null when none is available (the
-     * caller reports that reconcile cannot run). Throws InsecureSecretPermsException
-     * on a group/world-readable token file (DL-010 fail-closed).
-     *
-     * Resolution (DL-184):
-     *   1. An explicit `token_path` override is AUTHORITATIVE — read that file
-     *      only; a missing/blank file yields null (reported by the caller) with
-     *      NO ambient fallback, so a wrong path fails loud instead of silently
-     *      resolving a different credential.
-     *   2. Otherwise the conventional <secret_dir>/github/token, then an ambient
-     *      `GH_TOKEN` env fallback when that file is unplaced. GH_TOKEN is present
-     *      in an operator shell (~/.bashrc) but NOT in the webhook-spawned
-     *      receiver, so the fallback self-scopes to the reconcile CLI.
-     */
-    public static function fromConfig(): ?self
-    {
-        $token = SecretFile::read(self::tokenPath());   // throws on insecure perms; null when the file is absent
-
-        if (($token === null || $token === '') && ! self::hasTokenPathOverride()) {
-            $token = self::envToken();
-        }
-
-        return ($token === null || $token === '') ? null : new self($token);
-    }
-
-    /** Ambient GH_TOKEN, trimmed; null when unset or blank. */
-    private static function envToken(): ?string
-    {
-        $env = getenv('GH_TOKEN');
-        $env = is_string($env) ? trim($env) : '';
-
-        return $env === '' ? null : $env;
-    }
 
     /**
      * One-shot auth/scope probe for a repo (`GET /repos/{repo}`). Throws

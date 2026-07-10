@@ -21,6 +21,8 @@ There are three configuration surfaces:
 | `BRIDGE_RECEIVER_BASE_URL` | http(s) URL | — | This bridge's public webhook URL (used by `bridge:provision`). Malformed → `bridge:check` **fails**. |
 | `BRIDGE_KANBAN_API_BASE_URL` | http(s) URL | — | kanban API base. Malformed → `bridge:check` **fails**. |
 | `BRIDGE_GITHUB_API_BASE_URL` | http(s) URL | `https://api.github.com` | Only relevant if a github adapter calls the API. |
+| `BRIDGE_GITHUB_TOKEN_PATH` | abs path | — | `bridge:reconcile` GitHub read token (DL-184). Authoritative when set: a missing/blank/insecure file **fails loud** with no store/env fallback. Absent → the conventional `<secret_dir>/github/token`, then store-native, then `GH_TOKEN`. |
+| `BRIDGE_GITHUB_CREDENTIAL_HELPER` | helper name \| abs path \| `''` | `git-credential-coord` | `bridge:reconcile` store-native token leg (DL-185): resolves a **per-repo** PAT from the coordination store's `[git-credential-map]` via this helper (git wire-format). Bare name → PATH-resolved; a `/`-path used as-is; empty **disables** the store leg. Absent helper → falls through to `GH_TOKEN`. Needs `HOME`/`COORD_CREDENTIALS` in the reconcile env to locate the store. |
 | `BRIDGE_STATE_DIR` | abs path | `<config_dir>/state` | `inbox*.jsonl` / seen cursors / handler logs. Point OUTSIDE the 0700 config dir for cross-user inbox reads. |
 | `BRIDGE_INBOX_LAYOUT` | `shared` \| `per-agent` \| `both` | `shared` | Where staged lines land. Invalid → `bridge:check` + dispatch **fail closed**. |
 | `BRIDGE_DEFAULT_AGENT` | agent name | — | Bare `bridge:inbox` surfaces this agent. Unknown name → `bridge:check` **warns**. |
