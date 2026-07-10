@@ -10,7 +10,15 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 _(empty after each tagged release; accumulates as feature PRs land on dev)_
 
-## [0.46.1] - 2026-07-10
+## [0.47.0] - 2026-07-10
+
+**Minor — `bridge:reconcile`: board-vs-GitHub drift reconciler (closes RC-B).** 1 PR since v0.46.1 (#237, DL-183). **App code — no migration, no new `.env`, no change to what the receiver accepts/rejects.** A new operator command that re-derives each tracked card's correct column from GitHub PR truth — **report-only by default; `--fix` applies the forward moves** (cap-guarded by `--max-moves`). The systematic, re-runnable fix for the out-of-band / bundled-release stranding class (RC-B) that per-PR writeback can't catch.
+
+### Added
+- **#237** — `bridge:reconcile` (DL-183): reconciles board card state against GitHub PR outcomes. **Report-only by default; `--fix` applies forward moves.** New `ReconcileCommand` + `GitHubReadClient`, with `PrOutcome`/`PinGuard` primitives extracted pure (behavior-identical) from the classifier/handler. Guards: a startup per-repo auth probe (loud + non-zero exit on a token that can't read a repo); never-backward (DL-163); pinned-card respect (DL-178); `released_to_main` terminal (keyed on the `merged_to_main` outcome); truncated-read abort; `--max-moves` cap; unorderable→non-zero exit; per-card 404 benign / 401-403 systemic. `bridge:check` now warns on a missing GitHub read token.
+
+### Notes
+- v1 scope (documented, deliberate): dl-only cards, bare-`pr_number`-on-shared-board, the branch-create `started` outcome (no PR to GET), and the `closed_unmerged` abandoned-PR *backward* regression are out of scope (the last is report-only, not auto-applied).
 
 **Patch — card-movement writeback reliability: promote via a SHA-pinned toolkit action + a PR-title correlation lint.** 2 net PRs since v0.46.0 (#232, #233). **CI/tooling only — no app code, no migration, no new `.env`, no change to what the receiver accepts/rejects.** Bridge mirror of kanban-board v0.29.1.
 
