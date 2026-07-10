@@ -2,8 +2,6 @@
 
 namespace App\Bridge\Writeback;
 
-use App\Bridge\Support\SecretFile;
-use App\Bridge\Support\TokenPath;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 
@@ -14,10 +12,10 @@ use Illuminate\Support\Facades\Http;
  * its current state/merged/base. That closes RC-B (a webhook dropped during a
  * bridge outage is never re-delivered — GitHub fires each once).
  *
- * Uses the general per-provider token convention (<secret_dir>/github/token), NOT
- * the dedicated least-privilege writeback token — this is a github credential, not
- * a kanban one, and the kanban-board repo is private so a `repo`-scoped read token
- * is required in practice. The 0600 posture (DL-010) is enforced on read.
+ * Token-agnostic: constructed with an already-resolved token by the caller. The
+ * reconciler resolves one token PER REPO (GitHubTokenResolver, DL-185) — the store
+ * map routes each repo to its own least-privilege PAT — so the client is built per
+ * repo rather than owning resolution itself.
  *
  * Verb-only + throws on non-2xx: the caller (ReconcileCommand) decides that a
  * per-card 4xx/5xx is warn + skip, never abort the whole run.
@@ -30,24 +28,6 @@ final class GitHubReadClient
     public const TIMEOUT_SECONDS = 15;
 
     public function __construct(private string $token) {}
-
-    /** The <secret_dir>/github/token path (the general per-provider token convention). */
-    public static function tokenPath(): string
-    {
-        return TokenPath::for((string) config('bridge.secret_dir'), 'github');
-    }
-
-    /**
-     * Build from the configured github token, or null when it is absent/blank (the
-     * caller reports that reconcile cannot run). Throws InsecureSecretPermsException
-     * on a group/world-readable token (DL-010 fail-closed).
-     */
-    public static function fromConfig(): ?self
-    {
-        $token = SecretFile::read(self::tokenPath());   // throws on insecure perms
-
-        return $token === null ? null : new self($token);
-    }
 
     /**
      * One-shot auth/scope probe for a repo (`GET /repos/{repo}`). Throws

@@ -16,6 +16,8 @@ class ReconcileCommandTest extends TestCase
 {
     private string $dir;
 
+    private string|false $origGhToken;
+
     /** Stage-order positions (workflow_stage_id => position) for board 8. */
     private const ORDER = [46 => 1.0, 49 => 3.0, 50 => 4.0, 52 => 5.0, 53 => 6.0];
 
@@ -30,14 +32,29 @@ class ReconcileCommandTest extends TestCase
             'bridge.secret_dir' => $this->dir,
             'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
             'bridge.writeback.correlation' => 'ref',
+            // Neutralize the store-native leg (this host has a real
+            // git-credential-coord on PATH) so these tests exercise the file /
+            // GH_TOKEN legs deterministically; per-repo store resolution is covered
+            // by GitHubTokenResolverTest and the dedicated store test below.
+            'bridge.providers.github.credential_helper' => $this->dir.'/no-store-helper',
         ]);
         $this->writeToken($this->dir.'/kanban/writeback-token');
         $this->writeToken($this->dir.'/github/token');
+        // Hermetic: the host/CI may export GH_TOKEN (~/.bashrc), which is now a
+        // reconcile token source (DL-184). Clear it so the file-token path is
+        // exercised deterministically and the "no token" case really has none.
+        $this->origGhToken = getenv('GH_TOKEN');
+        putenv('GH_TOKEN');
     }
 
     protected function tearDown(): void
     {
         File::deleteDirectory($this->dir);
+        if ($this->origGhToken === false) {
+            putenv('GH_TOKEN');
+        } else {
+            putenv('GH_TOKEN='.$this->origGhToken);
+        }
         parent::tearDown();
     }
 
@@ -275,6 +292,55 @@ class ReconcileCommandTest extends TestCase
         $this->artisan('bridge:reconcile')
             ->expectsOutputToContain('no github token')
             ->assertExitCode(1);
+    }
+
+    public function test_gh_token_env_is_used_when_file_absent(): void
+    {
+        // DL-184: no file token, but GH_TOKEN exported → reconcile proceeds past
+        // the token check instead of failing "no github token".
+        $this->writeWriteback();
+        File::delete($this->dir.'/github/token');
+        putenv('GH_TOKEN=ghp_env');
+        $this->fake([], []);
+
+        $this->artisan('bridge:reconcile')
+            ->doesntExpectOutputToContain('no github token')
+            ->assertExitCode(0);
+    }
+
+    public function test_configured_token_path_is_authoritative_over_gh_token(): void
+    {
+        // DL-184: an explicit (missing) token_path override fails loud and does
+        // NOT silently fall through to an ambient GH_TOKEN.
+        $this->writeWriteback();
+        File::delete($this->dir.'/github/token');
+        config(['bridge.providers.github.token_path' => $this->dir.'/github/missing-override']);
+        putenv('GH_TOKEN=ghp_env');
+        $this->fake([], []);
+
+        $this->artisan('bridge:reconcile')
+            ->expectsOutputToContain('configured token_path')
+            ->assertExitCode(1);
+    }
+
+    public function test_store_native_token_is_used_per_repo(): void
+    {
+        // DL-185: no file token; credential_helper resolves a per-repo token from
+        // the store (the stub echoes a token derived from the requested path). The
+        // GitHub calls must carry that store-derived token, not a file/env one.
+        $this->writeWriteback();
+        File::delete($this->dir.'/github/token');
+        $stub = $this->dir.'/gcc-stub';
+        File::put($stub, "#!/bin/sh\npath=\$(sed -n 's/^path=//p')\nprintf 'password=tok:%s\\n' \"\$path\"\n");
+        chmod($stub, 0o755);
+        config(['bridge.providers.github.credential_helper' => $stub]);
+        // in-sync card (stage 50, open PR → 50): no move, just proves auth wiring.
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => $this->openPr()]);
+
+        $this->artisan('bridge:reconcile')->assertExitCode(0);
+
+        Http::assertSent(fn (Request $r) => str_starts_with($r->url(), 'https://api.github.com/')
+            && $r->hasHeader('Authorization', 'Bearer tok:owner/repo'));
     }
 
     public function test_no_writeback_config_fails(): void

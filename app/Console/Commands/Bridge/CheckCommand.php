@@ -18,7 +18,7 @@ use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
 use App\Bridge\Writeback\AlertChannel;
-use App\Bridge\Writeback\GitHubReadClient;
+use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -367,16 +367,20 @@ class CheckCommand extends BridgeCommand
                         $this->warn('writeback: '.SecretFile::permsMessage($tokenPath).' — the move will fail until fixed');
                     }
 
-                    // reconcile (bridge:reconcile, DL-183) reads PR state from GitHub
-                    // via the general github token (<secret_dir>/github/token). When
-                    // writeback is configured, reconcile is usable — warn (never fail)
-                    // if that token is absent/insecure so the backstop isn't silently
-                    // unusable. The event-driven writeback itself is unaffected.
-                    $ghToken = GitHubReadClient::tokenPath();
-                    if (! is_file($ghToken)) {
-                        $this->warn("reconcile: no github token at {$ghToken} — bridge:reconcile reads PR state from GitHub and will FAIL until you place a read-only token (chmod 600); the event-driven writeback is unaffected");
-                    } elseif (SecretFile::isInsecure($ghToken)) {
-                        $this->warn('reconcile: '.SecretFile::permsMessage($ghToken).' — bridge:reconcile will FAIL until fixed');
+                    // reconcile (bridge:reconcile) reads PR state from GitHub,
+                    // resolving a token PER REPO (GitHubTokenResolver, DL-185): a
+                    // token_path override → the conventional <secret_dir>/github/token
+                    // → the coordination store's [git-credential-map] → ambient
+                    // GH_TOKEN. Route this through the SAME resolver so bridge:check
+                    // can't drift from what reconcile actually resolves. Warn (never
+                    // fail, DL-026) for any mapped repo whose token doesn't resolve;
+                    // the event-driven writeback is unaffected either way.
+                    $ghResolver = new GitHubTokenResolver;
+                    foreach ($writeback->mappings as $repo => $mapping) {
+                        $resolution = $ghResolver->resolveFor((string) $repo);
+                        if (! $resolution->ok()) {
+                            $this->warn("reconcile: {$repo}: {$resolution->problem} — bridge:reconcile will FAIL for this repo until you place a read-only token (chmod 600), map it in the coordination store's [git-credential-map], or export GH_TOKEN; the event-driven writeback is unaffected");
+                        }
                     }
                 }
 
