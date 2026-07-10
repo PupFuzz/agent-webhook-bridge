@@ -7,6 +7,7 @@ use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Support\Facades\Log;
@@ -271,7 +272,9 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         }
         $base = is_array($pr['base'] ?? null) ? ($pr['base']['ref'] ?? '') : '';
 
-        return $base === 'main' ? 'merged_to_main' : 'merged';
+        // The merged→stage decision lives in PrOutcome so the reconciler
+        // (bridge:reconcile, DL-183) derives the identical outcome from REST state.
+        return PrOutcome::forMergedBase(is_string($base) ? $base : '');
     }
 
     /**

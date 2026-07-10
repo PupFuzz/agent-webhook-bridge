@@ -18,6 +18,7 @@ use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
 use App\Bridge\Writeback\AlertChannel;
+use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -364,6 +365,18 @@ class CheckCommand extends BridgeCommand
                         $this->warn("writeback: no kanban writeback token at {$tokenPath} — the move will fail until you place a least-privilege token (chmod 600)");
                     } elseif (SecretFile::isInsecure($tokenPath)) {
                         $this->warn('writeback: '.SecretFile::permsMessage($tokenPath).' — the move will fail until fixed');
+                    }
+
+                    // reconcile (bridge:reconcile, DL-183) reads PR state from GitHub
+                    // via the general github token (<secret_dir>/github/token). When
+                    // writeback is configured, reconcile is usable — warn (never fail)
+                    // if that token is absent/insecure so the backstop isn't silently
+                    // unusable. The event-driven writeback itself is unaffected.
+                    $ghToken = GitHubReadClient::tokenPath();
+                    if (! is_file($ghToken)) {
+                        $this->warn("reconcile: no github token at {$ghToken} — bridge:reconcile reads PR state from GitHub and will FAIL until you place a read-only token (chmod 600); the event-driven writeback is unaffected");
+                    } elseif (SecretFile::isInsecure($ghToken)) {
+                        $this->warn('reconcile: '.SecretFile::permsMessage($ghToken).' — bridge:reconcile will FAIL until fixed');
                     }
                 }
 
