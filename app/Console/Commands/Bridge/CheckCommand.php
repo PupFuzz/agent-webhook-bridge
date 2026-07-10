@@ -367,16 +367,26 @@ class CheckCommand extends BridgeCommand
                         $this->warn('writeback: '.SecretFile::permsMessage($tokenPath).' — the move will fail until fixed');
                     }
 
-                    // reconcile (bridge:reconcile, DL-183) reads PR state from GitHub
-                    // via the general github token (<secret_dir>/github/token). When
+                    // reconcile (bridge:reconcile, DL-183) reads PR state from GitHub.
+                    // Token sources (DL-184): an explicit
+                    // bridge.providers.github.token_path override (authoritative),
+                    // else <secret_dir>/github/token, else an ambient GH_TOKEN. When
                     // writeback is configured, reconcile is usable — warn (never fail)
-                    // if that token is absent/insecure so the backstop isn't silently
-                    // unusable. The event-driven writeback itself is unaffected.
+                    // if NO source resolves, or a file source is insecure, so the
+                    // backstop isn't silently unusable. Event-driven writeback is
+                    // unaffected either way.
                     $ghToken = GitHubReadClient::tokenPath();
-                    if (! is_file($ghToken)) {
-                        $this->warn("reconcile: no github token at {$ghToken} — bridge:reconcile reads PR state from GitHub and will FAIL until you place a read-only token (chmod 600); the event-driven writeback is unaffected");
-                    } elseif (SecretFile::isInsecure($ghToken)) {
+                    $override = GitHubReadClient::hasTokenPathOverride();
+                    if (is_file($ghToken) && SecretFile::isInsecure($ghToken)) {
                         $this->warn('reconcile: '.SecretFile::permsMessage($ghToken).' — bridge:reconcile will FAIL until fixed');
+                    } elseif (! is_file($ghToken) && ($override || getenv('GH_TOKEN') === false || trim((string) getenv('GH_TOKEN')) === '')) {
+                        // No usable source: an override path that isn't a file (env
+                        // fallback is suppressed under an override), or the default
+                        // path is absent AND GH_TOKEN is unset/blank.
+                        $hint = $override
+                            ? "no github token at the configured token_path {$ghToken}"
+                            : "no github token at {$ghToken} and GH_TOKEN is unset";
+                        $this->warn("reconcile: {$hint} — bridge:reconcile reads PR state from GitHub and will FAIL until you place a read-only token (chmod 600) or export GH_TOKEN; the event-driven writeback is unaffected");
                     }
                 }
 

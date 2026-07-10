@@ -16,6 +16,8 @@ class ReconcileCommandTest extends TestCase
 {
     private string $dir;
 
+    private string|false $origGhToken;
+
     /** Stage-order positions (workflow_stage_id => position) for board 8. */
     private const ORDER = [46 => 1.0, 49 => 3.0, 50 => 4.0, 52 => 5.0, 53 => 6.0];
 
@@ -33,11 +35,21 @@ class ReconcileCommandTest extends TestCase
         ]);
         $this->writeToken($this->dir.'/kanban/writeback-token');
         $this->writeToken($this->dir.'/github/token');
+        // Hermetic: the host/CI may export GH_TOKEN (~/.bashrc), which is now a
+        // reconcile token source (DL-184). Clear it so the file-token path is
+        // exercised deterministically and the "no token" case really has none.
+        $this->origGhToken = getenv('GH_TOKEN');
+        putenv('GH_TOKEN');
     }
 
     protected function tearDown(): void
     {
         File::deleteDirectory($this->dir);
+        if ($this->origGhToken === false) {
+            putenv('GH_TOKEN');
+        } else {
+            putenv('GH_TOKEN='.$this->origGhToken);
+        }
         parent::tearDown();
     }
 
@@ -274,6 +286,35 @@ class ReconcileCommandTest extends TestCase
 
         $this->artisan('bridge:reconcile')
             ->expectsOutputToContain('no github token')
+            ->assertExitCode(1);
+    }
+
+    public function test_gh_token_env_is_used_when_file_absent(): void
+    {
+        // DL-184: no file token, but GH_TOKEN exported → reconcile proceeds past
+        // the token check instead of failing "no github token".
+        $this->writeWriteback();
+        File::delete($this->dir.'/github/token');
+        putenv('GH_TOKEN=ghp_env');
+        $this->fake([], []);
+
+        $this->artisan('bridge:reconcile')
+            ->doesntExpectOutputToContain('no github token')
+            ->assertExitCode(0);
+    }
+
+    public function test_configured_token_path_is_authoritative_over_gh_token(): void
+    {
+        // DL-184: an explicit (missing) token_path override fails loud and does
+        // NOT silently fall through to an ambient GH_TOKEN.
+        $this->writeWriteback();
+        File::delete($this->dir.'/github/token');
+        config(['bridge.providers.github.token_path' => $this->dir.'/github/missing-override']);
+        putenv('GH_TOKEN=ghp_env');
+        $this->fake([], []);
+
+        $this->artisan('bridge:reconcile')
+            ->expectsOutputToContain('configured token_path')
             ->assertExitCode(1);
     }
 

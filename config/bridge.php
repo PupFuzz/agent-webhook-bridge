@@ -41,7 +41,16 @@ return [
 
     'providers' => [
         'kanban' => ['api_base_url' => env('BRIDGE_KANBAN_API_BASE_URL')],
-        'github' => ['api_base_url' => env('BRIDGE_GITHUB_API_BASE_URL', 'https://api.github.com')],
+        'github' => [
+            'api_base_url' => env('BRIDGE_GITHUB_API_BASE_URL', 'https://api.github.com'),
+            // Optional explicit path to the GitHub read token (DL-184). Absent →
+            // the conventional <secret_dir>/github/token, with an ambient
+            // GH_TOKEN fallback. Set this to reuse a centralized credential
+            // (e.g. ~/.config/coord/github-pat) without a per-install symlink;
+            // when set it is AUTHORITATIVE (no GH_TOKEN fallback) so a wrong path
+            // fails loud instead of silently resolving a different credential.
+            'token_path' => env('BRIDGE_GITHUB_TOKEN_PATH'),
+        ],
     ],
 
     /*

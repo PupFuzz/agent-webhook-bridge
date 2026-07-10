@@ -117,7 +117,11 @@ class ReconcileCommand extends BridgeCommand
             return self::FAILURE;
         }
         if ($github === null) {
-            $this->error('no github token at '.GitHubReadClient::tokenPath().' — bridge:reconcile reads PR state from GitHub (the kanban-board repo is private, so a read-only token is required). Place one, chmod 600.');
+            $tokenPath = GitHubReadClient::tokenPath();
+            $source = GitHubReadClient::hasTokenPathOverride()
+                ? "no github token at the configured token_path {$tokenPath}"
+                : "no github token at {$tokenPath} and GH_TOKEN is unset";
+            $this->error("{$source} — bridge:reconcile reads PR state from GitHub (the kanban-board repo is private, so a read-only token is required). Place a token file (chmod 600) or export GH_TOKEN, or set bridge.providers.github.token_path (BRIDGE_GITHUB_TOKEN_PATH) to reuse a centralized credential.");
 
             return self::FAILURE;
         }
