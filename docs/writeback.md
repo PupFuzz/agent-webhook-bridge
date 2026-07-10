@@ -224,7 +224,13 @@ php artisan bridge:reconcile --repo owner/repo   # reconcile only one writeback.
 php artisan bridge:reconcile --fix --max-moves=20   # safety cap (default 20)
 ```
 
-**Reads PR state from GitHub → needs a github token.** It uses the general per-provider token at `<secret_dir>/github/token` (the same convention `bridge:provision` uses — **not** the dedicated kanban writeback token). The **kanban-board repo is private**, so a `repo`-scoped read token is required in practice; without it the command fails with a clear message, and `bridge:check` warns when writeback is configured but the token is absent/insecure.
+**Reads PR state from GitHub → needs a github read token.** The **kanban-board repo is private**, so a `repo`-scoped read token is required in practice (a fine-grained read-only PAT is preferred — reconcile only reads). Token sources, in precedence order (DL-184):
+
+1. **`bridge.providers.github.token_path`** (env `BRIDGE_GITHUB_TOKEN_PATH`) — an explicit path to the token file. Point it at a centralized credential (e.g. `~/.config/coord/github-pat`) to reuse it without a per-install symlink. **When set it is authoritative**: a missing/blank file fails loud (no ambient fallback), so a wrong path never silently resolves a different credential.
+2. **`<secret_dir>/github/token`** — the conventional per-provider path (same convention `bridge:provision` uses; **not** the dedicated kanban writeback token), when no override is set.
+3. **`GH_TOKEN` env** — an ambient fallback used only when no override is set and the conventional file is unplaced. It is present in an operator shell (`~/.bashrc`) but **not** in the webhook-spawned receiver, so it self-scopes to the reconcile CLI.
+
+Without any usable source the command fails with a clear message naming the resolved path, and `bridge:check` warns when writeback is configured but no token resolves (or a file source is insecure).
 
 **What it reconciles.** Only cards carrying a resolvable `(repo, PR)`: a `payload.pr_url` (yields both repo + number) or a `payload.pr_number` on a **1:1 board** (the mapping supplies the repo). A `dl_number`-only card is **skipped with an info line** — DL→PR resolution needs a GitHub search, out of v1 scope. A bare `pr_number` on a **shared** board is ambiguous (no repo) and skipped. The expected stage is derived from the PR state with the **same** outcome mapping as the event path (`open → opened`, `closed+merged` to the integration branch `→ merged`, to `main → merged_to_main`, `closed+unmerged → closed_unmerged`).
 

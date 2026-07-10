@@ -8,7 +8,8 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
-_(empty after each tagged release; accumulates as feature PRs land on dev)_
+### Added
+- **#3835** — `bridge:reconcile` GitHub token now resolves from `bridge.providers.github.token_path` (env `BRIDGE_GITHUB_TOKEN_PATH`, authoritative when set) → `<secret_dir>/github/token` → an ambient `GH_TOKEN` fallback (DL-184). Lets an install reuse a centralized credential (e.g. `~/.config/coord/github-pat`) without a per-install symlink; the env fallback self-scopes to the CLI (absent in the webhook-spawned receiver). File sources keep the DL-010 perms gate; an explicit-but-missing `token_path` fails loud rather than silently using a different credential. Store-native named-PAT selection is deferred pending a framework-dev contract answer.
 
 ## [0.47.0] - 2026-07-10
 
