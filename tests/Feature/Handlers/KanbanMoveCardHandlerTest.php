@@ -622,4 +622,142 @@ class KanbanMoveCardHandlerTest extends TestCase
         $alertPushes = collect(Http::recorded())->filter(fn ($pair) => $this->isAlertPush($pair[0]))->count();
         $this->assertSame(2, $alertPushes, 'a failed first push must re-arm the signature for the next delivery');
     }
+
+    // --- FR #3866: stamp correlation refs (dl_number / pr_number) add-if-missing ---
+
+    public function test_card_fallback_move_stamps_missing_dl_and_pr(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['origin' => 'preemptive']]])  // GET
+                ->push(['data' => ['id' => 5]])   // PATCH move
+                ->push(['data' => ['id' => 5]]),  // PATCH stamp
+        ]);
+
+        $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
+
+        // dl_number stored zero-padded (DL-%04d); pr_number as an int.
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r['task'] === ['payload' => ['dl_number' => 'DL-0042', 'pr_number' => 77]]);
+    }
+
+    public function test_stamp_is_add_if_missing_never_overwrites_an_existing_dl(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['dl_number' => 'DL-0099']]])  // GET: dl already set
+                ->push(['data' => ['id' => 5]])   // move
+                ->push(['data' => ['id' => 5]]),  // stamp (pr only)
+        ]);
+
+        $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
+
+        // only pr_number stamped — the existing dl_number is NOT overwritten.
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r['task'] === ['payload' => ['pr_number' => 77]]);
+    }
+
+    public function test_stamp_is_add_if_missing_stamps_dl_when_only_pr_present(): void
+    {
+        // Inverse of the dl-present case: pr_number already set, dl_number absent →
+        // stamp only dl_number, leaving the existing pr_number untouched.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 77]]])  // GET: pr set, dl absent
+                ->push(['data' => ['id' => 5]])   // move
+                ->push(['data' => ['id' => 5]]),  // stamp (dl only)
+        ]);
+
+        $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r['task'] === ['payload' => ['dl_number' => 'DL-0042']]);
+    }
+
+    public function test_no_stamp_patch_when_card_already_carries_both_refs(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['dl_number' => 'DL-0042', 'pr_number' => 77]]])
+                ->push(['data' => ['id' => 5]]),  // move only
+        ]);
+
+        $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['task']['payload']));
+    }
+
+    public function test_already_in_stage_self_heals_the_stamp_without_moving(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['origin' => 'x']]])  // GET: already in target stage 52
+                ->push(['data' => ['id' => 5]]),  // stamp PATCH
+        ]);
+
+        $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
+
+        Http::assertNotSent(fn (Request $r) => isset($r['task']['workflow_stage_id']));  // no move
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r['task'] === ['payload' => ['dl_number' => 'DL-0042', 'pr_number' => 77]]);
+    }
+
+    public function test_stamp_permanent_4xx_is_swallowed_move_still_succeeds(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])  // GET
+                ->push(['data' => ['id' => 5]])                    // move OK
+                ->push(['message' => 'unknown field'], 422),      // stamp 4xx — permanent
+        ]);
+
+        // Must NOT throw: a permanent stamp failure is log + no-op (the move succeeded).
+        $this->handle($this->payload(['stamp_dl' => 'DL-42']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['task']['payload']));  // stamp was attempted
+    }
+
+    public function test_stamp_transient_5xx_propagates_for_redelivery(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])  // GET
+                ->push(['data' => ['id' => 5]])       // move OK
+                ->push(['error' => 'boom'], 500),     // stamp 5xx — transient
+        ]);
+
+        // A transient stamp failure propagates → 5xx → redelivery re-stamps (idempotent).
+        $this->expectException(RequestException::class);
+        $this->handle($this->payload(['stamp_dl' => 'DL-42']));
+    }
+
+    public function test_move_without_stamp_hints_sends_no_payload_patch(): void
+    {
+        // A DL-resolved move carries no stamp_dl/stamp_pr — stays column-only.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle($this->payload());
+
+        Http::assertNotSent(fn (Request $r) => isset($r['task']['payload']));
+    }
 }
