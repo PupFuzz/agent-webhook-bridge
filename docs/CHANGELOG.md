@@ -8,6 +8,9 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
+### Added
+- **#3858** — `bridge:reconcile` token diagnosability (DL-186), from two peer integrators (AIMLA + Sola PMs) who both hit the same upgrade-shadow. **No precedence behavior change.** The per-repo auth-probe failure now **names the resolved leg** (`… HTTP 401 (token expired/revoked) (token from token file /path)`) so a multi-leg resolver failure points at *which* source won; `bridge:reconcile -v` prints the leg per repo on success too. `bridge:check` now probes the resolved reconcile token's **validity** against each mapped repo (warn-never-fail, DL-026) — a resolved-but-expired token (classically a stale `<secret_dir>/github/token` from the single-token era **shadowing** the store map) surfaces at preflight naming the leg, instead of a silent 401 on the first run. Docs: an **UPGRADING** callout in `docs/writeback.md` (a pre-existing token file short-circuits the `[git-credential-map]` store — remove it to adopt per-repo tokens) + a **Running reconcile unattended** worked example (cron/systemd `HOME`/`PATH`/`COORD_CREDENTIALS` for the helper, `--max-moves` circuit-breaker).
+
 ## [0.48.0] - 2026-07-10
 
 **Minor — `bridge:reconcile` GitHub token: configurable path + `GH_TOKEN`, then store-native per-repo resolution.** 2 PRs since v0.47.0 (#240, #241). **App code — no migration, no new required `.env`, no change to what the receiver accepts/rejects.** Extends the DL-183 reconcile command's token resolution so an install can reuse a centralized credential and, by default, resolve a per-repo least-privilege PAT from the coordination store — with no second token copy to rotate.

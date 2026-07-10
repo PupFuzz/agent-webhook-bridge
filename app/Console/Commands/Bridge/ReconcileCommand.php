@@ -141,18 +141,26 @@ class ReconcileCommand extends BridgeCommand
             }
             $client = new GitHubReadClient((string) $resolution->token);
             $this->clients[$canon] = $client;
+            // Name the resolved leg (DL-186) so an auth failure points at WHICH
+            // credential source won — the #1 diagnosability gap on a multi-leg
+            // resolver (a stale <secret_dir>/github/token shadowing the store map is
+            // the common upgrade footgun). Never prints the token, only the source.
+            $from = " (token from {$resolution->source})";   // source is non-null after ok()
 
             try {
                 $client->probeRepo($repo);
                 $this->repoUsable[$canon] = true;
+                if ($this->output->isVerbose()) {
+                    $this->line("github: {$repo} — readable{$from}");
+                }
             } catch (RequestException $e) {
                 $status = $e->response->status();
                 $hint = $status === 401 ? ' (token expired/revoked)' : ($status === 404 || $status === 403 ? ' (token lacks access to this private repo — needs `repo` scope)' : '');
-                $this->error("github: cannot read repo {$repo} — HTTP {$status}{$hint}; its cards will be SKIPPED");
+                $this->error("github: cannot read repo {$repo} — HTTP {$status}{$hint}{$from}; its cards will be SKIPPED");
                 $this->repoUsable[$canon] = false;
                 $this->hadError = true;
             } catch (Throwable $e) {   // timeout / connection
-                $this->error("github: cannot reach repo {$repo} — {$e->getMessage()}; its cards will be SKIPPED");
+                $this->error("github: cannot reach repo {$repo} — {$e->getMessage()}{$from}; its cards will be SKIPPED");
                 $this->repoUsable[$canon] = false;
                 $this->hadError = true;
             }
