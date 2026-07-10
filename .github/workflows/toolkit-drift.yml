@@ -1,0 +1,56 @@
+name: Toolkit drift
+
+# Guards the vendored agent-board-toolkit copies in bin/ (currently
+# promote-released-cards) against silent divergence from the toolkit at the
+# version recorded in .agent-board-toolkit-version (toolkit docs/UPGRADE.md §3).
+# Drift can only enter through these paths, so the job is path-filtered.
+#
+# Deliberately NOT a required status check: path-filtered workflows never
+# report on non-matching PRs, so making this required would permanently block
+# them (the laravel-tests.yml lesson). Merge-blocking comes from the
+# all-workflows-green rule the dev-PR merge procedure already enforces
+# (CLAUDE.md rule 5).
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'bin/**'
+      - '.agent-board-toolkit-version'
+      - '.github/workflows/toolkit-drift.yml'
+  pull_request:
+    paths:
+      - 'bin/**'
+      - '.agent-board-toolkit-version'
+      - '.github/workflows/toolkit-drift.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: toolkit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Fetch agent-board-toolkit at the vendored version
+        # Public repo, unauthenticated clone. A stamp whose v<ver> matches no
+        # toolkit ref (tag or branch) fails the clone, so a bad stamp fails
+        # closed; the drift-check's VERSION-vs-stamp comparison backstops a
+        # ref that isn't the release tag it claims to be.
+        run: |
+          ver="$(cat .agent-board-toolkit-version)"
+          rm -rf "$RUNNER_TEMP/agent-board-toolkit"
+          git clone --depth 1 --branch "v${ver}" \
+            https://github.com/PupFuzz/agent-board-toolkit.git \
+            "$RUNNER_TEMP/agent-board-toolkit"
+
+      - name: Drift-check vendored copies
+        run: |
+          "$RUNNER_TEMP/agent-board-toolkit/bin/agent-board-toolkit-drift-check" \
+            "$RUNNER_TEMP/agent-board-toolkit" .
