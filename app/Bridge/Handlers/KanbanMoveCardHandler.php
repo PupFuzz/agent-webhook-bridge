@@ -161,6 +161,10 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         }
 
         if (($card['workflow_stage_id'] ?? null) === $stageId) {
+            // Self-heal: the move is a no-op (already here), but a card# fallback card
+            // may still be missing its correlation refs — stamp add-if-missing (#3866).
+            $this->stampCorrelationRefs($card, $payload, $cardId, $client);
+
             return;   // idempotent: already in the target stage
         }
 
@@ -235,7 +239,68 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             }
             throw $e;   // transient → 5xx → retry
         }
+        // The card is now legitimately at its target stage (it passed every reject-guard
+        // above) — stamp its correlation refs add-if-missing (#3866). Done AFTER the move
+        // so a stale/redelivered/regressive event, which the guards no-op, never stamps.
+        $this->stampCorrelationRefs($card, $payload, $cardId, $client);
         Log::info('kanban_move_card: moved', ['card_id' => $cardId, 'board' => $mapping->boardId, 'stage' => $stageId, 'outcome' => $outcome]);
+    }
+
+    /**
+     * Stamp the card's correlation refs (`dl_number` / `pr_number`) add-if-missing (#3866),
+     * so a card the writeback moved by native id (the `card#` fallback) becomes visible to
+     * release-promote's `dl_number`/`pr_number` correlation instead of stranding in
+     * Shipped-to-Dev. ONLY the card# path supplies `stamp_dl`/`stamp_pr` — a DL-resolved
+     * card already carries its `dl_number` (that is HOW it resolved), so a DL-driven move
+     * stamps nothing. NEVER overwrites an existing value: the card's already-read payload
+     * is the authority for "missing" (no extra read). Called only once the card is
+     * legitimately at/entering its target stage (a self-heal no-op or a guard-passed move),
+     * never from a reject-guarded event.
+     *
+     * Best-effort with the move's transient/permanent split: a 4xx (e.g. the board has no
+     * `dl_number`/`pr_number` custom field) is PERMANENT → log + no-op (never 5xx-storm an
+     * unfixable stamp). A 5xx/timeout PROPAGATES → redelivery re-stamps — safe because the
+     * stamp is add-if-missing-idempotent and the move is idempotent, and it closes the
+     * window where a swallowed transient failure would strand the card unstamped forever.
+     *
+     * @param  array<string, mixed>  $card  the card as already read by getCard()
+     * @param  array<string, mixed>  $payload  the target payload (may carry stamp_dl/stamp_pr)
+     */
+    private function stampCorrelationRefs(array $card, array $payload, int $cardId, KanbanClient $client): void
+    {
+        $current = is_array($card['payload'] ?? null) ? $card['payload'] : [];
+        $refs = [];
+
+        $stampDl = $payload['stamp_dl'] ?? null;
+        if (is_string($stampDl) && $stampDl !== '' && ($current['dl_number'] ?? '') === '') {
+            // Canonical zero-padded form every kbcard-written card uses (DL-%04d), so the
+            // card is cosmetically consistent; correlation readers (release-promote, the
+            // by-ref index) strip non-digits, so the width itself carries no meaning.
+            $refs['dl_number'] = sprintf('DL-%04d', (int) preg_replace('/\D/', '', $stampDl));
+        }
+
+        // A JSON round-trip through the durable inbox can stringify the number, so accept
+        // a numeric string too (mirrors the card_id coercion above).
+        $stampPr = $payload['stamp_pr'] ?? null;
+        if (is_numeric($stampPr) && ($current['pr_number'] ?? '') === '') {
+            $refs['pr_number'] = (int) $stampPr;
+        }
+
+        if ($refs === []) {
+            return;
+        }
+
+        try {
+            $client->stampCorrelationRefs($cardId, $refs);
+            Log::info('kanban_move_card: stamped correlation refs', ['card_id' => $cardId, 'refs' => array_keys($refs)]);
+        } catch (RequestException $e) {
+            if ($this->isPermanent($e)) {
+                Log::warning('kanban_move_card: stamp refused by kanban (4xx) — the board likely lacks the dl_number/pr_number custom field; skipping', ['card_id' => $cardId, 'status' => $e->response->status()]);
+
+                return;
+            }
+            throw $e;   // transient → 5xx → redelivery re-stamps (add-if-missing idempotent)
+        }
     }
 
     /**

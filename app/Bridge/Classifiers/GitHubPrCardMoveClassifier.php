@@ -146,13 +146,15 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         // card#<task-id> (FR-7): direct native-id selection — reached when DL is
         // absent, or present-but-unresolved with a card# fallback. Board+stage stay
         // operator config; the durable handler rejects a card not on the mapped
-        // board and applies the same no-regression guards as a DL move.
+        // board and applies the same no-regression guards as a DL move. This is the
+        // ONLY path that carries stamp refs (FR #3866): the card selected by native
+        // id is the one that strands unstamped for release-promote correlation.
         return new ClassifyResult(targets: [
-            ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: [
+            ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: array_merge([
                 'card_id' => $cardToken,
                 'repo' => $repo,
                 'outcome' => $outcome,
-            ]),
+            ], $this->stampRefs($this->titleAndHead($payload), $this->prNumber($payload)))),
         ]);
     }
 
@@ -243,12 +245,13 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
 
         // card#<task-id> (FR-7): native-id selection — DL absent, or present-but-
         // unresolved with a card# fallback. Handler-guarded on board membership.
+        // Carries stamp refs (FR #3866) off the branch ref (no PR on a push).
         return new ClassifyResult(targets: [
-            ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: [
+            ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: array_merge([
                 'card_id' => $cardToken,
                 'repo' => $repo,
                 'outcome' => 'started',
-            ]),
+            ], $this->stampRefs($branch, null))),
         ]);
     }
 
@@ -278,6 +281,22 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
     }
 
     /**
+     * The correlation surface — the PR title plus the head branch ref — where both
+     * the `DL-NNN` and `card#<id>` tokens are matched (the shared primitive for
+     * {@see dlToken}/{@see cardToken}/{@see stampRefs}).
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function titleAndHead(array $payload): string
+    {
+        $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
+        $title = is_string($pr['title'] ?? null) ? $pr['title'] : '';
+        $head = is_array($pr['head'] ?? null) && is_string($pr['head']['ref'] ?? null) ? $pr['head']['ref'] : '';
+
+        return $title.' '.$head;
+    }
+
+    /**
      * The `card#<task-id>` token (FR-7, framework v0.2.229) from the PR title or
      * head branch — the native-kanban-task-id correlation channel for cards that
      * carry no DL. Same surface + matching style as {@see dlToken}.
@@ -286,10 +305,7 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
      */
     private function cardToken(array $payload): ?int
     {
-        $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
-        $title = is_string($pr['title'] ?? null) ? $pr['title'] : '';
-        $head = is_array($pr['head'] ?? null) && is_string($pr['head']['ref'] ?? null) ? $pr['head']['ref'] : '';
-        if (preg_match('/\bcard#(\d+)\b/i', $title.' '.$head, $m) === 1) {
+        if (preg_match('/\bcard#(\d+)\b/i', $this->titleAndHead($payload), $m) === 1) {
             return (int) $m[1];
         }
 
@@ -304,14 +320,37 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
      */
     private function dlToken(array $payload): ?string
     {
-        $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
-        $title = is_string($pr['title'] ?? null) ? $pr['title'] : '';
-        $head = is_array($pr['head'] ?? null) && is_string($pr['head']['ref'] ?? null) ? $pr['head']['ref'] : '';
-        if (preg_match('/\bDL-(\d+)/i', $title.' '.$head, $m) === 1) {
+        if (preg_match('/\bDL-(\d+)/i', $this->titleAndHead($payload), $m) === 1) {
             return 'DL-'.$m[1];
         }
 
         return null;
+    }
+
+    /**
+     * The correlation refs to STAMP onto a card selected by the `card#` fallback
+     * (FR #3866) — the durable handler writes them add-if-missing. Only the card#
+     * path stamps: a DL-resolved card already carries its `dl_number` (that is HOW
+     * it resolved), so stamping it delivers nothing and — via a release PR whose
+     * title carries a feature card's DL — could poison its `pr_number`. Includes
+     * the DL token ONLY when EXACTLY ONE `DL-NNN` appears in $text: a bundled /
+     * release-shaped PR carrying several DLs (or a single FOREIGN, unresolved DL
+     * alongside a `card#` for a different card) must never stamp one. The PR number
+     * is included when present (it is this card's PR — the card# selected it).
+     *
+     * @return array{stamp_dl?: string, stamp_pr?: int}
+     */
+    private function stampRefs(string $text, ?int $prNumber): array
+    {
+        $refs = [];
+        if (preg_match_all('/\bDL-(\d+)/i', $text, $m) === 1) {
+            $refs['stamp_dl'] = 'DL-'.$m[1][0];
+        }
+        if ($prNumber !== null) {
+            $refs['stamp_pr'] = $prNumber;
+        }
+
+        return $refs;
     }
 
     /**
