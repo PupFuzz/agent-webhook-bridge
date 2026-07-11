@@ -72,6 +72,16 @@ Non-array `subscriptions`, or an entry that isn't a mapping, throws at load. Onl
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `class` | FQCN | `App\Bridge\Classifiers\InboxOnlyClassifier` | Must be resolvable + implement `Classifier`; `bridge:check` resolves it so a typo **fails** at preflight instead of a dispatch-time 5xx. |
+| `config` | mapping | `{}` | Typed parameters for a **config-driven classifier** (`ClassifierConfig`), so a shared reference classifier is parameterized without hardcoding per-project specifics. Absent ⇒ all-defaults (back-compat). A present non-mapping — or a malformed key below — **throws** (fail-closed, like the rest of the config). Read by a classifier via `$ctx->agent->classifierConfig`. |
+
+#### `classifier.config:` keys
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `shared_account_id` | scalar | — | The GitHub account id shared by several agents (DL-002). Used to recover the true author of a shared-identity event. Present-but-blank **throws**. |
+| `scope_author_map` | mapping | `{}` | `scope_id` (repo) ⇒ the sole author-agent on that repo — the primary attribution path for a **label-less** impl event (falls back to the `from:`/`FROM:` line). Keys lowercased for case-insensitive scope matching; a non-string key/value **throws**. |
+| `families` | list<string> | `[]` (classifier default) | The event families a config-driven classifier runs (its config-gated pipeline). Lowercased; a blank entry **throws**. |
+
+> Family-specific config (e.g. an `impl-ci-wake` family's wake-conclusions / CI-name patterns / release-branch) is read through `ClassifierConfig`'s generic typed accessors (`strings()` / `string()` / `section()`), so a new family adds keys here **without** a schema/contract change.
 
 ### `channel:` (optional) — where `channel_push` / `route_intents` delivers
 | Key | Type | Default | Notes |
