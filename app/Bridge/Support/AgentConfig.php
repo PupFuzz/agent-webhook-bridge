@@ -45,6 +45,7 @@ final class AgentConfig
         public readonly array $subscriptions,
         public readonly EchoSuppressionConfig $echoSuppression,
         public readonly string $classifierClass,
+        public readonly ClassifierConfig $classifierConfig,
         public readonly ChannelConfig $channel,
         public readonly array $tokenPathOverrides,
         public readonly bool $surfaceSilentDropWarnings,
@@ -116,7 +117,9 @@ final class AgentConfig
             throw new ConfigException('surface.silent_drop_warnings must be a boolean');
         }
 
-        $classifierClass = self::resolveClassifierClass(self::requireMapping($raw, 'classifier'));
+        $classifierSection = self::requireMapping($raw, 'classifier');
+        $classifierClass = self::resolveClassifierClass($classifierSection);
+        $classifierConfig = ClassifierConfig::fromClassifierSection($classifierSection);
 
         $channel = self::resolveChannel(self::requireMapping($raw, 'channel'));
 
@@ -126,6 +129,7 @@ final class AgentConfig
             subscriptions: $subscriptions,
             echoSuppression: $echo,
             classifierClass: $classifierClass,
+            classifierConfig: $classifierConfig,
             channel: $channel,
             tokenPathOverrides: self::resolveTokenOverrides(self::section($raw, 'api')),
             surfaceSilentDropWarnings: $silentDrop,
