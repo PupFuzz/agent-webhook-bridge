@@ -57,8 +57,15 @@ class CoordinationClassifier implements Classifier
     /** Families run when `classifier.config.families` is unset — the pre-#8 behavior. */
     private const DEFAULT_FAMILIES = ['coord-message'];
 
-    /** workflow_run conclusions that wake by default (CI-failure oversight); override via config. */
-    private const DEFAULT_WAKE_CONCLUSIONS = ['failure', 'timed_out', 'startup_failure'];
+    /**
+     * workflow_run conclusions treated as BENIGN (no wake) by default; override via
+     * `classifier.config.benign_conclusions`. The gate is fail-LOUD: a completed run
+     * wakes UNLESS its conclusion is in this set — so a NEW GitHub conclusion type
+     * never silently escapes CI oversight (a missed failure is worse than a spurious
+     * wake). `success` is benign here for the CI-failure signal, but still wakes as a
+     * provenance cue when its workflow NAME matches `provenance_patterns`.
+     */
+    private const DEFAULT_BENIGN_CONCLUSIONS = ['success', 'cancelled', 'skipped', 'neutral'];
 
     public function classify(ClassifyContext $ctx): ClassifyResult
     {
@@ -207,12 +214,12 @@ class CoordinationClassifier implements Classifier
             provider: $ctx->provider,
             actor: $ctx->actor,
             summary: sprintf('impl %s on %s (%s): %s', $signal['kind'], $ctx->scopeId, $who, $signal['tail']),
-            payload: [
+            payload: array_merge([
                 'repo' => $ctx->scopeId,
                 'event' => $eventType,
                 'url' => $signal['url'],
                 'from' => $who,
-            ],
+            ], $signal['extra']),
         );
 
         return new ClassifyResult(
@@ -228,10 +235,12 @@ class CoordinationClassifier implements Classifier
 
     /**
      * A push to the release branch = release-landed (aimla's push-landing wake).
-     * Non-release-branch pushes and branch-delete pushes are not wake-worthy.
+     * Non-release-branch pushes and branch-delete pushes are not wake-worthy. The
+     * subjectId is the landed commit SHA (aimla's plane-5 SHA-chain keys on the
+     * commit, not the branch name); `head_sha` + `commit_count` ride the payload.
      *
      * @param  array<mixed>  $payload
-     * @return array{kind:string,ref:string,tail:string,url:string}|null
+     * @return array{kind:string,ref:string,tail:string,url:string,extra:array<string,mixed>}|null
      */
     private function pushSignal(array $payload, ClassifierConfig $cfg): ?array
     {
@@ -246,23 +255,32 @@ class CoordinationClassifier implements Classifier
         }
         $repo = is_array($payload['repository'] ?? null) ? $payload['repository'] : [];
         $head = is_array($payload['head_commit'] ?? null) ? $payload['head_commit'] : [];
+        $headSha = is_scalar($payload['after'] ?? null) ? (string) $payload['after']
+            : (is_scalar($head['id'] ?? null) ? (string) $head['id'] : '');
+        $commits = is_array($payload['commits'] ?? null) ? $payload['commits'] : [];
 
         return [
             'kind' => 'release_landed',
-            'ref' => $releaseBranch,
+            'ref' => $headSha !== '' ? $headSha : $releaseBranch,   // subjectId = the landed commit; branch as fallback
             'tail' => $this->oneLine(is_scalar($head['message'] ?? null) ? (string) $head['message'] : $releaseBranch),
             'url' => is_scalar($head['url'] ?? null) ? (string) $head['url']
                 : (is_scalar($repo['html_url'] ?? null) ? (string) $repo['html_url'] : ''),
+            'extra' => [
+                'branch' => $releaseBranch,
+                'head_sha' => $headSha,
+                'commit_count' => count($commits),
+            ],
         ];
     }
 
     /**
-     * A completed workflow_run whose conclusion is failure-class (CI-failure
-     * oversight) OR a name-matched provenance workflow that SUCCEEDED (archival
-     * cue — sola's SLSA/Auto-tag). Everything else is not wake-worthy.
+     * A completed workflow_run that wakes: any conclusion NOT in the benign set
+     * (fail-loud CI-failure oversight), OR a name-matched provenance workflow that
+     * SUCCEEDED (archival cue — sola's SLSA/Auto-tag). A benign, non-provenance
+     * conclusion is not wake-worthy.
      *
      * @param  array<mixed>  $payload
-     * @return array{kind:string,ref:string,tail:string,url:string}|null
+     * @return array{kind:string,ref:string,tail:string,url:string,extra:array<string,mixed>}|null
      */
     private function workflowRunSignal(array $payload, ClassifierConfig $cfg): ?array
     {
@@ -275,17 +293,22 @@ class CoordinationClassifier implements Classifier
         $url = is_scalar($run['html_url'] ?? null) ? (string) $run['html_url'] : '';
         $runId = is_scalar($run['id'] ?? null) ? (string) $run['id'] : $name;
 
-        $wakeConclusions = $cfg->strings('wake_conclusions', self::DEFAULT_WAKE_CONCLUSIONS);
-        if (in_array($concl, $wakeConclusions, true)) {
-            return ['kind' => 'ci_failed', 'ref' => $runId, 'tail' => "{$name} → {$concl}", 'url' => $url];
+        // Fail-LOUD: wake on ANY conclusion not in the benign set — so a new/unknown
+        // GitHub conclusion (e.g. a future `action_required`, `stale`) is surfaced,
+        // never silently dropped (both sola + aimla gated the PR on this — an
+        // allow-set fails silent on a conclusion it doesn't enumerate).
+        $benign = $cfg->strings('benign_conclusions', self::DEFAULT_BENIGN_CONCLUSIONS);
+        if (! in_array($concl, $benign, true)) {
+            return ['kind' => 'ci_failed', 'ref' => $runId, 'tail' => "{$name} → {$concl}", 'url' => $url, 'extra' => []];
         }
 
-        // Provenance-success (name-matched). Patterns are sola-specific config
-        // (e.g. SLSA / Auto-tag); absent ⇒ no provenance wake.
+        // A benign conclusion — only a name-matched provenance SUCCESS is a (positive)
+        // wake. Patterns are sola-specific config (e.g. SLSA / Auto-tag); absent ⇒
+        // no provenance wake.
         if ($concl === 'success') {
             foreach ($cfg->strings('provenance_patterns') as $pattern) {
                 if ($pattern !== '' && str_contains(strtolower($name), $pattern)) {
-                    return ['kind' => 'provenance_ok', 'ref' => $runId, 'tail' => "{$name} → success", 'url' => $url];
+                    return ['kind' => 'provenance_ok', 'ref' => $runId, 'tail' => "{$name} → success", 'url' => $url, 'extra' => []];
                 }
             }
         }

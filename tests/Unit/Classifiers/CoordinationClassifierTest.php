@@ -95,11 +95,19 @@ class CoordinationClassifierTest extends TestCase
 
     public function test_push_to_release_branch_wakes_release_landed(): void
     {
-        $r = $this->classify('push', ['ref' => 'refs/heads/main', 'head_commit' => ['message' => 'Merge #9', 'url' => 'https://c/1']], 'org/impl', classifierConfig: $this->implConfig());
+        $r = $this->classify('push', [
+            'ref' => 'refs/heads/main',
+            'after' => 'abc1234',
+            'head_commit' => ['message' => 'Merge #9', 'id' => 'abc1234', 'url' => 'https://c/1'],
+            'commits' => [['id' => 'abc1234'], ['id' => 'def5678']],
+        ], 'org/impl', classifierConfig: $this->implConfig());
 
         $this->assertCount(1, $r->intents);
         $this->assertSame('impl_release_landed', $r->intents[0]->kind);
-        $this->assertSame('device', $r->intents[0]->payload['from']);  // §1 scope-map on a label-less event
+        $this->assertSame('abc1234', $r->intents[0]->subjectId);          // subjectId = landed commit sha (aimla's SHA-chain key)
+        $this->assertSame('abc1234', $r->intents[0]->payload['head_sha']);
+        $this->assertSame(2, $r->intents[0]->payload['commit_count']);
+        $this->assertSame('device', $r->intents[0]->payload['from']);     // §1 scope-map on a label-less event
         $this->assertCount(1, $r->targets);
     }
 
@@ -130,6 +138,23 @@ class CoordinationClassifierTest extends TestCase
         $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'success', 'name' => 'CI', 'id' => 6]], 'org/impl', classifierConfig: $this->implConfig());
 
         $this->assertSame([], $r->intents);
+    }
+
+    public function test_workflow_run_cancelled_is_benign_no_wake(): void
+    {
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'cancelled', 'name' => 'CI', 'id' => 6]], 'org/impl', classifierConfig: $this->implConfig());
+
+        $this->assertSame([], $r->intents);
+    }
+
+    public function test_workflow_run_unknown_conclusion_wakes_fail_loud(): void
+    {
+        // A new/unknown GitHub conclusion is NOT in the benign set ⇒ wakes (fail-loud);
+        // the pre-fix allow-set would have silently dropped it.
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'action_required', 'name' => 'CI', 'id' => 6]], 'org/impl', classifierConfig: $this->implConfig());
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
     }
 
     public function test_workflow_run_provenance_success_wakes(): void
