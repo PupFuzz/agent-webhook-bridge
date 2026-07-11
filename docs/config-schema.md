@@ -78,9 +78,9 @@ Non-array `subscriptions`, or an entry that isn't a mapping, throws at load. Onl
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `scope_author_map` | mapping | `{}` | `scope_id` (repo) ⇒ the sole author-agent on that repo — the primary attribution path for a **label-less** impl event (falls back to the `from:`/`FROM:` line). Keys lowercased for case-insensitive scope matching; a non-string key/value **throws**. |
-| `families` | list<string> | `[]` (classifier default) | The event families a config-driven classifier runs (its config-gated pipeline). Lowercased; a blank entry **throws**. |
+| `families` | list<string> | `[]` (classifier default) | The event families a config-driven classifier runs (its config-gated pipeline). Lowercased; a blank entry **throws**. Recognized by `CoordinationClassifier`: `coord-message` (GitHub coordination messages), `impl-ci-wake` (push→release-branch + CI wake), `kanban-triage` (wake the triage owner on a human-filed untriaged card — DL-168). An unknown family is ignored (forward-compat). Empty ⇒ the classifier's own default (`CoordinationClassifier` → `[coord-message]`; the `KanbanTriageClassifier` shim → `[kanban-triage]`). |
 
-> Family-specific config (e.g. an `impl-ci-wake` family's wake-conclusions / CI-name patterns / release-branch) is read through `ClassifierConfig`'s generic typed accessors (`strings()` / `string()` / `section()`), so a new family adds keys here **without** a schema/contract change.
+> Family-specific config (e.g. an `impl-ci-wake` family's `benign_conclusions` / CI-name patterns / `release_branch`) is read through `ClassifierConfig`'s generic typed accessors (`strings()` / `string()` / `section()`), so a new family adds keys here **without** a schema/contract change.
 
 ### `channel:` (optional) — where `channel_push` / `route_intents` delivers
 | Key | Type | Default | Notes |

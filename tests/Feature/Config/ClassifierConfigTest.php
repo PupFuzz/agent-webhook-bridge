@@ -38,14 +38,14 @@ class ClassifierConfigTest extends TestCase
         $cfg = ClassifierConfig::fromClassifierSection([
             'config' => [
                 'release_branch' => 'main',
-                'wake_conclusions' => ['Failure', 'TIMED_OUT'],
+                'sample_list' => ['Failure', 'TIMED_OUT'],   // arbitrary key — exercises strings() lowercasing generically
                 'impl_ci_wake' => ['provenance_patterns' => ['SLSA', 'Auto-tag']],
             ],
         ]);
 
         $this->assertSame('main', $cfg->string('release_branch', 'trunk'));
         $this->assertSame('trunk', $cfg->string('missing_key', 'trunk'));           // default
-        $this->assertSame(['failure', 'timed_out'], $cfg->strings('wake_conclusions')); // lowercased
+        $this->assertSame(['failure', 'timed_out'], $cfg->strings('sample_list')); // lowercased
         $this->assertSame(['a'], $cfg->strings('missing_list', ['a']));             // default
         $this->assertSame(['provenance_patterns' => ['SLSA', 'Auto-tag']], $cfg->section('impl_ci_wake'));
         $this->assertSame([], $cfg->section('missing_section'));
