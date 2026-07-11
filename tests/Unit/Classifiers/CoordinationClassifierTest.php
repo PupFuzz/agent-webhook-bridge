@@ -5,6 +5,7 @@ namespace Tests\Unit\Classifiers;
 use App\Bridge\Classifiers\CoordinationClassifier;
 use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyContext;
+use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Support\AgentConfig;
 use Tests\TestCase;
 
@@ -175,5 +176,67 @@ class CoordinationClassifierTest extends TestCase
         $r = $this->classify('workflow_run.requested', ['workflow_run' => ['status' => 'in_progress', 'name' => 'CI', 'id' => 8]], 'org/impl', classifierConfig: $this->implConfig());
 
         $this->assertSame([], $r->intents);
+    }
+
+    // ---- kanban-triage family (opt-in; folded DL-168) ----
+
+    /**
+     * @param  array<mixed>  $card
+     * @param  list<string>  $families
+     */
+    private function classifyKanbanCreated(array $card, array $families = ['kanban-triage'], bool $actorIsAgent = false): ClassifyResult
+    {
+        $agent = AgentConfig::fromArray('pm', [
+            'identity' => ['kanban_user_id' => 1],
+            'subscriptions' => [],
+            'classifier' => ['class' => CoordinationClassifier::class, 'config' => ['families' => $families]],
+        ]);
+
+        return $this->classifier->classify(new ClassifyContext(
+            'task.created',
+            ['subject_id' => 42, 'board_id' => 5, 'payload' => ['name' => 'Investigate flake'], 'card' => $card],
+            new Actor(id: '7', name: 'human', isKnownAgent: $actorIsAgent),
+            'kanban', '5', $agent,
+        ));
+    }
+
+    public function test_kanban_triage_family_wakes_human_untriaged(): void
+    {
+        $r = $this->classifyKanbanCreated(['tags' => [], 'external_references' => []]);
+
+        $this->assertCount(1, $r->intents);                                    // inbox new_card from the InboxOnly base
+        $this->assertSame('new_card', $r->intents[0]->kind);
+        $this->assertCount(1, $r->targets);
+        $this->assertSame('channel_push', $r->targets[0]->handler);
+        $this->assertSame($r->intents[0]->subjectId, $r->targets[0]->targetId); // silent-drop guard
+        $this->assertSame($r->intents[0]->toArray(), $r->targets[0]->payload);
+    }
+
+    public function test_kanban_triage_family_suppresses_triaged_card(): void
+    {
+        $r = $this->classifyKanbanCreated(['tags' => ['triaged'], 'external_references' => []]);
+
+        $this->assertCount(1, $r->intents);   // still inbox-staged
+        $this->assertSame([], $r->targets);   // but no wake
+    }
+
+    public function test_kanban_triage_family_suppresses_agent_filed_card(): void
+    {
+        $r = $this->classifyKanbanCreated(['tags' => [], 'external_references' => []], actorIsAgent: true);
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_kanban_event_inbox_staged_but_no_wake_when_family_off(): void
+    {
+        // Default families (coord-message only): a human untriaged kanban card is
+        // still inbox-staged by the InboxOnly base, but does NOT wake — the triage
+        // wake is gated behind enabling the kanban-triage family.
+        $r = $this->classifyKanbanCreated(['tags' => [], 'external_references' => []], families: ['coord-message']);
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('new_card', $r->intents[0]->kind);
+        $this->assertSame([], $r->targets);
     }
 }

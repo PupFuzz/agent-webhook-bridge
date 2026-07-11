@@ -2,7 +2,6 @@
 
 namespace App\Bridge\Classifiers;
 
-use App\Bridge\Contracts\Classifier;
 use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
@@ -22,6 +21,13 @@ use App\Bridge\Support\RecipientAddressing;
  * specifics (repo→agent maps go in config; a custom handler like sola's
  * `registry_append` is the only reason to subclass). The mechanics live here.
  *
+ * Extends {@see InboxOnlyClassifier}: `parent::classify()` provides the base
+ * inbox-staging for kanban `task.*` events (a GitHub event yields an empty base —
+ * InboxOnly handles no GitHub event type), and the config-gated families below
+ * layer reactions on top. This is the roundtable-#8 unification: ONE reference
+ * classifier for a coord repo, a cross-project channel, an impl code repo, AND a
+ * kanban triage board, selected by which families a project enables.
+ *
  * Event families (config-gated via `classifier.config.families`; DEFAULT
  * `['coord-message']` so an install that doesn't opt in behaves EXACTLY as the
  * pre-#8 reference — back-compat):
@@ -30,6 +36,10 @@ use App\Bridge\Support\RecipientAddressing;
  *   - `impl-ci-wake`  — github push→release-branch (release-landed) + workflow_run
  *     wake-worthy CI (failure-class conclusions, provenance-success). Surgical:
  *     hand-emits a channel_push ONLY for wake-worthy events, else inbox-only.
+ *   - `kanban-triage` — kanban `task.created` for a HUMAN-filed, UNTRIAGED card
+ *     (DL-168): pairs the inbox `new_card` Intent with a channel_push to the
+ *     triage owner. Folded in from the retired standalone KanbanTriageClassifier
+ *     (now a thin back-compat shim that just enables this family).
  *
  * SCOPE-AGNOSTIC: never branches on `$ctx->scopeId` for routing — it keys on the
  * addressing labels + `$agent->agentName` — so the same instance serves a coord
@@ -45,7 +55,7 @@ use App\Bridge\Support\RecipientAddressing;
  * Stateless: `$agent`/config are read as call-locals (one cached instance serves
  * every agent in the per-agent dispatch loop — never stash on the instance).
  */
-class CoordinationClassifier implements Classifier
+class CoordinationClassifier extends InboxOnlyClassifier
 {
     /** event_type prefix → the body-actions that represent a NEW coordination message worth waking on. */
     private const HANDLED = [
@@ -69,25 +79,27 @@ class CoordinationClassifier implements Classifier
 
     public function classify(ClassifyContext $ctx): ClassifyResult
     {
-        // Only GitHub events carry the coordination addressing / CI convention.
-        if ($ctx->provider !== 'github') {
-            return new ClassifyResult;
-        }
+        // InboxOnly base: kanban `task.*` events stage to the agent inbox; a GitHub
+        // event yields an empty base (InboxOnly handles no GitHub event type). The
+        // config-gated families below layer reactions onto this base.
+        $base = parent::classify($ctx);
 
         $cfg = $ctx->agent->classifierConfig;
-        $families = $cfg->enabledFamilies !== [] ? $cfg->enabledFamilies : self::DEFAULT_FAMILIES;
+        $families = $cfg->enabledFamilies !== [] ? $cfg->enabledFamilies : $this->defaultFamilies();
 
-        // Run each enabled family; merge results into one ClassifyResult. Families
-        // handle disjoint event types (coord: issues/issue_comment/pull_request;
-        // impl-ci: push/workflow_run), so at most one contributes per event — but
-        // the merge is order-independent and additive regardless.
-        $intents = [];
-        $targets = [];
-        $reattributed = null;
+        // Run each enabled family; merge results onto the inbox base. Families are
+        // provider- and event-scoped (coord/impl-ci: github; kanban-triage: kanban),
+        // so at most one contributes per event — but the merge is order-independent
+        // and additive regardless. Each github family self-guards its provider (the
+        // class now serves both github and kanban events).
+        $intents = $base->intents;
+        $targets = $base->targets;
+        $reattributed = $base->reattributedActor;
         foreach ($families as $family) {
             $result = match ($family) {
                 'coord-message' => $this->coordMessageFamily($ctx, $cfg),
                 'impl-ci-wake' => $this->implCiWakeFamily($ctx, $cfg),
+                'kanban-triage' => $this->kanbanTriageFamily($ctx, $base),
                 default => null,   // unknown family: ignore (forward-compat; bridge:check can warn)
             };
             if ($result === null) {
@@ -101,12 +113,28 @@ class CoordinationClassifier implements Classifier
         return new ClassifyResult(intents: $intents, targets: $targets, reattributedActor: $reattributed);
     }
 
+    /**
+     * The families run when `classifier.config.families` is unset. The base default
+     * is the pre-#8 coord-message-only behavior; a subclass overrides this to pin a
+     * different default (e.g. the {@see KanbanTriageClassifier} shim → kanban-triage).
+     *
+     * @return list<string>
+     */
+    protected function defaultFamilies(): array
+    {
+        return self::DEFAULT_FAMILIES;
+    }
+
     // =====================================================================
     // Family: coord-message (the pre-#8 CoordinationClassifier behavior + §1)
     // =====================================================================
 
     private function coordMessageFamily(ClassifyContext $ctx, ClassifierConfig $cfg): ?ClassifyResult
     {
+        if ($ctx->provider !== 'github') {
+            return null; // coordination addressing convention is GitHub-only
+        }
+
         $eventType = $ctx->eventType;
         $payload = $ctx->payload;
         $actor = $ctx->actor;
@@ -192,6 +220,10 @@ class CoordinationClassifier implements Classifier
 
     private function implCiWakeFamily(ClassifyContext $ctx, ClassifierConfig $cfg): ?ClassifyResult
     {
+        if ($ctx->provider !== 'github') {
+            return null; // push / workflow_run CI convention is GitHub-only
+        }
+
         $eventType = $ctx->eventType;
         $payload = $ctx->payload;
 
@@ -314,6 +346,90 @@ class CoordinationClassifier implements Classifier
         }
 
         return null;
+    }
+
+    // =====================================================================
+    // Family: kanban-triage (DL-168 — wake the triage owner on a human-filed,
+    // untriaged card; folded in from the retired standalone KanbanTriageClassifier)
+    // =====================================================================
+
+    /**
+     * A card a HUMAN filed directly on the board that is still UNTRIAGED wakes the
+     * serving (triage-owner) session via a channel_push — instead of waiting for the
+     * SessionStart untriaged-snapshot at the next session. Everything else (agent-
+     * filed, already-classified, non-`task.created`) stays inbox-only: the `new_card`
+     * Intent the InboxOnly parent already produced in `$base`.
+     *
+     * The wake fires ONLY for a `task.created` that is:
+     *   - human-filed — the actor is NOT a known agent, and
+     *   - untriaged — no `triaged` tag, no `id:pr:*` tag, no `dl` external reference.
+     *
+     * No-self-wake — each automated creator is suppressed by a DIFFERENT mechanism,
+     * NOT a single `isKnownAgent` check (which only covers registered agents):
+     *   - the bridge's OWN dependabot-card creations carry `triaged` at create
+     *     (DL-024) → dropped by the untriaged filter (the bridge's only card-CREATE
+     *     path; the writeback move path only moves existing cards);
+     *   - the dedicated writeback `identity_id` user's events are dropped PRE-classify
+     *     by the dispatcher global-echo gate (`DispatchService`/`globalEchoIds`);
+     *   - the poll adapter's auto-`triaged` backstops carry `triaged`.
+     *
+     * The filter reads the DL-164 `card` snapshot the `task.created` webhook carries,
+     * so it runs at classify time with NO API call and NO read token. On a kanban that
+     * predates the snapshot, `card` is absent → reads untriaged → wakes (SessionStart
+     * snapshot is the durable backstop, so an over-wake is at worst minor noise, never
+     * a miss).
+     */
+    private function kanbanTriageFamily(ClassifyContext $ctx, ClassifyResult $base): ?ClassifyResult
+    {
+        if ($ctx->provider !== 'kanban'
+            || $ctx->eventType !== 'task.created'
+            || $base->intents === []
+            || $ctx->actor->isKnownAgent          // registered agents only; bridge/dependabot/writeback suppressed elsewhere (see docblock)
+            || $this->isAlreadyClassified($ctx->payload)) {
+            return null;
+        }
+
+        // targetId === the base new_card Intent's subjectId so the dispatcher's
+        // silent-drop guard never warns; payload is that Intent's wire shape (the
+        // handler sends {"intent": <toArray()>}); transport is the agent's cfg-default
+        // channel — so the triage owner IS the recipient by configuration.
+        return new ClassifyResult(
+            targets: [ReactionTarget::make(
+                handler: 'channel_push',
+                targetId: $base->intents[0]->subjectId,
+                debounceSeconds: 0,
+                payload: $base->intents[0]->toArray(),
+            )],
+        );
+    }
+
+    /**
+     * Whether the new card is ALREADY classified — a `triaged` tag, an `id:pr:*` tag,
+     * or a `dl` external reference — read from the DL-164 `card` snapshot on the
+     * `task.created` webhook (no API call). Such a card is not a fresh human triage
+     * item, so it must NOT wake the triage owner.
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function isAlreadyClassified(array $payload): bool
+    {
+        $card = is_array($payload['card'] ?? null) ? $payload['card'] : [];
+
+        $tags = is_array($card['tags'] ?? null) ? $card['tags'] : [];
+        foreach ($tags as $tag) {
+            if ($tag === 'triaged' || (is_string($tag) && str_starts_with($tag, 'id:pr:'))) {
+                return true;
+            }
+        }
+
+        $refs = is_array($card['external_references'] ?? null) ? $card['external_references'] : [];
+        foreach ($refs as $ref) {
+            if (is_array($ref) && ($ref['system'] ?? null) === 'dl') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // =====================================================================
