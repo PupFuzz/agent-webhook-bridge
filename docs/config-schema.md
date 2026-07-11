@@ -77,7 +77,6 @@ Non-array `subscriptions`, or an entry that isn't a mapping, throws at load. Onl
 #### `classifier.config:` keys
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `shared_account_id` | scalar | — | The GitHub account id shared by several agents (DL-002). Used to recover the true author of a shared-identity event. Present-but-blank **throws**. |
 | `scope_author_map` | mapping | `{}` | `scope_id` (repo) ⇒ the sole author-agent on that repo — the primary attribution path for a **label-less** impl event (falls back to the `from:`/`FROM:` line). Keys lowercased for case-insensitive scope matching; a non-string key/value **throws**. |
 | `families` | list<string> | `[]` (classifier default) | The event families a config-driven classifier runs (its config-gated pipeline). Lowercased; a blank entry **throws**. |
 

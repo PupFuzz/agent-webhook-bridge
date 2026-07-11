@@ -13,13 +13,17 @@ use App\Bridge\Exceptions\ConfigException;
  * Before this, config reached a classifier only through the untyped
  * {@see AgentConfig::$raw} blob, so a shared base could not be parameterized
  * without ad-hoc per-classifier parsing. This is the single typed home for the
- * cross-cutting knobs a shared base needs — the shared-account id (§1
- * re-attribution), the scope→author-agent map (§1 primary attribution), and the
- * enabled event-family set (the config-gated pipeline) — plus GENERIC typed
- * accessors ({@see strings()} / {@see mapOfStrings()} / {@see section()}) for
- * family-specific config (e.g. an `impl-ci-wake` family's wake-conclusions and
- * CI-name patterns) that firms up as families land, WITHOUT another contract
- * change each time.
+ * cross-cutting knobs a shared base needs — the scope→author-agent map (§1
+ * primary attribution) and the enabled event-family set (the config-gated
+ * pipeline) — plus GENERIC typed accessors ({@see strings()} / {@see string()} /
+ * {@see section()}) for family-specific config (e.g. an `impl-ci-wake` family's
+ * wake-conclusions and CI-name patterns) that firms up as families land, WITHOUT
+ * another contract change each time.
+ *
+ * The shared-ACCOUNT declaration deliberately does NOT live here — it stays in
+ * `shared-identities.json` (its authoritative home), which is what resolves a
+ * shared-account event to `Actor.name === null`; the classifier keys on that
+ * null-ness, not on a duplicated id (canon #5).
  *
  * Fail-closed, matching the {@see AgentConfig} posture: a present-but-malformed
  * key throws {@see ConfigException}; an ABSENT `classifier.config` block yields an
@@ -34,7 +38,6 @@ final class ClassifierConfig
      * @param  array<mixed>  $raw  the full `classifier.config` mapping, for family-specific typed reads
      */
     private function __construct(
-        public readonly ?string $sharedAccountId,
         public readonly array $scopeAuthorMap,
         public readonly array $enabledFamilies,
         public readonly array $raw,
@@ -45,7 +48,7 @@ final class ClassifierConfig
      */
     public static function empty(): self
     {
-        return new self(sharedAccountId: null, scopeAuthorMap: [], enabledFamilies: [], raw: []);
+        return new self(scopeAuthorMap: [], enabledFamilies: [], raw: []);
     }
 
     /**
@@ -65,7 +68,6 @@ final class ClassifierConfig
         }
 
         return new self(
-            sharedAccountId: self::scalarStringOrNull($config, 'shared_account_id'),
             scopeAuthorMap: self::parseScopeAuthorMap($config),
             enabledFamilies: self::parseStringList($config, 'families'),
             raw: $config,
@@ -127,22 +129,6 @@ final class ClassifierConfig
     }
 
     // ---- parsing helpers (fail-closed) ----
-
-    /**
-     * @param  array<mixed>  $config
-     */
-    private static function scalarStringOrNull(array $config, string $key): ?string
-    {
-        $value = $config[$key] ?? null;
-        if ($value === null) {
-            return null;
-        }
-        if (! is_scalar($value) || (string) $value === '') {
-            throw new ConfigException("classifier.config.{$key} must be a non-empty scalar");
-        }
-
-        return (string) $value;
-    }
 
     /**
      * `scope_author_map: { "owner/repo": agent }` → lowercased scope_id => agent.

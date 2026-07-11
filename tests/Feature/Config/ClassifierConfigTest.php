@@ -13,7 +13,6 @@ class ClassifierConfigTest extends TestCase
     {
         $cfg = ClassifierConfig::fromClassifierSection(['class' => 'App\\Some\\Classifier']);
 
-        $this->assertNull($cfg->sharedAccountId);
         $this->assertSame([], $cfg->scopeAuthorMap);
         $this->assertSame([], $cfg->enabledFamilies);
         $this->assertSame([], $cfg->raw);
@@ -24,13 +23,11 @@ class ClassifierConfigTest extends TestCase
         $cfg = ClassifierConfig::fromClassifierSection([
             'class' => 'App\\Some\\Classifier',
             'config' => [
-                'shared_account_id' => 269788076,
                 'scope_author_map' => ['Sola/Device' => 'device', 'sola/backend' => 'backend'],
                 'families' => ['coord-message', 'impl-ci-wake'],
             ],
         ]);
 
-        $this->assertSame('269788076', $cfg->sharedAccountId);          // scalar coerced to string
         // scope_id keys lowercased for case-insensitive scope matching
         $this->assertSame(['sola/device' => 'device', 'sola/backend' => 'backend'], $cfg->scopeAuthorMap);
         $this->assertSame(['coord-message', 'impl-ci-wake'], $cfg->enabledFamilies);
@@ -72,12 +69,6 @@ class ClassifierConfigTest extends TestCase
         ClassifierConfig::fromClassifierSection(['config' => ['families' => ['coord-message', '']]]);
     }
 
-    public function test_blank_shared_account_id_throws(): void
-    {
-        $this->expectException(ConfigException::class);
-        ClassifierConfig::fromClassifierSection(['config' => ['shared_account_id' => '']]);
-    }
-
     public function test_agent_config_wires_classifier_config(): void
     {
         $cfg = AgentConfig::fromArray('pm', [
@@ -85,11 +76,11 @@ class ClassifierConfigTest extends TestCase
             'subscriptions' => [],
             'classifier' => [
                 'class' => 'App\\Bridge\\Classifiers\\CoordinationClassifier',
-                'config' => ['shared_account_id' => 269788076, 'families' => ['coord-message']],
+                'config' => ['scope_author_map' => ['org/impl' => 'device'], 'families' => ['coord-message']],
             ],
         ]);
 
-        $this->assertSame('269788076', $cfg->classifierConfig->sharedAccountId);
+        $this->assertSame(['org/impl' => 'device'], $cfg->classifierConfig->scopeAuthorMap);
         $this->assertSame(['coord-message'], $cfg->classifierConfig->enabledFamilies);
     }
 
@@ -100,7 +91,7 @@ class ClassifierConfigTest extends TestCase
             'subscriptions' => [],
         ]);
 
-        $this->assertNull($cfg->classifierConfig->sharedAccountId);
+        $this->assertSame([], $cfg->classifierConfig->scopeAuthorMap);
         $this->assertSame([], $cfg->classifierConfig->enabledFamilies);
     }
 }
