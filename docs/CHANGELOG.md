@@ -18,6 +18,18 @@ The changelog is **release-event only** — entries land in the release-tag comm
 ### Changed
 - **#253** — folded the DL-168 triage-wake into the unified classifier as the config-gated **`kanban-triage`** family (DL-188). `CoordinationClassifier` now **`extends InboxOnlyClassifier`** (was `implements Classifier`) so `parent::classify()` provides base inbox-staging for kanban `task.*` events; the `kanban-triage` family pairs the `new_card` Intent for a **human-filed, untriaged** `task.created` (no `triaged`/`id:pr:*` tag, no `dl` ref — read off the DL-164 `card` snapshot, **no API call, no read token**) with a `channel_push` to the triage owner. `KanbanTriageClassifier` is now a thin **back-compat shim** (`extends CoordinationClassifier`, defaults its family set to `[kanban-triage]`) — the v0.42.0 `classifier.class: …\KanbanTriageClassifier` target keeps working, with a single implementation of the untriaged check. The two GitHub families self-guard `provider === 'github'` (the pre-#8 top-level provider guard is removed). 609/609 phpunit, phpstan L7 0, pint clean; one fresh-adversarial impl-review pass (APPROVE). `KanbanTriageClassifierTest` unchanged and green proves shim behavior-equivalence.
 
+### Upgrading — retire an untracked `CoordinationClassifier` overlay BEFORE pulling
+If your install runs an **untracked `app/Bridge/Classifiers/CoordinationClassifier.php` overlay** (the pre-#8 roundtable classifier that installs vendored by hand), **retire it before pulling v0.50.0** — this release ships `CoordinationClassifier.php` **tracked**, so `git pull`/`checkout` refuses with `error: The following untracked working tree files would be overwritten by checkout` (a *safe* fail — it never silently clobbers your overlay — but it **blocks the pull**). Steps:
+```
+cp app/Bridge/Classifiers/CoordinationClassifier.php ~/coord-classifier.overlay.bak   # rollback copy
+rm app/Bridge/Classifiers/CoordinationClassifier.php
+git pull            # v0.50.0 lands the tracked CoordinationClassifier + ClassifierConfig
+composer dump-autoload -o                                                             # pick up the new ClassifierConfig class
+php artisan optimize:clear   # (+ optimize on a serving install)
+php artisan bridge:check     # confirms every agent's classifier still loads
+```
+The tracked `CoordinationClassifier` with its **default families `[coord-message]`** reproduces a vanilla pre-#8 overlay **unchanged** — no `classifier.config` needed for coord-only behavior. Opt into the other families with `classifier.config.families: [impl-ci-wake]` / `[kanban-triage]`. If your overlay carried project-specifics (a `scope_author_map`, a custom handler), port them into `classifier.config` (map/families) or a thin subclass — **not** back into a re-vendored overlay. `KanbanTriageClassifier` remains a valid `classifier.class` target (now a thin shim). No migration, no `.env` change.
+
 ## [0.49.0] - 2026-07-10
 
 **Minor — the writeback stamps a `card#` fallback card's `dl_number`/`pr_number` add-if-missing, so it correlates for release-promote instead of stranding (DL-187).** 2 PRs since v0.48.1 (#248 app code + #246 docs). **No migration, no new `.env`, no change to what the receiver accepts/rejects, no writeback-token scope bump.**
