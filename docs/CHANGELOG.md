@@ -8,6 +8,17 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-07-12
+
+**Minor — roundtable-#8 R1: two config-gated `CoordinationClassifier` knobs (`impl_repos` wake gate + `drop_title_all_of` coord noise filter), plus the v0.50.0 upgrade note reaches `main` (DL-189).** 2 PRs since v0.50.0 (#258 R1 knobs + #257 upgrade-note docs). **No migration, no new `.env`, no change to what the receiver accepts/rejects.** Both knobs default-empty ⇒ v0.50.0 behavior byte-for-byte; adopt per-install via `classifier.config`.
+
+### Added
+- **#258** — two optional, config-gated knobs on `CoordinationClassifier` (DL-189). **`impl_repos`** (list<string>, `impl-ci-wake` family): gate the impl CI/push wake to a repo subset — the family fires only when the event's `scope_id` (lowercased) is in the list; empty/absent ⇒ every subscribed repo (back-compat). Lets a PM subscribed to both a coord repo and impl repos scope the wake to its impl subset so a coord-repo push/CI event doesn't self-wake; gates **before** `pushSignal`/`workflowRunSignal`, so the push-landing predicate + fail-loud conclusion logic are unchanged. **`drop_title_all_of`** (list<list<string>>, `coord-message` family): drop a coordination subject whose **title** contains every (case-insensitive) substring of any group — AND within a group, OR across groups — before the recipient gate, for bookkeeping-title noise (e.g. `[["Rule E back-merge sync","paper-trail anchor"]]`); for an `issue_comment` the title is the parent issue's, so a match also suppresses comments on that issue (intended for a pure paper-trail anchor — keep groups specific). New typed `ClassifierConfig::stringGroups()` accessor (fail-closed). Defaults reproduce v0.50.0; DL-007 shared-account echo posture untouched. 622/622 phpunit, phpstan L7 0, pint clean; fresh-adversarial impl-review APPROVE. Coordinated in PupFuzz/agent-roundtable#8.
+
+### Changed
+- **#258** — corrected the `implCiWakeFamily` doc-comments (DL-189): a non-wake impl event is **gate-dropped** (no intent), not "staged to inbox by the dispatcher" — the dispatcher inbox-stages classifier *intents* only, and a null family + empty InboxOnly base yields no intent.
+- **#257** — the **v0.50.0 upgrade note** reaches `main` (DL-188): retire the untracked `CoordinationClassifier` overlay **before** `git pull` (v0.50.0 ships that file tracked, so the pull otherwise refuses on the untracked working-tree file). The note landed on `dev` only after the v0.50.0 tag was cut, so this release brings it into the release branch.
+
 ## [0.50.0] - 2026-07-11
 
 **Minor — roundtable-#8 classifier unification: one config-driven `CoordinationClassifier` with config-gated event families, so no install forks the bridge (DL-188).** 2 PRs since v0.49.0 (#252 core + #253 kanban-triage fold). **No migration, no new `.env`, no change to what the receiver accepts/rejects.** Requires kanban **v0.22.0+** for the `card` snapshot the `kanban-triage` family reads (degrades to over-wake on older).
@@ -17,6 +28,18 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ### Changed
 - **#253** — folded the DL-168 triage-wake into the unified classifier as the config-gated **`kanban-triage`** family (DL-188). `CoordinationClassifier` now **`extends InboxOnlyClassifier`** (was `implements Classifier`) so `parent::classify()` provides base inbox-staging for kanban `task.*` events; the `kanban-triage` family pairs the `new_card` Intent for a **human-filed, untriaged** `task.created` (no `triaged`/`id:pr:*` tag, no `dl` ref — read off the DL-164 `card` snapshot, **no API call, no read token**) with a `channel_push` to the triage owner. `KanbanTriageClassifier` is now a thin **back-compat shim** (`extends CoordinationClassifier`, defaults its family set to `[kanban-triage]`) — the v0.42.0 `classifier.class: …\KanbanTriageClassifier` target keeps working, with a single implementation of the untriaged check. The two GitHub families self-guard `provider === 'github'` (the pre-#8 top-level provider guard is removed). 609/609 phpunit, phpstan L7 0, pint clean; one fresh-adversarial impl-review pass (APPROVE). `KanbanTriageClassifierTest` unchanged and green proves shim behavior-equivalence.
+
+### Upgrading — retire an untracked `CoordinationClassifier` overlay BEFORE pulling
+If your install runs an **untracked `app/Bridge/Classifiers/CoordinationClassifier.php` overlay** (the pre-#8 roundtable classifier that installs vendored by hand), **retire it before pulling v0.50.0** — this release ships `CoordinationClassifier.php` **tracked**, so `git pull`/`checkout` refuses with `error: The following untracked working tree files would be overwritten by checkout` (a *safe* fail — it never silently clobbers your overlay — but it **blocks the pull**). Steps:
+```
+cp app/Bridge/Classifiers/CoordinationClassifier.php ~/coord-classifier.overlay.bak   # rollback copy
+rm app/Bridge/Classifiers/CoordinationClassifier.php
+git pull            # v0.50.0 lands the tracked CoordinationClassifier + ClassifierConfig
+composer dump-autoload -o                                                             # pick up the new ClassifierConfig class
+php artisan optimize:clear   # (+ optimize on a serving install)
+php artisan bridge:check     # confirms every agent's classifier still loads
+```
+The tracked `CoordinationClassifier` with its **default families `[coord-message]`** reproduces a vanilla pre-#8 overlay **unchanged** — no `classifier.config` needed for coord-only behavior. Opt into the other families with `classifier.config.families: [impl-ci-wake]` / `[kanban-triage]`. If your overlay carried project-specifics (a `scope_author_map`, a custom handler), port them into `classifier.config` (map/families) or a thin subclass — **not** back into a re-vendored overlay. `KanbanTriageClassifier` remains a valid `classifier.class` target (now a thin shim). No migration, no `.env` change.
 
 ## [0.49.0] - 2026-07-10
 

@@ -178,6 +178,106 @@ class CoordinationClassifierTest extends TestCase
         $this->assertSame([], $r->intents);
     }
 
+    // ---- impl-ci-wake: impl_repos gate (R1, DL-189) ----
+
+    public function test_impl_repos_gate_wakes_when_scope_in_list(): void
+    {
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5]], 'org/impl', classifierConfig: $this->implConfig(['impl_repos' => ['org/impl', 'org/other']]));
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
+    public function test_impl_repos_gate_drops_when_scope_not_in_list(): void
+    {
+        // A wake-worthy event on a repo OUTSIDE the configured subset is gate-dropped
+        // (e.g. a coord-repo push/CI event a PM doesn't want to self-wake on).
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5]], 'org/coord', classifierConfig: $this->implConfig(['impl_repos' => ['org/impl']]));
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_impl_repos_gate_is_case_insensitive(): void
+    {
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5]], 'ORG/Impl', classifierConfig: $this->implConfig(['impl_repos' => ['org/impl']]));
+
+        $this->assertCount(1, $r->intents);
+    }
+
+    public function test_impl_repos_empty_wakes_all_subscribed(): void
+    {
+        // Absent impl_repos ⇒ v0.50.0 back-compat: every subscribed repo wakes.
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5]], 'org/anything', classifierConfig: $this->implConfig());
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
+    // ---- coord-message: drop_title_all_of noise filter (R1, DL-189) ----
+
+    public function test_drop_title_all_of_drops_when_all_substrings_present(): void
+    {
+        $r = $this->classify(
+            'issues.opened',
+            $this->issue(9, ['to:me'], '', 'Rule E back-merge sync — paper-trail anchor for v0.50.0'),
+            'org/coord',
+            classifierConfig: ['drop_title_all_of' => [['Rule E back-merge sync', 'paper-trail anchor']]],
+        );
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_drop_title_all_of_keeps_when_only_partial_match(): void
+    {
+        // Only one of the two substrings present ⇒ NOT a match ⇒ kept + surfaced.
+        $r = $this->classify(
+            'issues.opened',
+            $this->issue(9, ['to:me'], '', 'Rule E back-merge sync completed'),
+            'org/coord',
+            classifierConfig: ['drop_title_all_of' => [['Rule E back-merge sync', 'paper-trail anchor']]],
+        );
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('coord_issue', $r->intents[0]->kind);
+    }
+
+    public function test_drop_title_all_of_is_case_insensitive(): void
+    {
+        $r = $this->classify(
+            'issues.opened',
+            $this->issue(9, ['to:me'], '', 'RULE E BACK-MERGE SYNC — PAPER-TRAIL ANCHOR'),
+            'org/coord',
+            classifierConfig: ['drop_title_all_of' => [['Rule E back-merge sync', 'paper-trail anchor']]],
+        );
+
+        $this->assertSame([], $r->intents);
+    }
+
+    public function test_drop_title_all_of_absent_keeps_subject(): void
+    {
+        // No config ⇒ back-compat: an ordinary addressed subject surfaces unchanged.
+        $r = $this->classify('issues.opened', $this->issue(9, ['to:me'], '', 'Rule E back-merge sync — paper-trail anchor'), 'org/coord');
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('coord_issue', $r->intents[0]->kind);
+    }
+
+    public function test_drop_title_all_of_suppresses_comments_on_a_matched_issue(): void
+    {
+        // Blast radius: for an issue_comment the title is the PARENT issue's, so a
+        // matched drop-group suppresses even a to:me-addressed comment on that issue.
+        $payload = [
+            'issue' => ['number' => 9, 'title' => 'Rule E back-merge sync — paper-trail anchor', 'labels' => [['name' => 'to:me']]],
+            'comment' => ['body' => 'TO: me', 'html_url' => 'https://x/9#c1', 'id' => 1, 'created_at' => '2026-07-12T00:00:00Z'],
+        ];
+        $r = $this->classify('issue_comment.created', $payload, 'org/coord', classifierConfig: ['drop_title_all_of' => [['Rule E back-merge sync', 'paper-trail anchor']]]);
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
     // ---- kanban-triage family (opt-in; folded DL-168) ----
 
     /**
