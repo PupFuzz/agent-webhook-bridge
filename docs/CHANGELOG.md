@@ -8,6 +8,16 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-07-11
+
+**Minor — roundtable-#8 classifier unification: one config-driven `CoordinationClassifier` with config-gated event families, so no install forks the bridge (DL-188).** 2 PRs since v0.49.0 (#252 core + #253 kanban-triage fold). **No migration, no new `.env`, no change to what the receiver accepts/rejects.** Requires kanban **v0.22.0+** for the `card` snapshot the `kanban-triage` family reads (degrades to over-wake on older).
+
+### Added
+- **#252** — a unified, config-driven `CoordinationClassifier` + a typed `ClassifierConfig` view over the `classifier.config` YAML block (DL-188, core). One reference classifier runs a **config-gated event-family pipeline** (`classifier.config.families`) so a coordination repo, a cross-project channel, and an impl code repo all route through the same code parameterized by config — no install forks the bridge PHP. Families: `coord-message` (GitHub issues/issue_comment/pull_request coordination messages, DL-022 addressing + DL-002 shared-identity re-attribution) and `impl-ci-wake` (push→release-branch = release-landed with `subjectId = head_sha`; `workflow_run` **fail-LOUD** CI gate — wakes on ANY terminal conclusion NOT in `benign_conclusions` [`success`/`cancelled`/`skipped`/`neutral`], so a new/unknown GitHub conclusion surfaces instead of silently escaping CI oversight; a name-matched provenance-success also wakes). Default families `[coord-message]` ⇒ an install that doesn't opt in behaves **exactly** as the pre-#8 reference (back-compat). `ClassifierConfig` exposes `scope_author_map`, `families`, and generic typed accessors (`strings()`/`string()`/`section()`) so a family adds knobs without another contract change.
+
+### Changed
+- **#253** — folded the DL-168 triage-wake into the unified classifier as the config-gated **`kanban-triage`** family (DL-188). `CoordinationClassifier` now **`extends InboxOnlyClassifier`** (was `implements Classifier`) so `parent::classify()` provides base inbox-staging for kanban `task.*` events; the `kanban-triage` family pairs the `new_card` Intent for a **human-filed, untriaged** `task.created` (no `triaged`/`id:pr:*` tag, no `dl` ref — read off the DL-164 `card` snapshot, **no API call, no read token**) with a `channel_push` to the triage owner. `KanbanTriageClassifier` is now a thin **back-compat shim** (`extends CoordinationClassifier`, defaults its family set to `[kanban-triage]`) — the v0.42.0 `classifier.class: …\KanbanTriageClassifier` target keeps working, with a single implementation of the untriaged check. The two GitHub families self-guard `provider === 'github'` (the pre-#8 top-level provider guard is removed). 609/609 phpunit, phpstan L7 0, pint clean; one fresh-adversarial impl-review pass (APPROVE). `KanbanTriageClassifierTest` unchanged and green proves shim behavior-equivalence.
+
 ## [0.49.0] - 2026-07-10
 
 **Minor — the writeback stamps a `card#` fallback card's `dl_number`/`pr_number` add-if-missing, so it correlates for release-promote instead of stranding (DL-187).** 2 PRs since v0.48.1 (#248 app code + #246 docs). **No migration, no new `.env`, no change to what the receiver accepts/rejects, no writeback-token scope bump.**
