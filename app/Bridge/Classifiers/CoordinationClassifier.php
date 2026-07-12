@@ -32,10 +32,13 @@ use App\Bridge\Support\RecipientAddressing;
  * `['coord-message']` so an install that doesn't opt in behaves EXACTLY as the
  * pre-#8 reference — back-compat):
  *   - `coord-message` — github issues/issue_comment/pull_request coordination
- *     messages, addressed per DL-022, shared-identity re-attributed.
+ *     messages, addressed per DL-022, shared-identity re-attributed. Optional
+ *     `drop_title_all_of` drops a subject whose title contains every substring of
+ *     any configured group (bookkeeping-title noise, e.g. a back-merge anchor).
  *   - `impl-ci-wake`  — github push→release-branch (release-landed) + workflow_run
  *     wake-worthy CI (failure-class conclusions, provenance-success). Surgical:
- *     hand-emits a channel_push ONLY for wake-worthy events, else inbox-only.
+ *     hand-emits a channel_push ONLY for wake-worthy events, else gate-dropped.
+ *     Optional `impl_repos` gates the wake to a repo subset (empty ⇒ all subscribed).
  *   - `kanban-triage` — kanban `task.created` for a HUMAN-filed, UNTRIAGED card
  *     (DL-168): pairs the inbox `new_card` Intent with a channel_push to the
  *     triage owner. Folded in from the retired standalone KanbanTriageClassifier
@@ -145,6 +148,14 @@ class CoordinationClassifier extends InboxOnlyClassifier
             return null; // unhandled / contentless coordination event
         }
 
+        // Noise drop (config-gated): a subject whose title contains EVERY substring
+        // of any `drop_title_all_of` group is bookkeeping churn (e.g. a back-merge
+        // paper-trail anchor) — drop it for everyone before the recipient gate. Empty
+        // config ⇒ no-op.
+        if ($this->titleMatchesDropGroup($subject['title'], $cfg)) {
+            return null;
+        }
+
         $labels = $this->labels($eventType, $payload);
         $me = $agent->agentName;
 
@@ -213,15 +224,24 @@ class CoordinationClassifier extends InboxOnlyClassifier
     // Family: impl-ci-wake (§3 — AIMLA push-landing + sola workflow_run gating)
     // =====================================================================
     //
-    // STRAWMAN pending aimla's field data (wake-conclusions + push-detection) — the
-    // defaults below are the safe starting set; every knob is config. Surgical:
-    // a wake-worthy event gets an Intent + channel_push; a non-wake impl event
-    // returns null (staged to inbox by the dispatcher, never a live wake).
+    // Field-validated (roundtable #8; aimla second-install). Surgical: a wake-worthy
+    // event gets an Intent + channel_push; a non-wake impl event returns null and is
+    // GATE-DROPPED by the dispatcher (no intent — the InboxOnly base is empty for a
+    // GitHub event), never a live wake and never an inbox row.
 
     private function implCiWakeFamily(ClassifyContext $ctx, ClassifierConfig $cfg): ?ClassifyResult
     {
         if ($ctx->provider !== 'github') {
             return null; // push / workflow_run CI convention is GitHub-only
+        }
+
+        // impl_repos gate (optional): when non-empty, wake only for these scopes;
+        // empty/absent ⇒ every subscribed repo (v0.50.0 back-compat). Keys on the
+        // already-available scopeId — a PM scopes the wake to its impl-repo subset so
+        // a coord-repo push/CI event doesn't self-wake.
+        $implRepos = $cfg->strings('impl_repos');
+        if ($implRepos !== [] && ! in_array(strtolower($ctx->scopeId), $implRepos, true)) {
+            return null;
         }
 
         $eventType = $ctx->eventType;
@@ -234,7 +254,7 @@ class CoordinationClassifier extends InboxOnlyClassifier
             $signal = $this->workflowRunSignal($payload, $cfg);
         }
         if ($signal === null) {
-            return null; // non-wake impl event → inbox-only (dispatcher stages it)
+            return null; // non-wake impl event → gate-dropped (no intent; not inbox-staged)
         }
 
         $reattributed = $this->reattribute($ctx->actor, $ctx->scopeId, [], '', false, $cfg);
@@ -592,6 +612,30 @@ class CoordinationClassifier extends InboxOnlyClassifier
         }
 
         return $actor->name ?? $actor->id ?? '?';
+    }
+
+    /**
+     * Whether a subject title matches any `drop_title_all_of` group — it contains
+     * every (case-insensitive) substring of that group. Empty config ⇒ false (no
+     * subject is dropped). Substrings are pre-lowercased by the accessor.
+     */
+    private function titleMatchesDropGroup(string $title, ClassifierConfig $cfg): bool
+    {
+        $haystack = strtolower($title);
+        foreach ($cfg->stringGroups('drop_title_all_of') as $group) {
+            $matchesAll = true;
+            foreach ($group as $needle) {
+                if (! str_contains($haystack, $needle)) {
+                    $matchesAll = false;
+                    break;
+                }
+            }
+            if ($matchesAll) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function oneLine(string $text): string
