@@ -112,6 +112,47 @@ final class ClassifierConfig
     }
 
     /**
+     * A list of "phrase groups" at a top-level config key — each group a list of
+     * non-empty substrings, lowercased for case-insensitive matching. A subject
+     * matches a group when it contains EVERY substring of that group (AND within a
+     * group, OR across groups). Used by title drop-filters (e.g. a back-merge
+     * paper-trail anchor). Absent ⇒ `[]`; a present non-list, or a non-list group,
+     * or an empty substring, throws. An empty group is ignored (dropped from the
+     * result) — a zero-substring group would vacuously match every title.
+     *
+     * @return list<list<string>>
+     */
+    public function stringGroups(string $key): array
+    {
+        $raw = $this->raw[$key] ?? null;
+        if ($raw === null) {
+            return [];
+        }
+        if (! is_array($raw)) {
+            throw new ConfigException("classifier.config.{$key} must be a list of string-groups");
+        }
+
+        $out = [];
+        foreach (array_values($raw) as $group) {
+            if (! is_array($group)) {
+                throw new ConfigException("classifier.config.{$key} entries must each be a list of strings");
+            }
+            $substrings = [];
+            foreach (array_values($group) as $entry) {
+                if (! is_scalar($entry) || (string) $entry === '') {
+                    throw new ConfigException("classifier.config.{$key} substrings must be non-empty strings");
+                }
+                $substrings[] = strtolower((string) $entry);
+            }
+            if ($substrings !== []) {
+                $out[] = $substrings;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * A single scalar string at a top-level config key (e.g. `release_branch`),
      * or `$default` when absent. A present non-scalar throws.
      */

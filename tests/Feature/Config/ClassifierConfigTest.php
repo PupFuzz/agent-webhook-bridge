@@ -51,6 +51,45 @@ class ClassifierConfigTest extends TestCase
         $this->assertSame([], $cfg->section('missing_section'));
     }
 
+    public function test_string_groups_parses_and_lowercases(): void
+    {
+        $cfg = ClassifierConfig::fromClassifierSection([
+            'config' => [
+                'drop_title_all_of' => [
+                    ['Rule E back-merge sync', 'paper-trail anchor'],
+                    ['some other anchor'],
+                ],
+            ],
+        ]);
+
+        $this->assertSame([
+            ['rule e back-merge sync', 'paper-trail anchor'],
+            ['some other anchor'],
+        ], $cfg->stringGroups('drop_title_all_of'));
+        $this->assertSame([], $cfg->stringGroups('missing_groups')); // absent ⇒ []
+    }
+
+    public function test_string_groups_non_list_throws(): void
+    {
+        $cfg = ClassifierConfig::fromClassifierSection(['config' => ['drop_title_all_of' => 'not-a-list']]);
+        $this->expectException(ConfigException::class);
+        $cfg->stringGroups('drop_title_all_of');
+    }
+
+    public function test_string_groups_non_list_group_throws(): void
+    {
+        $cfg = ClassifierConfig::fromClassifierSection(['config' => ['drop_title_all_of' => ['not-a-group']]]);
+        $this->expectException(ConfigException::class);
+        $cfg->stringGroups('drop_title_all_of');
+    }
+
+    public function test_string_groups_empty_substring_throws(): void
+    {
+        $cfg = ClassifierConfig::fromClassifierSection(['config' => ['drop_title_all_of' => [['ok', '']]]]);
+        $this->expectException(ConfigException::class);
+        $cfg->stringGroups('drop_title_all_of');
+    }
+
     public function test_non_mapping_config_throws(): void
     {
         $this->expectException(ConfigException::class);
