@@ -8,6 +8,30 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-07-13
+
+**Minor — roundtable-#8 Phase-2: the shared best-of-both impl-agent classifier folds into the tracked `CoordinationClassifier`, so no install forks the bridge on the impl side either (DL-190) + the F-A double-wake replay fix (DL-191).** 5 PRs since v0.51.0 (#261 Phase-2 core + #265 F-A fix + 3 dependency bumps #262/#263/#264). **No migration, no new `.env`, no change to what the receiver accepts/rejects.** Defaults reproduce v0.51.0 byte-for-byte **except `wake_membership`** (a deliberate wide→narrow default flip — see Upgrading). Coordinated in PupFuzz/agent-roundtable#8 (three-way: kanban-solo reference owner, sola + aimla sign-off).
+
+### Added
+- **#261** — the Phase-2 impl-agent classifier surface on `CoordinationClassifier`, folding `SolaImplClassifier`'s remaining features as config so no install forks the bridge (DL-190). Three config-gated `classifier.config` knobs (every default reproducing v0.51.0 except the `wake_membership` flip): **`impl_non_wake_disposition`** (`drop` default | `inbox_stage`) — a non-wake terminal impl event either gate-drops (lean inbox) or builds a no-`channel_push` inbox `Intent` (`impl_push`/`impl_ci`) for a broad SessionStart history; **`coord_extra_actions`** (`{prefix:[actions]}`) — extends the fail-safe `subject()` action **allow-list** per event prefix (e.g. `{pull_request:[synchronize]}`), never a deny-list (a new GitHub action never auto-surfaces); **`wake_membership`** (`[to_me, to_all]` default | `+from_me` opt-in) — config-drives which label classes grant `coord-message` live-wake. Plus the **`github_user_id`-never-on-wake-identity invariant** (docblock + regression test): a wake identity is the author agent by NAME via `scope_author_map`, never the raw pusher github id, so the pre-classify echo gate can't drop an agent's own-repo landing. New typed `ClassifierConfig::stringListMap()`; shared `makeImplIntent()` + `pushInboxSignal()`/`workflowRunInboxSignal()`.
+
+### Changed
+- **#265** — channel-aware wake-emit: every `CoordinationClassifier` family emits its `channel_push` only when the serving channel is `route_intents:false`; on a `route_intents:true` channel the dispatcher already routes every staged intent (DL-006), so a hand-emit double-wakes (DL-191). One `wakePush()` helper, all three families (coord-message, impl-ci-wake, kanban-triage). Fixes the double-wake sola's Phase-2 replay surfaced on her `route_intents:true` profile (two `channel_push` per addressed coord message → one). **Supersedes the interim `impl_wake_emit` knob** introduced by #261 — the suppression is now derived structurally from `route_intents` (all families, no knob), so `impl_wake_emit` is removed (it was never released; a lingering value in a config is ignored, no `ConfigException`). `route_intents:false` installs are byte-identical; only `route_intents:true` behavior changes (one wake, was two). Verified against the full `DispatchService` route_intents merge (independent second-consumer replay + an in-repo composed dispatch guard).
+- **#261** — `wake_membership` narrow default (DL-190): the `coord-message` live-wake gate defaults to `[to_me, to_all]` (was effectively wide, including `from_me`). Because a comment's direction lives in its body `TO:` line — which only *narrows* within membership, never grants — dropping `from_me` shifts even a **directed** reply on a thread you opened from live-wake to SessionStart pickup, backstopped by the `from:<self>`/`protocol:invalid` SessionStart scan. Over-wake is the guarded failure mode. See Upgrading to restore the prior wide behavior.
+
+### Dependencies
+- **#262** — `laravel/framework` 13.18.1 → 13.19.0.
+- **#263** — `PupFuzz/agent-board-toolkit/promote` composite-action SHA pin (v0.11.0 → v0.12.1).
+- **#264** — `phpunit/phpunit` (dev) 13.2.2 → 13.2.4.
+
+### Behavior notes (roundtable #8, F-B/F-C — no config change)
+- **Code-repo `pull_request` / `issues` / `issue_comment` are dropped** under the unified model (they route through `coord-message`'s recipient gate, and a code-repo object carries no `to:`/`from:` addressing labels → dropped; `impl-ci-wake` only handles `push`/`workflow_run`). The unified framing is *"code repos = push/CI signals; coordination = the coordination repo."* The only real loss is non-self / dependabot code-repo activity, which has its own kanban-card path. An install that needs code-repo PR/issue/comment passthrough should scope that as a separate reference feature.
+- **A landless branch-delete `push`** (`deleted:true`, no release-branch ref) is dropped — benign noise reduction.
+
+### Upgrading
+- **`wake_membership` default flipped wide→narrow (DL-190).** If you relied on waking for **all** activity on threads you opened (a `from:<me>` label), restore it per channel: `classifier.config.wake_membership: [to_me, to_all, from_me]`. Otherwise no action — directed own-thread replies are re-surfaced at SessionStart by the `from:<self>`/`protocol:invalid` scan.
+- **`impl_wake_emit` removed (DL-191).** It was introduced on `dev` by DL-190 and retired in the same release cycle before shipping — no released version ever exposed it. If a config carries `impl_wake_emit`, it is silently ignored (no error); remove it as cleanup. The equivalent single-wake behavior on a `route_intents:true` channel is now automatic.
+
 ## [0.51.0] - 2026-07-12
 
 **Minor — roundtable-#8 R1: two config-gated `CoordinationClassifier` knobs (`impl_repos` wake gate + `drop_title_all_of` coord noise filter), plus the v0.50.0 upgrade note reaches `main` (DL-189).** 2 PRs since v0.50.0 (#258 R1 knobs + #257 upgrade-note docs). **No migration, no new `.env`, no change to what the receiver accepts/rejects.** Both knobs default-empty ⇒ v0.50.0 behavior byte-for-byte; adopt per-install via `classifier.config`.
