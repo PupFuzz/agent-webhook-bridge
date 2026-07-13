@@ -36,9 +36,17 @@ use App\Bridge\Support\RecipientAddressing;
  *     `drop_title_all_of` drops a subject whose title contains every substring of
  *     any configured group (bookkeeping-title noise, e.g. a back-merge anchor).
  *   - `impl-ci-wake`  — github push→release-branch (release-landed) + workflow_run
- *     wake-worthy CI (failure-class conclusions, provenance-success). Surgical:
- *     hand-emits a channel_push ONLY for wake-worthy events, else gate-dropped.
- *     Optional `impl_repos` gates the wake to a repo subset (empty ⇒ all subscribed).
+ *     wake-worthy CI (failure-class conclusions, provenance-success). DEFAULT
+ *     surgical: hand-emits a channel_push ONLY for wake-worthy events, else
+ *     gate-dropped. Config: `impl_repos` gates to a repo subset (empty ⇒ all
+ *     subscribed); `impl_non_wake_disposition: inbox_stage` keeps a broad CI/push
+ *     inbox (no channel_push) instead of gate-dropping non-wake events;
+ *     `impl_wake_emit: none` suppresses the classifier push so a channel whose
+ *     `route_intents` owns waking isn't double-woken.
+ *
+ *   - `coord_extra_actions` (coord-message) extends the fail-safe action allow-list
+ *     per prefix; `wake_membership` (default `[to_me, to_all]`) selects which label
+ *     classes grant coord-message live-wake (`from_me` = opt-in).
  *   - `kanban-triage` — kanban `task.created` for a HUMAN-filed, UNTRIAGED card
  *     (DL-168): pairs the inbox `new_card` Intent with a channel_push to the
  *     triage owner. Folded in from the retired standalone KanbanTriageClassifier
@@ -143,7 +151,7 @@ class CoordinationClassifier extends InboxOnlyClassifier
         $actor = $ctx->actor;
         $agent = $ctx->agent;
 
-        $subject = $this->subject($eventType, $payload);
+        $subject = $this->subject($eventType, $payload, $cfg);
         if ($subject === null) {
             return null; // unhandled / contentless coordination event
         }
@@ -159,11 +167,16 @@ class CoordinationClassifier extends InboxOnlyClassifier
         $labels = $this->labels($eventType, $payload);
         $me = $agent->agentName;
 
-        // Recipient gate (DL-022): membership is label-authoritative (to:{me} /
-        // to:all / from:{me}); a comment's TO: line NARROWS within membership.
-        $forMe = in_array("to:{$me}", $labels, true)
-            || in_array('to:all', $labels, true)
-            || in_array("from:{$me}", $labels, true);
+        // Recipient gate (DL-022): membership is label-authoritative. Which label
+        // classes grant live-wake membership is config-driven via `wake_membership`
+        // — DEFAULT narrow `[to_me, to_all]` (over-wake is the failure mode we guard
+        // against; a coordinator opening many threads would else wake on every reply
+        // to them). `from_me` is the opt-in for waking on all activity on your own
+        // threads. A comment's TO: line still NARROWS within membership, unchanged.
+        $membership = $cfg->strings('wake_membership', ['to_me', 'to_all']);
+        $forMe = (in_array('to_me', $membership, true) && in_array("to:{$me}", $labels, true))
+            || (in_array('to_all', $membership, true) && in_array('to:all', $labels, true))
+            || (in_array('from_me', $membership, true) && in_array("from:{$me}", $labels, true));
         if ($subject['kind'] === 'comment'
             && RecipientAddressing::addresses($subject['body'], $me) === false) {
             $forMe = false;
@@ -247,20 +260,66 @@ class CoordinationClassifier extends InboxOnlyClassifier
         $eventType = $ctx->eventType;
         $payload = $ctx->payload;
 
-        $signal = null;   // [kind, summaryTail, url]
+        $signal = null;   // [kind, ref, tail, url, extra]
         if ($eventType === 'push') {
             $signal = $this->pushSignal($payload, $cfg);
         } elseif (str_starts_with($eventType, 'workflow_run.')) {
             $signal = $this->workflowRunSignal($payload, $cfg);
         }
-        if ($signal === null) {
-            return null; // non-wake impl event → gate-dropped (no intent; not inbox-staged)
+
+        if ($signal !== null) {
+            // Wake-worthy event → surgical channel_push, UNLESS `impl_wake_emit: none`
+            // (a broad-wake install's channel `route_intents` owns waking, so the
+            // classifier push would double-wake). The Intent is staged either way.
+            $intent = $this->makeImplIntent($signal, $ctx, $cfg);
+            $targets = $cfg->string('impl_wake_emit', 'channel_push') === 'none'
+                ? []
+                : [ReactionTarget::make(
+                    handler: 'channel_push',
+                    targetId: $intent->subjectId,
+                    debounceSeconds: 0,
+                    payload: $intent->toArray(),
+                )];
+
+            return new ClassifyResult(intents: [$intent], targets: $targets);
         }
 
+        // Non-wake terminal impl event. DEFAULT `drop` = gate-drop (lean inbox — no
+        // intent). `impl_non_wake_disposition: inbox_stage` keeps a broad CI/push
+        // SessionStart history: build a normal Intent with NO channel_push (a
+        // broad-wake install routes it via the channel's route_intents; a surgical
+        // install stays on `drop` and never reaches here).
+        if ($cfg->string('impl_non_wake_disposition', 'drop') !== 'inbox_stage') {
+            return null;
+        }
+        $staged = null;
+        if ($eventType === 'push') {
+            $staged = $this->pushInboxSignal($payload);
+        } elseif (str_starts_with($eventType, 'workflow_run.')) {
+            $staged = $this->workflowRunInboxSignal($payload);
+        }
+        if ($staged === null) {
+            return null; // a branch-delete push / a non-terminal workflow_run is not inbox-worthy
+        }
+
+        return new ClassifyResult(intents: [$this->makeImplIntent($staged, $ctx, $cfg)], targets: []);
+    }
+
+    /**
+     * Build the impl Intent shared by the wake path and the inbox_stage path. The
+     * actor is re-attributed via the scope→author map (§1) — the wake identity is
+     * the author AGENT (by name), NEVER the raw pusher github id. Invariant: a
+     * wake-purposed agent config must not set `identity.github_user_id`, or the
+     * dispatcher's pre-classify echo gate would drop the agent's own-repo landing.
+     *
+     * @param  array{kind:string,ref:string,tail:string,url:string,extra:array<string,mixed>}  $signal
+     */
+    private function makeImplIntent(array $signal, ClassifyContext $ctx, ClassifierConfig $cfg): Intent
+    {
         $reattributed = $this->reattribute($ctx->actor, $ctx->scopeId, [], '', false, $cfg);
         $who = $this->displayName($reattributed, $ctx->actor);
 
-        $intent = new Intent(
+        return new Intent(
             kind: 'impl_'.$signal['kind'],
             subjectId: $signal['ref'],
             provider: $ctx->provider,
@@ -268,20 +327,10 @@ class CoordinationClassifier extends InboxOnlyClassifier
             summary: sprintf('impl %s on %s (%s): %s', $signal['kind'], $ctx->scopeId, $who, $signal['tail']),
             payload: array_merge([
                 'repo' => $ctx->scopeId,
-                'event' => $eventType,
+                'event' => $ctx->eventType,
                 'url' => $signal['url'],
                 'from' => $who,
             ], $signal['extra']),
-        );
-
-        return new ClassifyResult(
-            intents: [$intent],
-            targets: [ReactionTarget::make(
-                handler: 'channel_push',
-                targetId: $intent->subjectId,
-                debounceSeconds: 0,
-                payload: $intent->toArray(),
-            )],
         );
     }
 
@@ -366,6 +415,71 @@ class CoordinationClassifier extends InboxOnlyClassifier
         }
 
         return null;
+    }
+
+    /**
+     * A non-wake push staged for the broad inbox (`impl_non_wake_disposition:
+     * inbox_stage`): any non-delete push on any branch. A branch-delete carries no
+     * landed content, so it is not staged. A release-branch push never reaches here —
+     * it is wake-worthy via {@see pushSignal}.
+     *
+     * @param  array<mixed>  $payload
+     * @return array{kind:string,ref:string,tail:string,url:string,extra:array<string,mixed>}|null
+     */
+    private function pushInboxSignal(array $payload): ?array
+    {
+        if (($payload['deleted'] ?? false) === true) {
+            return null;
+        }
+        $ref = is_scalar($payload['ref'] ?? null) ? (string) $payload['ref'] : '';
+        $branch = str_starts_with($ref, 'refs/heads/') ? substr($ref, strlen('refs/heads/')) : $ref;
+        $repo = is_array($payload['repository'] ?? null) ? $payload['repository'] : [];
+        $head = is_array($payload['head_commit'] ?? null) ? $payload['head_commit'] : [];
+        $headSha = is_scalar($payload['after'] ?? null) ? (string) $payload['after']
+            : (is_scalar($head['id'] ?? null) ? (string) $head['id'] : '');
+        $commits = is_array($payload['commits'] ?? null) ? $payload['commits'] : [];
+
+        return [
+            'kind' => 'push',
+            'ref' => $headSha !== '' ? $headSha : ($branch !== '' ? $branch : 'push'),
+            'tail' => $this->oneLine(is_scalar($head['message'] ?? null) ? (string) $head['message'] : $branch),
+            'url' => is_scalar($head['url'] ?? null) ? (string) $head['url']
+                : (is_scalar($repo['html_url'] ?? null) ? (string) $repo['html_url'] : ''),
+            'extra' => [
+                'branch' => $branch,
+                'head_sha' => $headSha,
+                'commit_count' => count($commits),
+            ],
+        ];
+    }
+
+    /**
+     * A non-wake completed workflow_run staged for the broad inbox (inbox_stage).
+     * Only TERMINAL (completed) runs are staged; a non-terminal run is filtered,
+     * same as the wake path. The wake-worthy completed runs (failure / provenance
+     * success) never reach here — they are handled by {@see workflowRunSignal}.
+     *
+     * @param  array<mixed>  $payload
+     * @return array{kind:string,ref:string,tail:string,url:string,extra:array<string,mixed>}|null
+     */
+    private function workflowRunInboxSignal(array $payload): ?array
+    {
+        $run = is_array($payload['workflow_run'] ?? null) ? $payload['workflow_run'] : [];
+        if (($run['status'] ?? null) !== 'completed') {
+            return null;
+        }
+        $name = is_scalar($run['name'] ?? null) ? (string) $run['name'] : '';
+        $concl = strtolower(is_scalar($run['conclusion'] ?? null) ? (string) $run['conclusion'] : '');
+        $url = is_scalar($run['html_url'] ?? null) ? (string) $run['html_url'] : '';
+        $runId = is_scalar($run['id'] ?? null) ? (string) $run['id'] : $name;
+
+        return [
+            'kind' => 'ci',
+            'ref' => $runId,
+            'tail' => $concl !== '' ? "{$name} → {$concl}" : $name,
+            'url' => $url,
+            'extra' => [],
+        ];
     }
 
     // =====================================================================
@@ -463,14 +577,20 @@ class CoordinationClassifier extends InboxOnlyClassifier
      * @param  array<mixed>  $payload
      * @return array{kind:string,number:int|string,title:string,body:string,url:string,comment_id?:int|string|null,comment_created_at?:string|null}|null
      */
-    private function subject(string $eventType, array $payload): ?array
+    private function subject(string $eventType, array $payload, ClassifierConfig $cfg): ?array
     {
+        // Per-install allow-list extension: `coord_extra_actions: { pull_request:
+        // [synchronize] }` surfaces additional actions beyond the fail-safe default.
+        // An unlisted action still returns null — a new GitHub action never
+        // auto-surfaces (allow-list, not deny-list).
+        $extra = $cfg->stringListMap('coord_extra_actions');
         foreach (self::HANDLED as $prefix => $actions) {
             if (! str_starts_with($eventType, $prefix)) {
                 continue;
             }
             $action = substr($eventType, strlen($prefix));
-            if (! in_array($action, $actions, true)) {
+            $allowed = array_merge($actions, $extra[rtrim($prefix, '.')] ?? []);
+            if (! in_array($action, $allowed, true)) {
                 return null;
             }
 
