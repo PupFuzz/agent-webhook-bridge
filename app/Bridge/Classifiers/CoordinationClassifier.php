@@ -40,9 +40,13 @@ use App\Bridge\Support\RecipientAddressing;
  *     surgical: hand-emits a channel_push ONLY for wake-worthy events, else
  *     gate-dropped. Config: `impl_repos` gates to a repo subset (empty ⇒ all
  *     subscribed); `impl_non_wake_disposition: inbox_stage` keeps a broad CI/push
- *     inbox (no channel_push) instead of gate-dropping non-wake events;
- *     `impl_wake_emit: none` suppresses the classifier push so a channel whose
- *     `route_intents` owns waking isn't double-woken.
+ *     inbox (no channel_push) instead of gate-dropping non-wake events.
+ *
+ * WAKE-EMIT INVARIANT (DL-191): every family hand-emits its `channel_push` through
+ * {@see wakePush()}, which suppresses the push on a `route_intents:true` channel —
+ * there the dispatcher routes every staged intent (DL-006), so a hand-emit would
+ * double-wake. So: hand-emit ⟺ `route_intents:false`; when the channel routes, the
+ * routed push (byte-identical payload) is the single wake.
  *
  *   - `coord_extra_actions` (coord-message) extends the fail-safe action allow-list
  *     per prefix; `wake_membership` (default `[to_me, to_all]`) selects which label
@@ -136,6 +140,30 @@ class CoordinationClassifier extends InboxOnlyClassifier
         return self::DEFAULT_FAMILIES;
     }
 
+    /**
+     * The single wake-emit point for every family (DL-191). Emit a surgical
+     * `channel_push` for the intent — UNLESS the serving channel has
+     * `route_intents:true`, where the dispatcher already routes every staged intent
+     * to the channel (DL-006) and a hand-emit would double-wake. The routed push
+     * carries the same `$intent->toArray()` payload, so suppressing here loses no
+     * wake: hand-emit ⟺ `route_intents:false`.
+     *
+     * @return list<ReactionTarget>
+     */
+    private function wakePush(Intent $intent, ClassifyContext $ctx): array
+    {
+        if ($ctx->agent->channel->routeIntents) {
+            return [];
+        }
+
+        return [ReactionTarget::make(
+            handler: 'channel_push',
+            targetId: $intent->subjectId,
+            debounceSeconds: 0,
+            payload: $intent->toArray(),
+        )];
+    }
+
     // =====================================================================
     // Family: coord-message (the pre-#8 CoordinationClassifier behavior + §1)
     // =====================================================================
@@ -223,12 +251,7 @@ class CoordinationClassifier extends InboxOnlyClassifier
 
         return new ClassifyResult(
             intents: [$intent],
-            targets: [ReactionTarget::make(
-                handler: 'channel_push',
-                targetId: $intent->subjectId,
-                debounceSeconds: 0,
-                payload: $intent->toArray(),
-            )],
+            targets: $this->wakePush($intent, $ctx),
             reattributedActor: $reattributed,
         );
     }
@@ -268,20 +291,11 @@ class CoordinationClassifier extends InboxOnlyClassifier
         }
 
         if ($signal !== null) {
-            // Wake-worthy event → surgical channel_push, UNLESS `impl_wake_emit: none`
-            // (a broad-wake install's channel `route_intents` owns waking, so the
-            // classifier push would double-wake). The Intent is staged either way.
+            // Wake-worthy event → surgical channel_push (suppressed on a route_intents
+            // channel by wakePush(), DL-191). The Intent is staged either way.
             $intent = $this->makeImplIntent($signal, $ctx, $cfg);
-            $targets = $cfg->string('impl_wake_emit', 'channel_push') === 'none'
-                ? []
-                : [ReactionTarget::make(
-                    handler: 'channel_push',
-                    targetId: $intent->subjectId,
-                    debounceSeconds: 0,
-                    payload: $intent->toArray(),
-                )];
 
-            return new ClassifyResult(intents: [$intent], targets: $targets);
+            return new ClassifyResult(intents: [$intent], targets: $this->wakePush($intent, $ctx));
         }
 
         // Non-wake terminal impl event. DEFAULT `drop` = gate-drop (lean inbox — no
@@ -526,14 +540,10 @@ class CoordinationClassifier extends InboxOnlyClassifier
         // targetId === the base new_card Intent's subjectId so the dispatcher's
         // silent-drop guard never warns; payload is that Intent's wire shape (the
         // handler sends {"intent": <toArray()>}); transport is the agent's cfg-default
-        // channel — so the triage owner IS the recipient by configuration.
+        // channel — so the triage owner IS the recipient by configuration. Suppressed
+        // on a route_intents channel (DL-191) — the base new_card intent routes there.
         return new ClassifyResult(
-            targets: [ReactionTarget::make(
-                handler: 'channel_push',
-                targetId: $base->intents[0]->subjectId,
-                debounceSeconds: 0,
-                payload: $base->intents[0]->toArray(),
-            )],
+            targets: $this->wakePush($base->intents[0], $ctx),
         );
     }
 
