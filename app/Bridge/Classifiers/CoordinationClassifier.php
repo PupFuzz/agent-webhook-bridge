@@ -50,7 +50,8 @@ use App\Bridge\Support\RecipientAddressing;
  *
  *   - `coord_extra_actions` (coord-message) extends the fail-safe action allow-list
  *     per prefix; `wake_membership` (default `[to_me, to_all]`) selects which label
- *     classes grant coord-message live-wake (`from_me` = opt-in).
+ *     classes grant coord-message live-wake (`from_me` = opt-in; `comment_to` =
+ *     opt-in body-`TO:<self>` grant for cross-thread pull-ins, DL-192).
  *   - `kanban-triage` — kanban `task.created` for a HUMAN-filed, UNTRIAGED card
  *     (DL-168): pairs the inbox `new_card` Intent with a channel_push to the
  *     triage owner. Folded in from the retired standalone KanbanTriageClassifier
@@ -200,14 +201,25 @@ class CoordinationClassifier extends InboxOnlyClassifier
         // — DEFAULT narrow `[to_me, to_all]` (over-wake is the failure mode we guard
         // against; a coordinator opening many threads would else wake on every reply
         // to them). `from_me` is the opt-in for waking on all activity on your own
-        // threads. A comment's TO: line still NARROWS within membership, unchanged.
+        // threads.
+        //
+        // A comment's body TO: line is three-state (RecipientAddressing::addresses):
+        // it always NARROWS (a comment addressed to someone else denies membership),
+        // and — only with the `comment_to` opt-in (DL-192) — a comment addressed TO
+        // the agent GRANTS membership even when the thread labels don't, closing the
+        // cross-thread pull-in gap (a loop-in on a thread the agent neither opened nor
+        // was labelled on). The narrow is unconditional; the grant is opt-in.
         $membership = $cfg->strings('wake_membership', ['to_me', 'to_all']);
         $forMe = (in_array('to_me', $membership, true) && in_array("to:{$me}", $labels, true))
             || (in_array('to_all', $membership, true) && in_array('to:all', $labels, true))
             || (in_array('from_me', $membership, true) && in_array("from:{$me}", $labels, true));
-        if ($subject['kind'] === 'comment'
-            && RecipientAddressing::addresses($subject['body'], $me) === false) {
-            $forMe = false;
+        if ($subject['kind'] === 'comment') {
+            $addressed = RecipientAddressing::addresses($subject['body'], $me);
+            if ($addressed === true && in_array('comment_to', $membership, true)) {
+                $forMe = true;   // directed TO:<self> grants membership (opt-in)
+            } elseif ($addressed === false) {
+                $forMe = false;  // addressed to someone else — narrow, unconditional
+            }
         }
         if (! $forMe) {
             return null;
