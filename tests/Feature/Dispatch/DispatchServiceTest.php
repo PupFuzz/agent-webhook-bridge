@@ -3,6 +3,7 @@
 namespace Tests\Feature\Dispatch;
 
 use App\Bridge\Adapters\EventDto;
+use App\Bridge\Classifiers\CoordinationClassifier;
 use App\Bridge\Dispatch\DispatchService;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\IntentLog;
@@ -408,6 +409,32 @@ class DispatchServiceTest extends TestCase
         // The intent is still durably staged (channel push is layered on top).
         $this->assertSame(1, $this->inboxCount());
         $this->assertNull(AgentDispatch::firstOrFail()->error_message);
+    }
+
+    public function test_coordination_classifier_hand_emit_does_not_double_push_on_route_intents(): void
+    {
+        // DL-191 end-to-end guard: a hand-emitting CoordinationClassifier family
+        // (kanban-triage) on a route_intents:true channel must deliver EXACTLY ONE
+        // channel_push — wakePush() suppresses the family hand-emit, the dispatcher
+        // routes the staged intent. Before the fix the two survived the dedup map
+        // (keys channel_push|<subj> vs channel_push|channel_push:<subj>) → 2 pushes.
+        Http::fake(['*' => Http::response('ok', 200)]);
+
+        File::put($this->dir.'/prod-agent.yml',
+            "subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."classifier:\n  class: '".CoordinationClassifier::class."'\n"
+            ."  config:\n    families: [kanban-triage]\n"
+            ."channel:\n  url: http://127.0.0.1:8788/\n  route_intents: true\n");
+
+        // Human-filed, untriaged card ⇒ the kanban-triage family would hand-emit.
+        $payload = ['subject_id' => 42, 'board_id' => 5, 'payload' => ['name' => 'Ship it'],
+            'card' => ['tags' => [], 'external_references' => []]];
+
+        $this->dispatcher()->dispatch('kanban', '5', $this->dto(), $payload);
+
+        Http::assertSentCount(1);   // exactly one wake, not two
+        Http::assertSent(fn ($r) => ($r->data()['intent']['subject_id'] ?? null) === '42');
+        $this->assertSame(1, $this->inboxCount());
     }
 
     public function test_route_intents_attaches_bearer_token_and_never_persists_it(): void

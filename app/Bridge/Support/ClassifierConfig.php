@@ -153,6 +153,42 @@ final class ClassifierConfig
     }
 
     /**
+     * A mapping of key => list-of-non-empty-strings at a top-level config key
+     * (e.g. `coord_extra_actions: { pull_request: [synchronize] }`), both keys and
+     * values lowercased for case-insensitive matching. Absent ⇒ `[]`. A present
+     * non-mapping, a non-list value, or an empty string throws.
+     *
+     * @return array<string, list<string>>
+     */
+    public function stringListMap(string $key): array
+    {
+        $raw = $this->raw[$key] ?? null;
+        if ($raw === null) {
+            return [];
+        }
+        if (! is_array($raw)) {
+            throw new ConfigException("classifier.config.{$key} must be a mapping of key => list-of-strings");
+        }
+
+        $out = [];
+        foreach ($raw as $mapKey => $list) {
+            if (! is_string($mapKey) || $mapKey === '' || ! is_array($list)) {
+                throw new ConfigException("classifier.config.{$key} entries must be non-empty key => list-of-strings");
+            }
+            $values = [];
+            foreach (array_values($list) as $entry) {
+                if (! is_scalar($entry) || (string) $entry === '') {
+                    throw new ConfigException("classifier.config.{$key} values must be non-empty strings");
+                }
+                $values[] = strtolower((string) $entry);
+            }
+            $out[strtolower($mapKey)] = $values;
+        }
+
+        return $out;
+    }
+
+    /**
      * A single scalar string at a top-level config key (e.g. `release_branch`),
      * or `$default` when absent. A present non-scalar throws.
      */
