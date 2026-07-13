@@ -23,13 +23,19 @@ class CoordinationClassifierTest extends TestCase
      * @param  array<mixed>  $payload
      * @param  array<mixed>  $classifierConfig
      */
-    private function classify(string $eventType, array $payload, string $scopeId, string $me = 'me', array $classifierConfig = [], ?string $actorName = null)
+    private function classify(string $eventType, array $payload, string $scopeId, string $me = 'me', array $classifierConfig = [], ?string $actorName = null, bool $routeIntents = false)
     {
-        $agent = AgentConfig::fromArray($me, [
+        $raw = [
             'identity' => ['github_user_id' => 99],
             'subscriptions' => [],
             'classifier' => array_merge(['class' => CoordinationClassifier::class], $classifierConfig === [] ? [] : ['config' => $classifierConfig]),
-        ]);
+        ];
+        if ($routeIntents) {
+            // route_intents:true requires a socket/url; the dispatcher then routes
+            // every staged intent, so wakePush() suppresses each family's hand-emit.
+            $raw['channel'] = ['socket' => '/tmp/test-coord-channel.sock', 'route_intents' => true];
+        }
+        $agent = AgentConfig::fromArray($me, $raw);
 
         // Shared identity ⇒ Actor.name is null (the whole point of re-attribution).
         return $this->classifier->classify(new ClassifyContext(
@@ -284,13 +290,17 @@ class CoordinationClassifierTest extends TestCase
      * @param  array<mixed>  $card
      * @param  list<string>  $families
      */
-    private function classifyKanbanCreated(array $card, array $families = ['kanban-triage'], bool $actorIsAgent = false): ClassifyResult
+    private function classifyKanbanCreated(array $card, array $families = ['kanban-triage'], bool $actorIsAgent = false, bool $routeIntents = false): ClassifyResult
     {
-        $agent = AgentConfig::fromArray('pm', [
+        $raw = [
             'identity' => ['kanban_user_id' => 1],
             'subscriptions' => [],
             'classifier' => ['class' => CoordinationClassifier::class, 'config' => ['families' => $families]],
-        ]);
+        ];
+        if ($routeIntents) {
+            $raw['channel'] = ['socket' => '/tmp/test-triage-channel.sock', 'route_intents' => true];
+        }
+        $agent = AgentConfig::fromArray('pm', $raw);
 
         return $this->classifier->classify(new ClassifyContext(
             'task.created',
@@ -310,6 +320,17 @@ class CoordinationClassifierTest extends TestCase
         $this->assertSame('channel_push', $r->targets[0]->handler);
         $this->assertSame($r->intents[0]->subjectId, $r->targets[0]->targetId); // silent-drop guard
         $this->assertSame($r->intents[0]->toArray(), $r->targets[0]->payload);
+    }
+
+    public function test_kanban_triage_suppresses_hand_emit_on_route_intents_true(): void
+    {
+        // DL-191: on a route_intents channel the triage push is suppressed — the base
+        // new_card intent still routes (single wake), so no double-wake and no miss.
+        $r = $this->classifyKanbanCreated(['tags' => [], 'external_references' => []], routeIntents: true);
+
+        $this->assertCount(1, $r->intents);                 // base new_card intent routes
+        $this->assertSame('new_card', $r->intents[0]->kind);
+        $this->assertSame([], $r->targets);                 // no hand-emit
     }
 
     public function test_kanban_triage_family_suppresses_triaged_card(): void
@@ -454,32 +475,64 @@ class CoordinationClassifierTest extends TestCase
         $this->assertCount(1, $r->targets);   // wake preserved
     }
 
-    // ---- impl-ci-wake: impl_wake_emit (Phase-2, DL-190) ----
+    // ---- wakePush: route_intents suppresses every family's hand-emit (DL-191) ----
 
-    public function test_impl_wake_emit_none_suppresses_channel_push(): void
+    public function test_coord_message_hand_emits_on_route_intents_false(): void
     {
-        // Wake-worthy event still stages the Intent, but the classifier emits no
-        // push — a channel whose route_intents owns waking isn't double-woken.
+        // Baseline: a route_intents:false channel keeps the surgical hand-emit (the
+        // aimla/kanban-solo model) — byte-identical to pre-DL-191.
+        $r = $this->classify('issues.opened', $this->issue(4, ['to:me', 'from:other'], 'FROM: other'), 'org/coord');
+
+        $this->assertCount(1, $r->intents);
+        $this->assertCount(1, $r->targets);
+    }
+
+    public function test_coord_message_suppresses_hand_emit_on_route_intents_true(): void
+    {
+        // F-A regression (sola's route_intents:true profile): the intent is still
+        // staged (route_intents routes it → single wake), but the classifier emits
+        // NO channel_push, so the dispatcher's routed push isn't a double-wake.
+        $r = $this->classify('issues.opened', $this->issue(4, ['to:me', 'from:other'], 'FROM: other'), 'org/coord', routeIntents: true);
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('coord_issue', $r->intents[0]->kind);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_coord_message_narrow_gate_still_drops_non_member_on_route_intents(): void
+    {
+        // The wake_membership gate returns null (no intent) BEFORE the emit decision,
+        // so route_intents cannot widen the wake past the narrow gate — a non-member
+        // stages no intent to route.
+        $r = $this->classify('issues.opened', $this->issue(4, ['to:someone-else', 'from:other']), 'org/coord', routeIntents: true);
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_impl_wake_suppresses_hand_emit_on_route_intents_true(): void
+    {
+        // Wake-worthy impl event on a route_intents channel: Intent staged, no push.
         $r = $this->classify('workflow_run.completed',
             ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5, 'html_url' => 'https://r/5']],
-            'org/impl', classifierConfig: $this->implConfig(['impl_wake_emit' => 'none']));
+            'org/impl', classifierConfig: $this->implConfig(), routeIntents: true);
 
         $this->assertCount(1, $r->intents);
         $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
         $this->assertSame([], $r->targets);
     }
 
-    public function test_sola_profile_inbox_stage_plus_wake_emit_none(): void
+    public function test_sola_profile_inbox_stage_on_route_intents_true(): void
     {
-        // The full sola impl profile: every terminal event stages an Intent, none
-        // emits a classifier push (route_intents:true owns waking).
-        $cfg = $this->implConfig(['impl_non_wake_disposition' => 'inbox_stage', 'impl_wake_emit' => 'none']);
+        // The full sola impl profile: inbox_stage + route_intents:true. Every terminal
+        // event stages an Intent, none emits a classifier push (routing owns waking).
+        $cfg = $this->implConfig(['impl_non_wake_disposition' => 'inbox_stage']);
 
-        $fail = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5]], 'org/impl', classifierConfig: $cfg);
+        $fail = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5]], 'org/impl', classifierConfig: $cfg, routeIntents: true);
         $this->assertSame('impl_ci_failed', $fail->intents[0]->kind);
         $this->assertSame([], $fail->targets);
 
-        $benign = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'success', 'name' => 'CI', 'id' => 6]], 'org/impl', classifierConfig: $cfg);
+        $benign = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'success', 'name' => 'CI', 'id' => 6]], 'org/impl', classifierConfig: $cfg, routeIntents: true);
         $this->assertSame('impl_ci', $benign->intents[0]->kind);
         $this->assertSame([], $benign->targets);
     }
