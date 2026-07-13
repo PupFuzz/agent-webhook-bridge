@@ -29,6 +29,11 @@ final class WritebackMapping
      *                                         this set, so re-creating an old branch never drags an
      *                                         already-progressed card backward. null ⇒ a `started`
      *                                         move is refused (no safe source set configured).
+     * @param  bool  $draftOverlay  opt-in (DL-193): mirror the PR's DRAFT state onto the
+     *                              correlated card's `block_reason` field (overlay only — NO
+     *                              column/stage move). converted_to_draft / opened-as-draft
+     *                              SET the marker (add-if-missing); ready_for_review CLEARS it
+     *                              (clear-if-ours). Default false ⇒ these actions are ignored.
      */
     public function __construct(
         public readonly int $boardId,
@@ -36,6 +41,7 @@ final class WritebackMapping
         public readonly bool $createDependabotCards = false,
         public readonly ?int $swimlaneId = null,
         public readonly ?array $startedFromStages = null,
+        public readonly bool $draftOverlay = false,
     ) {}
 
     /** The configured stage id for a GitHub-PR outcome, or null when unmapped. */

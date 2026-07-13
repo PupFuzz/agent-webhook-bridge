@@ -23,7 +23,8 @@ use App\Bridge\Support\PathHelper;
  *         "stages": { "started": 49, "opened": 50, "merged": 52, "merged_to_main": 53, "closed_unmerged": 49 },
  *         "started_from_stages": [46, 47],          // optional (DL-160) — promote-from guard for `started`
  *         "create_dependabot_cards": false,        // optional (DL-024)
- *         "swimlane_id": 31                         // optional — lane for CREATED cards (DL-027)
+ *         "swimlane_id": 31,                        // optional — lane for CREATED cards (DL-027)
+ *         "draft_overlay": false                    // optional (DL-193) — mirror PR draft state to block_reason
  *       }
  *     }
  *   }
@@ -112,6 +113,11 @@ final class WritebackConfig
                 }
             }
             $createDependabotCards = ($m['create_dependabot_cards'] ?? false) === true;
+            // Opt-in draft → block_reason overlay (DL-193). Plain bool, default false —
+            // parsed exactly like create_dependabot_cards (a non-`true` value, absent or
+            // otherwise, disables it), so a draft_overlay-absent config is byte-identical
+            // to today. NOT a stage-mapped outcome, so WritebackConfig::OUTCOMES is unchanged.
+            $draftOverlay = ($m['draft_overlay'] ?? false) === true;
             // Optional lane for CREATED cards (DL-027). Strict like board_id/stages —
             // a non-numeric swimlane_id THROWS rather than silently dropping to null
             // (which would land cards in the default lane with no error, the fail-quiet
@@ -123,7 +129,7 @@ final class WritebackConfig
                 }
                 $swimlaneId = (int) $m['swimlane_id'];
             }
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages);
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay);
         }
 
         return new self($identityId, $mappings, self::parseAlertChannel($raw));

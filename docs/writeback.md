@@ -9,6 +9,7 @@ The bridge can keep a kanban card in sync with its PR's lifecycle **deterministi
    - **`pull_request`** → derives the **outcome** from GitHub-controlled fields (`opened`/`reopened` → `opened`; `closed`+merged to `main` → `merged_to_main`; `closed`+merged to another base → `merged`; `closed`+not-merged → `closed_unmerged`) — never the PR title; finds the card by the `DL-NNN` token in the PR title / head branch.
    - **`push` that CREATED a branch** (`payload.created === true`) whose ref carries a `DL-NNN` → outcome **`started`** (codifies "work has begun" from the artifact — the branch). Fires once on branch creation (a later push to the same branch is a no-op); a `dependabot/*` branch or a ref with no `DL-NNN` is ignored. The card is found by that `DL-NNN`, matched against the mapped board's `dl_number`.
    - emits a `kanban_move_card` durable reaction per correlated card (or no-ops if the repo is unmapped / no `DL-NNN` / no matching card).
+   - **(opt-in) `draft_overlay`** → additionally emits a `kanban_block_reason` durable reaction that mirrors the PR's *draft* state onto the card's `block_reason` (overlay only, **no stage move**) — see the *PR draft → `block_reason` overlay* section below.
 3. `KanbanMoveCardHandler` (durable) moves the card — board + stage come **only** from your `writeback.json` (keyed on the outcome), it **refuses** a card not on the mapped board, and it is idempotent (no-op if already there). The `started` outcome additionally enforces a **no-regression guard** (see below): it only promotes a card currently in one of the mapping's `started_from_stages`, never dragging an already-progressed card backward — and it **refuses a pinned card** (non-empty `block_reason` or a `no-automove` tag) regardless of stage.
    - **No-regression guard on the PR outcomes too (DL-163).** A stale or redelivered `pull_request` event — or a **release PR whose title carries a card's `DL-NNN`** — can re-fire an outcome on a card that has already advanced past it. The handler refuses any move that would drag a card **backward** in the board's workflow order (e.g. `opened`→In-Review on a card already Released, or a redelivered `merged` on a Released card). `closed_unmerged` is the one **legitimately backward** outcome (an abandoned PR returns its In-Review card to In-Progress), so it is allowed to regress **unless** the card has already reached a terminal (`merged`/`merged_to_main`) stage. The order is read from the board (preload); if it can't be read, the move proceeds (fail-open — the guard never blocks the writeback on missing order data). No config needed. *Mitigation that is now belt-and-braces, not required: keeping `DL` tokens out of release-PR titles avoids the spurious `opened` move in the first place.*
 
@@ -163,6 +164,34 @@ It is **strict** like `board_id`/`stages`: a non-numeric value fails `writeback.
 > **Shared-board safety (DL-167, refined by DL-174).** A bare PR/DL number collides when several repos map to **one board** (a `swimlane_id` lane per repo — see above): a same-numbered PR/DL in another repo correlates too. On a **shared** board (two or more repo mappings targeting one `board_id`) the bridge passes the event's **repo as the kanban `source` qualifier** (kanban DL-163, requires kanban **v0.21.0+**) so in `ref` mode the server returns only **this repo's** card(s) — for both the dependabot path *and* the DL move path. On a **1:1 board** the qualifier is **omitted** (DL-174): there is no collision to disambiguate, and kanban's `source` filter is strict, so qualifying would exclude every card whose derived source is null (any operator-stamped `dl_number`/`pr_number` card with no `pr_url`/`repo` field) — the silent never-self-moves failure #3399 diagnosed. In `scan` mode (legacy, no `source`), the dependabot handler still attributes each correlated card by the `github.com/<owner>/<repo>/pull/` segment of its `pr_url` and drops a co-hosted repo's identically-numbered card. Either way, a foreign repo's collision is never moved or archived. (Against a pre-v0.21.0 kanban the `source` key is ignored → any-source behavior, same as before.)
 
 **Worked example.** With the mapping above, dependabot opens `chore(deps): Bump x from 1 to 2` (PR #77, head `dependabot/composer/x-2.0`) → a card *"chore(deps): Bump x from 1 to 2"* appears on board 8 in **In Review** (50), tagged `dependencies`/`triaged`, with `payload.pr_number: 77`. When it auto-merges to `dev`, the card moves to **Shipped to dev** (52). `php artisan bridge:inspect <event_id>` shows each create/move.
+
+## Optional: PR draft → `block_reason` overlay (DL-193)
+
+Set **`draft_overlay: true`** on a mapping and the writeback mirrors a PR's **draft** state onto its correlated card's **`block_reason`** field — so a card whose PR is a draft is visibly *blocked*. This is an **overlay only**: it writes one field, it **never moves the card** between stages/columns. It rides the same DL/`card#` correlation as the move path (move ALL matching cards, one-to-many), and off/absent ⇒ the draft actions are ignored (byte-identical to today).
+
+```jsonc
+"your-org/your-repo": {
+  "board_id": 8,
+  "stages": { "opened": 50, "merged": 52, "merged_to_main": 53, "closed_unmerged": 49 },
+  "draft_overlay": true              // opt-in (default false)
+}
+```
+
+**Triggers** (all driven by `pull_request` events for the mapped repo):
+
+- **`converted_to_draft`** → **SET** `block_reason`.
+- **`opened` / `reopened` with `pull_request.draft === true`** → **SET** `block_reason`. (Covers a PR *born* a draft — GitHub sends `opened` with the draft flag, not `converted_to_draft`.) The existing **`opened` move still fires unchanged** in addition — the card moves to In Review *and* gets the block_reason; the overlay only adds the set.
+- **`ready_for_review`** → **CLEAR** `block_reason`.
+- Every other action is unchanged.
+
+**Data-preservation (load-bearing — must not stomp a human's `block_reason`).** Both operations GET the card first:
+
+- **SET = add-if-missing.** The marker `"PR is in draft"` is written **only when `block_reason` is empty** (null / blank). If the card already has *any* reason — a human's, or our marker already there — it is **left untouched** (idempotent).
+- **CLEAR = clear-if-ours.** `block_reason` is nulled **only when its current value is exactly the marker** `"PR is in draft"`. A human-set reason is left intact.
+
+**DL-178 pin interaction (intended).** A non-empty `block_reason` **pins** the card (PinGuard, DL-178), so a **`started`** (branch-push) auto-promote is refused while the PR is a draft; clearing on `ready_for_review` releases the pin. This is desired — a drafted card is gated against the branch-push promote. (The pin is consulted **only** on the `started` outcome; the four PR-outcome moves are gated by the no-regression stage order, not the pin — and GitHub blocks merging a draft PR, so `merged` can't fire on a still-drafted card regardless.) No change to PinGuard.
+
+To use it: set `draft_overlay: true` on the mapping and subscribe the repo webhook to **Pull requests** (which already carries the `converted_to_draft` / `ready_for_review` / `opened` actions — no extra event class needed). Same durable, transient(5xx→retry)/permanent(4xx→log+no-op) split and belongs-to-mapped-board guard as the move handler.
 
 ## Optional: a loud alert on a permanent move-failure (FR-4)
 

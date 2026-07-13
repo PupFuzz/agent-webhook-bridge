@@ -10,6 +10,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
+use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -60,7 +61,13 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         }
 
         $outcome = $this->outcome($eventType, $payload);
-        if ($outcome === null) {
+        // Draft → block_reason OVERLAY trigger (DL-193), orthogonal to the move
+        // outcome: converted_to_draft / opened-as-draft → 'set'; ready_for_review →
+        // 'clear'; anything else → null. The pure-overlay actions carry no move
+        // outcome (converted_to_draft/ready_for_review), so both being null is the
+        // "we act on this event neither way" no-op.
+        $overlayAction = $this->draftOverlayAction($eventType, $payload);
+        if ($outcome === null && $overlayAction === null) {
             return new ClassifyResult;   // an action we don't act on (edited, synchronize, …)
         }
 
@@ -76,7 +83,9 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         // (per-mapping `create_dependabot_cards`), emit a create-or-move target
         // keyed by PR NUMBER — the durable handler creates the card on open and
         // moves it on close. Detected by dependabot's own branch namespace.
-        if ($mapping->createDependabotCards && $this->isDependabot($payload)) {
+        // Gated on a real MOVE outcome so a null-outcome overlay action (which was
+        // previously unreachable here — it early-returned above) can't fall in.
+        if ($outcome !== null && $mapping->createDependabotCards && $this->isDependabot($payload)) {
             $prNumber = $this->prNumber($payload);
             if ($prNumber === null) {
                 return new ClassifyResult;
@@ -94,10 +103,26 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
             ]);
         }
 
+        // Draft-overlay targets (block_reason set/clear, DL-193) — opt-in per mapping,
+        // reusing the SAME DL/card# correlation as the move path. Overlay ONLY: it adds
+        // a `kanban_block_reason` target, never a stage move. When the mapping doesn't
+        // opt in (or the action isn't a draft trigger) this is [] ⇒ every move return
+        // below is byte-identical to today. On an opened-as-draft PR the overlay set
+        // target is emitted IN ADDITION to the existing `opened` move target.
+        $overlayTargets = ($overlayAction !== null && $mapping->draftOverlay)
+            ? $this->blockReasonTargets($payload, $repo, $overlayAction, $mapping, $writeback)
+            : [];
+
+        // converted_to_draft / ready_for_review carry no move outcome → overlay only
+        // (empty when not opted in, so byte-identical to the previous null-outcome no-op).
+        if ($outcome === null) {
+            return new ClassifyResult(targets: $overlayTargets);
+        }
+
         $dl = $this->dlToken($payload);
         $cardToken = $this->cardToken($payload);
         if ($dl === null && $cardToken === null) {
-            return new ClassifyResult;   // no card-first token in the PR → un-linked, no-op
+            return new ClassifyResult(targets: $overlayTargets);   // no card-first token in the PR → move no-op (overlay may also be empty)
         }
 
         // FR-7 try-in-order-with-fallback (framework #112): resolve on the OUTCOME
@@ -129,7 +154,7 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
                     Log::info("kanban_move_card: PR carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# token is ignored");
                 }
 
-                return new ClassifyResult(targets: $this->moveTargets($cardIds, $repo, $outcome));
+                return new ClassifyResult(targets: array_merge($this->moveTargets($cardIds, $repo, $outcome), $overlayTargets));
             }
             // (4) DL present but nothing resolved and no card# fallback → a
             // high-value miss (a decision-logged-but-unstamped card is the live
@@ -137,7 +162,7 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
             if ($cardToken === null) {
                 Log::warning("kanban_move_card: PR carries {$dl} but no card tracks it and no card# fallback token is present — no move (FR-7 high-value miss)");
 
-                return new ClassifyResult;
+                return new ClassifyResult(targets: $overlayTargets);
             }
             // (2) DL unresolved → fall through to the present card#.
             Log::info("kanban_move_card: {$dl} resolved to no card — falling through to card#{$cardToken} (FR-7 try-in-order)");
@@ -149,13 +174,13 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         // board and applies the same no-regression guards as a DL move. This is the
         // ONLY path that carries stamp refs (FR #3866): the card selected by native
         // id is the one that strands unstamped for release-promote correlation.
-        return new ClassifyResult(targets: [
+        return new ClassifyResult(targets: array_merge([
             ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: array_merge([
                 'card_id' => $cardToken,
                 'repo' => $repo,
                 'outcome' => $outcome,
             ], $this->stampRefs($this->titleAndHead($payload), $this->prNumber($payload)))),
-        ]);
+        ], $overlayTargets));
     }
 
     /**
@@ -177,6 +202,85 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
         }
 
         return $targets;
+    }
+
+    /**
+     * The draft → block_reason overlay ACTION for a pull_request event (DL-193), or
+     * null when the action is not a draft trigger. Overlay only — no stage move:
+     *  - `converted_to_draft`                        → 'set'   (add-if-missing marker)
+     *  - `opened` / `reopened` with `draft === true` → 'set'   (a PR born a draft;
+     *      `converted_to_draft` never fires for it — GitHub sends `opened` with the
+     *      draft flag). The existing `opened` move still fires; overlay only adds the set.
+     *  - `ready_for_review`                          → 'clear' (clear-if-ours)
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function draftOverlayAction(string $eventType, array $payload): ?string
+    {
+        $action = substr($eventType, strlen('pull_request.'));
+        if ($action === 'converted_to_draft') {
+            return 'set';
+        }
+        if ($action === 'ready_for_review') {
+            return 'clear';
+        }
+        if ($action === 'opened' || $action === 'reopened') {
+            $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
+
+            return ($pr['draft'] ?? null) === true ? 'set' : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * One `kanban_block_reason` overlay target per correlated card (DL-193) — the
+     * card id is the distinct target_id so bundled-card targets don't coalesce
+     * (DL-003/DL-148), and the payload carries just the repo (for the handler's
+     * board resolution) and the set/clear action. No card correlates → no target
+     * (empty list), exactly like the move path's un-linked no-op.
+     *
+     * @param  array<mixed>  $payload
+     * @return list<ReactionTarget>
+     */
+    private function blockReasonTargets(array $payload, string $repo, string $action, WritebackMapping $mapping, WritebackConfig $writeback): array
+    {
+        $targets = [];
+        foreach ($this->correlatedCardIds($payload, $repo, $mapping, $writeback) as $cardId) {
+            $targets[] = ReactionTarget::make('kanban_block_reason', (string) $cardId, payload: [
+                'repo' => $repo,
+                'action' => $action,
+            ]);
+        }
+
+        return $targets;
+    }
+
+    /**
+     * The card ids a PR correlates to, for the draft overlay — the SAME DL→card /
+     * card#-fallback resolution the move path uses (FR-7 try-in-order): a DL that
+     * resolves wins (all matching cards, one-to-many DL-148); an unresolved DL falls
+     * through to a present `card#`; neither → empty. Deliberately does NOT re-log the
+     * move path's FR-7 diagnostics (precedence / high-value-miss / fallthrough) — on
+     * an opened-as-draft PR the move path already emits them for the same tokens, so
+     * repeating them here would double-log the identical event.
+     *
+     * @param  array<mixed>  $payload
+     * @return list<int>
+     */
+    private function correlatedCardIds(array $payload, string $repo, WritebackMapping $mapping, WritebackConfig $writeback): array
+    {
+        $dl = $this->dlToken($payload);
+        $cardToken = $this->cardToken($payload);
+        if ($dl !== null) {
+            $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
+            $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
+            if ($cardIds !== []) {
+                return $cardIds;
+            }
+        }
+
+        return $cardToken !== null ? [$cardToken] : [];
     }
 
     /**
