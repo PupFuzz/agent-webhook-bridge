@@ -193,6 +193,45 @@ Set **`draft_overlay: true`** on a mapping and the writeback mirrors a PR's **dr
 
 To use it: set `draft_overlay: true` on the mapping and subscribe the repo webhook to **Pull requests** (which already carries the `converted_to_draft` / `ready_for_review` / `opened` actions — no extra event class needed). Same durable, transient(5xx→retry)/permanent(4xx→log+no-op) split and belongs-to-mapped-board guard as the move handler.
 
+## Optional: auto-unpark a parked card on branch-cut (DL-194)
+
+By default the `started` (branch-create) move **refuses a pinned card** (a non-empty `block_reason` or a `no-automove` tag) — "parked means parked" (DL-178). But cutting a fresh branch **for a specific card** is an unambiguous human *"work has begun"* signal, and column position is not the enforcement boundary (deploy/merge + a persistent tag is). Set **`unpark_from_stages`** on a mapping and a `started` event **promotes the card even if it is pinned**, *scoped to those stage ids only* — and emits a compensating operator **alert** whenever it overrode a *deliberate* hold, so a genuinely-held card is never unparked silently.
+
+```jsonc
+"owner/repo": {
+  "board_id": 8,
+  "stages": { "started": 49, /* … */ },
+  "started_from_stages": [46, 47],       // refuse-if-pinned promote-from (DL-160)
+  "unpark_from_stages": [51],            // move-EVEN-IF-pinned (e.g. a Held/Parked stage) — DL-194
+  "hold_marker_tags": ["gate"],          // optional — this install's extra hold convention
+  "draft_block_reason": "PR is in draft" // optional — the benign draft sentinel (default shown)
+}
+```
+
+- **`unpark_from_stages`** — the stage ids from which a `started` event promotes to In-Progress *even when the card is pinned*. Parsed strictly (a non-empty numeric list, like `started_from_stages`). It **must be disjoint from `started_from_stages`** — a stage can't be both refuse-if-pinned and move-if-pinned; an overlap **fails the config closed** (`bridge:check` reports it). The move is still bounded by the belongs-to-mapped-board guard and only ever advances **forward** to the `started` stage.
+- Everywhere *outside* `unpark_from_stages`, **DL-178 is byte-identical**: a pinned card in a plain `started_from_stages` stage is still refused (`pinned_no_automove`). With no `unpark_from_stages` set, this feature is entirely inert.
+
+**The alert predicate + fail-safe.** After a *confirmed* move (never on a 4xx move no-op), the handler alerts (a new `writeback_auto_unparked` signal on the `alert_channel`, no dedup) **only when it actually overrode a deliberate hold** — the durable `Log::warning` labels which one (`hold_signal`):
+
+| Card's pin signal | `hold_marker_tags` | Alerts? |
+|---|---|---|
+| `no-automove` tag | any | ✅ `no_automove` |
+| human `block_reason` (≠ the draft sentinel) | any | ✅ `block_reason` |
+| a configured hold tag (e.g. `gate`) | `["gate"]` | ✅ `hold_tag` |
+| draft-only (`block_reason` == the sentinel, no other signal) | any | ❌ (benign automated draft) |
+| bare park (no recognized pin signal) | **empty** | ✅ `failsafe` |
+| bare park (no recognized pin signal) | configured | ❌ (operator declared their marker → trust it) |
+
+The **fail-safe** is deliberate: an install that opts into `unpark_from_stages` but hasn't listed its hold-tag convention alerts on *every* non-benign-draft unpark — a spurious, dismissable alert beats a **missed** alert on a real gate. A real PinGuard pin (a `no-automove` tag or a human `block_reason`) **always** alerts regardless of `hold_marker_tags`; declaring `hold_marker_tags` only *quiets bare-park noise*, never the pinned/held cases. `draft_block_reason` (default the DL-193 marker `"PR is in draft"`) names the benign automated-draft sentinel so a drafted-then-branch-cut card doesn't alert; set it if your draft overlay writes a different value.
+
+- **Durable-first.** The `Log::warning` record is written **before** the alert push (log = durable record, push = additive live wake), so the override is recorded even when no `alert_channel` is configured or the push is down.
+- **One alert per successful unpark, storm-free (no marker to persist).** The alert sits *between the move and the correlation-ref stamp*: a first delivery moves → alerts once → (a later stamp 5xx just re-runs the delivery, which then hits the idempotent already-in-stage short-circuit **before** the alert line). A genuine **re-park** (a human moves the card back into an unpark stage) followed by a fresh branch-cut is a new event and **correctly re-alerts** — cardid dedup would wrongly collapse those distinct human cycles.
+- **Cross-mover scope note.** This is the **bridge** half only. The toolkit `board-card-start` hook is a *separate* build, so a purely **local** checkout won't unpark a card until the branch is **pushed** (the bridge only sees the push). The card still ends up moved via the push path — the operator story just isn't fully symmetric between a local branch-cut and a pushed one.
+
+**Accepted-by-design residual risks:**
+- **Concurrent double-delivery.** Two in-flight deliveries of the same event (e.g. an operator "Redeliver" while the original is still processing) can both read `processed_at = null` and both alert. Bounded to the concurrency count (GitHub serializes *automatic* redeliveries), consistent with the "extra alert > missed alert" posture — not eliminated.
+- **Sentinel ambiguity.** A human who types the exact `draft_block_reason` sentinel as their own `block_reason` is treated as a benign draft and unparks silently. Inherent to a constant sentinel.
+
 ## Optional: a loud alert on a permanent move-failure (FR-4)
 
 By default a **permanent** move-failure (a refused/un-actionable move — see *Failure behaviour* below) is **logged + no-op**: a durable record in the log, but no live signal. Add a top-level **`alert_channel`** to `writeback.json` to ALSO emit a loud per-event signal to a local channel when that happens — log = durable record, push = live wake. Opt-in; absent ⇒ log-only (unchanged).
@@ -207,7 +246,7 @@ By default a **permanent** move-failure (a refused/un-actionable move — see *F
 }
 ```
 
-`socket` and `url` are **mutually exclusive** (exactly one), mirroring an agent's `channel` config. The signal body is one line: `{"type": "writeback_move_failed", "repo": <repo>, "outcome": <outcome>, "card_id": <id|null>, "reason": <reason>}`.
+`socket` and `url` are **mutually exclusive** (exactly one), mirroring an agent's `channel` config. The signal body is one line: `{"type": "writeback_move_failed", "repo": <repo>, "outcome": <outcome>, "card_id": <id|null>, "reason": <reason>}`. (The same `alert_channel` also carries the DL-194 **`writeback_auto_unparked`** signal — a distinct `type`, no dedup — see *auto-unpark a parked card on branch-cut* above.)
 
 **Which failures signal.** Only the **`Log::warning` permanent branches** — the ones that indicate a real misconfiguration or a refused move — fire a signal:
 
