@@ -29,6 +29,39 @@ final class WritebackMapping
      *                                         this set, so re-creating an old branch never drags an
      *                                         already-progressed card backward. null ⇒ a `started`
      *                                         move is refused (no safe source set configured).
+     * @param  bool  $draftOverlay  opt-in (DL-193): mirror the PR's DRAFT state onto the
+     *                              correlated card's `block_reason` field (overlay only — NO
+     *                              column/stage move). converted_to_draft / opened-as-draft
+     *                              SET the marker (add-if-missing); ready_for_review CLEARS it
+     *                              (clear-if-ours). Default false ⇒ these actions are ignored.
+     * @param  ?list<int>  $unparkFromStages  optional auto-unpark set for the `started` outcome
+     *                                        (DL-194): the workflow_stage_ids a branch-create
+     *                                        `started` move promotes a card FROM even when the
+     *                                        card is PINNED (the DL-178 reversal, scoped to these
+     *                                        stages only). Must be DISJOINT from
+     *                                        `startedFromStages` (enforced at load). null ⇒ no
+     *                                        auto-unpark (DL-178 byte-identical).
+     * @param  list<string>  $holdMarkerTags  optional (DL-194): tags identifying a deliberate
+     *                                        hold PinGuard doesn't already recognize (e.g.
+     *                                        `gate`). WIDENS the unpark alert set; can never
+     *                                        narrow/suppress the alert for a PinGuard-pinned
+     *                                        card. Default `[]` ⇒ the fail-safe alerts on every
+     *                                        non-benign-draft unpark.
+     * @param  ?string  $draftBlockReason  optional (DL-194): the benign automated-draft
+     *                                     `block_reason` sentinel (DL-193 overlay). A card whose
+     *                                     only pin signal is this value is a draft-park, not a
+     *                                     deliberate hold, so it does not alert on unpark. null ⇒
+     *                                     the handler resolves the KanbanBlockReasonHandler::MARKER
+     *                                     default.
+     * @param  bool  $reviveOnReopen  opt-in (DL-195): when a PR the writeback parked in the
+     *                                `closed_unmerged` (abandon) stage is REOPENED, revive its card
+     *                                back to the `opened` (In-Review) stage — the backward move the
+     *                                DL-163 no-regression guard otherwise refuses. Scoped to a card
+     *                                CURRENTLY in the mapped `closed_unmerged` stage (terminal-safe:
+     *                                a Shipped/Released card is never there); a marker-gated alert
+     *                                fires on the override. Default false ⇒ a `reopened` action stays
+     *                                the `opened` outcome (byte-identical). Reuses `stages.opened` as
+     *                                the target — there is NO `stages.reopened` key.
      */
     public function __construct(
         public readonly int $boardId,
@@ -36,6 +69,11 @@ final class WritebackMapping
         public readonly bool $createDependabotCards = false,
         public readonly ?int $swimlaneId = null,
         public readonly ?array $startedFromStages = null,
+        public readonly bool $draftOverlay = false,
+        public readonly ?array $unparkFromStages = null,
+        public readonly array $holdMarkerTags = [],
+        public readonly ?string $draftBlockReason = null,
+        public readonly bool $reviveOnReopen = false,
     ) {}
 
     /** The configured stage id for a GitHub-PR outcome, or null when unmapped. */

@@ -434,6 +434,23 @@ class CheckCommand extends BridgeCommand
                             $missing = $hasStartedStage ? 'started_from_stages' : 'stages.started';
                             $this->warn("writeback: mapping for {$repo} sets {$present} but not {$missing} — the branch-create `started` trigger (DL-160) needs BOTH and is silently INERT (never fires) until {$missing} is set");
                         }
+                        // DL-195: Won't-Do-revival needs BOTH stages.opened (the revive-to target)
+                        // AND stages.closed_unmerged (the abandon stage the revival is scoped from).
+                        // With revive_on_reopen on but either missing, a reopened PR's revival is
+                        // silently INERT (no target to revive to, or no abandon stage to scope the
+                        // carve-out). Config-only, no board read — fires on a half-configured install.
+                        if ($mapping->reviveOnReopen) {
+                            $missingRevive = [];
+                            if ($mapping->stageFor('opened') === null) {
+                                $missingRevive[] = 'stages.opened';
+                            }
+                            if ($mapping->stageFor('closed_unmerged') === null) {
+                                $missingRevive[] = 'stages.closed_unmerged';
+                            }
+                            if ($missingRevive !== []) {
+                                $this->warn("writeback: mapping for {$repo} sets revive_on_reopen but not ".implode(' / ', $missingRevive).' — Won\'t-Do-revival (DL-195) needs BOTH stages.opened (revive-to) and stages.closed_unmerged (abandon stage) and is silently INERT until set');
+                            }
+                        }
                     }
 
                     try {
@@ -516,6 +533,12 @@ class CheckCommand extends BridgeCommand
                                 if ($boardStageIds !== []) {   // empty ⇒ no stages read; don't false-warn
                                     $targets = array_values($mapping->stages);
                                     foreach ($mapping->startedFromStages ?? [] as $fromId) {
+                                        $targets[] = $fromId;
+                                    }
+                                    // DL-194: the unpark_from_stages ids are read on the
+                                    // `started` path too — a typo'd id makes the auto-unpark
+                                    // guard silently never match (same class as above).
+                                    foreach ($mapping->unparkFromStages ?? [] as $fromId) {
                                         $targets[] = $fromId;
                                     }
                                     $unknownStages = array_values(array_unique(array_diff($targets, $boardStageIds)));

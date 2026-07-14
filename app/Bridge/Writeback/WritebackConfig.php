@@ -22,8 +22,13 @@ use App\Bridge\Support\PathHelper;
  *         "board_id": 8,
  *         "stages": { "started": 49, "opened": 50, "merged": 52, "merged_to_main": 53, "closed_unmerged": 49 },
  *         "started_from_stages": [46, 47],          // optional (DL-160) — promote-from guard for `started`
+ *         "unpark_from_stages": [51],               // optional (DL-194) — auto-unpark a pinned card from these stages on `started`
+ *         "hold_marker_tags": ["gate"],             // optional (DL-194) — widen the auto-unpark override alert
+ *         "draft_block_reason": "PR is in draft",   // optional (DL-194) — benign draft sentinel (no unpark alert)
+ *         "revive_on_reopen": false,               // optional (DL-195) — a reopened abandoned PR revives its parked card (closed_unmerged → opened)
  *         "create_dependabot_cards": false,        // optional (DL-024)
- *         "swimlane_id": 31                         // optional — lane for CREATED cards (DL-027)
+ *         "swimlane_id": 31,                        // optional — lane for CREATED cards (DL-027)
+ *         "draft_overlay": false                    // optional (DL-193) — mirror PR draft state to block_reason
  *       }
  *     }
  *   }
@@ -111,7 +116,74 @@ final class WritebackConfig
                     $startedFromStages[] = (int) $sid;
                 }
             }
+            // Optional auto-unpark set for the `started` outcome (DL-194): the stage
+            // ids a branch-create `started` move promotes a card FROM even when the
+            // card is PINNED (the DL-178 reversal, scoped to these stages). Parsed
+            // strictly like started_from_stages — a present non-list, an empty list,
+            // or a non-numeric element THROWS (fail-closed), never silently disables.
+            $unparkFromStages = null;
+            if (array_key_exists('unpark_from_stages', $m) && $m['unpark_from_stages'] !== null) {
+                if (! is_array($m['unpark_from_stages']) || ! array_is_list($m['unpark_from_stages'])) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} unpark_from_stages must be a list of workflow_stage_ids");
+                }
+                if ($m['unpark_from_stages'] === []) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} unpark_from_stages must be non-empty (an empty list silently disables auto-unpark; omit the key to disable instead)");
+                }
+                $unparkFromStages = [];
+                foreach ($m['unpark_from_stages'] as $sid) {
+                    if (! is_numeric($sid)) {
+                        throw new ConfigException("writeback.json: mapping for {$repo} unpark_from_stages must contain only numeric workflow_stage_ids");
+                    }
+                    $unparkFromStages[] = (int) $sid;
+                }
+            }
+            // A stage cannot be both refuse-if-pinned (started_from_stages) and
+            // move-if-pinned (unpark_from_stages) — fail-closed on any overlap (DL-194).
+            if ($startedFromStages !== null && $unparkFromStages !== null) {
+                $overlap = array_values(array_intersect($startedFromStages, $unparkFromStages));
+                if ($overlap !== []) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} stage id(s) ".implode(', ', $overlap).' appear in BOTH started_from_stages and unpark_from_stages — a stage cannot be both refuse-if-pinned (started_from_stages) and move-if-pinned (unpark_from_stages)');
+                }
+            }
+            // Optional install-specific hold-marker tags (DL-194) that WIDEN the unpark
+            // alert set (catch a hold convention PinGuard doesn't recognize). Absent ⇒
+            // [] (the fail-safe alerts on every non-benign unpark). An empty list is a
+            // VALID declared state (unlike unpark_from_stages), so it is not rejected.
+            $holdMarkerTags = [];
+            if (array_key_exists('hold_marker_tags', $m) && $m['hold_marker_tags'] !== null) {
+                if (! is_array($m['hold_marker_tags']) || ! array_is_list($m['hold_marker_tags'])) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} hold_marker_tags must be a list of tag strings");
+                }
+                foreach ($m['hold_marker_tags'] as $tag) {
+                    if (! is_string($tag) || $tag === '') {
+                        throw new ConfigException("writeback.json: mapping for {$repo} hold_marker_tags must contain only non-empty tag strings");
+                    }
+                    $holdMarkerTags[] = $tag;
+                }
+            }
+            // Optional benign automated-draft `block_reason` sentinel (DL-194). Parsed
+            // strictly: a PRESENT value must be a non-empty string — an empty string
+            // would collapse the benign-draft/human-hold distinction and silently
+            // disable draft-park suppression (a noise regression). Absent ⇒ null ⇒ the
+            // handler resolves the KanbanBlockReasonHandler::MARKER default.
+            $draftBlockReason = null;
+            if (array_key_exists('draft_block_reason', $m) && $m['draft_block_reason'] !== null) {
+                if (! is_string($m['draft_block_reason']) || $m['draft_block_reason'] === '') {
+                    throw new ConfigException("writeback.json: mapping for {$repo} draft_block_reason must be a non-empty string");
+                }
+                $draftBlockReason = $m['draft_block_reason'];
+            }
             $createDependabotCards = ($m['create_dependabot_cards'] ?? false) === true;
+            // Opt-in draft → block_reason overlay (DL-193). Plain bool, default false —
+            // parsed exactly like create_dependabot_cards (a non-`true` value, absent or
+            // otherwise, disables it), so a draft_overlay-absent config is byte-identical
+            // to today. NOT a stage-mapped outcome, so WritebackConfig::OUTCOMES is unchanged.
+            $draftOverlay = ($m['draft_overlay'] ?? false) === true;
+            // Opt-in Won't-Do-revival (DL-195). Plain bool, default false — parsed exactly
+            // like draft_overlay/create_dependabot_cards, so a revive_on_reopen-absent config
+            // is byte-identical to today. NOT a stage-mapped outcome (the `reopened` move
+            // outcome reuses `stages.opened`), so WritebackConfig::OUTCOMES is unchanged.
+            $reviveOnReopen = ($m['revive_on_reopen'] ?? false) === true;
             // Optional lane for CREATED cards (DL-027). Strict like board_id/stages —
             // a non-numeric swimlane_id THROWS rather than silently dropping to null
             // (which would land cards in the default lane with no error, the fail-quiet
@@ -123,7 +195,7 @@ final class WritebackConfig
                 }
                 $swimlaneId = (int) $m['swimlane_id'];
             }
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages);
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen);
         }
 
         return new self($identityId, $mappings, self::parseAlertChannel($raw));

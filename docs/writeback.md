@@ -6,11 +6,12 @@ The bridge can keep a kanban card in sync with its PR's lifecycle **deterministi
 
 1. GitHub POSTs a `pull_request` **or `push`** webhook → the bridge's github receiver (HMAC-verified like any event).
 2. A github-subscribed agent runs `GitHubPrCardMoveClassifier`, which:
-   - **`pull_request`** → derives the **outcome** from GitHub-controlled fields (`opened`/`reopened` → `opened`; `closed`+merged to `main` → `merged_to_main`; `closed`+merged to another base → `merged`; `closed`+not-merged → `closed_unmerged`) — never the PR title; finds the card by the `DL-NNN` token in the PR title / head branch.
+   - **`pull_request`** → derives the **outcome** from GitHub-controlled fields (`opened`/`reopened` → `opened`; `closed`+merged to `main` → `merged_to_main`; `closed`+merged to another base → `merged`; `closed`+not-merged → `closed_unmerged`) — never the PR title; finds the card by the `DL-NNN` token in the PR title / head branch. (With the opt-in `revive_on_reopen`, a `reopened` action instead derives a distinct **`reopened`** outcome — see *revive a Won't-Do card* below, DL-195.)
    - **`push` that CREATED a branch** (`payload.created === true`) whose ref carries a `DL-NNN` → outcome **`started`** (codifies "work has begun" from the artifact — the branch). Fires once on branch creation (a later push to the same branch is a no-op); a `dependabot/*` branch or a ref with no `DL-NNN` is ignored. The card is found by that `DL-NNN`, matched against the mapped board's `dl_number`.
    - emits a `kanban_move_card` durable reaction per correlated card (or no-ops if the repo is unmapped / no `DL-NNN` / no matching card).
-3. `KanbanMoveCardHandler` (durable) moves the card — board + stage come **only** from your `writeback.json` (keyed on the outcome), it **refuses** a card not on the mapped board, and it is idempotent (no-op if already there). The `started` outcome additionally enforces a **no-regression guard** (see below): it only promotes a card currently in one of the mapping's `started_from_stages`, never dragging an already-progressed card backward — and it **refuses a pinned card** (non-empty `block_reason` or a `no-automove` tag) regardless of stage.
-   - **No-regression guard on the PR outcomes too (DL-163).** A stale or redelivered `pull_request` event — or a **release PR whose title carries a card's `DL-NNN`** — can re-fire an outcome on a card that has already advanced past it. The handler refuses any move that would drag a card **backward** in the board's workflow order (e.g. `opened`→In-Review on a card already Released, or a redelivered `merged` on a Released card). `closed_unmerged` is the one **legitimately backward** outcome (an abandoned PR returns its In-Review card to In-Progress), so it is allowed to regress **unless** the card has already reached a terminal (`merged`/`merged_to_main`) stage. The order is read from the board (preload); if it can't be read, the move proceeds (fail-open — the guard never blocks the writeback on missing order data). No config needed. *Mitigation that is now belt-and-braces, not required: keeping `DL` tokens out of release-PR titles avoids the spurious `opened` move in the first place.*
+   - **(opt-in) `draft_overlay`** → additionally emits a `kanban_block_reason` durable reaction that mirrors the PR's *draft* state onto the card's `block_reason` (overlay only, **no stage move**) — see the *PR draft → `block_reason` overlay* section below.
+3. `KanbanMoveCardHandler` (durable) moves the card — board + stage come **only** from your `writeback.json` (keyed on the outcome), it **refuses** a card not on the mapped board, and it is idempotent (no-op if already there). The `started` outcome additionally enforces a **no-regression guard** (see below): it only promotes a card currently in one of the mapping's `started_from_stages` **or `unpark_from_stages`** (DL-194), never dragging an already-progressed card backward — and it **refuses a pinned card** (non-empty `block_reason` or a `no-automove` tag) regardless of stage, **except from an `unpark_from_stages` stage, where a branch-cut deliberately overrides the pin and emits a compensating alert (DL-194, see *Auto-unpark* below).**
+   - **No-regression guard on the PR outcomes too (DL-163).** A stale or redelivered `pull_request` event — or a **release PR whose title carries a card's `DL-NNN`** — can re-fire an outcome on a card that has already advanced past it. The handler refuses any move that would drag a card **backward** in the board's workflow order (e.g. `opened`→In-Review on a card already Released, or a redelivered `merged` on a Released card). `closed_unmerged` is the one **legitimately backward** outcome by default (an abandoned PR returns its In-Review card to In-Progress), so it is allowed to regress **unless** the card has already reached a terminal (`merged`/`merged_to_main`) stage. (The opt-in `reopened` revival outcome, DL-195, is the *other* deliberately-backward move — allowed only from the mapped `closed_unmerged` abandon stage; see *revive a Won't-Do card* below.) The order is read from the board (preload); if it can't be read, the move proceeds (fail-open — the guard never blocks the writeback on missing order data). No config needed. *Mitigation that is now belt-and-braces, not required: keeping `DL` tokens out of release-PR titles avoids the spurious `opened` move in the first place.*
 
 ## Setup (operator)
 
@@ -46,15 +47,15 @@ The writeback acts as this token's kanban user — note that user's `user_id`. *
 ```
 Absent ⇒ writeback off. Malformed ⇒ fail-closed (`bridge:check` reports it). Every stage id must be a real stage **on that board** (a cross-board id is refused by kanban and logged, not retried).
 
-> **`closed_unmerged` — In Progress vs a "Won't Do" terminal (operator choice).** The example maps `closed_unmerged → In Progress` because a closed-unmerged **DL-tracked** PR usually means *work continues* (rework, not abandonment). If your board has a **terminal "Won't Do" / "Cancelled" column** (`lane_type: done`, positioned far-right) and you'd rather treat a closed-unmerged PR as an *abandon-disposition* (dependabot dismissals, `[DO NOT MERGE]` diagnostics, superseded/rejected PRs), map `closed_unmerged → <that stage id>` instead. The no-regression guard (DL-163) **allows this terminal move** — it special-cases `closed_unmerged` and never applies the forward-only check to it, so a card in In-Review moving to a far-right Won't-Do terminal is permitted (it's a disposition, not a regression), and once there the card is sticky (no stale PR event can drag it back out). The **dependabot** path is unaffected either way — a closed-unmerged dependabot card always **archives** (DL-161), ignoring this mapping.
+> **`closed_unmerged` — In Progress vs a "Won't Do" terminal (operator choice).** The example maps `closed_unmerged → In Progress` because a closed-unmerged **DL-tracked** PR usually means *work continues* (rework, not abandonment). If your board has a **terminal "Won't Do" / "Cancelled" column** (`lane_type: done`, positioned far-right) and you'd rather treat a closed-unmerged PR as an *abandon-disposition* (dependabot dismissals, `[DO NOT MERGE]` diagnostics, superseded/rejected PRs), map `closed_unmerged → <that stage id>` instead. The no-regression guard (DL-163) **allows this terminal move** — it special-cases `closed_unmerged` and never applies the forward-only check to it, so a card in In-Review moving to a far-right Won't-Do terminal is permitted (it's a disposition, not a regression), and once there the card is sticky (no stale PR event can drag it back out) — **unless you opt into `revive_on_reopen` (DL-195), which revives such a card from that stage when its PR is reopened (see below).** The **dependabot** path is unaffected either way — a closed-unmerged dependabot card always **archives** (DL-161), ignoring this mapping.
 
 ### Branch-create → In Progress (DL-160)
 
 A GitHub `push` that **creates a branch** whose ref carries a `DL-NNN` (e.g. `feat/DL-160-x`) promotes the correlated card to the **`started`** stage — "work has begun" derived from the artifact, no agent involved. It is gated three ways so it can only ever advance a card forward:
 
 - **Fires once, on creation** (`payload.created === true`) — a subsequent push to the same branch is a no-op.
-- **No-regression guard.** The move is applied **only** when the card's current stage is in the mapping's **`started_from_stages`** (the board's Backlog/Prioritized stage ids, and optionally **Held** — see below). A card already in In-Review/Shipped/Released is left untouched, so re-creating or force-pushing an old branch never drags it backward. `started_from_stages` is parsed strictly (a numeric list — a non-list / non-numeric element fails the config closed). **If `started_from_stages` is absent, a `started` move is refused** (the guard can't know what's safe to promote from) — set it to enable the trigger.
-- **Held auto-promote + pinned opt-out (contract PR #113).** To un-park a **Held** card automatically when a branch is created for it, add the board's Held stage id to `started_from_stages`. The `created === true` classifier gate already makes this safe against re-fires — a re-push/force-push never emits `started`, only a genuine branch birth does. The escape hatch: a card a human wants to keep parked is **never** auto-promoted if it carries a non-empty `block_reason` **or** a `no-automove` tag — the handler refuses the move (loud `warning` + an `alert_channel` signal), regardless of stage. This mirrors the toolkit `board-card-start` hook's local half of the same contract.
+- **No-regression guard.** The move is applied **only** when the card's current stage is in the mapping's **`started_from_stages`** (the board's Backlog/Prioritized stage ids, and optionally **Held** — see below) **or `unpark_from_stages`** (DL-194). A card already in In-Review/Shipped/Released is left untouched, so re-creating or force-pushing an old branch never drags it backward. `started_from_stages` is parsed strictly (a numeric list — a non-list / non-numeric element fails the config closed). **If `started_from_stages` is absent, a `started` move is refused** (the guard can't know what's safe to promote from) — set it to enable the trigger.
+- **Held auto-promote + pinned opt-out (contract PR #113).** To un-park a **Held** card automatically when a branch is created for it, add the board's Held stage id to `started_from_stages`. The `created === true` classifier gate already makes this safe against re-fires — a re-push/force-push never emits `started`, only a genuine branch birth does. The escape hatch: a card a human wants to keep parked is not auto-promoted if it carries a non-empty `block_reason` **or** a `no-automove` tag — the handler refuses the move (loud `warning` + an `alert_channel` signal), regardless of stage — **except from an `unpark_from_stages` stage (DL-194), where the branch-cut deliberately overrides the pin and emits a compensating auto-unpark alert instead of refusing; see *Auto-unpark* below.** This mirrors the toolkit `board-card-start` hook's local half of the same contract.
 - A `dependabot/*` branch, or a ref with no `DL-NNN`, emits no target.
 
 To use it you must (a) map a `started` stage **and** set `started_from_stages`, and (b) subscribe the repo webhook to **push** events (see step 4).
@@ -164,6 +165,97 @@ It is **strict** like `board_id`/`stages`: a non-numeric value fails `writeback.
 
 **Worked example.** With the mapping above, dependabot opens `chore(deps): Bump x from 1 to 2` (PR #77, head `dependabot/composer/x-2.0`) → a card *"chore(deps): Bump x from 1 to 2"* appears on board 8 in **In Review** (50), tagged `dependencies`/`triaged`, with `payload.pr_number: 77`. When it auto-merges to `dev`, the card moves to **Shipped to dev** (52). `php artisan bridge:inspect <event_id>` shows each create/move.
 
+## Optional: PR draft → `block_reason` overlay (DL-193)
+
+Set **`draft_overlay: true`** on a mapping and the writeback mirrors a PR's **draft** state onto its correlated card's **`block_reason`** field — so a card whose PR is a draft is visibly *blocked*. This is an **overlay only**: it writes one field, it **never moves the card** between stages/columns. It rides the same DL/`card#` correlation as the move path (move ALL matching cards, one-to-many), and off/absent ⇒ the draft actions are ignored (byte-identical to today).
+
+```jsonc
+"your-org/your-repo": {
+  "board_id": 8,
+  "stages": { "opened": 50, "merged": 52, "merged_to_main": 53, "closed_unmerged": 49 },
+  "draft_overlay": true              // opt-in (default false)
+}
+```
+
+**Triggers** (all driven by `pull_request` events for the mapped repo):
+
+- **`converted_to_draft`** → **SET** `block_reason`.
+- **`opened` / `reopened` with `pull_request.draft === true`** → **SET** `block_reason`. (Covers a PR *born* a draft — GitHub sends `opened` with the draft flag, not `converted_to_draft`.) The existing **`opened` move still fires unchanged** in addition — the card moves to In Review *and* gets the block_reason; the overlay only adds the set.
+- **`ready_for_review`** → **CLEAR** `block_reason`.
+- Every other action is unchanged.
+
+**Data-preservation (load-bearing — must not stomp a human's `block_reason`).** Both operations GET the card first:
+
+- **SET = add-if-missing.** The marker `"PR is in draft"` is written **only when `block_reason` is empty** (null / blank). If the card already has *any* reason — a human's, or our marker already there — it is **left untouched** (idempotent).
+- **CLEAR = clear-if-ours.** `block_reason` is nulled **only when its current value is exactly the marker** `"PR is in draft"`. A human-set reason is left intact.
+
+**DL-178 pin interaction (intended).** A non-empty `block_reason` **pins** the card (PinGuard, DL-178), so a **`started`** (branch-push) auto-promote is refused while the PR is a draft (**unless the draft card's stage is in `unpark_from_stages`, DL-194 — there the move proceeds; a benign draft sentinel emits no alert**); clearing on `ready_for_review` releases the pin. This is desired — a drafted card is gated against the branch-push promote. (The pin is consulted **only** on the `started` outcome; the four PR-outcome moves are gated by the no-regression stage order, not the pin — and GitHub blocks merging a draft PR, so `merged` can't fire on a still-drafted card regardless.) No change to PinGuard.
+
+To use it: set `draft_overlay: true` on the mapping and subscribe the repo webhook to **Pull requests** (which already carries the `converted_to_draft` / `ready_for_review` / `opened` actions — no extra event class needed). Same durable, transient(5xx→retry)/permanent(4xx→log+no-op) split and belongs-to-mapped-board guard as the move handler.
+
+## Optional: auto-unpark a parked card on branch-cut (DL-194)
+
+By default the `started` (branch-create) move **refuses a pinned card** (a non-empty `block_reason` or a `no-automove` tag) — "parked means parked" (DL-178). But cutting a fresh branch **for a specific card** is an unambiguous human *"work has begun"* signal, and column position is not the enforcement boundary (deploy/merge + a persistent tag is). Set **`unpark_from_stages`** on a mapping and a `started` event **promotes the card even if it is pinned**, *scoped to those stage ids only* — and emits a compensating operator **alert** whenever it overrode a *deliberate* hold, so a genuinely-held card is never unparked silently.
+
+```jsonc
+"owner/repo": {
+  "board_id": 8,
+  "stages": { "started": 49, /* … */ },
+  "started_from_stages": [46, 47],       // refuse-if-pinned promote-from (DL-160)
+  "unpark_from_stages": [51],            // move-EVEN-IF-pinned (e.g. a Held/Parked stage) — DL-194
+  "hold_marker_tags": ["gate"],          // optional — this install's extra hold convention
+  "draft_block_reason": "PR is in draft" // optional — the benign draft sentinel (default shown)
+}
+```
+
+- **`unpark_from_stages`** — the stage ids from which a `started` event promotes to In-Progress *even when the card is pinned*. Parsed strictly (a non-empty numeric list, like `started_from_stages`). It **must be disjoint from `started_from_stages`** — a stage can't be both refuse-if-pinned and move-if-pinned; an overlap **fails the config closed** (`bridge:check` reports it). The move is still bounded by the belongs-to-mapped-board guard and only ever advances **forward** to the `started` stage.
+- Everywhere *outside* `unpark_from_stages`, **DL-178 is byte-identical**: a pinned card in a plain `started_from_stages` stage is still refused (`pinned_no_automove`). With no `unpark_from_stages` set, this feature is entirely inert.
+
+**The alert predicate + fail-safe.** After a *confirmed* move (never on a 4xx move no-op), the handler alerts (a new `writeback_auto_unparked` signal on the `alert_channel`, no dedup) **only when it actually overrode a deliberate hold** — the durable `Log::warning` labels which one (`hold_signal`):
+
+| Card's pin signal | `hold_marker_tags` | Alerts? |
+|---|---|---|
+| `no-automove` tag | any | ✅ `no_automove` |
+| human `block_reason` (≠ the draft sentinel) | any | ✅ `block_reason` |
+| a configured hold tag (e.g. `gate`) | `["gate"]` | ✅ `hold_tag` |
+| draft-only (`block_reason` == the sentinel, no other signal) | any | ❌ (benign automated draft) |
+| bare park (no recognized pin signal) | **empty** | ✅ `failsafe` |
+| bare park (no recognized pin signal) | configured | ❌ (operator declared their marker → trust it) |
+
+The **fail-safe** is deliberate: an install that opts into `unpark_from_stages` but hasn't listed its hold-tag convention alerts on *every* non-benign-draft unpark — a spurious, dismissable alert beats a **missed** alert on a real gate. A real PinGuard pin (a `no-automove` tag or a human `block_reason`) **always** alerts regardless of `hold_marker_tags`; declaring `hold_marker_tags` only *quiets bare-park noise*, never the pinned/held cases. `draft_block_reason` (default the DL-193 marker `"PR is in draft"`) names the benign automated-draft sentinel so a drafted-then-branch-cut card doesn't alert; set it if your draft overlay writes a different value.
+
+- **Durable-first.** The `Log::warning` record is written **before** the alert push (log = durable record, push = additive live wake), so the override is recorded even when no `alert_channel` is configured or the push is down.
+- **One alert per successful unpark, storm-free (no marker to persist).** The alert sits *between the move and the correlation-ref stamp*: a first delivery moves → alerts once → (a later stamp 5xx just re-runs the delivery, which then hits the idempotent already-in-stage short-circuit **before** the alert line). A genuine **re-park** (a human moves the card back into an unpark stage) followed by a fresh branch-cut is a new event and **correctly re-alerts** — cardid dedup would wrongly collapse those distinct human cycles.
+- **Cross-mover scope note.** This is the **bridge** half only. The toolkit `board-card-start` hook is a *separate* build, so a purely **local** checkout won't unpark a card until the branch is **pushed** (the bridge only sees the push). The card still ends up moved via the push path — the operator story just isn't fully symmetric between a local branch-cut and a pushed one.
+
+**Accepted-by-design residual risks:**
+- **Concurrent double-delivery.** Two in-flight deliveries of the same event (e.g. an operator "Redeliver" while the original is still processing) can both read `processed_at = null` and both alert. Bounded to the concurrency count (GitHub serializes *automatic* redeliveries), consistent with the "extra alert > missed alert" posture — not eliminated.
+- **Sentinel ambiguity.** A human who types the exact `draft_block_reason` sentinel as their own `block_reason` is treated as a benign draft and unparks silently. Inherent to a constant sentinel.
+
+## Optional: revive a Won't-Do card when its PR is reopened (DL-195)
+
+If you map `closed_unmerged → <a "Won't Do" terminal stage>` (see the `closed_unmerged` operator-choice note above), an abandoned PR parks its card there. When that PR is **reopened**, GitHub fires `pull_request.reopened` — which normally collapses to the `opened` outcome, and the **DL-163 no-regression guard refuses the backward Won't-Do → In-Review move**, so the card **strands in Won't-Do while its PR is alive again**. Set **`revive_on_reopen: true`** on the mapping and a reopen **revives** the card from the abandon stage back to the `opened` (In-Review) stage.
+
+```jsonc
+{
+  "mappings": {
+    "owner/repo": {
+      "board_id": 8,
+      "stages": { "opened": 50, "merged": 52, "merged_to_main": 53, "closed_unmerged": 77 },  // closed_unmerged = a "Won't Do" stage
+      "revive_on_reopen": true                 // reopen an abandoned PR → revive its parked card (DL-195)
+    }
+  }
+}
+```
+
+- **Opt-in, byte-identical when off.** Absent/`false` ⇒ a `reopened` action stays the `opened` outcome exactly as before. When `true`, the classifier emits a distinct `reopened` move-outcome that the handler treats specially. There is **no `stages.reopened` key** — revival reuses **`stages.opened`** as the target.
+- **Scoped to the abandon stage (terminal-safe).** Revival fires **only** when the card's current stage is the mapped **`closed_unmerged`** stage. A card that has advanced to Shipped/Released is never in that stage, so it can never be revived — and GitHub can't reopen a *merged* PR anyway. A reopen of a card that is **not** in the abandon stage behaves exactly like `opened` (forward-only; a stale reopen on a later stage is refused).
+- **Only meaningful with a Won't-Do-*terminal* `closed_unmerged`.** This feature exists to unstick a card the guard would otherwise strand — i.e. when the abandon stage sits *after* In-Review. On the **default** `closed_unmerged → In-Progress` mapping a reopen already advances the card forward (In-Progress → In-Review) with no guard to override, so `revive_on_reopen` there is functionally inert and only adds a (harmless) revival alert on that forward move. Enable it **only** when `closed_unmerged` maps to a terminal Won't-Do stage.
+- **Overrides a pin, with a compensating alert (symmetric with auto-unpark).** A human-pinned Won't-Do card (`block_reason` / `no-automove` tag) is revived anyway, and the override emits a **`writeback_revived_on_reopen`** signal on the `alert_channel` (no dedup), gated by the **same** `hold_marker_tags` / `draft_block_reason` predicate as the auto-unpark alert: a genuinely-held card always alerts; a bare-stage park alerts via the fail-safe unless you've declared `hold_marker_tags`. The durable `Log::warning` labels which hold it overrode (`hold_signal`).
+- **Redelivery-safe.** After a revival the card sits at the `opened` stage, so a redelivered `reopened` hits the idempotent already-in-stage short-circuit **before** the guard and the alert — no double-move, no double-alert.
+- **`bridge:check` guard.** With `revive_on_reopen` on, the check **warns** if `stages.opened` or `stages.closed_unmerged` is missing (revival is inert without both).
+- **Not back-stopped by `bridge:reconcile` (deliberate).** The reconciler sees only static state (PR open, card in Won't-Do) with **no reopen signal**, so it cannot distinguish an automated `closed_unmerged` park from a deliberate human abandon of a still-open PR — reviving there would risk overriding a human decision. Only the live `reopened` event carries "work resumed"; a **missed** reopen (bridge down through redelivery exhaustion) needs a manual operator revive.
+
 ## Optional: a loud alert on a permanent move-failure (FR-4)
 
 By default a **permanent** move-failure (a refused/un-actionable move — see *Failure behaviour* below) is **logged + no-op**: a durable record in the log, but no live signal. Add a top-level **`alert_channel`** to `writeback.json` to ALSO emit a loud per-event signal to a local channel when that happens — log = durable record, push = live wake. Opt-in; absent ⇒ log-only (unchanged).
@@ -178,7 +270,7 @@ By default a **permanent** move-failure (a refused/un-actionable move — see *F
 }
 ```
 
-`socket` and `url` are **mutually exclusive** (exactly one), mirroring an agent's `channel` config. The signal body is one line: `{"type": "writeback_move_failed", "repo": <repo>, "outcome": <outcome>, "card_id": <id|null>, "reason": <reason>}`.
+`socket` and `url` are **mutually exclusive** (exactly one), mirroring an agent's `channel` config. The signal body is one line: `{"type": "writeback_move_failed", "repo": <repo>, "outcome": <outcome>, "card_id": <id|null>, "reason": <reason>}`. (The same `alert_channel` also carries the DL-194 **`writeback_auto_unparked`** and the DL-195 **`writeback_revived_on_reopen`** signals — each a distinct `type`, no dedup — see *auto-unpark a parked card on branch-cut* and *revive a Won't-Do card* above.)
 
 **Which failures signal.** Only the **`Log::warning` permanent branches** — the ones that indicate a real misconfiguration or a refused move — fire a signal:
 

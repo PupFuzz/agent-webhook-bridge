@@ -510,4 +510,221 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame('DL-55', $p['stamp_dl']);
         $this->assertArrayNotHasKey('stamp_pr', $p);   // no PR on a push
     }
+
+    // --- DL-193: PR draft → block_reason OVERLAY (opt-in `draft_overlay`) ---
+
+    /** Enable the draft overlay on the owner/repo mapping (scan correlation stays pinned from setUp). */
+    private function enableDraftOverlay(): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => [
+                'opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49,
+            ], 'draft_overlay' => true]],
+        ]));
+    }
+
+    public function test_converted_to_draft_emits_block_reason_set_when_opted_in(): void
+    {
+        $this->enableDraftOverlay();
+        $this->fakeBoardCards();   // DL-42 → card 5
+
+        $r = $this->classify('pull_request.converted_to_draft', ['title' => 'DL-42 wip', 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(1, $r->targets);
+        $t = $r->targets[0];
+        $this->assertSame('kanban_block_reason', $t->handler);
+        $this->assertSame('5', $t->targetId);   // card id is the target id
+        $this->assertSame(['repo' => 'owner/repo', 'action' => 'set'], $t->payload);
+        $this->assertSame([], $r->intents);   // machine-only
+    }
+
+    public function test_ready_for_review_emits_block_reason_clear_when_opted_in(): void
+    {
+        $this->enableDraftOverlay();
+        $this->fakeBoardCards();
+
+        $r = $this->classify('pull_request.ready_for_review', ['title' => 'DL-42', 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(1, $r->targets);
+        $this->assertSame('kanban_block_reason', $r->targets[0]->handler);
+        $this->assertSame('clear', $r->targets[0]->payload['action']);
+    }
+
+    public function test_opened_as_draft_emits_both_the_opened_move_and_the_block_reason_set(): void
+    {
+        // A PR born a draft: the existing `opened` move STILL fires (card → In Review),
+        // and the overlay ADDS a block_reason set — two targets for the same card,
+        // distinct handlers (distinct dispatch buckets: handler|debounceKey).
+        $this->enableDraftOverlay();
+        $this->fakeBoardCards();
+
+        $r = $this->classify('pull_request.opened', ['title' => 'DL-42', 'draft' => true, 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(2, $r->targets);
+        $byHandler = [];
+        foreach ($r->targets as $t) {
+            $byHandler[$t->handler] = $t;
+        }
+        $this->assertArrayHasKey('kanban_move_card', $byHandler);
+        $this->assertArrayHasKey('kanban_block_reason', $byHandler);
+        $this->assertSame(['card_id' => 5, 'repo' => 'owner/repo', 'outcome' => 'opened'], $byHandler['kanban_move_card']->payload);
+        $this->assertSame(['repo' => 'owner/repo', 'action' => 'set'], $byHandler['kanban_block_reason']->payload);
+    }
+
+    public function test_opened_non_draft_emits_no_overlay_even_when_opted_in(): void
+    {
+        // Not a draft → only the existing `opened` move (byte-identical to today).
+        $this->enableDraftOverlay();
+        $this->fakeBoardCards();
+
+        $r = $this->classify('pull_request.opened', ['title' => 'DL-42', 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(1, $r->targets);
+        $this->assertSame('kanban_move_card', $r->targets[0]->handler);
+    }
+
+    public function test_bundled_dl_emits_one_block_reason_target_per_matching_card(): void
+    {
+        // A DL tracking multiple cards overlays them ALL (one-to-many, like the move
+        // path) — each with its card id as a distinct target_id (no coalesce).
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50], 'draft_overlay' => true]],
+        ]));
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 5, 'payload' => ['dl_number' => 'DL-42']],
+            ['id' => 6, 'payload' => ['dl_number' => '042']],   // same canonical 42
+            ['id' => 7, 'payload' => ['dl_number' => 'DL-9']],  // different DL, not matched
+        ]])]);
+
+        $r = $this->classify('pull_request.converted_to_draft', ['title' => 'DL-42', 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(2, $r->targets);
+        $this->assertEqualsCanonicalizing(['5', '6'], array_map(fn ($t) => $t->targetId, $r->targets));
+        foreach ($r->targets as $t) {
+            $this->assertSame('kanban_block_reason', $t->handler);
+            $this->assertSame('set', $t->payload['action']);
+        }
+    }
+
+    public function test_converted_to_draft_via_card_token_overlays_the_native_id(): void
+    {
+        // Overlay reuses the card# native-id fallback — no kanban read needed.
+        $this->enableDraftOverlay();
+        Http::fake();
+
+        $r = $this->classify('pull_request.converted_to_draft', ['title' => 'wip card#3410', 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(1, $r->targets);
+        $this->assertSame('kanban_block_reason', $r->targets[0]->handler);
+        $this->assertSame('3410', $r->targets[0]->targetId);
+        Http::assertNothingSent();   // native-id selection needs no classify-time read
+    }
+
+    public function test_converted_to_draft_is_noop_when_draft_overlay_off(): void
+    {
+        // Default config (setUp) has no draft_overlay → the draft actions are IGNORED,
+        // byte-identical to today's behavior (they weren't acted on at all).
+        Http::fake();
+
+        $r = $this->classify('pull_request.converted_to_draft', ['title' => 'DL-42', 'head' => ['ref' => 'f']]);
+
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();   // never even correlated
+    }
+
+    public function test_ready_for_review_is_noop_when_draft_overlay_off(): void
+    {
+        Http::fake();
+
+        $r = $this->classify('pull_request.ready_for_review', ['title' => 'DL-42', 'head' => ['ref' => 'f']]);
+
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
+    }
+
+    public function test_draft_overlay_no_card_token_is_noop(): void
+    {
+        $this->enableDraftOverlay();
+        Http::fake();
+
+        $r = $this->classify('pull_request.converted_to_draft', ['title' => 'no card reference']);
+
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
+    }
+
+    public function test_draft_overlay_unmapped_repo_is_noop(): void
+    {
+        $this->enableDraftOverlay();
+        Http::fake();
+
+        $r = $this->classify('pull_request.converted_to_draft', ['title' => 'DL-42'], repo: 'other/repo');
+
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
+    }
+
+    // --- DL-195: Won't-Do-revival (reopened → distinct `reopened` move outcome) ---
+
+    private function enableRevive(bool $withDependabot = false): void
+    {
+        $mapping = ['board_id' => 8, 'stages' => [
+            'opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 77,
+        ], 'revive_on_reopen' => true];
+        if ($withDependabot) {
+            $mapping['create_dependabot_cards'] = true;
+        }
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => $mapping],
+        ]));
+    }
+
+    public function test_reopened_emits_distinct_reopened_outcome_when_revive_on(): void
+    {
+        $this->enableRevive();
+        $this->fakeBoardCards();
+
+        $r = $this->classify('pull_request.reopened', ['title' => 'feat: DL-42 ship it', 'head' => ['ref' => 'feat/x']]);
+
+        $this->assertCount(1, $r->targets);
+        $this->assertSame('kanban_move_card', $r->targets[0]->handler);
+        $this->assertSame('reopened', $r->targets[0]->payload['outcome']);
+    }
+
+    public function test_reopened_stays_opened_outcome_when_revive_off(): void
+    {
+        // setUp's config has no revive_on_reopen → a reopened PR is byte-identical to
+        // today: it collapses to the `opened` outcome.
+        $this->fakeBoardCards();
+
+        $r = $this->classify('pull_request.reopened', ['title' => 'feat: DL-42 ship it', 'head' => ['ref' => 'feat/x']]);
+
+        $this->assertCount(1, $r->targets);
+        $this->assertSame('opened', $r->targets[0]->payload['outcome']);
+    }
+
+    public function test_reopened_dependabot_pr_stays_opened_never_reopened(): void
+    {
+        // SHOULD-FIX 1 regression guard: a reopened dependabot PR (create_dependabot_cards
+        // + revive_on_reopen both on) must keep the `opened` outcome on the DEPENDABOT
+        // target — dependabot cards archive on close, never park in closed_unmerged, so
+        // revival never applies. A `reopened` outcome here would null-stage the dependabot
+        // handler and neither move nor create the card.
+        $this->enableRevive(withDependabot: true);
+        Http::fake();
+
+        $r = $this->classify('pull_request.reopened', [
+            'title' => 'chore(deps): Bump x from 1 to 2',
+            'number' => 77,
+            'head' => ['ref' => 'dependabot/composer/x-2.0'],
+            'html_url' => 'https://github.com/owner/repo/pull/77',
+        ]);
+
+        $this->assertCount(1, $r->targets);
+        $this->assertSame('kanban_dependabot_card', $r->targets[0]->handler);
+        $this->assertSame('opened', $r->targets[0]->payload['outcome']);
+    }
 }

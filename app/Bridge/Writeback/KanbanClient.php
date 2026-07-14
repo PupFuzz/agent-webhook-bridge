@@ -74,6 +74,18 @@ final class KanbanClient
     }
 
     /**
+     * Set (or clear) a card's `block_reason` field (DL-193) — a plain fillable
+     * field write, so a `{"task":{"block_reason":…}}` PATCH, mirroring {@see moveCard}
+     * (which is column-only and never touches this field). Passing null clears the
+     * reason. The add-if-missing / clear-if-ours decision is the caller's (from the
+     * card it already read); this is the thin write verb. Throws on non-2xx.
+     */
+    public function setBlockReason(int $cardId, ?string $reason): void
+    {
+        $this->http()->patch("/tasks/{$cardId}.json", ['task' => ['block_reason' => $reason]])->throw();
+    }
+
+    /**
      * Archive (retire) a card via the kanban lifecycle verb (DL-161). Archiving
      * is a TOP-LEVEL `_action`, NOT a field write: a `{"task":{"archived_at":…}}`
      * PATCH returns 200 but silently no-ops, so we send `{"_action":"archive"}`.

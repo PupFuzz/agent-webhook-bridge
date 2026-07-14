@@ -388,6 +388,64 @@ class CoordinationClassifierTest extends TestCase
         $this->assertCount(1, $this->classify('issues.opened', $this->issue(9, ['to:all']), 'org/coord')->intents);
     }
 
+    // ---- coord-message: comment_to (DL-192) — directed body-TO:<self> GRANTS on opt-in ----
+
+    /**
+     * An issue_comment payload: the parent issue carries the thread labels, the
+     * comment carries the body TO: line the grant/narrow reads.
+     *
+     * @param  list<string>  $labelNames
+     * @return array<string, mixed>
+     */
+    private function comment(int $number, array $labelNames, string $body): array
+    {
+        $labels = array_map(static fn (string $n): array => ['name' => $n], $labelNames);
+
+        return [
+            'issue' => ['number' => $number, 'title' => 'T', 'labels' => $labels],
+            'comment' => ['body' => $body, 'html_url' => 'https://x/'.$number.'#c1', 'id' => 1, 'created_at' => '2026-07-12T00:00:00Z'],
+        ];
+    }
+
+    public function test_comment_to_grants_a_directed_comment_on_an_unaddressed_thread(): void
+    {
+        // The cross-thread pull-in: a comment "TO: me" on a thread labelled to:other
+        // (I neither opened nor was labelled on) GRANTS when comment_to is opted in.
+        $r = $this->classify('issue_comment.created', $this->comment(9, ['from:other', 'to:other'], 'TO: me'),
+            'org/coord', classifierConfig: ['wake_membership' => ['to_me', 'to_all', 'comment_to']]);
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('coord_comment', $r->intents[0]->kind);
+    }
+
+    public function test_comment_to_off_by_default_does_not_grant(): void
+    {
+        // The SAME pull-in comment WITHOUT comment_to → no grant (default byte-identical).
+        $r = $this->classify('issue_comment.created', $this->comment(9, ['from:other', 'to:other'], 'TO: me'), 'org/coord');
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_comment_to_narrow_still_denies_a_comment_addressed_elsewhere(): void
+    {
+        // Narrow is UNCONDITIONAL: even with comment_to set AND a to:me label that would
+        // otherwise wake, a comment "TO: other" denies membership → no wake.
+        $r = $this->classify('issue_comment.created', $this->comment(9, ['to:me'], 'TO: other'),
+            'org/coord', classifierConfig: ['wake_membership' => ['to_me', 'to_all', 'comment_to']]);
+
+        $this->assertSame([], $r->intents);
+    }
+
+    public function test_comment_to_null_body_falls_back_to_labels(): void
+    {
+        // A comment with NO TO: line falls back to label membership (comment_to or not):
+        // a to:me label wakes; an unaddressed thread does not.
+        $cfg = ['wake_membership' => ['to_me', 'to_all', 'comment_to']];
+        $this->assertCount(1, $this->classify('issue_comment.created', $this->comment(9, ['to:me'], 'no directive'), 'org/coord', classifierConfig: $cfg)->intents);
+        $this->assertSame([], $this->classify('issue_comment.created', $this->comment(9, ['to:other'], 'no directive'), 'org/coord', classifierConfig: $cfg)->intents);
+    }
+
     // ---- coord-message: coord_extra_actions (Phase-2, DL-190) — allow-list extension ----
 
     public function test_coord_extra_actions_surfaces_configured_action(): void
