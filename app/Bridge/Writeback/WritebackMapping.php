@@ -62,6 +62,15 @@ final class WritebackMapping
      *                                fires on the override. Default false ⇒ a `reopened` action stays
      *                                the `opened` outcome (byte-identical). Reuses `stages.opened` as
      *                                the target — there is NO `stages.reopened` key.
+     * @param  bool  $createCoordCards  opt-in (DL-198): a coordination issue opened/reopened with a
+     *                                  recognized `[PREFIX]` title gets a tracking card CREATED in
+     *                                  real time, keyed (idempotent) on the `id:<sid>` tag. Create-only
+     *                                  (the periodic reconcile owns column/lifecycle). Default false ⇒
+     *                                  no coord card is created (byte-identical).
+     * @param  ?int  $coordCardStageId  the stage a new coord card lands in (DL-198) — REQUIRED when
+     *                                  createCoordCards is true (a create with no stage can't POST →
+     *                                  the config fails closed at load, not silently at dispatch). null
+     *                                  when createCoordCards is false.
      */
     public function __construct(
         public readonly int $boardId,
@@ -74,6 +83,8 @@ final class WritebackMapping
         public readonly array $holdMarkerTags = [],
         public readonly ?string $draftBlockReason = null,
         public readonly bool $reviveOnReopen = false,
+        public readonly bool $createCoordCards = false,
+        public readonly ?int $coordCardStageId = null,
     ) {}
 
     /** The configured stage id for a GitHub-PR outcome, or null when unmapped. */

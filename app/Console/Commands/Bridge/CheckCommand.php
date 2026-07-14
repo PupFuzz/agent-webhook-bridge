@@ -215,6 +215,30 @@ class CheckCommand extends BridgeCommand
                         $consumed = [];
                     }
                 }
+
+                // DL-197: the impl-ci-wake CI-FAILURE name filter INVERTS the family's
+                // fail-loud posture — a set-but-non-matching filter (a typo, or a
+                // workflow later renamed) silently blackholes EVERY CI-failure wake for
+                // the scope, with no inbox trace under the default `drop`. Config
+                // validation can't catch a well-formed-but-stale pattern, so surface the
+                // configured patterns at preflight for eyeball verification against real
+                // workflow names. Warn-never-fail (the filter is a deliberate opt-in).
+                // `ci_failure_workflow_patterns` is a LAZY config key (not eagerly
+                // parsed in AgentConfig::load, unlike families/scope_author_map), so a
+                // malformed value (non-list / blank entry) first throws HERE. The
+                // classify path would 5xx on it at runtime — catch it per-agent (like
+                // the DL-196 block above) so one bad value surfaces cleanly instead of
+                // aborting the whole check + skipping every remaining agent.
+                try {
+                    $failureFilter = $cfg->classifierConfig->strings('ci_failure_workflow_patterns');
+                    if ($failureFilter !== [] && in_array('impl-ci-wake', $cfg->classifierConfig->strings('families'), true)) {
+                        $this->warn("agent {$name}: classifier.config.ci_failure_workflow_patterns = [".implode(', ', $failureFilter).'] — the impl-ci-wake CI-FAILURE wake fires ONLY for workflow_run names containing one of these (case-insensitive substring); a failure of any OTHER workflow on a subscribed scope will NOT wake. Verify these match your intended workflow names — a typo or a renamed workflow silences every failure wake.');
+                    }
+                } catch (Throwable $e) {
+                    $this->error("agent {$name}: classifier.config.ci_failure_workflow_patterns — ".$e->getMessage());
+                    $ok = false;
+                }
+
                 foreach ($cfg->subscriptions as $sub) {
                     if ($sub->provider === 'github') {
                         $githubScopeConsumers[$sub->scopeId][] = [
@@ -496,6 +520,15 @@ class CheckCommand extends BridgeCommand
                                 $this->warn("writeback: mapping for {$repo} sets revive_on_reopen but not ".implode(' / ', $missingRevive).' — Won\'t-Do-revival (DL-195) needs BOTH stages.opened (revive-to) and stages.closed_unmerged (abandon stage) and is silently INERT until set');
                             }
                         }
+                        // DL-198: a created coord card's task.created webhook would echo
+                        // back to the bridge; only the global-echo gate (identity_id)
+                        // stops it from self-waking a kanban-triage session. With no
+                        // identity_id, that guard is absent — surface the concrete hazard
+                        // (the generic no-identity_id warn above doesn't name it). Config
+                        // -only; the missing-stage half is already fail-closed at load.
+                        if ($mapping->createCoordCards && $writeback->identityId === null) {
+                            $this->warn("writeback: mapping for {$repo} sets create_coord_cards but writeback.json has no identity_id — a created coord card's task.created webhook echoes back and could self-wake a kanban-triage session; set identity_id (the global-echo gate is the sole guard).");
+                        }
                     }
 
                     try {
@@ -585,6 +618,11 @@ class CheckCommand extends BridgeCommand
                                     // guard silently never match (same class as above).
                                     foreach ($mapping->unparkFromStages ?? [] as $fromId) {
                                         $targets[] = $fromId;
+                                    }
+                                    // DL-198: the coord-card create stage — a typo'd id makes
+                                    // every coord-card create 422 and silently no-op (same class).
+                                    if ($mapping->coordCardStageId !== null) {
+                                        $targets[] = $mapping->coordCardStageId;
                                     }
                                     $unknownStages = array_values(array_unique(array_diff($targets, $boardStageIds)));
                                     if ($unknownStages !== []) {

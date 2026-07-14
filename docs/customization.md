@@ -191,6 +191,8 @@ final class MyEventDrivenClassifier extends InboxOnlyClassifier
 
 Point `classifier.class` at `EventDrivenClassifier` directly if it fits, or subclass it further.
 
+**If your subclass consumes GitHub events, also implement `DeclaresConsumedEvents`** (§ *Declaring which GitHub events your classifier consumes*, above). `InboxOnlyClassifier` and `EventDrivenClassifier` do **not** declare consumed event types — they inbox-stage kanban `task.*`, not GitHub events — so a subclass that adds GitHub-event handling inherits an *empty* consumed set. `bridge:check`'s event-follows-consumer probe then reads your classifier as consuming nothing and **false-WARNs** on every event type only your subclass consumes (e.g. `issues` / `issue_comment` / `workflow_run`) for its scopes, since no *other* classifier covers them. Declare the top-level types your subclass consumes so the probe counts it (the WARN is fail-safe — it names the undeclared classifier and can never false-*clean* — but declaring upfront avoids the noise).
+
 ### Surfacing GitHub issue comments to a channel (forward the comment identity)
 
 The shipped classifiers surface **kanban** events; the only GitHub handling in the box is the PR→card-move **writeback** (`GitHubPrCardMoveClassifier`), which emits no agent-facing Intent. To wake an agent live on a new GitHub **issue comment**, write a custom classifier. The one rule worth getting right is **what you put in the payload**: forward the *comment identity*, not just the thread.

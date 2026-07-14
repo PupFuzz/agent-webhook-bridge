@@ -106,6 +106,33 @@ class BridgeCommandsTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_check_warns_when_ci_failure_workflow_patterns_is_set(): void
+    {
+        // DL-197: the failure-name filter inverts the family's fail-loud posture — a
+        // stale/typo'd pattern silently blackholes every CI-failure wake — so
+        // bridge:check surfaces the configured patterns at preflight (warn, never fail).
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
+            ."  config:\n    families: [impl-ci-wake]\n    ci_failure_workflow_patterns: [protocol integrity]\n");
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('ci_failure_workflow_patterns')
+            ->assertExitCode(0);   // warn, not fail
+    }
+
+    public function test_check_fails_on_malformed_ci_failure_workflow_patterns(): void
+    {
+        // A non-list value throws at parse (the classify path would 5xx on it) — the
+        // check surfaces it per-agent and fails, instead of crashing the whole run.
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
+            ."  config:\n    families: [impl-ci-wake]\n    ci_failure_workflow_patterns: not-a-list\n");
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('ci_failure_workflow_patterns')
+            ->assertExitCode(1);
+    }
+
     public function test_check_fails_on_malformed_writeback_json(): void
     {
         $this->writeAgent();
@@ -678,6 +705,47 @@ class BridgeCommandsTest extends TestCase
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('references workflow stage id(s) 9999 not on board 8')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warns_when_coord_card_stage_id_is_not_on_the_board(): void
+    {
+        // DL-198: a typo'd coord_card_stage_id silently 422s every coord-card create,
+        // same class as a mapped stage id not on the board.
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 9999]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3', 'bridge.writeback.correlation' => 'scan']);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
+                ['id' => 49, 'position' => 1024.0], ['id' => 50, 'position' => 2048.0], ['id' => 52, 'position' => 3072.0],
+            ]]]]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('references workflow stage id(s) 9999 not on board 8')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warns_when_create_coord_cards_set_but_identity_id_null(): void
+    {
+        // DL-198 R5: the echo-gate guard. Without identity_id a created coord card's
+        // task.created echoes back and could self-wake a kanban-triage session.
+        // Config-only warn (no board read needed), never fails.
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21]],
+        ]));
+        Http::fake();   // no token → board probe self-skips; the config-only warn fires regardless
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('create_coord_cards but writeback.json has no identity_id')
             ->assertExitCode(0);
     }
 
