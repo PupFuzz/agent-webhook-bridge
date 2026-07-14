@@ -729,7 +729,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             return null;
         }
 
-        $itype = strtolower(explode('-', $sid, 2)[0]);   // sid = "<PREFIX_UPPER>-<num>" → itype
+        $itype = $this->coordItype($title);   // mirror the reconcile's _itype (see method) — NOT the anchored sid prefix
         $url = is_string($issue['html_url'] ?? null) ? $issue['html_url'] : '';
 
         return new ClassifyResult(targets: [
@@ -751,9 +751,11 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * TASK}`), emitting `"<PREFIX_UPPER>-<num>"` (un-padded). NO trailing boundary —
      * `[QUERY]x` matches → `QUERY-<num>` (the reconcile does too; a `(?=\s|$)` guard
      * would make PHP MORE restrictive and orphan a card the reconcile creates).
-     * `trim()` mirrors Python's `.strip()`. Un-prefixed / PROPOSAL / unrecognized →
-     * null → NOT carded (the create-set equals the reconcile's own-prefix set, so a
-     * carded issue is always one the periodic pass backstops).
+     * `trim()` approximates Python's `.strip()` (ASCII whitespace; the Unicode-ws / NUL
+     * edge cases where they differ are unreachable in a deliverable GitHub issue title,
+     * and the reachable direction fails safe — the reconcile backstops). Un-prefixed /
+     * PROPOSAL / unrecognized → null → NOT carded (the create-set equals the reconcile's
+     * own-prefix set, so a carded issue is always one the periodic pass backstops).
      */
     private function stableId(string $title, int $num): ?string
     {
@@ -762,6 +764,27 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         }
 
         return null;
+    }
+
+    /**
+     * The `type:` tag value — a byte-for-byte port of the reconcile's `_itype`
+     * (coord.kanban_common reference): an UNANCHORED, priority-ordered substring scan
+     * (`[BRIEF]` > `[ANNOUNCE]` > `[QUERY]` > `[REVIEW]`, else `task`), deliberately
+     * distinct from the ANCHORED first-prefix {@see stableId} uses for the adoption key.
+     * They diverge on a multi-bracket title (`[REVIEW] of [BRIEF]` → sid `REVIEW-N`,
+     * itype `brief`) — matching the reconcile's own divergence so its next pass does not
+     * update-churn the `type:` tag / `priority`. (The adoption key stays exact either way.)
+     */
+    private function coordItype(string $title): string
+    {
+        $upper = strtoupper($title);
+        foreach (['BRIEF' => 'brief', 'ANNOUNCE' => 'announce', 'QUERY' => 'query', 'REVIEW' => 'review'] as $bracket => $mapped) {
+            if (str_contains($upper, "[{$bracket}]")) {
+                return $mapped;
+            }
+        }
+
+        return 'task';
     }
 
     // =====================================================================

@@ -94,6 +94,24 @@ class CoordinationCardCreateClassifierTest extends TestCase
         }
     }
 
+    public function test_itype_is_the_unanchored_priority_scan_not_the_sid_prefix(): void
+    {
+        // The reconcile's _itype is an UNANCHORED, priority-ordered substring scan
+        // (BRIEF > ANNOUNCE > QUERY > REVIEW, else task), distinct from the ANCHORED sid
+        // first-prefix. On a multi-bracket title they diverge — the bridge must match the
+        // reconcile's _itype so the type: tag / priority don't churn on the next pass.
+        foreach ([
+            '[REVIEW] of [BRIEF]' => ['REVIEW-4', 'brief'],    // sid=anchored REVIEW; itype=BRIEF (scanned first)
+            '[QUERY] about [BRIEF]' => ['QUERY-4', 'brief'],
+            '[TASK] see [QUERY]' => ['TASK-4', 'query'],        // TASK not in the scan → QUERY wins
+            '[REVIEW] plain' => ['REVIEW-4', 'review'],
+        ] as $title => [$sid, $itype]) {
+            $t = $this->classify($title)->targets[0];
+            $this->assertSame($sid, $t->payload['sid'], $title);
+            $this->assertSame($itype, $t->payload['itype'], $title);
+        }
+    }
+
     public function test_prefix_match_has_no_trailing_boundary_query_x_matches(): void
     {
         // Byte-exact to the reconcile's anchored regex (NO trailing boundary):

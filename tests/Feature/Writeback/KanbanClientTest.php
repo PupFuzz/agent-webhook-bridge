@@ -354,16 +354,16 @@ class KanbanClientTest extends TestCase
 
     public function test_create_card_sets_the_new_coord_fields_when_given(): void
     {
-        // DL-198: the coord path sets description/priority/external_id (INTEGER)
-        // /external_link as top-level Task fields.
+        // DL-198: the coord path sets description/priority/external_link as top-level
+        // Task fields (external_id is deliberately NOT set — see createCard docblock).
         Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 9]], 201)]);
 
-        $this->client()->createCard(8, 21, '[QUERY] x', [], ['id:QUERY-4', 'type:query'], null, 'Coordination thread o/r#4', 0, 4, 'https://github.com/o/r/issues/4');
+        $this->client()->createCard(8, 21, '[QUERY] x', [], ['id:QUERY-4', 'type:query'], null, 'Coordination thread o/r#4', 0, 'https://github.com/o/r/issues/4');
 
         Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
             && $r['task']['description'] === 'Coordination thread o/r#4'
             && $r['task']['priority'] === 0
-            && $r['task']['external_id'] === 4        // integer, not "4"
+            && ! array_key_exists('external_id', $r['task'])
             && $r['task']['external_link'] === 'https://github.com/o/r/issues/4'
             && $r['task']['tags'] === ['id:QUERY-4', 'type:query']
             && ! array_key_exists('swimlane_id', $r['task']));
@@ -375,7 +375,7 @@ class KanbanClientTest extends TestCase
         // dependabot null-omit — it must appear in the POST.
         Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 9]], 201)]);
 
-        $this->client()->createCard(8, 21, 'x', [], [], null, 'd', 0, 5, 'https://x');
+        $this->client()->createCard(8, 21, 'x', [], [], null, 'd', 0, 'https://x');
 
         Http::assertSent(fn (Request $r) => array_key_exists('priority', $r['task']) && $r['task']['priority'] === 0);
     }

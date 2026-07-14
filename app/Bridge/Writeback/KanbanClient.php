@@ -370,16 +370,18 @@ final class KanbanClient
      * $swimlaneId places it in a lane (DL-027) — omitted from the POST entirely
      * when null (the board then assigns its default lane, today's behavior).
      *
-     * The trailing $description/$priority/$externalId/$externalLink are additive,
-     * top-level Task fields (fillable + documented create-body params) the coord-card
-     * path sets for reconcile churn-avoidance (DL-198). Each is nullable → omitted
-     * from the POST when null, so the dependabot caller (which passes none) is
-     * byte-identical to before. `external_id` is INTEGER in kanban.
+     * The trailing $description/$priority/$externalLink are additive, top-level Task
+     * fields (fillable + documented create-body params) the coord-card path sets for
+     * reconcile churn-avoidance (DL-198). Each is nullable → omitted from the POST when
+     * null, so the dependabot caller (which passes none) is byte-identical to before.
+     * `external_id` is deliberately NOT a param: the reconcile's build_create omits it,
+     * and kanban's (board_id, external_id) uniqueness would 422 a colliding issue number
+     * on a multi-repo coord board — `external_link` alone carries the correlation.
      *
      * @param  array<string, mixed>  $payload
      * @param  list<string>  $tags
      */
-    public function createCard(int $boardId, int $stageId, string $name, array $payload, array $tags, ?int $swimlaneId = null, ?string $description = null, ?int $priority = null, ?int $externalId = null, ?string $externalLink = null): int
+    public function createCard(int $boardId, int $stageId, string $name, array $payload, array $tags, ?int $swimlaneId = null, ?string $description = null, ?int $priority = null, ?string $externalLink = null): int
     {
         $task = [
             'board_id' => $boardId,
@@ -396,9 +398,6 @@ final class KanbanClient
         }
         if ($priority !== null) {
             $task['priority'] = $priority;
-        }
-        if ($externalId !== null) {
-            $task['external_id'] = $externalId;
         }
         if ($externalLink !== null) {
             $task['external_link'] = $externalLink;

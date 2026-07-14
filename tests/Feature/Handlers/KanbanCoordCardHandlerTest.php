@@ -78,7 +78,7 @@ class KanbanCoordCardHandlerTest extends TestCase
             && $r['task']['name'] === '[QUERY] can we ship?'
             && $r['task']['description'] === 'Coordination thread org/coord#4'
             && $r['task']['priority'] === 0
-            && $r['task']['external_id'] === 4        // INTEGER
+            && ! array_key_exists('external_id', $r['task'])   // NOT set — build_create omits it + (board_id,external_id) uniqueness 422 risk
             && $r['task']['external_link'] === 'https://github.com/org/coord/issues/4'
             && $r['task']['tags'] === ['id:QUERY-4', 'type:query']   // id:/type: only — no repo:
             && $r['task']['payload'] === []);

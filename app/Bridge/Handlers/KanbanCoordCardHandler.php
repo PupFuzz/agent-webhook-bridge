@@ -80,8 +80,11 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
                 return;
             }
 
-            // Churn-avoidance fields (mirror the reconcile's build_create so its next
-            // pass doesn't update-churn them). external_id is INTEGER in kanban.
+            // Churn-avoidance fields mirror the reconcile's build_create so its next pass
+            // doesn't update-churn them: description, priority (brief⇒1), and the issue
+            // URL. external_id is intentionally NOT set — build_create omits it and
+            // kanban's (board_id, external_id) uniqueness would 422 a colliding issue
+            // number on a multi-repo coord board; external_link carries the correlation.
             $newId = $client->createCard(
                 $mapping->boardId,
                 $mapping->coordCardStageId,
@@ -91,7 +94,6 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
                 $mapping->swimlaneId,
                 "Coordination thread {$repo}#{$issueNumber}",
                 $itype === 'brief' ? 1 : 0,
-                $issueNumber,
                 "https://github.com/{$repo}/issues/{$issueNumber}",
             );
             Log::info('kanban_coord_card: created', ['card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $mapping->coordCardStageId, 'swimlane' => $mapping->swimlaneId, 'sid' => $sid, 'issue' => $issueNumber]);
