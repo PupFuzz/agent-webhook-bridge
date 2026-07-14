@@ -50,9 +50,11 @@ use Throwable;
  * pull_request event — or a release PR whose title carries a card's DL-NNN — must
  * not drag a card backward (e.g. opened→In-Review on a card already Released). The
  * board's workflow-stage ORDER (positions, read from preload) is the authority;
- * `closed_unmerged` is the lone legitimately-backward outcome and is allowed to
- * regress UNLESS the card has reached a terminal (Shipped/Released) stage. Fail-open
- * when the order can't be read, so the guard never breaks the writeback.
+ * `closed_unmerged` is the lone legitimately-backward outcome AMONG THE FOUR PR
+ * outcomes and is allowed to regress UNLESS the card has reached a terminal
+ * (Shipped/Released) stage. Fail-open when the order can't be read, so the guard
+ * never breaks the writeback. (The opt-in `reopened` outcome below is a fifth,
+ * handler-internal, deliberately-backward move — scoped to the abandon stage.)
  *
  * The `reopened` outcome (opt-in `revive_on_reopen`, DL-195) is the writeback's other
  * legitimately-backward move: a reopened PR revives its card from the mapped
