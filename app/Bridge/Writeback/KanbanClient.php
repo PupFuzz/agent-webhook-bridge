@@ -202,6 +202,34 @@ final class KanbanClient
     }
 
     /**
+     * The card ids on a board carrying a given tag (DL-198) — the coord-card
+     * adoption key is the `id:<sid>` TAG, so the create handler correlates by it
+     * (idempotency + post-create collapse). One `q=board_id=<b> tags:"<tag>"`
+     * search (exact tag match, TasksController); returns ALL matches so the
+     * post-create collapse can retire a raced duplicate. Board-scoped by the
+     * `board_id=` clause, so no `source` qualifier is needed (the tag is unique per
+     * `id:<sid>`). Degraded-read caveat (DL-026): a blind/wrong-board token returns
+     * `{data:[]}` → reads "no card" like the by-ref path; `bridge:check`'s visibility
+     * probe catches that at preflight, and the shared `id:` tag lets the reconcile
+     * orphan-adoption collapse any duplicate a blind read minted.
+     *
+     * @return list<int>
+     */
+    public function cardsByTag(int $boardId, string $tag): array
+    {
+        $data = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId} tags:\"{$tag}\"", 'limit' => self::SEARCH_LIMIT])->throw()->json('data');
+
+        $ids = [];
+        foreach (is_array($data) ? $data : [] as $card) {
+            if (is_array($card) && isset($card['id']) && is_numeric($card['id'])) {
+                $ids[] = (int) $card['id'];
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
      * Cheap board-visibility probe for `bridge:check` (DL-029): a single
      * `limit=1` search — answers "can this token see the board, and how big is
      * it?" without the full correlation read, independent of the correlation
@@ -342,10 +370,18 @@ final class KanbanClient
      * $swimlaneId places it in a lane (DL-027) — omitted from the POST entirely
      * when null (the board then assigns its default lane, today's behavior).
      *
+     * The trailing $description/$priority/$externalLink are additive, top-level Task
+     * fields (fillable + documented create-body params) the coord-card path sets for
+     * reconcile churn-avoidance (DL-198). Each is nullable → omitted from the POST when
+     * null, so the dependabot caller (which passes none) is byte-identical to before.
+     * `external_id` is deliberately NOT a param: the reconcile's build_create omits it,
+     * and kanban's (board_id, external_id) uniqueness would 422 a colliding issue number
+     * on a multi-repo coord board — `external_link` alone carries the correlation.
+     *
      * @param  array<string, mixed>  $payload
      * @param  list<string>  $tags
      */
-    public function createCard(int $boardId, int $stageId, string $name, array $payload, array $tags, ?int $swimlaneId = null): int
+    public function createCard(int $boardId, int $stageId, string $name, array $payload, array $tags, ?int $swimlaneId = null, ?string $description = null, ?int $priority = null, ?string $externalLink = null): int
     {
         $task = [
             'board_id' => $boardId,
@@ -356,6 +392,15 @@ final class KanbanClient
         ];
         if ($swimlaneId !== null) {
             $task['swimlane_id'] = $swimlaneId;
+        }
+        if ($description !== null) {
+            $task['description'] = $description;
+        }
+        if ($priority !== null) {
+            $task['priority'] = $priority;
+        }
+        if ($externalLink !== null) {
+            $task['external_link'] = $externalLink;
         }
         $data = $this->http()->post('/tasks.json', ['task' => $task])->throw()->json('data');
         if (! is_array($data) || ! isset($data['id']) || ! is_numeric($data['id'])) {

@@ -337,6 +337,70 @@ class KanbanClientTest extends TestCase
             && ! array_key_exists('swimlane_id', $r['task']));
     }
 
+    public function test_create_card_dependabot_caller_omits_the_new_coord_fields(): void
+    {
+        // DL-198: the dependabot caller passes none of the new trailing params, so
+        // the POST body must be byte-identical — no description/priority/external_*.
+        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 7]], 201)]);
+
+        $this->client()->createCard(8, 50, 'x', ['pr_number' => 1], ['dependencies'], 31);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && ! array_key_exists('description', $r['task'])
+            && ! array_key_exists('priority', $r['task'])
+            && ! array_key_exists('external_id', $r['task'])
+            && ! array_key_exists('external_link', $r['task']));
+    }
+
+    public function test_create_card_sets_the_new_coord_fields_when_given(): void
+    {
+        // DL-198: the coord path sets description/priority/external_link as top-level
+        // Task fields (external_id is deliberately NOT set — see createCard docblock).
+        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 9]], 201)]);
+
+        $this->client()->createCard(8, 21, '[QUERY] x', [], ['id:QUERY-4', 'type:query'], null, 'Coordination thread o/r#4', 0, 'https://github.com/o/r/issues/4');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && $r['task']['description'] === 'Coordination thread o/r#4'
+            && $r['task']['priority'] === 0
+            && ! array_key_exists('external_id', $r['task'])
+            && $r['task']['external_link'] === 'https://github.com/o/r/issues/4'
+            && $r['task']['tags'] === ['id:QUERY-4', 'type:query']
+            && ! array_key_exists('swimlane_id', $r['task']));
+    }
+
+    public function test_create_card_priority_zero_is_still_sent(): void
+    {
+        // priority 0 (a non-brief coord card) is a real value, distinct from the
+        // dependabot null-omit — it must appear in the POST.
+        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 9]], 201)]);
+
+        $this->client()->createCard(8, 21, 'x', [], [], null, 'd', 0, 'https://x');
+
+        Http::assertSent(fn (Request $r) => array_key_exists('priority', $r['task']) && $r['task']['priority'] === 0);
+    }
+
+    // ---- cardsByTag (DL-198 coord-card adoption key) ----
+
+    public function test_cards_by_tag_searches_by_board_and_tag_and_returns_ids(): void
+    {
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 42], ['id' => 7], 'bad-row']])]);
+
+        $ids = $this->client()->cardsByTag(8, 'id:QUERY-4');
+
+        $this->assertSame([42, 7], $ids);
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET'
+            && str_contains($r->url(), '/tasks/search.json')
+            && str_contains(urldecode($r->url()), 'board_id=8 tags:"id:QUERY-4"'));
+    }
+
+    public function test_cards_by_tag_no_match_returns_empty(): void
+    {
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+
+        $this->assertSame([], $this->client()->cardsByTag(8, 'id:TASK-9'));
+    }
+
     public function test_board_swimlane_ids_reads_the_preload_endpoint(): void
     {
         Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['swimlanes' => [
