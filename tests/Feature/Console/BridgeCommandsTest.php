@@ -403,6 +403,84 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    // --- card#4183 (DL-196): event-follows-consumer ---
+
+    private function writeGithubAgent(string $name, string $classifierClass, ?string $familiesLine = null): void
+    {
+        $yaml = "identity:\n  github_user_id: ".crc32($name)."\n"
+            ."subscriptions:\n  - provider: github\n    scopes: [\"owner/repo\"]\n"
+            ."classifier:\n  class: {$classifierClass}\n";
+        if ($familiesLine !== null) {
+            $yaml .= "  config:\n    families: [{$familiesLine}]\n";
+        }
+        File::put($this->dir.'/'.$name.'.yml', $yaml);
+    }
+
+    private function githubEvent(string $eventType, string $delivery): void
+    {
+        WebhookEvent::create([
+            'delivery_id' => $delivery, 'provider' => 'github', 'scope_id' => 'owner/repo',
+            'event_type' => $eventType, 'actor_id' => '1', 'payload' => ['x' => 1],
+        ]);
+    }
+
+    public function test_check_event_consumer_clean_under_the_union_of_two_agents_on_one_scope(): void
+    {
+        // Load-bearing AIMLA case: github:owner/repo is subscribed by TWO agents —
+        // GitHubPrCardMoveClassifier ({pull_request,push}) + CoordinationClassifier
+        // with impl-ci-wake ({push,workflow_run}). Observed {pull_request,push,
+        // workflow_run} is fully covered by the UNION → CLEAN, no unconsumed warn.
+        // A one-per-scope evaluation would false-WARN workflow_run — this locks it.
+        $this->writeGithubAgent('wb', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+        $this->writeGithubAgent('ci', 'App\\Bridge\\Classifiers\\CoordinationClassifier', 'impl-ci-wake');
+        $this->githubEvent('pull_request.opened', 'e1');
+        $this->githubEvent('push', 'e2');
+        $this->githubEvent('workflow_run.completed', 'e3');
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('no enabled classifier consumes it')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_event_consumer_warns_on_a_genuinely_unconsumed_event(): void
+    {
+        // Only GitHubPrCardMoveClassifier ({pull_request,push}) is subscribed, but a
+        // workflow_run has ARRIVED for the scope → unconsumed → warn (never fail).
+        $this->writeGithubAgent('wb', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+        $this->githubEvent('pull_request.opened', 'e1');
+        $this->githubEvent('workflow_run.completed', 'e2');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain("github:owner/repo has received 'workflow_run' but no enabled classifier consumes it")
+            ->assertExitCode(0);
+    }
+
+    public function test_check_event_consumer_silent_when_nothing_has_arrived(): void
+    {
+        // A github agent subscribed but NO events received yet → nothing dropped →
+        // no warn (an empty webhook_events is not a false clean).
+        $this->writeGithubAgent('wb', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('no enabled classifier consumes it')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_event_consumer_disambiguates_an_undeclared_classifier(): void
+    {
+        // An agent running a classifier that does NOT implement DeclaresConsumedEvents
+        // (the default InboxOnlyClassifier) contributes nothing to `consumed` → the
+        // observed event lands in unconsumed (a possible FALSE positive). The check
+        // co-emits a disambiguation line naming the undeclared classifier.
+        $this->writeGithubAgent('legacy', 'App\\Bridge\\Classifiers\\InboxOnlyClassifier');
+        $this->githubEvent('pull_request.opened', 'e1');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('does not declare its consumed events')
+            ->expectsOutputToContain("has received 'pull_request' but no enabled classifier consumes it")
+            ->assertExitCode(0);
+    }
+
     public function test_check_confirms_a_mapping_swimlane_id_that_exists_on_the_board(): void
     {
         // DL-027: when a mapping pins a swimlane_id, bridge:check validates it
