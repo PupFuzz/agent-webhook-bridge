@@ -125,6 +125,149 @@ class WritebackConfigTest extends TestCase
         WritebackConfig::load($this->dir);
     }
 
+    // --- DL-194: unpark_from_stages / hold_marker_tags / draft_block_reason ---
+
+    public function test_loads_unpark_from_stages(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'unpark_from_stages' => [51]],
+        ]]));
+        $this->assertSame([51], WritebackConfig::load($this->dir)->mappingFor('o/r')->unparkFromStages);
+    }
+
+    public function test_absent_unpark_from_stages_is_null(): void
+    {
+        $this->write(json_encode(['mappings' => ['o/r' => ['board_id' => 8, 'stages' => ['started' => 49]]]]));
+        $this->assertNull(WritebackConfig::load($this->dir)->mappingFor('o/r')->unparkFromStages);
+    }
+
+    public function test_non_list_unpark_from_stages_throws(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'unpark_from_stages' => ['a' => 51]],
+        ]]));
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_empty_unpark_from_stages_throws(): void
+    {
+        // An empty list silently disables auto-unpark (fail-closed but invisible) —
+        // reject it so the operator omits the key to disable instead.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'unpark_from_stages' => []],
+        ]]));
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_non_numeric_unpark_from_stages_element_throws(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'unpark_from_stages' => [51, 'held']],
+        ]]));
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_unpark_overlapping_started_from_stages_throws(): void
+    {
+        // Fail-closed: a stage cannot be both refuse-if-pinned (started_from_stages)
+        // and move-if-pinned (unpark_from_stages).
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'started_from_stages' => [46, 51], 'unpark_from_stages' => [51]],
+        ]]));
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_disjoint_started_and_unpark_stages_load_together(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'started_from_stages' => [46, 47], 'unpark_from_stages' => [51]],
+        ]]));
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
+        $this->assertSame([46, 47], $mapping->startedFromStages);
+        $this->assertSame([51], $mapping->unparkFromStages);
+    }
+
+    public function test_loads_hold_marker_tags(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'hold_marker_tags' => ['gate', 'parked']],
+        ]]));
+        $this->assertSame(['gate', 'parked'], WritebackConfig::load($this->dir)->mappingFor('o/r')->holdMarkerTags);
+    }
+
+    public function test_absent_hold_marker_tags_defaults_to_empty_list(): void
+    {
+        $this->write(json_encode(['mappings' => ['o/r' => ['board_id' => 8, 'stages' => ['started' => 49]]]]));
+        $this->assertSame([], WritebackConfig::load($this->dir)->mappingFor('o/r')->holdMarkerTags);
+    }
+
+    public function test_empty_hold_marker_tags_is_allowed(): void
+    {
+        // Unlike unpark_from_stages, an empty hold_marker_tags is the meaningful
+        // "no marker declared" state (fail-safe alerts on a bare park), not disabled.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'hold_marker_tags' => []],
+        ]]));
+        $this->assertSame([], WritebackConfig::load($this->dir)->mappingFor('o/r')->holdMarkerTags);
+    }
+
+    public function test_non_list_hold_marker_tags_throws(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'hold_marker_tags' => ['x' => 'gate']],
+        ]]));
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_non_string_hold_marker_tag_element_throws(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'hold_marker_tags' => ['gate', 7]],
+        ]]));
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_loads_draft_block_reason(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'draft_block_reason' => 'draft in progress'],
+        ]]));
+        $this->assertSame('draft in progress', WritebackConfig::load($this->dir)->mappingFor('o/r')->draftBlockReason);
+    }
+
+    public function test_absent_draft_block_reason_is_null(): void
+    {
+        // Absent ⇒ null; the handler resolves the KanbanBlockReasonHandler::MARKER default.
+        $this->write(json_encode(['mappings' => ['o/r' => ['board_id' => 8, 'stages' => ['started' => 49]]]]));
+        $this->assertNull(WritebackConfig::load($this->dir)->mappingFor('o/r')->draftBlockReason);
+    }
+
+    public function test_empty_draft_block_reason_throws(): void
+    {
+        // An empty string would collapse the benign-draft/human-hold distinction and
+        // silently disable draft-park suppression (a noise regression) — reject it.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'draft_block_reason' => ''],
+        ]]));
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_non_string_draft_block_reason_throws(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['started' => 49], 'draft_block_reason' => 42],
+        ]]));
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
+
     public function test_malformed_json_is_fail_closed(): void
     {
         $this->write('not json {');

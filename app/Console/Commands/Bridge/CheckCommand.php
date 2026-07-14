@@ -518,6 +518,12 @@ class CheckCommand extends BridgeCommand
                                     foreach ($mapping->startedFromStages ?? [] as $fromId) {
                                         $targets[] = $fromId;
                                     }
+                                    // DL-194: the unpark_from_stages ids are read on the
+                                    // `started` path too — a typo'd id makes the auto-unpark
+                                    // guard silently never match (same class as above).
+                                    foreach ($mapping->unparkFromStages ?? [] as $fromId) {
+                                        $targets[] = $fromId;
+                                    }
                                     $unknownStages = array_values(array_unique(array_diff($targets, $boardStageIds)));
                                     if ($unknownStages !== []) {
                                         $this->warn("writeback: mapping for {$repo} references workflow stage id(s) ".implode(', ', $unknownStages)." not on board {$mapping->boardId} — those moves will 422 (or the started/no-regression guard will silently never match) until fixed");

@@ -176,27 +176,36 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // allowed source stages are operator config (`started_from_stages`); with
         // none set we can't know what's safe to promote from, so we refuse
         // (fail-closed, mirroring the DL-026 "don't silently do the wrong thing").
+        $isUnpark = false;
         if ($outcome === 'started') {
+            $current = $card['workflow_stage_id'] ?? null;
+            $unparkStages = $mapping->unparkFromStages ?? [];
+            $isUnpark = in_array($current, $unparkStages, true);
+
             // Pinned-card opt-out (cross-mover contract, agent-board-framework
-            // PR #113): never auto-move a card a human has parked — a non-empty
-            // block_reason OR a `no-automove` tag — regardless of its stage. This
-            // is the belt-and-suspenders escape hatch that keeps the Held-promote
-            // default (delivered via `started_from_stages` carrying the Held stage)
-            // safe. Loud so the skipped promotion is visible.
-            if (PinGuard::isPinned($card)) {
+            // PR #113 / DL-178): never auto-move a card a human has parked — a
+            // non-empty block_reason OR a `no-automove` tag. REVERSED for the opt-in
+            // `unpark_from_stages` (DL-194): from an unpark stage a branch-cut is an
+            // unambiguous "work has begun" override, so a pinned card IS promoted
+            // (and a compensating alert is emitted after the move). Everywhere else
+            // DL-178 is byte-identical. Loud so a refused promotion stays visible.
+            if (PinGuard::isPinned($card) && ! $isUnpark) {
                 Log::warning('kanban_move_card: started move refused — card is pinned (block_reason/no-automove)', [
-                    'card_id' => $cardId, 'repo' => $repo, 'current_stage' => $card['workflow_stage_id'] ?? null,
+                    'card_id' => $cardId, 'repo' => $repo, 'current_stage' => $current,
                 ]);
                 $this->alerts->notify($repo, $outcome, $cardId, 'pinned_no_automove');
 
                 return;
             }
 
-            $allowed = $mapping->startedFromStages;
-            $current = $card['workflow_stage_id'] ?? null;
-            if ($allowed === null || $allowed === [] || ! in_array($current, $allowed, true)) {
+            // The promote-from set is the union of the (refuse-if-pinned) started
+            // stages and the (move-if-pinned) unpark stages — both null-coalesced to
+            // []. Both absent ⇒ [] ⇒ refuse (DL-160 fail-closed preserved).
+            $allowed = array_merge($mapping->startedFromStages ?? [], $unparkStages);
+            if ($allowed === [] || ! in_array($current, $allowed, true)) {
                 Log::info('kanban_move_card: started move skipped — card is not in an allowed promote-from stage (no regression)', [
-                    'card_id' => $cardId, 'repo' => $repo, 'current_stage' => $current, 'started_from_stages' => $allowed,
+                    'card_id' => $cardId, 'repo' => $repo, 'current_stage' => $current,
+                    'started_from_stages' => $mapping->startedFromStages, 'unpark_from_stages' => $mapping->unparkFromStages,
                 ]);
 
                 return;
@@ -239,6 +248,24 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             }
             throw $e;   // transient → 5xx → retry
         }
+        // Auto-unpark alert (DL-194): after a CONFIRMED move from an unpark stage, and
+        // BEFORE the stamp (which may 5xx-throw), emit the compensating "we overrode a
+        // human hold" signal — durable Log::warning first (the record; mirrors every
+        // other alert caller), then the additive live wake (notifyUnpark can't throw).
+        // Placed here so a first delivery that later 5xx-throws on the stamp still
+        // alerted once, and a partial-failure redelivery short-circuits at the
+        // already-in-stage guard above (before this line) rather than re-alerting.
+        if ($outcome === 'started' && $isUnpark) {
+            $signal = $this->shouldAlertUnpark($card, $mapping);
+            if ($signal !== null) {
+                $fromStage = $card['workflow_stage_id'] ?? null;
+                Log::warning('kanban_move_card: auto-unparked a card from a parked stage', [
+                    'card_id' => $cardId, 'repo' => $repo, 'from_stage' => $fromStage, 'hold_signal' => $signal,
+                ]);
+                $this->alerts->notifyUnpark($repo, $cardId, is_int($fromStage) ? $fromStage : null);
+            }
+        }
+
         // The card is now legitimately at its target stage (it passed every reject-guard
         // above) — stamp its correlation refs add-if-missing (#3866). Done AFTER the move
         // so a stale/redelivered/regressive event, which the guards no-op, never stamps.
@@ -301,6 +328,55 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             }
             throw $e;   // transient → 5xx → redelivery re-stamps (add-if-missing idempotent)
         }
+    }
+
+    /**
+     * The hold-signal discriminator for an auto-unpark (DL-194), or null when the
+     * unpark should stay quiet. The alert FLOOR is "we are actually overriding a
+     * deliberate hold": a `no-automove` tag, a human `block_reason` (≠ the benign
+     * draft sentinel), or an install's configured hold tag ALWAYS alert regardless of
+     * `hold_marker_tags`; a benign automated draft-park (block_reason == the sentinel,
+     * no other signal) never alerts. With NO `hold_marker_tags` declared the fail-safe
+     * alerts on every non-benign unpark (a spurious dismissable alert beats a missed
+     * one on a real gate); declaring `hold_marker_tags` only quiets bare-park noise,
+     * never the pinned/held cases. Field reads go through PinGuard's boundary-safe
+     * accessors (the card is a system boundary; block_reason may be non-string, tags
+     * non-array). The returned string BOTH gates the alert AND labels the durable log
+     * — one computation, no second derivation.
+     *
+     * @param  array<string, mixed>  $card
+     */
+    private function shouldAlertUnpark(array $card, WritebackMapping $mapping): ?string
+    {
+        $draftMarker = $mapping->draftBlockReason ?? KanbanBlockReasonHandler::MARKER;
+        $blockReason = trim(PinGuard::blockReason($card) ?? '');
+        $tags = PinGuard::tags($card);
+
+        $hasNoAutomove = in_array('no-automove', $tags, true);
+        $hasHumanBR = $blockReason !== '' && $blockReason !== $draftMarker;
+        $hasHoldTag = false;
+        foreach ($mapping->holdMarkerTags as $tag) {
+            if (in_array($tag, $tags, true)) {
+                $hasHoldTag = true;
+                break;
+            }
+        }
+        $isBenignDraft = $blockReason === $draftMarker && ! $hasNoAutomove && ! $hasHoldTag;
+
+        if ($hasNoAutomove) {
+            return 'no_automove';
+        }
+        if ($hasHumanBR) {
+            return 'block_reason';
+        }
+        if ($hasHoldTag) {
+            return 'hold_tag';
+        }
+        if ($mapping->holdMarkerTags === [] && ! $isBenignDraft) {
+            return 'failsafe';
+        }
+
+        return null;
     }
 
     /**

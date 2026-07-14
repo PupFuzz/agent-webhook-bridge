@@ -760,4 +760,277 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         Http::assertNotSent(fn (Request $r) => isset($r['task']['payload']));
     }
+
+    // --- DL-194: auto-unpark a parked card on branch-cut (started + unpark_from_stages) ---
+
+    /**
+     * A `started` move from an unpark stage (51) to In-Progress (49). A single
+     * non-sequence fake: GET returns the card at 51 (with the given pin signals),
+     * the PATCH move returns 200. No re-GET, so this serves repeated deliveries too.
+     *
+     * @param  array<string, mixed>  $cardData  extra card fields (block_reason / tags)
+     */
+    private function fakeUnparkCard(array $cardData = [], bool $withAlert = true): void
+    {
+        $fakes = [
+            '*/tasks/5.json' => Http::response(['data' => array_merge(
+                ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 51], $cardData
+            )]),
+        ];
+        if ($withAlert) {
+            $fakes = [self::ALERT_URL.'*' => Http::response(['ok' => true])] + $fakes;
+        }
+        Http::fake($fakes);
+    }
+
+    /** unpark_from_stages=[51], started stage 49; started_from_stages disjoint. */
+    private function unparkExtra(array $holdMarkerTags = [], array $over = []): array
+    {
+        return array_merge([
+            'started_from_stages' => [46, 47],
+            'unpark_from_stages' => [51],
+            'hold_marker_tags' => $holdMarkerTags,
+        ], $over);
+    }
+
+    private function alertPushCount(): int
+    {
+        return collect(Http::recorded())->filter(fn ($pair) => $this->isAlertPush($pair[0]))->count();
+    }
+
+    public function test_unpark_moves_a_no_automove_pinned_card_and_alerts(): void
+    {
+        // Row 1: a `no-automove` tag is a real pin — the move is applied anyway
+        // (DL-194 reversal for the unpark stage) and the override alerts.
+        $this->writeWritebackWithAlert(['started' => 49], $this->unparkExtra());
+        $this->writeToken();
+        Log::spy();
+        $this->fakeUnparkCard(['tags' => ['triaged', 'no-automove']]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 49]);
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_auto_unparked'
+            && $r['reason'] === 'auto_unparked'
+            && $r['repo'] === 'owner/repo'
+            && $r['card_id'] === 5
+            && $r['from_stage'] === 51);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'auto-unparked') && $ctx['hold_signal'] === 'no_automove');
+    }
+
+    public function test_unpark_moves_a_human_block_reason_card_and_alerts(): void
+    {
+        // Row 2 (BLOCKER-round-1 fix): a human block_reason (≠ the draft sentinel)
+        // ALWAYS alerts, even with hold_marker_tags configured.
+        $this->writeWritebackWithAlert(['started' => 49], $this->unparkExtra(['gate']));
+        $this->writeToken();
+        Log::spy();
+        $this->fakeUnparkCard(['block_reason' => 'waiting on upstream']);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 49]);
+        $this->assertSame(1, $this->alertPushCount());
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'auto-unparked') && $ctx['hold_signal'] === 'block_reason');
+    }
+
+    public function test_unpark_moves_a_configured_hold_tag_card_and_alerts(): void
+    {
+        // Row 3: a card carrying a configured hold tag (e.g. `gate`) alerts.
+        $this->writeWritebackWithAlert(['started' => 49], $this->unparkExtra(['gate']));
+        $this->writeToken();
+        Log::spy();
+        $this->fakeUnparkCard(['tags' => ['gate']]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH');
+        $this->assertSame(1, $this->alertPushCount());
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'auto-unparked') && $ctx['hold_signal'] === 'hold_tag');
+    }
+
+    public function test_unpark_draft_only_card_moves_without_alerting_hold_tags_configured(): void
+    {
+        // Row 4: block_reason == the benign draft sentinel, no other signal,
+        // hold_marker_tags configured → moves, no alert (automated draft-park).
+        $this->writeWritebackWithAlert(['started' => 49], $this->unparkExtra(['gate']));
+        $this->writeToken();
+        $this->fakeUnparkCard(['block_reason' => 'PR is in draft']);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH');
+        $this->assertSame(0, $this->alertPushCount());
+    }
+
+    public function test_unpark_draft_only_card_moves_without_alerting_no_hold_tags(): void
+    {
+        // Row 5: draft sentinel, hold_marker_tags empty → moves, no alert (provably
+        // an automated draft-park).
+        $this->writeWritebackWithAlert(['started' => 49], $this->unparkExtra());
+        $this->writeToken();
+        $this->fakeUnparkCard(['block_reason' => 'PR is in draft']);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH');
+        $this->assertSame(0, $this->alertPushCount());
+    }
+
+    public function test_unpark_bare_park_alerts_failsafe_when_no_hold_tags_configured(): void
+    {
+        // Row 6 (fail-safe): a card with NO recognized pin signal, hold_marker_tags
+        // empty → moves and alerts (can't discriminate → an extra alert beats a miss).
+        $this->writeWritebackWithAlert(['started' => 49], $this->unparkExtra());
+        $this->writeToken();
+        Log::spy();
+        $this->fakeUnparkCard(['tags' => ['triaged']]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH');
+        $this->assertSame(1, $this->alertPushCount());
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'auto-unparked') && $ctx['hold_signal'] === 'failsafe');
+    }
+
+    public function test_unpark_bare_park_stays_quiet_when_hold_tags_configured(): void
+    {
+        // Row 7: a bare park, hold_marker_tags configured → the operator declared
+        // their marker, so a card without it is trusted → moves, no alert.
+        $this->writeWritebackWithAlert(['started' => 49], $this->unparkExtra(['gate']));
+        $this->writeToken();
+        $this->fakeUnparkCard(['tags' => ['triaged']]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH');
+        $this->assertSame(0, $this->alertPushCount());
+    }
+
+    public function test_started_pinned_card_in_a_started_from_stage_still_refused_dl178(): void
+    {
+        // Row 8 (DL-178 preserved): a pinned card in a started_from_stages stage that
+        // is NOT an unpark stage is still refused — the reversal is scoped to unpark.
+        $this->writeWritebackWithAlert(['started' => 49], [
+            'started_from_stages' => [46, 47, 51],
+            'unpark_from_stages' => [52],   // disjoint; the card at 51 is NOT an unpark stage
+        ]);
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 51, 'block_reason' => 'parked']]),
+        ]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');   // DL-178 refuse, no move
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'pinned_no_automove');
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r) && $r['type'] === 'writeback_auto_unparked');
+    }
+
+    public function test_unpark_alert_not_sent_when_the_move_4xx_noops(): void
+    {
+        // The alert is emitted only AFTER a confirmed move. A 4xx move-refusal
+        // no-ops → no auto-unpark alert.
+        $this->writeWritebackWithAlert(['started' => 49], $this->unparkExtra());
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 51, 'tags' => ['no-automove']]])   // GET
+                ->push(['error' => 'invalid stage'], 422),                                                                // PATCH 4xx
+        ]);
+
+        $this->handle($this->payload(['outcome' => 'started']));   // no throw
+
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r) && $r['type'] === 'writeback_auto_unparked');
+    }
+
+    public function test_unpark_durable_log_fires_even_with_no_alert_channel(): void
+    {
+        // The durable Log::warning records the override even when no alert channel is
+        // configured (log = durable record; push = additive live wake).
+        $this->writeWriteback(['started' => 49], $this->unparkExtra());   // NO alert_channel
+        $this->writeToken();
+        Log::spy();
+        $this->fakeUnparkCard(['tags' => ['no-automove']], withAlert: false);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH');
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'auto-unparked') && $ctx['hold_signal'] === 'no_automove');
+    }
+
+    public function test_unpark_durable_log_fires_even_when_the_alert_push_is_down(): void
+    {
+        // Alert channel configured but the push 500s — the move still succeeds, the
+        // durable log still fires, and nothing throws out of the handler.
+        $this->writeWritebackWithAlert(['started' => 49], $this->unparkExtra());
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response('channel down', 500),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 51, 'tags' => ['no-automove']]]),
+        ]);
+
+        $this->handle($this->payload(['outcome' => 'started']));   // no throw
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r));   // push attempted
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'auto-unparked'));
+    }
+
+    public function test_reparked_card_re_alerts_on_a_second_unpark_no_dedup(): void
+    {
+        // A human re-parks the card (moves it back into the unpark stage), a fresh
+        // branch-cut fires `started` again → a second alert (no per-card dedup).
+        $this->writeWritebackWithAlert(['started' => 49], $this->unparkExtra());
+        $this->writeToken();
+        $this->fakeUnparkCard(['tags' => ['no-automove']]);   // non-sequence: every GET returns stage 51
+
+        $this->handle($this->payload(['outcome' => 'started']));
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        $this->assertSame(2, $this->alertPushCount());   // one per successful unpark, no dedup
+    }
+
+    public function test_redelivery_while_already_in_progress_does_not_re_alert(): void
+    {
+        // A partial-failure redelivery re-runs the handler, but the card is already at
+        // the target In-Progress stage → the idempotent short-circuit returns before
+        // the `started`/alert block → no second alert.
+        $this->writeWritebackWithAlert(['started' => 49], $this->unparkExtra());
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'tags' => ['no-automove']]]),   // already at target 49
+        ]);
+
+        $this->handle($this->payload(['outcome' => 'started']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['task']['workflow_stage_id']));   // no move
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));   // no alert
+    }
+
+    public function test_notify_unpark_pushes_once_per_distinct_card_no_dedup(): void
+    {
+        // notifyUnpark has NO dedup — two distinct cards unparked → two pushes, each
+        // carrying the writeback_auto_unparked type.
+        $this->writeWritebackWithAlert(['started' => 49], $this->unparkExtra());
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 51, 'tags' => ['no-automove']]]),
+            '*/tasks/6.json' => Http::response(['data' => ['id' => 6, 'board_id' => 8, 'workflow_stage_id' => 51, 'tags' => ['no-automove']]]),
+        ]);
+
+        $this->handle($this->payload(['card_id' => 5, 'outcome' => 'started']));
+        $this->handle($this->payload(['card_id' => 6, 'outcome' => 'started']));
+
+        $pushes = collect(Http::recorded())
+            ->filter(fn ($pair) => $this->isAlertPush($pair[0]) && $pair[0]['type'] === 'writeback_auto_unparked')
+            ->map(fn ($pair) => $pair[0]['card_id'])
+            ->sort()->values()->all();
+        $this->assertSame([5, 6], $pushes);
+    }
 }
