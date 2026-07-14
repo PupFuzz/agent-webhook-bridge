@@ -132,6 +132,19 @@ After adding or moving a class, run `composer dump-autoload`.
 
 If your classifier emits writeback `ReactionTarget`s (`kanban_move_card` / `kanban_dependabot_card`) to drive a `writeback.json` mapping, **also implement the marker interface `App\Bridge\Contracts\EmitsWritebackReactions`** (it has no methods). `bridge:check` uses it to detect an *orphaned* mapping — one whose repo scope no agent's classifier drives — and warn that the mapping is inert. A subclass of `GitHubPrCardMoveClassifier` inherits the marker automatically; a from-scratch classifier must add it, or `bridge:check` will (falsely) report its mappings as orphaned.
 
+### Declaring which GitHub events your classifier consumes (card#4183 / DL-196)
+
+`bridge:check` runs an **event-follows-consumer** check: for each `github:<scope>`, it unions the top-level event types every enabled classifier subscribed to that scope consumes, compares that against the event types **actually received** for the scope (from the bridge's own `webhook_events` history), and **warns** (never fails) about any received event type that nothing consumes — a subscription that arrives and is silently dropped. To participate, **implement `App\Bridge\Contracts\DeclaresConsumedEvents`**:
+
+```php
+public function consumedEventTypes(ClassifierConfig $cfg): array
+{
+    return ['pull_request', 'push'];   // TOP-LEVEL types, no `.action` suffix
+}
+```
+
+Return the **top-level** GitHub event types (`pull_request`, `push`, `workflow_run`, `issues`, `issue_comment` — not `pull_request.opened`). Gate on `$cfg` when your consumed set is config-driven (e.g. `CoordinationClassifier` unions only its *enabled* families). **HARD CONTRACT:** the method must be a pure `$cfg` → event-types map — no lazy class-loading, no side effects; it runs inside `bridge:check` and an impl that loads un-probed code can fatal past the guard (DL-025). A classifier that does *not* implement the interface contributes nothing to the consumed set (conservative — at worst a false warn, which `bridge:check` flags as *possibly* a false positive by naming the undeclared classifier, never a false clean). Note: the observed set is bounded by `bridge:prune` retention — a long-quiet unconsumed event isn't flagged until it next fires.
+
 ### Extending a shipped classifier (subclass pattern)
 
 For agents wanting `InboxOnlyClassifier` behavior plus extra targets, subclass rather than copy. This is exactly what `EventDrivenClassifier` does:
