@@ -25,6 +25,7 @@ use App\Bridge\Support\PathHelper;
  *         "unpark_from_stages": [51],               // optional (DL-194) — auto-unpark a pinned card from these stages on `started`
  *         "hold_marker_tags": ["gate"],             // optional (DL-194) — widen the auto-unpark override alert
  *         "draft_block_reason": "PR is in draft",   // optional (DL-194) — benign draft sentinel (no unpark alert)
+ *         "revive_on_reopen": false,               // optional (DL-195) — a reopened abandoned PR revives its parked card (closed_unmerged → opened)
  *         "create_dependabot_cards": false,        // optional (DL-024)
  *         "swimlane_id": 31,                        // optional — lane for CREATED cards (DL-027)
  *         "draft_overlay": false                    // optional (DL-193) — mirror PR draft state to block_reason
@@ -178,6 +179,11 @@ final class WritebackConfig
             // otherwise, disables it), so a draft_overlay-absent config is byte-identical
             // to today. NOT a stage-mapped outcome, so WritebackConfig::OUTCOMES is unchanged.
             $draftOverlay = ($m['draft_overlay'] ?? false) === true;
+            // Opt-in Won't-Do-revival (DL-195). Plain bool, default false — parsed exactly
+            // like draft_overlay/create_dependabot_cards, so a revive_on_reopen-absent config
+            // is byte-identical to today. NOT a stage-mapped outcome (the `reopened` move
+            // outcome reuses `stages.opened`), so WritebackConfig::OUTCOMES is unchanged.
+            $reviveOnReopen = ($m['revive_on_reopen'] ?? false) === true;
             // Optional lane for CREATED cards (DL-027). Strict like board_id/stages —
             // a non-numeric swimlane_id THROWS rather than silently dropping to null
             // (which would land cards in the default lane with no error, the fail-quiet
@@ -189,7 +195,7 @@ final class WritebackConfig
                 }
                 $swimlaneId = (int) $m['swimlane_id'];
             }
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason);
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen);
         }
 
         return new self($identityId, $mappings, self::parseAlertChannel($raw));

@@ -53,6 +53,15 @@ final class WritebackMapping
      *                                     deliberate hold, so it does not alert on unpark. null ⇒
      *                                     the handler resolves the KanbanBlockReasonHandler::MARKER
      *                                     default.
+     * @param  bool  $reviveOnReopen  opt-in (DL-195): when a PR the writeback parked in the
+     *                                `closed_unmerged` (abandon) stage is REOPENED, revive its card
+     *                                back to the `opened` (In-Review) stage — the backward move the
+     *                                DL-163 no-regression guard otherwise refuses. Scoped to a card
+     *                                CURRENTLY in the mapped `closed_unmerged` stage (terminal-safe:
+     *                                a Shipped/Released card is never there); a marker-gated alert
+     *                                fires on the override. Default false ⇒ a `reopened` action stays
+     *                                the `opened` outcome (byte-identical). Reuses `stages.opened` as
+     *                                the target — there is NO `stages.reopened` key.
      */
     public function __construct(
         public readonly int $boardId,
@@ -64,6 +73,7 @@ final class WritebackMapping
         public readonly ?array $unparkFromStages = null,
         public readonly array $holdMarkerTags = [],
         public readonly ?string $draftBlockReason = null,
+        public readonly bool $reviveOnReopen = false,
     ) {}
 
     /** The configured stage id for a GitHub-PR outcome, or null when unmapped. */

@@ -37,8 +37,9 @@ use Throwable;
  *    security guard (belongs-to-mapped-board) and is logged as a refusal.
  *
  * Payload: card_id (int), repo ("owner/repo"), outcome (one of
- * WritebackConfig::OUTCOMES). Any payload board_id/stage_id is IGNORED — the
- * config mapping is authoritative.
+ * WritebackConfig::OUTCOMES, PLUS the handler-internal `reopened` — DL-195 — which
+ * has no config stage of its own and reuses the `opened` stage). Any payload
+ * board_id/stage_id is IGNORED — the config mapping is authoritative.
  *
  * The `started` outcome (branch-create push, DL-160) carries its own no-regression
  * guard: it only promotes a card whose current stage is in the mapping's
@@ -52,6 +53,13 @@ use Throwable;
  * `closed_unmerged` is the lone legitimately-backward outcome and is allowed to
  * regress UNLESS the card has reached a terminal (Shipped/Released) stage. Fail-open
  * when the order can't be read, so the guard never breaks the writeback.
+ *
+ * The `reopened` outcome (opt-in `revive_on_reopen`, DL-195) is the writeback's other
+ * legitimately-backward move: a reopened PR revives its card from the mapped
+ * `closed_unmerged` (abandon) stage back to the `opened` stage. The guard allows that
+ * backward move ONLY from the abandon stage (terminal-safe — a Shipped/Released card
+ * is never there); elsewhere `reopened` is forward-only like `opened`. A marker-gated
+ * override alert (notifyRevive) fires after the move.
  */
 final class KanbanMoveCardHandler implements DurableReaction, Handler
 {
@@ -123,7 +131,11 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
             return;
         }
-        $stageId = $mapping->stageFor($outcome);
+        // Won't-Do-revival (DL-195): the `reopened` move outcome has NO config stage of its
+        // own — it reuses the `opened` (In-Review) stage. Resolve it explicitly so
+        // stageFor('reopened')===null doesn't no-op the revival at the guard below.
+        $stageOutcome = $outcome === 'reopened' ? 'opened' : $outcome;
+        $stageId = $mapping->stageFor($stageOutcome);
         if ($stageId === null) {
             Log::info('kanban_move_card: no stage mapped for outcome; ignoring', ['repo' => $repo, 'outcome' => $outcome, 'card_id' => $cardId]);
 
@@ -212,6 +224,21 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             }
         }
 
+        // Won't-Do-revival (DL-195): a `reopened` PR whose card CURRENTLY sits in the
+        // mapped `closed_unmerged` (abandon) stage is revived to the `opened` (In-Review)
+        // stage — the backward move the DL-163 guard below otherwise refuses. Detected
+        // here so the post-move alert can fire; the guard carve-out is in isRegressiveMove.
+        // Terminal-safe by construction: a Shipped/Released card is never in the abandon
+        // stage (and GitHub can't reopen a merged PR). `reopened` reaches the handler only
+        // when the mapping opted in (the classifier emits `opened` otherwise), so revive-off
+        // is byte-identical. Anywhere else, a `reopened` move behaves exactly like `opened`.
+        $isRevive = false;
+        if ($outcome === 'reopened') {
+            $current = $card['workflow_stage_id'] ?? null;
+            $abandon = $mapping->stageFor('closed_unmerged');
+            $isRevive = is_int($current) && $abandon !== null && $current === $abandon;
+        }
+
         // No-regression guard for the four PR-driven outcomes (#2935), generalizing
         // the DL-160 `started` guard above. A stale / redelivered pull_request event
         // — or a RELEASE PR whose title carries a card's DL-NNN — can re-fire an
@@ -221,9 +248,11 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // legitimately-backward outcome (In-Review→In-Progress when a PR is
         // abandoned), so it is allowed to regress UNLESS the card has already
         // reached a terminal (Shipped/Released) stage — a stale close must not
-        // resurrect a shipped card. Fail-open: when the order can't be read (preload
-        // down, or a stage not on the board) the move proceeds as it did pre-guard.
-        if (in_array($outcome, ['opened', 'merged', 'merged_to_main', 'closed_unmerged'], true)) {
+        // resurrect a shipped card. `reopened` (DL-195) allows the backward move ONLY
+        // from the abandon stage (the revival), else is forward-only like `opened`.
+        // Fail-open: when the order can't be read (preload down, or a stage not on the
+        // board) the move proceeds as it did pre-guard.
+        if (in_array($outcome, ['opened', 'merged', 'merged_to_main', 'closed_unmerged', 'reopened'], true)) {
             $current = $card['workflow_stage_id'] ?? null;
             if (is_int($current) && $this->isRegressiveMove($outcome, $current, $stageId, $mapping, $client)) {
                 Log::info('kanban_move_card: move skipped — would regress the card to an earlier stage (no regression)', [
@@ -263,6 +292,22 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                     'card_id' => $cardId, 'repo' => $repo, 'from_stage' => $fromStage, 'hold_signal' => $signal,
                 ]);
                 $this->alerts->notifyUnpark($repo, $cardId, is_int($fromStage) ? $fromStage : null);
+            }
+        }
+        // Won't-Do-revival alert (DL-195): after a CONFIRMED revival move from the abandon
+        // stage, emit the compensating "we revived a parked card on reopen" signal — same
+        // shouldAlertUnpark override-gate (a genuinely-held card alerts; a bare-parked card
+        // alerts via the fail-safe unless hold_marker_tags quiets it), same placement between
+        // move and stamp, same no-dedup redelivery bound (a redelivered reopen short-circuits
+        // at the already-in-stage guard above before reaching here, so no double-alert).
+        if ($outcome === 'reopened' && $isRevive) {
+            $signal = $this->shouldAlertUnpark($card, $mapping);
+            if ($signal !== null) {
+                $fromStage = $card['workflow_stage_id'] ?? null;
+                Log::warning('kanban_move_card: revived a card from the abandon stage on PR reopen', [
+                    'card_id' => $cardId, 'repo' => $repo, 'from_stage' => $fromStage, 'hold_signal' => $signal,
+                ]);
+                $this->alerts->notifyRevive($repo, $cardId, is_int($fromStage) ? $fromStage : null);
             }
         }
 
@@ -413,6 +458,21 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $terminalFloor = $this->terminalFloor($mapping, $order);
 
             return $terminalFloor !== null && $currentPos >= $terminalFloor;
+        }
+
+        if ($outcome === 'reopened') {
+            // Won't-Do-revival (DL-195): ALLOW the otherwise-refused backward move ONLY
+            // from the mapped `closed_unmerged` (abandon) stage — the revival. Anywhere
+            // else a `reopened` is forward-only, identical to `opened` (so a reopen of a
+            // still-in-progress card, or a stale reopen on a terminal card, can't drag it
+            // back). `closed_unmerged` unmapped ⇒ no abandon stage ⇒ falls through to
+            // forward-only (revival can't apply without a parked-from stage).
+            $abandon = $mapping->stageFor('closed_unmerged');
+            if ($abandon !== null && $currentStage === $abandon) {
+                return false;   // revival: the backward Won't-Do → In-Review move is allowed
+            }
+
+            return $targetPos < $currentPos;
         }
 
         // Forward outcomes (opened / merged / merged_to_main): refuse any move to a
