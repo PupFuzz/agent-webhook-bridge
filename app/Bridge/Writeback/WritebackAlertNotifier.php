@@ -66,6 +66,26 @@ final class WritebackAlertNotifier
     }
 
     /**
+     * Signal that a card parked in the `closed_unmerged` (abandon) stage was REVIVED
+     * (DL-195) back to the `opened` stage when its PR was reopened — the compensating
+     * "we moved a card out of a terminal-ish stage" notification. Emitted AFTER a
+     * confirmed revival move (the handler places it between the move and the stamp) and
+     * with NO dedup, mirroring {@see notifyUnpark}: a card can be re-abandoned and
+     * re-revived across distinct close/reopen cycles, each a real override worth
+     * surfacing. Redelivery is bounded to one alert per successful revival by the
+     * handler's idempotent already-in-stage short-circuit, not by a persistent marker.
+     */
+    public function notifyRevive(string $repo, int $cardId, ?int $fromStage): void
+    {
+        $this->emit('writeback_revived_on_reopen', null, [
+            'repo' => $repo,
+            'card_id' => $cardId,
+            'from_stage' => $fromStage,
+            'reason' => 'revived_on_reopen',
+        ]);
+    }
+
+    /**
      * Push one alert to the configured channel. BEST-EFFORT, STRUCTURALLY: the ENTIRE
      * body is wrapped so nothing — a bad channel config, a connection refusal, an HTTP
      * error, OR an internal failure like an unwritable state dir (`mkdir` warns →

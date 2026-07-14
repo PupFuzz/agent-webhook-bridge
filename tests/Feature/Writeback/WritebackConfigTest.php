@@ -268,6 +268,30 @@ class WritebackConfigTest extends TestCase
         WritebackConfig::load($this->dir);
     }
 
+    public function test_loads_revive_on_reopen(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50, 'closed_unmerged' => 77], 'revive_on_reopen' => true],
+        ]]));
+        $this->assertTrue(WritebackConfig::load($this->dir)->mappingFor('o/r')->reviveOnReopen);
+    }
+
+    public function test_absent_revive_on_reopen_defaults_false(): void
+    {
+        $this->write(json_encode(['mappings' => ['o/r' => ['board_id' => 8, 'stages' => ['opened' => 50]]]]));
+        $this->assertFalse(WritebackConfig::load($this->dir)->mappingFor('o/r')->reviveOnReopen);
+    }
+
+    public function test_non_true_revive_on_reopen_is_false(): void
+    {
+        // Parsed like draft_overlay/create_dependabot_cards — a non-`true` value (here a
+        // string) disables it; only strict boolean true opts in.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'revive_on_reopen' => 'yes'],
+        ]]));
+        $this->assertFalse(WritebackConfig::load($this->dir)->mappingFor('o/r')->reviveOnReopen);
+    }
+
     public function test_malformed_json_is_fail_closed(): void
     {
         $this->write('not json {');

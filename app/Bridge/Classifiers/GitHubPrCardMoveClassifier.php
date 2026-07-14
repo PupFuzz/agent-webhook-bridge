@@ -119,6 +119,20 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
             return new ClassifyResult(targets: $overlayTargets);
         }
 
+        // Won't-Do-revival (DL-195): a `reopened` action normally collapses to the `opened`
+        // outcome (above). When the mapping opts in, emit a DISTINCT `reopened` MOVE outcome
+        // so the durable handler applies the revival carve-out (revive a card parked in the
+        // `closed_unmerged` abandon stage back to the `opened` stage — the backward move the
+        // DL-163 guard otherwise refuses). Computed HERE, after the dependabot branch, so the
+        // dependabot path — cards that ARCHIVE on close (DL-161), never park in
+        // `closed_unmerged` — keeps `opened` and never enters revival; and after $mapping is
+        // resolved (it isn't in scope in outcome()). Absent revive_on_reopen ⇒ $moveOutcome ===
+        // $outcome ⇒ byte-identical. `reopened` is a handler-internal outcome with no config
+        // stage of its own (it reuses `stages.opened`), so it is NOT in WritebackConfig::OUTCOMES.
+        $moveOutcome = ($eventType === 'pull_request.reopened' && $mapping->reviveOnReopen)
+            ? 'reopened'
+            : $outcome;
+
         $dl = $this->dlToken($payload);
         $cardToken = $this->cardToken($payload);
         if ($dl === null && $cardToken === null) {
@@ -154,7 +168,7 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
                     Log::info("kanban_move_card: PR carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# token is ignored");
                 }
 
-                return new ClassifyResult(targets: array_merge($this->moveTargets($cardIds, $repo, $outcome), $overlayTargets));
+                return new ClassifyResult(targets: array_merge($this->moveTargets($cardIds, $repo, $moveOutcome), $overlayTargets));
             }
             // (4) DL present but nothing resolved and no card# fallback → a
             // high-value miss (a decision-logged-but-unstamped card is the live
@@ -178,7 +192,7 @@ class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
             ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: array_merge([
                 'card_id' => $cardToken,
                 'repo' => $repo,
-                'outcome' => $outcome,
+                'outcome' => $moveOutcome,
             ], $this->stampRefs($this->titleAndHead($payload), $this->prNumber($payload)))),
         ], $overlayTargets));
     }

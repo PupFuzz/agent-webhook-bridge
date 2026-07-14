@@ -665,4 +665,66 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame([], $r->targets);
         Http::assertNothingSent();
     }
+
+    // --- DL-195: Won't-Do-revival (reopened → distinct `reopened` move outcome) ---
+
+    private function enableRevive(bool $withDependabot = false): void
+    {
+        $mapping = ['board_id' => 8, 'stages' => [
+            'opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 77,
+        ], 'revive_on_reopen' => true];
+        if ($withDependabot) {
+            $mapping['create_dependabot_cards'] = true;
+        }
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => $mapping],
+        ]));
+    }
+
+    public function test_reopened_emits_distinct_reopened_outcome_when_revive_on(): void
+    {
+        $this->enableRevive();
+        $this->fakeBoardCards();
+
+        $r = $this->classify('pull_request.reopened', ['title' => 'feat: DL-42 ship it', 'head' => ['ref' => 'feat/x']]);
+
+        $this->assertCount(1, $r->targets);
+        $this->assertSame('kanban_move_card', $r->targets[0]->handler);
+        $this->assertSame('reopened', $r->targets[0]->payload['outcome']);
+    }
+
+    public function test_reopened_stays_opened_outcome_when_revive_off(): void
+    {
+        // setUp's config has no revive_on_reopen → a reopened PR is byte-identical to
+        // today: it collapses to the `opened` outcome.
+        $this->fakeBoardCards();
+
+        $r = $this->classify('pull_request.reopened', ['title' => 'feat: DL-42 ship it', 'head' => ['ref' => 'feat/x']]);
+
+        $this->assertCount(1, $r->targets);
+        $this->assertSame('opened', $r->targets[0]->payload['outcome']);
+    }
+
+    public function test_reopened_dependabot_pr_stays_opened_never_reopened(): void
+    {
+        // SHOULD-FIX 1 regression guard: a reopened dependabot PR (create_dependabot_cards
+        // + revive_on_reopen both on) must keep the `opened` outcome on the DEPENDABOT
+        // target — dependabot cards archive on close, never park in closed_unmerged, so
+        // revival never applies. A `reopened` outcome here would null-stage the dependabot
+        // handler and neither move nor create the card.
+        $this->enableRevive(withDependabot: true);
+        Http::fake();
+
+        $r = $this->classify('pull_request.reopened', [
+            'title' => 'chore(deps): Bump x from 1 to 2',
+            'number' => 77,
+            'head' => ['ref' => 'dependabot/composer/x-2.0'],
+            'html_url' => 'https://github.com/owner/repo/pull/77',
+        ]);
+
+        $this->assertCount(1, $r->targets);
+        $this->assertSame('kanban_dependabot_card', $r->targets[0]->handler);
+        $this->assertSame('opened', $r->targets[0]->payload['outcome']);
+    }
 }

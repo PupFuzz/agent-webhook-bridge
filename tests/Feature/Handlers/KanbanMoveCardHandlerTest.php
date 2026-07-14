@@ -1033,4 +1033,151 @@ class KanbanMoveCardHandlerTest extends TestCase
             ->sort()->values()->all();
         $this->assertSame([5, 6], $pushes);
     }
+
+    // --- DL-195: Won't-Do-revival (reopened → revive from the abandon stage) ---
+
+    /**
+     * closed_unmerged parks in Won't-Do (77), which sits AFTER In-Review (50) in stage
+     * order, so a reopen revival is a backward move the DL-163 guard refuses without
+     * DL-195. revive_on_reopen on; hold_marker_tags per arg.
+     */
+    private function writeReviveConfig(array $holdMarkerTags = [], bool $withAlert = false): void
+    {
+        $stages = ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 77];
+        $extra = ['revive_on_reopen' => true, 'hold_marker_tags' => $holdMarkerTags];
+        $withAlert
+            ? $this->writeWritebackWithAlert($stages, $extra)
+            : $this->writeWriteback($stages, $extra);
+        $this->writeToken();
+    }
+
+    /** Board-8 order with Won't-Do (77) after In-Review; card at $currentStage. */
+    private function fakeReviveStageOrderAndCard(int $currentStage, array $cardData = [], bool $withAlert = false): void
+    {
+        $fakes = [
+            '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['id' => 11, 'stages' => [
+                ['id' => 49, 'position' => 3072.0],
+                ['id' => 50, 'position' => 4096.0],
+                ['id' => 52, 'position' => 5120.0],
+                ['id' => 53, 'position' => 6144.0],
+                ['id' => 77, 'position' => 7168.0],   // Won't-Do, AFTER In-Review
+            ]]]]]),
+            '*/tasks/5.json' => Http::response(['data' => array_merge(
+                ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => $currentStage], $cardData
+            )]),
+        ];
+        if ($withAlert) {
+            $fakes = [self::ALERT_URL.'*' => Http::response(['ok' => true])] + $fakes;
+        }
+        Http::fake($fakes);
+    }
+
+    public function test_reopened_revives_a_card_from_the_abandon_stage(): void
+    {
+        // The core hole: a reopened PR whose card is parked in Won't-Do (77) is
+        // revived back to In-Review (50) — the backward move the DL-163 guard refuses.
+        $this->writeReviveConfig();
+        $this->fakeReviveStageOrderAndCard(77);
+
+        $this->handle($this->payload(['outcome' => 'reopened']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 50]);
+    }
+
+    public function test_reopened_on_a_non_abandoned_card_is_forward_only_like_opened(): void
+    {
+        // A reopen of a card NOT in the abandon stage behaves exactly like `opened`:
+        // a forward move In-Progress(49) → In-Review(50) is allowed, no revival.
+        $this->writeReviveConfig();
+        $this->fakeReviveStageOrderAndCard(49);
+
+        $this->handle($this->payload(['outcome' => 'reopened']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 50]);
+    }
+
+    public function test_reopened_does_not_revive_a_terminal_card(): void
+    {
+        // Terminal protection: a card at Released (53) is NOT in the abandon stage, so
+        // a (stale) reopen targeting In-Review(50) is a backward move → refused.
+        $this->writeReviveConfig();
+        $this->fakeReviveStageOrderAndCard(53);
+
+        $this->handle($this->payload(['outcome' => 'reopened']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_reopened_redelivery_after_revival_no_double_move(): void
+    {
+        // A redelivered reopen after the revival: the card already sits at In-Review(50),
+        // so the idempotent already-in-stage short-circuit no-ops before the guard.
+        $this->writeReviveConfig();
+        $this->fakeReviveStageOrderAndCard(50);   // already revived
+
+        $this->handle($this->payload(['outcome' => 'reopened']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_reopened_pinned_card_is_revived_and_alerts(): void
+    {
+        // A human-pinned Won't-Do card is revived anyway (operator chose override) and
+        // the override alerts — the revived_on_reopen signal, symmetric with unpark.
+        $this->writeReviveConfig(withAlert: true);
+        Log::spy();
+        $this->fakeReviveStageOrderAndCard(77, ['tags' => ['no-automove']], withAlert: true);
+
+        $this->handle($this->payload(['outcome' => 'reopened']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 50]);
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_revived_on_reopen'
+            && $r['reason'] === 'revived_on_reopen'
+            && $r['repo'] === 'owner/repo'
+            && $r['card_id'] === 5
+            && $r['from_stage'] === 77);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'revived a card') && $ctx['hold_signal'] === 'no_automove');
+    }
+
+    public function test_reopened_bare_park_alerts_failsafe_when_no_hold_tags(): void
+    {
+        // A bare Won't-Do park (no recognized pin signal), no hold_marker_tags → the
+        // fail-safe alerts on every revival (an extra alert beats a missed override).
+        $this->writeReviveConfig(withAlert: true);
+        Log::spy();
+        $this->fakeReviveStageOrderAndCard(77, ['tags' => ['triaged']], withAlert: true);
+
+        $this->handle($this->payload(['outcome' => 'reopened']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH');
+        $this->assertSame(1, $this->alertPushCount());
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'revived a card') && $ctx['hold_signal'] === 'failsafe');
+    }
+
+    public function test_reopened_bare_park_stays_quiet_when_hold_tags_configured(): void
+    {
+        // A bare park with hold_marker_tags declared: the operator declared their
+        // marker, so a card without it is trusted → revived, no alert.
+        $this->writeReviveConfig(['gate'], withAlert: true);
+        $this->fakeReviveStageOrderAndCard(77, ['tags' => ['triaged']], withAlert: true);
+
+        $this->handle($this->payload(['outcome' => 'reopened']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH');
+        $this->assertSame(0, $this->alertPushCount());
+    }
+
+    public function test_reopened_forward_move_does_not_alert(): void
+    {
+        // A non-revival reopen (forward, card not in the abandon stage) moves but must
+        // NOT alert — only a genuine revival from the abandon stage is an override.
+        $this->writeReviveConfig(withAlert: true);
+        $this->fakeReviveStageOrderAndCard(49, [], withAlert: true);
+
+        $this->handle($this->payload(['outcome' => 'reopened']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH');
+        $this->assertSame(0, $this->alertPushCount());
+    }
 }
