@@ -223,9 +223,20 @@ class CheckCommand extends BridgeCommand
                 // validation can't catch a well-formed-but-stale pattern, so surface the
                 // configured patterns at preflight for eyeball verification against real
                 // workflow names. Warn-never-fail (the filter is a deliberate opt-in).
-                $failureFilter = $cfg->classifierConfig->strings('ci_failure_workflow_patterns');
-                if ($failureFilter !== [] && in_array('impl-ci-wake', $cfg->classifierConfig->strings('families'), true)) {
-                    $this->warn("agent {$name}: classifier.config.ci_failure_workflow_patterns = [".implode(', ', $failureFilter).'] — the impl-ci-wake CI-FAILURE wake fires ONLY for workflow_run names containing one of these (case-insensitive substring); a failure of any OTHER workflow on a subscribed scope will NOT wake. Verify these match your intended workflow names — a typo or a renamed workflow silences every failure wake.');
+                // `ci_failure_workflow_patterns` is a LAZY config key (not eagerly
+                // parsed in AgentConfig::load, unlike families/scope_author_map), so a
+                // malformed value (non-list / blank entry) first throws HERE. The
+                // classify path would 5xx on it at runtime — catch it per-agent (like
+                // the DL-196 block above) so one bad value surfaces cleanly instead of
+                // aborting the whole check + skipping every remaining agent.
+                try {
+                    $failureFilter = $cfg->classifierConfig->strings('ci_failure_workflow_patterns');
+                    if ($failureFilter !== [] && in_array('impl-ci-wake', $cfg->classifierConfig->strings('families'), true)) {
+                        $this->warn("agent {$name}: classifier.config.ci_failure_workflow_patterns = [".implode(', ', $failureFilter).'] — the impl-ci-wake CI-FAILURE wake fires ONLY for workflow_run names containing one of these (case-insensitive substring); a failure of any OTHER workflow on a subscribed scope will NOT wake. Verify these match your intended workflow names — a typo or a renamed workflow silences every failure wake.');
+                    }
+                } catch (Throwable $e) {
+                    $this->error("agent {$name}: classifier.config.ci_failure_workflow_patterns — ".$e->getMessage());
+                    $ok = false;
                 }
 
                 foreach ($cfg->subscriptions as $sub) {

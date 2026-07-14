@@ -120,6 +120,19 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);   // warn, not fail
     }
 
+    public function test_check_fails_on_malformed_ci_failure_workflow_patterns(): void
+    {
+        // A non-list value throws at parse (the classify path would 5xx on it) — the
+        // check surfaces it per-agent and fails, instead of crashing the whole run.
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
+            ."  config:\n    families: [impl-ci-wake]\n    ci_failure_workflow_patterns: not-a-list\n");
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('ci_failure_workflow_patterns')
+            ->assertExitCode(1);
+    }
+
     public function test_check_fails_on_malformed_writeback_json(): void
     {
         $this->writeAgent();
