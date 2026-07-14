@@ -458,7 +458,9 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * A completed workflow_run that wakes: any conclusion NOT in the benign set
      * (fail-loud CI-failure oversight), OR a name-matched provenance workflow that
      * SUCCEEDED (archival cue — sola's SLSA/Auto-tag). A benign, non-provenance
-     * conclusion is not wake-worthy.
+     * conclusion is not wake-worthy. The failure wake is optionally narrowed to a
+     * workflow-NAME allow-list (`ci_failure_workflow_patterns`, DL-197) — empty ⇒ any
+     * workflow; the narrowing is on workflow NAME only, never on conclusion.
      *
      * @param  array<mixed>  $payload
      * @return array{kind:string,ref:string,tail:string,url:string,extra:array<string,mixed>}|null
@@ -480,21 +482,52 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         // allow-set fails silent on a conclusion it doesn't enumerate).
         $benign = $cfg->strings('benign_conclusions', self::DEFAULT_BENIGN_CONCLUSIONS);
         if (! in_array($concl, $benign, true)) {
+            // Optional workflow-NAME filter on the FAILURE wake (DL-197). Empty
+            // (default) ⇒ any workflow's failure wakes (byte-identical). Non-empty ⇒
+            // only a name-matched workflow wakes — narrows WHICH workflows, never
+            // WHICH conclusions (the fail-loud gate above is untouched: for a matched
+            // workflow, EVERY non-benign conclusion still wakes). A run with NO name
+            // ($name === '') is never filtered — it can't be matched against the
+            // allow-list, so it wakes fail-loud, preserving the pre-filter behavior
+            // for a malformed payload. A filtered-out failure becomes a NON-wake run
+            // (drop / inbox_stage per `impl_non_wake_disposition`), same as a benign run.
+            $failurePatterns = $cfg->strings('ci_failure_workflow_patterns');
+            if ($failurePatterns !== [] && $name !== '' && ! $this->nameMatchesAnyPattern($name, $failurePatterns)) {
+                return null;
+            }
+
             return ['kind' => 'ci_failed', 'ref' => $runId, 'tail' => "{$name} → {$concl}", 'url' => $url, 'extra' => []];
         }
 
         // A benign conclusion — only a name-matched provenance SUCCESS is a (positive)
         // wake. Patterns are sola-specific config (e.g. SLSA / Auto-tag); absent ⇒
         // no provenance wake.
-        if ($concl === 'success') {
-            foreach ($cfg->strings('provenance_patterns') as $pattern) {
-                if ($pattern !== '' && str_contains(strtolower($name), $pattern)) {
-                    return ['kind' => 'provenance_ok', 'ref' => $runId, 'tail' => "{$name} → success", 'url' => $url, 'extra' => []];
-                }
-            }
+        if ($concl === 'success' && $this->nameMatchesAnyPattern($name, $cfg->strings('provenance_patterns'))) {
+            return ['kind' => 'provenance_ok', 'ref' => $runId, 'tail' => "{$name} → success", 'url' => $url, 'extra' => []];
         }
 
         return null;
+    }
+
+    /**
+     * Case-insensitive substring match of a workflow-run NAME against a pattern list.
+     * Patterns come from {@see ClassifierConfig::strings} → already lowercased and
+     * guaranteed non-empty (parseStringList rejects empty entries), so no per-entry
+     * empty guard is needed. Empty list ⇒ false. One matcher, two callers: the
+     * CI-failure name filter (DL-197) and the provenance-success cue.
+     *
+     * @param  list<string>  $patterns
+     */
+    private function nameMatchesAnyPattern(string $name, array $patterns): bool
+    {
+        $lower = strtolower($name);
+        foreach ($patterns as $pattern) {
+            if (str_contains($lower, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -536,8 +569,11 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     /**
      * A non-wake completed workflow_run staged for the broad inbox (inbox_stage).
      * Only TERMINAL (completed) runs are staged; a non-terminal run is filtered,
-     * same as the wake path. The wake-worthy completed runs (failure / provenance
-     * success) never reach here — they are handled by {@see workflowRunSignal}.
+     * same as the wake path. Wake-worthy completed runs (failure / provenance success)
+     * normally do not reach here — they are handled by {@see workflowRunSignal} — EXCEPT
+     * a FAILURE whose workflow name is excluded by `ci_failure_workflow_patterns`
+     * (DL-197): it becomes a non-wake run and is inbox-staged here like any benign run
+     * (conclusion-agnostic — the `{name} → {concl}` tail carries whatever conclusion it has).
      *
      * @param  array<mixed>  $payload
      * @return array{kind:string,ref:string,tail:string,url:string,extra:array<string,mixed>}|null

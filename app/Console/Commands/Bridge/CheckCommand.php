@@ -215,6 +215,19 @@ class CheckCommand extends BridgeCommand
                         $consumed = [];
                     }
                 }
+
+                // DL-197: the impl-ci-wake CI-FAILURE name filter INVERTS the family's
+                // fail-loud posture — a set-but-non-matching filter (a typo, or a
+                // workflow later renamed) silently blackholes EVERY CI-failure wake for
+                // the scope, with no inbox trace under the default `drop`. Config
+                // validation can't catch a well-formed-but-stale pattern, so surface the
+                // configured patterns at preflight for eyeball verification against real
+                // workflow names. Warn-never-fail (the filter is a deliberate opt-in).
+                $failureFilter = $cfg->classifierConfig->strings('ci_failure_workflow_patterns');
+                if ($failureFilter !== [] && in_array('impl-ci-wake', $cfg->classifierConfig->strings('families'), true)) {
+                    $this->warn("agent {$name}: classifier.config.ci_failure_workflow_patterns = [".implode(', ', $failureFilter).'] — the impl-ci-wake CI-FAILURE wake fires ONLY for workflow_run names containing one of these (case-insensitive substring); a failure of any OTHER workflow on a subscribed scope will NOT wake. Verify these match your intended workflow names — a typo or a renamed workflow silences every failure wake.');
+                }
+
                 foreach ($cfg->subscriptions as $sub) {
                     if ($sub->provider === 'github') {
                         $githubScopeConsumers[$sub->scopeId][] = [

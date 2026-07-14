@@ -232,6 +232,103 @@ class CoordinationClassifierTest extends TestCase
         $this->assertSame([], $r->intents);
     }
 
+    // ---- impl-ci-wake: ci_failure_workflow_patterns filter (DL-197) ----
+
+    public function test_ci_failure_filter_empty_wakes_any_failure(): void
+    {
+        // Absent filter ⇒ any workflow's failure wakes (back-compat, byte-identical).
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'Retention sweep', 'id' => 5]], 'org/impl', classifierConfig: $this->implConfig());
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
+    public function test_ci_failure_filter_matched_name_wakes(): void
+    {
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'Protocol integrity', 'id' => 5]], 'org/impl', classifierConfig: $this->implConfig(['ci_failure_workflow_patterns' => ['protocol integrity']]));
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
+    public function test_ci_failure_filter_unmatched_name_does_not_wake(): void
+    {
+        // A non-watched workflow's failure is filtered out → non-wake, default drop.
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'Retention sweep', 'id' => 5]], 'org/impl', classifierConfig: $this->implConfig(['ci_failure_workflow_patterns' => ['protocol integrity']]));
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_ci_failure_filter_unmatched_name_inbox_staged_when_disposition_set(): void
+    {
+        // A filtered-out failure is a NON-wake run: with inbox_stage it stages like any
+        // benign run (impl_ci, no channel_push) — conclusion-agnostic staging.
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'Retention sweep', 'id' => 5, 'html_url' => 'https://r/5']], 'org/impl', classifierConfig: $this->implConfig(['ci_failure_workflow_patterns' => ['protocol integrity'], 'impl_non_wake_disposition' => 'inbox_stage']));
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci', $r->intents[0]->kind);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_ci_failure_filter_matched_name_unknown_conclusion_still_wakes_fail_loud(): void
+    {
+        // The filter narrows WHICH workflows, never WHICH conclusions: a matched
+        // workflow with an unknown conclusion still wakes fail-loud.
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'stale', 'name' => 'Protocol integrity', 'id' => 5]], 'org/impl', classifierConfig: $this->implConfig(['ci_failure_workflow_patterns' => ['protocol integrity']]));
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
+    public function test_ci_failure_filter_substring_matches_ci_of_ci(): void
+    {
+        // `protocol integrity` substring-matches `Protocol integrity tests` too — both
+        // are oversight gates; substring is the desired behavior (sola/aimla intent).
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'Protocol integrity tests', 'id' => 5]], 'org/impl', classifierConfig: $this->implConfig(['ci_failure_workflow_patterns' => ['protocol integrity']]));
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
+    public function test_ci_failure_filter_is_case_insensitive(): void
+    {
+        // Config `Protocol integrity` (mixed case) is lowercased at parse; matching
+        // lowercases the name → matches regardless of case.
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'Protocol integrity', 'id' => 5]], 'org/impl', classifierConfig: $this->implConfig(['ci_failure_workflow_patterns' => ['Protocol integrity']]));
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
+    public function test_ci_failure_filter_empty_name_wakes_fail_loud(): void
+    {
+        // A failure with NO workflow name can't be matched against the allow-list →
+        // it is never filtered, and wakes fail-loud (preserves pre-filter behavior).
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'id' => 5]], 'org/impl', classifierConfig: $this->implConfig(['ci_failure_workflow_patterns' => ['protocol integrity']]));
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
+    public function test_ci_failure_filter_multi_pattern_second_match_wakes(): void
+    {
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'Protocol integrity', 'id' => 5]], 'org/impl', classifierConfig: $this->implConfig(['ci_failure_workflow_patterns' => ['alpha', 'protocol integrity']]));
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
+    public function test_ci_failure_filter_does_not_affect_provenance_success(): void
+    {
+        // The failure filter is applied ONLY in the failure branch — the provenance
+        // SUCCESS path is orthogonal. Filter set, provenance_patterns empty, a matched
+        // name concluding success ⇒ NO wake (the filter is never consulted here).
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'success', 'name' => 'Protocol integrity', 'id' => 5]], 'org/impl', classifierConfig: $this->implConfig(['ci_failure_workflow_patterns' => ['protocol integrity']]));
+
+        $this->assertSame([], $r->intents);
+    }
+
     // ---- impl-ci-wake: impl_repos gate (R1, DL-189) ----
 
     public function test_impl_repos_gate_wakes_when_scope_in_list(): void

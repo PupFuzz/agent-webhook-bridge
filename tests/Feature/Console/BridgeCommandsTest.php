@@ -106,6 +106,20 @@ class BridgeCommandsTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_check_warns_when_ci_failure_workflow_patterns_is_set(): void
+    {
+        // DL-197: the failure-name filter inverts the family's fail-loud posture — a
+        // stale/typo'd pattern silently blackholes every CI-failure wake — so
+        // bridge:check surfaces the configured patterns at preflight (warn, never fail).
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
+            ."  config:\n    families: [impl-ci-wake]\n    ci_failure_workflow_patterns: [protocol integrity]\n");
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('ci_failure_workflow_patterns')
+            ->assertExitCode(0);   // warn, not fail
+    }
+
     public function test_check_fails_on_malformed_writeback_json(): void
     {
         $this->writeAgent();
