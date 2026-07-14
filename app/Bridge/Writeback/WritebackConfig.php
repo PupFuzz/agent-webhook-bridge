@@ -27,6 +27,8 @@ use App\Bridge\Support\PathHelper;
  *         "draft_block_reason": "PR is in draft",   // optional (DL-194) — benign draft sentinel (no unpark alert)
  *         "revive_on_reopen": false,               // optional (DL-195) — a reopened abandoned PR revives its parked card (closed_unmerged → opened)
  *         "create_dependabot_cards": false,        // optional (DL-024)
+ *         "create_coord_cards": false,             // optional (DL-198) — real-time coord-issue → card create
+ *         "coord_card_stage_id": 21,               // required-when-create_coord_cards — stage a new coord card lands in
  *         "swimlane_id": 31,                        // optional — lane for CREATED cards (DL-027)
  *         "draft_overlay": false                    // optional (DL-193) — mirror PR draft state to block_reason
  *       }
@@ -195,7 +197,25 @@ final class WritebackConfig
                 }
                 $swimlaneId = (int) $m['swimlane_id'];
             }
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen);
+            // Opt-in coordination-issue → card create (DL-198). Plain bool, default
+            // false — parsed exactly like create_dependabot_cards, so a
+            // create_coord_cards-absent config is byte-identical to today.
+            $createCoordCards = ($m['create_coord_cards'] ?? false) === true;
+            // The stage a created coord card lands in (DL-198). Strict-numeric like
+            // swimlane_id, and REQUIRED-when-create_coord_cards: a create with no
+            // stage can't POST, so an absent stage while create_coord_cards is on
+            // must fail LOUD at load (fail-closed), not silently no-op at dispatch.
+            $coordCardStageId = null;
+            if (array_key_exists('coord_card_stage_id', $m) && $m['coord_card_stage_id'] !== null) {
+                if (! is_numeric($m['coord_card_stage_id'])) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} coord_card_stage_id must be a numeric workflow_stage_id");
+                }
+                $coordCardStageId = (int) $m['coord_card_stage_id'];
+            }
+            if ($createCoordCards && $coordCardStageId === null) {
+                throw new ConfigException("writeback.json: mapping for {$repo} sets create_coord_cards but no coord_card_stage_id — a coord-card create has no stage to POST to; set coord_card_stage_id (or remove create_coord_cards)");
+            }
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId);
         }
 
         return new self($identityId, $mappings, self::parseAlertChannel($raw));

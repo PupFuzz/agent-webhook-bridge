@@ -428,4 +428,68 @@ class WritebackConfigTest extends TestCase
         $this->assertFalse($cfg->boardIsShared(12));
         $this->assertFalse($cfg->boardIsShared(999));
     }
+
+    // ---- DL-198: create_coord_cards + coord_card_stage_id ----
+
+    public function test_absent_create_coord_cards_defaults_false_byte_identical(): void
+    {
+        // The load-bearing back-compat property: a mapping with neither key parses
+        // exactly as before — createCoordCards false, coordCardStageId null.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
+        $this->assertFalse($mapping->createCoordCards);
+        $this->assertNull($mapping->coordCardStageId);
+    }
+
+    public function test_create_coord_cards_with_stage_parses(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
+        $this->assertTrue($mapping->createCoordCards);
+        $this->assertSame(21, $mapping->coordCardStageId);
+    }
+
+    public function test_create_coord_cards_without_stage_throws(): void
+    {
+        // Fail-closed at LOAD: a create with no stage can't POST, so it must fail
+        // loud, not silently no-op at dispatch.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('create_coord_cards but no coord_card_stage_id');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_non_numeric_coord_card_stage_id_throws(): void
+    {
+        // Strict like swimlane_id — a typo must not fail-quiet.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 'stage-x'],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('coord_card_stage_id must be a numeric');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_coord_card_stage_id_without_create_flag_is_inert_but_parsed(): void
+    {
+        // A stage set without the flag is allowed (no throw) — createCoordCards
+        // false ⇒ the handler/classifier never act on it.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'coord_card_stage_id' => 21],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
+        $this->assertFalse($mapping->createCoordCards);
+        $this->assertSame(21, $mapping->coordCardStageId);
+    }
 }

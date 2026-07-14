@@ -7,6 +7,7 @@ use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ExternalReferenceNormalizer;
+use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -197,35 +198,19 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
 
     /**
      * Reduce the cards for one repo+PR down to a single survivor, archiving the rest,
-     * and return the survivor's card. The survivor is the LOWEST id — a deterministic
-     * choice, so two racing workers that each observe the same set converge on the
-     * same survivor and the same archive set (no flip-flop). Archiving is idempotent
-     * (an archived card drops out of correlation, so a redelivery re-presents
-     * nothing). Assumes a non-empty map (every caller has already guarded `!== []`).
-     * The cards share an identical dependabot payload, so which one survives is
-     * immaterial — only that exactly one does.
+     * and return the survivor's card. Delegates the deterministic-tie-break kernel
+     * (keep lowest id, archive rest) to the shared {@see CardCollapse} so the two
+     * create-capable movers can never drift on which card wins (DL-198); the (repo,
+     * PR) correlation stays here. Assumes a non-empty map (every caller has already
+     * guarded `!== []`). The cards share an identical dependabot payload, so which one
+     * survives is immaterial — only that exactly one does.
      *
      * @param  non-empty-array<int, array<string, mixed>>  $cards  id => card
      * @return array<string, mixed>
      */
     private function collapseDuplicates(KanbanClient $client, array $cards, string $repo, int $prNumber): array
     {
-        ksort($cards);
-        $survivorId = array_key_first($cards);
-        foreach (array_keys($cards) as $id) {
-            if ($id === $survivorId) {
-                continue;
-            }
-            if ($client->archiveCard($id)) {
-                Log::info('kanban_dependabot_card: archived duplicate card for the same repo+PR', ['card_id' => $id, 'survivor' => $survivorId, 'repo' => $repo, 'pr' => $prNumber]);
-            } else {
-                // 200 but not archived = wrong-verb / contract change — deterministic,
-                // so log LOUD + leave it rather than 5xx-storm an unfixable event (DL-020).
-                Log::error('kanban_dependabot_card: duplicate archive returned 200 but the card is not archived (archived_at null); NOT retrying', ['card_id' => $id, 'survivor' => $survivorId, 'repo' => $repo, 'pr' => $prNumber]);
-            }
-        }
-
-        return $cards[$survivorId];
+        return CardCollapse::toSurvivor($client, $cards, 'kanban_dependabot_card', ['repo' => $repo, 'pr' => $prNumber]);
     }
 
     private function isPermanent(RequestException $e): bool

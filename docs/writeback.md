@@ -165,6 +165,33 @@ It is **strict** like `board_id`/`stages`: a non-numeric value fails `writeback.
 
 **Worked example.** With the mapping above, dependabot opens `chore(deps): Bump x from 1 to 2` (PR #77, head `dependabot/composer/x-2.0`) → a card *"chore(deps): Bump x from 1 to 2"* appears on board 8 in **In Review** (50), tagged `dependencies`/`triaged`, with `payload.pr_number: 77`. When it auto-merges to `dev`, the card moves to **Shipped to dev** (52). `php artisan bridge:inspect <event_id>` shows each create/move.
 
+## Optional: real-time coordination issue → card (DL-198)
+
+If you run the bridge on a **coordination repo** (the Agent Board Framework's `[BRIEF]`/`[QUERY]`/… thread repo), a periodic `reconcile_simple_board` pass already mints a tracking card for each recognized-prefix issue. Set **`create_coord_cards: true`** (plus a **`coord_card_stage_id`**) on that repo's mapping and the bridge instead creates the card **in real time** the moment the issue opens — the reconcile stays the **backstop** (it adopts the bridge-created card by its `id:<sid>` tag, so the bridge stays **registry-free** and the two movers never duplicate).
+
+```jsonc
+// $BRIDGE_DIR/writeback.json
+{
+  "identity_id": 4242,                 // REQUIRED — the created card's task.created echoes back; this gates it (see below)
+  "mappings": {
+    "your-org/your-coord-repo": {
+      "board_id": 8,
+      "create_coord_cards": true,      // opt-in (default false ⇒ byte-identical)
+      "coord_card_stage_id": 21,       // required-when-create_coord_cards — the stage a new coord card lands in
+      "swimlane_id": 31,               // optional — created cards land in this lane
+      "stages": { /* … */ }            // PR outcomes (unused if the coord repo has no PR writeback)
+    }
+  }
+}
+```
+
+- **Enable the family.** The classifier that cards coord issues is a `CoordinationClassifier` **family** — add **`coord-card-create`** to that agent's `classifier.config.families` (it is **not** a default). It runs on the same agent already handling coord wakes → no new agent, no new webhook subscription (`issues` is already delivered). It cards **every** recognized-prefix issue on the repo (board-level, **not** addressed-to-me) — its own gate is a recognized prefix AND this mapping's `create_coord_cards`.
+- **What gets carded.** An issue whose **trimmed title** starts with `[BRIEF]`, `[ANNOUNCE]`, `[QUERY]`, `[REVIEW]`, or `[TASK]` (case-insensitive), on `issues.opened` **or** `issues.reopened`. An un-prefixed / `[PROPOSAL]` / unrecognized-prefix issue is **not** carded (the create-set equals the reconcile's own-prefix set, so a carded issue is always one the reconcile backstops).
+- **The card.** Named the issue title verbatim; tagged **`id:<sid>`** + **`type:<itype>`** only (`sid = "<PREFIX>-<num>"`, e.g. `QUERY-42`; `itype` = the lowercased prefix). `repo:` is **omitted** at create (non-critical — the reconcile folds it). It also sets `description = "Coordination thread <repo>#<num>"`, `priority = 1` for a `[BRIEF]` else `0`, `external_id = <num>` (integer), and `external_link = https://github.com/<repo>/issues/<num>` — mirroring the reconcile's create so its next pass doesn't update-churn them.
+- **Create-only + idempotent.** The bridge **never moves or archives** a coord card (the reconcile owns column/lifecycle). It correlates by the **`id:<sid>` tag**: if a card already carries it, it **skips** — which covers redelivery, opened+reopened, **and** the bridge-vs-reconcile race (both movers key on the same tag). After a create it re-reads by tag and collapses a raced duplicate (keep lowest id, archive the rest — the shared deterministic tie-break). Durable, transient(5xx→retry)/permanent(4xx→log+no-op).
+- **`identity_id` is REQUIRED (echo-gate).** A created card fires a kanban `task.created` webhook that comes back to the bridge; if any agent runs the `kanban-triage` family on that board, that echo reads as an untriaged card and could **self-wake**. The **only** guard is the global-echo gate keyed on `writeback.json` `identity_id`. `bridge:check` **warns** when `create_coord_cards` is set but `identity_id` is null.
+- **`bridge:check`.** Validates `coord_card_stage_id` (and any `swimlane_id`) exists on the board — a typo'd id makes every create 422 and silently no-op. Missing `coord_card_stage_id` while `create_coord_cards` is on **fails the config closed at load** (a create with no stage can't POST).
+
 ## Optional: PR draft → `block_reason` overlay (DL-193)
 
 Set **`draft_overlay: true`** on a mapping and the writeback mirrors a PR's **draft** state onto its correlated card's **`block_reason`** field — so a card whose PR is a draft is visibly *blocked*. This is an **overlay only**: it writes one field, it **never moves the card** between stages/columns. It rides the same DL/`card#` correlation as the move path (move ALL matching cards, one-to-many), and off/absent ⇒ the draft actions are ignored (byte-identical to today).

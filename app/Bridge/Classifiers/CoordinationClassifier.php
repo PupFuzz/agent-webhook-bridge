@@ -3,6 +3,7 @@
 namespace App\Bridge\Classifiers;
 
 use App\Bridge\Contracts\DeclaresConsumedEvents;
+use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
@@ -10,6 +11,7 @@ use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\RecipientAddressing;
+use App\Bridge\Writeback\WritebackConfig;
 
 /**
  * Coordination + impl/CI classifier for the Claude Code Coordination Framework —
@@ -57,6 +59,12 @@ use App\Bridge\Support\RecipientAddressing;
  *     (DL-168): pairs the inbox `new_card` Intent with a channel_push to the
  *     triage owner. Folded in from the retired standalone KanbanTriageClassifier
  *     (now a thin back-compat shim that just enables this family).
+ *   - `coord-card-create` — github `issues.opened/reopened` on the coord repo
+ *     whose title carries a recognized `[PREFIX]` (DL-198): emits ONE
+ *     `kanban_coord_card` writeback target (no intent, no wake) so a tracking card
+ *     is created in real time. Runs board-level (independent of the coord-message
+ *     recipient gate); own gate is prefix-recognized AND the repo's
+ *     `writeback.json` mapping has `create_coord_cards`. Opt-in (not a default).
  *
  * SCOPE-AGNOSTIC: never branches on `$ctx->scopeId` for routing — it keys on the
  * addressing labels + `$agent->agentName` — so the same instance serves a coord
@@ -72,7 +80,7 @@ use App\Bridge\Support\RecipientAddressing;
  * Stateless: `$agent`/config are read as call-locals (one cached instance serves
  * every agent in the per-agent dispatch loop — never stash on the instance).
  */
-class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresConsumedEvents
+class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresConsumedEvents, EmitsWritebackReactions
 {
     /** event_type prefix → the body-actions that represent a NEW coordination message worth waking on. */
     private const HANDLED = [
@@ -128,6 +136,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'coord-message' => $this->coordMessageFamily($ctx, $cfg),
                 'impl-ci-wake' => $this->implCiWakeFamily($ctx, $cfg),
                 'kanban-triage' => $this->kanbanTriageFamily($ctx, $base),
+                'coord-card-create' => $this->coordCardCreateFamily($ctx),
                 default => null,   // unknown family: ignore (forward-compat; bridge:check can warn)
             };
             if ($result === null) {
@@ -159,10 +168,10 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * applies, falling back to {@see defaultFamilies()}. Derived from the SAME
      * source of truth the classify pipeline uses so the two can't drift:
      * coord-message from {@see HANDLED}, impl-ci-wake from
-     * {@see IMPL_CI_WAKE_EVENT_TYPES}. kanban-triage (and any unknown family) is a
-     * kanban-provider family that consumes NO GitHub event type → contributes
-     * nothing. Pure `$cfg` → map, no class-loading (the HARD CONTRACT on
-     * {@see DeclaresConsumedEvents}).
+     * {@see IMPL_CI_WAKE_EVENT_TYPES}, coord-card-create → `issues` (DL-198).
+     * kanban-triage (and any unknown family) is a kanban-provider family that
+     * consumes NO GitHub event type → contributes nothing. Pure `$cfg` → map, no
+     * class-loading (the HARD CONTRACT on {@see DeclaresConsumedEvents}).
      *
      * @return list<string>
      */
@@ -175,6 +184,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             $events = [...$events, ...match ($family) {
                 'coord-message' => self::coordMessageEventTypes(),
                 'impl-ci-wake' => self::IMPL_CI_WAKE_EVENT_TYPES,
+                'coord-card-create' => ['issues'],   // acts on issues.opened/reopened (DL-198)
                 default => [],   // kanban-triage (kanban provider) + unknown families: no github event type
             }];
         }
@@ -676,6 +686,82 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         }
 
         return false;
+    }
+
+    // =====================================================================
+    // Family: coord-card-create (DL-198 — real-time coordination issue → card)
+    // =====================================================================
+    //
+    // A coordination issue opened/reopened with a recognized `[PREFIX]` title gets a
+    // tracking card CREATED in real time (the bridge is the primary mover; the
+    // periodic reconcile is the backstop that adopts it by the `id:<sid>` tag). Runs
+    // INDEPENDENTLY of the coord-message recipient gate — it cards EVERY
+    // recognized-prefix issue on the coord repo (board-level, not addressed-to-me);
+    // its own gate is prefix-recognized AND the repo's `writeback.json` mapping has
+    // `create_coord_cards`. Emits ONE writeback target, NO intent, NO wake.
+
+    private function coordCardCreateFamily(ClassifyContext $ctx): ?ClassifyResult
+    {
+        if ($ctx->provider !== 'github') {
+            return null; // coordination issues are GitHub-only
+        }
+        if ($ctx->eventType !== 'issues.opened' && $ctx->eventType !== 'issues.reopened') {
+            return null; // opened + reopened only (a pre-ship issue backfills on its next reopen)
+        }
+        $issue = is_array($ctx->payload['issue'] ?? null) ? $ctx->payload['issue'] : null;
+        if ($issue === null || ! is_numeric($issue['number'] ?? null)) {
+            return null;
+        }
+        $num = (int) $issue['number'];
+        $title = is_string($issue['title'] ?? null) ? $issue['title'] : '';
+
+        $sid = $this->stableId($title, $num);
+        if ($sid === null) {
+            return null; // un-prefixed / PROPOSAL / unrecognized → not carded (definitional skip)
+        }
+
+        // Own gate: the repo must opt into coord-card creation. Loaded like the
+        // PR-move classifier does — absent mapping / opt-out ⇒ byte-identical no-op.
+        $configDir = (string) config('bridge.config_dir');
+        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $mapping = $writeback?->mappingFor($ctx->scopeId);
+        if ($mapping === null || ! $mapping->createCoordCards) {
+            return null;
+        }
+
+        $itype = strtolower(explode('-', $sid, 2)[0]);   // sid = "<PREFIX_UPPER>-<num>" → itype
+        $url = is_string($issue['html_url'] ?? null) ? $issue['html_url'] : '';
+
+        return new ClassifyResult(targets: [
+            ReactionTarget::make('kanban_coord_card', "issue-{$num}", payload: [
+                'repo' => $ctx->scopeId,
+                'issue_number' => $num,
+                'sid' => $sid,
+                'itype' => $itype,
+                'title' => $title,
+                'issue_url' => $url,
+            ]),
+        ]);
+    }
+
+    /**
+     * The card adoption key `sid` (DL-198) — byte-exact to the reconcile's Python
+     * `_stable_id` recognized-prefix branch: an anchored, case-insensitive `[PREFIX]`
+     * at the START of the trimmed title (`PREFIX ∈ {BRIEF, ANNOUNCE, QUERY, REVIEW,
+     * TASK}`), emitting `"<PREFIX_UPPER>-<num>"` (un-padded). NO trailing boundary —
+     * `[QUERY]x` matches → `QUERY-<num>` (the reconcile does too; a `(?=\s|$)` guard
+     * would make PHP MORE restrictive and orphan a card the reconcile creates).
+     * `trim()` mirrors Python's `.strip()`. Un-prefixed / PROPOSAL / unrecognized →
+     * null → NOT carded (the create-set equals the reconcile's own-prefix set, so a
+     * carded issue is always one the periodic pass backstops).
+     */
+    private function stableId(string $title, int $num): ?string
+    {
+        if (preg_match('/^\[(BRIEF|ANNOUNCE|QUERY|REVIEW|TASK)\]/i', trim($title), $m) === 1) {
+            return strtoupper($m[1]).'-'.$num;
+        }
+
+        return null;
     }
 
     // =====================================================================

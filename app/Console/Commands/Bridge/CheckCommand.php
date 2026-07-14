@@ -520,6 +520,15 @@ class CheckCommand extends BridgeCommand
                                 $this->warn("writeback: mapping for {$repo} sets revive_on_reopen but not ".implode(' / ', $missingRevive).' — Won\'t-Do-revival (DL-195) needs BOTH stages.opened (revive-to) and stages.closed_unmerged (abandon stage) and is silently INERT until set');
                             }
                         }
+                        // DL-198: a created coord card's task.created webhook would echo
+                        // back to the bridge; only the global-echo gate (identity_id)
+                        // stops it from self-waking a kanban-triage session. With no
+                        // identity_id, that guard is absent — surface the concrete hazard
+                        // (the generic no-identity_id warn above doesn't name it). Config
+                        // -only; the missing-stage half is already fail-closed at load.
+                        if ($mapping->createCoordCards && $writeback->identityId === null) {
+                            $this->warn("writeback: mapping for {$repo} sets create_coord_cards but writeback.json has no identity_id — a created coord card's task.created webhook echoes back and could self-wake a kanban-triage session; set identity_id (the global-echo gate is the sole guard).");
+                        }
                     }
 
                     try {
@@ -609,6 +618,11 @@ class CheckCommand extends BridgeCommand
                                     // guard silently never match (same class as above).
                                     foreach ($mapping->unparkFromStages ?? [] as $fromId) {
                                         $targets[] = $fromId;
+                                    }
+                                    // DL-198: the coord-card create stage — a typo'd id makes
+                                    // every coord-card create 422 and silently no-op (same class).
+                                    if ($mapping->coordCardStageId !== null) {
+                                        $targets[] = $mapping->coordCardStageId;
                                     }
                                     $unknownStages = array_values(array_unique(array_diff($targets, $boardStageIds)));
                                     if ($unknownStages !== []) {
