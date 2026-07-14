@@ -3,10 +3,12 @@
 namespace App\Bridge\Classifiers;
 
 use App\Bridge\Contracts\Classifier;
+use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -35,8 +37,21 @@ use Illuminate\Support\Facades\Log;
  * with no parseable card reference, or a repo with no `writeback.json` mapping →
  * empty result (graceful no-op).
  */
-class GitHubPrCardMoveClassifier implements Classifier, EmitsWritebackReactions
+class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, EmitsWritebackReactions
 {
+    /**
+     * The top-level GitHub event types this classifier consumes (card#4183 /
+     * DL-196): a `pull_request.<action>` (the move lifecycle) and a `push` (the
+     * DL-160 branch-create `started` trigger). Config-independent. Pure map — the
+     * HARD CONTRACT on {@see DeclaresConsumedEvents}.
+     *
+     * @return list<string>
+     */
+    public function consumedEventTypes(ClassifierConfig $cfg): array
+    {
+        return ['pull_request', 'push'];
+    }
+
     public function classify(ClassifyContext $ctx): ClassifyResult
     {
         $eventType = $ctx->eventType;

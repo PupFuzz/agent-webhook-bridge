@@ -3,6 +3,7 @@
 namespace App\Console\Commands\Bridge;
 
 use App\Bridge\Adapters\WebhookAdapterFactory;
+use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Handlers\KanbanDependabotCardHandler;
 use App\Bridge\Support\AgentConfig;
@@ -23,6 +24,7 @@ use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
+use App\Models\WebhookEvent;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\DB;
 use Throwable;
@@ -129,6 +131,13 @@ class CheckCommand extends BridgeCommand
         // writeback-emitting classifier — used to flag orphaned writeback
         // mappings below (#2162). Keyed by scope for O(1) lookup.
         $writebackEmittingScopes = [];
+        // github scope (repo full_name) => list of the agents subscribed to it and
+        // the top-level event types each CONSUMES, for the event-follows-consumer
+        // check below (card#4183 / DL-196). Multiple agents can subscribe one scope
+        // (the bridge dispatches each event to all of them), so consumed is the
+        // union over all of them — hence a list per scope, not one entry.
+        // Shape: scope => list<array{agent:string, class:string, consumed:list<string>, declared:bool}>.
+        $githubScopeConsumers = [];
         $hasSecretDir = is_string($secretDir) && str_starts_with($secretDir, '/');
         if (is_string($configDir) && is_dir($configDir)) {
             foreach (glob(rtrim($configDir, '/').'/*.yml') ?: [] as $file) {
@@ -178,6 +187,42 @@ class CheckCommand extends BridgeCommand
                         if ($sub->provider === 'github') {
                             $writebackEmittingScopes[$sub->scopeId] = true;
                         }
+                    }
+                }
+
+                // card#4183 (DL-196): record the top-level github event types this
+                // agent's classifier CONSUMES per subscribed github scope, for the
+                // event-follows-consumer check after the loop. DL-025-safe, mirroring
+                // the orphan check above: probeImplements is OUT OF PROCESS; the
+                // consumedEventTypes() call is on the instance for() already resolved
+                // in-process (line ~172, after probeLoadable passed), wrapped in
+                // catch(Throwable) → an undeclared/failing classifier contributes
+                // nothing to `consumed` (conservative — at worst a false WARN, never a
+                // false clean). A classifier NOT implementing the interface is recorded
+                // as `declared:false` so the check can disambiguate a possible false
+                // positive (sola's #22 note).
+                $declares = ClassifierResolver::probeImplements($cfg->classifierClass, DeclaresConsumedEvents::class);
+                $consumed = [];
+                if ($declares) {
+                    try {
+                        $instance = ClassifierResolver::for($cfg);
+                        $consumed = $instance instanceof DeclaresConsumedEvents
+                            ? $instance->consumedEventTypes($cfg->classifierConfig)
+                            : [];
+                        $declares = $instance instanceof DeclaresConsumedEvents;
+                    } catch (Throwable) {
+                        $declares = false;   // treat as undeclared (conservative)
+                        $consumed = [];
+                    }
+                }
+                foreach ($cfg->subscriptions as $sub) {
+                    if ($sub->provider === 'github') {
+                        $githubScopeConsumers[$sub->scopeId][] = [
+                            'agent' => $name,
+                            'class' => $cfg->classifierClass,
+                            'consumed' => $consumed,
+                            'declared' => $declares,
+                        ];
                     }
                 }
 
@@ -571,7 +616,100 @@ class CheckCommand extends BridgeCommand
             }
         }
 
+        // card#4183 (DL-196): event-follows-consumer. WARN (never fail) when a
+        // github event type has ARRIVED for a scope but no enabled classifier
+        // consumes it. Independent of writeback (a coord agent has no writeback).
+        $this->checkEventFollowsConsumer($githubScopeConsumers);
+
         return $ok ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * card#4183 (DL-196): "event follows consumer". Per `github:<scope>`, WARN when
+     * a top-level event type has been RECEIVED (in `webhook_events`, provider
+     * github) but no enabled classifier of any agent subscribed to that scope
+     * consumes it — the event arrives and is silently dropped. WARN, never
+     * error/fail (a hygiene smell, not a broken install), consistent with every
+     * advisory in this command.
+     *
+     * Structurally the sibling of the orphaned-writeback-mapping check: both ask
+     * "is there classifier code that activates this config artifact?", here of a
+     * subscribed/arriving event. The observed set is the bridge's OWN inbound
+     * history (no GitHub hooks-API call — the least-privilege reconcile token can't
+     * read `/repos/{repo}/hooks`; §3 of the design), and is bounded by
+     * `bridge:prune` retention (a long-quiet unconsumed event self-heals on its
+     * next arrival — acceptable for a WARN).
+     *
+     * Fail-soft: wrapped so a DB hiccup can never throw out of `bridge:check`;
+     * emits only `warn`/`info`, never `error`. An empty `webhook_events` for a
+     * scope ⇒ no warns (nothing has been dropped yet — correct).
+     *
+     * @param  array<string, list<array{agent:string, class:string, consumed:list<string>, declared:bool}>>  $githubScopeConsumers
+     */
+    private function checkEventFollowsConsumer(array $githubScopeConsumers): void
+    {
+        if ($githubScopeConsumers === []) {
+            return;
+        }
+
+        try {
+            foreach ($githubScopeConsumers as $scope => $consumers) {
+                // observed: distinct top-level event types actually received for this
+                // scope, normalized off the `.action` suffix (webhook_events stores
+                // `pull_request.opened`; the top level is `pull_request`).
+                $observed = [];
+                $rows = WebhookEvent::query()
+                    ->where('provider', 'github')
+                    ->where('scope_id', (string) $scope)
+                    ->distinct()
+                    ->pluck('event_type');
+                foreach ($rows as $eventType) {
+                    if (is_string($eventType) && $eventType !== '') {
+                        $observed[explode('.', $eventType, 2)[0]] = true;
+                    }
+                }
+                if ($observed === []) {
+                    continue;   // nothing arrived → nothing dropped (not a false clean)
+                }
+
+                // consumed: union across EVERY enabled classifier subscribed to the
+                // scope (not one-per-scope — the AIMLA case, two agents on one scope).
+                $consumed = [];
+                $undeclared = [];   // classifiers with no DeclaresConsumedEvents (disambiguation)
+                foreach ($consumers as $c) {
+                    foreach ($c['consumed'] as $eventType) {
+                        $consumed[$eventType] = true;
+                    }
+                    if (! $c['declared']) {
+                        $undeclared[$c['class'].' (agent '.$c['agent'].')'] = true;
+                    }
+                }
+
+                $unconsumed = array_values(array_diff(array_keys($observed), array_keys($consumed)));
+                if ($unconsumed === []) {
+                    continue;
+                }
+
+                // Disambiguation (sola's #22): an undeclared classifier on the scope
+                // MIGHT consume the event without declaring it, so a warn below may be
+                // a false positive — say so, keeping it actionable. Moot for the
+                // reference classifiers (all declare); matters only for custom impls.
+                foreach (array_keys($undeclared) as $desc) {
+                    $this->warn("event-consumer: scope github:{$scope} has an enabled classifier {$desc} that does not declare its consumed events (App\\Bridge\\Contracts\\DeclaresConsumedEvents) — the following unconsumed-event WARNING(s) MAY be a false positive if that classifier actually consumes them");
+                }
+
+                $subscribed = implode(', ', array_values(array_unique(array_map(
+                    static fn (array $c): string => $c['agent'],
+                    $consumers,
+                ))));
+                foreach ($unconsumed as $eventType) {
+                    $this->warn("event-consumer: github:{$scope} has received '{$eventType}' but no enabled classifier consumes it — the event is silently dropped on arrival (agent(s) subscribed: {$subscribed}). Add a consuming family, or drop '{$eventType}' from the subscription via coord:setup-bridge.");
+                }
+            }
+        } catch (Throwable $e) {
+            // Fail-soft: this advisory must never break the install check.
+            $this->info('event-consumer: check skipped — '.$e->getMessage());
+        }
     }
 
     /**

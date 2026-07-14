@@ -7,6 +7,7 @@ use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\ClassifierConfig;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -68,6 +69,17 @@ class GitHubPrCardMoveClassifierTest extends TestCase
             ['id' => 7, 'payload' => ['dl_number' => 'DL-9']],
             ['id' => 5, 'payload' => ['dl_number' => 'DL-42']],
         ]])]);
+    }
+
+    public function test_consumed_event_types_are_pull_request_and_push(): void
+    {
+        // card#4183 (DL-196): the writeback classifier consumes pull_request (the
+        // move lifecycle) + push (the DL-160 branch-create `started` trigger),
+        // config-independent.
+        $events = (new GitHubPrCardMoveClassifier)->consumedEventTypes(ClassifierConfig::empty());
+
+        sort($events);
+        $this->assertSame(['pull_request', 'push'], $events);
     }
 
     public function test_opened_pr_correlates_and_emits_move_to_opened_stage(): void

@@ -3,10 +3,12 @@
 namespace Tests\Unit\Classifiers;
 
 use App\Bridge\Classifiers\CoordinationClassifier;
+use App\Bridge\Classifiers\KanbanTriageClassifier;
 use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\ClassifierConfig;
 use Tests\TestCase;
 
 class CoordinationClassifierTest extends TestCase
@@ -49,6 +51,52 @@ class CoordinationClassifierTest extends TestCase
         $labels = array_map(fn ($n) => ['name' => $n], $labelNames);
 
         return ['issue' => ['number' => $number, 'title' => $title, 'body' => $body, 'labels' => $labels, 'html_url' => 'https://x/'.$number]];
+    }
+
+    // ---- consumedEventTypes (card#4183 / DL-196) ----
+
+    /** @param array<mixed> $config */
+    private function config(array $config = []): ClassifierConfig
+    {
+        return ClassifierConfig::fromClassifierSection($config === [] ? [] : ['config' => $config]);
+    }
+
+    public function test_consumed_event_types_default_families_are_coord_message(): void
+    {
+        // Unset families ⇒ the coord-message default, derived from HANDLED.
+        $events = $this->classifier->consumedEventTypes($this->config());
+
+        sort($events);
+        $this->assertSame(['issue_comment', 'issues', 'pull_request'], $events);
+    }
+
+    public function test_consumed_event_types_impl_ci_wake_subset(): void
+    {
+        $events = $this->classifier->consumedEventTypes($this->config(['families' => ['impl-ci-wake']]));
+
+        sort($events);
+        $this->assertSame(['push', 'workflow_run'], $events);
+    }
+
+    public function test_consumed_event_types_union_over_enabled_families(): void
+    {
+        // Both families enabled ⇒ the DEDUPED union of their top-level event types.
+        $events = $this->classifier->consumedEventTypes($this->config(['families' => ['coord-message', 'impl-ci-wake']]));
+
+        sort($events);
+        $this->assertSame(['issue_comment', 'issues', 'pull_request', 'push', 'workflow_run'], $events);
+    }
+
+    public function test_consumed_event_types_kanban_triage_has_no_github_events(): void
+    {
+        // kanban-triage is a kanban-provider family — it consumes NO github event type.
+        $this->assertSame([], $this->classifier->consumedEventTypes($this->config(['families' => ['kanban-triage']])));
+    }
+
+    public function test_consumed_event_types_triage_shim_default_has_no_github_events(): void
+    {
+        // The KanbanTriageClassifier shim defaults to [kanban-triage] → no github events.
+        $this->assertSame([], (new KanbanTriageClassifier)->consumedEventTypes($this->config()));
     }
 
     // ---- coord-message family (default; back-compat) ----

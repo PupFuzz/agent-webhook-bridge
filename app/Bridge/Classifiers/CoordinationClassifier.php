@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Classifiers;
 
+use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
@@ -71,7 +72,7 @@ use App\Bridge\Support\RecipientAddressing;
  * Stateless: `$agent`/config are read as call-locals (one cached instance serves
  * every agent in the per-agent dispatch loop — never stash on the instance).
  */
-class CoordinationClassifier extends InboxOnlyClassifier
+class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresConsumedEvents
 {
     /** event_type prefix → the body-actions that represent a NEW coordination message worth waking on. */
     private const HANDLED = [
@@ -79,6 +80,17 @@ class CoordinationClassifier extends InboxOnlyClassifier
         'issue_comment.' => ['created'],
         'pull_request.' => ['opened', 'reopened', 'ready_for_review'],
     ];
+
+    /**
+     * The top-level GitHub event types the `impl-ci-wake` family consumes (§3):
+     * a `push` (release-landed) and a `workflow_run.<action>` (CI). This is the
+     * SINGLE source of truth {@see consumedEventTypes} unions for that family — it
+     * mirrors the two dispatch guards in {@see implCiWakeFamily} (`$eventType ===
+     * 'push'` / `str_starts_with($eventType, 'workflow_run.')`); keep them in sync.
+     * (coord-message derives its types from {@see HANDLED} instead, so it can't
+     * drift at all.)
+     */
+    private const IMPL_CI_WAKE_EVENT_TYPES = ['push', 'workflow_run'];
 
     /** Families run when `classifier.config.families` is unset — the pre-#8 behavior. */
     private const DEFAULT_FAMILIES = ['coord-message'];
@@ -139,6 +151,48 @@ class CoordinationClassifier extends InboxOnlyClassifier
     protected function defaultFamilies(): array
     {
         return self::DEFAULT_FAMILIES;
+    }
+
+    /**
+     * The union of top-level GitHub event types over the ENABLED families
+     * (card#4183 / DL-196) — the same `$cfg->enabledFamilies` gate `classify()`
+     * applies, falling back to {@see defaultFamilies()}. Derived from the SAME
+     * source of truth the classify pipeline uses so the two can't drift:
+     * coord-message from {@see HANDLED}, impl-ci-wake from
+     * {@see IMPL_CI_WAKE_EVENT_TYPES}. kanban-triage (and any unknown family) is a
+     * kanban-provider family that consumes NO GitHub event type → contributes
+     * nothing. Pure `$cfg` → map, no class-loading (the HARD CONTRACT on
+     * {@see DeclaresConsumedEvents}).
+     *
+     * @return list<string>
+     */
+    public function consumedEventTypes(ClassifierConfig $cfg): array
+    {
+        $families = $cfg->enabledFamilies !== [] ? $cfg->enabledFamilies : $this->defaultFamilies();
+
+        $events = [];
+        foreach ($families as $family) {
+            $events = [...$events, ...match ($family) {
+                'coord-message' => self::coordMessageEventTypes(),
+                'impl-ci-wake' => self::IMPL_CI_WAKE_EVENT_TYPES,
+                default => [],   // kanban-triage (kanban provider) + unknown families: no github event type
+            }];
+        }
+
+        return array_values(array_unique($events));
+    }
+
+    /**
+     * The top-level GitHub event types the `coord-message` family consumes,
+     * derived from {@see HANDLED} (`issues.`/`issue_comment.`/`pull_request.` →
+     * `issues`/`issue_comment`/`pull_request`) so {@see consumedEventTypes} cannot
+     * drift from the actual dispatch surface.
+     *
+     * @return list<string>
+     */
+    private static function coordMessageEventTypes(): array
+    {
+        return array_map(static fn (string $prefix): string => rtrim($prefix, '.'), array_keys(self::HANDLED));
     }
 
     /**
