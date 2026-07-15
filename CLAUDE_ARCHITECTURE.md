@@ -21,7 +21,8 @@ Upstream system (kanban-board, GitHub, ...)
  DispatchService::dispatch(provider, scopeId, event, payload)      ← the synchronous core
    ├─ record   dedupCreate(webhook_events)   UNIQUE(delivery_id) dedup + audit/replay store
    ├─ for each subscribed agent on this (provider, scope):
-   │    ├─ build Actor via AgentRegistry → EchoSuppression: is this the agent's own write? skip.
+   │    ├─ build Actor via AgentRegistry → EchoSuppression: is this the agent's own write? skip
+   │    │      (github writeback classifier: classify + strip to machine targets instead, DL-203)
    │    ├─ classify()   → ClassifyResult(intents, targets)        (A) throws → record + ack 200
    │    ├─ stage intents → inbox.jsonl                            (B) throws → propagate → 5xx (redelivered)
    │    └─ run each target's Handler                              (C) throws → dispatch done-with-note, continue

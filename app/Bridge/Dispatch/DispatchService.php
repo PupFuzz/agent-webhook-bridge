@@ -4,6 +4,7 @@ namespace App\Bridge\Dispatch;
 
 use App\Bridge\Adapters\EventDto;
 use App\Bridge\Contracts\DurableReaction;
+use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
@@ -102,22 +103,55 @@ final class DispatchService
 
             $actor = $this->agents->actorFromEvent($provider, $dto->actorId, $payload);
 
+            // Resolved BEFORE the gates because the gates' disposition depends
+            // on the classifier's marker (DL-203) — the marker cannot be read
+            // without loading the class. A CATCHABLE resolution failure (missing
+            // class, not-a-Classifier, ConfigException) is the same deterministic
+            // config error as a classify throw → treatment A (record + ack 200).
+            // A DL-025 stale-signature classifier is an UNCATCHABLE E_COMPILE_ERROR
+            // that fatals here as it already does on every ungated event —
+            // `bridge:check`'s out-of-process probeLoadable is the pre-deploy gate
+            // for that, and hoisting widens WHICH events hit it (a gated stream no
+            // longer acks 200 first), it does not create the failure mode.
+            try {
+                $classifier = ClassifierResolver::for($agent);
+            } catch (Throwable $e) {
+                $this->recordError($dispatch, $e);
+
+                continue;
+            }
+
+            // Echo/signal are AGENT-SURFACE concerns, not dispatch concerns
+            // (DL-203): for a github writeback-emitting classifier a gate hit
+            // means classify-then-STRIP (inbox/wake surface removed, machine
+            // writeback preserved — the agent's own PR merge must still move
+            // its card) instead of a wholesale drop. Everything else keeps the
+            // cheap pre-classify drop byte-identical — the provider gate keeps
+            // the kanban global-echo stream (the writeback identity's own
+            // card_updated echo, incl. a kanban-triage marker seat) off the
+            // classify path entirely.
+            $stripToMachine = $provider === 'github' && $classifier instanceof EmitsWritebackReactions;
+
             // Filtered out before classify → a gate-drop, not a delivery (DL-036).
+            $gateReason = null;
             if ($this->isEcho($agent, $actor)) {
-                $this->markDropped($dispatch, 'echo: own write');
+                $gateReason = 'echo: own write';
+            } elseif (! $this->isSignal($agent, $actor)) {
+                $gateReason = 'actor is not a signal';
+            }
+            if ($gateReason !== null && ! $stripToMachine) {
+                $this->markDropped($dispatch, $gateReason);
 
                 continue;
             }
-            if (! $this->isSignal($agent, $actor)) {
-                $this->markDropped($dispatch, 'actor is not a signal');
 
-                continue;
-            }
-
-            // (A) classify — application error → record + continue (no 5xx)
+            // (A) classify — application error → record + continue (no 5xx).
+            // A throw on an already-gate-flagged dispatch is STILL treatment A
+            // (ruled, DL-203): the classifier error is real and must stay
+            // replayable regardless of how the gate would have disposed of it.
             try {
                 $ctx = new ClassifyContext($dto->eventType, $payload, $actor, $provider, $scopeId, $agent);
-                $result = ClassifierResolver::for($agent)->classify($ctx);
+                $result = $classifier->classify($ctx);
             } catch (Throwable $e) {
                 $this->recordError($dispatch, $e);
 
@@ -130,11 +164,37 @@ final class DispatchService
             // recovered the true author, re-run the SAME per-agent echo check
             // now that attribution is better — drop the agent's OWN write (a
             // different shared-id agent's write has a non-self name and stays).
-            // No-op when the classifier left reattributedActor null.
-            if ($result->reattributedActor !== null && $this->isEcho($agent, $result->reattributedActor)) {
-                $this->markDropped($dispatch, 'echo: own write (reattributed author)');
+            // No-op when the classifier left reattributedActor null, and
+            // redundant when a pre-classify gate already flagged the dispatch.
+            if ($gateReason === null && $result->reattributedActor !== null && $this->isEcho($agent, $result->reattributedActor)) {
+                if (! $stripToMachine) {
+                    $this->markDropped($dispatch, 'echo: own write (reattributed author)');
 
-                continue;
+                    continue;
+                }
+                $gateReason = 'echo: own write (reattributed author)';
+            }
+
+            // The DL-203 strip: a gate hit on a github writeback classifier
+            // removes the agent-facing surface — every intent (so inbox staging
+            // AND the route_intents synthesis below derive nothing) and every
+            // non-DurableReaction target (fail-closed: an unmarked or
+            // unregistered custom handler is agent-facing until marked durable,
+            // so a classifier bug can't leak an own-write wake/spawn). Nothing
+            // machine-facing left → the gate wins whole, recorded under its
+            // ORIGINAL reason (never 'classifier emitted no reactions' — the
+            // classifier may well have emitted; the gate ate it).
+            if ($gateReason !== null) {
+                $machineTargets = array_values(array_filter(
+                    $result->targets,
+                    fn (ReactionTarget $t): bool => $this->handlers->resolve($t->handler) instanceof DurableReaction,
+                ));
+                if ($machineTargets === []) {
+                    $this->markDropped($dispatch, $gateReason);
+
+                    continue;
+                }
+                $result = new ClassifyResult(targets: $machineTargets);
             }
 
             // (B) inbox staging — durability; an IO failure propagates → 5xx.
@@ -227,7 +287,7 @@ final class DispatchService
             if ($result->intents === [] && $targets === []) {
                 $this->markDropped($dispatch, 'classifier emitted no reactions');
             } else {
-                $this->markDelivered($dispatch, $note);
+                $this->markDelivered($dispatch, $note, $gateReason !== null ? 'echo: agent surface suppressed' : null);
             }
         }
     }
@@ -274,20 +334,25 @@ final class DispatchService
         return SignalAllowlist::default($agent->echoSuppression->treatAsSignal, $this->agents)->isSignal($actor);
     }
 
-    private function markDelivered(AgentDispatch $dispatch, ?string $note = null): void
+    private function markDelivered(AgentDispatch $dispatch, ?string $note = null, ?string $reason = null): void
     {
         $dispatch->update([
             'processed_at' => now(),
             'outcome' => AgentDispatch::OUTCOME_DELIVERED,
             'error_message' => $note,   // a best-effort handler failure, if any
-            'reason' => null,           // clear a prior pass's drop reason (--force replay transition)
+            // Non-null on a delivered row ONLY for the DL-203 echo-suppressed
+            // machine writeback ('echo: agent surface suppressed'); otherwise
+            // cleared like before (--force replay transition, DL-036).
+            'reason' => $reason,
         ]);
         // Info-level so the healthy live path is observable (it otherwise logs
-        // nothing — only failures logged at WARNING) — DL-036.
+        // nothing — only failures logged at WARNING) — DL-036. The reason key
+        // marks a suppressed-surface delivery in the live log (DL-203).
         Log::info('bridge dispatch: delivered', array_filter([
             'agent' => $dispatch->agent_name,
             'event' => $dispatch->webhook_event_id,
             'handler_note' => $note,
+            'reason' => $reason,
         ], static fn ($v) => $v !== null));
     }
 

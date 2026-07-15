@@ -8,8 +8,10 @@ use Closure;
 /**
  * Predicate-based filter applied BEFORE classify(). When isEcho()
  * is true the dispatch is marked done but skipped — no classify, no surface.
- * Predicate-based (not a bare id list) so consumers can filter by name, raw
- * id, or anything on the Actor.
+ * (One carve-out, DL-203: for a github writeback-emitting classifier the
+ * dispatcher classifies anyway and strips to machine-only targets — the agent
+ * surface still never fires.) Predicate-based (not a bare id list) so
+ * consumers can filter by name, raw id, or anything on the Actor.
  */
 final class EchoSuppression
 {
