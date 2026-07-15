@@ -64,13 +64,26 @@ final class WritebackMapping
      *                                the target — there is NO `stages.reopened` key.
      * @param  bool  $createCoordCards  opt-in (DL-198): a coordination issue opened/reopened with a
      *                                  recognized `[PREFIX]` title gets a tracking card CREATED in
-     *                                  real time, keyed (idempotent) on the `id:<sid>` tag. Create-only
-     *                                  (the periodic reconcile owns column/lifecycle). Default false ⇒
-     *                                  no coord card is created (byte-identical).
+     *                                  real time, keyed (idempotent) on the `id:<sid>` tag. This flag
+     *                                  is create-only; its sibling $moveCoordCards (DL-200) carries the
+     *                                  column moves, and the periodic reconcile owns column/lifecycle
+     *                                  wherever that one is off. Default false ⇒ no coord card is
+     *                                  created (byte-identical).
      * @param  ?int  $coordCardStageId  the stage a new coord card lands in (DL-198) — REQUIRED when
      *                                  createCoordCards is true (a create with no stage can't POST →
      *                                  the config fails closed at load, not silently at dispatch). null
-     *                                  when createCoordCards is false.
+     *                                  when createCoordCards is false. Doubles as the REVIVE target
+     *                                  under moveCoordCards (DL-200), so it is required there too.
+     * @param  bool  $moveCoordCards  opt-in (DL-200): a coordination issue CLOSING moves its tracking
+     *                                card to coordCardTerminalStageId, and a REOPEN revives a card whose
+     *                                terminal this bridge set back to coordCardStageId. Correlated by the
+     *                                same `id:<sid>` tag createCoordCards writes. Separately opt-in — it
+     *                                does NOT ride createCoordCards (roundtable #18 "opt-in first").
+     *                                Default false ⇒ no coord card is ever moved (byte-identical).
+     * @param  ?int  $coordCardTerminalStageId  the terminal stage a coord card moves to when its issue
+     *                                          closes (DL-200) — REQUIRED when moveCoordCards is true,
+     *                                          and MUST differ from coordCardStageId (equal ⇒ close and
+     *                                          revive resolve to one stage ⇒ the leg can express neither).
      */
     public function __construct(
         public readonly int $boardId,
@@ -85,6 +98,8 @@ final class WritebackMapping
         public readonly bool $reviveOnReopen = false,
         public readonly bool $createCoordCards = false,
         public readonly ?int $coordCardStageId = null,
+        public readonly bool $moveCoordCards = false,
+        public readonly ?int $coordCardTerminalStageId = null,
     ) {}
 
     /** The configured stage id for a GitHub-PR outcome, or null when unmapped. */

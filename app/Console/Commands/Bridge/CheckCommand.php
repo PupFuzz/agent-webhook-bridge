@@ -19,11 +19,13 @@ use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
 use App\Bridge\Writeback\AlertChannel;
+use App\Bridge\Writeback\CoordConfigTerminals;
 use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
+use App\Bridge\Writeback\WritebackMapping;
 use App\Models\WebhookEvent;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\DB;
@@ -624,6 +626,11 @@ class CheckCommand extends BridgeCommand
                                     if ($mapping->coordCardStageId !== null) {
                                         $targets[] = $mapping->coordCardStageId;
                                     }
+                                    // DL-200: the coord-card terminal — same class again (a typo'd
+                                    // id 422s every close→terminal move and silently no-ops).
+                                    if ($mapping->coordCardTerminalStageId !== null) {
+                                        $targets[] = $mapping->coordCardTerminalStageId;
+                                    }
                                     $unknownStages = array_values(array_unique(array_diff($targets, $boardStageIds)));
                                     if ($unknownStages !== []) {
                                         $this->warn("writeback: mapping for {$repo} references workflow stage id(s) ".implode(', ', $unknownStages)." not on board {$mapping->boardId} — those moves will 422 (or the started/no-regression guard will silently never match) until fixed");
@@ -631,6 +638,9 @@ class CheckCommand extends BridgeCommand
                                         $this->info("writeback: all mapped stage ids exist on board {$mapping->boardId} ({$repo})");
                                     }
                                 }
+                                // DL-200: the cross-config compare — the MANDATORY preflight that
+                                // makes the move leg's bridge-owned terminal config legitimate.
+                                $this->checkCoordTerminalAgreement($repo, $mapping, $client);
                             } catch (Throwable $e) {
                                 $this->warn("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".$e->getMessage());
                             }
@@ -804,6 +814,102 @@ class CheckCommand extends BridgeCommand
                 $this->info("writeback: dl_number cards on board {$boardId} all have a mapped source (self-move-eligible)");
             }
         }
+    }
+
+    /**
+     * DL-200 — the MANDATORY cross-config preflight for the coord-card move leg
+     * (roundtable #18, ruled 3-way): compare THIS bridge's `coord_card_terminal_stage_id`
+     * against what the coordination config considers terminal for the same board.
+     *
+     * WHY IT IS MANDATORY, not a nicety. Q1's real failure is NOT "a stage id that isn't
+     * on the board" — the stage-existence check above already catches that. It is the two
+     * movers DISAGREEING about which column concludes a card: the bridge moves a closed
+     * card to stage X while the reconcile treats stage Y as terminal, so they fight every
+     * cycle, forever, with each side individually "working". Only comparing the two
+     * CONFIGS can see that. This read is what makes it legitimate for the bridge to own a
+     * terminal stage id in its own config at all.
+     *
+     * TWO BINDING CONDITIONS (non-negotiable, both peer-affirmed):
+     *  (a) FAIL SOFT, and report CANNOT-VERIFY **distinctly from agreement**. An absent /
+     *      unreadable / malformed / silent-on-this-board coord config means the comparison
+     *      COULD NOT RUN. Never print agreement on a read failure — a missing input is not
+     *      evidence of agreement, it is evidence we could not ask.
+     *  (b) NEVER FAIL THE BRIDGE. Diagnostics only, warn-never-fail (the DL-196 posture) —
+     *      `bridge:check` must not go non-zero because a coord file moved.
+     */
+    private function checkCoordTerminalAgreement(string $repo, WritebackMapping $mapping, KanbanClient $client): void
+    {
+        if (! $mapping->moveCoordCards || $mapping->coordCardTerminalStageId === null) {
+            return;   // leg off ⇒ nothing to verify (and no CANNOT-VERIFY noise on installs that never enable it)
+        }
+        $mine = $mapping->coordCardTerminalStageId;
+        $prefix = "writeback: move_coord_cards ({$repo}, board {$mapping->boardId})";
+        $tail = 'Until this is verified the two movers may disagree about which column is terminal and fight every cycle.';
+
+        // The per-install override (BRIDGE_COORD_CONFIG_PATH via .env) first, then the
+        // ambient $COORD_CONFIG read LIVE through getenv(). getenv() rather than env()
+        // is load-bearing, not a style choice: `php artisan optimize` caches config/ and
+        // freezes every env() at deploy time (and the frozen value wins over the live
+        // one), so an ambient path resolved in config/bridge.php would be whatever the
+        // DEPLOYING shell had — usually nothing — forever. That would make this
+        // "mandatory" compare permanently report CANNOT-VERIFY: present, running, and
+        // never once doing its job. getenv() is cache-immune, and reading it here is
+        // legitimate ONLY because this command is CLI-only (the receiver's FPM env has
+        // no $COORD_CONFIG — which is the whole reason the compare lives here).
+        $path = config('bridge.writeback.coord_config_path');
+        if (! is_string($path) || $path === '') {
+            $ambient = getenv('COORD_CONFIG');
+            $path = is_string($ambient) && $ambient !== '' ? $ambient : null;
+        }
+        $config = CoordConfigTerminals::load($path);
+        if ($config === null) {
+            $where = $path === null ? '$COORD_CONFIG is not set' : "the coordination config at {$path} is absent, unreadable, or malformed";
+            $this->warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
+
+            return;
+        }
+
+        // Resolved through the framework's OWN rule (explicit terminal_columns, else the
+        // user_lanes → "Done" lane-model fallback), joined by board_id and unioned across
+        // every entry sharing it — see CoordConfigTerminals. A bare terminal_columns read
+        // would resolve NOTHING on the canonical lane-model `issues` board.
+        $names = CoordConfigTerminals::terminalNamesForBoardId($config, $mapping->boardId);
+        if ($names === []) {
+            $this->warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — it declares no terminal for board {$mapping->boardId} (no kanban.boards[] entry carries that board_id, or the entry has neither terminal_columns nor user_lanes). {$tail}");
+
+            return;
+        }
+        if (count($names) > 1) {
+            // >1 is legal framework-wide (e.g. ["Released to main", "Won't Do"]), but the
+            // bridge concludes into exactly ONE stage, so which of them it ought to match
+            // is genuinely unknowable. Ambiguous ⇒ cannot verify; never pick one and call
+            // that agreement.
+            $this->warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — it resolves ".count($names)." terminals for board {$mapping->boardId} (".implode(', ', $names).'), but the bridge concludes cards into exactly one stage, so which it should match is ambiguous. '.$tail);
+
+            return;
+        }
+        $name = $names[0];
+
+        try {
+            $byName = $client->boardStageIdsByName($mapping->boardId);
+        } catch (Throwable $e) {
+            $this->warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — could not read board {$mapping->boardId} to resolve its terminal column \"{$name}\" to a stage id: ".$e->getMessage().' '.$tail);
+
+            return;
+        }
+        if (! array_key_exists($name, $byName)) {
+            $this->warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — its terminal column \"{$name}\" for board {$mapping->boardId} is not a stage on that board, so it cannot be compared against stage {$mine}. {$tail}");
+
+            return;
+        }
+
+        $theirs = $byName[$name];
+        if ($theirs === $mine) {
+            $this->info("{$prefix}: coord config agrees — its terminal \"{$name}\" is stage {$theirs}, matching coord_card_terminal_stage_id");
+
+            return;
+        }
+        $this->warn("{$prefix}: the two movers DISAGREE on the terminal — this bridge concludes coord cards into stage {$mine}, but the coordination config's terminal for board {$mapping->boardId} is \"{$name}\" (stage {$theirs}). They will fight every cycle: the bridge moves a closed card to {$mine} and the reconcile drags it back to {$theirs}. Set coord_card_terminal_stage_id={$theirs}, or change that board's terminal_columns.");
     }
 
     /**

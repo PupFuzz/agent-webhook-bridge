@@ -410,4 +410,38 @@ class KanbanClientTest extends TestCase
         $this->assertSame([31, 32], $this->client()->boardSwimlaneIds(8));
         Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/boards/8/preload.json'));
     }
+
+    public function test_board_stage_ids_by_name_maps_names_to_ids(): void
+    {
+        // DL-200: the coord-config compare resolves a terminal column NAME to a stage
+        // id, so bridge:check needs the name→id direction boardStageOrder doesn't give.
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [
+            ['stages' => [
+                ['id' => 48, 'name' => 'Backlog', 'position' => 1024],
+                ['id' => 53, 'name' => 'Done', 'position' => 2048],
+            ]],
+        ]]])]);
+
+        $this->assertSame(['Backlog' => 48, 'Done' => 53], $this->client()->boardStageIdsByName(8));
+    }
+
+    public function test_board_stage_ids_by_name_flattens_across_workflows_and_skips_malformed_rows(): void
+    {
+        // Same flattening boardStageOrder does (a board may carry several workflows),
+        // and a row without an id/name must be skipped rather than fatal.
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [
+            ['stages' => [['id' => 1, 'name' => 'A'], ['id' => 2], ['name' => 'no-id'], 'bad-row']],
+            ['stages' => [['id' => 3, 'name' => 'B']]],
+            'bad-workflow',
+        ]]])]);
+
+        $this->assertSame(['A' => 1, 'B' => 3], $this->client()->boardStageIdsByName(8));
+    }
+
+    public function test_board_stage_ids_by_name_is_empty_when_no_stages_are_read(): void
+    {
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => []])]);
+
+        $this->assertSame([], $this->client()->boardStageIdsByName(8));
+    }
 }

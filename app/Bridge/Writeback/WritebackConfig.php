@@ -28,7 +28,9 @@ use App\Bridge\Support\PathHelper;
  *         "revive_on_reopen": false,               // optional (DL-195) — a reopened abandoned PR revives its parked card (closed_unmerged → opened)
  *         "create_dependabot_cards": false,        // optional (DL-024)
  *         "create_coord_cards": false,             // optional (DL-198) — real-time coord-issue → card create
- *         "coord_card_stage_id": 21,               // required-when-create_coord_cards — stage a new coord card lands in
+ *         "coord_card_stage_id": 21,               // required-when-create_coord_cards/move_coord_cards — stage a new coord card lands in, and the revive target
+ *         "move_coord_cards": false,               // optional (DL-200) — real-time coord-issue close → terminal, reopen → revive
+ *         "coord_card_terminal_stage_id": 99,      // required-when-move_coord_cards — terminal a closed coord card moves to (MUST differ from coord_card_stage_id)
  *         "swimlane_id": 31,                        // optional — lane for CREATED cards (DL-027)
  *         "draft_overlay": false                    // optional (DL-193) — mirror PR draft state to block_reason
  *       }
@@ -215,7 +217,38 @@ final class WritebackConfig
             if ($createCoordCards && $coordCardStageId === null) {
                 throw new ConfigException("writeback.json: mapping for {$repo} sets create_coord_cards but no coord_card_stage_id — a coord-card create has no stage to POST to; set coord_card_stage_id (or remove create_coord_cards)");
             }
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId);
+            // Opt-in coordination-issue → card MOVE/revive (DL-200). Separately opt-in
+            // from create_coord_cards (roundtable #18 "opt-in first") — a move-on/create-off
+            // mapping is coherent, so this must NOT ride createCoordCards.
+            $moveCoordCards = ($m['move_coord_cards'] ?? false) === true;
+            // The terminal a coord card moves to when its issue closes (DL-200). Strict-numeric
+            // + REQUIRED-when-move_coord_cards, exactly like coord_card_stage_id under
+            // create_coord_cards: a move with no terminal has nowhere to PATCH to, so it must
+            // fail LOUD at load rather than silently no-op at dispatch.
+            $coordCardTerminalStageId = null;
+            if (array_key_exists('coord_card_terminal_stage_id', $m) && $m['coord_card_terminal_stage_id'] !== null) {
+                if (! is_numeric($m['coord_card_terminal_stage_id'])) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} coord_card_terminal_stage_id must be a numeric workflow_stage_id");
+                }
+                $coordCardTerminalStageId = (int) $m['coord_card_terminal_stage_id'];
+            }
+            if ($moveCoordCards && $coordCardTerminalStageId === null) {
+                throw new ConfigException("writeback.json: mapping for {$repo} sets move_coord_cards but no coord_card_terminal_stage_id — a coord-card close has no terminal stage to move to; set coord_card_terminal_stage_id (or remove move_coord_cards)");
+            }
+            // coord_card_stage_id is the REVIVE target under move_coord_cards (the stage a
+            // reopened card returns to — the same stage a fresh card lands in, mirroring
+            // DL-195's "revive reuses stages.opened"). Absent ⇒ the leg half-works: closes
+            // land, reopens silently no-op. Fail closed.
+            if ($moveCoordCards && $coordCardStageId === null) {
+                throw new ConfigException("writeback.json: mapping for {$repo} sets move_coord_cards but no coord_card_stage_id — a reopened coord card has no stage to revive to; set coord_card_stage_id (or remove move_coord_cards)");
+            }
+            // Disjointness, fail-closed (the DL-194 unpark_from_stages precedent): an equal
+            // terminal and create/revive stage collapses both transitions onto one stage —
+            // close→terminal and reopen→revive become indistinguishable no-ops.
+            if ($coordCardTerminalStageId !== null && $coordCardTerminalStageId === $coordCardStageId) {
+                throw new ConfigException("writeback.json: mapping for {$repo} coord_card_terminal_stage_id must differ from coord_card_stage_id — a coord card cannot conclude into the same stage it is created/revived in");
+            }
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId);
         }
 
         return new self($identityId, $mappings, self::parseAlertChannel($raw));
