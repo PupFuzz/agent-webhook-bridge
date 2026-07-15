@@ -449,6 +449,115 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame('started', $result->targets[0]->payload['outcome']);
     }
 
+    // --- DL-201 / roundtable #48: dash alias + DL-shaped boundary + near-miss warn.
+    // The regex decisions are the guard (hostile-input matrix, mutation-checked):
+    // reintroducing the trailing \b REDs the underscore tests; dropping the dash
+    // alias REDs the card- tests; losing the leading \b REDs the discard/wildcard
+    // tests. ---
+
+    public function test_dash_card_token_on_a_branch_create_push_emits_started(): void
+    {
+        Http::fake();
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/card-3054-fix']);
+
+        $this->assertCount(1, $r->targets);
+        $this->assertSame(3054, $r->targets[0]->payload['card_id']);
+        $this->assertSame('started', $r->targets[0]->payload['outcome']);
+        Http::assertNothingSent();
+    }
+
+    public function test_underscore_after_id_still_correlates_no_trailing_boundary(): void
+    {
+        // THE roundtable-#48 hole: with a trailing \b, `_` (a word char) after the
+        // digits made card#3054_fix a SILENT no-op while DL-200_fix was immune.
+        // DL-shaped = both token forms tolerate a word char after the id.
+        Http::fake();
+        foreach (['refs/heads/feat/card-3054_fix', 'refs/heads/feat/card#3054_fix'] as $ref) {
+            $r = $this->classifyPush(['created' => true, 'ref' => $ref]);
+            $this->assertCount(1, $r->targets, $ref);
+            $this->assertSame(3054, $r->targets[0]->payload['card_id'], $ref);
+        }
+    }
+
+    public function test_embedded_card_words_do_not_correlate_leading_boundary_holds(): void
+    {
+        // `discard-1`, `wildcard-2`: "card" preceded by a word char is not a token.
+        Http::fake();
+        Log::spy();
+        foreach (['refs/heads/feat/discard-1-thing', 'refs/heads/fix/wildcard-2-x'] as $ref) {
+            $r = $this->classifyPush(['created' => true, 'ref' => $ref]);
+            $this->assertSame([], $r->targets, $ref);
+        }
+        Http::assertNothingSent();
+        Log::shouldNotHaveReceived('warning');   // not a near-miss either — no \b'd "card" present
+    }
+
+    public function test_dash_card_token_at_start_of_name_and_after_non_word_char(): void
+    {
+        Http::fake();
+        foreach (['refs/heads/card-77-bare' => 77, 'refs/heads/feat-card-88-x' => 88] as $ref => $id) {
+            $r = $this->classifyPush(['created' => true, 'ref' => $ref]);
+            $this->assertCount(1, $r->targets, $ref);
+            $this->assertSame($id, $r->targets[0]->payload['card_id'], $ref);
+        }
+    }
+
+    public function test_near_miss_card_token_in_branch_warns_and_noops(): void
+    {
+        // A branch that NAMES a card in a shape the token doesn't accept must fail
+        // LOUD, not silent — the exact defect class (b) closes: the branch publishes,
+        // the card never moves, nobody is told.
+        Http::fake();
+        Log::spy();   // Facade::spy() no-ops when already mocked — one spy, count totals
+        $refs = ['refs/heads/feat/card_3054-fix', 'refs/heads/feat/card3054', 'refs/heads/feat/card:3054'];
+        foreach ($refs as $ref) {
+            $r = $this->classifyPush(['created' => true, 'ref' => $ref]);
+            $this->assertSame([], $r->targets, $ref);
+        }
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'near-miss'))->times(count($refs));
+        Http::assertNothingSent();
+    }
+
+    public function test_token_less_branch_stays_silent_no_near_miss_spam(): void
+    {
+        // The warn is a NEAR-MISS detector, not an any-unlinked warn: routine
+        // token-less branches (sync/, release/, plain features) and embedded
+        // "card"-words followed by non-digits must not log.
+        Http::fake();
+        Log::spy();
+        foreach ([
+            'refs/heads/sync/main-to-dev-post-v0.56.0',
+            'refs/heads/release/v0.57.0',
+            'refs/heads/feat/scorecard_2',          // "card" not \b'd → not a near-miss
+            'refs/heads/feat/card-layout-rework',   // token form but no digits → not a near-miss
+        ] as $ref) {
+            $r = $this->classifyPush(['created' => true, 'ref' => $ref]);
+            $this->assertSame([], $r->targets, $ref);
+        }
+        Log::shouldNotHaveReceived('warning');
+        Http::assertNothingSent();
+    }
+
+    public function test_dash_card_token_in_pr_title_correlates_and_near_miss_in_pr_warns(): void
+    {
+        Http::fake();
+        $r = $this->classify('pull_request.opened', ['title' => 'Fix flaky retry card-3410', 'head' => ['ref' => 'f']]);
+        $this->assertCount(1, $r->targets);
+        $this->assertSame(3410, $r->targets[0]->payload['card_id']);
+
+        Log::spy();
+        $miss = $this->classify('pull_request.opened', ['title' => 'Fix flaky retry card_3410', 'head' => ['ref' => 'f']]);
+        $this->assertSame([], $miss->targets);
+        $spaceHash = $this->classify('pull_request.opened', ['title' => 'Fixes card #3410', 'head' => ['ref' => 'f']]);
+        $this->assertSame([], $spaceHash->targets);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'near-miss'))->times(2);
+
+        $prose = $this->classify('pull_request.opened', ['title' => 'supports card 2 of the deck', 'head' => ['ref' => 'f']]);
+        $this->assertSame([], $prose->targets);
+        Log::shouldHaveReceived('warning')->times(2);   // still 2 — bare "card 2" prose is not a near-miss
+        Http::assertNothingSent();
+    }
+
     // --- FR #3866: the card# fallback target carries correlation-key stamp hints ---
 
     public function test_card_fallback_stamps_pr_number_and_no_dl_when_only_a_card_token_is_present(): void
