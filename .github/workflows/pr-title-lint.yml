@@ -56,26 +56,33 @@ jobs:
               ;;
           esac
 
-          # The <type>/<card-id>-slug convention: a lowercase type segment, a
-          # numeric card id, then a hyphen. Anything else has no card id to enforce.
-          if [[ ! "$BRANCH" =~ ^[a-z-]+/[0-9]+- ]]; then
+          # Case-insensitive throughout: the classifier's regexes are /i, so the
+          # lint folds its INPUTS once and matches lowercase patterns — a title
+          # the classifier correlates must never red here on case alone (#4384).
+          branch_lc=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]')
+          title_lc=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]')
+
+          # The <type>/<card-id>-slug convention: a type segment, a numeric card
+          # id, then a hyphen. Anything else has no card id to enforce.
+          if [[ ! "$branch_lc" =~ ^[a-z-]+/[0-9]+- ]]; then
             echo "Branch '$BRANCH' does not follow <type>/<card-id>-slug — no card id to enforce, skipping."
             exit 0
           fi
 
           # Extract the card id: drop the leading "type/", then keep the digits
           # up to the first hyphen.
-          card_id="${BRANCH#*/}"
+          card_id="${branch_lc#*/}"
           card_id="${card_id%%-*}"
 
           # Accept a genuine "card-<exact-id>"/"card#<exact-id>" or "DL-<1-4
           # digits>" token, bounded on BOTH sides so a coincidental substring does
-          # not satisfy the check: the leading (^|[^0-9A-Za-z_]) mirrors the
+          # not satisfy the check: the leading (^|[^0-9a-z_]) mirrors the
           # classifier's \b (underscore is a word char there — a title the lint
           # passes must also correlate), rejecting tails like "IDL-2"/
           # "discard#3770"/"foo_card-3770"; the trailing ([^0-9]|$) rejects a
-          # longer id like "card#37700".
-          if [[ "$TITLE" =~ (^|[^0-9A-Za-z_])card[-#]${card_id}([^0-9]|$) ]] || [[ "$TITLE" =~ (^|[^0-9A-Za-z_])DL-[0-9]{1,4}([^0-9]|$) ]]; then
+          # longer id like "card#37700". Inputs are pre-folded, so the lowercase
+          # class is the whole alphabet.
+          if [[ "$title_lc" =~ (^|[^0-9a-z_])card[-#]${card_id}([^0-9]|$) ]] || [[ "$title_lc" =~ (^|[^0-9a-z_])dl-[0-9]{1,4}([^0-9]|$) ]]; then
             echo "OK: title carries a correlation token for card $card_id."
             exit 0
           fi
