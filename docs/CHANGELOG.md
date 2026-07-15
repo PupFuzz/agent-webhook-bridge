@@ -8,6 +8,19 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-07-15
+
+**Minor — the card correlation token goes DL-shaped: `card-<id>` dash alias, no trailing `\b`, and a loud FR-7 near-miss warn (DL-201).** 1 PR since v0.56.0 (#287). **No migration, no new config, no change to what the receiver accepts/rejects, no token-scope change.** The regex is strictly wider — every previously-correlating token correlates identically.
+
+**DL-201 (#287)** — roundtable #48's ratified fleet card-first standard, bridge side. Both peer operators ratified `card-<id>` as the day-one primary branch/PR token, and both consumers measured the boundary: the shipped `/\bcard#(\d+)\b/i` trailing `\b` made `card#3054_fix` a **silent no-op** (`_` is a word char) while the DL regex — `/\bDL-(\d+)/i`, no trailing `\b` — was immune to the identical input. The asymmetry was the bug.
+
+- **The token** is now one shared `CARD_TOKEN_PATTERN = '/\bcard[-#](\d+)/i'` at BOTH parse surfaces — `classifyPush` (branch ref) and `cardToken()` (PR title + head; the DL-193 draft-overlay correlation reuses it). `card-<id>` and `card#<id>`, case-insensitive, leading `\b` only. Measured 9/9 hook↔bridge agreement by both consumers (a trailing `\b` is 8/9). Greedy-and-loud beats strict-and-silent: a wrong-but-parsed id fails at the card lookup / board-membership guard with a warn; an unparsed token failed silently.
+- **FR-7 near-miss warn:** the two un-linked early returns (push path + PR move path) now warn when the text *appears* to name a card in a shape the token doesn't accept (`card_123`, `card123`, `card:123`, `card #123`) — probe `/\bcard(?:[_:.]|\s#)?\d/i`. Token-less refs (`sync/…`, `release/…`, embedded `scorecard_2`, bare `card 2` prose) stay silent: it is a near-miss detector, not an any-unlinked warn.
+- **PR-title lint** (`pr-title-lint.yml`) accepts `card[-#]<id>`, and its leading boundary class gains `_` to mirror the classifier's `\b` — previously a `foo_card-<id>` title passed CI but never correlated (the silent direction of a parser split).
+- Also: `DL_TOKEN_PATTERN` constant unifies the three DL parse sites; `docs/writeback.md` FR-7 + DL-160 paragraphs synced.
+
+**Consumer adoption:** upgrade to this tag, then pin any local hook filter (publish-at-start `post-checkout`) to the pattern's boundary semantics — under this shape aimla's v1 artifact filter is already correct with nothing to pin. 855/855 phpunit, phpstan L7 0, pint clean; two fresh-adversarial review rounds to zero code findings; regex + probe decisions mutation-verified (revert reds exactly 4 / 2 / 1 tests). Roundtable #48; card #4382.
+
 ## [0.56.0] - 2026-07-15
 
 **Minor — one opt-in addition: real-time coordination issue close/reopen → card move (DL-200), the MOVE sibling of v0.55.0's create leg.** 1 PR since v0.55.0 (#284). **No migration, no new required `.env`, no change to what the receiver accepts/rejects, no token-scope change.** Opt-in ⇒ absent-config is v0.55.0 byte-identical.
