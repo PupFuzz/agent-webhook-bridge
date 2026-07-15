@@ -108,6 +108,15 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      */
     private const IMPL_CI_WAKE_EVENT_TYPES = ['push', 'workflow_run'];
 
+    /**
+     * The issue actions each coord-card family acts on — single source for BOTH
+     * the family dispatch guards and the qualified {@see consumedEventTypes}
+     * declaration (card #4354), so neither can drift from the other.
+     */
+    private const COORD_CARD_CREATE_ACTIONS = ['opened', 'reopened'];
+
+    private const COORD_CARD_MOVE_ACTIONS = ['closed', 'reopened'];
+
     /** Families run when `classifier.config.families` is unset — the pre-#8 behavior. */
     private const DEFAULT_FAMILIES = ['coord-message'];
 
@@ -194,10 +203,14 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         $events = [];
         foreach ($families as $family) {
             $events = [...$events, ...match ($family) {
-                'coord-message' => self::coordMessageEventTypes(),
+                'coord-message' => self::coordMessageEventTypes($cfg),
+                // impl-ci-wake stays BARE: it consumes EVERY workflow_run.<action>
+                // (non-terminal runs are considered-and-dropped by design), so a
+                // qualified set would inventory requested/in_progress — one arrival
+                // per CI run, all deliberate no-ops (card #4354 design review F3).
                 'impl-ci-wake' => self::IMPL_CI_WAKE_EVENT_TYPES,
-                'coord-card-create' => ['issues'],   // acts on issues.opened/reopened (DL-198)
-                'coord-card-move' => ['issues'],     // acts on issues.closed/reopened (DL-200)
+                'coord-card-create' => self::qualify('issues.', self::COORD_CARD_CREATE_ACTIONS),   // DL-198
+                'coord-card-move' => self::qualify('issues.', self::COORD_CARD_MOVE_ACTIONS),       // DL-200
                 default => [],   // kanban-triage (kanban provider) + unknown families: no github event type
             }];
         }
@@ -206,16 +219,37 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     }
 
     /**
-     * The top-level GitHub event types the `coord-message` family consumes,
-     * derived from {@see HANDLED} (`issues.`/`issue_comment.`/`pull_request.` →
-     * `issues`/`issue_comment`/`pull_request`) so {@see consumedEventTypes} cannot
-     * drift from the actual dispatch surface.
+     * The QUALIFIED GitHub event types the `coord-message` family consumes
+     * (`issues.opened`-style, card #4354), derived from {@see HANDLED} UNIONED
+     * with the install's `coord_extra_actions` allow-list extension (DL-190) —
+     * both are the exact inputs of {@see subject}'s action gate, so the
+     * declaration cannot drift from the dispatch surface, including on installs
+     * that customized. Pure `$cfg` read (already-parsed YAML) — the
+     * DeclaresConsumedEvents hard contract holds.
      *
      * @return list<string>
      */
-    private static function coordMessageEventTypes(): array
+    private static function coordMessageEventTypes(ClassifierConfig $cfg): array
     {
-        return array_map(static fn (string $prefix): string => rtrim($prefix, '.'), array_keys(self::HANDLED));
+        $extra = $cfg->stringListMap('coord_extra_actions');
+        $out = [];
+        foreach (self::HANDLED as $prefix => $actions) {
+            $merged = array_values(array_unique(array_merge($actions, $extra[rtrim($prefix, '.')] ?? [])));
+            $out = [...$out, ...self::qualify($prefix, $merged)];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Qualify a `type.` prefix with each action: (`issues.`, [opened]) → [`issues.opened`].
+     *
+     * @param  list<string>  $actions
+     * @return list<string>
+     */
+    private static function qualify(string $prefix, array $actions): array
+    {
+        return array_map(static fn (string $a): string => $prefix.$a, $actions);
     }
 
     /**
@@ -718,7 +752,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         if ($ctx->provider !== 'github') {
             return null; // coordination issues are GitHub-only
         }
-        if ($ctx->eventType !== 'issues.opened' && $ctx->eventType !== 'issues.reopened') {
+        if (! in_array($ctx->eventType, self::qualify('issues.', self::COORD_CARD_CREATE_ACTIONS), true)) {
             return null; // opened + reopened only (a pre-ship issue backfills on its next reopen)
         }
         $issue = is_array($ctx->payload['issue'] ?? null) ? $ctx->payload['issue'] : null;
@@ -787,6 +821,8 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         // closed → terminal, reopened → revive. `opened` belongs to the create leg
         // (moving a just-created card is a no-op at best); `edited` is not a lifecycle
         // transition. An unlisted action never auto-surfaces.
+        // COORD_CARD_MOVE_ACTIONS is the declared surface; the mapping to a
+        // disposition stays explicit here (closed → terminal, reopened → revive).
         $disposition = match ($ctx->eventType) {
             'issues.closed' => 'terminal',
             'issues.reopened' => 'revive',

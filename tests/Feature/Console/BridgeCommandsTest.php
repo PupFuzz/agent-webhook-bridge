@@ -526,6 +526,94 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    // --- card #4354: action-level consumer declarations + the INFO inventory ---
+
+    public function test_check_action_inventory_names_an_observed_action_no_family_declares(): void
+    {
+        // The motivating gap: coord-card-create declares issues.[opened,reopened]
+        // (qualified, DL-198) — an issues.closed arriving on the scope was invisible
+        // to the top-level compare. It now surfaces as an aggregated INFO line
+        // (never a WARN: GitHub has no per-action unsubscribe), with count+last-seen.
+        $this->writeGithubAgent('coord', 'App\\Bridge\\Classifiers\\CoordinationClassifier', "'coord-card-create'");
+        $this->githubEvent('issues.opened', 'e1');
+        $this->githubEvent('issues.closed', 'e2');
+        $this->githubEvent('issues.closed', 'e3');
+        WebhookEvent::query()->where('delivery_id', 'e3')->update(['received_at' => '2026-07-02 10:00:00']);
+        WebhookEvent::query()->where('delivery_id', 'e2')->update(['received_at' => '2026-07-01 10:00:00']);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain("'issues' actions observed but not action-declared by any family: closed (2x, last 2026-07-02 10:00:00 UTC)")
+            ->doesntExpectOutputToContain("has received 'issues'")   // the type IS consumed — no top-level WARN
+            ->assertExitCode(0);
+    }
+
+    public function test_check_action_inventory_silent_when_a_bare_declaration_owns_the_type(): void
+    {
+        // A bare declaration means the type is OWNED — unlisted actions are
+        // deliberate no-ops, not inventory. GitHubPrCardMoveClassifier declares
+        // bare pull_request; a pull_request.synchronize must NOT inventory.
+        $this->writeGithubAgent('wb', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+        $this->githubEvent('pull_request.opened', 'e1');
+        $this->githubEvent('pull_request.synchronize', 'e2');
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('actions observed but not action-declared')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_action_inventory_honors_coord_extra_actions(): void
+    {
+        // DL-190's per-install allow-list extension IS consumption — an install
+        // that added pull_request.synchronize via coord_extra_actions must not see
+        // it inventoried (design-review find: the false INFO would land on exactly
+        // the installs that customized).
+        $yaml = "identity:\n  github_user_id: 77\n"
+            ."subscriptions:\n  - provider: github\n    scopes: [\"owner/repo\"]\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
+            ."  config:\n    families: [coord-message]\n"
+            ."    coord_extra_actions:\n      pull_request: [synchronize]\n";
+        File::put($this->dir.'/coord.yml', $yaml);
+        $this->githubEvent('pull_request.opened', 'e1');
+        $this->githubEvent('pull_request.synchronize', 'e2');
+        $this->githubEvent('pull_request.labeled', 'e3');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('actions observed but not action-declared by any family: labeled (1x')
+            ->assertExitCode(0);
+        // and synchronize is NOT in the line (covered by the extra-action):
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('synchronize (1x')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_action_inventory_carries_the_undeclared_classifier_caveat(): void
+    {
+        // An undeclared classifier might consume an action just as it might a type
+        // — the inventory says so instead of asserting a state it cannot back.
+        $this->writeGithubAgent('coord', 'App\\Bridge\\Classifiers\\CoordinationClassifier', "'coord-card-create'");
+        $this->writeGithubAgent('legacy', 'App\\Bridge\\Classifiers\\InboxOnlyClassifier');
+        $this->githubEvent('issues.closed', 'e1');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('possible false inventory')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warn_compare_is_unchanged_by_qualified_declarations(): void
+    {
+        // Projection preserves WARN semantics: a scope with ONLY qualified issues
+        // coverage still top-level-consumes issues (no WARN), and a genuinely
+        // unconsumed type still WARNs alongside the inventory.
+        $this->writeGithubAgent('coord', 'App\\Bridge\\Classifiers\\CoordinationClassifier', "'coord-card-create'");
+        $this->githubEvent('issues.opened', 'e1');
+        $this->githubEvent('workflow_run.completed', 'e2');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain("has received 'workflow_run' (1x, last")
+            ->doesntExpectOutputToContain("has received 'issues'")
+            ->assertExitCode(0);
+    }
+
     public function test_check_confirms_a_mapping_swimlane_id_that_exists_on_the_board(): void
     {
         // DL-027: when a mapping pins a swimlane_id, bridge:check validates it
