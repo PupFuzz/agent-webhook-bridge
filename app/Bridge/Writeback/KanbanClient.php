@@ -482,6 +482,37 @@ final class KanbanClient
     }
 
     /**
+     * Stage NAME → id for a board, off the same `preload.json` read as
+     * {@see boardStageOrder()} (which gives id → position, the wrong direction here).
+     *
+     * DL-200 needs the name→id direction because the coordination config expresses its
+     * terminals as column NAMES while the bridge's `writeback.json` expresses its own as
+     * a stage ID — resolving the two onto one axis is what makes the cross-config compare
+     * possible. Diagnostics-only (`bridge:check`); nothing on the request path calls it.
+     *
+     * A stage lacking an id or name is skipped rather than fatal; empty when the read
+     * carries no stages, which the caller must treat as "could not verify", never as
+     * agreement.
+     *
+     * @return array<string, int>
+     */
+    public function boardStageIdsByName(int $boardId): array
+    {
+        $workflows = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data.workflows');
+        $byName = [];
+        foreach (is_array($workflows) ? $workflows : [] as $wf) {
+            $stages = is_array($wf) && is_array($wf['stages'] ?? null) ? $wf['stages'] : [];
+            foreach ($stages as $s) {
+                if (is_array($s) && isset($s['id'], $s['name']) && is_numeric($s['id']) && is_string($s['name']) && $s['name'] !== '') {
+                    $byName[$s['name']] = (int) $s['id'];
+                }
+            }
+        }
+
+        return $byName;
+    }
+
+    /**
      * Canonicalize a repo qualifier to match the kanban server's `source`
      * canonicalization (DL-163), via the vendored normalizer. The bridge passes
      * the canonical form so `ref`-mode (server-side) and `scan`-mode (client-side)

@@ -188,9 +188,83 @@ If you run the bridge on a **coordination repo** (the Agent Board Framework's `[
 - **Enable the family.** The classifier that cards coord issues is a `CoordinationClassifier` **family** — add **`coord-card-create`** to that agent's `classifier.config.families` (it is **not** a default). It runs on the same agent already handling coord wakes → no new agent, no new webhook subscription (`issues` is already delivered). It cards **every** recognized-prefix issue on the repo (board-level, **not** addressed-to-me) — its own gate is a recognized prefix AND this mapping's `create_coord_cards`.
 - **What gets carded.** An issue whose **trimmed title** starts with `[BRIEF]`, `[ANNOUNCE]`, `[QUERY]`, `[REVIEW]`, or `[TASK]` (case-insensitive), on `issues.opened` **or** `issues.reopened`. An un-prefixed / `[PROPOSAL]` / unrecognized-prefix issue is **not** carded (the create-set equals the reconcile's own-prefix set, so a carded issue is always one the reconcile backstops).
 - **The card.** Named the issue title verbatim; tagged **`id:<sid>`** + **`type:<itype>`** only (`sid = "<PREFIX>-<num>"` from the **anchored** first prefix, e.g. `QUERY-42`; `itype` mirrors the reconcile's `_itype` — an **unanchored** priority-substring scan `[BRIEF]`>`[ANNOUNCE]`>`[QUERY]`>`[REVIEW]`, else `task`, so a multi-bracket title's `type:` matches the reconcile even where it differs from the anchored `sid` prefix). `repo:` is **omitted** at create (non-critical — the reconcile folds it). It also sets `description = "Coordination thread <repo>#<num>"`, `priority = 1` for a `[BRIEF]` else `0`, and `external_link = https://github.com/<repo>/issues/<num>` — mirroring the reconcile's create so its next pass doesn't update-churn them. `external_id` is **not** set (the reconcile's `build_create` omits it, and kanban's `(board_id, external_id)` uniqueness would 422 a colliding issue number on a multi-repo coord board — `external_link` carries the correlation).
-- **Create-only + idempotent.** The bridge **never moves or archives** a coord card (the reconcile owns column/lifecycle). It correlates by the **`id:<sid>` tag**: if a card already carries it, it **skips** — which covers redelivery, opened+reopened, **and** the bridge-vs-reconcile race (both movers key on the same tag). After a create it re-reads by tag and collapses a raced duplicate (keep lowest id, archive the rest — the shared deterministic tie-break). Durable, transient(5xx→retry)/permanent(4xx→log+no-op).
+- **Create-only + idempotent.** This create path never moves or archives a card. (The bridge as a whole is no longer create-only for coord cards: its opt-in sibling **`move_coord_cards`** (DL-200, below) carries close→terminal / reopen→revive. The reconcile still owns column/lifecycle wherever that opt-in is **off**, and **archival remains the reconcile's alone**.) It correlates by the **`id:<sid>` tag**: if a card already carries it, it **skips** — which covers redelivery, opened+reopened, **and** the bridge-vs-reconcile race (both movers key on the same tag). After a create it re-reads by tag and collapses a raced duplicate (keep lowest id, archive the rest — the shared deterministic tie-break). Durable, transient(5xx→retry)/permanent(4xx→log+no-op).
 - **`identity_id` is REQUIRED (echo-gate).** A created card fires a kanban `task.created` webhook that comes back to the bridge; if any agent runs the `kanban-triage` family on that board, that echo reads as an untriaged card and could **self-wake**. The **only** guard is the global-echo gate keyed on `writeback.json` `identity_id`. `bridge:check` **warns** when `create_coord_cards` is set but `identity_id` is null.
 - **`bridge:check`.** Validates `coord_card_stage_id` (and any `swimlane_id`) exists on the board — a typo'd id makes every create 422 and silently no-op. Missing `coord_card_stage_id` while `create_coord_cards` is on **fails the config closed at load** (a create with no stage can't POST).
+
+## Optional: coordination issue close/reopen → card move (`move_coord_cards`, DL-200)
+
+The sibling of `create_coord_cards` above, and **separately opt-in** — it does *not* ride
+`create_coord_cards`. With it on, a coordination issue **closing** moves its tracking card to a
+terminal column in real time, and a **reopen** revives it. Without it, that only happens on the
+consumer's next periodic reconcile pass.
+
+```json
+{
+  "mappings": {
+    "org/coord": {
+      "board_id": 8,
+      "stages": { "opened": 50 },
+      "create_coord_cards": true,
+      "coord_card_stage_id": 21,
+      "move_coord_cards": true,
+      "coord_card_terminal_stage_id": 99
+    }
+  }
+}
+```
+
+- **Enable the family.** Add **`coord-card-move`** to the agent's `classifier.config.families` (it is
+  **not** a default). Same agent, no new webhook subscription — `issues` is already delivered.
+- **`coord_card_terminal_stage_id`** is the column a closed issue's card concludes into. **Required**
+  when `move_coord_cards` is on, and it **must differ from `coord_card_stage_id`** — both are
+  fail-closed at load.
+- **`coord_card_stage_id` doubles as the revive target** (the stage a reopened card returns to — the
+  same stage a fresh card is created in), so it is required here too, even with `create_coord_cards`
+  off. Absent, the leg would half-work: closes land, reopens silently no-op.
+- **What moves.** Same set as the create leg (recognized `[PREFIX]`, correlated by the **`id:<sid>`
+  tag**) on `issues.closed` → terminal and `issues.reopened` → revive. `issues.opened` belongs to the
+  create leg; `issues.edited` is not a lifecycle transition. **Nothing carrying the tag ⇒ nothing
+  moves** — this leg never creates.
+- **Reopen composition.** `issues.reopened` reaches **both** families: create-if-absent
+  (`coord-card-create`) vs revive-if-present (`coord-card-move`). Each resolves on the tag lookup, so
+  exactly one acts — never both.
+- **The revive actor-gate (fail-closed).** A card is revived **only if** its terminal was
+  **service-set** — `last_stage_move.actor_type === "service"`, an **allow-list**, not a deny-list of
+  the human value. (kanban emits exactly `human` for a UI move, `service` for api/system, and `null`
+  on a pre-feature row — it never emits `"user"`.) Absent, null, unknown, or human provenance ⇒
+  **no revive**. A human who drags a card to the
+  terminal has expressed a closure intent the bridge must never reverse. Revive also requires the card
+  to currently *be* in that terminal: one that has since moved on is live work, and dragging it back
+  would be a backward regression.
+- **A close is unconditional over a user lane.** A human's priority placement yields to closure
+  (close→terminal is the terminal case) — so unlike the unpark/pin paths, there is no pin side to pick.
+- **Idempotent + redelivery-safe.** A card already in the destination is skipped, so at-least-once
+  delivery never re-PATCHes. Durable, transient(5xx→retry)/permanent(4xx→log+no-op).
+- **`bridge:check` cross-config compare (read this).** The bridge owns `coord_card_terminal_stage_id`
+  (a **stage id**), while the consumer's reconcile derives its terminal from `terminal_columns`
+  (column **names**) in the coordination project's `coordination.config.json`. If the two disagree they
+  **fight every cycle** — the bridge concludes a card, the reconcile drags it back — with each side
+  individually "working". So `bridge:check` reads `$COORD_CONFIG` (override:
+  `bridge.writeback.coord_config_path`), resolves that board's terminal through the framework's own
+  rule (explicit `terminal_columns`, else the `user_lanes` → `"Done"` lane-model fallback, unioned
+  across every `boards[]` entry sharing the `board_id`), and compares:
+  - **agrees** → an `info` line naming the column and stage.
+  - **DISAGREE** → a warn naming both stages and the fix.
+  - **CANNOT VERIFY** → `$COORD_CONFIG` unset/absent/malformed, no entry for this board, more than one
+    terminal (ambiguous — the bridge writes exactly one), the board read failed so the column name
+    couldn't be resolved to a stage id, or the column isn't a stage on the board.
+    This is reported **distinctly from agreement**: a missing input is not evidence of agreement, it is
+    evidence we could not ask.
+
+  It **never fails** `bridge:check` (warn-never-fail) — the bridge must not become unrunnable because a
+  coord file moved. The read is **CLI-only by design**: `bridge:check` runs with the operator's
+  environment, while the receiver runs under PHP-FPM, whose environment does **not** carry
+  `$COORD_CONFIG`. Nothing on the request path reads it.
+  **If you run `php artisan optimize`** (config cache), the ambient `$COORD_CONFIG` is still honored —
+  it is read live at the check via `getenv()`, deliberately not baked into cached config (which would
+  freeze it to the deploying shell's value forever). To pin a path independent of the invoking shell,
+  set `BRIDGE_COORD_CONFIG_PATH` in that install's `.env`.
 
 ## Optional: PR draft → `block_reason` overlay (DL-193)
 
