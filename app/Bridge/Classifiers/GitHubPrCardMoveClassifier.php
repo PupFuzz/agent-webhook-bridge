@@ -22,9 +22,9 @@ use Illuminate\Support\Facades\Log;
  * GitHub-CONTROLLED fields (the action + `pull_request.merged` + `base.ref`),
  * never the PR title; (b) correlating the card by the `DL-NNN` token in the PR
  * title or head branch against the mapped board's `dl_number`, OR the native-id
- * `card#<task-id>` token (FR-7). Which board+stage the move targets is decided by
- * the durable handler from operator config — this classifier only supplies which
- * card + outcome.
+ * `card-<task-id>` / `card#<task-id>` token (FR-7). Which board+stage the move
+ * targets is decided by the durable handler from operator config — this classifier
+ * only supplies which card + outcome.
  *
  * Token resolution is try-in-order-with-fallback (framework #112), keyed on the
  * OUTCOME of a token not its presence: a `DL-NNN` that resolves wins (a co-present
@@ -39,6 +39,25 @@ use Illuminate\Support\Facades\Log;
  */
 class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, EmitsWritebackReactions
 {
+    /**
+     * The card token: `card-<id>` or `card#<id>`, case-insensitive. DL-shaped
+     * boundary — leading `\b` only, deliberately NO trailing `\b`, mirroring the
+     * DL regex one call up (DL-201 / roundtable #48): a trailing `\b` made
+     * `card#3054_fix` a SILENT no-op (`_` is a word char, so `\b` never matches
+     * digit→`_`) while `DL-200_fix` was immune to the identical input. Greedy-and-
+     * loud beats strict-and-silent: a wrong-but-parsed id fails at the card lookup
+     * with a warn; an unparsed token fails silently. Both peer installs' hook
+     * filters byte-pin to this pattern's boundary semantics.
+     */
+    private const CARD_TOKEN_PATTERN = '/\bcard[-#](\d+)/i';
+
+    /**
+     * The `DL-NNN` token, case-insensitive — leading `\b` only, same boundary
+     * shape as {@see self::CARD_TOKEN_PATTERN} (the card token was made to match
+     * THIS shape, DL-201). One home for the three DL parse sites.
+     */
+    private const DL_TOKEN_PATTERN = '/\bDL-(\d+)/i';
+
     /**
      * The top-level GitHub event types this classifier consumes (card#4183 /
      * DL-196): a `pull_request.<action>` (the move lifecycle) and a `push` (the
@@ -151,6 +170,8 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         $dl = $this->dlToken($payload);
         $cardToken = $this->cardToken($payload);
         if ($dl === null && $cardToken === null) {
+            $this->warnCardTokenNearMiss($this->titleAndHead($payload), 'PR title/head');
+
             return new ClassifyResult(targets: $overlayTargets);   // no card-first token in the PR → move no-op (overlay may also be empty)
         }
 
@@ -315,13 +336,14 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     /**
      * Branch-create push → `started` move target(s) (DL-160). Fires ONCE on the
      * creation of a branch (`payload.created === true`) whose ref carries a
-     * `DL-NNN`, so it codifies "work has begun" from the artifact (the branch),
-     * not from any agent. Uses `created === true` so a subsequent push to the same
-     * branch is a no-op (the move would otherwise re-fire on every push). The
-     * handler's promote-from guard (`started_from_stages`) makes a re-create /
-     * force-push of an old branch a no-op too. Correlates DL→card exactly as the
-     * PR path. No target when: not a created-branch push, a dependabot branch, no
-     * DL in the ref, the repo is unmapped, or no card tracks the DL.
+     * `DL-NNN` or a `card-<id>`/`card#<id>` token, so it codifies "work has begun"
+     * from the artifact (the branch), not from any agent. Uses `created === true`
+     * so a subsequent push to the same branch is a no-op (the move would otherwise
+     * re-fire on every push). The handler's promote-from guard
+     * (`started_from_stages`) makes a re-create / force-push of an old branch a
+     * no-op too. Correlates tokens→card exactly as the PR path (FR-7 try-in-order).
+     * No target when: not a created-branch push, a dependabot branch, no token in
+     * the ref, the repo is unmapped, or nothing resolves.
      *
      * @param  array<mixed>  $payload
      */
@@ -347,9 +369,11 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             return new ClassifyResult;   // repo not configured for writeback
         }
 
-        $hasDl = preg_match('/\bDL-(\d+)/i', $branch, $m) === 1;
-        $cardToken = preg_match('/\bcard#(\d+)\b/i', $branch, $cm) === 1 ? (int) $cm[1] : null;
+        $hasDl = preg_match(self::DL_TOKEN_PATTERN, $branch, $m) === 1;
+        $cardToken = preg_match(self::CARD_TOKEN_PATTERN, $branch, $cm) === 1 ? (int) $cm[1] : null;
         if (! $hasDl && $cardToken === null) {
+            $this->warnCardTokenNearMiss($branch, 'branch ref');
+
             return new ClassifyResult;   // no card-first token in the branch ref → un-linked, no-op
         }
 
@@ -430,19 +454,37 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     }
 
     /**
-     * The `card#<task-id>` token (FR-7, framework v0.2.229) from the PR title or
-     * head branch — the native-kanban-task-id correlation channel for cards that
-     * carry no DL. Same surface + matching style as {@see dlToken}.
+     * The `card-<task-id>` / `card#<task-id>` token (FR-7, framework v0.2.229;
+     * dash alias + DL-shaped boundary DL-201) from the PR title or head branch —
+     * the native-kanban-task-id correlation channel for cards that carry no DL.
+     * Same surface + matching style as {@see dlToken}.
      *
      * @param  array<mixed>  $payload
      */
     private function cardToken(array $payload): ?int
     {
-        if (preg_match('/\bcard#(\d+)\b/i', $this->titleAndHead($payload), $m) === 1) {
+        if (preg_match(self::CARD_TOKEN_PATTERN, $this->titleAndHead($payload), $m) === 1) {
             return (int) $m[1];
         }
 
         return null;
+    }
+
+    /**
+     * Warn when text APPEARS to name a card but the token doesn't parse
+     * (`card_123`, `card123`, `card:123`, `card #123` — anything but the
+     * accepted `card-<id>` / `card#<id>`). An unparsed token is otherwise a
+     * silent no-op — the branch publishes, the card never moves, nobody is
+     * told — exactly as high-value a miss as an unresolvable DL (roundtable
+     * #48). Token-less text stays silent: most branches/PRs legitimately
+     * carry no card token, and a bare `card 2` (space, no `#`) is deliberately
+     * NOT a near-miss — prose like "supports card 2" in a PR title would warn.
+     */
+    private function warnCardTokenNearMiss(string $text, string $surface): void
+    {
+        if (preg_match('/\bcard(?:[_:.]|\s#)?\d/i', $text) === 1) {
+            Log::warning("kanban_move_card: {$surface} appears to name a card but the token does not parse (accepted: card-<id> or card#<id>) — no move (FR-7 near-miss): {$text}");
+        }
     }
 
     /**
@@ -453,7 +495,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      */
     private function dlToken(array $payload): ?string
     {
-        if (preg_match('/\bDL-(\d+)/i', $this->titleAndHead($payload), $m) === 1) {
+        if (preg_match(self::DL_TOKEN_PATTERN, $this->titleAndHead($payload), $m) === 1) {
             return 'DL-'.$m[1];
         }
 
@@ -476,7 +518,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     private function stampRefs(string $text, ?int $prNumber): array
     {
         $refs = [];
-        if (preg_match_all('/\bDL-(\d+)/i', $text, $m) === 1) {
+        if (preg_match_all(self::DL_TOKEN_PATTERN, $text, $m) === 1) {
             $refs['stamp_dl'] = 'DL-'.$m[1][0];
         }
         if ($prNumber !== null) {
