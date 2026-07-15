@@ -5,13 +5,17 @@ namespace App\Bridge\Contracts;
 use App\Bridge\Support\ClassifierConfig;
 
 /**
- * A {@see Classifier} that declares the TOP-LEVEL GitHub event types it consumes
- * for a given config — `pull_request`, `push`, `workflow_run`, `issues`,
- * `issue_comment` (the granularity `webhook_events.event_type` and the GitHub hook
- * `events[]` both key on, minus any `.action` suffix). `bridge:check` unions these
- * across every enabled classifier subscribed to a scope and warns (never fails)
- * when an event type has ARRIVED for that scope but nothing consumes it — the
- * event is silently dropped on arrival (card#4183 / DL-196). Sibling of
+ * A {@see Classifier} that declares the GitHub event types it consumes for a
+ * given config. An entry is either BARE — `pull_request`, `push`, `issues` (the
+ * type is OWNED: every `.action` is covered, unlisted actions are deliberate
+ * no-ops) — or QUALIFIED — `issues.opened` (card #4354): the classifier consumes
+ * exactly the listed actions, and `bridge:check` may surface OTHER observed
+ * actions of that type as an informational action inventory. `bridge:check`
+ * projects both forms to the top level (the granularity the GitHub hook
+ * `events[]` keys on) and warns (never fails) when an event type has ARRIVED for
+ * a scope but nothing consumes it — the event is silently dropped on arrival
+ * (card#4183 / DL-196). The action inventory is INFO, never a warn: GitHub has
+ * no per-action unsubscribe, so there is no remedy to alarm about. Sibling of
  * {@see EmitsWritebackReactions}: the same "is there code that activates this
  * config artifact?" question, asked of a subscribed/arriving event.
  *
@@ -32,9 +36,10 @@ use App\Bridge\Support\ClassifierConfig;
 interface DeclaresConsumedEvents
 {
     /**
-     * The top-level GitHub event types this classifier consumes under `$cfg`
-     * (e.g. `['pull_request', 'push']`). MUST be a pure map — see the class
-     * docblock's HARD CONTRACT.
+     * The GitHub event types this classifier consumes under `$cfg` — bare
+     * (`['pull_request', 'push']`, type owned) and/or qualified
+     * (`['issues.opened', 'issues.reopened']`, exactly these actions; card
+     * #4354). MUST be a pure map — see the class docblock's HARD CONTRACT.
      *
      * @return list<string>
      */

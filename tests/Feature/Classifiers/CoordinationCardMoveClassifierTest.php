@@ -212,6 +212,10 @@ class CoordinationCardMoveClassifierTest extends TestCase
             'classifier' => ['class' => CoordinationClassifier::class, 'config' => ['families' => ['coord-card-move']]],
         ])->classifierConfig;
 
-        $this->assertContains('issues', (new CoordinationClassifier)->consumedEventTypes($cfg));
+        // Qualified since card #4354 — the move family declares exactly the
+        // actions its dispatch guard accepts (closed → terminal, reopened → revive).
+        $events = (new CoordinationClassifier)->consumedEventTypes($cfg);
+        $this->assertContains('issues.closed', $events);
+        $this->assertContains('issues.reopened', $events);
     }
 }
