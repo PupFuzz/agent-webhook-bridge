@@ -492,4 +492,117 @@ class WritebackConfigTest extends TestCase
         $this->assertFalse($mapping->createCoordCards);
         $this->assertSame(21, $mapping->coordCardStageId);
     }
+
+    // ---- DL-200: move_coord_cards + coord_card_terminal_stage_id ----
+
+    public function test_absent_move_coord_cards_defaults_false_byte_identical(): void
+    {
+        // The load-bearing back-compat property: a mapping with neither key parses
+        // exactly as before — moveCoordCards false, coordCardTerminalStageId null.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
+        $this->assertFalse($mapping->moveCoordCards);
+        $this->assertNull($mapping->coordCardTerminalStageId);
+    }
+
+    public function test_move_coord_cards_with_both_stages_parses(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
+                'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
+        $this->assertTrue($mapping->moveCoordCards);
+        $this->assertSame(99, $mapping->coordCardTerminalStageId);
+    }
+
+    public function test_move_coord_cards_without_terminal_stage_throws(): void
+    {
+        // Fail-closed at LOAD, exactly like create_coord_cards/coord_card_stage_id:
+        // a close→terminal move with no terminal stage has nowhere to PATCH to.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
+                'coord_card_stage_id' => 21],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('move_coord_cards but no coord_card_terminal_stage_id');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_move_coord_cards_without_create_stage_throws(): void
+    {
+        // coord_card_stage_id is the REVIVE target (the stage a reopened card returns
+        // to — the same stage a fresh card would be created in, mirroring DL-195's
+        // "revive reuses stages.opened"). Without it a revive has nowhere to go, so
+        // the move leg would silently half-work: closes land, reopens no-op.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
+                'coord_card_terminal_stage_id' => 99],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('move_coord_cards but no coord_card_stage_id');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_non_numeric_coord_card_terminal_stage_id_throws(): void
+    {
+        // Strict like coord_card_stage_id — a typo must not fail-quiet.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
+                'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 'done'],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('coord_card_terminal_stage_id must be a numeric');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_terminal_equal_to_create_stage_throws(): void
+    {
+        // Disjointness, fail-closed (the DL-194 unpark_from_stages precedent): if the
+        // terminal IS the create/revive stage, close→terminal and reopen→revive resolve
+        // to the same stage — the leg can never express either transition, and a revive
+        // would be indistinguishable from a no-op.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
+                'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 21],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('coord_card_terminal_stage_id must differ from coord_card_stage_id');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_coord_card_terminal_stage_id_without_move_flag_is_inert_but_parsed(): void
+    {
+        // A terminal set without the flag is allowed (no throw) — moveCoordCards
+        // false ⇒ the classifier/handler never act on it. Mirrors the DL-198 sibling.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'coord_card_terminal_stage_id' => 99],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
+        $this->assertFalse($mapping->moveCoordCards);
+        $this->assertSame(99, $mapping->coordCardTerminalStageId);
+    }
+
+    public function test_move_coord_cards_is_independent_of_create_coord_cards(): void
+    {
+        // The two legs are separately opt-in (the ruling's "OPT-IN FIRST": the move leg
+        // does NOT ride create_coord_cards). Move-on/create-off is a coherent state.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
+                'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
+        $this->assertTrue($mapping->moveCoordCards);
+        $this->assertFalse($mapping->createCoordCards);
+    }
 }

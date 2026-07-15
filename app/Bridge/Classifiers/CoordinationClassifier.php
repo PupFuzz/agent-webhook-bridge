@@ -65,6 +65,14 @@ use App\Bridge\Writeback\WritebackConfig;
  *     is created in real time. Runs board-level (independent of the coord-message
  *     recipient gate); own gate is prefix-recognized AND the repo's
  *     `writeback.json` mapping has `create_coord_cards`. Opt-in (not a default).
+ *   - `coord-card-move` — github `issues.closed/reopened` on the coord repo whose
+ *     title carries a recognized `[PREFIX]` (DL-200): emits ONE
+ *     `kanban_coord_card_move` writeback target (no intent, no wake) so a tracking
+ *     card concludes into the terminal / revives in real time. The create leg's
+ *     sibling and its exact `id:<sid>` correlation key; SEPARATELY opt-in (gate is
+ *     `move_coord_cards`, NOT `create_coord_cards`). On `issues.reopened` BOTH
+ *     families fire — create-if-absent vs revive-if-present resolve by each
+ *     handler's tag lookup, so exactly one acts.
  *
  * SCOPE-AGNOSTIC: never branches on `$ctx->scopeId` for routing — it keys on the
  * addressing labels + `$agent->agentName` — so the same instance serves a coord
@@ -123,11 +131,13 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         $cfg = $ctx->agent->classifierConfig;
         $families = $cfg->enabledFamilies !== [] ? $cfg->enabledFamilies : $this->defaultFamilies();
 
-        // Run each enabled family; merge results onto the inbox base. Families are
-        // provider- and event-scoped (coord/impl-ci: github; kanban-triage: kanban),
-        // so at most one contributes per event — but the merge is order-independent
-        // and additive regardless. Each github family self-guards its provider (the
-        // class now serves both github and kanban events).
+        // Run each enabled family; merge results onto the inbox base. SEVERAL families
+        // can contribute to ONE event: `issues.reopened` reaches both coord-card-create
+        // (create-if-absent) and coord-card-move (revive-if-present), which resolve
+        // against each other on the `id:<sid>` tag at handler time, not here. The merge
+        // is additive and order-independent, so no family can suppress another's targets
+        // — a family that must not act has to self-guard. Each github family self-guards
+        // its provider (the class serves both github and kanban events).
         $intents = $base->intents;
         $targets = $base->targets;
         $reattributed = $base->reattributedActor;
@@ -137,6 +147,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'impl-ci-wake' => $this->implCiWakeFamily($ctx, $cfg),
                 'kanban-triage' => $this->kanbanTriageFamily($ctx, $base),
                 'coord-card-create' => $this->coordCardCreateFamily($ctx),
+                'coord-card-move' => $this->coordCardMoveFamily($ctx),
                 default => null,   // unknown family: ignore (forward-compat; bridge:check can warn)
             };
             if ($result === null) {
@@ -168,7 +179,8 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * applies, falling back to {@see defaultFamilies()}. Derived from the SAME
      * source of truth the classify pipeline uses so the two can't drift:
      * coord-message from {@see HANDLED}, impl-ci-wake from
-     * {@see IMPL_CI_WAKE_EVENT_TYPES}, coord-card-create → `issues` (DL-198).
+     * {@see IMPL_CI_WAKE_EVENT_TYPES}, coord-card-create → `issues` (DL-198),
+     * coord-card-move → `issues` (DL-200).
      * kanban-triage (and any unknown family) is a kanban-provider family that
      * consumes NO GitHub event type → contributes nothing. Pure `$cfg` → map, no
      * class-loading (the HARD CONTRACT on {@see DeclaresConsumedEvents}).
@@ -185,6 +197,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'coord-message' => self::coordMessageEventTypes(),
                 'impl-ci-wake' => self::IMPL_CI_WAKE_EVENT_TYPES,
                 'coord-card-create' => ['issues'],   // acts on issues.opened/reopened (DL-198)
+                'coord-card-move' => ['issues'],     // acts on issues.closed/reopened (DL-200)
                 default => [],   // kanban-triage (kanban provider) + unknown families: no github event type
             }];
         }
@@ -740,6 +753,75 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'itype' => $itype,
                 'title' => $title,
                 'issue_url' => $url,
+            ]),
+        ]);
+    }
+
+    // =====================================================================
+    // Family: coord-card-move (DL-200 — real-time coordination issue → card move)
+    // =====================================================================
+    //
+    // The unshipped sibling of coord-card-create (roundtable #18(b)). A coordination
+    // issue CLOSING moves its tracking card to the mapping's terminal stage; a REOPEN
+    // revives it back to the create stage. Correlated by the same `id:<sid>` tag the
+    // create leg writes, so the two legs share one key and never need a registry.
+    //
+    // The partition (roundtable #18, aimla): this bridge leg is the real-time PRIMARY,
+    // so each consumer's periodic reconcile DEFERS to it and becomes the backstop.
+    // That makes the bridge a coord-card COLUMN mover for the first time — deliberately
+    // reversing the create leg's "the reconcile owns column/lifecycle" scope.
+    //
+    // REOPEN COMPOSITION: `issues.reopened` reaches BOTH families. create-if-absent is
+    // coord-card-create's; revive-if-present is this one's. Each handler self-gates on
+    // the `id:<sid>` tag lookup, so exactly one acts — never both.
+    //
+    // Separately opt-in from create_coord_cards ("opt-in first") — gated on the repo's
+    // `writeback.json` mapping having `move_coord_cards`. Emits ONE writeback target,
+    // NO intent, NO wake (a board write is not a message).
+
+    private function coordCardMoveFamily(ClassifyContext $ctx): ?ClassifyResult
+    {
+        if ($ctx->provider !== 'github') {
+            return null; // coordination issues are GitHub-only
+        }
+        // closed → terminal, reopened → revive. `opened` belongs to the create leg
+        // (moving a just-created card is a no-op at best); `edited` is not a lifecycle
+        // transition. An unlisted action never auto-surfaces.
+        $disposition = match ($ctx->eventType) {
+            'issues.closed' => 'terminal',
+            'issues.reopened' => 'revive',
+            default => null,
+        };
+        if ($disposition === null) {
+            return null;
+        }
+        $issue = is_array($ctx->payload['issue'] ?? null) ? $ctx->payload['issue'] : null;
+        if ($issue === null || ! is_numeric($issue['number'] ?? null)) {
+            return null;
+        }
+        $num = (int) $issue['number'];
+        $title = is_string($issue['title'] ?? null) ? $issue['title'] : '';
+
+        // The move-set MUST equal the create-set: a card that was never created under
+        // this sid can't be correlated by it. Same anchored helper, no second rule.
+        $sid = $this->stableId($title, $num);
+        if ($sid === null) {
+            return null; // un-prefixed / PROPOSAL / unrecognized → never carded → nothing to move
+        }
+
+        $configDir = (string) config('bridge.config_dir');
+        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $mapping = $writeback?->mappingFor($ctx->scopeId);
+        if ($mapping === null || ! $mapping->moveCoordCards) {
+            return null;
+        }
+
+        return new ClassifyResult(targets: [
+            ReactionTarget::make('kanban_coord_card_move', "issue-{$num}", payload: [
+                'repo' => $ctx->scopeId,
+                'issue_number' => $num,
+                'sid' => $sid,
+                'disposition' => $disposition,
             ]),
         ]);
     }

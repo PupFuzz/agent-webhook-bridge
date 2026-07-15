@@ -749,6 +749,210 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    // ---- DL-200: the coord-config cross-config terminal compare ----
+
+    /** Write a writeback.json with the move leg on, + the board fake. Returns nothing. */
+    private function writeMoveLegInstall(int $terminalStageId = 53): void
+    {
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'move_coord_cards' => true, 'coord_card_stage_id' => 50,
+                'coord_card_terminal_stage_id' => $terminalStageId]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3', 'bridge.writeback.correlation' => 'scan']);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
+                ['id' => 50, 'name' => 'In Progress', 'position' => 1024.0],
+                ['id' => 53, 'name' => 'Done', 'position' => 2048.0],
+                ['id' => 54, 'name' => "Won't Do", 'position' => 3072.0],
+            ]]]]]),
+        ]);
+    }
+
+    /** @param array<string, mixed> $config */
+    private function writeCoordConfig(array $config): string
+    {
+        $p = $this->dir.'/coordination.config.json';
+        File::put($p, (string) json_encode($config));
+        config(['bridge.writeback.coord_config_path' => $p]);
+
+        return $p;
+    }
+
+    public function test_check_falls_back_to_the_ambient_coord_config_env_when_no_override_is_set(): void
+    {
+        // The getenv() leg. Pinned because it is the ONLY leg that survives
+        // `php artisan optimize`: config/bridge.php resolves BRIDGE_COORD_CONFIG_PATH
+        // via env(), which config-caching FREEZES at deploy time. If the ambient
+        // $COORD_CONFIG were read there too it would freeze to the deploying shell's
+        // value (usually nothing) and this "mandatory" compare would report
+        // CANNOT-VERIFY forever — present, running, never doing its job. So the ambient
+        // fallback MUST be read live at this CLI read-site, and that must not silently
+        // regress to an env() lookup in some future tidy-up.
+        $this->writeMoveLegInstall(terminalStageId: 53);
+        $p = $this->dir.'/ambient-coordination.config.json';
+        File::put($p, (string) json_encode(['kanban' => ['boards' => [
+            ['key' => 'issues', 'board_id' => 8, 'user_lanes' => ['Now']],
+        ]]]));
+        config(['bridge.writeback.coord_config_path' => null]);   // no per-install override
+        putenv("COORD_CONFIG={$p}");
+
+        try {
+            $this->artisan('bridge:check')
+                ->expectsOutputToContain('coord config agrees')
+                ->assertExitCode(0);
+        } finally {
+            putenv('COORD_CONFIG');
+        }
+    }
+
+    public function test_check_prefers_the_per_install_override_over_the_ambient_env(): void
+    {
+        // Two installs on one host share ONE ambient $COORD_CONFIG. The .env override
+        // must WIN, or a -prod install silently compares against a -dev operator's
+        // coordination project and reports a confident, wrong answer.
+        $this->writeMoveLegInstall(terminalStageId: 53);
+        $override = $this->dir.'/override.json';
+        File::put($override, (string) json_encode(['kanban' => ['boards' => [
+            ['key' => 'issues', 'board_id' => 8, 'user_lanes' => ['Now']],       // -> "Done" = 53 = agrees
+        ]]]));
+        $ambient = $this->dir.'/ambient.json';
+        File::put($ambient, (string) json_encode(['kanban' => ['boards' => [
+            ['key' => 'issues', 'board_id' => 8, 'terminal_columns' => ["Won't Do"]],   // -> 54 = would DISAGREE
+        ]]]));
+        config(['bridge.writeback.coord_config_path' => $override]);
+        putenv("COORD_CONFIG={$ambient}");
+
+        try {
+            $this->artisan('bridge:check')
+                ->expectsOutputToContain('coord config agrees')   // the override won
+                ->doesntExpectOutputToContain('DISAGREE')          // the ambient did NOT
+                ->assertExitCode(0);
+        } finally {
+            putenv('COORD_CONFIG');
+        }
+    }
+
+    public function test_check_agrees_when_the_coord_config_terminal_resolves_to_the_mapped_stage(): void
+    {
+        // The lane-model fallback path: the canonical `issues` board declares user_lanes
+        // and NO terminal_columns → resolves to "Done" → stage 53 → agrees with the
+        // mapping. This is the case a literal terminal_columns read would have MISSED.
+        $this->writeMoveLegInstall(terminalStageId: 53);
+        $this->writeCoordConfig(['kanban' => ['boards' => [
+            ['key' => 'issues', 'board_id' => 8, 'user_lanes' => ['Now', 'Next']],
+        ]]]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('coord config agrees')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warns_when_the_two_movers_disagree_on_the_terminal(): void
+    {
+        // THE case the compare exists for (Q1): the bridge concludes cards into stage 53
+        // while the reconcile treats "Won't Do" (54) as terminal → they fight every cycle.
+        $this->writeMoveLegInstall(terminalStageId: 53);
+        $this->writeCoordConfig(['kanban' => ['boards' => [
+            ['key' => 'issues', 'board_id' => 8, 'terminal_columns' => ["Won't Do"]],
+        ]]]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('DISAGREE')
+            ->assertExitCode(0);   // never fails the bridge (condition (b))
+    }
+
+    public function test_check_cannot_verify_when_coord_config_is_absent(): void
+    {
+        // Condition (a): a missing input is NOT evidence of agreement — it is evidence
+        // we could not ask. Must NOT print "agrees".
+        $this->writeMoveLegInstall();
+        config(['bridge.writeback.coord_config_path' => '/nonexistent/coordination.config.json']);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('CANNOT VERIFY')
+            ->doesntExpectOutputToContain('coord config agrees')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_cannot_verify_when_coord_config_is_malformed(): void
+    {
+        $this->writeMoveLegInstall();
+        $p = $this->dir.'/coordination.config.json';
+        File::put($p, '{not json');
+        config(['bridge.writeback.coord_config_path' => $p]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('CANNOT VERIFY')
+            ->doesntExpectOutputToContain('coord config agrees')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_cannot_verify_when_the_board_has_no_coord_config_entry(): void
+    {
+        // The coord config exists but knows nothing about this board — we cannot ask.
+        $this->writeMoveLegInstall();
+        $this->writeCoordConfig(['kanban' => ['boards' => [
+            ['key' => 'issues', 'board_id' => 999, 'user_lanes' => ['Now']],
+        ]]]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('CANNOT VERIFY')
+            ->doesntExpectOutputToContain('coord config agrees')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_cannot_verify_when_the_board_resolves_several_terminals(): void
+    {
+        // >1 terminal is legal framework-wide, but the MOVER needs exactly one column to
+        // write into — so which one it should agree with is genuinely unknowable here.
+        $this->writeMoveLegInstall();
+        $this->writeCoordConfig(['kanban' => ['boards' => [
+            ['key' => 'prs', 'board_id' => 8, 'terminal_columns' => ['Done']],
+            ['key' => 'product-tasks', 'board_id' => 8, 'terminal_columns' => ["Won't Do"]],
+        ]]]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('CANNOT VERIFY')
+            ->doesntExpectOutputToContain('coord config agrees')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_cannot_verify_when_the_terminal_name_is_not_on_the_board(): void
+    {
+        $this->writeMoveLegInstall();
+        $this->writeCoordConfig(['kanban' => ['boards' => [
+            ['key' => 'issues', 'board_id' => 8, 'terminal_columns' => ['Nonexistent Column']],
+        ]]]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('CANNOT VERIFY')
+            ->doesntExpectOutputToContain('coord config agrees')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_does_not_run_the_coord_compare_when_the_move_leg_is_off(): void
+    {
+        // Nothing to verify when the leg is off — no CANNOT-VERIFY noise on the
+        // overwhelming majority of installs that never enable it.
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50]]],
+        ]));
+        Http::fake();
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('coord config')
+            ->assertExitCode(0);
+    }
+
     public function test_check_skips_the_board_probe_without_a_base_url_and_makes_no_request(): void
     {
         // Guard-lock (S3): the probe block IS reached (writeback.json + mapping),

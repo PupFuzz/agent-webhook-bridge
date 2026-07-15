@@ -19,8 +19,13 @@ use Illuminate\Support\Facades\Log;
  * `reconcile_simple_board` pass. The reconcile stays the backstop: it adopts the
  * bridge-created card by its `id:<sid>` tag, so the bridge stays REGISTRY-FREE.
  *
- * CREATE-ONLY — the reconcile owns column/lifecycle; the bridge never moves or
- * archives a coord card. Correlation + idempotency key on the `id:<sid>` TAG (the
+ * CREATE-ONLY — this handler only ever creates; it never moves or archives a card.
+ * The bridge as a whole is no longer create-only, though: its sibling
+ * {@see KanbanCoordCardMoveHandler} (DL-200, opt-in `move_coord_cards`) carries the
+ * close→terminal / reopen→revive column moves, and under roundtable #18's partition
+ * the reconcile DEFERS to it as the backstop. The reconcile still owns column and
+ * lifecycle wherever that opt-in is off. Archival remains the reconcile's alone.
+ * Correlation + idempotency key on the `id:<sid>` TAG (the
  * locked contract adoption key): if a card already carries it, skip — which covers
  * redelivery, opened+reopened, AND the bridge-vs-reconcile race (both movers key on
  * the same tag). Otherwise create at the mapping's `coord_card_stage_id`, then
