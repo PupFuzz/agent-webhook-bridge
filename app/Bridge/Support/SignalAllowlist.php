@@ -9,7 +9,10 @@ use Closure;
 /**
  * Optional positive filter applied AFTER echo suppression. When treat_as_signal
  * is set, only events authored by the named agents reach classify; everything
- * else is dropped. Empty list → allow all. Matched against actor.name (from the
+ * else is dropped. (One carve-out, DL-203 — the same one {@see EchoSuppression}
+ * carries: for a github writeback-emitting classifier a non-signal actor's event
+ * DOES reach classify, and the dispatcher strips the result to machine-only
+ * targets; the agent surface still never fires.) Empty list → allow all. Matched against actor.name (from the
  * registry), so a name must be a real agent (a <name>.yml) — an unknown name is
  * fail-closed (a typo would silently classify everything NOT-IN-SIGNAL).
  */
