@@ -684,9 +684,13 @@ class CheckCommand extends BridgeCommand
      * "is there classifier code that activates this config artifact?", here of a
      * subscribed/arriving event. The observed set is the bridge's OWN inbound
      * history (no GitHub hooks-API call — the least-privilege reconcile token can't
-     * read `/repos/{repo}/hooks`; §3 of the design), and is bounded by
-     * `bridge:prune` retention (a long-quiet unconsumed event self-heals on its
-     * next arrival — acceptable for a WARN).
+     * read `/repos/{repo}/hooks`; §3 of the design). That history is unbounded
+     * until pruned — retention is event-gated (DL-199) or manual, so a single
+     * long-remediated stray can WARN indefinitely. The WARN therefore carries the
+     * occurrence count + last-seen timestamp (card #4321): an old last-seen is
+     * remediated history, a fresh one is live drift — WITHOUT bounding the set by
+     * a recency window, which would let rare-but-real drift older than the window
+     * read CLEAN and invert the check's false-clean-impossible invariant.
      *
      * Fail-soft: wrapped so a DB hiccup can never throw out of `bridge:check`;
      * emits only `warn`/`info`, never `error`. An empty `webhook_events` for a
@@ -702,19 +706,34 @@ class CheckCommand extends BridgeCommand
 
         try {
             foreach ($githubScopeConsumers as $scope => $consumers) {
-                // observed: distinct top-level event types actually received for this
-                // scope, normalized off the `.action` suffix (webhook_events stores
-                // `pull_request.opened`; the top level is `pull_request`).
+                // observed: top-level event types actually received for this scope
+                // (normalized off the `.action` suffix — webhook_events stores
+                // `pull_request.opened`), each with its occurrence count + last-seen
+                // (the datum separating remediated history from live drift, #4321).
+                /** @var array<string, array{count: int, last: string}> $observed */
                 $observed = [];
                 $rows = WebhookEvent::query()
                     ->where('provider', 'github')
                     ->where('scope_id', (string) $scope)
-                    ->distinct()
-                    ->pluck('event_type');
-                foreach ($rows as $eventType) {
-                    if (is_string($eventType) && $eventType !== '') {
-                        $observed[explode('.', $eventType, 2)[0]] = true;
+                    ->groupBy('event_type')
+                    ->selectRaw('event_type, COUNT(*) as occurrences, MAX(received_at) as last_seen')
+                    ->toBase()
+                    ->get();
+                foreach ($rows as $row) {
+                    $eventType = is_string($row->event_type ?? null) ? $row->event_type : '';
+                    if ($eventType === '') {
+                        continue;
                     }
+                    $top = explode('.', $eventType, 2)[0];
+                    // Seconds precision: received_at is timestamp(3) and MariaDB's
+                    // MAX() returns the fractional part while SQLite returns the
+                    // stored string — trim to the driver-independent 19 chars.
+                    $last = is_scalar($row->last_seen ?? null) ? substr((string) $row->last_seen, 0, 19) : '';
+                    $prev = $observed[$top] ?? ['count' => 0, 'last' => ''];
+                    $observed[$top] = [
+                        'count' => $prev['count'] + (int) ($row->occurrences ?? 0),
+                        'last' => max($prev['last'], $last),
+                    ];
                 }
                 if ($observed === []) {
                     continue;   // nothing arrived → nothing dropped (not a false clean)
@@ -751,7 +770,9 @@ class CheckCommand extends BridgeCommand
                     $consumers,
                 ))));
                 foreach ($unconsumed as $eventType) {
-                    $this->warn("event-consumer: github:{$scope} has received '{$eventType}' but no enabled classifier consumes it — the event is silently dropped on arrival (agent(s) subscribed: {$subscribed}). Add a consuming family, or drop '{$eventType}' from the subscription via coord:setup-bridge.");
+                    $count = $observed[$eventType]['count'];
+                    $last = $observed[$eventType]['last'] !== '' ? $observed[$eventType]['last'].' UTC' : 'unknown';
+                    $this->warn("event-consumer: github:{$scope} has received '{$eventType}' ({$count}x, last {$last}) but no enabled classifier consumes it — the event is silently dropped on arrival (agent(s) subscribed: {$subscribed}). A last-seen predating your subscription fix is remediated history, not live drift. Add a consuming family, or drop '{$eventType}' from the subscription via coord:setup-bridge.");
                 }
             }
         } catch (Throwable $e) {

@@ -478,7 +478,25 @@ class BridgeCommandsTest extends TestCase
         $this->githubEvent('workflow_run.completed', 'e2');
 
         $this->artisan('bridge:check')
-            ->expectsOutputToContain("github:owner/repo has received 'workflow_run' but no enabled classifier consumes it")
+            ->expectsOutputToContain("github:owner/repo has received 'workflow_run' (1x, last")
+            ->assertExitCode(0);
+    }
+
+    public function test_check_event_consumer_warn_carries_occurrences_and_last_seen(): void
+    {
+        // #4321: the observed set is unbounded (retention is event-gated or manual),
+        // so a single remediated stray WARNs on every run, indistinguishable from
+        // live drift — the occurrence count + last-seen timestamp is the datum that
+        // separates them, WITHOUT a recency window (which would let old-but-real
+        // drift read CLEAN and invert the false-clean-impossible invariant).
+        $this->writeGithubAgent('wb', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+        $this->githubEvent('issue_comment.created', 'e1');
+        $this->githubEvent('issue_comment.created', 'e2');
+        WebhookEvent::query()->where('delivery_id', 'e1')->update(['received_at' => '2026-06-06 08:00:00']);
+        WebhookEvent::query()->where('delivery_id', 'e2')->update(['received_at' => '2026-07-01 09:30:00']);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain("has received 'issue_comment' (2x, last 2026-07-01 09:30:00 UTC) but no enabled classifier consumes it")
             ->assertExitCode(0);
     }
 
@@ -504,7 +522,7 @@ class BridgeCommandsTest extends TestCase
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('does not declare its consumed events')
-            ->expectsOutputToContain("has received 'pull_request' but no enabled classifier consumes it")
+            ->expectsOutputToContain("has received 'pull_request' (1x, last")
             ->assertExitCode(0);
     }
 
