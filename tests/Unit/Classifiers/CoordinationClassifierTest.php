@@ -63,11 +63,17 @@ class CoordinationClassifierTest extends TestCase
 
     public function test_consumed_event_types_default_families_are_coord_message(): void
     {
-        // Unset families ⇒ the coord-message default, derived from HANDLED.
+        // Unset families ⇒ the coord-message default — QUALIFIED entries derived
+        // from HANDLED (card #4354): coord-message consumes exactly these actions;
+        // other observed actions of the type feed bridge:check's action inventory.
         $events = $this->classifier->consumedEventTypes($this->config());
 
         sort($events);
-        $this->assertSame(['issue_comment', 'issues', 'pull_request'], $events);
+        $this->assertSame([
+            'issue_comment.created',
+            'issues.opened', 'issues.reopened',
+            'pull_request.opened', 'pull_request.ready_for_review', 'pull_request.reopened',
+        ], $events);
     }
 
     public function test_consumed_event_types_impl_ci_wake_subset(): void
@@ -80,11 +86,18 @@ class CoordinationClassifierTest extends TestCase
 
     public function test_consumed_event_types_union_over_enabled_families(): void
     {
-        // Both families enabled ⇒ the DEDUPED union of their top-level event types.
+        // Both families enabled ⇒ the DEDUPED union: coord-message QUALIFIED
+        // (card #4354) + impl-ci-wake BARE (it consumes every workflow_run action
+        // by design — qualifying would inventory requested/in_progress noise).
         $events = $this->classifier->consumedEventTypes($this->config(['families' => ['coord-message', 'impl-ci-wake']]));
 
         sort($events);
-        $this->assertSame(['issue_comment', 'issues', 'pull_request', 'push', 'workflow_run'], $events);
+        $this->assertSame([
+            'issue_comment.created',
+            'issues.opened', 'issues.reopened',
+            'pull_request.opened', 'pull_request.ready_for_review', 'pull_request.reopened',
+            'push', 'workflow_run',
+        ], $events);
     }
 
     public function test_consumed_event_types_kanban_triage_has_no_github_events(): void

@@ -67,8 +67,13 @@ To use it you must (a) map a `started` stage **and** set `started_from_stages`, 
 ### 3. A github-subscribed agent using the classifier
 ```yaml
 # $BRIDGE_DIR/writeback-agent.yml
-identity:
-  github_user_id: 99999999            # the bot account GitHub delivers the webhook as
+# `identity` is OPTIONAL and deliberately omitted here: this seat is machine-only
+# (it emits durable card writebacks, never a wake or an inbox surface), so it has
+# no own-writes to suppress — an identity-less seat's echo/signal gates never fire
+# at all, which is the trivially-correct posture (DL-203 § seat placement below).
+# Seeding `github_user_id: <the bot account>` is SUPPORTED (since DL-203 a gate hit
+# strips only the agent-facing surface and the writeback still runs) but buys this
+# seat nothing.
 subscriptions:
   - provider: github
     scopes: ["your-org/your-repo"]
@@ -185,7 +190,7 @@ If you run the bridge on a **coordination repo** (the Agent Board Framework's `[
 }
 ```
 
-- **Enable the family.** The classifier that cards coord issues is a `CoordinationClassifier` **family** — add **`coord-card-create`** to that agent's `classifier.config.families` (it is **not** a default). It runs on the same agent already handling coord wakes → no new agent, no new webhook subscription (`issues` is already delivered). It cards **every** recognized-prefix issue on the repo (board-level, **not** addressed-to-me) — its own gate is a recognized prefix AND this mapping's `create_coord_cards`.
+- **Enable the family.** The classifier that cards coord issues is a `CoordinationClassifier` **family** — add **`coord-card-create`** to that agent's `classifier.config.families` (it is **not** a default). **Seat placement:** the **preferred** seat is a dedicated, identity-less writeback agent (no `identity.github_user_id`, no channel) whose only job is emitting the durable card writebacks — its echo/signal gates never fire, so its behavior is trivially independent of who authored the event. Running the family on the same agent already handling coord wakes is **supported too** (no new agent, no new webhook subscription — `issues` is already delivered): since DL-203 an echo/signal gate hit on a writeback-emitting classifier strips only the agent-facing surface (wake/inbox) while the machine writeback still runs, so a seeded `github_user_id` on that seat no longer kills its own issue-open/close card writebacks. Scope that retirement precisely: it applies to **writeback targets only** — a wake-purposed seat that seeds `identity.github_user_id` still loses its own-push **wakes** (by design; the DL-190 never-seed-`github_user_id`-on-a-wake-identity rule stands). It cards **every** recognized-prefix issue on the repo (board-level, **not** addressed-to-me) — its own gate is a recognized prefix AND this mapping's `create_coord_cards`.
 - **What gets carded.** An issue whose **trimmed title** starts with `[BRIEF]`, `[ANNOUNCE]`, `[QUERY]`, `[REVIEW]`, or `[TASK]` (case-insensitive), on `issues.opened` **or** `issues.reopened`. An un-prefixed / `[PROPOSAL]` / unrecognized-prefix issue is **not** carded (the create-set equals the reconcile's own-prefix set, so a carded issue is always one the reconcile backstops).
 - **The card.** Named the issue title verbatim; tagged **`id:<sid>`** + **`type:<itype>`** only (`sid = "<PREFIX>-<num>"` from the **anchored** first prefix, e.g. `QUERY-42`; `itype` mirrors the reconcile's `_itype` — an **unanchored** priority-substring scan `[BRIEF]`>`[ANNOUNCE]`>`[QUERY]`>`[REVIEW]`, else `task`, so a multi-bracket title's `type:` matches the reconcile even where it differs from the anchored `sid` prefix). `repo:` is **omitted** at create (non-critical — the reconcile folds it). It also sets `description = "Coordination thread <repo>#<num>"`, `priority = 1` for a `[BRIEF]` else `0`, and `external_link = https://github.com/<repo>/issues/<num>` — mirroring the reconcile's create so its next pass doesn't update-churn them. `external_id` is **not** set (the reconcile's `build_create` omits it, and kanban's `(board_id, external_id)` uniqueness would 422 a colliding issue number on a multi-repo coord board — `external_link` carries the correlation).
 - **Create-only + idempotent.** This create path never moves or archives a card. (The bridge as a whole is no longer create-only for coord cards: its opt-in sibling **`move_coord_cards`** (DL-200, below) carries close→terminal / reopen→revive. The reconcile still owns column/lifecycle wherever that opt-in is **off**, and **archival remains the reconcile's alone**.) It correlates by the **`id:<sid>` tag**: if a card already carries it, it **skips** — which covers redelivery, opened+reopened, **and** the bridge-vs-reconcile race (both movers key on the same tag). After a create it re-reads by tag and collapses a raced duplicate (keep lowest id, archive the rest — the shared deterministic tie-break). Durable, transient(5xx→retry)/permanent(4xx→log+no-op).

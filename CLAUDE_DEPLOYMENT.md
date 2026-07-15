@@ -244,6 +244,8 @@ Each `(event, agent)` is one `agent_dispatches` row:
 - **done** — `processed_at` set. Intents were staged and handlers ran. If a *handler/push* failed (e.g. channel push to an idle agent — connection refused, which is NORMAL), the row is still **done** with `error_message` recording the note; the intent is already durable in `inbox.jsonl`, read via `bridge:inbox` when the agent returns. The webhook still 200s.
 - **errored** — `processed_at` null, `error_message` set. The classifier threw (a deterministic bug). The webhook still 200s (a 5xx would retry-storm an event that fails identically every time). Fix the classifier, reload FPM, then `bridge:replay <id>`.
 
+A **delivered** row's `reason` is non-null in exactly one case: **`echo: agent surface suppressed`** (DL-203) — a github event whose actor tripped an echo/signal gate, classified by a writeback-emitting classifier, had its agent-facing surface (inbox intent + channel push) stripped and only the machine writeback handlers ran. `error_message` stays handler-failure-only, and `bridge:replay`'s gate-DROPPED skip count is unaffected (the row is delivered, not dropped).
+
 ## Where things land
 
 All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR` / `BRIDGE_SECRET_DIR` / `BRIDGE_STATE_DIR` override them.
