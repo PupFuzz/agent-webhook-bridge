@@ -1,7 +1,7 @@
 name: PR title correlation-key lint
 
 # A PR whose head branch follows the <type>/<card-id>-slug convention MUST carry
-# a `card#<id>` or `DL-NNNN` token in its title. That token is the ONLY key the
+# a `card-<id>`/`card#<id>` or `DL-NNNN` token in its title. That token is the ONLY key the
 # card-movement writeback has to correlate a merged PR back to its tracking card;
 # without it the card silently never moves. The convention was empirically
 # skipped (wave-1 2026-07-08: 8 PRs, zero automated card moves), so this converts
@@ -68,17 +68,20 @@ jobs:
           card_id="${BRANCH#*/}"
           card_id="${card_id%%-*}"
 
-          # Accept a genuine "card#<exact-id>" or "DL-<1-4 digits>" token, bounded
-          # on BOTH sides so a coincidental substring does not satisfy the check:
-          # the leading (^|[^0-9A-Za-z]) rejects tails like "IDL-2"/"discard#3770",
-          # and the trailing ([^0-9]|$) rejects a longer id like "card#37700".
-          if [[ "$TITLE" =~ (^|[^0-9A-Za-z])card#${card_id}([^0-9]|$) ]] || [[ "$TITLE" =~ (^|[^0-9A-Za-z])DL-[0-9]{1,4}([^0-9]|$) ]]; then
+          # Accept a genuine "card-<exact-id>"/"card#<exact-id>" or "DL-<1-4
+          # digits>" token, bounded on BOTH sides so a coincidental substring does
+          # not satisfy the check: the leading (^|[^0-9A-Za-z_]) mirrors the
+          # classifier's \b (underscore is a word char there — a title the lint
+          # passes must also correlate), rejecting tails like "IDL-2"/
+          # "discard#3770"/"foo_card-3770"; the trailing ([^0-9]|$) rejects a
+          # longer id like "card#37700".
+          if [[ "$TITLE" =~ (^|[^0-9A-Za-z_])card[-#]${card_id}([^0-9]|$) ]] || [[ "$TITLE" =~ (^|[^0-9A-Za-z_])DL-[0-9]{1,4}([^0-9]|$) ]]; then
             echo "OK: title carries a correlation token for card $card_id."
             exit 0
           fi
 
           echo "::error::PR title is missing a card-movement correlation token."
-          echo "Branch '$BRANCH' targets card $card_id, but the title carries neither 'card#$card_id' nor a 'DL-NNNN' token."
+          echo "Branch '$BRANCH' targets card $card_id, but the title carries neither 'card-$card_id' (nor 'card#$card_id') nor a 'DL-NNNN' token."
           echo "The writeback uses this token as its ONLY key to move the tracking card; without it the card silently never moves."
-          echo "Fix: add 'card#$card_id' or the relevant 'DL-NNNN' to the PR title, then re-save (the 'edited' event re-runs this check)."
+          echo "Fix: add 'card-$card_id' or the relevant 'DL-NNNN' to the PR title, then re-save (the 'edited' event re-runs this check)."
           exit 1
