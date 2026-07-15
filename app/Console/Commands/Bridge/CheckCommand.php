@@ -725,7 +725,10 @@ class CheckCommand extends BridgeCommand
                         continue;
                     }
                     $top = explode('.', $eventType, 2)[0];
-                    $last = is_scalar($row->last_seen ?? null) ? (string) $row->last_seen : '';
+                    // Seconds precision: received_at is timestamp(3) and MariaDB's
+                    // MAX() returns the fractional part while SQLite returns the
+                    // stored string — trim to the driver-independent 19 chars.
+                    $last = is_scalar($row->last_seen ?? null) ? substr((string) $row->last_seen, 0, 19) : '';
                     $prev = $observed[$top] ?? ['count' => 0, 'last' => ''];
                     $observed[$top] = [
                         'count' => $prev['count'] + (int) ($row->occurrences ?? 0),
