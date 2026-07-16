@@ -103,11 +103,25 @@ class CoordinationCardMoveClassifierTest extends TestCase
 
     public function test_move_coord_cards_off_emits_nothing(): void
     {
-        // The opt-in gate — the load-bearing byte-identical property.
-        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50],
+        // DL-204 (#4357): the opt-out gate is now EXPLICIT move_coord_cards:false — omission
+        // defaults the leg ON where a terminal is configured (see the default-on sibling below).
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => false,
             'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99]);
 
         $this->assertSame([], $this->classify('[QUERY] x', 'issues.closed')->targets);
+    }
+
+    public function test_move_coord_cards_defaults_on_without_the_flag_and_emits(): void
+    {
+        // DL-204 fleet default: a complete move config (terminal present) WITHOUT move_coord_cards
+        // resolves the leg ON, so the family emits the move target — the classifier self-gate reads
+        // the same WritebackConfig default the handler does.
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50],
+            'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99]);
+
+        $targets = $this->classify('[QUERY] x', 'issues.closed')->targets;
+        $this->assertCount(1, $targets);
+        $this->assertSame('terminal', $targets[0]->payload['disposition']);
     }
 
     public function test_opened_is_not_a_move(): void

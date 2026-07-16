@@ -29,7 +29,7 @@ use App\Bridge\Support\PathHelper;
  *         "create_dependabot_cards": false,        // optional (DL-024)
  *         "create_coord_cards": false,             // optional (DL-198) — real-time coord-issue → card create
  *         "coord_card_stage_id": 21,               // required-when-create_coord_cards/move_coord_cards — stage a new coord card lands in, and the revive target
- *         "move_coord_cards": false,               // optional (DL-200) — real-time coord-issue close → terminal, reopen → revive
+ *         "move_coord_cards": false,               // DL-200; guarded fleet default (DL-204): absent ⇒ on where coord_card_terminal_stage_id present, inert where absent
  *         "coord_card_terminal_stage_id": 99,      // required-when-move_coord_cards — terminal a closed coord card moves to (MUST differ from coord_card_stage_id)
  *         "swimlane_id": 31,                        // optional — lane for CREATED cards (DL-027)
  *         "draft_overlay": false                    // optional (DL-193) — mirror PR draft state to block_reason
@@ -217,20 +217,35 @@ final class WritebackConfig
             if ($createCoordCards && $coordCardStageId === null) {
                 throw new ConfigException("writeback.json: mapping for {$repo} sets create_coord_cards but no coord_card_stage_id — a coord-card create has no stage to POST to; set coord_card_stage_id (or remove create_coord_cards)");
             }
-            // Opt-in coordination-issue → card MOVE/revive (DL-200). Separately opt-in
-            // from create_coord_cards (roundtable #18 "opt-in first") — a move-on/create-off
-            // mapping is coherent, so this must NOT ride createCoordCards.
-            $moveCoordCards = ($m['move_coord_cards'] ?? false) === true;
-            // The terminal a coord card moves to when its issue closes (DL-200). Strict-numeric
-            // + REQUIRED-when-move_coord_cards, exactly like coord_card_stage_id under
-            // create_coord_cards: a move with no terminal has nowhere to PATCH to, so it must
-            // fail LOUD at load rather than silently no-op at dispatch.
+            // The terminal a coord card moves to when its issue closes (DL-200). Strict-numeric.
+            // Its PRESENCE is also the "operator configured the move leg" signal for the fleet
+            // default below — the key has no other consumer. Under an EXPLICIT move_coord_cards:true
+            // an absent terminal is fail-closed at load (the guard after the resolution): a move
+            // with no terminal has nowhere to PATCH to.
             $coordCardTerminalStageId = null;
             if (array_key_exists('coord_card_terminal_stage_id', $m) && $m['coord_card_terminal_stage_id'] !== null) {
                 if (! is_numeric($m['coord_card_terminal_stage_id'])) {
                     throw new ConfigException("writeback.json: mapping for {$repo} coord_card_terminal_stage_id must be a numeric workflow_stage_id");
                 }
                 $coordCardTerminalStageId = (int) $m['coord_card_terminal_stage_id'];
+            }
+            // Coordination-issue → card MOVE/revive (DL-200), a guarded FLEET DEFAULT (DL-204, #4357).
+            // Resolved separately from create_coord_cards (roundtable #18 "opt-in first") — a
+            // move-on/create-off mapping is coherent, so this must NOT ride createCoordCards.
+            // EXPLICIT move_coord_cards is honored exactly (opt-in still fail-closed on an incomplete
+            // config below; opt-out still silent-off). When the key is ABSENT the leg defaults ON
+            // where the move config is complete (terminal present) and INERT where it is not — so an
+            // install that never configured a terminal upgrades byte-identically, while one whose
+            // per-board stage ids are already present activates without also setting the flag. This
+            // governs only the handler-side gate; the classifier's coord-card-move family is a
+            // separate opt-in, so the leg fires only where BOTH are on — bridge:check nudges an
+            // install that enabled the family but left this leg inert (the terminal absent). A
+            // PARTIAL default-on config (terminal present, revive stage missing/equal) is made LOUD
+            // by the guards below, never a silent no-op.
+            if (array_key_exists('move_coord_cards', $m) && $m['move_coord_cards'] !== null) {
+                $moveCoordCards = $m['move_coord_cards'] === true;
+            } else {
+                $moveCoordCards = $coordCardTerminalStageId !== null;
             }
             if ($moveCoordCards && $coordCardTerminalStageId === null) {
                 throw new ConfigException("writeback.json: mapping for {$repo} sets move_coord_cards but no coord_card_terminal_stage_id — a coord-card close has no terminal stage to move to; set coord_card_terminal_stage_id (or remove move_coord_cards)");
@@ -240,7 +255,7 @@ final class WritebackConfig
             // DL-195's "revive reuses stages.opened"). Absent ⇒ the leg half-works: closes
             // land, reopens silently no-op. Fail closed.
             if ($moveCoordCards && $coordCardStageId === null) {
-                throw new ConfigException("writeback.json: mapping for {$repo} sets move_coord_cards but no coord_card_stage_id — a reopened coord card has no stage to revive to; set coord_card_stage_id (or remove move_coord_cards)");
+                throw new ConfigException("writeback.json: mapping for {$repo} has coord_card_terminal_stage_id set (so the move leg is on — explicitly via move_coord_cards or by the DL-204 default) but no coord_card_stage_id — a reopened coord card has no stage to revive to; set coord_card_stage_id, or remove coord_card_terminal_stage_id to disable the move leg");
             }
             // Disjointness, fail-closed (the DL-194 unpark_from_stages precedent): an equal
             // terminal and create/revive stage collapses both transitions onto one stage —
