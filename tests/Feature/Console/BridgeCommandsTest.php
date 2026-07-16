@@ -860,7 +860,14 @@ class BridgeCommandsTest extends TestCase
     /** Write a writeback.json with the move leg on, + the board fake. Returns nothing. */
     private function writeMoveLegInstall(int $terminalStageId = 53): void
     {
-        $this->writeAgent();
+        // An agent that actually DRIVES the move leg: subscribed to github:owner/repo with the
+        // coord-card-move family enabled (gate 1), so the mapping isn't orphaned and the DL-204
+        // family gate lets the terminal-agreement compare run.
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n  github_user_id: 555\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."  - provider: github\n    scopes: [\"owner/repo\"]\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
+            ."  config:\n    families: [coord-message, coord-card-move]\n");
         File::put($this->dir.'/writeback.json', (string) json_encode([
             'identity_id' => 4242,
             'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50],
@@ -1040,6 +1047,79 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:check')
             ->expectsOutputToContain('CANNOT VERIFY')
             ->doesntExpectOutputToContain('coord config agrees')
+            ->assertExitCode(0);
+    }
+
+    // ---- DL-204 (#4357): the fleet-default no-silent-inert discovery nudge + family gating ----
+
+    public function test_check_warns_when_the_coord_card_move_family_is_enabled_but_the_terminal_is_unset(): void
+    {
+        // Gate 1 (coord-card-move family) on, gate 2 inert (no coord_card_terminal_stage_id ⇒ the
+        // fleet default resolves move_coord_cards false): issues.closed/reopened are classified but
+        // no card moves — silent-inert. The config-only nudge names the activation path.
+        $this->writeMoveLegInstall();   // writes the coord-card-move family agent + plumbing
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50], 'coord_card_stage_id' => 50]],
+        ]));   // terminal + move flag omitted ⇒ inert
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('enables the coord-card-move family but its writeback mapping has no coord_card_terminal_stage_id')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_does_not_nudge_the_move_leg_for_a_pure_pr_writeback_install(): void
+    {
+        // The nudge is scoped to family-enabled scopes — a pure PR-lifecycle writeback (no
+        // coord-card-move family) gets NO coord-move noise even with a terminal-less mapping
+        // (DL-196 no-false-alarm posture).
+        $this->writeGithubAgent('prod-agent', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50]]],
+        ]));
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('enables the coord-card-move family')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warns_when_the_terminal_is_set_but_the_move_family_is_not_enabled(): void
+    {
+        // DL-204 MIRROR silent-inert: gate 2 on (terminal present ⇒ default move_coord_cards true)
+        // but gate 1 off (the serving coord agent lacks the coord-card-move family) ⇒ the handler
+        // would move but nothing classifies a move ⇒ dead leg. bridge:check must nudge (the
+        // adoption-path death — set the terminal but forget the family — DL-204 warns against).
+        $this->writeGithubAgent('prod-agent', 'App\\Bridge\\Classifiers\\CoordinationClassifier', 'coord-message, coord-card-create');
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'coord_card_stage_id' => 50, 'coord_card_terminal_stage_id' => 53]],
+        ]));   // terminal present + move flag absent ⇒ default on; family lacks coord-card-move
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('no agent enables the coord-card-move family on that scope')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_skips_the_terminal_compare_when_the_move_family_is_not_enabled(): void
+    {
+        // Finding-1 gate: after the DL-204 flip move_coord_cards can resolve true from
+        // terminal-presence alone. Without the coord-card-move family (gate 1) the leg cannot
+        // fire, so the terminal-agreement compare must NOT run and imply the leg is live.
+        $this->writeGithubAgent('prod-agent', 'App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier');
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'coord_card_stage_id' => 50, 'coord_card_terminal_stage_id' => 53]],
+        ]));   // move_coord_cards absent + terminal present ⇒ default resolves true, but family off
+        $this->writeCoordConfig(['kanban' => ['boards' => [
+            ['key' => 'issues', 'board_id' => 8, 'terminal_columns' => ['Done']],
+        ]]]);
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('coord config agrees')
+            ->doesntExpectOutputToContain('the two movers DISAGREE')
             ->assertExitCode(0);
     }
 

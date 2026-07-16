@@ -546,7 +546,7 @@ class WritebackConfigTest extends TestCase
         ]]));
 
         $this->expectException(ConfigException::class);
-        $this->expectExceptionMessage('move_coord_cards but no coord_card_stage_id');
+        $this->expectExceptionMessage('but no coord_card_stage_id');
         WritebackConfig::load($this->dir);
     }
 
@@ -579,17 +579,57 @@ class WritebackConfigTest extends TestCase
         WritebackConfig::load($this->dir);
     }
 
-    public function test_coord_card_terminal_stage_id_without_move_flag_is_inert_but_parsed(): void
+    public function test_move_coord_cards_defaults_on_when_configured_without_the_flag(): void
     {
-        // A terminal set without the flag is allowed (no throw) — moveCoordCards
-        // false ⇒ the classifier/handler never act on it. Mirrors the DL-198 sibling.
+        // DL-204 (#4357) fleet default: an ABSENT move_coord_cards resolves ON where the move
+        // config is complete (terminal + revive stage present + differ). The terminal key is the
+        // "operator configured move" signal, so an install whose per-board stage ids are already
+        // set activates without also setting the flag (aimla board 10 / sola board 2/3 shape).
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
+        $this->assertTrue($mapping->moveCoordCards);
+        $this->assertSame(99, $mapping->coordCardTerminalStageId);
+    }
+
+    public function test_move_coord_cards_absent_and_terminal_absent_is_inert(): void
+    {
+        // DL-204: the byte-identical upgrade. An install that never configured a terminal stays
+        // OFF — no terminal ⇒ the move leg was never configured ⇒ inert, exactly as pre-flip.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'coord_card_stage_id' => 21],
+        ]]));
+
+        $this->assertFalse(WritebackConfig::load($this->dir)->mappingFor('o/r')->moveCoordCards);
+    }
+
+    public function test_move_coord_cards_default_on_without_a_revive_stage_throws(): void
+    {
+        // DL-204 point 3: a PARTIAL default-on config (terminal present, revive stage absent) is
+        // made LOUD by the existing fail-closed guard — a half-configured move leg is a worse
+        // failure than the load-throw, so it is never a silent no-op.
         $this->write(json_encode(['mappings' => [
             'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'coord_card_terminal_stage_id' => 99],
         ]]));
 
-        $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
-        $this->assertFalse($mapping->moveCoordCards);
-        $this->assertSame(99, $mapping->coordCardTerminalStageId);
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('but no coord_card_stage_id');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_explicit_move_coord_cards_false_stays_off_even_when_fully_configured(): void
+    {
+        // DL-204: an EXPLICIT opt-out wins over the fleet default even with a complete config —
+        // the presence-of-terminal heuristic only fires when the key is ABSENT.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => false,
+                'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99],
+        ]]));
+
+        $this->assertFalse(WritebackConfig::load($this->dir)->mappingFor('o/r')->moveCoordCards);
     }
 
     public function test_move_coord_cards_is_independent_of_create_coord_cards(): void

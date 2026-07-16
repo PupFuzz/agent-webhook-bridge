@@ -133,6 +133,12 @@ class CheckCommand extends BridgeCommand
         // writeback-emitting classifier — used to flag orphaned writeback
         // mappings below (#2162). Keyed by scope for O(1) lookup.
         $writebackEmittingScopes = [];
+        // DL-204 (#4357): scopes where an agent enables the coord-card-move family (gate 1
+        // of the MOVE leg; gate 2 is the writeback mapping's move_coord_cards). Keyed by
+        // scope, used to scope the fleet-default nudges so bridge:check only speaks about the
+        // move leg where it can actually fire (family-on) rather than where the writeback
+        // default alone resolved move_coord_cards true.
+        $coordCardMoveScopes = [];
         // github scope (repo full_name) => list of the agents subscribed to it and
         // the top-level event types each CONSUMES, for the event-follows-consumer
         // check below (card#4183 / DL-196). Multiple agents can subscribe one scope
@@ -188,6 +194,18 @@ class CheckCommand extends BridgeCommand
                     foreach ($cfg->subscriptions as $sub) {
                         if ($sub->provider === 'github') {
                             $writebackEmittingScopes[$sub->scopeId] = true;
+                        }
+                    }
+                }
+
+                // DL-204 (#4357): record scopes whose agent enables the coord-card-move family.
+                // coord-card-move is never in DEFAULT_FAMILIES, so a raw-config membership test IS
+                // the resolved answer — an unset families list defaults to [coord-message] and can
+                // never contain it.
+                if (in_array('coord-card-move', $cfg->classifierConfig->strings('families'), true)) {
+                    foreach ($cfg->subscriptions as $sub) {
+                        if ($sub->provider === 'github') {
+                            $coordCardMoveScopes[$sub->scopeId] = true;
                         }
                     }
                 }
@@ -531,6 +549,29 @@ class CheckCommand extends BridgeCommand
                         if ($mapping->createCoordCards && $writeback->identityId === null) {
                             $this->warn("writeback: mapping for {$repo} sets create_coord_cards but writeback.json has no identity_id — a created coord card's task.created webhook echoes back and could self-wake a kanban-triage session; set identity_id (the global-echo gate is the sole guard).");
                         }
+                        // DL-204 (#4357): the move leg fires only where BOTH gates are on — the
+                        // coord-card-move family (gate 1) AND the writeback mapping's move_coord_cards
+                        // (gate 2, now a guarded fleet default: on where coord_card_terminal_stage_id
+                        // is present, inert where absent). An install that enabled the family but never
+                        // set the terminal gets issues.closed/reopened classified with NO card move —
+                        // silent-inert, the exact death the fleet default's no-silent-inert clause
+                        // targets. Nudge it (config-only, no board read), scoped to family-enabled
+                        // scopes so a pure PR-writeback mapping stays quiet (DL-196 posture).
+                        if (isset($coordCardMoveScopes[$repo]) && $mapping->coordCardTerminalStageId === null) {
+                            $this->warn("writeback: github:{$repo} enables the coord-card-move family but its writeback mapping has no coord_card_terminal_stage_id — the real-time coord-issue close/reopen → card move (DL-200) is INERT (issues.closed/reopened are classified but no card moves). Set coord_card_terminal_stage_id (the fleet default activates the leg where it is present), or remove coord-card-move from classifier.config.families if the move leg is not wanted.");
+                        }
+                        // DL-204 MIRROR: the other silent-inert direction. Gate 2 on (move_coord_cards
+                        // resolved true — explicitly, or by the terminal-present fleet default) but gate 1
+                        // off (no agent runs the coord-card-move family on this scope): the handler-side
+                        // gate is on, but the classifier never emits a move to hand it, so the leg is dead.
+                        // This is exactly the adoption path DL-204 advertises ("set the terminal, no flag
+                        // needed") dying when the operator sets the terminal but never enables the family —
+                        // and it is the case the family-gate on the terminal-agreement compare above no
+                        // longer surfaces. Config-only, no board read; terminal-absent installs can't reach
+                        // it (moveCoordCards is false there), so a pure PR-writeback mapping stays quiet.
+                        if ($mapping->moveCoordCards && ! isset($coordCardMoveScopes[$repo])) {
+                            $this->warn("writeback: github:{$repo} has coord_card_terminal_stage_id set (the move leg is on — explicitly or by the DL-204 default) but no agent enables the coord-card-move family on that scope — the leg cannot fire (nothing classifies issues.closed/reopened into a move). Add coord-card-move to the serving agent's classifier.config.families, or remove coord_card_terminal_stage_id to disable the move leg.");
+                        }
                     }
 
                     try {
@@ -639,8 +680,14 @@ class CheckCommand extends BridgeCommand
                                     }
                                 }
                                 // DL-200: the cross-config compare — the MANDATORY preflight that
-                                // makes the move leg's bridge-owned terminal config legitimate.
-                                $this->checkCoordTerminalAgreement($repo, $mapping, $client);
+                                // makes the move leg's bridge-owned terminal config legitimate. Gated
+                                // on the coord-card-move family (gate 1): after the DL-204 default flip,
+                                // move_coord_cards can resolve true from terminal-presence alone, so
+                                // without this gate the compare would verify a terminal for a leg that
+                                // cannot fire (family off) and read as though the leg were live.
+                                if (isset($coordCardMoveScopes[$repo])) {
+                                    $this->checkCoordTerminalAgreement($repo, $mapping, $client);
+                                }
                             } catch (Throwable $e) {
                                 $this->warn("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".$e->getMessage());
                             }

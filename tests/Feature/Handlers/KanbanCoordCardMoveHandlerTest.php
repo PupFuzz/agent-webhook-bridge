@@ -240,13 +240,29 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
 
     public function test_opt_out_moves_nothing(): void
     {
-        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50],
+        // DL-204 (#4357): opting out is now EXPLICIT move_coord_cards:false — omission defaults
+        // the leg ON where a terminal is configured, so the opt-out must be explicit to win.
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => false,
             'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99]);
         $this->fakeBoard(['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50]);
 
         $this->handle();
 
         $this->assertNoMove();
+    }
+
+    public function test_default_on_without_the_flag_moves(): void
+    {
+        // DL-204 fleet default: a complete move config (terminal present, revive stage present,
+        // differ) WITHOUT move_coord_cards fires the move — the activation a terminal-configured
+        // install gets for free, no flag needed.
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50],
+            'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99]);
+        $this->fakeBoard(['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50]);
+
+        $this->handle();   // disposition defaults to close→terminal
+
+        $this->assertMovedTo(99);
     }
 
     public function test_unmapped_repo_moves_nothing(): void
