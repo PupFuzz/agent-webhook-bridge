@@ -97,6 +97,8 @@ php artisan bridge:check        # validates writeback.json + the writeback token
 
 Open/merge a PR whose title or branch carries `DL-NNN` matching a card's `payload.dl_number` (the card's `dl_number` custom field, populated by your board automation when the card is created); the card moves. `php artisan bridge:inspect <event_id>` shows the dispatch + any logged refusal/no-op.
 
+> **Reading a refusal.** When kanban refuses a writeback call with a `4xx`, the handler logs a `warning` carrying **`status`** and **`body`** — kanban's response body verbatim (truncated to ~500 chars, with any credential-shaped value redacted). The body is the authority for *why* it refused (a `403` authz refusal, a `422` unregistered custom field / bad stage, a `404` deleted card, …); the log message states only what was observed and defers the cause to the `body`, so trust the server's words over any guess.
+
 ## Optional: dependabot cards (DL-024)
 
 By default the writeback only **moves an existing card** correlated by a `DL-NNN`. Dependabot PRs carry no `DL-NNN` and have no card, so dependency updates never appear on the board. Set **`create_dependabot_cards: true`** on a mapping and the bridge will **create a card when a dependabot PR opens** and carry it through the same lifecycle on close — keyed by **PR number** (no DL needed). It builds on the base setup above (token, the repo webhook subscribed to *Pull requests*, the classifier agent); it just adds the one flag.

@@ -6,6 +6,7 @@ use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Http\Client\RequestException;
@@ -86,7 +87,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             $card = $client->getCard($cardId);
         } catch (RequestException $e) {
             if ($this->isPermanent($e)) {
-                Log::warning('kanban_block_reason: getCard refused by kanban (4xx) — ignoring', ['card_id' => $cardId, 'status' => $e->response->status()]);
+                Log::warning('kanban_block_reason: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)', ['card_id' => $cardId] + RefusalContext::from($e));
 
                 return;
             }
@@ -131,7 +132,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             $client->setBlockReason($cardId, $reason);
         } catch (RequestException $e) {
             if ($this->isPermanent($e)) {
-                Log::warning('kanban_block_reason: setBlockReason refused by kanban (4xx) — ignoring', ['card_id' => $cardId, 'status' => $e->response->status()]);
+                Log::warning('kanban_block_reason: setBlockReason refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)', ['card_id' => $cardId] + RefusalContext::from($e));
 
                 return;
             }
