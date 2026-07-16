@@ -33,7 +33,10 @@ use Illuminate\Support\Facades\Log;
  *
  * DURABLE, with the same transient(5xx → retry) / permanent(4xx → log + no-op)
  * split as the move handler (DL-020). New cards are tagged `dependencies` +
- * `triaged` so the routine churn doesn't flood the untriaged sweep.
+ * `triaged` so the routine churn doesn't flood the untriaged sweep, plus an
+ * opt-in rendered `id:` provenance tag (#75) when the mapping sets
+ * `card_id_tag_template`, so a tag-keyed Shipped→Released promoter can find
+ * them — absent ⇒ no tag (back-compat).
  */
 final class KanbanDependabotCardHandler implements DurableReaction, Handler
 {
@@ -129,7 +132,11 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             // truth: add a key to the constant without a value here and array_combine
             // throws (count mismatch) — they cannot silently drift.
             $payload = array_combine(self::CREATE_PAYLOAD_KEYS, [$prNumber, $url, 'dependabot']);
-            $newId = $client->createCard($mapping->boardId, $stageId, $title, $payload, ['dependencies', 'triaged'], $mapping->swimlaneId);
+            $tags = ['dependencies', 'triaged'];
+            if ($mapping->cardIdTagTemplate !== null) {
+                array_unshift($tags, $this->renderIdTag($mapping->cardIdTagTemplate, $prNumber, $repo));
+            }
+            $newId = $client->createCard($mapping->boardId, $stageId, $title, $payload, $tags, $mapping->swimlaneId);
             Log::info('kanban_dependabot_card: created', ['card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $stageId, 'swimlane' => $mapping->swimlaneId, 'outcome' => $outcome, 'pr' => $prNumber]);
 
             // Close the create-or-move race. The correlate→create above is not atomic
@@ -212,6 +219,19 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
     private function collapseDuplicates(KanbanClient $client, array $cards, string $repo, int $prNumber): array
     {
         return CardCollapse::toSurvivor($client, $cards, 'kanban_dependabot_card', ['repo' => $repo, 'pr' => $prNumber]);
+    }
+
+    /**
+     * Render a mapping's id-tag template for a dependabot card (#75). Placeholders:
+     * {n}/{pr_number} = PR number, {repo} = repo NAME (last path segment). Unknown
+     * placeholders are left literal — the tenant's template is verified against its own
+     * id:-keyed reader at activation, not here.
+     */
+    private function renderIdTag(string $template, int $prNumber, string $repo): string
+    {
+        $repoName = basename($repo);
+
+        return strtr($template, ['{n}' => (string) $prNumber, '{pr_number}' => (string) $prNumber, '{repo}' => $repoName]);
     }
 
     private function isPermanent(RequestException $e): bool
