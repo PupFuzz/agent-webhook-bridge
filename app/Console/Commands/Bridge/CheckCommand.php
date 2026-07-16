@@ -560,6 +560,18 @@ class CheckCommand extends BridgeCommand
                         if (isset($coordCardMoveScopes[$repo]) && $mapping->coordCardTerminalStageId === null) {
                             $this->warn("writeback: github:{$repo} enables the coord-card-move family but its writeback mapping has no coord_card_terminal_stage_id — the real-time coord-issue close/reopen → card move (DL-200) is INERT (issues.closed/reopened are classified but no card moves). Set coord_card_terminal_stage_id (the fleet default activates the leg where it is present), or remove coord-card-move from classifier.config.families if the move leg is not wanted.");
                         }
+                        // DL-204 MIRROR: the other silent-inert direction. Gate 2 on (move_coord_cards
+                        // resolved true — explicitly, or by the terminal-present fleet default) but gate 1
+                        // off (no agent runs the coord-card-move family on this scope): the handler-side
+                        // gate is on, but the classifier never emits a move to hand it, so the leg is dead.
+                        // This is exactly the adoption path DL-204 advertises ("set the terminal, no flag
+                        // needed") dying when the operator sets the terminal but never enables the family —
+                        // and it is the case the family-gate on the terminal-agreement compare above no
+                        // longer surfaces. Config-only, no board read; terminal-absent installs can't reach
+                        // it (moveCoordCards is false there), so a pure PR-writeback mapping stays quiet.
+                        if ($mapping->moveCoordCards && ! isset($coordCardMoveScopes[$repo])) {
+                            $this->warn("writeback: github:{$repo} has coord_card_terminal_stage_id set (the move leg is on — explicitly or by the DL-204 default) but no agent enables the coord-card-move family on that scope — the leg cannot fire (nothing classifies issues.closed/reopened into a move). Add coord-card-move to the serving agent's classifier.config.families, or remove coord_card_terminal_stage_id to disable the move leg.");
+                        }
                     }
 
                     try {

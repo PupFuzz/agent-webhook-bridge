@@ -1084,6 +1084,24 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_warns_when_the_terminal_is_set_but_the_move_family_is_not_enabled(): void
+    {
+        // DL-204 MIRROR silent-inert: gate 2 on (terminal present ⇒ default move_coord_cards true)
+        // but gate 1 off (the serving coord agent lacks the coord-card-move family) ⇒ the handler
+        // would move but nothing classifies a move ⇒ dead leg. bridge:check must nudge (the
+        // adoption-path death — set the terminal but forget the family — DL-204 warns against).
+        $this->writeGithubAgent('prod-agent', 'App\\Bridge\\Classifiers\\CoordinationClassifier', 'coord-message, coord-card-create');
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'coord_card_stage_id' => 50, 'coord_card_terminal_stage_id' => 53]],
+        ]));   // terminal present + move flag absent ⇒ default on; family lacks coord-card-move
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('no agent enables the coord-card-move family on that scope')
+            ->assertExitCode(0);
+    }
+
     public function test_check_skips_the_terminal_compare_when_the_move_family_is_not_enabled(): void
     {
         // Finding-1 gate: after the DL-204 flip move_coord_cards can resolve true from
