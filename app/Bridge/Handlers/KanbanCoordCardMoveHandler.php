@@ -6,6 +6,7 @@ use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -107,7 +108,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
                     $this->moveOne($client, $mapping, $id, $disposition, $sid, $repo, $issueNumber);
                 } catch (RequestException $e) {
                     if ($this->isPermanent($e)) {
-                        Log::warning('kanban_coord_card_move: kanban refused (4xx) for this card — skipping it', ['card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber, 'status' => $e->response->status()]);
+                        Log::warning('kanban_coord_card_move: kanban refused (4xx) for this card — skipping it (see `body` for the reason kanban gave)', ['card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e));
 
                         continue;
                     }
@@ -117,7 +118,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         } catch (RequestException $e) {
             // The cardsByTag read itself: 4xx permanent (log + no-op), 5xx transient (throw → retry).
             if ($this->isPermanent($e)) {
-                Log::warning('kanban_coord_card_move: kanban refused (4xx) — ignoring', ['repo' => $repo, 'issue' => $issueNumber, 'status' => $e->response->status()]);
+                Log::warning('kanban_coord_card_move: kanban refused (4xx) — ignoring (see `body` for the reason kanban gave)', ['repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e));
 
                 return;
             }

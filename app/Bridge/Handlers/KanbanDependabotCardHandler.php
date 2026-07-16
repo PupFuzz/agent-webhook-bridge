@@ -7,6 +7,7 @@ use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ExternalReferenceNormalizer;
+use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -146,7 +147,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
         } catch (RequestException $e) {
             // A kanban 4xx is permanent (log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
             if ($this->isPermanent($e)) {
-                Log::warning('kanban_dependabot_card: kanban refused (4xx) — ignoring', ['repo' => $repo, 'pr' => $prNumber, 'status' => $e->response->status()]);
+                Log::warning('kanban_dependabot_card: kanban refused (4xx) — ignoring (see `body` for the reason kanban gave)', ['repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e));
 
                 return;
             }
