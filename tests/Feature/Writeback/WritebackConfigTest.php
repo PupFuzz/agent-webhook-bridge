@@ -645,4 +645,39 @@ class WritebackConfigTest extends TestCase
         $this->assertTrue($mapping->moveCoordCards);
         $this->assertFalse($mapping->createCoordCards);
     }
+
+    // ---- #75 / card-4485: card_id_tag_template ----
+
+    public function test_loads_card_id_tag_template(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'card_id_tag_template' => 'id:DEV-pr-{n}'],
+        ]]));
+
+        $this->assertSame('id:DEV-pr-{n}', WritebackConfig::load($this->dir)->mappingFor('o/r')->cardIdTagTemplate);
+    }
+
+    public function test_absent_card_id_tag_template_is_null(): void
+    {
+        $this->write(json_encode(['mappings' => ['o/r' => ['board_id' => 8, 'stages' => ['opened' => 50]]]]));
+        $this->assertNull(WritebackConfig::load($this->dir)->mappingFor('o/r')->cardIdTagTemplate);
+    }
+
+    public function test_empty_card_id_tag_template_throws(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'card_id_tag_template' => ''],
+        ]]));
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_non_string_card_id_tag_template_throws(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'card_id_tag_template' => 123],
+        ]]));
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
 }

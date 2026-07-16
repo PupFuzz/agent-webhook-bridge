@@ -84,6 +84,15 @@ final class WritebackMapping
      *                                          closes (DL-200) — REQUIRED when moveCoordCards is true,
      *                                          and MUST differ from coordCardStageId (equal ⇒ close and
      *                                          revive resolve to one stage ⇒ the leg can express neither).
+     * @param  ?string  $cardIdTagTemplate  opt-in (#75 / card-4485): free-form template rendered into an
+     *                                      `id:` provenance tag stamped on each dependabot card
+     *                                      KanbanDependabotCardHandler creates, so a tag-keyed
+     *                                      Shipped→Released promoter can find them (the bridge otherwise
+     *                                      mints dependabot cards with no `id:` tag, unlike their
+     *                                      impl-created siblings). Placeholders: {n}/{pr_number} = the PR
+     *                                      number, {repo} = the repo NAME (last path segment). Per-tenant
+     *                                      grammar, e.g. `id:DEV-pr-{n}` or `id:dep:{repo}#{n}`. null ⇒
+     *                                      no tag is added (back-compat, byte-identical).
      */
     public function __construct(
         public readonly int $boardId,
@@ -100,6 +109,7 @@ final class WritebackMapping
         public readonly ?int $coordCardStageId = null,
         public readonly bool $moveCoordCards = false,
         public readonly ?int $coordCardTerminalStageId = null,
+        public readonly ?string $cardIdTagTemplate = null,
     ) {}
 
     /** The configured stage id for a GitHub-PR outcome, or null when unmapped. */

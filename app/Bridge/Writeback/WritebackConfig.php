@@ -27,6 +27,7 @@ use App\Bridge\Support\PathHelper;
  *         "draft_block_reason": "PR is in draft",   // optional (DL-194) — benign draft sentinel (no unpark alert)
  *         "revive_on_reopen": false,               // optional (DL-195) — a reopened abandoned PR revives its parked card (closed_unmerged → opened)
  *         "create_dependabot_cards": false,        // optional (DL-024)
+ *         "card_id_tag_template": "id:DEV-pr-{n}",  // optional (#75) — id: tag stamped on created dependabot cards; {n}/{pr_number}, {repo}
  *         "create_coord_cards": false,             // optional (DL-198) — real-time coord-issue → card create
  *         "coord_card_stage_id": 21,               // required-when-create_coord_cards/move_coord_cards — stage a new coord card lands in, and the revive target
  *         "move_coord_cards": false,               // DL-200; guarded fleet default (DL-204): absent ⇒ on where coord_card_terminal_stage_id present, inert where absent
@@ -177,6 +178,19 @@ final class WritebackConfig
                 }
                 $draftBlockReason = $m['draft_block_reason'];
             }
+            // Opt-in id-tag template (#75 / card-4485): when set, KanbanDependabotCardHandler
+            // stamps a rendered `id:` provenance tag on each dependabot card it creates, so a
+            // tag-keyed Shipped→Released promoter can find them (the bridge otherwise mints
+            // dependabot cards without the id: tag its impl-created siblings carry). Free-form
+            // per-tenant grammar (sola: `id:DEV-pr-{n}`; AIMLA: `id:dep:{repo}#{n}`); placeholders
+            // {n}=pr_number, {repo}=repo NAME. Absent/null ⇒ no tag (inert, back-compat).
+            $cardIdTagTemplate = null;
+            if (array_key_exists('card_id_tag_template', $m) && $m['card_id_tag_template'] !== null) {
+                if (! is_string($m['card_id_tag_template']) || $m['card_id_tag_template'] === '') {
+                    throw new ConfigException("writeback.json: mapping for {$repo} card_id_tag_template must be a non-empty string");
+                }
+                $cardIdTagTemplate = $m['card_id_tag_template'];
+            }
             $createDependabotCards = ($m['create_dependabot_cards'] ?? false) === true;
             // Opt-in draft → block_reason overlay (DL-193). Plain bool, default false —
             // parsed exactly like create_dependabot_cards (a non-`true` value, absent or
@@ -263,7 +277,7 @@ final class WritebackConfig
             if ($coordCardTerminalStageId !== null && $coordCardTerminalStageId === $coordCardStageId) {
                 throw new ConfigException("writeback.json: mapping for {$repo} coord_card_terminal_stage_id must differ from coord_card_stage_id — a coord card cannot conclude into the same stage it is created/revived in");
             }
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId);
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId, $cardIdTagTemplate);
         }
 
         return new self($identityId, $mappings, self::parseAlertChannel($raw));
