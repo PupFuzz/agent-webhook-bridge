@@ -204,6 +204,17 @@ The sibling of `create_coord_cards` above, and **separately opt-in** — it does
 terminal column in real time, and a **reopen** revives it. Without it, that only happens on the
 consumer's next periodic reconcile pass.
 
+**Guarded fleet default (DL-204, #4357).** `move_coord_cards` is no longer plainly opt-in: when the
+key is **absent** it defaults **ON wherever the move config is complete** — i.e. wherever
+`coord_card_terminal_stage_id` is present. That key is the "operator configured the move leg" signal
+(it has no other consumer), so an install that never set a terminal upgrades **byte-identically**
+(inert), while one whose per-board stage ids are already present activates **without** also setting the
+flag. Set **`move_coord_cards: false`** to opt out explicitly even with a terminal configured. The leg
+still fires only where **both** gates are on — this handler-side default **and** the `coord-card-move`
+family (below); `bridge:check` nudges an install that enabled the family but left the terminal (hence
+the leg) inert. A partial config (terminal present, revive stage missing or equal to the terminal)
+fails **closed at load** — never a silent no-op.
+
 ```json
 {
   "mappings": {
