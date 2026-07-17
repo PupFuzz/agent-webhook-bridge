@@ -104,10 +104,20 @@ class PruneCommand extends BridgeCommand
 
     /**
      * Rewrite every inbox*.jsonl in the state dir, keeping lines whose `ts` is
-     * at/after the cutoff, and prune each file's paired seen-cursor to the ids
-     * that remain (so the seen set is bounded by the trimmed inbox, not by all
-     * activity ever — DL-012). A line with no numeric `ts` is kept (fail-open:
-     * never drop something we can't age).
+     * at/after the cutoff, then bound EVERY seen-cursor to the ids that survive
+     * (so the seen set is bounded by the trimmed inbox, not by all activity ever
+     * — DL-012). A line with no numeric `ts` is kept (fail-open: never drop
+     * something we can't age).
+     *
+     * Cursors are swept independently of inbox files (glob inbox-seen*.json), NOT
+     * paired to an inbox file: under `shared` layout bridge:inbox advances a
+     * per-agent cursor (inbox-seen-<agent>.json) while reading the shared
+     * inbox.jsonl, so no inbox-<agent>.jsonl exists to pair with — the old
+     * file-paired sweep left that cursor unbounded. A cursor id is agent-scoped
+     * (id = delivery_id:agentName:index, IntentLog), so an id in agent A's cursor
+     * can only match an A-tagged line; intersecting each cursor against the union
+     * of all surviving ids is therefore exactly the per-agent bound, with no
+     * agent-name reconstruction from the (sanitized, possibly lossy) filename.
      *
      * @return array{0:int,1:int} [lines removed, files trimmed]
      */
@@ -116,6 +126,7 @@ class PruneCommand extends BridgeCommand
         $stateDir = BridgePaths::stateDir();
         $removed = 0;
         $filesTrimmed = 0;
+        $survivingIds = [];
 
         foreach (File::glob($stateDir.'/inbox*.jsonl') as $path) {
             $lines = BridgePaths::readJsonl($path);
@@ -123,6 +134,11 @@ class PruneCommand extends BridgeCommand
                 $lines,
                 fn (array $line) => ! is_numeric($line['ts'] ?? null) || (float) $line['ts'] >= $cutoffTs,
             ));
+            foreach ($kept as $line) {
+                if (is_string($line['id'] ?? null)) {
+                    $survivingIds[$line['id']] = true;
+                }
+            }
             $drop = count($lines) - count($kept);
             if ($drop === 0) {
                 continue;
@@ -132,34 +148,16 @@ class PruneCommand extends BridgeCommand
             if (! $dry) {
                 $this->rewriteJsonl($path, $kept);
             }
+        }
 
-            // Bound the paired seen-cursor to the ids that still exist.
-            $seenPath = $this->seenPathFor($path);
-            if (is_file($seenPath)) {
-                $keptIds = array_values(array_filter(array_map(
-                    fn (array $l) => is_string($l['id'] ?? null) ? $l['id'] : null,
-                    $kept,
-                )));
-                if (! $dry) {
-                    $this->pruneSeen($seenPath, $keptIds);
-                }
+        if (! $dry) {
+            $keepIds = array_keys($survivingIds);
+            foreach (File::glob($stateDir.'/inbox-seen*.json') as $seenPath) {
+                $this->pruneSeen($seenPath, $keepIds);
             }
         }
 
         return [$removed, $filesTrimmed];
-    }
-
-    /**
-     * The seen-cursor file paired with an inbox file:
-     * inbox.jsonl → inbox-seen.json, inbox-<agent>.jsonl → inbox-seen-<agent>.json.
-     */
-    private function seenPathFor(string $inboxPath): string
-    {
-        $dir = dirname($inboxPath);
-        $base = basename($inboxPath, '.jsonl');        // "inbox" | "inbox-<agent>"
-        $suffix = substr($base, strlen('inbox'));      // "" | "-<agent>"
-
-        return $dir.'/inbox-seen'.$suffix.'.json';
     }
 
     /**
@@ -175,18 +173,19 @@ class PruneCommand extends BridgeCommand
     }
 
     /**
+     * Bound one seen-cursor to the ids that still exist. Skips the write when
+     * nothing aged out, so the every-run cursor sweep doesn't churn the mtime of
+     * every cursor on every prune.
+     *
      * @param  list<string>  $keepIds
      */
     private function pruneSeen(string $seenPath, array $keepIds): void
     {
-        $decoded = json_decode((string) file_get_contents($seenPath), true);
-        if (! is_array($decoded)) {
+        $current = BridgePaths::readSeen($seenPath);
+        $keep = array_values(array_intersect($current, $keepIds));
+        if ($keep === $current) {
             return;
         }
-        $keep = array_values(array_intersect(
-            array_values(array_filter($decoded, 'is_string')),
-            $keepIds,
-        ));
-        BridgePaths::writeFile($seenPath, (string) json_encode($keep, JSON_UNESCAPED_SLASHES), LOCK_EX);
+        BridgePaths::writeSeen($seenPath, $keep);
     }
 }

@@ -1358,6 +1358,46 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(['new:0'], json_decode((string) File::get($this->dir.'/state/inbox-seen.json'), true));   // seen bounded
     }
 
+    public function test_prune_bounds_a_shared_layout_per_agent_seen_cursor(): void
+    {
+        // Positive control for the DL-012 retention gap: under shared layout,
+        // bridge:inbox --agent=pm advances inbox-seen-pm.json while reading the
+        // SHARED inbox.jsonl (no inbox-pm.jsonl on disk). The old prune paired
+        // seen-cursors to inbox FILES, so inbox-seen-pm.json had nothing to pair
+        // with and grew unbounded — prune must bound it against the surviving ids.
+        File::ensureDirectoryExists($this->dir.'/state');
+        $oldTs = (float) now()->subDays(40)->format('U.u');
+        $newTs = (float) now()->format('U.u');
+        File::put($this->dir.'/state/inbox.jsonl',
+            json_encode(['id' => 'old:pm:0', 'ts' => $oldTs, 'agent' => 'pm', 'kind' => 'x', 'summary' => 'old'])."\n".
+            json_encode(['id' => 'new:pm:0', 'ts' => $newTs, 'agent' => 'pm', 'kind' => 'x', 'summary' => 'new'])."\n",
+        );
+        // pm's per-agent cursor (advanced by prior shared-layout --agent=pm runs).
+        // No inbox-pm.jsonl exists — that is the whole point of the gap.
+        File::put($this->dir.'/state/inbox-seen-pm.json', json_encode(['old:pm:0', 'new:pm:0']));
+
+        $this->artisan('bridge:prune', ['--older-than' => '30d'])->assertExitCode(0);
+
+        $remaining = array_column(BridgePaths::readJsonl($this->dir.'/state/inbox.jsonl'), 'id');
+        $this->assertSame(['new:pm:0'], $remaining);                     // shared inbox trimmed (harness sanity)
+        // The aged-out id is bounded out of pm's cursor even with no paired inbox file.
+        $this->assertSame(['new:pm:0'], json_decode((string) File::get($this->dir.'/state/inbox-seen-pm.json'), true));
+    }
+
+    public function test_prune_dry_run_leaves_per_agent_seen_cursor_untouched(): void
+    {
+        File::ensureDirectoryExists($this->dir.'/state');
+        $oldTs = (float) now()->subDays(40)->format('U.u');
+        File::put($this->dir.'/state/inbox.jsonl',
+            json_encode(['id' => 'old:pm:0', 'ts' => $oldTs, 'agent' => 'pm', 'kind' => 'x', 'summary' => 'old'])."\n");
+        File::put($this->dir.'/state/inbox-seen-pm.json', json_encode(['old:pm:0']));
+
+        $this->artisan('bridge:prune', ['--older-than' => '30d', '--dry-run' => true])->assertExitCode(0);
+
+        // Dry-run changes nothing: the would-be-pruned cursor id survives.
+        $this->assertSame(['old:pm:0'], json_decode((string) File::get($this->dir.'/state/inbox-seen-pm.json'), true));
+    }
+
     public function test_prune_dry_run_changes_nothing(): void
     {
         $old = $this->event();
