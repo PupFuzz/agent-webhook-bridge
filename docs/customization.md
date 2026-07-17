@@ -157,7 +157,6 @@ namespace App\Bridge\Classifiers;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
-use App\Bridge\Dispatch\ReactionTarget;
 
 final class MyEventDrivenClassifier extends InboxOnlyClassifier
 {
@@ -169,16 +168,15 @@ final class MyEventDrivenClassifier extends InboxOnlyClassifier
             return $result;
         }
 
-        // Pair every Intent with a channel_push target by subject_id.
-        // The silent-drop guard checks for this invariant (subject_id match).
-        $channelTargets = array_map(
-            fn (Intent $intent): ReactionTarget => ReactionTarget::make(
-                handler: 'channel_push',
-                targetId: $intent->subjectId,
-                debounceSeconds: 0,
-                payload: $intent->toArray(),   // canonical wire shape
+        // Pair every Intent with a channel_push target by subject_id, via the base's
+        // guarded wakePush(): it matches the subject_id the silent-drop guard checks
+        // for, AND suppresses the hand-emit on a route_intents:true channel (DL-191,
+        // DL-208) so the dispatcher's routed push isn't a double-wake.
+        $channelTargets = array_merge(
+            ...array_map(
+                fn (Intent $intent): array => $this->wakePush($intent, $ctx),
+                $result->intents,
             ),
-            $result->intents,
         );
 
         return new ClassifyResult(
@@ -189,7 +187,7 @@ final class MyEventDrivenClassifier extends InboxOnlyClassifier
 }
 ```
 
-Point `classifier.class` at `EventDrivenClassifier` directly if it fits, or subclass it further.
+Emit each `channel_push` through the inherited `wakePush()` (as above) rather than constructing a `ReactionTarget` directly — a raw hand-emit double-wakes on a `route_intents:true` channel (the dispatcher already routes every staged intent). Point `classifier.class` at `EventDrivenClassifier` directly if it fits, or subclass it further.
 
 **If your subclass consumes GitHub events, also implement `DeclaresConsumedEvents`** (§ *Declaring which GitHub events your classifier consumes*, above). `InboxOnlyClassifier` and `EventDrivenClassifier` do **not** declare consumed event types — they inbox-stage kanban `task.*`, not GitHub events — so a subclass that adds GitHub-event handling inherits an *empty* consumed set. `bridge:check`'s event-follows-consumer probe then reads your classifier as consuming nothing and **false-WARNs** on every event type only your subclass consumes (e.g. `issues` / `issue_comment` / `workflow_run`) for its scopes, since no *other* classifier covers them. Declare the top-level types your subclass consumes so the probe counts it (the WARN is fail-safe — it names the undeclared classifier and can never false-*clean* — but declaring upfront avoids the noise).
 

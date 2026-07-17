@@ -252,29 +252,8 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         return array_map(static fn (string $a): string => $prefix.$a, $actions);
     }
 
-    /**
-     * The single wake-emit point for every family (DL-191). Emit a surgical
-     * `channel_push` for the intent — UNLESS the serving channel has
-     * `route_intents:true`, where the dispatcher already routes every staged intent
-     * to the channel (DL-006) and a hand-emit would double-wake. The routed push
-     * carries the same `$intent->toArray()` payload, so suppressing here loses no
-     * wake: hand-emit ⟺ `route_intents:false`.
-     *
-     * @return list<ReactionTarget>
-     */
-    private function wakePush(Intent $intent, ClassifyContext $ctx): array
-    {
-        if ($ctx->agent->channel->routeIntents) {
-            return [];
-        }
-
-        return [ReactionTarget::make(
-            handler: 'channel_push',
-            targetId: $intent->subjectId,
-            debounceSeconds: 0,
-            payload: $intent->toArray(),
-        )];
-    }
+    // The wake-emit point ({@see InboxOnlyClassifier::wakePush()}) is inherited from
+    // the base so its DL-191 route_intents guard lives in exactly one place (card #4494).
 
     // =====================================================================
     // Family: coord-message (the pre-#8 CoordinationClassifier behavior + §1)
