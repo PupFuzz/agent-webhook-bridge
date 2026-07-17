@@ -217,6 +217,65 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    /** @param array<string,mixed> $extra */
+    private function writePromoteConfig(array $extra, bool $withGithubTokenFile): void
+    {
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => array_merge(['board_id' => 8, 'stages' => [
+                'merged' => 52, 'merged_to_main' => 53,
+            ], 'promote_on_release' => true], $extra)],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        if ($withGithubTokenFile) {
+            File::ensureDirectoryExists($this->dir.'/github');
+            File::put($this->dir.'/github/token', 'ghp_read');
+            chmod($this->dir.'/github/token', 0o600);
+        }
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+        ]);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            'https://api.github.com/*' => Http::response(['full_name' => 'owner/repo']),
+        ]);
+    }
+
+    public function test_check_warns_when_promote_on_release_lacks_a_github_token_file(): void
+    {
+        // DL-207: the promote leg runs under FPM where GH_TOKEN is absent + the store helper
+        // is CLI-only, so only a placed token FILE works. No file ⇒ the leg is inert at runtime.
+        $this->writePromoteConfig([], withGithubTokenFile: false);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('promote_on_release but no GitHub read token resolves from a FILE')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_warns_when_promote_on_release_maps_shipped_and_released_to_one_stage(): void
+    {
+        // DL-207: shipped === released ⇒ the promote is a no-op (nothing to move).
+        $this->writePromoteConfig(['stages' => ['merged' => 52, 'merged_to_main' => 52]], withGithubTokenFile: true);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('stages.merged and stages.merged_to_main are the same stage')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_is_quiet_about_promote_on_release_when_token_file_present_and_stages_distinct(): void
+    {
+        $this->writePromoteConfig([], withGithubTokenFile: true);
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('promote_on_release but no GitHub read token')
+            ->doesntExpectOutputToContain('stages.merged and stages.merged_to_main are the same stage')
+            ->assertExitCode(0);
+    }
+
     public function test_check_warns_when_the_writeback_token_sees_zero_cards(): void
     {
         // DL-026: a 200 + empty board read = blind/degraded token (user not a

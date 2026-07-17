@@ -84,6 +84,24 @@ final class WritebackMapping
      *                                          closes (DL-200) — REQUIRED when moveCoordCards is true,
      *                                          and MUST differ from coordCardStageId (equal ⇒ close and
      *                                          revive resolve to one stage ⇒ the leg can express neither).
+     * @param  bool  $promoteOnRelease  opt-in (DL-207 / card-4483): on a release-PR merge into
+     *                                  main (a `merged_to_main` event), scan this board for cards at
+     *                                  the Shipped stage (`stages.merged`) whose merged PR's commit is
+     *                                  now reachable from main, and promote each to the Released stage
+     *                                  (`stages.merged_to_main`) — the steady-state Shipped→Released
+     *                                  transition a card-first board otherwise never gets (base=dev
+     *                                  cards get no merged_to_main event of their own). Reuses
+     *                                  stages.merged/stages.merged_to_main; both are REQUIRED when this
+     *                                  is on (fail-closed at load). Default false ⇒ no scan (byte-identical).
+     * @param  ?string  $cardIdTagTemplate  opt-in (#75 / card-4485): free-form template rendered into an
+     *                                      `id:` provenance tag stamped on each dependabot card
+     *                                      KanbanDependabotCardHandler creates, so a tag-keyed
+     *                                      Shipped→Released promoter can find them (the bridge otherwise
+     *                                      mints dependabot cards with no `id:` tag, unlike their
+     *                                      impl-created siblings). Placeholders: {n}/{pr_number} = the PR
+     *                                      number, {repo} = the repo NAME (last path segment). Per-tenant
+     *                                      grammar, e.g. `id:DEV-pr-{n}` or `id:dep:{repo}#{n}`. null ⇒
+     *                                      no tag is added (back-compat, byte-identical).
      */
     public function __construct(
         public readonly int $boardId,
@@ -100,6 +118,8 @@ final class WritebackMapping
         public readonly ?int $coordCardStageId = null,
         public readonly bool $moveCoordCards = false,
         public readonly ?int $coordCardTerminalStageId = null,
+        public readonly ?string $cardIdTagTemplate = null,
+        public readonly bool $promoteOnRelease = false,
     ) {}
 
     /** The configured stage id for a GitHub-PR outcome, or null when unmapped. */

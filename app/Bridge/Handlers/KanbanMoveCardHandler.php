@@ -6,6 +6,7 @@ use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
@@ -153,7 +154,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $card = $client->getCard($cardId);
         } catch (RequestException $e) {
             if ($this->isPermanent($e)) {
-                Log::warning('kanban_move_card: getCard refused by kanban (4xx) — ignoring', ['card_id' => $cardId, 'status' => $e->response->status()]);
+                Log::warning('kanban_move_card: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)', ['card_id' => $cardId] + RefusalContext::from($e));
                 $this->alerts->notify($repo, $outcome, $cardId, 'getcard_4xx');
 
                 return;
@@ -269,11 +270,13 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $client->moveCard($cardId, $stageId);
         } catch (RequestException $e) {
             if ($this->isPermanent($e)) {
-                // e.g. the mapped stage isn't on the card's board (config typo):
-                // permanent, log + no-op rather than 5xx-storm.
-                Log::warning('kanban_move_card: moveCard refused by kanban (4xx) — check the writeback.json stage maps to a stage on the card\'s board', [
-                    'card_id' => $cardId, 'stage' => $stageId, 'status' => $e->response->status(),
-                ]);
+                // A 4xx is a PERMANENT refusal (authz, a stage not on the board, a
+                // deleted card, …): log + no-op rather than 5xx-storm. Hand over what
+                // the server actually said (`body`) instead of guessing the cause —
+                // status alone can't tell a 403 authz refusal from a config typo.
+                Log::warning('kanban_move_card: kanban refused the move (4xx) — see `body` for the reason kanban gave', [
+                    'card_id' => $cardId, 'board' => $mapping->boardId, 'stage' => $stageId,
+                ] + RefusalContext::from($e));
 
                 return;
             }
@@ -369,7 +372,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             Log::info('kanban_move_card: stamped correlation refs', ['card_id' => $cardId, 'refs' => array_keys($refs)]);
         } catch (RequestException $e) {
             if ($this->isPermanent($e)) {
-                Log::warning('kanban_move_card: stamp refused by kanban (4xx) — the board likely lacks the dl_number/pr_number custom field; skipping', ['card_id' => $cardId, 'status' => $e->response->status()]);
+                Log::warning('kanban_move_card: stamp refused by kanban (4xx) — skipping (see `body` for the reason kanban gave)', ['card_id' => $cardId] + RefusalContext::from($e));
 
                 return;
             }

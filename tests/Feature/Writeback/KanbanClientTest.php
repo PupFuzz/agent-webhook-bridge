@@ -103,6 +103,21 @@ class KanbanClientTest extends TestCase
             ->withArgs(fn (string $msg) => str_contains($msg, '0 cards'));
     }
 
+    public function test_zero_cards_warning_states_the_observation_not_a_guessed_cause(): void
+    {
+        // card#4409: a 0-card read is ambiguous (genuinely-empty board vs lost
+        // membership vs wrong board_id). The warning must not ASSERT membership loss as
+        // the cause; it states the observed no-op and hands over what to check.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+        Log::spy();
+
+        $this->client()->correlateDl(8, 'DL-42');
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg) => str_contains($msg, '0 cards')
+            && ! str_contains($msg, 'likely not a member')
+            && str_contains($msg, 'if the board is not genuinely empty'));
+    }
+
     public function test_scan_blind_token_warning_also_fires_on_the_dependabot_pr_finder(): void
     {
         Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);

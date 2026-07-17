@@ -279,8 +279,9 @@ final class KanbanClient
      * The board's cards for correlation, WITH the degraded-state guards (DL-026/028).
      *
      * `null` from a finder otherwise conflates "N cards, none matched" (a genuine
-     * no-op) with "0 cards" — which means the token's user lost board membership
-     * (or board_id/instance is wrong): kanban answers 200 + empty data, so
+     * no-op) with "0 cards" — which can mean the token's user lost board membership,
+     * or board_id/instance is wrong, or the board is genuinely empty: kanban answers
+     * 200 + empty data in every case, so
      * `->throw()` never fires and EVERY correlation silently no-ops (or, on the
      * dependabot create path, duplicates a card). Make those two non-erroring
      * degradations LOUD here, at the single read both finders share — never as a
@@ -294,7 +295,7 @@ final class KanbanClient
     {
         $read = $this->readBoard($boardId);
         if ($read->cards === []) {
-            Log::warning('writeback correlation: board read returned 0 cards — the writeback token\'s user is likely not a member of this board (or board_id/instance is wrong); every card-move correlation will silently no-op until fixed', ['board_id' => $boardId]);
+            Log::warning('writeback correlation: board read returned 0 cards — every card-move correlation will silently no-op until this is resolved; if the board is not genuinely empty, verify the writeback token user\'s board membership and that board_id/instance are correct', ['board_id' => $boardId]);
         } elseif ($read->truncated) {
             Log::warning('writeback correlation: board read hit the '.self::MAX_PAGES.'-page safety ceiling ('.(self::MAX_PAGES * self::SEARCH_LIMIT).' cards) — any cards beyond it are invisible to correlation', ['board_id' => $boardId, 'ceiling' => self::MAX_PAGES * self::SEARCH_LIMIT]);
         }

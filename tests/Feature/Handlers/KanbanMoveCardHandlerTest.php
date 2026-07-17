@@ -187,6 +187,74 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH');   // move attempted; 4xx swallowed
     }
 
+    public function test_move_4xx_logs_the_server_body_and_drops_the_guessed_cause(): void
+    {
+        // card#4409: a 4xx move refusal must hand over what kanban actually said (the
+        // response body) instead of asserting a config cause the handler never checked.
+        // The real DL-204 incident was a 403 authz refusal mislabelled as a
+        // writeback.json stage-map typo — status alone couldn't tell them apart.
+        $this->writeWriteback();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [['id' => 49, 'position' => 3], ['id' => 52, 'position' => 5]]]]]]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET ok
+                ->push(['message' => 'you are not authorized to move this card'], 403),         // PATCH 403 authz
+        ]);
+
+        $this->handle($this->payload());
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'kanban refused the move')
+            && ! str_contains($msg, 'check the writeback.json stage')
+            && $ctx['status'] === 403
+            && $ctx['board'] === 8
+            && str_contains($ctx['body'], 'not authorized to move this card'));
+    }
+
+    public function test_stamp_4xx_logs_the_server_body_and_drops_the_custom_field_guess(): void
+    {
+        // card#4409: the stamp refusal previously asserted "the board likely lacks the
+        // dl_number/pr_number custom field" — a cause it never verified. The card is
+        // already at the target stage (self-heal path), so only the stamp PATCH fires.
+        $this->writeWriteback();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52]])   // GET: already at target
+                ->push(['message' => 'forbidden: token cannot write custom fields'], 403),      // PATCH stamp 403
+        ]);
+
+        $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'stamp refused by kanban')
+            && ! str_contains($msg, 'board likely lacks')
+            && $ctx['status'] === 403
+            && str_contains($ctx['body'], 'cannot write custom fields'));
+    }
+
+    public function test_move_4xx_scrubs_a_credential_echoed_in_the_body(): void
+    {
+        // A kanban error body that echoes the request could carry the writeback token;
+        // the refusal log must scrub it before persisting.
+        $this->writeWriteback();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [['id' => 49, 'position' => 3], ['id' => 52, 'position' => 5]]]]]]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['message' => 'denied', 'echo' => ['token' => 'wb-SECRET-TOKEN-abc123']], 403),
+        ]);
+
+        $this->handle($this->payload());
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'kanban refused the move')
+            && ! str_contains($ctx['body'], 'wb-SECRET-TOKEN-abc123')
+            && str_contains($ctx['body'], '[REDACTED]'));
+    }
+
     public function test_kanban_5xx_is_transient_and_throws(): void
     {
         // A kanban 5xx / timeout is TRANSIENT: throw → 5xx → redelivery retries.

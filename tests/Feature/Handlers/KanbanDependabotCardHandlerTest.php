@@ -353,4 +353,73 @@ class KanbanDependabotCardHandlerTest extends TestCase
 
         Http::assertNothingSent();
     }
+
+    // ---- #75 / card-4485: card_id_tag_template ----
+
+    public function test_card_id_tag_template_stamps_a_rendered_id_tag_on_create(): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => [
+                'board_id' => 8,
+                'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49],
+                'create_dependabot_cards' => true,
+                'card_id_tag_template' => 'id:DEV-pr-{n}',
+            ]],
+        ]));
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle('opened', 166);
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && in_array('id:DEV-pr-166', $r['task']['tags'], true)
+            && in_array('dependencies', $r['task']['tags'], true)
+            && in_array('triaged', $r['task']['tags'], true));
+    }
+
+    public function test_card_id_tag_template_supports_repo_placeholder(): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['AIMLA/magento' => [
+                'board_id' => 8,
+                'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49],
+                'create_dependabot_cards' => true,
+                'card_id_tag_template' => 'id:dep:{repo}#{n}',
+            ]],
+        ]));
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        (new KanbanDependabotCardHandler)->handle(
+            ReactionTarget::make('kanban_dependabot_card', 'pr-166', payload: [
+                'repo' => 'AIMLA/magento', 'outcome' => 'opened', 'pr_number' => 166,
+                'pr_title' => 'chore(deps): Bump x from 1 to 2', 'pr_url' => 'https://github.com/AIMLA/magento/pull/166',
+            ]),
+            AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
+        );
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && in_array('id:dep:magento#166', $r['task']['tags'], true));
+    }
+
+    public function test_no_card_id_tag_template_leaves_tags_back_compat(): void
+    {
+        // setUp's mapping carries no card_id_tag_template — the tags must be
+        // exactly ['dependencies', 'triaged'], no id: tag added (back-compat).
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle('opened');
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && $r['task']['tags'] === ['dependencies', 'triaged']);
+    }
 }

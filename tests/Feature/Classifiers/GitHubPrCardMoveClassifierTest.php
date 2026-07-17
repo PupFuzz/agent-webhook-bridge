@@ -6,6 +6,7 @@ use App\Bridge\Classifiers\GitHubPrCardMoveClassifier;
 use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
+use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ClassifierConfig;
 use Illuminate\Support\Facades\File;
@@ -69,6 +70,93 @@ class GitHubPrCardMoveClassifierTest extends TestCase
             ['id' => 7, 'payload' => ['dl_number' => 'DL-9']],
             ['id' => 5, 'payload' => ['dl_number' => 'DL-42']],
         ]])]);
+    }
+
+    /** @param array<string,mixed> $extra extra keys merged into the owner/repo mapping */
+    private function writeMapping(array $extra): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => array_merge(['board_id' => 8, 'stages' => [
+                'opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49,
+            ]], $extra)],
+        ]));
+    }
+
+    /** @return list<ReactionTarget> */
+    private function targetsNamed(ClassifyResult $r, string $handler): array
+    {
+        return array_values(array_filter($r->targets, fn ($t) => $t->handler === $handler));
+    }
+
+    public function test_promote_target_emitted_on_bare_release_pr_merged_to_main(): void
+    {
+        $this->writeMapping(['promote_on_release' => true]);
+
+        // A release PR: closed+merged into main, NO DL/card token in title/head.
+        $r = $this->classify('pull_request.closed', [
+            'number' => 300, 'merged' => true, 'base' => ['ref' => 'main'],
+            'title' => 'chore(release): v0.60.0', 'head' => ['ref' => 'release/v0.60.0'],
+        ]);
+
+        $promote = $this->targetsNamed($r, 'kanban_promote_released');
+        $this->assertCount(1, $promote);
+        $this->assertSame(['repo' => 'owner/repo'], $promote[0]->payload);
+        $this->assertSame([], $this->targetsNamed($r, 'kanban_move_card'));
+    }
+
+    public function test_promote_target_emitted_alongside_the_dl_move_target(): void
+    {
+        $this->writeMapping(['promote_on_release' => true]);
+        $this->fakeBoardCards();
+
+        $r = $this->classify('pull_request.closed', [
+            'number' => 301, 'merged' => true, 'base' => ['ref' => 'main'],
+            'title' => 'DL-42 folded release', 'head' => ['ref' => 'feature/x'],
+        ]);
+
+        $this->assertCount(1, $this->targetsNamed($r, 'kanban_promote_released'));
+        $this->assertCount(1, $this->targetsNamed($r, 'kanban_move_card'));
+    }
+
+    public function test_promote_target_emitted_even_on_a_dependabot_merge_to_main(): void
+    {
+        // The Finding-8 edge: a dependabot PR merged to main early-returns before the
+        // move/overlay targets — the promote scan must still be appended.
+        $this->writeMapping(['promote_on_release' => true, 'create_dependabot_cards' => true]);
+
+        $r = $this->classify('pull_request.closed', [
+            'number' => 302, 'merged' => true, 'base' => ['ref' => 'main'],
+            'title' => 'Bump lib', 'head' => ['ref' => 'dependabot/npm_and_yarn/lib-1.2.3'],
+        ]);
+
+        $this->assertCount(1, $this->targetsNamed($r, 'kanban_promote_released'));
+        $this->assertCount(1, $this->targetsNamed($r, 'kanban_dependabot_card'));
+    }
+
+    public function test_no_promote_target_on_merge_to_dev(): void
+    {
+        $this->writeMapping(['promote_on_release' => true]);
+        $this->fakeBoardCards();
+
+        $r = $this->classify('pull_request.closed', [
+            'number' => 303, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'DL-42 feature', 'head' => ['ref' => 'feature/y'],
+        ]);
+
+        $this->assertSame([], $this->targetsNamed($r, 'kanban_promote_released'));
+    }
+
+    public function test_no_promote_target_when_flag_off(): void
+    {
+        $this->writeMapping([]);   // promote_on_release absent ⇒ off
+
+        $r = $this->classify('pull_request.closed', [
+            'number' => 304, 'merged' => true, 'base' => ['ref' => 'main'],
+            'title' => 'chore(release): v0.60.0', 'head' => ['ref' => 'release/v0.60.0'],
+        ]);
+
+        $this->assertSame([], $this->targetsNamed($r, 'kanban_promote_released'));
     }
 
     public function test_consumed_event_types_are_pull_request_and_push(): void

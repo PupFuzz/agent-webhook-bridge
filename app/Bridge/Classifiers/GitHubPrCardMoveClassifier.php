@@ -73,6 +73,56 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
 
     public function classify(ClassifyContext $ctx): ClassifyResult
     {
+        // The move/overlay/create classification (many early returns per action + token
+        // path). The promote-on-release scan target is appended ONCE below rather than
+        // threaded into each of those returns — a single choke point can't grow a
+        // dropped-target sibling hole (canon #7), and the scan is independent of the
+        // release PR's own card token anyway.
+        $result = $this->classifyInner($ctx);
+
+        $promote = $this->promoteOnReleaseTargets($ctx);
+        if ($promote === []) {
+            return $result;
+        }
+
+        return new ClassifyResult(
+            targets: array_merge($result->targets, $promote),
+            intents: $result->intents,
+            reattributedActor: $result->reattributedActor,
+        );
+    }
+
+    /**
+     * The DL-207 promote-on-release scan target — emitted on a release-PR merge into main
+     * (a `merged_to_main` outcome) for a `promote_on_release` mapping, INDEPENDENT of
+     * whether the release PR itself carries a card token. One `kanban_promote_released`
+     * target per event; the durable handler does the board-wide Shipped→Released scan.
+     * Reuses {@see outcome()} for the merged_to_main derivation (the same GitHub-controlled
+     * fields the move path keys on) so the trigger can't drift from the move outcome.
+     *
+     * @return list<ReactionTarget>
+     */
+    private function promoteOnReleaseTargets(ClassifyContext $ctx): array
+    {
+        if ($ctx->provider !== 'github' || ! str_starts_with($ctx->eventType, 'pull_request.')) {
+            return [];
+        }
+        if ($this->outcome($ctx->eventType, $ctx->payload) !== 'merged_to_main') {
+            return [];
+        }
+        $repo = $ctx->scopeId;
+        $configDir = (string) config('bridge.config_dir');
+        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $mapping = $writeback?->mappingFor($repo);
+        if ($mapping === null || ! $mapping->promoteOnRelease) {
+            return [];
+        }
+
+        return [ReactionTarget::make('kanban_promote_released', $repo, payload: ['repo' => $repo])];
+    }
+
+    private function classifyInner(ClassifyContext $ctx): ClassifyResult
+    {
         $eventType = $ctx->eventType;
         $payload = $ctx->payload;
         $provider = $ctx->provider;

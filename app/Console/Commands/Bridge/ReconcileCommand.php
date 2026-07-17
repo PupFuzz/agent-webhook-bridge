@@ -9,6 +9,8 @@ use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrOutcome;
+use App\Bridge\Writeback\TrackedCardRef;
+use App\Bridge\Writeback\TrackedRefKind;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
@@ -374,51 +376,49 @@ class ReconcileCommand extends BridgeCommand
         $none = [null, null, '', 0, null];
         $cardId = is_numeric($card['id'] ?? null) ? (int) $card['id'] : 0;
 
-        // (1) pr_url — yields both repo + number. A placeholder ".../pull/0" (the
-        // source-only qualifier stamped by `kbcard --pr-url`) is not a real PR:
-        // fall through to pr_number / dl handling.
-        $pu = $payload['pr_url'] ?? null;
-        if (is_string($pu) && $pu !== '') {
-            [$canon, $num] = $this->parsePrUrl($pu, $refs);
-            if ($canon !== null && $num !== null && $num > 0) {
-                $owner = $byCanonRepo[$canon] ?? null;
+        // The PR-reference precedence (pr_url → pr_number → dl-only) is the shared
+        // TrackedCardRef authority (canon #5) — kept single-sourced with the DL-207
+        // promote-on-release scan so the two can't derive a card's PR differently. This
+        // method maps each kind onto reconcile's own skip line + counter.
+        $ref = TrackedCardRef::fromPayload($payload, $isShared, $refs);
+        switch ($ref->kind) {
+            case TrackedRefKind::PrUrl:
+                $owner = $byCanonRepo[$ref->canonRepo] ?? null;
                 if ($owner === null) {
-                    $this->line("card {$cardId}: pr_url repo {$canon} is not in scope for this board (unmapped, or excluded by --repo) — skipped");
+                    $this->line("card {$cardId}: pr_url repo {$ref->canonRepo} is not in scope for this board (unmapped, or excluded by --repo) — skipped");
                     $this->skipped++;
 
                     return $none;
                 }
 
-                return [$owner['repo'], $owner['mapping'], $canon, $num, $pu];
-            }
-        }
+                return [$owner['repo'], $owner['mapping'], $ref->canonRepo, $ref->prNumber, $ref->prUrl];
 
-        // (2) pr_number — needs the repo. Only unambiguous on a 1:1 board.
-        $pn = $payload['pr_number'] ?? null;
-        if (is_numeric($pn) && (int) $pn > 0) {
-            if ($isShared) {
-                $this->line("card {$cardId}: bare pr_number {$pn} on shared board — ambiguous repo (needs a repo-qualified pr_url); skipped");
+            case TrackedRefKind::PrNumber:
+                // exactly one mapping on a 1:1 board
+                $repo = array_key_first($boardMappings);
+                $mapping = $boardMappings[$repo];
+                $canon = $refs->canonicalizeSource((string) $repo) ?? (string) $repo;
+
+                return [$repo, $mapping, $canon, $ref->prNumber, null];
+
+            case TrackedRefKind::Ambiguous:
+                $this->line("card {$cardId}: bare pr_number {$ref->prNumber} on shared board — ambiguous repo (needs a repo-qualified pr_url); skipped");
                 $this->skipped++;
 
                 return $none;
-            }
-            // exactly one mapping on a 1:1 board
-            $repo = array_key_first($boardMappings);
-            $mapping = $boardMappings[$repo];
-            $canon = $refs->canonicalizeSource((string) $repo) ?? (string) $repo;
 
-            return [$repo, $mapping, $canon, (int) $pn, null];
+            case TrackedRefKind::DlOnly:
+                $this->line("card {$cardId} (DL {$ref->dl}): no PR reference (pr_url/pr_number) — DL→PR resolution is out of v1 scope; skipped");
+                $this->skipped++;
+
+                return $none;
+
+            case TrackedRefKind::None:
+                // not a tracked card (no pr/dl) — silent.
+                return $none;
         }
 
-        // (3) dl_number only (no PR reference) — DL→PR resolution is out of v1 scope.
-        $dl = $payload['dl_number'] ?? null;
-        if (is_scalar($dl) && (string) $dl !== '') {
-            $this->line("card {$cardId} (DL {$dl}): no PR reference (pr_url/pr_number) — DL→PR resolution is out of v1 scope; skipped");
-            $this->skipped++;
-        }
-
-        // otherwise: not a tracked card (no pr/dl) — silent.
-        return $none;
+        return $none;   // unreachable (TrackedRefKind is exhaustive) — satisfies static analysis
     }
 
     /**
@@ -438,24 +438,6 @@ class ReconcileCommand extends BridgeCommand
         }
 
         return PrOutcome::forMergedBase($pr['base_ref']);
-    }
-
-    /**
-     * The canonical owner/repo + PR number from a github PR url, or [null, null].
-     *
-     * @return array{0: ?string, 1: ?int}
-     */
-    private function parsePrUrl(string $url, ExternalReferenceNormalizer $refs): array
-    {
-        // Repo via the single vendored URL authority (kept in sync with kanban) so
-        // this can't drift from the correlation path; the PR number is a trivial
-        // /pull/<n> capture the normalizer doesn't expose.
-        $repo = $refs->repoFromGitHubUrl($url);
-        if ($repo === null || preg_match('#/pull/(\d+)#', $url, $m) !== 1) {
-            return [null, null];
-        }
-
-        return [$repo, (int) $m[1]];
     }
 
     /**
