@@ -572,6 +572,27 @@ class CheckCommand extends BridgeCommand
                         if ($mapping->moveCoordCards && ! isset($coordCardMoveScopes[$repo])) {
                             $this->warn("writeback: github:{$repo} has coord_card_terminal_stage_id set (the move leg is on — explicitly or by the DL-204 default) but no agent enables the coord-card-move family on that scope — the leg cannot fire (nothing classifies issues.closed/reopened into a move). Add coord-card-move to the serving agent's classifier.config.families, or remove coord_card_terminal_stage_id to disable the move leg.");
                         }
+                        // DL-207: promote-on-release health. WritebackConfig::load already fails
+                        // closed on a missing shipped/released stage, so here we catch the two
+                        // silent-inert shapes load can't: (a) both stages mapped to ONE column
+                        // (the promote is a no-op), and (b) no FPM-viable GitHub token. The
+                        // promote leg runs in the webhook RUNTIME — unlike bridge:reconcile (CLI),
+                        // under FPM GH_TOKEN is absent and the git-credential-coord store helper is
+                        // CLI-only (DL-184), so ONLY a placed token FILE resolves there. There is no
+                        // reconcile backstop for Shipped→Released, so an inert leg strands cards.
+                        if ($mapping->promoteOnRelease) {
+                            if ($mapping->stageFor('merged') !== null && $mapping->stageFor('merged') === $mapping->stageFor('merged_to_main')) {
+                                $this->warn("writeback: mapping for {$repo} sets promote_on_release but stages.merged and stages.merged_to_main are the same stage — the Shipped→Released promote is a no-op (nothing to move); map them to distinct columns or remove promote_on_release.");
+                            }
+                            // Reuse the authoritative resolver; a file leg's `source` starts with
+                            // "token file" / "token_path override" (mirrors GitHubTokenResolver).
+                            $promoteToken = (new GitHubTokenResolver)->resolveFor((string) $repo);
+                            $fromFile = $promoteToken->ok() && $promoteToken->source !== null
+                                && (str_starts_with($promoteToken->source, 'token file') || str_starts_with($promoteToken->source, 'token_path override'));
+                            if (! $fromFile) {
+                                $this->warn("writeback: mapping for {$repo} sets promote_on_release but no GitHub read token resolves from a FILE (<secret_dir>/github/token, or providers.github.token_path) — the promote leg runs in the FPM webhook runtime where GH_TOKEN is absent and the credential-store helper is CLI-only, so a store/GH_TOKEN-only token (usable by bridge:reconcile) leaves the promote leg INERT at runtime with no reconcile backstop. Place a read-only token file (chmod 600).");
+                            }
+                        }
                     }
 
                     try {

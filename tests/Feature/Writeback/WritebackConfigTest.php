@@ -56,6 +56,45 @@ class WritebackConfigTest extends TestCase
         $this->assertNull($mapping->swimlaneId);   // DL-027: absent ⇒ null
     }
 
+    public function test_promote_on_release_defaults_false_and_parses_true(): void
+    {
+        $this->write(json_encode([
+            'mappings' => [
+                'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52, 'merged_to_main' => 53]],
+                'owner/promo' => ['board_id' => 9, 'stages' => ['merged' => 62, 'merged_to_main' => 63], 'promote_on_release' => true],
+            ],
+        ]));
+
+        $cfg = WritebackConfig::load($this->dir);
+        $this->assertFalse($cfg->mappingFor('owner/repo')->promoteOnRelease);
+        $this->assertTrue($cfg->mappingFor('owner/promo')->promoteOnRelease);
+    }
+
+    public function test_promote_on_release_fails_closed_without_merged_stage(): void
+    {
+        $this->write(json_encode([
+            'mappings' => [
+                'owner/repo' => ['board_id' => 8, 'stages' => ['merged_to_main' => 53], 'promote_on_release' => true],
+            ],
+        ]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessageMatches('/promote_on_release .* stages\.merged/');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_promote_on_release_fails_closed_without_released_stage(): void
+    {
+        $this->write(json_encode([
+            'mappings' => [
+                'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52], 'promote_on_release' => true],
+            ],
+        ]));
+
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
+
     public function test_loads_optional_swimlane_id(): void
     {
         $this->write(json_encode(['mappings' => [
