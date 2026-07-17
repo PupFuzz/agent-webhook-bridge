@@ -2,6 +2,8 @@
 
 namespace App\Bridge\Validation;
 
+use App\Bridge\Support\LoopbackHost;
+
 /**
  * SSRF gate for a loopback HTTP endpoint: scheme must be http, host must be
  * 127.0.0.1 / localhost / [::1], and no userinfo component. Shared by
@@ -27,8 +29,7 @@ final class LocalhostUrl
         if (isset($parts['user']) || isset($parts['pass'])) {
             throw new EndpointValidationException("{$subject} must not contain a userinfo component");
         }
-        $host = strtolower(trim($parts['host'] ?? '', '[]'));
-        if (! in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
+        if (! LoopbackHost::matches($parts['host'] ?? '')) {
             throw new EndpointValidationException("{$subject} must point at 127.0.0.1, localhost, or [::1]");
         }
     }
