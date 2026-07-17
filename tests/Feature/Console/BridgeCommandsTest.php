@@ -235,6 +235,43 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_classifies_the_reconcile_token_probe_status_into_a_hint(): void
+    {
+        // The shared GitHubRepoProbe gives bridge:check the status classification it
+        // previously lacked: a 401 reads "expired/revoked" and a 403/404 "needs `repo`
+        // scope" (matching bridge:reconcile), not a bare "HTTP {status}". One substring
+        // per case — Laravel's expectsOutputToContain sets one Mockery expectation per
+        // call, so two substrings from the SAME warn line collide.
+        $this->writeWritebackWithToken();
+        File::ensureDirectoryExists($this->dir.'/github');
+        File::put($this->dir.'/github/token', 'stale-token');
+        chmod($this->dir.'/github/token', 0o600);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            'https://api.github.com/*' => Http::response(['message' => 'Bad credentials'], 401),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('HTTP 401 (token expired/revoked)')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_classifies_a_403_probe_as_a_scope_hint(): void
+    {
+        $this->writeWritebackWithToken();
+        File::ensureDirectoryExists($this->dir.'/github');
+        File::put($this->dir.'/github/token', 'scopeless-token');
+        chmod($this->dir.'/github/token', 0o600);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            'https://api.github.com/*' => Http::response(['message' => 'Forbidden'], 403),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('HTTP 403 (token lacks access to this private repo — needs `repo` scope)')
+            ->assertExitCode(0);
+    }
+
     /** @param array<string,mixed> $extra */
     private function writePromoteConfig(array $extra, bool $withGithubTokenFile): void
     {
