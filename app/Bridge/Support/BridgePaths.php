@@ -95,6 +95,48 @@ final class BridgePaths
         return self::stateDir().'/inbox-seen-'.self::sanitizeAgent($agent).'.json';
     }
 
+    /**
+     * The seen-cursor file for a serving agent (or the shared inbox when null) —
+     * the single home for the cursor-path mapping, so bridge:inbox (writer) and
+     * bridge:prune (retention) can never derive it two different ways:
+     * null → inbox-seen.json, <agent> → inbox-seen-<agent>.json.
+     */
+    public static function seenPath(?string $agent): string
+    {
+        return $agent === null
+            ? self::stateDir().'/inbox-seen.json'
+            : self::agentSeenPath($agent);
+    }
+
+    /**
+     * Read a seen-cursor into a list of ids (missing/garbage → []). One canonical
+     * parse so the writer and the retention prune agree on the shape.
+     *
+     * @return list<string>
+     */
+    public static function readSeen(string $path): array
+    {
+        if (! is_file($path)) {
+            return [];
+        }
+        $decoded = json_decode((string) file_get_contents($path), true);
+
+        return is_array($decoded) ? array_values(array_filter($decoded, 'is_string')) : [];
+    }
+
+    /**
+     * Overwrite a seen-cursor with the given ids. Cursors stay install-user-owned
+     * (not group-shared, unlike per-agent inbox files) — only the process running
+     * bridge:inbox/bridge:prune writes them (DL-006), so no applyInboxPerms here.
+     *
+     * @param  list<string>  $ids
+     */
+    public static function writeSeen(string $path, array $ids): void
+    {
+        self::ensureDir(dirname($path));
+        self::writeFile($path, (string) json_encode($ids, JSON_UNESCAPED_SLASHES), LOCK_EX);
+    }
+
     public static function sanitizeAgent(string $agent): string
     {
         return PathHelper::sanitizeSegment($agent, 'agent');
