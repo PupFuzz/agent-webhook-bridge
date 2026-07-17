@@ -377,6 +377,32 @@ If you map `closed_unmerged → <a "Won't Do" terminal stage>` (see the `closed_
 - **`bridge:check` guard.** With `revive_on_reopen` on, the check **warns** if `stages.opened` or `stages.closed_unmerged` is missing (revival is inert without both).
 - **Not back-stopped by `bridge:reconcile` (deliberate).** The reconciler sees only static state (PR open, card in Won't-Do) with **no reopen signal**, so it cannot distinguish an automated `closed_unmerged` park from a deliberate human abandon of a still-open PR — reviving there would risk overriding a human decision. Only the live `reopened` event carries "work resumed"; a **missed** reopen (bridge down through redelivery exhaustion) needs a manual operator revive.
 
+## Optional: promote Shipped cards to Released on a release merge (`promote_on_release`, DL-207)
+
+On a board that splits **Shipped-to-dev** (`stages.merged`) from **Released-to-main** (`stages.merged_to_main`), a feature PR merges to `dev` and its card moves to **Shipped** — but its commits reach `main` only later, folded into a **release PR** (`release/vX → main`). That release merge fires exactly ONE `merged_to_main` event (for the release PR's own card), so the constituent feature cards **stay at Shipped** until a manual `bridge:reconcile` — and reconcile deliberately **defers** Shipped→Released to "the promote workflow". Set **`promote_on_release: true`** and the bridge becomes that workflow: on the release merge it scans the board and promotes every Shipped card whose work is now on `main`.
+
+```jsonc
+{
+  "mappings": {
+    "owner/repo": {
+      "board_id": 8,
+      "stages": { "opened": 50, "merged": 52, "merged_to_main": 53, "closed_unmerged": 49 },
+      "promote_on_release": true                // release merge → promote Shipped cards now on main to Released (DL-207)
+    }
+  }
+}
+```
+
+- **Opt-in, byte-identical when off; reuses the existing stages.** No new stage keys — the scan reads `stages.merged` (Shipped) and moves to `stages.merged_to_main` (Released). Both are **required** when `promote_on_release` is on; the config **fails closed at load** if either is missing.
+- **Which cards.** Only cards **currently at `stages.merged`** that are **tooling-managed** (carry a PR reference — `pr_url`, or `pr_number` on a 1:1 board) and **not pinned** (`block_reason` / `no-automove`, mirroring the reconcile). DL-only cards (no PR reference) are out of scope — the same PR-driven boundary `bridge:reconcile` draws. On a board shared by several repos, a bare `pr_number` is ambiguous and skipped (needs a repo-qualified `pr_url`), again matching reconcile.
+- **How "on main" is decided — positive reachability.** For each candidate the bridge reads the PR and, when it is **merged**, asks GitHub whether the PR's `merge_commit_sha` is reachable from `main` (`compare(sha...main).status ∈ {ahead, identical}`). Reachable ⇒ released ⇒ promote; otherwise the card stays Shipped (a card merged to dev *after* the release cut correctly waits for the next release). This is a positive "is it on main" test — an open PR (whose test-merge sha is on no branch) and a PR merged to some other base are never promoted.
+- **Merge-strategy precondition.** Correctness needs the release→`main` merge to **preserve dev's commit shas** — a **merge-commit or fast-forward** (the reference workflow's method; dev PRs squash-merge, so a squash-sha on dev becomes reachable from main via the release merge-commit). A **squash/rebase RELEASE merge** rewrites shas, so no feature sha ever joins main and the leg promotes nothing. `bridge:check` cannot see the merge strategy, so this is a documented precondition, not a guard.
+- **Needs a runtime GitHub read token — a placed file.** This is the one writeback leg that reads GitHub **from the receiver** (not just the `bridge:reconcile` CLI). Under PHP-FPM `GH_TOKEN` is absent and the credential-store helper is CLI-only, so you must place a read-only **`<secret_dir>/github/token`** (or set `providers.github.token_path`), `chmod 600` — the same least-privilege PR-read token `bridge:reconcile` uses. Without a file-resolvable token the leg is **inert** (durable alert + log, no move); `bridge:check` **warns**.
+- **`bridge:check` guards.** With `promote_on_release` on, the check **warns** if (a) no GitHub token resolves **from a file** (store/`GH_TOKEN`-only tokens don't hold under FPM), or (b) `stages.merged` and `stages.merged_to_main` are the **same** stage (the promote is a no-op).
+- **Idempotent + self-healing.** A promoted card leaves the Shipped filter, so a redelivered event (or a mid-scan transient failure) re-scans and moves nothing already done. A card stranded by an earlier failed/disabled release is promoted on the **next** release event (its sha is on main via the earlier merge-commit). A synchronous per-event candidate **cap** bounds the webhook cost; overflow is alerted and drains across successive releases (steady-state N is a handful — a large first-adoption backlog is the documented worst case).
+- **Not back-stopped by `bridge:reconcile` (deliberate).** Reconcile treats `merged_to_main` as terminal and never promotes into the released stage — this leg *is* the only promoter, so its inert/failure paths are made **loud** (durable alert + `bridge:check`) rather than silently relying on a backstop.
+- **Fires on any merge to `main`.** A hotfix or dependabot PR merged directly to `main` also triggers a scan; it is idempotent and only promotes cards genuinely on main, so this is safe (anything landing work on main releases it).
+
 ## Optional: a loud alert on a permanent move-failure (FR-4)
 
 By default a **permanent** move-failure (a refused/un-actionable move — see *Failure behaviour* below) is **logged + no-op**: a durable record in the log, but no live signal. Add a top-level **`alert_channel`** to `writeback.json` to ALSO emit a loud per-event signal to a local channel when that happens — log = durable record, push = live wake. Opt-in; absent ⇒ log-only (unchanged).

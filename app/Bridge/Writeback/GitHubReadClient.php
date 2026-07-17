@@ -27,7 +27,14 @@ final class GitHubReadClient
     /** Kept under a human-interactive command's patience; a slow GitHub is skipped per card. */
     public const TIMEOUT_SECONDS = 15;
 
-    public function __construct(private string $token) {}
+    /**
+     * @param  string  $token  an already-resolved GitHub read token (resolution is the caller's — GitHubTokenResolver)
+     * @param  ?int  $timeoutSeconds  per-request timeout override — the SYNCHRONOUS promote-on-release
+     *                                writeback leg (DL-207) runs inside a webhook request and passes a
+     *                                tighter budget than reconcile's human-interactive 15s default so a
+     *                                board scan can't stack N slow reads past the FPM request ceiling.
+     */
+    public function __construct(private string $token, private ?int $timeoutSeconds = null) {}
 
     /**
      * One-shot auth/scope probe for a repo (`GET /repos/{repo}`). Throws
@@ -46,7 +53,13 @@ final class GitHubReadClient
      * deleted PR 404s — the caller warns + skips that card once the repo probe
      * has confirmed the token CAN see the repo).
      *
-     * @return array{state: string, merged: bool, base_ref: string, html_url: string}
+     * `merge_commit_sha` is GitHub's post-merge commit for a MERGED PR (the sha the
+     * promote-on-release leg tests for reachability from `main`, DL-207). For an OPEN
+     * PR GitHub populates it with a transient TEST-merge sha that is on no branch —
+     * so a consumer must gate on `merged === true` before trusting it, never on
+     * emptiness (it is rarely empty).
+     *
+     * @return array{state: string, merged: bool, base_ref: string, html_url: string, merge_commit_sha: string}
      */
     public function getPull(string $repo, int $number): array
     {
@@ -59,7 +72,27 @@ final class GitHubReadClient
             'merged' => ($pr['merged'] ?? false) === true,
             'base_ref' => is_string($base) ? $base : '',
             'html_url' => is_string($pr['html_url'] ?? null) ? $pr['html_url'] : '',
+            'merge_commit_sha' => is_string($pr['merge_commit_sha'] ?? null) ? $pr['merge_commit_sha'] : '',
         ];
+    }
+
+    /**
+     * The GitHub compare `status` of `base...head` (`ahead` | `behind` | `identical`
+     * | `diverged`), for the promote-on-release reachability test (DL-207). Called as
+     * `compareStatus($repo, $mergeSha, PrOutcome::RELEASE_BASE)`: `ahead`/`identical`
+     * means `main` is ahead-of / equal-to the merge sha ⇒ the sha is an ancestor of
+     * `main` ⇒ the card's work is ON main ⇒ released. `behind`/`diverged` ⇒ not on
+     * main. Only the `status` scalar is read, so the 250-commit cap on the compare's
+     * `commits[]` is irrelevant (no truncation risk). `base`/`head` may each be a raw
+     * SHA or a ref. Throws RequestException on any non-2xx (a bad/unknown sha 404s —
+     * the caller warns + skips that card, as with getPull).
+     */
+    public function compareStatus(string $repo, string $base, string $head): string
+    {
+        $cmp = $this->http()->get(self::API_BASE."/repos/{$repo}/compare/{$base}...{$head}")->throw()->json();
+        $cmp = is_array($cmp) ? $cmp : [];
+
+        return is_string($cmp['status'] ?? null) ? $cmp['status'] : '';
     }
 
     private function http(): PendingRequest
@@ -70,6 +103,6 @@ final class GitHubReadClient
                 'X-GitHub-Api-Version' => '2022-11-28',
                 'User-Agent' => 'agent-webhook-bridge',   // GitHub rejects a UA-less request
             ])
-            ->timeout(self::TIMEOUT_SECONDS);
+            ->timeout($this->timeoutSeconds ?? self::TIMEOUT_SECONDS);
     }
 }

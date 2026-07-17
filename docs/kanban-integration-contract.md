@@ -72,7 +72,17 @@ Rules — the "degraded states must be loud" posture (same as the bridge's blind
 
 ## 4. The GitHub provider (writeback trigger)
 
-The card-move writeback is **triggered by GitHub PR webhooks**, not kanban events — a second inbound provider. `GitHubAdapter` (HMAC; scope = `repository.full_name`, must match `?b=`); `GitHubPrCardMoveClassifier` derives the outcome from GitHub-controlled fields and emits `kanban_move_card` / `kanban_dependabot_card`. The writeback *policy* (`writeback.json`) and the *trigger* (a github-subscribed agent running that classifier) are validated independently — a mapping with no driving classifier is silently inert (bridge **#2162**). Full setup: [`writeback.md`](writeback.md).
+The card-move writeback is **triggered by GitHub PR webhooks**, not kanban events — a second inbound provider. `GitHubAdapter` (HMAC; scope = `repository.full_name`, must match `?b=`); `GitHubPrCardMoveClassifier` derives the outcome from GitHub-controlled fields and emits `kanban_move_card` / `kanban_dependabot_card` / `kanban_promote_released`. The writeback *policy* (`writeback.json`) and the *trigger* (a github-subscribed agent running that classifier) are validated independently — a mapping with no driving classifier is silently inert (bridge **#2162**). Full setup: [`writeback.md`](writeback.md).
+
+**Outbound GitHub reads (a second outbound seam, distinct from the kanban §2 surface).** Two consumers call the GitHub REST API read-only via `GitHubReadClient`, each with a per-repo least-privilege PR-read token (`GitHubTokenResolver`, DL-184/185):
+
+| Endpoint | Who / why | Contract dependency |
+| --- | --- | --- |
+| `GET /repos/{repo}` | startup auth/scope probe (reconcile) | 2xx = the token can see the repo; a non-2xx fails loud |
+| `GET /repos/{repo}/pulls/{n}` | `bridge:reconcile` (ground-truth PR state) **and** the DL-207 promote leg (`merge_commit_sha`) | reads `state`, `merged`, `base.ref`, `html_url`, `merge_commit_sha`. **DL-207 gates on `merged === true`** because an OPEN PR carries a non-null *test-merge* `merge_commit_sha` on no branch |
+| `GET /repos/{repo}/compare/{base}...{head}` | DL-207 promote leg (reachability) | reads only `status` (`ahead`/`behind`/`identical`/`diverged`); `base`/`head` may be a SHA or a ref. Reading only `status` sidesteps the 250-commit cap on the compare's `commits[]` |
+
+**Runtime-token invariant (DL-207):** the promote leg is the FIRST GitHub read on the **request path** (the FPM receiver) — every other GitHub read is `bridge:reconcile` (CLI). Under FPM `GH_TOKEN` is absent and the `git-credential-coord` store helper is CLI-only, so the promote leg resolves its token only from a **placed file** (`<secret_dir>/github/token` or `providers.github.token_path`). Break that (no file) → the leg is inert (`bridge:check` warns). See [`writeback.md`](writeback.md) § promote-on-release.
 
 ## 5. Change protocol at the seam
 

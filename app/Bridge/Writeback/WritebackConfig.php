@@ -33,7 +33,8 @@ use App\Bridge\Support\PathHelper;
  *         "move_coord_cards": false,               // DL-200; guarded fleet default (DL-204): absent ⇒ on where coord_card_terminal_stage_id present, inert where absent
  *         "coord_card_terminal_stage_id": 99,      // required-when-move_coord_cards — terminal a closed coord card moves to (MUST differ from coord_card_stage_id)
  *         "swimlane_id": 31,                        // optional — lane for CREATED cards (DL-027)
- *         "draft_overlay": false                    // optional (DL-193) — mirror PR draft state to block_reason
+ *         "draft_overlay": false,                   // optional (DL-193) — mirror PR draft state to block_reason
+ *         "promote_on_release": false               // optional (DL-207) — on a release merge to main, promote Shipped cards now on main to Released (needs stages.merged + stages.merged_to_main)
  *       }
  *     }
  *   }
@@ -191,6 +192,16 @@ final class WritebackConfig
                 }
                 $cardIdTagTemplate = $m['card_id_tag_template'];
             }
+            // Opt-in promote-on-release (DL-207). Plain bool, default false — parsed like
+            // draft_overlay/revive_on_reopen, so a promote_on_release-absent config is
+            // byte-identical. The leg REUSES stages.merged (Shipped source) + stages.merged_to_main
+            // (Released target), so BOTH are required when it is on: without them the scan has no
+            // source or target stage and would silently never move a card. Fail LOUD at load (the
+            // DL-160/198 fail-closed precedent) rather than no-op quietly at dispatch.
+            $promoteOnRelease = ($m['promote_on_release'] ?? false) === true;
+            if ($promoteOnRelease && (! isset($stages['merged']) || ! isset($stages['merged_to_main']))) {
+                throw new ConfigException("writeback.json: mapping for {$repo} sets promote_on_release but is missing stages.merged and/or stages.merged_to_main — the promote leg reads cards at the Shipped stage (stages.merged) and moves them to the Released stage (stages.merged_to_main); set both (or remove promote_on_release)");
+            }
             $createDependabotCards = ($m['create_dependabot_cards'] ?? false) === true;
             // Opt-in draft → block_reason overlay (DL-193). Plain bool, default false —
             // parsed exactly like create_dependabot_cards (a non-`true` value, absent or
@@ -277,7 +288,7 @@ final class WritebackConfig
             if ($coordCardTerminalStageId !== null && $coordCardTerminalStageId === $coordCardStageId) {
                 throw new ConfigException("writeback.json: mapping for {$repo} coord_card_terminal_stage_id must differ from coord_card_stage_id — a coord card cannot conclude into the same stage it is created/revived in");
             }
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId, $cardIdTagTemplate);
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId, $cardIdTagTemplate, $promoteOnRelease);
         }
 
         return new self($identityId, $mappings, self::parseAlertChannel($raw));

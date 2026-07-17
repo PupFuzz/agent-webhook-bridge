@@ -2,10 +2,12 @@
 
 namespace Tests\Feature\Handlers;
 
+use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Handlers\ChannelPushHandler;
 use App\Bridge\Handlers\KanbanMoveCardHandler;
+use App\Bridge\Handlers\KanbanPromoteReleasedHandler;
 use App\Bridge\Handlers\LogIntentHandler;
 use App\Bridge\Handlers\RegistryAppendHandler;
 use App\Bridge\Handlers\SpawnDetachedHandler;
@@ -25,6 +27,16 @@ class HandlerRegistryTest extends TestCase
         $this->assertInstanceOf(KanbanMoveCardHandler::class, $registry->resolve('kanban_move_card'));
     }
 
+    public function test_promote_released_is_registered_as_a_durable_reaction(): void
+    {
+        // Load-bearing for DL-203: the echo/signal strip keeps only `instanceof
+        // DurableReaction` targets, so an UNregistered kanban_promote_released would resolve
+        // to null and be stripped on every agent-merged (echo) release — the dominant path.
+        $handler = (new HandlerRegistry)->resolve('kanban_promote_released');
+        $this->assertInstanceOf(KanbanPromoteReleasedHandler::class, $handler);
+        $this->assertInstanceOf(DurableReaction::class, $handler);
+    }
+
     public function test_spawn_detached_is_opt_in(): void
     {
         // Off by default (DL-011): a classifier emitting spawn_detached resolves
@@ -39,11 +51,11 @@ class HandlerRegistryTest extends TestCase
     public function test_known_is_sorted(): void
     {
         $this->assertSame(
-            ['channel_push', 'kanban_block_reason', 'kanban_coord_card', 'kanban_coord_card_move', 'kanban_dependabot_card', 'kanban_move_card', 'log_intent', 'registry_append'],
+            ['channel_push', 'kanban_block_reason', 'kanban_coord_card', 'kanban_coord_card_move', 'kanban_dependabot_card', 'kanban_move_card', 'kanban_promote_released', 'log_intent', 'registry_append'],
             (new HandlerRegistry)->known(),
         );
         $this->assertSame(
-            ['channel_push', 'kanban_block_reason', 'kanban_coord_card', 'kanban_coord_card_move', 'kanban_dependabot_card', 'kanban_move_card', 'log_intent', 'registry_append', 'spawn_detached'],
+            ['channel_push', 'kanban_block_reason', 'kanban_coord_card', 'kanban_coord_card_move', 'kanban_dependabot_card', 'kanban_move_card', 'kanban_promote_released', 'log_intent', 'registry_append', 'spawn_detached'],
             (new HandlerRegistry(true))->known(),
         );
     }
