@@ -97,9 +97,7 @@ final class BridgePaths
 
     public static function sanitizeAgent(string $agent): string
     {
-        $clean = preg_replace('/[^a-z0-9_-]+/i', '_', $agent) ?? '';
-
-        return $clean === '' ? 'agent' : $clean;
+        return PathHelper::sanitizeSegment($agent, 'agent');
     }
 
     /**
