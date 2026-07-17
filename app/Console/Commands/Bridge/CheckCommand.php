@@ -22,14 +22,14 @@ use App\Bridge\Validation\EndpointValidationException;
 use App\Bridge\Validation\LocalhostUrl;
 use App\Bridge\Writeback\AlertChannel;
 use App\Bridge\Writeback\CoordConfigTerminals;
-use App\Bridge\Writeback\GitHubReadClient;
+use App\Bridge\Writeback\GitHubRepoProbe;
+use App\Bridge\Writeback\GitHubRepoProbeKind;
 use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 use App\Models\WebhookEvent;
-use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 
@@ -460,36 +460,33 @@ class CheckCommand extends BridgeCommand
                         $this->warn('writeback: '.SecretFile::permsMessage($tokenPath).' — the move will fail until fixed');
                     }
 
-                    // reconcile (bridge:reconcile) reads PR state from GitHub,
-                    // resolving a token PER REPO (GitHubTokenResolver, DL-185): a
-                    // token_path override → the conventional <secret_dir>/github/token
-                    // → the coordination store's [git-credential-map] → ambient
-                    // GH_TOKEN. Route this through the SAME resolver so bridge:check
-                    // can't drift from what reconcile actually resolves. Warn (never
-                    // fail, DL-026) for any mapped repo whose token doesn't resolve;
-                    // the event-driven writeback is unaffected either way.
-                    $ghResolver = new GitHubTokenResolver;
+                    // reconcile (bridge:reconcile) resolves + probes a GitHub read
+                    // token PER REPO. Run the SAME shared GitHubRepoProbe (DL-185/186)
+                    // so bridge:check can't drift from what reconcile resolves OR from
+                    // how it classifies a failure — one resolve+probe+hint table, two
+                    // error postures (reconcile errors + skips; check warns). Warn
+                    // (never fail, DL-026) for any mapped repo whose token doesn't
+                    // resolve, or whose probe fails auth/scope. A resolved-but-invalid
+                    // token (DL-186) — classically a stale <secret_dir>/github/token
+                    // that SHADOWS the store map — resolves but 401s every repo at
+                    // reconcile time, so the probe surfaces the shadow at preflight,
+                    // naming the resolved leg, not on the first run. A network blip is
+                    // NOT a token problem → stay silent on it; the event-driven
+                    // writeback is unaffected regardless.
+                    $probe = new GitHubRepoProbe;
                     foreach ($writeback->mappings as $repo => $mapping) {
-                        $resolution = $ghResolver->resolveFor((string) $repo);
-                        if (! $resolution->ok()) {
-                            $this->warn("reconcile: {$repo}: {$resolution->problem} — bridge:reconcile will FAIL for this repo until you place a read-only token (chmod 600), map it in the coordination store's [git-credential-map], or export GH_TOKEN; the event-driven writeback is unaffected");
-
-                            continue;
-                        }
-                        // Resolvability ≠ validity (DL-186). A resolved-but-expired
-                        // token — classically a stale <secret_dir>/github/token from
-                        // the single-token era that SHADOWS the store map — passes the
-                        // check above but 401s every repo at reconcile time. Probe it
-                        // HERE (warn-never-fail, DL-026), naming the resolved leg so a
-                        // stale shadow surfaces at preflight, not on the first run. A
-                        // network blip is NOT a token problem → stay silent on it.
-                        try {
-                            (new GitHubReadClient((string) $resolution->token))->probeRepo((string) $repo);
-                        } catch (RequestException $e) {
-                            $status = $e->response->status();
-                            $this->warn("reconcile: {$repo}: token from {$resolution->source} → HTTP {$status} — bridge:reconcile will SKIP this repo. If the source is a <secret_dir>/github/token or BRIDGE_GITHUB_TOKEN_PATH file, it SHADOWS the [git-credential-map] store (a stale single-token-era file is the common upgrade cause) — remove it so each repo resolves its own store token.");
-                        } catch (Throwable) {
-                            // network/timeout — not a token-validity signal; ignore.
+                        $result = $probe->probe((string) $repo);
+                        switch ($result->kind) {
+                            case GitHubRepoProbeKind::Unresolvable:
+                                $this->warn("reconcile: {$repo}: {$result->problem} — bridge:reconcile will FAIL for this repo until you place a read-only token (chmod 600), map it in the coordination store's [git-credential-map], or export GH_TOKEN; the event-driven writeback is unaffected");
+                                break;
+                            case GitHubRepoProbeKind::Http:
+                                $this->warn("reconcile: {$repo}: token from {$result->source} → HTTP {$result->status}{$result->hint} — bridge:reconcile will SKIP this repo. If the source is a <secret_dir>/github/token or BRIDGE_GITHUB_TOKEN_PATH file, it SHADOWS the [git-credential-map] store (a stale single-token-era file is the common upgrade cause) — remove it so each repo resolves its own store token.");
+                                break;
+                            case GitHubRepoProbeKind::Ok:
+                            case GitHubRepoProbeKind::Network:
+                                // Valid, or a network blip (not a token-validity signal) — nothing to warn.
+                                break;
                         }
                     }
                 }

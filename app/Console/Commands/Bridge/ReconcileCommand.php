@@ -4,8 +4,8 @@ namespace App\Console\Commands\Bridge;
 
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\ExternalReferenceNormalizer;
-use App\Bridge\Writeback\GitHubReadClient;
-use App\Bridge\Writeback\GitHubTokenResolver;
+use App\Bridge\Writeback\GitHubRepoProbe;
+use App\Bridge\Writeback\GitHubRepoProbeKind;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrOutcome;
@@ -115,56 +115,51 @@ class ReconcileCommand extends BridgeCommand
 
             return self::FAILURE;
         }
-        $resolver = new GitHubTokenResolver;
+        $probe = new GitHubRepoProbe;
 
         $this->info($fix ? 'bridge:reconcile --fix (applying forward moves)' : 'bridge:reconcile (report-only; pass --fix to apply)');
 
         $refs = new ExternalReferenceNormalizer;
 
-        // Per-repo token resolution + startup auth/scope probe. The token is
-        // resolved per repo (DL-185: the store map routes each repo to its own
-        // least-privilege PAT), then the probe fails LOUDLY (non-zero exit) when a
-        // token can't read its repo, rather than every per-card getPull silently
-        // 404-ing while the run exits 0 (the wholesale-degradation trap). A per-repo
-        // failure — an unresolvable token OR an unreadable repo — skips only that
-        // repo's cards; other repos still run. The RAW mapping key is passed to the
-        // resolver ([git-credential-map] is case-sensitive); repoUsable/clients are
-        // keyed by the canonical form (how cards resolve their repo).
+        // Per-repo token resolution + startup auth/scope probe (GitHubRepoProbe — the
+        // shared home so bridge:check classifies a token problem IDENTICALLY, DL-185/186).
+        // The probe fails LOUDLY here (non-zero exit) when a token can't read its repo,
+        // rather than every per-card getPull silently 404-ing while the run exits 0 (the
+        // wholesale-degradation trap). A per-repo failure — unresolvable OR unreadable —
+        // skips only that repo's cards; other repos still run. The RAW mapping key is
+        // probed ([git-credential-map] is case-sensitive); repoUsable/clients are keyed
+        // by the canonical form (how cards resolve their repo). The resolved leg is named
+        // (DL-186) so an auth failure points at WHICH credential source won (a stale
+        // <secret_dir>/github/token shadowing the store map is the common upgrade footgun);
+        // never the token, only the source.
         foreach ($mappings as $repo => $mapping) {
             $canon = $refs->canonicalizeSource((string) $repo) ?? (string) $repo;
+            $result = $probe->probe((string) $repo);
+            $from = $result->source !== null ? " (token from {$result->source})" : '';
 
-            $resolution = $resolver->resolveFor((string) $repo);
-            if (! $resolution->ok()) {
-                $this->error("github token for {$repo}: {$resolution->problem} — bridge:reconcile reads PR state from GitHub (the repo is private, so a read-only token is required); its cards will be SKIPPED. Place a token file (chmod 600), map the repo in the coordination store's [git-credential-map], or export GH_TOKEN.");
-                $this->repoUsable[$canon] = false;
-                $this->hadError = true;
-
-                continue;
-            }
-            $client = new GitHubReadClient((string) $resolution->token);
-            $this->clients[$canon] = $client;
-            // Name the resolved leg (DL-186) so an auth failure points at WHICH
-            // credential source won — the #1 diagnosability gap on a multi-leg
-            // resolver (a stale <secret_dir>/github/token shadowing the store map is
-            // the common upgrade footgun). Never prints the token, only the source.
-            $from = " (token from {$resolution->source})";   // source is non-null after ok()
-
-            try {
-                $client->probeRepo($repo);
-                $this->repoUsable[$canon] = true;
-                if ($this->output->isVerbose()) {
-                    $this->line("github: {$repo} — readable{$from}");
-                }
-            } catch (RequestException $e) {
-                $status = $e->response->status();
-                $hint = $status === 401 ? ' (token expired/revoked)' : ($status === 404 || $status === 403 ? ' (token lacks access to this private repo — needs `repo` scope)' : '');
-                $this->error("github: cannot read repo {$repo} — HTTP {$status}{$hint}{$from}; its cards will be SKIPPED");
-                $this->repoUsable[$canon] = false;
-                $this->hadError = true;
-            } catch (Throwable $e) {   // timeout / connection
-                $this->error("github: cannot reach repo {$repo} — {$e->getMessage()}{$from}; its cards will be SKIPPED");
-                $this->repoUsable[$canon] = false;
-                $this->hadError = true;
+            switch ($result->kind) {
+                case GitHubRepoProbeKind::Ok:
+                    $this->clients[$canon] = $result->client;
+                    $this->repoUsable[$canon] = true;
+                    if ($this->output->isVerbose()) {
+                        $this->line("github: {$repo} — readable{$from}");
+                    }
+                    break;
+                case GitHubRepoProbeKind::Unresolvable:
+                    $this->error("github token for {$repo}: {$result->problem} — bridge:reconcile reads PR state from GitHub (the repo is private, so a read-only token is required); its cards will be SKIPPED. Place a token file (chmod 600), map the repo in the coordination store's [git-credential-map], or export GH_TOKEN.");
+                    $this->repoUsable[$canon] = false;
+                    $this->hadError = true;
+                    break;
+                case GitHubRepoProbeKind::Http:
+                    $this->error("github: cannot read repo {$repo} — HTTP {$result->status}{$result->hint}{$from}; its cards will be SKIPPED");
+                    $this->repoUsable[$canon] = false;
+                    $this->hadError = true;
+                    break;
+                case GitHubRepoProbeKind::Network:
+                    $this->error("github: cannot reach repo {$repo} — {$result->networkMessage}{$from}; its cards will be SKIPPED");
+                    $this->repoUsable[$canon] = false;
+                    $this->hadError = true;
+                    break;
             }
         }
 
