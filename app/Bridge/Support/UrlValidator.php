@@ -47,8 +47,7 @@ final class UrlValidator
         $value = self::httpUrl($value, $field);
         $parts = parse_url($value);
         $scheme = $parts['scheme'] ?? '';
-        $host = strtolower(trim((string) ($parts['host'] ?? ''), '[]'));
-        if ($scheme === 'http' && ! in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
+        if ($scheme === 'http' && ! LoopbackHost::matches((string) ($parts['host'] ?? ''))) {
             throw new ConfigException("{$field} '{$value}' must use https — this endpoint receives the bearer token/webhook secret, and cleartext http would expose them on the wire (http is allowed only for loopback hosts)");
         }
 

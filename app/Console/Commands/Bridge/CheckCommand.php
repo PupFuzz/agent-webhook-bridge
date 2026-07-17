@@ -18,6 +18,8 @@ use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
+use App\Bridge\Validation\EndpointValidationException;
+use App\Bridge\Validation\LocalhostUrl;
 use App\Bridge\Writeback\AlertChannel;
 use App\Bridge\Writeback\CoordConfigTerminals;
 use App\Bridge\Writeback\GitHubReadClient;
@@ -1076,19 +1078,16 @@ class CheckCommand extends BridgeCommand
 
             return;
         }
-        $parts = parse_url((string) $url);
-        if (! is_array($parts) || strtolower($parts['scheme'] ?? '') !== 'http') {
-            $this->warn("writeback.json alert_channel: url must be http:// loopback (got '{$url}') — the alert push will fail (caught) until fixed");
-
-            return;
+        // Defer to the runtime sender's authority (LocalhostUrl::assertValid, the
+        // same gate WritebackAlertNotifier enforces) so the check and the sender
+        // can never disagree on what a valid alert url is — a hand-rolled copy here
+        // once dropped the userinfo rejection and green-lit a url the sender refused.
+        try {
+            LocalhostUrl::assertValid((string) $url, 'writeback.json alert_channel: url');
+            $this->info("writeback.json alert_channel: url {$url} (localhost)");
+        } catch (EndpointValidationException $e) {
+            $this->warn($e->getMessage().' — the alert push will fail (caught) until fixed');
         }
-        $host = strtolower(trim($parts['host'] ?? '', '[]'));
-        if (! in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
-            $this->warn("writeback.json alert_channel: url must point at 127.0.0.1, localhost, or [::1] (got '{$host}') — the alert push will fail (caught) until fixed");
-
-            return;
-        }
-        $this->info("writeback.json alert_channel: url {$url} (localhost)");
     }
 
     /**

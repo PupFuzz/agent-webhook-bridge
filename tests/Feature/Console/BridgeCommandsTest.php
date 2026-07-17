@@ -173,6 +173,24 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_warns_on_alert_channel_url_with_userinfo(): void
+    {
+        // card#4495: the check must not green-light a userinfo URL that the
+        // runtime sender (LocalhostUrl::assertValid) rejects at send time —
+        // http://user:pass@127.0.0.1/ passes the scheme+host checks but is a
+        // credential-leaking SSRF shape the sender refuses.
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'alert_channel' => ['url' => 'http://user:pass@127.0.0.1:9931/hook'],
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        Http::fake();
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('must not contain a userinfo component')
+            ->assertExitCode(0);
+    }
+
     private function writeWritebackWithToken(bool $sharedBoard = false): void
     {
         $this->writeAgent();
