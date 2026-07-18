@@ -52,9 +52,13 @@ use App\Bridge\Writeback\WritebackConfig;
  * routed push (byte-identical payload) is the single wake.
  *
  *   - `coord_extra_actions` (coord-message) extends the fail-safe action allow-list
- *     per prefix; `wake_membership` (default `[to_me, to_all]`) selects which label
- *     classes grant coord-message live-wake (`from_me` = opt-in; `comment_to` =
- *     opt-in body-`TO:<self>` grant for cross-thread pull-ins, DL-192).
+ *     per prefix; `wake_membership` (default `[to_me, to_all, comment_to]`) selects
+ *     which label classes grant coord-message live-wake. `comment_to` (a body-`TO:<self>`
+ *     grant for cross-thread pull-ins, DL-192) is default-ON since DL-213 — the
+ *     post-a-reply-and-wait flow is otherwise dark out of the box; it is additive-only
+ *     and echo-safe (keys on the comment's directed `TO:` line, not authorship).
+ *     `from_me` (wake on ALL activity on threads you opened) stays opt-in — it is the
+ *     over-wake/self-wake knob.
  *   - `kanban-triage` — kanban `task.created` for a HUMAN-filed, UNTRIAGED card
  *     (DL-168): pairs the inbox `new_card` Intent with a channel_push to the
  *     triage owner. Folded in from the retired standalone KanbanTriageClassifier
@@ -288,18 +292,20 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
 
         // Recipient gate (DL-022): membership is label-authoritative. Which label
         // classes grant live-wake membership is config-driven via `wake_membership`
-        // — DEFAULT narrow `[to_me, to_all]` (over-wake is the failure mode we guard
-        // against; a coordinator opening many threads would else wake on every reply
-        // to them). `from_me` is the opt-in for waking on all activity on your own
-        // threads.
+        // — DEFAULT `[to_me, to_all, comment_to]`. `from_me` stays OUT of the default
+        // (it is the over-wake knob: a coordinator opening many threads would wake on
+        // every reply to them; it is the opt-in for waking on all activity on your own
+        // threads).
         //
         // A comment's body TO: line is three-state (RecipientAddressing::addresses):
         // it always NARROWS (a comment addressed to someone else denies membership),
-        // and — only with the `comment_to` opt-in (DL-192) — a comment addressed TO
-        // the agent GRANTS membership even when the thread labels don't, closing the
-        // cross-thread pull-in gap (a loop-in on a thread the agent neither opened nor
-        // was labelled on). The narrow is unconditional; the grant is opt-in.
-        $membership = $cfg->strings('wake_membership', ['to_me', 'to_all']);
+        // and — with `comment_to` (DL-192; default-ON since DL-213) — a comment
+        // addressed TO the agent GRANTS membership even when the thread labels don't,
+        // closing the cross-thread pull-in gap (a loop-in on a thread the agent neither
+        // opened nor was labelled on). The narrow is unconditional; the grant keys on
+        // the directed TO: line (not authorship), so it is echo-safe under a shared
+        // account: a comment the agent itself authored TO someone else does not wake it.
+        $membership = $cfg->strings('wake_membership', ['to_me', 'to_all', 'comment_to']);
         $forMe = (in_array('to_me', $membership, true) && in_array("to:{$me}", $labels, true))
             || (in_array('to_all', $membership, true) && in_array('to:all', $labels, true))
             || (in_array('from_me', $membership, true) && in_array("from:{$me}", $labels, true));

@@ -523,8 +523,9 @@ class CoordinationClassifierTest extends TestCase
 
     public function test_wake_membership_narrow_default_drops_from_me_only(): void
     {
-        // A thread I opened (from:me) with no to:me / to:all: under the NARROW default
-        // it no longer live-wakes — from_me is now an opt-in.
+        // A thread I opened (from:me) with no to:me / to:all: from_me is OUT of the
+        // default (DL-213 added only comment_to), so an own-thread open does not
+        // live-wake — from_me stays an opt-in.
         $r = $this->classify('issues.opened', $this->issue(9, ['from:me']), 'org/coord');
 
         $this->assertSame([], $r->intents);
@@ -576,13 +577,37 @@ class CoordinationClassifierTest extends TestCase
         $this->assertSame('coord_comment', $r->intents[0]->kind);
     }
 
-    public function test_comment_to_off_by_default_does_not_grant(): void
+    public function test_comment_to_on_by_default_grants_a_directed_comment(): void
     {
-        // The SAME pull-in comment WITHOUT comment_to → no grant (default byte-identical).
+        // DL-213: comment_to is now in the fleet DEFAULT. The SAME pull-in comment, with
+        // NO explicit wake_membership, now GRANTS — reds against the pre-flip
+        // [to_me, to_all] default, which returned no intents.
         $r = $this->classify('issue_comment.created', $this->comment(9, ['from:other', 'to:other'], 'TO: me'), 'org/coord');
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('coord_comment', $r->intents[0]->kind);
+    }
+
+    public function test_wake_membership_explicit_narrow_without_comment_to_stays_dark(): void
+    {
+        // DL-213: an install that set wake_membership EXPLICITLY and omitted comment_to
+        // OVERRIDES the default — its directed-reply pull-ins stay dark. The flip must not
+        // silently rewrite a deliberate operator config (bridge:check warns on it instead).
+        $r = $this->classify('issue_comment.created', $this->comment(9, ['from:other', 'to:other'], 'TO: me'),
+            'org/coord', classifierConfig: ['wake_membership' => ['to_me', 'to_all']]);
 
         $this->assertSame([], $r->intents);
         $this->assertSame([], $r->targets);
+    }
+
+    public function test_comment_to_default_is_echo_safe_on_a_comment_addressed_elsewhere(): void
+    {
+        // DL-213 property (2): the default grant keys on the directed TO: line, not
+        // authorship, so under the shared account a comment TO someone else never wakes —
+        // even with comment_to now default-on and even carrying a to:me thread label.
+        $r = $this->classify('issue_comment.created', $this->comment(9, ['to:me'], 'TO: other'), 'org/coord');
+
+        $this->assertSame([], $r->intents);
     }
 
     public function test_comment_to_narrow_still_denies_a_comment_addressed_elsewhere(): void
