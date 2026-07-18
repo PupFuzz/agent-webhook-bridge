@@ -109,8 +109,9 @@ final class BridgePaths
     }
 
     /**
-     * Read a seen-cursor into a list of ids (missing/garbage → []). One canonical
-     * parse so the writer and the retention prune agree on the shape.
+     * Read a seen-cursor into a list of ids (missing/garbage → []). A non-locking
+     * peek — the reader that only needs to filter (bridge:inbox's unseen scan) uses
+     * this; the read-modify-write callers go through updateSeenLocked instead.
      *
      * @return list<string>
      */
@@ -119,22 +120,77 @@ final class BridgePaths
         if (! is_file($path)) {
             return [];
         }
-        $decoded = json_decode((string) file_get_contents($path), true);
+
+        return self::decodeSeen((string) file_get_contents($path));
+    }
+
+    /**
+     * Parse a seen-cursor's raw JSON into a list of string ids (missing/garbage → []).
+     * The single parse home so every reader — readSeen (by path) and updateSeenLocked
+     * (from an open, locked handle) — agrees on the shape.
+     *
+     * @return list<string>
+     */
+    private static function decodeSeen(string $raw): array
+    {
+        $decoded = json_decode($raw, true);
 
         return is_array($decoded) ? array_values(array_filter($decoded, 'is_string')) : [];
     }
 
     /**
-     * Overwrite a seen-cursor with the given ids. Cursors stay install-user-owned
-     * (not group-shared, unlike per-agent inbox files) — only the process running
-     * bridge:inbox/bridge:prune writes them (DL-006), so no applyInboxPerms here.
+     * Read-modify-write a seen-cursor with an exclusive lock held across the WHOLE
+     * read → transform → write — the JSON-array sibling of filterJsonlLocked, and the
+     * ONLY sanctioned writer of a cursor.
      *
-     * @param  list<string>  $ids
+     * Why this exists: readSeen() then a plain write locks only the write (DL-212), so
+     * two concurrent cursor RMWs interleave — bridge:inbox advancing its cursor while a
+     * prune sweep intersects the same file could have the prune write a set computed
+     * from a pre-advance read, dropping a just-marked id back to unseen (one
+     * re-delivered wake; bounded by DL-012's read-side collapse, never lost — but real,
+     * card #4630). Holding one LOCK_EX across both callers' RMW serializes them: the
+     * loser blocks, then re-reads the post-write cursor and transforms that. The write
+     * is skipped when $transform returns an unchanged set, so a steady-state prune sweep
+     * doesn't churn an unchanged cursor's mtime.
+     *
+     * Cursors stay install-user-owned (not group-shared, unlike per-agent inbox files)
+     * — only the process running bridge:inbox/bridge:prune writes them (DL-006), so no
+     * applyInboxPerms here. Unlike filterJsonlLocked this slurps the whole file: a
+     * seen-cursor is a bounded id list, not the unbounded inbox stream.
+     *
+     * @param  callable(list<string>): list<string>  $transform
      */
-    public static function writeSeen(string $path, array $ids): void
+    public static function updateSeenLocked(string $path, callable $transform): void
     {
         self::ensureDir(dirname($path));
-        self::writeFile($path, (string) json_encode($ids, JSON_UNESCAPED_SLASHES), LOCK_EX);
+        $h = @fopen($path, 'c+');
+        if ($h === false) {
+            throw new \RuntimeException("bridge: failed to open {$path} for a seen-cursor update");
+        }
+
+        try {
+            if (! flock($h, LOCK_EX)) {
+                throw new \RuntimeException("bridge: failed to lock {$path} for a seen-cursor update");
+            }
+
+            rewind($h);
+            $current = self::decodeSeen((string) stream_get_contents($h));
+            $next = $transform($current);
+
+            if ($next === $current) {
+                return;   // unchanged — don't churn the cursor's mtime
+            }
+
+            rewind($h);
+            if (ftruncate($h, 0) === false
+                || fwrite($h, (string) json_encode($next, JSON_UNESCAPED_SLASHES)) === false) {
+                throw new \RuntimeException("bridge: failed to write {$path} seen-cursor");
+            }
+            fflush($h);
+        } finally {
+            @flock($h, LOCK_UN);
+            @fclose($h);
+        }
     }
 
     public static function sanitizeAgent(string $agent): string
