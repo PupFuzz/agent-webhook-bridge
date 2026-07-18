@@ -3,12 +3,12 @@
 namespace Tests\Feature\Retention;
 
 use App\Bridge\Retention\RetentionGate;
+use App\Bridge\Support\BridgePaths;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -185,15 +185,29 @@ class RetentionGateTest extends TestCase
         $this->assertDatabaseHas('webhook_events', ['id' => $old->id]);
     }
 
+    /**
+     * Force a real prune failure, driver-independently and WITHOUT DDL: a directory
+     * where {@see BridgePaths::filterJsonlLocked} expects a file
+     * makes its `fopen()` fail, so the inbox leg throws (after the DB leg deletes).
+     *
+     * NOT `Schema::drop('webhook_events')`: on MariaDB that FK-errors (agent_dispatches
+     * references it) AND, being DDL, implicitly commits the RefreshDatabase transaction
+     * — dropping the table for every later test and leaking this test's rows into them.
+     * A filesystem failure has neither hazard and behaves identically on SQLite/MariaDB.
+     */
+    private function forcePruneToThrow(): void
+    {
+        File::makeDirectory($this->dir.'/state/inbox.jsonl');
+    }
+
     public function test_a_failing_prune_never_escapes_the_callback(): void
     {
         // An escaping throw would surface as a fatal after the response, in the one
         // process nobody watches — and retention is never worth failing a webhook
-        // over: a 5xx makes the provider redeliver, compounding whatever broke.
-        // The DB genuinely going away is the real version of this, so use it rather
-        // than a double (RetentionService is final by design).
+        // over: a 5xx makes the provider redeliver, compounding whatever broke. Use a
+        // real failure (a broken inbox path), not a double — RetentionService is final.
         $this->agedEvent(40);
-        Schema::drop('webhook_events');
+        $this->forcePruneToThrow();
         Log::spy();
 
         $this->fire();   // must not throw
@@ -212,7 +226,7 @@ class RetentionGateTest extends TestCase
         // state. Without this, a check that fails cannot be distinguished from one that
         // never ran.
         $this->agedEvent(40);
-        Schema::drop('webhook_events');
+        $this->forcePruneToThrow();
 
         $this->fire();
 
