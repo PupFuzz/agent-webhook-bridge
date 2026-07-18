@@ -153,7 +153,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         try {
             $card = $client->getCard($cardId);
         } catch (RequestException $e) {
-            if ($this->isPermanent($e)) {
+            if (RefusalContext::isPermanent($e)) {
                 Log::warning('kanban_move_card: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)', ['card_id' => $cardId] + RefusalContext::from($e));
                 $this->alerts->notify($repo, $outcome, $cardId, 'getcard_4xx');
 
@@ -269,7 +269,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         try {
             $client->moveCard($cardId, $stageId);
         } catch (RequestException $e) {
-            if ($this->isPermanent($e)) {
+            if (RefusalContext::isPermanent($e)) {
                 // A 4xx is a PERMANENT refusal (authz, a stage not on the board, a
                 // deleted card, …): log + no-op rather than 5xx-storm. Hand over what
                 // the server actually said (`body`) instead of guessing the cause —
@@ -371,7 +371,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $client->stampCorrelationRefs($cardId, $refs);
             Log::info('kanban_move_card: stamped correlation refs', ['card_id' => $cardId, 'refs' => array_keys($refs)]);
         } catch (RequestException $e) {
-            if ($this->isPermanent($e)) {
+            if (RefusalContext::isPermanent($e)) {
                 Log::warning('kanban_move_card: stamp refused by kanban (4xx) — skipping (see `body` for the reason kanban gave)', ['card_id' => $cardId] + RefusalContext::from($e));
 
                 return;
@@ -503,13 +503,5 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         }
 
         return $positions === [] ? null : min($positions);
-    }
-
-    /** A 4xx is a permanent refusal (don't retry); 5xx/timeout/connection is transient. */
-    private function isPermanent(RequestException $e): bool
-    {
-        $status = $e->response->status();
-
-        return $status >= 400 && $status < 500;
     }
 }

@@ -86,7 +86,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         try {
             $card = $client->getCard($cardId);
         } catch (RequestException $e) {
-            if ($this->isPermanent($e)) {
+            if (RefusalContext::isPermanent($e)) {
                 Log::warning('kanban_block_reason: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)', ['card_id' => $cardId] + RefusalContext::from($e));
 
                 return;
@@ -131,7 +131,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         try {
             $client->setBlockReason($cardId, $reason);
         } catch (RequestException $e) {
-            if ($this->isPermanent($e)) {
+            if (RefusalContext::isPermanent($e)) {
                 Log::warning('kanban_block_reason: setBlockReason refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)', ['card_id' => $cardId] + RefusalContext::from($e));
 
                 return;
@@ -139,13 +139,5 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             throw $e;   // transient → 5xx → retry (add-if-missing / clear-if-ours is idempotent)
         }
         Log::info('kanban_block_reason: '.$action, ['card_id' => $cardId, 'board' => $mapping->boardId, 'repo' => $repo]);
-    }
-
-    /** A 4xx is a permanent refusal (don't retry); 5xx/timeout/connection is transient. */
-    private function isPermanent(RequestException $e): bool
-    {
-        $status = $e->response->status();
-
-        return $status >= 400 && $status < 500;
     }
 }
