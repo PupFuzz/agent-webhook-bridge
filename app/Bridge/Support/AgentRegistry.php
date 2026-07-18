@@ -233,12 +233,7 @@ final class AgentRegistry
                 continue;
             }
             $login = $s['github_login'] ?? null;
-            $agentNames = isset($s['agents']) && is_array($s['agents'])
-                ? array_values(array_filter(array_map(
-                    fn ($n) => is_scalar($n) ? (string) $n : null,
-                    $s['agents'],
-                )))
-                : [];
+            $agentNames = array_values(array_filter(StringList::coerce($s['agents'] ?? null)));
             $shared[] = new SharedIdentity(
                 githubUserId: (int) $guid,
                 githubLogin: is_scalar($login) ? (string) $login : null,

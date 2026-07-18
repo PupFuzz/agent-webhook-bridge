@@ -47,10 +47,7 @@ final class SubscriptionConfig
         if (! is_array($eventFilterRaw)) {
             throw new ConfigException('subscription.event_filter must be a list');
         }
-        $eventFilter = array_values(array_map(
-            fn (mixed $e): string => is_scalar($e) ? (string) $e : '',
-            $eventFilterRaw,
-        ));
+        $eventFilter = StringList::coerce($eventFilterRaw);
 
         $out = [];
         foreach (array_values($scopes) as $idx => $scope) {

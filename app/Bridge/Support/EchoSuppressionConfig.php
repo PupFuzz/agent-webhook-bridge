@@ -27,24 +27,9 @@ final class EchoSuppressionConfig
     public static function fromArray(array $data): self
     {
         return new self(
-            treatAsEcho: self::stringList($data['treat_as_echo'] ?? []),
-            treatAsSignal: self::stringList($data['treat_as_signal'] ?? []),
-            treatAsEchoIds: self::stringList($data['treat_as_echo_ids'] ?? []),
+            treatAsEcho: StringList::coerce($data['treat_as_echo'] ?? []),
+            treatAsSignal: StringList::coerce($data['treat_as_signal'] ?? []),
+            treatAsEchoIds: StringList::coerce($data['treat_as_echo_ids'] ?? []),
         );
-    }
-
-    /**
-     * @return list<string>
-     */
-    private static function stringList(mixed $value): array
-    {
-        if (! is_array($value)) {
-            return [];
-        }
-
-        return array_values(array_map(
-            fn (mixed $x): string => is_scalar($x) ? (string) $x : '',
-            $value,
-        ));
     }
 }
