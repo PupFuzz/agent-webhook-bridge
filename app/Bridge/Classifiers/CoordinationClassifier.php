@@ -763,8 +763,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
 
         // Own gate: the repo must opt into coord-card creation. Loaded like the
         // PR-move classifier does — absent mapping / opt-out ⇒ byte-identical no-op.
-        $configDir = (string) config('bridge.config_dir');
-        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $writeback = WritebackConfig::loadDefault();
         $mapping = $writeback?->mappingFor($ctx->scopeId);
         if ($mapping === null || ! $mapping->createCoordCards) {
             return null;
@@ -846,8 +845,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         // under population=all, where the handler correlates it by github_issue by-ref.
         $sid = $this->stableId($title, $num);
 
-        $configDir = (string) config('bridge.config_dir');
-        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $writeback = WritebackConfig::loadDefault();
         $mapping = $writeback?->mappingFor($ctx->scopeId);
         if ($mapping === null || ! $mapping->moveCoordCards) {
             return null;

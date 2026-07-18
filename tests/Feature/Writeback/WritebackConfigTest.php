@@ -763,4 +763,47 @@ class WritebackConfigTest extends TestCase
         $this->expectException(ConfigException::class);
         WritebackConfig::load($this->dir);
     }
+
+    // loadDefault() — the shared config('bridge.config_dir') → load() resolve every
+    // event-time caller repeats (handlers + writeback classifiers). Each caller keeps
+    // its own fail branch; loadDefault only folds the resolve.
+
+    public function test_load_default_returns_null_when_config_dir_unset(): void
+    {
+        config(['bridge.config_dir' => '']);
+        $this->assertNull(WritebackConfig::loadDefault());
+    }
+
+    public function test_load_default_returns_null_when_writeback_json_absent(): void
+    {
+        // config_dir set, but no writeback.json in it ⇒ writeback disabled.
+        config(['bridge.config_dir' => $this->dir]);
+        $this->assertNull(WritebackConfig::loadDefault());
+    }
+
+    public function test_load_default_loads_from_configured_dir(): void
+    {
+        $this->write(json_encode([
+            'identity_id' => 4242,
+            'mappings' => [
+                'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52, 'merged_to_main' => 53]],
+            ],
+        ]));
+        config(['bridge.config_dir' => $this->dir]);
+
+        $cfg = WritebackConfig::loadDefault();
+        $this->assertNotNull($cfg);
+        $this->assertSame(4242, $cfg->identityId);
+        $this->assertSame(8, $cfg->mappingFor('owner/repo')->boardId);
+    }
+
+    public function test_load_default_propagates_config_exception_on_malformed_file(): void
+    {
+        // The fail branch every caller relies on: a malformed writeback.json still
+        // throws through loadDefault (fail-closed), it is not swallowed to null.
+        $this->write('not json');
+        config(['bridge.config_dir' => $this->dir]);
+        $this->expectException(ConfigException::class);
+        WritebackConfig::loadDefault();
+    }
 }
