@@ -153,7 +153,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             }
         } catch (RequestException $e) {
             // A kanban 4xx is permanent (log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
-            if ($this->isPermanent($e)) {
+            if (RefusalContext::isPermanent($e)) {
                 Log::warning('kanban_dependabot_card: kanban refused (4xx) — ignoring (see `body` for the reason kanban gave)', ['repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e));
 
                 return;
@@ -232,12 +232,5 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
         $repoName = basename($repo);
 
         return strtr($template, ['{n}' => (string) $prNumber, '{pr_number}' => (string) $prNumber, '{repo}' => $repoName]);
-    }
-
-    private function isPermanent(RequestException $e): bool
-    {
-        $status = $e->response->status();
-
-        return $status >= 400 && $status < 500;
     }
 }

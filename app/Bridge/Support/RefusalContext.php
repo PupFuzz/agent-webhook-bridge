@@ -44,6 +44,19 @@ final class RefusalContext
     }
 
     /**
+     * Whether a kanban refusal is PERMANENT (a 4xx the client caused) rather than
+     * retryable. Load-bearing: a permanent refusal is swallowed + logged with a
+     * {@see self::from()} context, while a non-permanent one (5xx / transport) is
+     * rethrown so the receiver returns 5xx and kanban re-delivers the webhook.
+     */
+    public static function isPermanent(RequestException $e): bool
+    {
+        $status = $e->response->status();
+
+        return $status >= 400 && $status < 500;
+    }
+
+    /**
      * Redact credential-adjacent values a kanban error body — or an echoed request
      * inside it — could carry: JSON values of a sensitive key, query/form `key=value`
      * pairs, and `Bearer`/`Basic`/`token` auth-scheme values.

@@ -107,7 +107,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
                 try {
                     $this->moveOne($client, $mapping, $id, $disposition, $sid, $repo, $issueNumber);
                 } catch (RequestException $e) {
-                    if ($this->isPermanent($e)) {
+                    if (RefusalContext::isPermanent($e)) {
                         Log::warning('kanban_coord_card_move: kanban refused (4xx) for this card — skipping it (see `body` for the reason kanban gave)', ['card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e));
 
                         continue;
@@ -117,7 +117,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             }
         } catch (RequestException $e) {
             // The cardsByTag read itself: 4xx permanent (log + no-op), 5xx transient (throw → retry).
-            if ($this->isPermanent($e)) {
+            if (RefusalContext::isPermanent($e)) {
                 Log::warning('kanban_coord_card_move: kanban refused (4xx) — ignoring (see `body` for the reason kanban gave)', ['repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e));
 
                 return;
@@ -166,12 +166,5 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         }
         $client->moveCard($id, (int) $mapping->coordCardStageId);
         Log::info('kanban_coord_card_move: revived', ['card_id' => $id, 'stage' => $mapping->coordCardStageId, 'sid' => $sid, 'issue' => $issueNumber]);
-    }
-
-    private function isPermanent(RequestException $e): bool
-    {
-        $status = $e->response->status();
-
-        return $status >= 400 && $status < 500;
     }
 }

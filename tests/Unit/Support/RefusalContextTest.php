@@ -102,4 +102,26 @@ class RefusalContextTest extends TestCase
 
         $this->assertStringNotContainsString('ghp_LEAKEDTOKEN', $ctx['body']);
     }
+
+    /**
+     * @return list<array{0: int, 1: bool}>
+     */
+    public static function statuses(): array
+    {
+        return [
+            'lower 4xx boundary' => [400, true],
+            'not-found' => [404, true],
+            'unprocessable' => [422, true],
+            'upper 4xx boundary' => [499, true],
+            'lower 5xx boundary — retryable' => [500, false],
+            'bad gateway — retryable' => [502, false],
+            'service unavailable — retryable' => [503, false],
+        ];
+    }
+
+    #[DataProvider('statuses')]
+    public function test_is_permanent_classifies_4xx_as_permanent_and_5xx_as_retryable(int $status, bool $expected): void
+    {
+        $this->assertSame($expected, RefusalContext::isPermanent($this->exception('{}', $status)));
+    }
 }
