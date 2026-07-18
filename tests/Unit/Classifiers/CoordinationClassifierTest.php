@@ -142,6 +142,91 @@ class CoordinationClassifierTest extends TestCase
         $this->assertNull($r->reattributedActor);
     }
 
+    // ---- coord-message: coord_non_addressed_disposition (DL-215) ----
+    //
+    // Sibling of impl_non_wake_disposition: the recipient gate softens from
+    // gate-drop (default) to durable inbox-stage-without-wake, the PM completeness
+    // backstop that doesn't depend on live-wake.
+
+    public function test_coord_non_addressed_default_drops(): void
+    {
+        // DEFAULT `drop`: a non-addressed coord event yields no intent — byte-identical
+        // to pre-seam behavior (the existing not-addressed-is-dropped path, no config).
+        $r = $this->classify('issues.opened', $this->issue(4, ['to:someone-else', 'from:other']), 'org/coord');
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_coord_non_addressed_inbox_stage_stages_without_wake(): void
+    {
+        // inbox_stage: the same non-addressed event stages a normal coord Intent with
+        // NO channel_push — a durable inbox record, never a live wake.
+        $r = $this->classify('issues.opened', $this->issue(4, ['to:someone-else', 'from:other'], 'FROM: other'), 'org/coord',
+            classifierConfig: ['coord_non_addressed_disposition' => 'inbox_stage']);
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('coord_issue', $r->intents[0]->kind);
+        $this->assertSame([], $r->targets);   // inbox only, no channel_push
+        $this->assertSame('other', $r->reattributedActor?->name);  // reattribution still runs
+    }
+
+    public function test_coord_addressed_still_wakes_under_inbox_stage(): void
+    {
+        // The seam softens ONLY the non-addressed path; an addressed event still live-wakes.
+        $r = $this->classify('issues.opened', $this->issue(4, ['to:me', 'from:other'], 'FROM: other'), 'org/coord',
+            classifierConfig: ['coord_non_addressed_disposition' => 'inbox_stage']);
+
+        $this->assertCount(1, $r->intents);
+        $this->assertCount(1, $r->targets);   // wake preserved
+    }
+
+    public function test_coord_non_addressed_comment_addressed_elsewhere_inbox_staged(): void
+    {
+        // A comment whose body TO: names someone else NARROWS the wake (no push) but is
+        // still a coordination event — inbox_stage stages it as the durable backstop.
+        $r = $this->classify('issue_comment.created', $this->comment(9, ['from:other'], 'TO: third-party'), 'org/coord',
+            classifierConfig: ['coord_non_addressed_disposition' => 'inbox_stage']);
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('coord_comment', $r->intents[0]->kind);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_coord_non_addressed_inbox_stage_still_drops_noise_and_non_subject(): void
+    {
+        // The earlier drops (a non-coordination action, a drop_title_all_of noise title)
+        // still fire under inbox_stage — the seam only softens the RECIPIENT gate.
+        $noSubject = $this->classify('issues.closed', $this->issue(4, ['to:someone-else']), 'org/coord',
+            classifierConfig: ['coord_non_addressed_disposition' => 'inbox_stage']);
+        $this->assertSame([], $noSubject->intents);   // issues.closed is not a handled coord action
+
+        $noise = $this->classify('issues.opened', $this->issue(4, ['to:someone-else'], '', 'Rule E back-merge paper-trail anchor'), 'org/coord',
+            classifierConfig: ['coord_non_addressed_disposition' => 'inbox_stage', 'drop_title_all_of' => [['back-merge', 'paper-trail']]]);
+        $this->assertSame([], $noise->intents);   // dropped before the recipient gate
+    }
+
+    public function test_coord_non_addressed_inbox_stage_on_route_intents_stages_intent(): void
+    {
+        // Under route_intents:true the intent is still staged (routing owns waking); the
+        // seam widens WHICH events reach the inbox, never adds a hand-emit.
+        $r = $this->classify('issues.opened', $this->issue(4, ['to:someone-else', 'from:other']), 'org/coord',
+            classifierConfig: ['coord_non_addressed_disposition' => 'inbox_stage'], routeIntents: true);
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_coord_non_addressed_unknown_value_falls_back_to_drop(): void
+    {
+        // Any value other than inbox_stage ⇒ drop (mirrors impl_non_wake_disposition).
+        $r = $this->classify('issues.opened', $this->issue(4, ['to:someone-else']), 'org/coord',
+            classifierConfig: ['coord_non_addressed_disposition' => 'bogus']);
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
     // ---- family gating ----
 
     public function test_impl_ci_family_off_by_default(): void
