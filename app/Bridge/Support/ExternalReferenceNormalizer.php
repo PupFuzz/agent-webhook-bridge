@@ -25,10 +25,13 @@ class ExternalReferenceNormalizer
 
     public const SYSTEM_GITHUB_PR = 'github_pr';
 
+    public const SYSTEM_GITHUB_ISSUE = 'github_issue';
+
     /** Display custom-field key → external-reference system slug. */
     private const PAYLOAD_KEY_TO_SYSTEM = [
         'dl_number' => self::SYSTEM_DL,
         'pr_number' => self::SYSTEM_GITHUB_PR,
+        'issue_number' => self::SYSTEM_GITHUB_ISSUE,
     ];
 
     /**
@@ -44,6 +47,7 @@ class ExternalReferenceNormalizer
     private const NUMERIC_SYSTEMS = [
         self::SYSTEM_DL,
         self::SYSTEM_GITHUB_PR,
+        self::SYSTEM_GITHUB_ISSUE,
     ];
 
     private const REF_MAX = 255;
@@ -63,8 +67,8 @@ class ExternalReferenceNormalizer
     /**
      * The card's source repo (`owner/repo`) used to repo-qualify its refs on a
      * multi-repo board (DL-163), or null when the card carries no parseable
-     * source. A source applies to ALL of a card's refs (`dl` + `github_pr`) — a
-     * card tracks one repo. Preference order:
+     * source. A source applies to ALL of a card's refs (`dl` + `github_pr` +
+     * `github_issue`) — a card tracks one repo. Preference order:
      *   1. explicit `payload.repo`,
      *   2. a GitHub URL in a payload key ({@see SOURCE_URL_KEYS}),
      *   3. the card's top-level `external_link` (the canonical kanban field for

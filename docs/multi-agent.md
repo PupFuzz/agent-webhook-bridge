@@ -209,7 +209,7 @@ When `pm`'s classifier throws on event N, `pm`'s `agent_dispatches` row records 
 
 ### Retention
 
-`webhook_events` rows are the audit/replay store; there is no retention command in v0.12 — add a scheduled DB job for age-based cleanup. `agent_dispatches` rows cascade-delete with their parent `webhook_event`.
+`webhook_events` rows are the audit/replay store. **Retention is automatic and needs no scheduled job** (DL-199): the receiver prunes its own stores after each response, bounded, `bridge.retention.*`, on by default. `bridge:prune` is the manual entry point for a one-off or an unbounded drain. `agent_dispatches` rows cascade-delete with their parent `webhook_event`. Retention is install-wide, not per-agent — one gate prunes the shared stores regardless of how many agents the install serves.
 
 ## Per-agent surfacing (one install, N agents)
 
@@ -308,7 +308,7 @@ channel:
   route_intents: true
 ```
 
-`route_intents: true` makes the dispatcher push every staged intent to the agent's `channel.socket`/`channel.url` (best-effort — a connection-refused is recorded as a note, the durable inbox backstop still holds the intent). It's the config-driven form of `EventDrivenClassifier`; **use it OR an `EventDrivenClassifier`, not both**, or each event pushes twice. `channel.socket` and `channel.url` are mutually exclusive, and `route_intents` requires one of them. `channel.auth.token_path` (HTTP transport) attaches `Authorization: Bearer <token>` on the routed push, read fail-closed at push time (must be `0600`, non-empty) — see [`multi-host.md` § Simpler alternative](multi-host.md#simpler-alternative--channelroute_intents-no-classifier-code).
+`route_intents: true` makes the dispatcher push every staged intent to the agent's `channel.socket`/`channel.url` (best-effort — a connection-refused is recorded as a note, the durable inbox backstop still holds the intent). It's the config-driven form of `EventDrivenClassifier`. Pairing it with a shipped hand-emitting classifier (`EventDrivenClassifier`, `CoordinationClassifier`) is safe — those suppress their own `channel_push` under `route_intents:true` (DL-191, DL-208), so you still get one wake per event. Only a **raw custom classifier** that emits `channel_push` without routing through the guarded `InboxOnlyClassifier::wakePush()` double-pushes when paired with `route_intents`. `channel.socket` and `channel.url` are mutually exclusive, and `route_intents` requires one of them. `channel.auth.token_path` (HTTP transport) attaches `Authorization: Bearer <token>` on the routed push, read fail-closed at push time (must be `0600`, non-empty) — see [`multi-host.md` § Simpler alternative](multi-host.md#simpler-alternative--channelroute_intents-no-classifier-code).
 
 ## Multi-agent `channel_push`
 

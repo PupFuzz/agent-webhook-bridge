@@ -95,11 +95,51 @@ final class BridgePaths
         return self::stateDir().'/inbox-seen-'.self::sanitizeAgent($agent).'.json';
     }
 
+    /**
+     * The seen-cursor file for a serving agent (or the shared inbox when null) —
+     * the single home for the cursor-path mapping, so bridge:inbox (writer) and
+     * bridge:prune (retention) can never derive it two different ways:
+     * null → inbox-seen.json, <agent> → inbox-seen-<agent>.json.
+     */
+    public static function seenPath(?string $agent): string
+    {
+        return $agent === null
+            ? self::stateDir().'/inbox-seen.json'
+            : self::agentSeenPath($agent);
+    }
+
+    /**
+     * Read a seen-cursor into a list of ids (missing/garbage → []). One canonical
+     * parse so the writer and the retention prune agree on the shape.
+     *
+     * @return list<string>
+     */
+    public static function readSeen(string $path): array
+    {
+        if (! is_file($path)) {
+            return [];
+        }
+        $decoded = json_decode((string) file_get_contents($path), true);
+
+        return is_array($decoded) ? array_values(array_filter($decoded, 'is_string')) : [];
+    }
+
+    /**
+     * Overwrite a seen-cursor with the given ids. Cursors stay install-user-owned
+     * (not group-shared, unlike per-agent inbox files) — only the process running
+     * bridge:inbox/bridge:prune writes them (DL-006), so no applyInboxPerms here.
+     *
+     * @param  list<string>  $ids
+     */
+    public static function writeSeen(string $path, array $ids): void
+    {
+        self::ensureDir(dirname($path));
+        self::writeFile($path, (string) json_encode($ids, JSON_UNESCAPED_SLASHES), LOCK_EX);
+    }
+
     public static function sanitizeAgent(string $agent): string
     {
-        $clean = preg_replace('/[^a-z0-9_-]+/i', '_', $agent) ?? '';
-
-        return $clean === '' ? 'agent' : $clean;
+        return PathHelper::sanitizeSegment($agent, 'agent');
     }
 
     /**
@@ -225,6 +265,100 @@ final class BridgePaths
             json_encode(self::ksortRecursive($entry), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)."\n",
             FILE_APPEND | LOCK_EX,
         );
+    }
+
+    /**
+     * Where a rewrite's kept-set stops living in memory and spills to a temp file.
+     * Bounds a trim's heap cost independently of how large the inbox grew.
+     */
+    private const REWRITE_SPILL_BYTES = 8 * 1024 * 1024;
+
+    /**
+     * Read-modify-write a state file with an exclusive lock held across the WHOLE
+     * sequence, and hand the raw lines to $transform.
+     *
+     * Why this exists: `readJsonl()` then `writeFile(..., LOCK_EX)` locks only the
+     * write, so a concurrent `appendJsonl()` landing in between is truncated away by
+     * the rewrite — the append returns OK, the receiver acks 200, and the intent is
+     * gone with no redelivery. That is the one outcome the dispatch contract calls
+     * unacceptable (see CLAUDE_ARCHITECTURE.md, treatment B: we would rather 5xx and
+     * be re-delivered than silently lose a staged intent). Reproduced at 150k lines
+     * with a ~330ms window (DL-199).
+     *
+     * `appendJsonl()` takes an advisory `LOCK_EX` on the same inode, so holding it
+     * here serializes the two correctly: an append that arrives mid-rewrite BLOCKS
+     * until the rewrite is done, then lands on the trimmed file. Blocking a
+     * concurrent append briefly is the price of not losing it — and only a pass that
+     * actually drops a line rewrites at all.
+     *
+     * STREAMED, one line at a time, deliberately: slurping the file would make peak
+     * memory scale with it, and this runs under PHP-FPM's `memory_limit` (128M on the
+     * reference install). Exhausting it raises an **E_ERROR**, which is NOT catchable
+     * by the gate's `catch (\Throwable)` — the pass would die after its back-off
+     * marker was already set, so retention would go inert for a day at a time while
+     * `bridge:check` still reported it healthy. That is DL-012's silent-inertness
+     * failure rebuilt inside its own fix, so peak memory is bounded to one line.
+     *
+     * Kept lines are copied VERBATIM rather than re-encoded — nothing here needs to
+     * reformat them, and not touching them cannot corrupt them.
+     *
+     * @param  callable(array<string, mixed>): bool  $keep  per-line predicate
+     * @return array{0:int,1:int} [lines read, lines kept]
+     */
+    public static function filterJsonlLocked(string $path, callable $keep): array
+    {
+        $h = @fopen($path, 'c+');
+        if ($h === false) {
+            throw new \RuntimeException("bridge: failed to open {$path} for rewrite");
+        }
+
+        $tmp = null;
+
+        try {
+            if (! flock($h, LOCK_EX)) {
+                throw new \RuntimeException("bridge: failed to lock {$path} for rewrite");
+            }
+
+            // Spills to a real temp file past the threshold, so the kept set is
+            // bounded on disk, not in the worker's heap.
+            $tmp = fopen('php://temp/maxmemory:'.self::REWRITE_SPILL_BYTES, 'w+');
+            if ($tmp === false) {
+                throw new \RuntimeException('bridge: failed to open a rewrite buffer');
+            }
+
+            $read = 0;
+            $kept = 0;
+            rewind($h);
+            while (($raw = fgets($h)) !== false) {
+                $row = json_decode(rtrim($raw, "\n"), true);
+                if (! is_array($row)) {
+                    continue;   // same posture as readJsonl: undecodable lines are skipped
+                }
+                $read++;
+                if ($keep($row)) {
+                    $kept++;
+                    fwrite($tmp, rtrim($raw, "\n")."\n");
+                }
+            }
+
+            if ($kept === $read) {
+                return [$read, $kept];   // nothing dropped — don't rewrite at all
+            }
+
+            rewind($tmp);
+            if (fseek($h, 0) !== 0 || ftruncate($h, 0) === false || stream_copy_to_stream($tmp, $h) === false) {
+                throw new \RuntimeException("bridge: failed to rewrite {$path}");
+            }
+            fflush($h);
+
+            return [$read, $kept];
+        } finally {
+            if (is_resource($tmp)) {
+                fclose($tmp);
+            }
+            @flock($h, LOCK_UN);
+            @fclose($h);
+        }
     }
 
     /**

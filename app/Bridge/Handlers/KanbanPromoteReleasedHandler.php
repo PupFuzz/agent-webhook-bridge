@@ -195,7 +195,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         try {
             $pr = $github->getPull($repo, $prNumber);
         } catch (RequestException $e) {
-            if ($this->isPermanent($e)) {
+            if (RefusalContext::isPermanent($e)) {
                 Log::warning('kanban_promote_released: getPull refused (4xx) — skipping card (see `body`)', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e));
 
                 return false;
@@ -212,7 +212,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         try {
             $status = $github->compareStatus($repo, $pr['merge_commit_sha'], PrOutcome::RELEASE_BASE);
         } catch (RequestException $e) {
-            if ($this->isPermanent($e)) {
+            if (RefusalContext::isPermanent($e)) {
                 Log::warning('kanban_promote_released: compareStatus refused (4xx) — skipping card (see `body`)', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e));
 
                 return false;
@@ -229,7 +229,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         try {
             $kanban->moveCard($cardId, $released);
         } catch (RequestException $e) {
-            if ($this->isPermanent($e)) {
+            if (RefusalContext::isPermanent($e)) {
                 Log::warning('kanban_promote_released: kanban refused the move (4xx) — skipping card (see `body`)', ['card_id' => $cardId, 'stage' => $released] + RefusalContext::from($e));
 
                 return false;
@@ -255,13 +255,5 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             TrackedRefKind::PrUrl => $ref->canonRepo === $refs->canonicalizeSource($repo) ? $ref->prNumber : null,
             default => null,
         };
-    }
-
-    /** A 4xx is a permanent refusal (don't retry); 5xx/timeout/connection is transient. */
-    private function isPermanent(RequestException $e): bool
-    {
-        $status = $e->response->status();
-
-        return $status >= 400 && $status < 500;
     }
 }

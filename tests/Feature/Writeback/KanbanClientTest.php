@@ -236,6 +236,24 @@ class KanbanClientTest extends TestCase
         $this->assertSame([], $this->client('ref')->correlateDl(8, 'DL-1'));
     }
 
+    public function test_ref_correlate_issue_queries_by_ref_with_github_issue_system(): void
+    {
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['data' => [['id' => 4642]]])]);
+
+        $this->assertSame([4642], $this->client('ref')->correlateIssue(8, 990001));
+        Http::assertSent(fn (Request $r) => str_contains(urldecode($r->url()), 'system=github_issue')
+            && str_contains(urldecode($r->url()), 'ref=990001'));
+    }
+
+    public function test_ref_correlate_issue_passes_repo_as_canonical_source(): void
+    {
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['data' => [['id' => 7]]])]);
+
+        $this->client('ref')->correlateIssue(8, 300, 'Octo/Web');
+        Http::assertSent(fn (Request $r) => str_contains(urldecode($r->url()), 'system=github_issue')
+            && str_contains(urldecode($r->url()), 'source=octo/web'));
+    }
+
     public function test_ref_correlate_passes_repo_as_canonical_source_qualifier(): void
     {
         // DL-167: on a multi-repo board, the repo is sent as the kanban `source`

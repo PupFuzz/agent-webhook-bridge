@@ -331,6 +331,50 @@ class WritebackConfigTest extends TestCase
         $this->assertFalse(WritebackConfig::load($this->dir)->mappingFor('o/r')->reviveOnReopen);
     }
 
+    public function test_absent_issue_population_defaults_to_prefixed(): void
+    {
+        $this->write(json_encode(['mappings' => ['o/r' => ['board_id' => 8, 'stages' => ['opened' => 50]]]]));
+        $this->assertSame('prefixed', WritebackConfig::load($this->dir)->mappingFor('o/r')->issuePopulation);
+    }
+
+    public function test_issue_population_parses_all(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'issue_population' => 'all'],
+        ]]));
+        $this->assertSame('all', WritebackConfig::load($this->dir)->mappingFor('o/r')->issuePopulation);
+    }
+
+    public function test_issue_population_parses_explicit_prefixed(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'issue_population' => 'prefixed'],
+        ]]));
+        $this->assertSame('prefixed', WritebackConfig::load($this->dir)->mappingFor('o/r')->issuePopulation);
+    }
+
+    public function test_unknown_issue_population_value_throws(): void
+    {
+        // Fail-closed: an unrecognized population must not silently degrade to prefixed
+        // (which would leave an operator who typed 'everything' thinking non-prefixed
+        // issues are carded when they are not).
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'issue_population' => 'everything'],
+        ]]));
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessageMatches('/issue_population/');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_non_string_issue_population_throws(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'issue_population' => true],
+        ]]));
+        $this->expectException(ConfigException::class);
+        WritebackConfig::load($this->dir);
+    }
+
     public function test_malformed_json_is_fail_closed(): void
     {
         $this->write('not json {');

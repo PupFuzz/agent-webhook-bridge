@@ -112,6 +112,17 @@ final class ClassifierConfig
     }
 
     /**
+     * Whether a top-level config key is explicitly present — lets a preflight
+     * distinguish "the operator set this narrow" from "unset, so the default applies"
+     * (e.g. a warn that fires only for an explicit `wake_membership` missing a value
+     * the default would otherwise supply).
+     */
+    public function has(string $key): bool
+    {
+        return array_key_exists($key, $this->raw);
+    }
+
+    /**
      * A list of "phrase groups" at a top-level config key — each group a list of
      * non-empty substrings, lowercased for case-insensitive matching. A subject
      * matches a group when it contains EVERY substring of that group (AND within a

@@ -223,9 +223,13 @@ final class DispatchService
             // EventDrivenClassifier, for fan-out where an agent is remote/idle.
             // The debounceKey is namespaced ('channel_push:<subject>') so a routed
             // push never clobbers an unrelated classifier target on the same
-            // subject; it coalesces per subject like EventDrivenClassifier. (Pair
-            // route_intents with a plain inbox classifier, not EventDriven, or you
-            // get two pushes per event.)
+            // subject; it coalesces per subject like EventDrivenClassifier. The
+            // shipped hand-emitting classifiers (EventDriven, Coordination) route
+            // their channel_push through the guarded InboxOnlyClassifier::wakePush(),
+            // which suppresses the hand-emit under route_intents (DL-191, DL-208) —
+            // so pairing them with route_intents is safe (one wake). Only a RAW
+            // custom classifier that emits channel_push WITHOUT wakePush() would
+            // double-push here (distinct debounceKeys ⇒ both survive coalescing).
             if ($agent->channel->routeIntents) {
                 foreach ($result->intents as $intent) {
                     $routed = ReactionTarget::make(

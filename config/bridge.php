@@ -111,6 +111,53 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Retention (DL-199) — event-gated, after-response, bounded
+    |--------------------------------------------------------------------------
+    |
+    | DL-012 shipped `bridge:prune` and scheduled it NOWHERE: across three installs
+    | it had never run once, and the append-only stores grew for ~45 days. So
+    | retention runs off the inbound webhook itself — webhook_events grows ONLY on
+    | arrival, and the gate is evaluated ON arrival, so the creator IS the
+    | gate-evaluator and a silent install (which accrues nothing) needs no prune.
+    | That removes the cron exception rather than adding a daemon.
+    |
+    | ⚠ `enabled` defaults TRUE: an upgrade starts pruning without operator action.
+    | That is deliberate (a default nobody sets is exactly why DL-012 never ran) —
+    | set BRIDGE_RETENTION_ENABLED=false to opt out. See docs/CHANGELOG.md.
+    |
+    | The windows are STRINGS in the same vocabulary as the `bridge:prune` options
+    | ("30d" / "30"), parsed by the one RetentionService guard, so a config window
+    | and a CLI window cannot diverge. An unparseable window prunes NOTHING (a
+    | permissive fallback here would mean deleting on a fat-fingered value);
+    | `bridge:check` reports it at preflight.
+    |
+    | null_payloads_older_than defaults empty ⇒ that leg is OFF: it is an optional
+    | space optimization for a large store, not part of the growth fix.
+    |
+    | interval — seconds between passes in the drained steady state (default 24h),
+    | so at most one request per day pays anything at all. batch — max rows one
+    | pass touches per leg; while a backlog remains the gate keeps draining on
+    | successive receives instead of waiting out the interval (that is what makes a
+    | 20k-row backlog drain in hours rather than 40 days), so `interval` governs the
+    | CLEAN steady state and `batch` bounds any single request.
+    |
+    */
+
+    'retention' => [
+        'enabled' => (bool) env('BRIDGE_RETENTION_ENABLED', true),
+        'interval' => (int) env('BRIDGE_RETENTION_INTERVAL', 86400),
+        // ⚠ The windows are deliberately NOT cast. `env()` coerces the literal
+        // `true` to a BOOL, and `(string) true` is `'1'` — which parses as a valid
+        // ONE-DAY window and silently deletes 29 days more than intended. A bool is
+        // plausible here precisely because the sibling key above IS one. Uncast, a
+        // non-string reaches RetentionConfig and is refused as a type error.
+        'older_than' => env('BRIDGE_RETENTION_OLDER_THAN', '30d'),
+        'null_payloads_older_than' => env('BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN', ''),
+        'batch' => (int) env('BRIDGE_RETENTION_BATCH', 500),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Runtime-state directory
     |--------------------------------------------------------------------------
     |

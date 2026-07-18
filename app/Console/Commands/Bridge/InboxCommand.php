@@ -35,10 +35,10 @@ class InboxCommand extends BridgeCommand
     public function handle(): int
     {
         $agent = $this->resolveAgent();
-        $seenPath = $this->seenPath($agent);
+        $seenPath = BridgePaths::seenPath($agent);
 
         $lines = BridgePaths::agentInboxLines($agent);
-        $seen = $this->readSeen($seenPath);
+        $seen = BridgePaths::readSeen($seenPath);
 
         // Collapse duplicate ids among the unseen lines (keep first): the
         // writer no longer dedups before appending (DL-012), so a partial-
@@ -73,9 +73,7 @@ class InboxCommand extends BridgeCommand
         $reachesConsumer = $hookEvent === null || in_array($hookEvent, self::ADDITIONAL_CONTEXT_EVENTS, true);
         if ($reachesConsumer && ! $this->option('no-cursor-advance')) {
             $newIds = array_map(fn (array $line) => (string) $line['id'], $unseen);
-            // Seen-cursors stay install-user-owned (not group-shared) — only the
-            // process running bridge:inbox writes them (DL-006).
-            $this->writeSeen($seenPath, array_values(array_unique([...$seen, ...$newIds])));
+            BridgePaths::writeSeen($seenPath, array_values(array_unique([...$seen, ...$newIds])));
         }
 
         return self::SUCCESS;
@@ -94,13 +92,6 @@ class InboxCommand extends BridgeCommand
         $default = config('bridge.default_agent');
 
         return is_string($default) && $default !== '' ? $default : null;
-    }
-
-    private function seenPath(?string $agent): string
-    {
-        return $agent === null
-            ? BridgePaths::stateDir().'/inbox-seen.json'
-            : BridgePaths::agentSeenPath($agent);
     }
 
     /**
@@ -141,28 +132,6 @@ class InboxCommand extends BridgeCommand
         }
 
         return implode("\n", $out);
-    }
-
-    /**
-     * @return list<string>
-     */
-    private function readSeen(string $path): array
-    {
-        if (! is_file($path)) {
-            return [];
-        }
-        $decoded = json_decode((string) file_get_contents($path), true);
-
-        return is_array($decoded) ? array_values(array_filter($decoded, 'is_string')) : [];
-    }
-
-    /**
-     * @param  list<string>  $ids
-     */
-    private function writeSeen(string $path, array $ids): void
-    {
-        BridgePaths::ensureDir(dirname($path));
-        BridgePaths::writeFile($path, (string) json_encode($ids, JSON_UNESCAPED_SLASHES), LOCK_EX);
     }
 
     private function readHookEvent(): ?string

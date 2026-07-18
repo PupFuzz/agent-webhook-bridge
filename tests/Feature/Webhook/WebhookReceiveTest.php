@@ -4,6 +4,7 @@ namespace Tests\Feature\Webhook;
 
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Tests\TestCase;
 
@@ -90,6 +91,76 @@ class WebhookReceiveTest extends TestCase
         ]);
 
         $response->assertStatus(200)->assertSee('ok');
+    }
+
+    private function agedEvent(string $deliveryId): WebhookEvent
+    {
+        $e = WebhookEvent::create([
+            'delivery_id' => $deliveryId, 'provider' => 'kanban', 'scope_id' => '5',
+            'event_type' => 'task.moved', 'payload' => ['a' => 1],
+        ]);
+        $e->received_at = now()->subDays(40);   // NOT fillable — must be set post-create
+        $e->save();
+
+        return $e;
+    }
+
+    private function enableRetention(): void
+    {
+        config([
+            'bridge.retention.enabled' => true,
+            'bridge.retention.older_than' => '30d',
+            'bridge.retention.interval' => 86400,
+            'bridge.retention.batch' => 500,
+            'bridge.state_dir' => $this->secretDir.'/state',
+        ]);
+        Cache::flush();
+    }
+
+    public function test_a_delivery_defers_retention_to_the_terminating_phase(): void
+    {
+        // The controller must not prune inline: every webhook would then wait behind
+        // a DELETE, which is the DL-001 latency regression DL-199 forbids.
+        //
+        // Terminating callbacks run in registration order, so a spy registered BEFORE
+        // the request observes the world as the terminating phase begins. The aged row
+        // still being there proves receive() only QUEUED the work.
+        //
+        // What this does NOT prove: that the response reached the client first. That
+        // is fastcgi_finish_request(), an FPM property no PHPUnit test can observe —
+        // it is verified against the running dev bridge instead (DL-199 step 5).
+        $this->enableRetention();
+        $aged = $this->agedEvent('aged-1');
+        $existedWhenTerminatingBegan = null;
+        $this->app->terminating(function () use ($aged, &$existedWhenTerminatingBegan) {
+            $existedWhenTerminatingBegan = WebhookEvent::whereKey($aged->id)->exists();
+        });
+
+        $body = $this->kanbanBody();
+        $this->postWebhook('/webhooks/kanban?b=5', $body, [
+            'X-Kanban-Signature' => $this->sign($body, $this->kanbanSecret),
+        ])->assertStatus(200);
+
+        $this->assertTrue($existedWhenTerminatingBegan, 'retention ran inline instead of after the response');
+        $this->assertDatabaseMissing('webhook_events', ['id' => $aged->id]);   // and it DID run
+    }
+
+    public function test_a_ping_does_not_schedule_retention(): void
+    {
+        // A ping stores no event, so it grows nothing and must not trigger a pass —
+        // the gate keys off the arrival that CREATES, not any arrival. (GitHub is the
+        // only provider with a real ping; KanbanAdapter::isPing() is always false.)
+        $this->enableRetention();
+        $aged = $this->agedEvent('aged-ping');
+
+        $body = (string) json_encode(['zen' => 'Design for failure.']);
+        $this->postWebhook('/webhooks/github?b=acme-corp/widget', $body, [
+            'X-Hub-Signature-256' => $this->sign($body, 'gh-secret'),
+            'X-GitHub-Delivery' => 'gh-ping-1',
+            'X-GitHub-Event' => 'ping',
+        ])->assertStatus(200)->assertSee('pong');
+
+        $this->assertDatabaseHas('webhook_events', ['id' => $aged->id]);
     }
 
     public function test_bad_signature_is_401(): void

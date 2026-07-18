@@ -118,6 +118,38 @@ class CoordConfigTerminalsTest extends TestCase
         $this->assertSame(["Won't Do"], CoordConfigTerminals::terminalNamesForBoardId($cfg, 9));
     }
 
+    public function test_issue_population_explicit_all_resolves_all(): void
+    {
+        $cfg = ['kanban' => ['boards' => [['board_id' => 8, 'issue_population' => 'all']]]];
+        $this->assertSame(['all'], CoordConfigTerminals::issuePopulationsForBoardId($cfg, 8));
+    }
+
+    public function test_issue_population_absent_key_resolves_prefixed_default(): void
+    {
+        // sola's contract: absent ⇒ prefixed. An entry-present-but-key-absent resolves
+        // 'prefixed', NOT [] — [] is reserved for "no entry for this board" (cannot verify).
+        $cfg = ['kanban' => ['boards' => [['board_id' => 8]]]];
+        $this->assertSame(['prefixed'], CoordConfigTerminals::issuePopulationsForBoardId($cfg, 8));
+    }
+
+    public function test_issue_population_explicit_prefixed_resolves_prefixed(): void
+    {
+        $cfg = ['kanban' => ['boards' => [['board_id' => 8, 'issue_population' => 'prefixed']]]];
+        $this->assertSame(['prefixed'], CoordConfigTerminals::issuePopulationsForBoardId($cfg, 8));
+    }
+
+    public function test_issue_population_no_entry_for_board_is_empty_cannot_verify(): void
+    {
+        $cfg = ['kanban' => ['boards' => [['board_id' => 8, 'issue_population' => 'all']]]];
+        $this->assertSame([], CoordConfigTerminals::issuePopulationsForBoardId($cfg, 999));
+    }
+
+    public function test_issue_population_replace_me_board_is_skipped(): void
+    {
+        $cfg = ['kanban' => ['boards' => [['board_id' => 'REPLACE_ME', 'issue_population' => 'all']]]];
+        $this->assertSame([], CoordConfigTerminals::issuePopulationsForBoardId($cfg, 0));
+    }
+
     public function test_empty_or_missing_kanban_block_resolves_empty(): void
     {
         $this->assertSame([], CoordConfigTerminals::terminalNamesForBoardId([], 2));

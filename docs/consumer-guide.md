@@ -124,7 +124,9 @@ while True:
     time.sleep(1)
 ```
 
-`bridge:inbox` only reads `inbox.jsonl` and tracks seen ids in `inbox-seen.json`; it never rewrites or prunes `inbox.jsonl`. A tail consumer with a byte-offset cursor will not have lines pulled out from under it. To recover a missed dispatch: `php artisan bridge:replay <N>` consults `webhook_events` (the authoritative audit store, never touched by inbox operations) and re-runs dispatch.
+`bridge:inbox` only reads `inbox.jsonl` and tracks seen ids in `inbox-seen.json`; it never rewrites or prunes `inbox.jsonl`.
+
+> **⚠ A byte-offset cursor is NOT safe across retention (changed in DL-199).** Retention now runs automatically off the inbound webhook (`bridge.retention.*`, **on by default**, `older_than` 30d) and **rewrites `inbox*.jsonl` whole-file** to drop aged lines — so the file can SHRINK under a tail consumer, and a byte offset into it then points at the wrong place. This was already possible whenever an operator ran `bridge:prune`; DL-199 makes it the default. **Track position by intent `id`, not by byte offset** (`bridge:inbox`'s own seen-cursor already does exactly this, and is pruned in step with the file). If you must tail by offset, detect truncation (stat the file; if it shrank, re-read from the top and de-dup by `id`) or set `BRIDGE_RETENTION_ENABLED=false` and prune on your own schedule. To recover a missed dispatch: `php artisan bridge:replay <N>` consults `webhook_events` (the authoritative audit store, never touched by inbox operations) and re-runs dispatch.
 
 TypeScript/Bun/Node tail libraries (`tail-file`, `chokidar` + readline) work the same way. File is plain UTF-8 JSONL with `\n` line terminators.
 

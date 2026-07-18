@@ -10,6 +10,7 @@ use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
+use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -44,19 +45,22 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
         $p = $target->payload;
         $repo = $p['repo'] ?? null;
         $issueNumber = $p['issue_number'] ?? null;
-        $sid = $p['sid'] ?? null;
+        $sid = $p['sid'] ?? null;   // null for a non-prefixed issue (#4553 by-ref path)
         $itype = $p['itype'] ?? null;
         $title = $p['title'] ?? null;
+        // sid is NO LONGER always required (#4553): a non-prefixed issue carries an empty
+        // sid legitimately and is correlated by github_issue by-ref. The remaining fields
+        // are always required.
         if (! is_string($repo) || $repo === ''
             || ! is_numeric($issueNumber)
-            || ! is_string($sid) || $sid === ''
             || ! is_string($itype) || $itype === ''
             || ! is_string($title) || $title === '') {
-            Log::warning('kanban_coord_card: malformed payload (repo/issue_number/sid/itype/title); ignoring', ['payload' => $p]);
+            Log::warning('kanban_coord_card: malformed payload (repo/issue_number/itype/title); ignoring', ['payload' => $p]);
 
             return;
         }
         $issueNumber = (int) $issueNumber;
+        $isPrefixed = is_string($sid) && $sid !== '';
 
         $configDir = (string) config('bridge.config_dir');
         $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
@@ -73,15 +77,37 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
             return;
         }
 
-        $tag = "id:{$sid}";
+        // Per-issue correlation keys (#4553). Prefixed → the `id:<sid>` tag (DL-198, shared
+        // with the tag-keyed reconcile). Non-prefixed → the github_issue by-ref key, live
+        // ONLY under population=all. A card created under `all` stamps EVERY eligible key
+        // (tag when prefixed AND issue_number in payload always under `all`), so a prefixed
+        // card is dual-keyed and the prefix-change-between-events edge is covered by the
+        // unified pre-check below.
+        $byRef = $mapping->issuePopulation === WritebackMapping::POPULATION_ALL;
+        if (! $isPrefixed && ! $byRef) {
+            // No derivable correlation key: a null-sid target under population=prefixed. The
+            // classifier never emits this; refuse defensively rather than mint an
+            // uncorrelatable card that would re-create on every redelivery.
+            Log::warning('kanban_coord_card: malformed payload (empty sid with population=prefixed — no correlation key); ignoring', ['payload' => $p]);
+
+            return;
+        }
+
+        $tag = $isPrefixed ? "id:{$sid}" : null;
         $client = WritebackClientFactory::make();   // throws (→ 5xx) on a missing/insecure token
         try {
-            // Idempotency: correlate-before-create by the `id:` tag. Non-empty ⇒ a
-            // card already exists (redelivery, opened+reopened, OR the periodic
-            // reconcile already carded it — both movers key on the SAME tag) → skip.
-            $existing = $client->cardsByTag($mapping->boardId, $tag);
-            if ($existing !== []) {
+            // Unified pre-check: skip if EITHER derivable key already resolves a card. The
+            // tag covers redelivery / opened+reopened / the bridge-vs-reconcile race (both
+            // movers key on the same tag). The by-ref key (under `all`) additionally covers
+            // the non-prefixed population AND the prefix-change edge (a card first created
+            // non-prefixed is dual-discoverable once a later prefixed event stamps the tag).
+            if ($tag !== null && $client->cardsByTag($mapping->boardId, $tag) !== []) {
                 Log::info('kanban_coord_card: card already exists for tag; skipping', ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag]);
+
+                return;
+            }
+            if ($byRef && $client->correlateIssue($mapping->boardId, $issueNumber, $repo) !== []) {
+                Log::info('kanban_coord_card: card already exists for issue by-ref; skipping', ['repo' => $repo, 'issue' => $issueNumber]);
 
                 return;
             }
@@ -91,41 +117,52 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
             // URL. external_id is intentionally NOT set — build_create omits it and
             // kanban's (board_id, external_id) uniqueness would 422 a colliding issue
             // number on a multi-repo coord board; external_link carries the correlation.
+            // Stamp every eligible key: the id: tag when prefixed; issue_number in payload
+            // under `all` (so the by-ref index finds it — the ref derives from that payload
+            // key, verified live). Under the prefixed default this is byte-identical DL-198
+            // (empty payload, [id:,type:] tags).
+            $tags = ["type:{$itype}"];
+            if ($isPrefixed) {
+                array_unshift($tags, "id:{$sid}");
+            }
+            $payload = $byRef ? ['issue_number' => $issueNumber] : [];
+
             $newId = $client->createCard(
                 $mapping->boardId,
                 $mapping->coordCardStageId,
                 $title,
-                [],
-                ["id:{$sid}", "type:{$itype}"],
+                $payload,
+                $tags,
                 $mapping->swimlaneId,
                 "Coordination thread {$repo}#{$issueNumber}",
                 $itype === 'brief' ? 1 : 0,
                 "https://github.com/{$repo}/issues/{$issueNumber}",
             );
-            Log::info('kanban_coord_card: created', ['card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $mapping->coordCardStageId, 'swimlane' => $mapping->swimlaneId, 'sid' => $sid, 'issue' => $issueNumber]);
+            Log::info('kanban_coord_card: created', ['card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $mapping->coordCardStageId, 'swimlane' => $mapping->swimlaneId, 'sid' => $sid, 'issue' => $issueNumber, 'population' => $mapping->issuePopulation]);
 
-            // Close the check-then-create race (like the dependabot path): re-read by
-            // the same `id:` tag and collapse any duplicate a concurrent delivery (or
-            // the reconcile) minted. Deterministic survivor ⇒ racing workers converge.
-            $live = $client->cardsByTag($mapping->boardId, $tag);
-            if (count($live) > 1) {
-                CardCollapse::toSurvivor($client, array_fill_keys($live, []), 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag]);
+            // Close the check-then-create race (like the dependabot path): re-read by each
+            // eligible key and collapse a duplicate a concurrent delivery (or the reconcile)
+            // minted. Deterministic survivor ⇒ racing workers converge.
+            if ($tag !== null) {
+                $live = $client->cardsByTag($mapping->boardId, $tag);
+                if (count($live) > 1) {
+                    CardCollapse::toSurvivor($client, array_fill_keys($live, []), 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag]);
+                }
+            }
+            if ($byRef) {
+                $liveRef = $client->correlateIssue($mapping->boardId, $issueNumber, $repo);
+                if (count($liveRef) > 1) {
+                    CardCollapse::toSurvivor($client, array_fill_keys($liveRef, []), 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'ref' => "github_issue:{$issueNumber}"]);
+                }
             }
         } catch (RequestException $e) {
             // A kanban 4xx is permanent (log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
-            if ($this->isPermanent($e)) {
+            if (RefusalContext::isPermanent($e)) {
                 Log::warning('kanban_coord_card: kanban refused (4xx) — ignoring (see `body` for the reason kanban gave)', ['repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e));
 
                 return;
             }
             throw $e;
         }
-    }
-
-    private function isPermanent(RequestException $e): bool
-    {
-        $status = $e->response->status();
-
-        return $status >= 400 && $status < 500;
     }
 }

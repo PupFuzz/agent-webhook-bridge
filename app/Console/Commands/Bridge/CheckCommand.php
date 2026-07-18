@@ -6,6 +6,8 @@ use App\Bridge\Adapters\WebhookAdapterFactory;
 use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Handlers\KanbanDependabotCardHandler;
+use App\Bridge\Retention\RetentionConfig;
+use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
@@ -18,17 +20,21 @@ use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
+use App\Bridge\Validation\EndpointValidationException;
+use App\Bridge\Validation\LocalhostUrl;
 use App\Bridge\Writeback\AlertChannel;
 use App\Bridge\Writeback\CoordConfigTerminals;
-use App\Bridge\Writeback\GitHubReadClient;
+use App\Bridge\Writeback\GitHubRepoProbe;
+use App\Bridge\Writeback\GitHubRepoProbeKind;
 use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 use App\Models\WebhookEvent;
-use Illuminate\Http\Client\RequestException;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Symfony\Component\Process\ExecutableFinder;
 use Throwable;
 
 /**
@@ -40,6 +46,28 @@ class CheckCommand extends BridgeCommand
     protected $signature = 'bridge:check';
 
     protected $description = 'Validate the bridge install config (dirs, DB connectivity, agent YAMLs)';
+
+    /**
+     * Whether the RECEIVER's PHP can end a request before running terminating
+     * callbacks. `bridge:check` is CLI, where fastcgi_finish_request is never
+     * defined, so asking about THIS process would warn on every healthy FPM install.
+     * The receiver's SAPI is what matters, and php-fpm ships the function iff the
+     * FPM SAPI is built — so probe the fpm binary's own module list.
+     */
+    private function receiverSapiFinishesEarly(): bool
+    {
+        if (function_exists('fastcgi_finish_request')) {
+            return true;   // running under FPM already
+        }
+        foreach (['php-fpm'.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION, 'php-fpm'] as $bin) {
+            $path = (new ExecutableFinder)->find($bin);
+            if ($path !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public function handle(): int
     {
@@ -91,6 +119,48 @@ class CheckCommand extends BridgeCommand
         } catch (Throwable $e) {
             $this->error('inbox surfacing config: '.$e->getMessage());
             $ok = false;
+        }
+
+        // Retention (DL-199) is on by default and runs off the receiver, so a bad
+        // window is silent: the stores just grow, which is the exact DL-012 failure
+        // this replaced. Report the posture rather than let it go unnoticed.
+        $retention = RetentionConfig::fromConfig();
+        if (! $retention->enabled) {
+            $this->warn('retention: DISABLED (BRIDGE_RETENTION_ENABLED=false) — nothing prunes webhook_events/agent_dispatches/inbox lines unless you schedule bridge:prune yourself; the append-only stores grow without bound (DL-012/DL-199).');
+        } elseif (! $retention->isUsable()) {
+            $this->warn('retention: enabled but MISCONFIGURED — '.$retention->problem.'. Nothing is pruned (a bad window never falls back to a default cutoff). The stores grow until fixed.');
+        } else {
+            $this->info('retention: on ('.$retention->summary().')');
+            // The whole no-latency claim rests on the response being FINISHED before
+            // the terminating callback runs. Under PHP-FPM that is
+            // fastcgi_finish_request(); without it (mod_php) Symfony only flushes, so
+            // a keep-alive client can sit through the prune. The prune stays correct
+            // either way — this degrades latency, silently, which is why it is worth
+            // one preflight line. `bridge:check` runs on CLI, where the function is
+            // absent by definition, so probe the configured SAPI, not this process.
+            if (! $this->receiverSapiFinishesEarly()) {
+                $this->warn('retention: this PHP install has no fastcgi_finish_request() — retention runs AFTER the response is flushed but BEFORE the request ends, so a keep-alive client may wait for it. Serve the receiver under PHP-FPM (see CLAUDE_DEPLOYMENT.md), or set BRIDGE_RETENTION_ENABLED=false and run bridge:prune on a schedule.');
+            }
+            // Config being valid does NOT mean retention is RUNNING. A pass that throws
+            // (unwritable inbox, ENOSPC, a DB fault) backs off a full interval and drains
+            // nothing, leaving the posture line above reading healthy — the DL-012 blind
+            // spot. The gate records its last throw here; surface it (cleared automatically
+            // on the next successful pass). Wrapped like every other advisory: a broken
+            // cache backend must degrade to a note, never throw out of the preflight.
+            try {
+                $lastError = Cache::get(RetentionGate::ERROR_KEY);
+                if (is_array($lastError)) {
+                    // Deliberately does NOT assert the stores are growing: on a since-quieted
+                    // install nothing arrives, so nothing grows — the marker can outlive the
+                    // condition (webhook-driven clear, ≤30d TTL). State the fact (last pass
+                    // failed, nothing pruned since) and let the timestamp speak.
+                    $this->warn('retention: the LAST PASS FAILED and nothing has pruned since ('
+                        .($lastError['exception'] ?? 'error').': '.($lastError['error'] ?? '')
+                        .' at '.($lastError['at'] ?? '?').'). Check DB/file permissions and disk space; if traffic has since resumed, watch the log for a clean `retention pass` (the marker clears itself on the next success).');
+                }
+            } catch (Throwable $e) {
+                $this->warn('retention: could not read the last-failure marker ('.$e->getMessage().') — the cache backend the retention gate depends on may be unreachable.');
+            }
         }
 
         // Per-install endpoint URLs (when set — unset is fine until provisioning).
@@ -257,6 +327,29 @@ class CheckCommand extends BridgeCommand
                 } catch (Throwable $e) {
                     $this->error("agent {$name}: classifier.config.ci_failure_workflow_patterns — ".$e->getMessage());
                     $ok = false;
+                }
+
+                // DL-213 (#4632): comment_to is now in the wake_membership fleet DEFAULT.
+                // The flip only reaches installs with NO explicit wake_membership — an
+                // install that set it explicitly before the flip OVERRIDES the default, so
+                // its directed-reply wakes stay dark, and the flip must not silently rewrite
+                // a deliberate operator config. Surface exactly that population (coord-message
+                // on + explicit wake_membership + comment_to omitted); an absent-key install
+                // needs no warn (the default now covers it). wake_membership is lazily parsed
+                // (like ci_failure_workflow_patterns above), so a malformed value first throws
+                // here — catch it per-agent rather than aborting the whole check.
+                $families = $cfg->classifierConfig->strings('families');
+                $coordMessageOn = $families === [] || in_array('coord-message', $families, true);
+                if ($coordMessageOn && $cfg->classifierConfig->has('wake_membership')) {
+                    try {
+                        $membership = $cfg->classifierConfig->strings('wake_membership');
+                        if (! in_array('comment_to', $membership, true)) {
+                            $this->warn("agent {$name}: classifier.config.wake_membership = [".implode(', ', $membership)."] is set explicitly and omits comment_to — a counterparty's comment addressed TO you on a thread you neither opened nor were labelled on will NOT live-wake you (the common post-a-reply-and-wait flow). comment_to is now in the fleet default; add it to your explicit list to catch directed replies, or leave it off to keep them dark deliberately.");
+                        }
+                    } catch (Throwable $e) {
+                        $this->error("agent {$name}: classifier.config.wake_membership — ".$e->getMessage());
+                        $ok = false;
+                    }
                 }
 
                 foreach ($cfg->subscriptions as $sub) {
@@ -458,36 +551,33 @@ class CheckCommand extends BridgeCommand
                         $this->warn('writeback: '.SecretFile::permsMessage($tokenPath).' — the move will fail until fixed');
                     }
 
-                    // reconcile (bridge:reconcile) reads PR state from GitHub,
-                    // resolving a token PER REPO (GitHubTokenResolver, DL-185): a
-                    // token_path override → the conventional <secret_dir>/github/token
-                    // → the coordination store's [git-credential-map] → ambient
-                    // GH_TOKEN. Route this through the SAME resolver so bridge:check
-                    // can't drift from what reconcile actually resolves. Warn (never
-                    // fail, DL-026) for any mapped repo whose token doesn't resolve;
-                    // the event-driven writeback is unaffected either way.
-                    $ghResolver = new GitHubTokenResolver;
+                    // reconcile (bridge:reconcile) resolves + probes a GitHub read
+                    // token PER REPO. Run the SAME shared GitHubRepoProbe (DL-185/186)
+                    // so bridge:check can't drift from what reconcile resolves OR from
+                    // how it classifies a failure — one resolve+probe+hint table, two
+                    // error postures (reconcile errors + skips; check warns). Warn
+                    // (never fail, DL-026) for any mapped repo whose token doesn't
+                    // resolve, or whose probe fails auth/scope. A resolved-but-invalid
+                    // token (DL-186) — classically a stale <secret_dir>/github/token
+                    // that SHADOWS the store map — resolves but 401s every repo at
+                    // reconcile time, so the probe surfaces the shadow at preflight,
+                    // naming the resolved leg, not on the first run. A network blip is
+                    // NOT a token problem → stay silent on it; the event-driven
+                    // writeback is unaffected regardless.
+                    $probe = new GitHubRepoProbe;
                     foreach ($writeback->mappings as $repo => $mapping) {
-                        $resolution = $ghResolver->resolveFor((string) $repo);
-                        if (! $resolution->ok()) {
-                            $this->warn("reconcile: {$repo}: {$resolution->problem} — bridge:reconcile will FAIL for this repo until you place a read-only token (chmod 600), map it in the coordination store's [git-credential-map], or export GH_TOKEN; the event-driven writeback is unaffected");
-
-                            continue;
-                        }
-                        // Resolvability ≠ validity (DL-186). A resolved-but-expired
-                        // token — classically a stale <secret_dir>/github/token from
-                        // the single-token era that SHADOWS the store map — passes the
-                        // check above but 401s every repo at reconcile time. Probe it
-                        // HERE (warn-never-fail, DL-026), naming the resolved leg so a
-                        // stale shadow surfaces at preflight, not on the first run. A
-                        // network blip is NOT a token problem → stay silent on it.
-                        try {
-                            (new GitHubReadClient((string) $resolution->token))->probeRepo((string) $repo);
-                        } catch (RequestException $e) {
-                            $status = $e->response->status();
-                            $this->warn("reconcile: {$repo}: token from {$resolution->source} → HTTP {$status} — bridge:reconcile will SKIP this repo. If the source is a <secret_dir>/github/token or BRIDGE_GITHUB_TOKEN_PATH file, it SHADOWS the [git-credential-map] store (a stale single-token-era file is the common upgrade cause) — remove it so each repo resolves its own store token.");
-                        } catch (Throwable) {
-                            // network/timeout — not a token-validity signal; ignore.
+                        $result = $probe->probe((string) $repo);
+                        switch ($result->kind) {
+                            case GitHubRepoProbeKind::Unresolvable:
+                                $this->warn("reconcile: {$repo}: {$result->problem} — bridge:reconcile will FAIL for this repo until you place a read-only token (chmod 600), map it in the coordination store's [git-credential-map], or export GH_TOKEN; the event-driven writeback is unaffected");
+                                break;
+                            case GitHubRepoProbeKind::Http:
+                                $this->warn("reconcile: {$repo}: token from {$result->source} → HTTP {$result->status}{$result->hint} — bridge:reconcile will SKIP this repo. If the source is a <secret_dir>/github/token or BRIDGE_GITHUB_TOKEN_PATH file, it SHADOWS the [git-credential-map] store (a stale single-token-era file is the common upgrade cause) — remove it so each repo resolves its own store token.");
+                                break;
+                            case GitHubRepoProbeKind::Ok:
+                            case GitHubRepoProbeKind::Network:
+                                // Valid, or a network blip (not a token-validity signal) — nothing to warn.
+                                break;
                         }
                     }
                 }
@@ -548,6 +638,28 @@ class CheckCommand extends BridgeCommand
                         // -only; the missing-stage half is already fail-closed at load.
                         if ($mapping->createCoordCards && $writeback->identityId === null) {
                             $this->warn("writeback: mapping for {$repo} sets create_coord_cards but writeback.json has no identity_id — a created coord card's task.created webhook echoes back and could self-wake a kanban-triage session; set identity_id (the global-echo gate is the sole guard).");
+                        }
+                        // #4553: under population=all the bridge is the SOLE real-time mover for the
+                        // NON-PREFIXED coord-issue set — the prefix/tag-keyed reconcile ignores those
+                        // issues, so unless the consumer extends its reconcile to correlate them by
+                        // github_issue by-ref, a bridge-missed non-prefixed event self-heals NOWHERE.
+                        // Surface it so the DL-200 terminal-"agree" line is never misread as backstop
+                        // coverage for this population (prefixed issues stay backstopped via the id: tag).
+                        // Gated on create OR move — the move leg (create off) also correlates non-prefixed
+                        // cards by-ref, so it carries the same backstop + config-agreement stake.
+                        if (($mapping->createCoordCards || $mapping->moveCoordCards) && $mapping->issuePopulation === WritebackMapping::POPULATION_ALL) {
+                            $this->warn("writeback: issue_population=all for {$repo} — the bridge is the SOLE real-time mover for NON-PREFIXED coord issues (the prefix/tag-keyed reconcile does not card them). Ensure the consumer's reconcile is extended to correlate non-prefixed issues by github_issue by-ref, else a bridge-missed non-prefixed event has NO backstop. Prefixed issues remain backstopped via the shared id: tag.");
+                            // by-ref correlation is only correct in `ref` mode — scan mode does a bare
+                            // issue-number match with NO repo/source disambiguation, so on a multi-repo
+                            // board it correlates the wrong repo's issue #N (skips a create / moves the
+                            // wrong card). ref is the default; warn if an install pairs all with scan.
+                            if (config('bridge.writeback.correlation', 'ref') !== 'ref') {
+                                $this->warn("writeback: issue_population=all for {$repo} but BRIDGE_WRITEBACK_CORRELATION is not `ref` — the github_issue by-ref correlation degrades to a bare issue-number scan with NO repo disambiguation, so on a multi-repo board it can correlate the wrong repo's issue #N. Set correlation=ref (the default) for the `all` population.");
+                            }
+                            // The cross-config three-state compare (converged w/ sola): bind the bridge's
+                            // runtime issue_population (writeback.json) to the reconcile's ($COORD_CONFIG),
+                            // so bridge-on-all + reconcile-on-prefixed = a checkable DISAGREE, not silence.
+                            $this->checkIssuePopulationAgreement($repo, $mapping);
                         }
                         // DL-204 (#4357): the move leg fires only where BOTH gates are on — the
                         // coord-card-move family (gate 1) AND the writeback mapping's move_coord_cards
@@ -663,6 +775,36 @@ class CheckCommand extends BridgeCommand
                                         $this->warn("writeback: create_dependabot_cards is on for {$repo} but board {$mapping->boardId} is MISSING the custom field(s) ".implode(', ', $missing).' the create payload sets ('.implode(', ', $required).') — every dependabot-card create will 422 and SILENTLY no-op until they are registered (add them on the board, or set create_dependabot_cards=false)');
                                     } else {
                                         $this->info("writeback: create_dependabot_cards custom fields ok on board {$mapping->boardId} ({$repo})");
+                                    }
+                                }
+                                // #4553: population=all correlates + creates by github_issue by-ref, which
+                                // derives from the `issue_number` payload custom field. If the board does
+                                // NOT register issue_number, kanban 422s every non-prefixed create as a
+                                // PERMANENT no-op (silent), AND an empty by-ref pre-check is indistinguishable
+                                // from a real no-match — so the bridge (the sole real-time mover for this
+                                // population) would silently DOUBLE-CARD. FAIL-CLOSED (exit non-zero), not a
+                                // warn: refuse to certify an install that would silently lose/duplicate cards.
+                                // Gated on create OR move: the move leg (create off) also correlates
+                                // non-prefixed cards by-ref, so it too 422s / silently no-ops without
+                                // issue_number registered.
+                                if (($mapping->createCoordCards || $mapping->moveCoordCards) && $mapping->issuePopulation === WritebackMapping::POPULATION_ALL) {
+                                    // Read in its OWN try so a read failure fails CLOSED. This is the one
+                                    // fail-closed check in this block (its siblings warn), so it must NOT be
+                                    // swallowed by the per-mapping warn-catch below: a fail-closed invariant
+                                    // we could not verify is a FAILURE, not a warn (DL-026 / canon #9 — an
+                                    // unrun measurement is not a pass). A blind token / wrong board / transient
+                                    // 5xx here therefore exits non-zero rather than certifying blind.
+                                    try {
+                                        $present = $client->boardCustomFieldKeys($mapping->boardId);
+                                        if (! in_array('issue_number', $present, true)) {
+                                            $this->error("writeback: issue_population=all for {$repo} but board {$mapping->boardId} does not register the 'issue_number' custom field — every non-prefixed coord-card create 422s as a permanent no-op AND by-ref correlation cannot tell 'not indexed' from 'no match', so the bridge would silently double-card. Register issue_number (+ issue_url for source) on the board, or set issue_population=prefixed.");
+                                            $ok = false;
+                                        } else {
+                                            $this->info("writeback: issue_number custom field registered on board {$mapping->boardId} ({$repo}) — github_issue by-ref ready (issue_population=all)");
+                                        }
+                                    } catch (Throwable $e) {
+                                        $this->error("writeback: issue_population=all for {$repo} but could NOT read board {$mapping->boardId}'s custom fields to verify issue_number registration — ".$e->getMessage().'. This fail-closed check must not be skipped (an unverifiable board could silently double-card); fix board access / board_id and re-run.');
+                                        $ok = false;
                                     }
                                 }
                                 // #2652: every workflow stage id the mapping targets — each
@@ -1052,6 +1194,57 @@ class CheckCommand extends BridgeCommand
     }
 
     /**
+     * #4553 — bind the bridge's runtime `issue_population` (writeback.json, FPM-reachable)
+     * to the reconcile's (`$COORD_CONFIG`, its source of truth) so `bridge-on-all +
+     * reconcile-on-prefixed` — the exact non-prefixed no-backstop gap — is a CHECKABLE
+     * DISAGREE, not silence. Three-state (agree / DISAGREE / CANNOT-VERIFY), warn-never-fail,
+     * reusing the DL-200 cross-config machinery. CANNOT-VERIFY is kept DISTINCT from agreement:
+     * an unset/unreadable $COORD_CONFIG is "could not ask," not "they agree." Called only when
+     * the bridge side is already `all` (the direction that can strand cards); the mirror
+     * (reconcile=all, bridge=prefixed) is a lesser not-real-time gap and is not force-checked.
+     *
+     * CLI-only for the same reason as {@see checkCoordTerminalAgreement}: the FPM webhook env
+     * has no $COORD_CONFIG (the whole reason the compare lives here), and getenv() is read live
+     * (cache-immune) so `php artisan optimize` cannot freeze a deploy-time value.
+     */
+    private function checkIssuePopulationAgreement(string $repo, WritebackMapping $mapping): void
+    {
+        $mine = $mapping->issuePopulation;   // 'all' (this method is only called under `all`)
+        $prefix = "writeback: issue_population ({$repo}, board {$mapping->boardId})";
+        $tail = 'A bridge on `all` with a reconcile on `prefixed` is the no-backstop gap — the non-prefixed set self-heals nowhere.';
+
+        $path = config('bridge.writeback.coord_config_path');
+        if (! is_string($path) || $path === '') {
+            $ambient = getenv('COORD_CONFIG');
+            $path = is_string($ambient) && $ambient !== '' ? $ambient : null;
+        }
+        $config = CoordConfigTerminals::load($path);
+        if ($config === null) {
+            $where = $path === null ? '$COORD_CONFIG is not set' : "the coordination config at {$path} is absent, unreadable, or malformed";
+            $this->warn("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
+
+            return;
+        }
+        $theirs = CoordConfigTerminals::issuePopulationsForBoardId($config, $mapping->boardId);
+        if ($theirs === []) {
+            $this->warn("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — the coordination config has no kanban.boards[] entry for board {$mapping->boardId}. {$tail}");
+
+            return;
+        }
+        if (count($theirs) > 1) {
+            $this->warn("{$prefix}: CANNOT VERIFY — the coordination config resolves multiple issue_population values for board {$mapping->boardId} (".implode(', ', $theirs)."). {$tail}");
+
+            return;
+        }
+        if ($theirs[0] === $mine) {
+            $this->info("{$prefix}: coord config agrees — reconcile issue_population is '{$mine}', so the non-prefixed set is backstopped by the reconcile's by-ref correlation.");
+
+            return;
+        }
+        $this->warn("{$prefix}: the two movers DISAGREE on issue_population — this bridge is 'all' (it real-times NON-PREFIXED issues), but the coordination config's issue_population for board {$mapping->boardId} is '{$theirs[0]}'. A bridge-missed non-prefixed event then has NO reconcile backstop. Set kanban.boards[].issue_population=all in \$COORD_CONFIG (and extend the reconcile to correlate by github_issue by-ref), or set the bridge's issue_population=prefixed.");
+    }
+
+    /**
      * Validate the optional `writeback.alert_channel` (FR-4). Warn (never fail) on
      * a malformed channel — it is an opt-in diagnostic, so a bad value must not
      * fail the install check; at runtime a bad channel just makes the alert push
@@ -1076,19 +1269,16 @@ class CheckCommand extends BridgeCommand
 
             return;
         }
-        $parts = parse_url((string) $url);
-        if (! is_array($parts) || strtolower($parts['scheme'] ?? '') !== 'http') {
-            $this->warn("writeback.json alert_channel: url must be http:// loopback (got '{$url}') — the alert push will fail (caught) until fixed");
-
-            return;
+        // Defer to the runtime sender's authority (LocalhostUrl::assertValid, the
+        // same gate WritebackAlertNotifier enforces) so the check and the sender
+        // can never disagree on what a valid alert url is — a hand-rolled copy here
+        // once dropped the userinfo rejection and green-lit a url the sender refused.
+        try {
+            LocalhostUrl::assertValid((string) $url, 'writeback.json alert_channel: url');
+            $this->info("writeback.json alert_channel: url {$url} (localhost)");
+        } catch (EndpointValidationException $e) {
+            $this->warn($e->getMessage().' — the alert push will fail (caught) until fixed');
         }
-        $host = strtolower(trim($parts['host'] ?? '', '[]'));
-        if (! in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
-            $this->warn("writeback.json alert_channel: url must point at 127.0.0.1, localhost, or [::1] (got '{$host}') — the alert push will fail (caught) until fixed");
-
-            return;
-        }
-        $this->info("writeback.json alert_channel: url {$url} (localhost)");
     }
 
     /**

@@ -238,6 +238,35 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
 
     // ---- gates + payload ----
 
+    public function test_non_prefixed_close_moves_by_ref_card_under_population_all(): void
+    {
+        // #4553: population=all moves a non-prefixed card correlated by github_issue by-ref.
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
+            'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99, 'issue_population' => 'all']);
+        Http::fake([
+            '*/boards/8/tasks/by-ref.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50]]),
+        ]);
+
+        $this->handle(['sid' => null, 'disposition' => 'terminal']);
+
+        $this->assertMovedTo(99);
+        Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains(urldecode($r->url()), 'system=github_issue')
+            && str_contains(urldecode($r->url()), 'ref=4'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/search.json'));
+    }
+
+    public function test_non_prefixed_close_with_no_by_ref_card_moves_nothing(): void
+    {
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
+            'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99, 'issue_population' => 'all']);
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['data' => []])]);
+
+        $this->handle(['sid' => null, 'disposition' => 'terminal']);
+
+        $this->assertNoMove();
+    }
+
     public function test_opt_out_moves_nothing(): void
     {
         // DL-204 (#4357): opting out is now EXPLICIT move_coord_cards:false — omission defaults

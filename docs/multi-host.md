@@ -229,7 +229,7 @@ Skip the custom classifier entirely and let the dispatcher route every staged in
 ```yaml
 # <agent>.yml — route intents to the local tunnel endpoint automatically
 classifier:
-  class: App\Bridge\Classifiers\InboxOnlyClassifier   # or EventDriven; just don't double-push
+  class: App\Bridge\Classifiers\InboxOnlyClassifier   # or EventDriven — its hand-emit self-suppresses under route_intents (DL-208)
 channel:
   url: http://127.0.0.1:8788/   # local end of the reverse tunnel to host B
   auth:

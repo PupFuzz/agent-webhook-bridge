@@ -7,6 +7,7 @@ use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
+use App\Bridge\Dispatch\ReactionTarget;
 
 /**
  * Canonical default classifier: surfaces kanban activity to the agent inbox
@@ -134,6 +135,32 @@ class InboxOnlyClassifier implements Classifier
             summary: "{$verb} by {$this->who($actor)}: subject {$subjectId}{$suffix}",
             payload: ['board_id' => $payload['board_id'] ?? null, 'name' => $name !== '' ? $name : null],
         );
+    }
+
+    /**
+     * The single guarded wake-emit point shared by every reaction-emitting subclass
+     * (DL-191). Emit a surgical `channel_push` for the intent — UNLESS the serving
+     * channel has `route_intents:true`, where the dispatcher already routes every
+     * staged intent to the channel (DL-006) and a hand-emit would double-wake (the
+     * routed push carries the same `$intent->toArray()` payload, so suppressing here
+     * loses no wake): hand-emit ⟺ `route_intents:false`. The base's own `classify()`
+     * emits no reactions; this is machinery its wake-emitting subclasses (EventDriven,
+     * Coordination) share so the guard lives in exactly one place (card #4494).
+     *
+     * @return list<ReactionTarget>
+     */
+    protected function wakePush(Intent $intent, ClassifyContext $ctx): array
+    {
+        if ($ctx->agent->channel->routeIntents) {
+            return [];
+        }
+
+        return [ReactionTarget::make(
+            handler: 'channel_push',
+            targetId: $intent->subjectId,
+            debounceSeconds: 0,
+            payload: $intent->toArray(),
+        )];
     }
 
     /**

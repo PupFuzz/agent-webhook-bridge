@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Webhook;
 use App\Bridge\Adapters\WebhookAdapterFactory;
 use App\Bridge\Dispatch\DispatchService;
 use App\Bridge\Exceptions\InvalidEnvelopeException;
+use App\Bridge\Retention\RetentionGate;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -20,10 +21,18 @@ use Symfony\Component\HttpFoundation\Response;
  * subscribed agent is processed. A transient/durability failure inside dispatch
  * propagates to a 5xx (kanban-board redelivers); a deterministic classifier/
  * handler failure is recorded and still acks 200.
+ *
+ * Retention (DL-199) is queued here rather than in DispatchService::dispatch():
+ * dispatch() has a second, non-inbound caller — `bridge:replay` — where the gate
+ * would fire for no benefit. `receive` is the shared inbound entry across every
+ * provider, which is exactly the arrival the gate keys off.
  */
 class WebhookController extends Controller
 {
-    public function __construct(private DispatchService $dispatcher) {}
+    public function __construct(
+        private DispatchService $dispatcher,
+        private RetentionGate $retentionGate,
+    ) {}
 
     public function receive(Request $request): Response
     {
@@ -52,6 +61,10 @@ class WebhookController extends Controller
 
         $payload = json_decode($body, true);
         $this->dispatcher->dispatch($provider, $scopeId, $event, is_array($payload) ? $payload : []);
+
+        // Only this path stores an event, so only this path can have grown the
+        // stores. The pass itself runs after the response below is sent.
+        $this->retentionGate->schedule();
 
         return $this->plain('ok', 200);
     }

@@ -201,6 +201,45 @@ If you run the bridge on a **coordination repo** (the Agent Board Framework's `[
 - **`identity_id` is REQUIRED (echo-gate).** A created card fires a kanban `task.created` webhook that comes back to the bridge; if any agent runs the `kanban-triage` family on that board, that echo reads as an untriaged card and could **self-wake**. The **only** guard is the global-echo gate keyed on `writeback.json` `identity_id`. `bridge:check` **warns** when `create_coord_cards` is set but `identity_id` is null.
 - **`bridge:check`.** Validates `coord_card_stage_id` (and any `swimlane_id`) exists on the board — a typo'd id makes every create 422 and silently no-op. Missing `coord_card_stage_id` while `create_coord_cards` is on **fails the config closed at load** (a create with no stage can't POST).
 
+## Optional: card non-prefixed issues too (`issue_population`, #4553)
+
+By default `create_coord_cards`/`move_coord_cards` track only issues with a recognized
+`[BRIEF]`/`[ANNOUNCE]`/`[QUERY]`/`[REVIEW]`/`[TASK]` title (the `id:<sid>` tag key). Set
+**`issue_population: "all"`** on the mapping to ALSO track **non-prefixed** issues (`[PROPOSAL]`,
+`[FR]`, plain titles) — each correlated by the **`github_issue` by-ref** key instead of a tag.
+
+```jsonc
+"mappings": {
+  "org/coord": {
+    "board_id": 8,
+    "create_coord_cards": true,
+    "coord_card_stage_id": 21,
+    "issue_population": "all"       // default "prefixed" ⇒ byte-identical DL-198/200
+  }
+}
+```
+
+- **Per-issue key, never per-mapping.** A **prefixed** issue always uses the `id:<sid>` tag
+  (unchanged — the same key the reconcile uses, so they never double-card it). A **non-prefixed**
+  issue uses the `github_issue` by-ref key. Under `all` a prefixed card is **dual-keyed** (tag +
+  `issue_number` in payload), and create/move **pre-check both keys** — so a card is found whether
+  its title carried a prefix at create or at a later reopen.
+- **The ref is the payload `issue_number` field.** A by-ref card stamps `issue_number` in its
+  payload (that is what the kanban by-ref index derives from — NOT `external_link`, which only
+  derives the `source` repo). So the board **MUST register the `issue_number` custom field** (add
+  `issue_url` too, for `source`). `bridge:check` **FAILS** (exit non-zero) under `all` if it is
+  absent — without it every by-ref create 422s permanently AND an empty by-ref lookup can't be told
+  from "not indexed", so the bridge would silently double-card.
+- **Backstop is a consumer commitment.** The prefix/tag-keyed reconcile does **not** card
+  non-prefixed issues, so under `all` the bridge is the **sole real-time mover** for them — a
+  bridge-missed non-prefixed event self-heals nowhere **unless** the consumer extends its reconcile
+  to correlate by `github_issue` by-ref (framework #299). `bridge:check` **warns** on this, and
+  performs a **three-state cross-config compare** (agree / DISAGREE / CANNOT-VERIFY) binding this
+  bridge's `issue_population` to the reconcile's (`$COORD_CONFIG` `kanban.boards[].issue_population`):
+  `bridge=all` + `reconcile=prefixed` surfaces as a **DISAGREE** rather than a silent gap.
+  (Prefixed issues stay backstopped regardless, via the shared `id:` tag.)
+- **Default is byte-identical.** Absent (or `"prefixed"`) ⇒ exactly DL-198/200 behavior.
+
 ## Optional: coordination issue close/reopen → card move (`move_coord_cards`, DL-200)
 
 The sibling of `create_coord_cards` above, and **separately opt-in** — it does *not* ride
@@ -437,7 +476,7 @@ The "not tracked" `Log::info` branches stay **quiet** — they're the normal cas
 
 **Dedup — once per `(repo, outcome, reason)`.** A recurring failure (the same event redelivered, or a persistent misconfig) alerts **once**, not per delivery. Dedup is an atomic `O_EXCL` marker file under `<state_dir>/writeback-alerts/<sha1(repo, outcome, reason)>`. Remove the marker (or the directory) to re-arm a signature. A *failed* push releases the marker so a later redelivery re-attempts — a channel that was down when the first signal fired never permanently silences that signature (at the cost of a possible duplicate on a redelivery race).
 
-**Best-effort, never breaks the move.** The push is wrapped so an undeliverable alert (channel down, bad config, HTTP error) is caught and logged — it never throws, so it can't turn a permanent no-op into a 5xx redelivery storm. The log line always runs regardless of whether the push succeeds. There is **no timer/poll/watchdog** — the signal is emitted inline, event-driven, on the failing delivery only. `bridge:check` warns on a malformed `alert_channel` (both/neither of socket+url, a missing socket parent dir, or a non-loopback url).
+**Best-effort, never breaks the move.** The push is wrapped so an undeliverable alert (channel down, bad config, HTTP error) is caught and logged — it never throws, so it can't turn a permanent no-op into a 5xx redelivery storm. The log line always runs regardless of whether the push succeeds. There is **no timer/poll/watchdog** — the signal is emitted inline, event-driven, on the failing delivery only. `bridge:check` warns on a malformed `alert_channel` (both/neither of socket+url, a missing socket parent dir, or a url the runtime sender would reject). For the url it applies the sender's own gate (`LocalhostUrl::assertValid`, DL-209) rather than a hand-rolled copy, so the check and the sender can never disagree: it warns on a non-http scheme, a non-loopback host, **or a userinfo component** (`http://user:pass@127.0.0.1/` — a credential-leaking SSRF shape the sender refuses).
 
 ## Failure behaviour (what retries vs not)
 
@@ -472,7 +511,7 @@ php artisan bridge:reconcile --fix --max-moves=20   # safety cap (default 20)
 3. **store-native — `git-credential-coord` + `[git-credential-map]`** (DL-185) — the default when no explicit token file is placed. `bridge:reconcile` calls the framework credential helper (`bridge.providers.github.credential_helper`, env `BRIDGE_GITHUB_CREDENTIAL_HELPER`, default `git-credential-coord`) with the repo's `host/owner/repo`; the store's `[git-credential-map]` (most-specific-first) selects the `[github]` key → a per-repo, least-privilege PAT with no second token copy to rotate. An **unmapped** repo (empty result) falls through to `GH_TOKEN`; a `REPLACE_ME` placeholder, an unreadable `*_file`, or a helper crash **fail loud** (never a silent fall-through to a wrong-scoped token). The helper is spawned inheriting the reconcile CLI env, so it needs `HOME`/`COORD_CREDENTIALS` to locate the store — fine for an interactive operator run (if you ever wire reconcile to a timer, set them in the unit). Set `credential_helper` empty to disable this leg. **A placed token file (leg 1 or 2) short-circuits the store map** — use a file *or* the store map for a repo, not both.
 4. **`GH_TOKEN` env** — the last leg, used only when no override/file is set and the store returns nothing. It is present in an operator shell (`~/.bashrc`) but **not** in the webhook-spawned receiver, so it self-scopes to the reconcile CLI; it can never shadow a store-mapped token.
 
-Without any usable source the command fails with a clear message naming the resolved path. On an auth failure, the per-repo probe error **names the resolved leg** — e.g. `github: cannot read repo owner/repo — HTTP 401 (token expired/revoked) (token from token file /path)` — so you can see *which* source won without instrumenting it (DL-186); `bridge:reconcile -v` prints the resolved leg per repo even on success. `bridge:check` warns when writeback is configured but no token resolves (or a file source is insecure), **and probes the resolved token's validity** against each mapped repo — a resolved-but-expired token gets a warn naming the leg at preflight, not a silent 401 on the first run.
+Without any usable source the command fails with a clear message naming the resolved path. On an auth failure, the per-repo probe error **names the resolved leg** — e.g. `github: cannot read repo owner/repo — HTTP 401 (token expired/revoked) (token from token file /path)` — so you can see *which* source won without instrumenting it (DL-186); `bridge:reconcile -v` prints the resolved leg per repo even on success. `bridge:check` warns when writeback is configured but no token resolves (or a file source is insecure), **and probes the resolved token's validity** against each mapped repo — a resolved-but-expired token gets a warn naming the leg (and the same status hint reconcile shows — `HTTP 401 (token expired/revoked)`, `HTTP 403 (… needs `repo` scope)`) at preflight, not a silent 401 on the first run. Both commands run the one shared resolve→probe→classify primitive, so their token diagnostics can't diverge.
 
 > **⚠ UPGRADING to store-native per-repo tokens (DL-185)?** A pre-existing conventional `<secret_dir>/github/token` file — or `BRIDGE_GITHUB_TOKEN_PATH` — from the single-token era **short-circuits the `[git-credential-map]` store** (leg 1/2 beat leg 3), so every repo resolves that one file's token instead of its own per-repo PAT. On an upgraded install that file is frequently **stale** (nothing was rotating it once the store took over), which surfaces as *every repo 401s* on the first `bridge:reconcile` run despite a correctly-populated store map. **Fix:** remove the file (`ls <secret_dir>/github/token`; back it up, then `rm`/`mv`) so each repo resolves its own least-privilege token — or keep it deliberately if you *want* one shared token. `bridge:check` now flags this at preflight (the validity probe above names the shadowing leg).
 
@@ -494,7 +533,7 @@ Without any usable source the command fails with a clear message naming the reso
 - **The branch-create `started` outcome** (a card promoted to In-Progress by a `push` that created a branch, DL-160) — there is no PR to GET, so a dropped `push` event is *not* recovered here; it self-heals on the card's next PR event.
 - **`closed_unmerged` (abandoned-PR) regression** — this is legitimately *backward* (In-Review → In-Progress) and the event handler applies it, but the reconciler declines all backward moves, so a dropped `pull_request.closed`-unmerged event is **reported** (with an accurate label) but not auto-fixed. It is left to the event path (redelivery) or a human in v1.
 
-**Scheduling.** The command ships with **no new cron** — the daemonless design accepts exactly one periodic job (`bridge:prune`). Run `bridge:reconcile` from a host cron (e.g. hourly, report-only; `--fix` less often or after review), or wire a report-only pass into the session-close ritual. Automating `--fix` is an operator choice; start report-only and add `--fix` once the report is boring.
+**Scheduling.** The command ships with **no new cron** — and since DL-199 the design accepts **no** periodic job at all (retention now runs off the inbound webhook; `bridge:prune` is the manual entry point). `bridge:reconcile` is the one thing you may still want on a timer, because nothing event-drives it. Run `bridge:reconcile` from a host cron (e.g. hourly, report-only; `--fix` less often or after review), or wire a report-only pass into the session-close ritual. Automating `--fix` is an operator choice; start report-only and add `--fix` once the report is boring.
 
 ### Running reconcile unattended (worked example)
 

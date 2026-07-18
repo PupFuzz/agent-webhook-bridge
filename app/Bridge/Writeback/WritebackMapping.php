@@ -12,6 +12,12 @@ namespace App\Bridge\Writeback;
  */
 final class WritebackMapping
 {
+    /** Card only coordination issues with a recognized `[PREFIX]` title (DL-198 default). */
+    public const POPULATION_PREFIXED = 'prefixed';
+
+    /** Also card non-prefixed issues, correlated by the `github_issue` by-ref key (#4553). */
+    public const POPULATION_ALL = 'all';
+
     /**
      * @param  array<string, int>  $stages  outcome => workflow_stage_id
      * @param  bool  $createDependabotCards  opt-in: a dependabot PR (head `dependabot/*`)
@@ -102,6 +108,14 @@ final class WritebackMapping
      *                                      number, {repo} = the repo NAME (last path segment). Per-tenant
      *                                      grammar, e.g. `id:DEV-pr-{n}` or `id:dep:{repo}#{n}`. null ⇒
      *                                      no tag is added (back-compat, byte-identical).
+     * @param  string  $issuePopulation  which coordination issues get a tracking card (#4553):
+     *                                   {@see POPULATION_PREFIXED} (default) — only recognized-prefix
+     *                                   issues, correlated by the `id:<sid>` tag (byte-identical DL-198);
+     *                                   {@see POPULATION_ALL} — also non-prefixed issues, each correlated
+     *                                   by the `github_issue` by-ref key (payload `issue_number`). The key
+     *                                   is chosen PER ISSUE (prefixed→tag, non-prefixed→by-ref), never per
+     *                                   mapping, so a prefixed issue always shares the tag key with the
+     *                                   reconcile. Governs only the coord-card create/move families.
      */
     public function __construct(
         public readonly int $boardId,
@@ -120,6 +134,7 @@ final class WritebackMapping
         public readonly ?int $coordCardTerminalStageId = null,
         public readonly ?string $cardIdTagTemplate = null,
         public readonly bool $promoteOnRelease = false,
+        public readonly string $issuePopulation = self::POPULATION_PREFIXED,
     ) {}
 
     /** The configured stage id for a GitHub-PR outcome, or null when unmapped. */

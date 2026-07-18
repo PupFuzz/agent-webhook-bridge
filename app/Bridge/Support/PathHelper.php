@@ -82,12 +82,20 @@ final class PathHelper
     }
 
     /**
-     * Replace any character outside [a-zA-Z0-9._-] with '_', so a caller's
-     * opaque key (target id, debounce key) is safe as a single filesystem
-     * path segment. Callers that need slashes etc. must URL-encode first.
+     * Turn a caller's opaque key (target id, debounce key, agent name) into one
+     * filesystem-safe path segment: every run of characters outside [a-z0-9_-]
+     * (case-insensitive) collapses to a single '_', and an empty result takes
+     * `$fallback`. Dots are NOT in the kept set, so a '.'/'..' component can
+     * never form — the result is always safe as a standalone path component,
+     * not only when a caller wraps it between a literal prefix and suffix.
+     *
+     * The single sanitizer for the package (card #4497): callers that need
+     * slashes preserved must URL-encode first.
      */
-    public static function sanitizeSegment(string $value): string
+    public static function sanitizeSegment(string $value, string $fallback = '_'): string
     {
-        return preg_replace('/[^a-zA-Z0-9._-]/', '_', $value) ?? '';
+        $clean = preg_replace('/[^a-z0-9_-]+/i', '_', $value) ?? '';
+
+        return $clean === '' ? $fallback : $clean;
     }
 }

@@ -60,4 +60,17 @@ class FileHandlersTest extends TestCase
         $this->assertFileExists($this->dir.'/state/registry-org_repo_1.jsonl');
         $this->assertFileDoesNotExist($this->dir.'/state/registry-org/repo#1.jsonl');
     }
+
+    public function test_registry_append_strips_dots_from_target_id(): void
+    {
+        (new RegistryAppendHandler)->handle(
+            ReactionTarget::make('registry_append', 'v1.2.3', payload: []),
+            $this->agent(),
+        );
+
+        // Post-consolidation the shared sanitizer strips dots (no '.'/'..'
+        // component can ever form), so the ledger key is 'v1_2_3', not 'v1.2.3'.
+        $this->assertFileExists($this->dir.'/state/registry-v1_2_3.jsonl');
+        $this->assertFileDoesNotExist($this->dir.'/state/registry-v1.2.3.jsonl');
+    }
 }
