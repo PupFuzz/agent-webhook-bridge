@@ -28,8 +28,28 @@ Upstream system (kanban-board, GitHub, ...)
    │    └─ run each target's Handler                              (C) throws → dispatch done-with-note, continue
    └─ return
    ▼
+ RetentionGate::schedule()   registers a terminating callback (no work yet)   ← DL-199
+   ▼
  200 "ok"   (only after every subscribed agent is processed)
+   ▼
+ ── response sent; Response::send() → fastcgi_finish_request() ──────────────────
+   ▼
+ [terminating] RetentionGate: interval-gated, non-blocking-locked, BOUNDED prune
+               of webhook_events (+ cascading agent_dispatches) + inbox*.jsonl.
+               Never throws. Client already has its 200; only the worker is held.
 ```
+
+### The terminating stage (DL-199) — the only work that outlives the response
+
+`receive` ends by *queueing* retention, not running it. Laravel executes terminating callbacks after
+Symfony's `Response::send()` has already called `fastcgi_finish_request()`, so the prune costs the
+client nothing — measured: a pass deleting 20,000 rows (≥0.911s of work) left `time_total` at 0.2555s
+against a 0.231–0.258s no-prune baseline. It is the **only** stage that runs after the 200, and it is
+deliberately the *only* thing allowed to: it holds an FPM worker, so it is interval-gated (~24h once
+drained), bounded (`retention.batch` rows per leg), guarded by a **non-blocking** `Cache::lock` (a
+blocking one would queue concurrent receives behind the pruner — the exact DL-001 regression), and it
+never throws (a 5xx would make the provider redeliver, compounding the failure). This replaced DL-012's
+cron, which three installs never scheduled — so the design now has **no cron exception at all**.
 
 `webhook_events` is **not** a work-queue — nothing drains it. It is the dedup gate (`UNIQUE(delivery_id)`, so kanban-board retries land idempotently; for GitHub the key is sha256 of the SIGNED body, not the unsigned `X-GitHub-Delivery` header — DL-176, so a replayed signed body dedups too) plus the durable audit/replay store. `agent_dispatches` is the per-agent, per-event outcome ledger (one row per agent that processed an event), enabling per-agent replay + isolation.
 

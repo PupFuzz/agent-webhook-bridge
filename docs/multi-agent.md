@@ -209,7 +209,7 @@ When `pm`'s classifier throws on event N, `pm`'s `agent_dispatches` row records 
 
 ### Retention
 
-`webhook_events` rows are the audit/replay store; there is no retention command in v0.12 — add a scheduled DB job for age-based cleanup. `agent_dispatches` rows cascade-delete with their parent `webhook_event`.
+`webhook_events` rows are the audit/replay store. **Retention is automatic and needs no scheduled job** (DL-199): the receiver prunes its own stores after each response, bounded, `bridge.retention.*`, on by default. `bridge:prune` is the manual entry point for a one-off or an unbounded drain. `agent_dispatches` rows cascade-delete with their parent `webhook_event`. Retention is install-wide, not per-agent — one gate prunes the shared stores regardless of how many agents the install serves.
 
 ## Per-agent surfacing (one install, N agents)
 

@@ -43,7 +43,7 @@ BRIDGE_KANBAN_API_BASE_URL=https://kanban.example.com/api/v3   # upstream API ba
 
 The API token is read by convention from `<secret_dir>/<provider>/token` (e.g. `$BRIDGE_DIR/kanban/token`, chmod 600); set a per-agent `api.<provider>.token_path` override in the YAML only when an agent authenticates as a distinct account.
 
-There is **no** queue worker, scheduler, or systemd unit to install. The **one** optional periodic job is `bridge:prune` (retention — see Commands); nothing on the dispatch path depends on it, and skipping it only lets the stores grow.
+There is **no** queue worker, scheduler, systemd unit, **or cron** to install. Retention runs off the inbound webhook itself since **DL-199** (`bridge.retention.*`, on by default) — the receiver prunes its own stores after the response has been sent, so the append-only tables and `inbox*.jsonl` stay bounded with no periodic job at all. `bridge:prune` remains as the manual/one-off command (see Commands). Set `BRIDGE_RETENTION_ENABLED=false` to opt out — but then nothing prunes unless you schedule `bridge:prune` yourself.
 
 ## Pre-flight (per host)
 
@@ -273,11 +273,25 @@ php artisan bridge:inspect {id}                       # one webhook event + its 
 php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an event
 php artisan bridge:inbox [--hook-format=auto|claude-code|plain]              # surface unseen inbox intents
 php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile]   # ensure kanban subscriptions (--reconcile fixes drift)
-php artisan bridge:prune --older-than=30d [--null-payloads-older-than=7d] [--dry-run]   # retention (the one optional cron)
+php artisan bridge:prune --older-than=30d [--null-payloads-older-than=7d] [--dry-run]   # retention, manual/unbounded (the receiver self-prunes — DL-199)
 php artisan bridge:reconcile [--fix] [--repo=owner/repo] [--max-moves=20]     # board-vs-GitHub drift reconciler (report-only unless --fix)
 ```
 
-`bridge:prune` is the only periodic maintenance job (the design is otherwise daemonless). `--older-than=Nd` deletes `webhook_events` (cascading `agent_dispatches`) and trims `inbox*.jsonl` lines older than the cutoff; `--null-payloads-older-than=Md` (use `M < N`) nulls the stored payload past the replay window while keeping the row's dedup-gate + audit metadata; `--dry-run` reports counts only. Idempotent — safe to re-run. Schedule it per install (e.g. a daily cron); nothing breaks if it never runs except unbounded growth. See `CLAUDE_DECISIONS.md` DL-012.
+`bridge:prune` is the **manual** entry point to retention; since **DL-199** the receiver runs the same shared service automatically after each response, so scheduling this is no longer required (and the design has no cron at all). `--older-than=Nd` deletes `webhook_events` (cascading `agent_dispatches`) and trims `inbox*.jsonl` lines older than the cutoff; `--null-payloads-older-than=Md` (use `M < N`) nulls the stored payload past the replay window while keeping the row's dedup-gate + audit metadata; `--dry-run` reports counts only. Idempotent — safe to re-run alongside the automatic gate.
+
+**When you still want it:** draining a large backlog in ONE unbounded pass (the gate is deliberately bounded to `retention.batch` rows per delivery), a window different from the configured one, or any install running with `BRIDGE_RETENTION_ENABLED=false`. See `CLAUDE_DECISIONS.md` DL-012 (the command) and DL-199 (the gate).
+
+### Retention config (DL-199)
+
+| Key | Env | Default | Meaning |
+| --- | --- | --- | --- |
+| `retention.enabled` | `BRIDGE_RETENTION_ENABLED` | `true` | Prune after each delivery. **Defaults ON** — an upgrade starts pruning without operator action. |
+| `retention.interval` | `BRIDGE_RETENTION_INTERVAL` | `86400` | Seconds between passes once the store is drained. |
+| `retention.older_than` | `BRIDGE_RETENTION_OLDER_THAN` | `30d` | Delete events/dispatches + trim inbox lines older than this. Same vocabulary as `--older-than`. |
+| `retention.null_payloads_older_than` | `BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN` | *(empty ⇒ leg off)* | Null payloads past the replay window, keeping the row. |
+| `retention.batch` | `BRIDGE_RETENTION_BATCH` | `500` | Max rows one pass touches per leg. While a backlog remains the gate keeps draining on successive deliveries rather than waiting out `interval`. |
+
+An unparseable window (or a non-positive `interval`/`batch`) prunes **nothing** and logs a warning once per day — it never falls back to a default cutoff, because that would delete on a typo. `bridge:check` reports the resolved retention posture at preflight.
 
 `bridge:replay` re-runs the `processed_at`-guarded dispatch loop: errored rows (`processed_at` null) re-run; **already-succeeded rows are skipped** so a sibling's already-delivered push / `spawn_detached` is never re-fired. `--agent` scopes to one agent. `--force` clears `processed_at` first so done rows (incl. handler-note rows) re-run too — use it to re-attempt a missed channel push once the agent is back.
 

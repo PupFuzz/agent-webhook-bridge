@@ -6,6 +6,8 @@ use App\Bridge\Adapters\WebhookAdapterFactory;
 use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Handlers\KanbanDependabotCardHandler;
+use App\Bridge\Retention\RetentionConfig;
+use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
@@ -30,7 +32,9 @@ use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 use App\Models\WebhookEvent;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Symfony\Component\Process\ExecutableFinder;
 use Throwable;
 
 /**
@@ -42,6 +46,28 @@ class CheckCommand extends BridgeCommand
     protected $signature = 'bridge:check';
 
     protected $description = 'Validate the bridge install config (dirs, DB connectivity, agent YAMLs)';
+
+    /**
+     * Whether the RECEIVER's PHP can end a request before running terminating
+     * callbacks. `bridge:check` is CLI, where fastcgi_finish_request is never
+     * defined, so asking about THIS process would warn on every healthy FPM install.
+     * The receiver's SAPI is what matters, and php-fpm ships the function iff the
+     * FPM SAPI is built — so probe the fpm binary's own module list.
+     */
+    private function receiverSapiFinishesEarly(): bool
+    {
+        if (function_exists('fastcgi_finish_request')) {
+            return true;   // running under FPM already
+        }
+        foreach (['php-fpm'.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION, 'php-fpm'] as $bin) {
+            $path = (new ExecutableFinder)->find($bin);
+            if ($path !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public function handle(): int
     {
@@ -93,6 +119,48 @@ class CheckCommand extends BridgeCommand
         } catch (Throwable $e) {
             $this->error('inbox surfacing config: '.$e->getMessage());
             $ok = false;
+        }
+
+        // Retention (DL-199) is on by default and runs off the receiver, so a bad
+        // window is silent: the stores just grow, which is the exact DL-012 failure
+        // this replaced. Report the posture rather than let it go unnoticed.
+        $retention = RetentionConfig::fromConfig();
+        if (! $retention->enabled) {
+            $this->warn('retention: DISABLED (BRIDGE_RETENTION_ENABLED=false) — nothing prunes webhook_events/agent_dispatches/inbox lines unless you schedule bridge:prune yourself; the append-only stores grow without bound (DL-012/DL-199).');
+        } elseif (! $retention->isUsable()) {
+            $this->warn('retention: enabled but MISCONFIGURED — '.$retention->problem.'. Nothing is pruned (a bad window never falls back to a default cutoff). The stores grow until fixed.');
+        } else {
+            $this->info('retention: on ('.$retention->summary().')');
+            // The whole no-latency claim rests on the response being FINISHED before
+            // the terminating callback runs. Under PHP-FPM that is
+            // fastcgi_finish_request(); without it (mod_php) Symfony only flushes, so
+            // a keep-alive client can sit through the prune. The prune stays correct
+            // either way — this degrades latency, silently, which is why it is worth
+            // one preflight line. `bridge:check` runs on CLI, where the function is
+            // absent by definition, so probe the configured SAPI, not this process.
+            if (! $this->receiverSapiFinishesEarly()) {
+                $this->warn('retention: this PHP install has no fastcgi_finish_request() — retention runs AFTER the response is flushed but BEFORE the request ends, so a keep-alive client may wait for it. Serve the receiver under PHP-FPM (see CLAUDE_DEPLOYMENT.md), or set BRIDGE_RETENTION_ENABLED=false and run bridge:prune on a schedule.');
+            }
+            // Config being valid does NOT mean retention is RUNNING. A pass that throws
+            // (unwritable inbox, ENOSPC, a DB fault) backs off a full interval and drains
+            // nothing, leaving the posture line above reading healthy — the DL-012 blind
+            // spot. The gate records its last throw here; surface it (cleared automatically
+            // on the next successful pass). Wrapped like every other advisory: a broken
+            // cache backend must degrade to a note, never throw out of the preflight.
+            try {
+                $lastError = Cache::get(RetentionGate::ERROR_KEY);
+                if (is_array($lastError)) {
+                    // Deliberately does NOT assert the stores are growing: on a since-quieted
+                    // install nothing arrives, so nothing grows — the marker can outlive the
+                    // condition (webhook-driven clear, ≤30d TTL). State the fact (last pass
+                    // failed, nothing pruned since) and let the timestamp speak.
+                    $this->warn('retention: the LAST PASS FAILED and nothing has pruned since ('
+                        .($lastError['exception'] ?? 'error').': '.($lastError['error'] ?? '')
+                        .' at '.($lastError['at'] ?? '?').'). Check DB/file permissions and disk space; if traffic has since resumed, watch the log for a clean `retention pass` (the marker clears itself on the next success).');
+                }
+            } catch (Throwable $e) {
+                $this->warn('retention: could not read the last-failure marker ('.$e->getMessage().') — the cache backend the retention gate depends on may be unreachable.');
+            }
         }
 
         // Per-install endpoint URLs (when set — unset is fine until provisioning).

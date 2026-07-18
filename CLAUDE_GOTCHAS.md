@@ -203,6 +203,24 @@ Runtime `config()` overrides the env-derived value, and tests that exercise a no
 
 ---
 
+## G-019 — `bridge:prune` PARTIALLY APPLIES on an invalid second window: it deletes, then fails
+
+**Symptom:** `bridge:prune --older-than=30d --null-payloads-older-than=bogus` prints the range error and exits `FAILURE` — but 30 days of `webhook_events` (and their cascading `agent_dispatches`) are **already gone**. The non-zero exit reads like "nothing happened". It isn't.
+
+**Cause:** the two legs are parsed and executed **interleaved**, not validated up front: parse leg 1 → **DELETE** → parse leg 2 → fail (`PruneCommand::handleGuarded()`). So an invalid *second* window cannot prevent the *first* leg's destructive work — it has already committed.
+
+**Fix:** validate both windows yourself before invoking, or run `--dry-run` first. Each leg is independently valid, so the safe habit is one leg per invocation.
+
+**Deliberately not "fixed":** this is pre-existing behavior, **preserved on purpose** by the DL-199 service extraction (which rewrote it once to parse-both-first and thereby *silently changed the destructive side effect* — same exit code, different data outcome, and no test caught it; the interleaving is now pinned by `test_prune_runs_the_first_leg_before_parsing_the_second`). Changing it is a behavior change to a destructive command and needs its own decision (canon #6 / the always-ask gate), not a refactor's side effect. It is a **wart, still open**.
+
+**Note:** the DL-199 retention *gate* is not affected — it validates the whole config through `RetentionConfig` **before** touching anything, and an invalid window there prunes nothing at all.
+
+**Discovery:** caught during the DL-199 extraction (2026-07-15) by re-reading the original before trusting the rewrite; the combination had no test, so both versions went green.
+
+**Related:** `app/Console/Commands/Bridge/PruneCommand.php` (the interleaved legs), `app/Bridge/Retention/RetentionConfig.php` (the gate's validate-first posture), `CLAUDE_DECISIONS.md` DL-012 + DL-199.
+
+---
+
 ## How to add an entry
 
 1. New `G-NNN` (next available number).
