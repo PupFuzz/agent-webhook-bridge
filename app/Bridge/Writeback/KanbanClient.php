@@ -187,8 +187,12 @@ final class KanbanClient
             return $this->findCardsByRef($boardId, ExternalReferenceNormalizer::SYSTEM_GITHUB_ISSUE, (string) $issueNumber, self::canonSource($repo));
         }
 
-        // scan (legacy): bare issue-number match, repo-disambiguated downstream. `ref`
-        // is the default and the only mode the coord-card adopters run.
+        // scan (legacy): a BARE issue-number match with NO repo/source disambiguation —
+        // and, unlike correlatePr's scan branch, the coord-card handlers apply NO
+        // downstream repo guard on the result. So on a multi-repo board scan mode can
+        // correlate the wrong repo's issue #N. `ref` (the default, and the only mode the
+        // coord-card adopters run) passes canonSource($repo) and is correct; bridge:check
+        // warns if population=all is paired with scan.
         $ids = [];
         foreach ($this->correlationCards($boardId) as $card) {
             $issue = $card['payload']['issue_number'] ?? null;

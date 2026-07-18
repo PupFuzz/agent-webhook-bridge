@@ -1000,6 +1000,66 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_fails_closed_when_issue_number_read_throws_under_all(): void
+    {
+        // A fail-closed invariant that cannot be VERIFIED (the custom-fields read errors)
+        // must exit non-zero, not degrade to a warn — else an unverifiable `all` board
+        // certifies green and the silent double-card path ships.
+        $this->writeCoordAllMapping();
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            '*/boards/8/custom_fields.json' => Http::response(['error' => 'boom'], 500),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain("could NOT read board 8's custom fields to verify issue_number")
+            ->assertExitCode(1);
+    }
+
+    public function test_check_fails_closed_for_a_move_only_mapping_missing_issue_number_under_all(): void
+    {
+        // The preflight is gated on create OR move — a move-only mapping under `all` also
+        // correlates non-prefixed cards by-ref, so it needs issue_number too.
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => [
+                'board_id' => 8, 'stages' => ['opened' => 50],
+                'move_coord_cards' => true, 'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99,
+                'issue_population' => 'all',   // create_coord_cards intentionally OFF
+            ]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+        ]);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'dl_number']]]),   // no issue_number
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain("board 8 does not register the 'issue_number' custom field")
+            ->assertExitCode(1);
+    }
+
+    public function test_check_warns_when_population_all_paired_with_scan_correlation(): void
+    {
+        // by-ref correlation is only correct in `ref` mode; scan can't repo-disambiguate.
+        $this->writeCoordAllMapping();   // helper pins correlation=scan
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'issue_number']]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('BRIDGE_WRITEBACK_CORRELATION is not `ref`')
+            ->assertExitCode(0);   // warn, not fail
+    }
+
     public function test_check_skips_the_dependabot_custom_field_probe_when_the_flag_is_off(): void
     {
         // create_dependabot_cards absent → the mapping never creates cards, so the

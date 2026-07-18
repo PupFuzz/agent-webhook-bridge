@@ -645,8 +645,17 @@ class CheckCommand extends BridgeCommand
                         // github_issue by-ref, a bridge-missed non-prefixed event self-heals NOWHERE.
                         // Surface it so the DL-200 terminal-"agree" line is never misread as backstop
                         // coverage for this population (prefixed issues stay backstopped via the id: tag).
-                        if ($mapping->createCoordCards && $mapping->issuePopulation === WritebackMapping::POPULATION_ALL) {
+                        // Gated on create OR move — the move leg (create off) also correlates non-prefixed
+                        // cards by-ref, so it carries the same backstop + config-agreement stake.
+                        if (($mapping->createCoordCards || $mapping->moveCoordCards) && $mapping->issuePopulation === WritebackMapping::POPULATION_ALL) {
                             $this->warn("writeback: issue_population=all for {$repo} — the bridge is the SOLE real-time mover for NON-PREFIXED coord issues (the prefix/tag-keyed reconcile does not card them). Ensure the consumer's reconcile is extended to correlate non-prefixed issues by github_issue by-ref, else a bridge-missed non-prefixed event has NO backstop. Prefixed issues remain backstopped via the shared id: tag.");
+                            // by-ref correlation is only correct in `ref` mode — scan mode does a bare
+                            // issue-number match with NO repo/source disambiguation, so on a multi-repo
+                            // board it correlates the wrong repo's issue #N (skips a create / moves the
+                            // wrong card). ref is the default; warn if an install pairs all with scan.
+                            if (config('bridge.writeback.correlation', 'ref') !== 'ref') {
+                                $this->warn("writeback: issue_population=all for {$repo} but BRIDGE_WRITEBACK_CORRELATION is not `ref` — the github_issue by-ref correlation degrades to a bare issue-number scan with NO repo disambiguation, so on a multi-repo board it can correlate the wrong repo's issue #N. Set correlation=ref (the default) for the `all` population.");
+                            }
                             // The cross-config three-state compare (converged w/ sola): bind the bridge's
                             // runtime issue_population (writeback.json) to the reconcile's ($COORD_CONFIG),
                             // so bridge-on-all + reconcile-on-prefixed = a checkable DISAGREE, not silence.
@@ -775,13 +784,27 @@ class CheckCommand extends BridgeCommand
                                 // from a real no-match — so the bridge (the sole real-time mover for this
                                 // population) would silently DOUBLE-CARD. FAIL-CLOSED (exit non-zero), not a
                                 // warn: refuse to certify an install that would silently lose/duplicate cards.
-                                if ($mapping->createCoordCards && $mapping->issuePopulation === WritebackMapping::POPULATION_ALL) {
-                                    $present = $client->boardCustomFieldKeys($mapping->boardId);
-                                    if (! in_array('issue_number', $present, true)) {
-                                        $this->error("writeback: issue_population=all for {$repo} but board {$mapping->boardId} does not register the 'issue_number' custom field — every non-prefixed coord-card create 422s as a permanent no-op AND by-ref correlation cannot tell 'not indexed' from 'no match', so the bridge would silently double-card. Register issue_number (+ issue_url for source) on the board, or set issue_population=prefixed.");
+                                // Gated on create OR move: the move leg (create off) also correlates
+                                // non-prefixed cards by-ref, so it too 422s / silently no-ops without
+                                // issue_number registered.
+                                if (($mapping->createCoordCards || $mapping->moveCoordCards) && $mapping->issuePopulation === WritebackMapping::POPULATION_ALL) {
+                                    // Read in its OWN try so a read failure fails CLOSED. This is the one
+                                    // fail-closed check in this block (its siblings warn), so it must NOT be
+                                    // swallowed by the per-mapping warn-catch below: a fail-closed invariant
+                                    // we could not verify is a FAILURE, not a warn (DL-026 / canon #9 — an
+                                    // unrun measurement is not a pass). A blind token / wrong board / transient
+                                    // 5xx here therefore exits non-zero rather than certifying blind.
+                                    try {
+                                        $present = $client->boardCustomFieldKeys($mapping->boardId);
+                                        if (! in_array('issue_number', $present, true)) {
+                                            $this->error("writeback: issue_population=all for {$repo} but board {$mapping->boardId} does not register the 'issue_number' custom field — every non-prefixed coord-card create 422s as a permanent no-op AND by-ref correlation cannot tell 'not indexed' from 'no match', so the bridge would silently double-card. Register issue_number (+ issue_url for source) on the board, or set issue_population=prefixed.");
+                                            $ok = false;
+                                        } else {
+                                            $this->info("writeback: issue_number custom field registered on board {$mapping->boardId} ({$repo}) — github_issue by-ref ready (issue_population=all)");
+                                        }
+                                    } catch (Throwable $e) {
+                                        $this->error("writeback: issue_population=all for {$repo} but could NOT read board {$mapping->boardId}'s custom fields to verify issue_number registration — ".$e->getMessage().'. This fail-closed check must not be skipped (an unverifiable board could silently double-card); fix board access / board_id and re-run.');
                                         $ok = false;
-                                    } else {
-                                        $this->info("writeback: issue_number custom field registered on board {$mapping->boardId} ({$repo}) — github_issue by-ref ready (issue_population=all)");
                                     }
                                 }
                                 // #2652: every workflow stage id the mapping targets — each
