@@ -918,6 +918,88 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    /** @param array<string,mixed> $extra */
+    private function writeCoordAllMapping(array $extra = [], ?string $coordConfigPath = null): void
+    {
+        $this->writeAgent();
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => array_merge([
+                'board_id' => 8, 'stages' => ['merged' => 52],
+                'create_coord_cards' => true, 'coord_card_stage_id' => 21, 'issue_population' => 'all',
+            ], $extra)],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb-token');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+            'bridge.writeback.coord_config_path' => $coordConfigPath,
+        ]);
+    }
+
+    public function test_check_fails_closed_when_issue_population_all_and_board_lacks_issue_number(): void
+    {
+        // #4553 FAIL-CLOSED: population=all needs the issue_number custom field or every
+        // by-ref create 422s permanently AND by-ref correlation can't tell no-match from
+        // not-indexed → silent double-card. This is a hard failure, not a warn.
+        $this->writeCoordAllMapping();
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'dl_number']]]),   // no issue_number
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain("issue_population=all for owner/repo but board 8 does not register the 'issue_number' custom field")
+            ->assertExitCode(1);
+    }
+
+    public function test_check_passes_when_issue_population_all_and_board_registers_issue_number(): void
+    {
+        $this->writeCoordAllMapping();
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'issue_number'], ['key' => 'issue_url']]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('issue_number custom field registered on board 8')
+            ->assertExitCode(0);   // CANNOT-VERIFY on the compare (no $COORD_CONFIG) is a warn, not a fail
+    }
+
+    public function test_check_warns_when_bridge_all_disagrees_with_reconcile_prefixed(): void
+    {
+        // The load-bearing DISAGREE: bridge=all + reconcile=prefixed = the non-prefixed
+        // no-backstop gap, now checkable rather than silent.
+        $coordPath = $this->dir.'/coord.json';
+        File::put($coordPath, (string) json_encode(['kanban' => ['boards' => [['board_id' => 8, 'issue_population' => 'prefixed']]]]));
+        $this->writeCoordAllMapping(coordConfigPath: $coordPath);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'issue_number']]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('DISAGREE on issue_population')
+            ->assertExitCode(0);   // warn-never-fail
+    }
+
+    public function test_check_reports_issue_population_agreement_when_reconcile_also_all(): void
+    {
+        $coordPath = $this->dir.'/coord.json';
+        File::put($coordPath, (string) json_encode(['kanban' => ['boards' => [['board_id' => 8, 'issue_population' => 'all']]]]));
+        $this->writeCoordAllMapping(coordConfigPath: $coordPath);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
+            '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'issue_number']]]),
+        ]);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('coord config agrees')
+            ->assertExitCode(0);
+    }
+
     public function test_check_skips_the_dependabot_custom_field_probe_when_the_flag_is_off(): void
     {
         // create_dependabot_cards absent → the mapping never creates cards, so the

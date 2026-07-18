@@ -639,6 +639,19 @@ class CheckCommand extends BridgeCommand
                         if ($mapping->createCoordCards && $writeback->identityId === null) {
                             $this->warn("writeback: mapping for {$repo} sets create_coord_cards but writeback.json has no identity_id — a created coord card's task.created webhook echoes back and could self-wake a kanban-triage session; set identity_id (the global-echo gate is the sole guard).");
                         }
+                        // #4553: under population=all the bridge is the SOLE real-time mover for the
+                        // NON-PREFIXED coord-issue set — the prefix/tag-keyed reconcile ignores those
+                        // issues, so unless the consumer extends its reconcile to correlate them by
+                        // github_issue by-ref, a bridge-missed non-prefixed event self-heals NOWHERE.
+                        // Surface it so the DL-200 terminal-"agree" line is never misread as backstop
+                        // coverage for this population (prefixed issues stay backstopped via the id: tag).
+                        if ($mapping->createCoordCards && $mapping->issuePopulation === WritebackMapping::POPULATION_ALL) {
+                            $this->warn("writeback: issue_population=all for {$repo} — the bridge is the SOLE real-time mover for NON-PREFIXED coord issues (the prefix/tag-keyed reconcile does not card them). Ensure the consumer's reconcile is extended to correlate non-prefixed issues by github_issue by-ref, else a bridge-missed non-prefixed event has NO backstop. Prefixed issues remain backstopped via the shared id: tag.");
+                            // The cross-config three-state compare (converged w/ sola): bind the bridge's
+                            // runtime issue_population (writeback.json) to the reconcile's ($COORD_CONFIG),
+                            // so bridge-on-all + reconcile-on-prefixed = a checkable DISAGREE, not silence.
+                            $this->checkIssuePopulationAgreement($repo, $mapping);
+                        }
                         // DL-204 (#4357): the move leg fires only where BOTH gates are on — the
                         // coord-card-move family (gate 1) AND the writeback mapping's move_coord_cards
                         // (gate 2, now a guarded fleet default: on where coord_card_terminal_stage_id
@@ -753,6 +766,22 @@ class CheckCommand extends BridgeCommand
                                         $this->warn("writeback: create_dependabot_cards is on for {$repo} but board {$mapping->boardId} is MISSING the custom field(s) ".implode(', ', $missing).' the create payload sets ('.implode(', ', $required).') — every dependabot-card create will 422 and SILENTLY no-op until they are registered (add them on the board, or set create_dependabot_cards=false)');
                                     } else {
                                         $this->info("writeback: create_dependabot_cards custom fields ok on board {$mapping->boardId} ({$repo})");
+                                    }
+                                }
+                                // #4553: population=all correlates + creates by github_issue by-ref, which
+                                // derives from the `issue_number` payload custom field. If the board does
+                                // NOT register issue_number, kanban 422s every non-prefixed create as a
+                                // PERMANENT no-op (silent), AND an empty by-ref pre-check is indistinguishable
+                                // from a real no-match — so the bridge (the sole real-time mover for this
+                                // population) would silently DOUBLE-CARD. FAIL-CLOSED (exit non-zero), not a
+                                // warn: refuse to certify an install that would silently lose/duplicate cards.
+                                if ($mapping->createCoordCards && $mapping->issuePopulation === WritebackMapping::POPULATION_ALL) {
+                                    $present = $client->boardCustomFieldKeys($mapping->boardId);
+                                    if (! in_array('issue_number', $present, true)) {
+                                        $this->error("writeback: issue_population=all for {$repo} but board {$mapping->boardId} does not register the 'issue_number' custom field — every non-prefixed coord-card create 422s as a permanent no-op AND by-ref correlation cannot tell 'not indexed' from 'no match', so the bridge would silently double-card. Register issue_number (+ issue_url for source) on the board, or set issue_population=prefixed.");
+                                        $ok = false;
+                                    } else {
+                                        $this->info("writeback: issue_number custom field registered on board {$mapping->boardId} ({$repo}) — github_issue by-ref ready (issue_population=all)");
                                     }
                                 }
                                 // #2652: every workflow stage id the mapping targets — each
@@ -1139,6 +1168,57 @@ class CheckCommand extends BridgeCommand
             return;
         }
         $this->warn("{$prefix}: the two movers DISAGREE on the terminal — this bridge concludes coord cards into stage {$mine}, but the coordination config's terminal for board {$mapping->boardId} is \"{$name}\" (stage {$theirs}). They will fight every cycle: the bridge moves a closed card to {$mine} and the reconcile drags it back to {$theirs}. Set coord_card_terminal_stage_id={$theirs}, or change that board's terminal_columns.");
+    }
+
+    /**
+     * #4553 — bind the bridge's runtime `issue_population` (writeback.json, FPM-reachable)
+     * to the reconcile's (`$COORD_CONFIG`, its source of truth) so `bridge-on-all +
+     * reconcile-on-prefixed` — the exact non-prefixed no-backstop gap — is a CHECKABLE
+     * DISAGREE, not silence. Three-state (agree / DISAGREE / CANNOT-VERIFY), warn-never-fail,
+     * reusing the DL-200 cross-config machinery. CANNOT-VERIFY is kept DISTINCT from agreement:
+     * an unset/unreadable $COORD_CONFIG is "could not ask," not "they agree." Called only when
+     * the bridge side is already `all` (the direction that can strand cards); the mirror
+     * (reconcile=all, bridge=prefixed) is a lesser not-real-time gap and is not force-checked.
+     *
+     * CLI-only for the same reason as {@see checkCoordTerminalAgreement}: the FPM webhook env
+     * has no $COORD_CONFIG (the whole reason the compare lives here), and getenv() is read live
+     * (cache-immune) so `php artisan optimize` cannot freeze a deploy-time value.
+     */
+    private function checkIssuePopulationAgreement(string $repo, WritebackMapping $mapping): void
+    {
+        $mine = $mapping->issuePopulation;   // 'all' (this method is only called under `all`)
+        $prefix = "writeback: issue_population ({$repo}, board {$mapping->boardId})";
+        $tail = 'A bridge on `all` with a reconcile on `prefixed` is the no-backstop gap — the non-prefixed set self-heals nowhere.';
+
+        $path = config('bridge.writeback.coord_config_path');
+        if (! is_string($path) || $path === '') {
+            $ambient = getenv('COORD_CONFIG');
+            $path = is_string($ambient) && $ambient !== '' ? $ambient : null;
+        }
+        $config = CoordConfigTerminals::load($path);
+        if ($config === null) {
+            $where = $path === null ? '$COORD_CONFIG is not set' : "the coordination config at {$path} is absent, unreadable, or malformed";
+            $this->warn("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
+
+            return;
+        }
+        $theirs = CoordConfigTerminals::issuePopulationsForBoardId($config, $mapping->boardId);
+        if ($theirs === []) {
+            $this->warn("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — the coordination config has no kanban.boards[] entry for board {$mapping->boardId}. {$tail}");
+
+            return;
+        }
+        if (count($theirs) > 1) {
+            $this->warn("{$prefix}: CANNOT VERIFY — the coordination config resolves multiple issue_population values for board {$mapping->boardId} (".implode(', ', $theirs)."). {$tail}");
+
+            return;
+        }
+        if ($theirs[0] === $mine) {
+            $this->info("{$prefix}: coord config agrees — reconcile issue_population is '{$mine}', so the non-prefixed set is backstopped by the reconcile's by-ref correlation.");
+
+            return;
+        }
+        $this->warn("{$prefix}: the two movers DISAGREE on issue_population — this bridge is 'all' (it real-times NON-PREFIXED issues), but the coordination config's issue_population for board {$mapping->boardId} is '{$theirs[0]}'. A bridge-missed non-prefixed event then has NO reconcile backstop. Set kanban.boards[].issue_population=all in \$COORD_CONFIG (and extend the reconcile to correlate by github_issue by-ref), or set the bridge's issue_population=prefixed.");
     }
 
     /**
