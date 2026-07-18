@@ -494,7 +494,7 @@ Without any usable source the command fails with a clear message naming the reso
 - **The branch-create `started` outcome** (a card promoted to In-Progress by a `push` that created a branch, DL-160) — there is no PR to GET, so a dropped `push` event is *not* recovered here; it self-heals on the card's next PR event.
 - **`closed_unmerged` (abandoned-PR) regression** — this is legitimately *backward* (In-Review → In-Progress) and the event handler applies it, but the reconciler declines all backward moves, so a dropped `pull_request.closed`-unmerged event is **reported** (with an accurate label) but not auto-fixed. It is left to the event path (redelivery) or a human in v1.
 
-**Scheduling.** The command ships with **no new cron** — the daemonless design accepts exactly one periodic job (`bridge:prune`). Run `bridge:reconcile` from a host cron (e.g. hourly, report-only; `--fix` less often or after review), or wire a report-only pass into the session-close ritual. Automating `--fix` is an operator choice; start report-only and add `--fix` once the report is boring.
+**Scheduling.** The command ships with **no new cron** — and since DL-199 the design accepts **no** periodic job at all (retention now runs off the inbound webhook; `bridge:prune` is the manual entry point). `bridge:reconcile` is the one thing you may still want on a timer, because nothing event-drives it. Run `bridge:reconcile` from a host cron (e.g. hourly, report-only; `--fix` less often or after review), or wire a report-only pass into the session-close ritual. Automating `--fix` is an operator choice; start report-only and add `--fix` once the report is boring.
 
 ### Running reconcile unattended (worked example)
 

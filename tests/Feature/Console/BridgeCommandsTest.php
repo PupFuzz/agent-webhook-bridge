@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console;
 
+use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Writeback\KanbanClient;
 use App\Console\Commands\Bridge\InboxCommand;
@@ -10,8 +11,10 @@ use App\Models\AgentDispatch;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class BridgeCommandsTest extends TestCase
@@ -131,6 +134,40 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:check')
             ->expectsOutputToContain('ci_failure_workflow_patterns')
             ->assertExitCode(1);
+    }
+
+    public function test_check_reports_retention_on_when_enabled_and_usable(): void
+    {
+        // The posture line is the anti-DL-012 signal; pin that a healthy config
+        // actually emits it (and does NOT emit the failure line when nothing failed).
+        $this->writeAgent();
+        config(['bridge.retention.enabled' => true, 'bridge.retention.older_than' => '30d']);
+        Cache::forget(RetentionGate::ERROR_KEY);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('retention: on')
+            ->doesntExpectOutputToContain('LAST PASS FAILED')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_surfaces_a_persistent_retention_failure_from_the_marker(): void
+    {
+        // Finding from the DL-199 review: config being valid does NOT mean retention
+        // is RUNNING — a pass that throws backs off a full interval and drains nothing
+        // while the posture line reads healthy. The gate records its last throw; the
+        // preflight must surface it (warn, never fail — an install-check must not fail
+        // on a runtime condition it can only report).
+        $this->writeAgent();
+        config(['bridge.retention.enabled' => true, 'bridge.retention.older_than' => '30d']);
+        Cache::put(RetentionGate::ERROR_KEY, [
+            'at' => '2026-07-18T00:00:00+00:00',
+            'exception' => 'RuntimeException',
+            'error' => 'bridge: failed to lock inbox.jsonl for rewrite',
+        ], 3600);
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('LAST PASS FAILED')
+            ->assertExitCode(0);
     }
 
     public function test_check_fails_on_malformed_writeback_json(): void
@@ -1424,6 +1461,118 @@ class BridgeCommandsTest extends TestCase
 
         $this->artisan('bridge:prune', ['--older-than' => '99999999999999999999d'])->assertExitCode(1);
         $this->assertNotNull(WebhookEvent::find($old->id));
+    }
+
+    // --- card#4322 (DL-199): retention characterization ---
+    // The window parser is the only input guard on a destructive command, and
+    // the inbox trim's fail-open is the kind of subtlety an extraction drops
+    // silently. Both get pinned here before the logic moves to a service.
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function retentionWindowCases(): array
+    {
+        return [
+            'plain days' => ['30', true],
+            'd suffix' => ['30d', true],
+            'minimum' => ['1', true],
+            'cap boundary' => ['36500', true],
+            'one past the cap' => ['36501', false],
+            'zero' => ['0', false],
+            'negative' => ['-1', false],
+            'non-numeric' => ['abc', false],
+            'fractional' => ['1.5', false],
+            'leading space' => [' 30', false],
+            'double suffix' => ['30dd', false],
+            'absurd overflow' => ['99999999999999999999', false],
+        ];
+    }
+
+    #[DataProvider('retentionWindowCases')]
+    public function test_prune_window_parser_accepts_only_1_to_36500_days(string $window, bool $accepted): void
+    {
+        $run = $this->artisan('bridge:prune', ['--older-than' => $window]);
+        if (! $accepted) {
+            $run->expectsOutputToContain('must be a number of days between 1 and 36500');
+        }
+        $run->assertExitCode($accepted ? 0 : 1);
+    }
+
+    public function test_prune_window_parser_guards_the_null_payloads_leg_too(): void
+    {
+        // Same guard, second leg: an extraction that validates only --older-than
+        // leaves this one able to overflow into a future cutoff and null every row.
+        $this->artisan('bridge:prune', ['--null-payloads-older-than' => '36501'])
+            ->expectsOutputToContain('must be a number of days between 1 and 36500')
+            ->assertExitCode(1);
+    }
+
+    public function test_prune_runs_the_first_leg_before_parsing_the_second(): void
+    {
+        // Pre-existing behavior, pinned because the DL-199 extraction could silently
+        // "improve" it: each leg parses and RUNS before the next is parsed, so a valid
+        // --older-than followed by an invalid --null-payloads-older-than deletes first,
+        // THEN fails. Partial-apply-on-invalid-input is a wart, but changing it is a
+        // behavior change that must be its own declared decision — not a refactor's
+        // side effect. If this test reds, the extraction changed the ordering.
+        $old = $this->event();
+        $old->received_at = now()->subDays(40);
+        $old->save();
+
+        $this->artisan('bridge:prune', ['--older-than' => '30d', '--null-payloads-older-than' => 'bogus'])
+            ->assertExitCode(1);
+
+        $this->assertNull(WebhookEvent::find($old->id));   // leg 1 ALREADY deleted it
+    }
+
+    public function test_prune_treats_an_empty_window_as_absent_not_invalid(): void
+    {
+        // strOption() coerces '' → null, so an empty window falls through to the
+        // "specify a window" refusal rather than the parser's range error.
+        $this->artisan('bridge:prune', ['--older-than' => ''])
+            ->expectsOutputToContain('specify --older-than')
+            ->assertExitCode(1);
+    }
+
+    public function test_prune_keeps_an_inbox_line_with_no_numeric_ts(): void
+    {
+        // Fail-open (DL-012): a line that can't be aged is never dropped — only
+        // the sibling with a parseable, aged ts goes.
+        File::ensureDirectoryExists($this->dir.'/state');
+        $oldTs = (float) now()->subDays(40)->format('U.u');
+        File::put($this->dir.'/state/inbox.jsonl',
+            json_encode(['id' => 'aged:0', 'ts' => $oldTs, 'kind' => 'x', 'summary' => 'aged'])."\n"
+            .json_encode(['id' => 'no-ts:0', 'kind' => 'x', 'summary' => 'no ts key'])."\n"
+            .json_encode(['id' => 'bad-ts:0', 'ts' => 'not-a-number', 'kind' => 'x', 'summary' => 'unparseable ts'])."\n",
+        );
+
+        $this->artisan('bridge:prune', ['--older-than' => '30d'])->assertExitCode(0);
+
+        $this->assertSame(
+            ['no-ts:0', 'bad-ts:0'],
+            array_column(BridgePaths::readJsonl($this->dir.'/state/inbox.jsonl'), 'id'),
+        );
+    }
+
+    public function test_prune_dry_run_leaves_the_inbox_and_seen_cursor_untouched(): void
+    {
+        // test_prune_dry_run_changes_nothing covers the DB leg only; the file leg
+        // rewrites state on disk, so it needs its own proof — and it must still
+        // REPORT the count it would have removed.
+        File::ensureDirectoryExists($this->dir.'/state');
+        $oldTs = (float) now()->subDays(40)->format('U.u');
+        $inbox = json_encode(['id' => 'old:0', 'ts' => $oldTs, 'kind' => 'x', 'summary' => 'old'])."\n";
+        $seen = (string) json_encode(['old:0']);
+        File::put($this->dir.'/state/inbox.jsonl', $inbox);
+        File::put($this->dir.'/state/inbox-seen.json', $seen);
+
+        $this->artisan('bridge:prune', ['--older-than' => '30d', '--dry-run' => true])
+            ->expectsOutputToContain('1 removed')
+            ->assertExitCode(0);
+
+        $this->assertSame($inbox, File::get($this->dir.'/state/inbox.jsonl'));
+        $this->assertSame($seen, File::get($this->dir.'/state/inbox-seen.json'));
     }
 
     public function test_check_fails_on_invalid_inbox_layout(): void
