@@ -25,10 +25,13 @@ class ExternalReferenceNormalizer
 
     public const SYSTEM_GITHUB_PR = 'github_pr';
 
+    public const SYSTEM_GITHUB_ISSUE = 'github_issue';
+
     /** Display custom-field key → external-reference system slug. */
     private const PAYLOAD_KEY_TO_SYSTEM = [
         'dl_number' => self::SYSTEM_DL,
         'pr_number' => self::SYSTEM_GITHUB_PR,
+        'issue_number' => self::SYSTEM_GITHUB_ISSUE,
     ];
 
     /**
@@ -44,6 +47,7 @@ class ExternalReferenceNormalizer
     private const NUMERIC_SYSTEMS = [
         self::SYSTEM_DL,
         self::SYSTEM_GITHUB_PR,
+        self::SYSTEM_GITHUB_ISSUE,
     ];
 
     private const REF_MAX = 255;
