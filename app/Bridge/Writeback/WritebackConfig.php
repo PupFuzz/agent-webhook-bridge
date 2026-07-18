@@ -288,7 +288,22 @@ final class WritebackConfig
             if ($coordCardTerminalStageId !== null && $coordCardTerminalStageId === $coordCardStageId) {
                 throw new ConfigException("writeback.json: mapping for {$repo} coord_card_terminal_stage_id must differ from coord_card_stage_id — a coord card cannot conclude into the same stage it is created/revived in");
             }
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId, $cardIdTagTemplate, $promoteOnRelease);
+            // Which coordination issues get carded (#4553). Absent ⇒ 'prefixed' (byte-identical
+            // DL-198: only recognized-prefix issues, tag-keyed). 'all' also cards non-prefixed
+            // issues by the github_issue by-ref key. Fail-closed on an unrecognized value: a typo'd
+            // population must not silently degrade to prefixed (an operator who wrote 'everything'
+            // would believe non-prefixed issues are carded when they are not). Governs only the
+            // coord-card create/move families; the board-side issue_number registration + the
+            // reconcile-backstop coherence are bridge:check preflights (they need a live board read).
+            $issuePopulation = WritebackMapping::POPULATION_PREFIXED;
+            if (array_key_exists('issue_population', $m) && $m['issue_population'] !== null) {
+                $allowed = [WritebackMapping::POPULATION_PREFIXED, WritebackMapping::POPULATION_ALL];
+                if (! is_string($m['issue_population']) || ! in_array($m['issue_population'], $allowed, true)) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} issue_population must be one of: ".implode(', ', $allowed));
+                }
+                $issuePopulation = $m['issue_population'];
+            }
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId, $cardIdTagTemplate, $promoteOnRelease, $issuePopulation);
         }
 
         return new self($identityId, $mappings, self::parseAlertChannel($raw));

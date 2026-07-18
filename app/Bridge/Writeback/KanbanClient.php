@@ -172,6 +172,39 @@ final class KanbanClient
     }
 
     /**
+     * The card ids on a board whose `issue_number` matches (#4553) — the coord-card
+     * by-ref idempotency/correlation key for the non-prefixed population. A thin
+     * mirror of {@see correlatePr} over the `github_issue` system: the kanban by-ref
+     * index derives the ref from the card's `issue_number` payload key (verified live
+     * — the ref comes from the payload key, NOT `external_link`, which only qualifies
+     * `source`). Collection for the same N:1 reason as {@see correlateDl}.
+     *
+     * @return list<int>
+     */
+    public function correlateIssue(int $boardId, int $issueNumber, ?string $repo = null): array
+    {
+        if ($this->correlation === 'ref') {
+            return $this->findCardsByRef($boardId, ExternalReferenceNormalizer::SYSTEM_GITHUB_ISSUE, (string) $issueNumber, self::canonSource($repo));
+        }
+
+        // scan (legacy): a BARE issue-number match with NO repo/source disambiguation —
+        // and, unlike correlatePr's scan branch, the coord-card handlers apply NO
+        // downstream repo guard on the result. So on a multi-repo board scan mode can
+        // correlate the wrong repo's issue #N. `ref` (the default, and the only mode the
+        // coord-card adopters run) passes canonSource($repo) and is correct; bridge:check
+        // warns if population=all is paired with scan.
+        $ids = [];
+        foreach ($this->correlationCards($boardId) as $card) {
+            $issue = $card['payload']['issue_number'] ?? null;
+            if (is_numeric($issue) && (int) $issue === $issueNumber && isset($card['id']) && is_numeric($card['id'])) {
+                $ids[] = (int) $card['id'];
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
      * Card ids correlated to a `(system, ref)` via the kanban by-ref lookup
      * (DL-147/148): `GET /boards/{b}/tasks/by-ref.json` — server canonicalizes
      * the ref and returns the live cards as a collection (N:1). Indexed, O(1),

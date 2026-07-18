@@ -201,6 +201,45 @@ If you run the bridge on a **coordination repo** (the Agent Board Framework's `[
 - **`identity_id` is REQUIRED (echo-gate).** A created card fires a kanban `task.created` webhook that comes back to the bridge; if any agent runs the `kanban-triage` family on that board, that echo reads as an untriaged card and could **self-wake**. The **only** guard is the global-echo gate keyed on `writeback.json` `identity_id`. `bridge:check` **warns** when `create_coord_cards` is set but `identity_id` is null.
 - **`bridge:check`.** Validates `coord_card_stage_id` (and any `swimlane_id`) exists on the board — a typo'd id makes every create 422 and silently no-op. Missing `coord_card_stage_id` while `create_coord_cards` is on **fails the config closed at load** (a create with no stage can't POST).
 
+## Optional: card non-prefixed issues too (`issue_population`, #4553)
+
+By default `create_coord_cards`/`move_coord_cards` track only issues with a recognized
+`[BRIEF]`/`[ANNOUNCE]`/`[QUERY]`/`[REVIEW]`/`[TASK]` title (the `id:<sid>` tag key). Set
+**`issue_population: "all"`** on the mapping to ALSO track **non-prefixed** issues (`[PROPOSAL]`,
+`[FR]`, plain titles) — each correlated by the **`github_issue` by-ref** key instead of a tag.
+
+```jsonc
+"mappings": {
+  "org/coord": {
+    "board_id": 8,
+    "create_coord_cards": true,
+    "coord_card_stage_id": 21,
+    "issue_population": "all"       // default "prefixed" ⇒ byte-identical DL-198/200
+  }
+}
+```
+
+- **Per-issue key, never per-mapping.** A **prefixed** issue always uses the `id:<sid>` tag
+  (unchanged — the same key the reconcile uses, so they never double-card it). A **non-prefixed**
+  issue uses the `github_issue` by-ref key. Under `all` a prefixed card is **dual-keyed** (tag +
+  `issue_number` in payload), and create/move **pre-check both keys** — so a card is found whether
+  its title carried a prefix at create or at a later reopen.
+- **The ref is the payload `issue_number` field.** A by-ref card stamps `issue_number` in its
+  payload (that is what the kanban by-ref index derives from — NOT `external_link`, which only
+  derives the `source` repo). So the board **MUST register the `issue_number` custom field** (add
+  `issue_url` too, for `source`). `bridge:check` **FAILS** (exit non-zero) under `all` if it is
+  absent — without it every by-ref create 422s permanently AND an empty by-ref lookup can't be told
+  from "not indexed", so the bridge would silently double-card.
+- **Backstop is a consumer commitment.** The prefix/tag-keyed reconcile does **not** card
+  non-prefixed issues, so under `all` the bridge is the **sole real-time mover** for them — a
+  bridge-missed non-prefixed event self-heals nowhere **unless** the consumer extends its reconcile
+  to correlate by `github_issue` by-ref (framework #299). `bridge:check` **warns** on this, and
+  performs a **three-state cross-config compare** (agree / DISAGREE / CANNOT-VERIFY) binding this
+  bridge's `issue_population` to the reconcile's (`$COORD_CONFIG` `kanban.boards[].issue_population`):
+  `bridge=all` + `reconcile=prefixed` surfaces as a **DISAGREE** rather than a silent gap.
+  (Prefixed issues stay backstopped regardless, via the shared `id:` tag.)
+- **Default is byte-identical.** Absent (or `"prefixed"`) ⇒ exactly DL-198/200 behavior.
+
 ## Optional: coordination issue close/reopen → card move (`move_coord_cards`, DL-200)
 
 The sibling of `create_coord_cards` above, and **separately opt-in** — it does *not* ride

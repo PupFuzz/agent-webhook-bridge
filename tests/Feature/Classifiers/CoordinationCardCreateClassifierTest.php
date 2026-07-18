@@ -148,6 +148,40 @@ class CoordinationCardCreateClassifierTest extends TestCase
         $this->assertSame([], $this->classify('[NOTE] unknown prefix')->targets);
     }
 
+    public function test_non_prefixed_carded_under_population_all(): void
+    {
+        // #4553: population=all cards a non-prefixed issue by the github_issue by-ref
+        // key. sid is null (no id: tag); itype falls back to 'task'.
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21, 'issue_population' => 'all']);
+
+        $r = $this->classify('a plain non-prefixed title');
+        $this->assertSame([], $r->intents);
+        $this->assertCount(1, $r->targets);
+        $t = $r->targets[0];
+        $this->assertSame('kanban_coord_card', $t->handler);
+        $this->assertSame('issue-4', $t->targetId);
+        $this->assertNull($t->payload['sid']);
+        $this->assertSame(4, $t->payload['issue_number']);
+        $this->assertSame('task', $t->payload['itype']);
+        $this->assertSame('a plain non-prefixed title', $t->payload['title']);
+        $this->assertSame('https://github.com/org/coord/issues/4', $t->payload['issue_url']);
+    }
+
+    public function test_non_prefixed_not_carded_under_prefixed_default(): void
+    {
+        // The default (prefixed) is byte-identical DL-198: a non-prefixed issue is never
+        // carded even with create_coord_cards on. (Guards the fork against widening the default.)
+        $this->assertSame([], $this->classify('a plain non-prefixed title')->targets);
+    }
+
+    public function test_prefixed_still_carded_under_population_all(): void
+    {
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21, 'issue_population' => 'all']);
+        $t = $this->classify('[QUERY] still carded')->targets[0];
+        $this->assertSame('QUERY-4', $t->payload['sid']);   // prefixed path unchanged (tag key)
+        $this->assertSame(4, $t->payload['issue_number']);
+    }
+
     public function test_reopened_also_emits(): void
     {
         $this->assertCount(1, $this->classify('[REVIEW] reopen me', 'issues.reopened')->targets);

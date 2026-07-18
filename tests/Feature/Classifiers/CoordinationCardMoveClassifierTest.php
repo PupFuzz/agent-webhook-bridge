@@ -124,6 +124,36 @@ class CoordinationCardMoveClassifierTest extends TestCase
         $this->assertSame('terminal', $targets[0]->payload['disposition']);
     }
 
+    public function test_non_prefixed_closed_emits_terminal_move_under_population_all(): void
+    {
+        // #4553: population=all moves a non-prefixed card (by-ref keyed in the handler).
+        // sid is null; disposition still derives from the event.
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
+            'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99, 'issue_population' => 'all']);
+
+        $t = $this->classify('a plain non-prefixed title', 'issues.closed', 7)->targets[0];
+        $this->assertSame('kanban_coord_card_move', $t->handler);
+        $this->assertNull($t->payload['sid']);
+        $this->assertSame('terminal', $t->payload['disposition']);
+        $this->assertSame(7, $t->payload['issue_number']);
+    }
+
+    public function test_non_prefixed_reopen_revives_under_population_all(): void
+    {
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
+            'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99, 'issue_population' => 'all']);
+
+        $t = $this->classify('a plain non-prefixed title', 'issues.reopened', 7)->targets[0];
+        $this->assertNull($t->payload['sid']);
+        $this->assertSame('revive', $t->payload['disposition']);
+    }
+
+    public function test_non_prefixed_not_moved_under_prefixed_default(): void
+    {
+        // Byte-identical DL-200: the default (prefixed) never moves a non-prefixed card.
+        $this->assertSame([], $this->classify('a plain non-prefixed title', 'issues.closed')->targets);
+    }
+
     public function test_opened_is_not_a_move(): void
     {
         // opened belongs to the CREATE leg. If the move family also fired here it

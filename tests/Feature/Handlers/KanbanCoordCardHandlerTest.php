@@ -161,10 +161,93 @@ class KanbanCoordCardHandlerTest extends TestCase
         Log::spy();
         Http::fake();
 
-        $this->handle(['sid' => '']);   // empty sid → malformed
+        $this->handle(['title' => '']);   // empty title → malformed (always required)
 
         Http::assertNothingSent();
         Log::shouldHaveReceived('warning')->withArgs(fn (string $m) => str_contains($m, 'malformed payload'))->once();
+    }
+
+    public function test_empty_sid_under_prefixed_population_is_a_noop_no_correlation_key(): void
+    {
+        // #4553 fail-closed: a null/empty-sid target under the default (prefixed) population
+        // has no correlation key (no id: tag, no by-ref) — refuse rather than create an
+        // uncorrelatable card that would re-mint on every redelivery. The classifier never
+        // emits this; the handler guards it defensively.
+        Log::spy();
+        Http::fake();
+
+        $this->handle(['sid' => '']);   // prefixed default (setUp) + no sid ⇒ no key
+
+        Http::assertNothingSent();
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m) => str_contains($m, 'malformed payload'))->once();
+    }
+
+    public function test_non_prefixed_creates_by_ref_card_under_population_all(): void
+    {
+        // population=all: a non-prefixed issue (null sid) is correlated by github_issue
+        // by-ref → pre-check by-ref (empty) → create stamping issue_number in payload and
+        // NO id: tag (only type:).
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21, 'issue_population' => 'all']);
+        Http::fake([
+            '*/boards/8/tasks/by-ref.json*' => Http::response(['data' => []]),   // no existing by-ref card
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle(['sid' => null, 'itype' => 'task', 'title' => 'a plain non-prefixed title']);
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && $r['task']['tags'] === ['type:task']              // NO id: tag on the by-ref path
+            && $r['task']['payload'] === ['issue_number' => 4]   // stamped so it is by-ref findable
+            && $r['task']['external_link'] === 'https://github.com/org/coord/issues/4');
+        // correlated by-ref, not by tag
+        Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains(urldecode($r->url()), 'system=github_issue')
+            && str_contains(urldecode($r->url()), 'ref=4'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/search.json'));
+    }
+
+    public function test_non_prefixed_existing_by_ref_card_skips_create(): void
+    {
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21, 'issue_population' => 'all']);
+        Http::fake(['*/boards/8/tasks/by-ref.json*' => Http::response(['data' => [['id' => 7]]])]);
+
+        $this->handle(['sid' => null, 'itype' => 'task', 'title' => 'a plain non-prefixed title']);
+
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST');
+    }
+
+    public function test_prefixed_under_population_all_is_dual_keyed(): void
+    {
+        // A prefixed issue under population=all is dual-keyed: id: tag AND issue_number in
+        // payload → discoverable by the reconcile (tag) AND by-ref. Pre-check tests BOTH.
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21, 'issue_population' => 'all']);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),       // no tag card
+            '*/boards/8/tasks/by-ref.json*' => Http::response(['data' => []]),   // no by-ref card
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle();   // default payload: sid=QUERY-4, itype=query
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST'
+            && $r['task']['tags'] === ['id:QUERY-4', 'type:query']
+            && $r['task']['payload'] === ['issue_number' => 4]);   // dual-keyed
+        Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/search.json'));   // tag pre-check ran
+        Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains(urldecode($r->url()), 'system=github_issue'));   // by-ref pre-check ran
+    }
+
+    public function test_prefixed_under_all_skips_when_by_ref_finds_it_prefix_change_edge(): void
+    {
+        // The prefix-change edge: an issue carded non-prefixed (by-ref only) that reopens
+        // WITH a prefix — the tag lookup is empty but the by-ref lookup finds the card → skip.
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21, 'issue_population' => 'all']);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),            // tag: not found
+            '*/boards/8/tasks/by-ref.json*' => Http::response(['data' => [['id' => 7]]]),   // by-ref: found
+        ]);
+
+        $this->handle();   // prefixed target
+
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST');
     }
 
     public function test_unmapped_or_optout_noops(): void

@@ -12,6 +12,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\RecipientAddressing;
 use App\Bridge\Writeback\WritebackConfig;
+use App\Bridge\Writeback\WritebackMapping;
 
 /**
  * Coordination + impl/CI classifier for the Claude Code Coordination Framework —
@@ -747,10 +748,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         $num = (int) $issue['number'];
         $title = is_string($issue['title'] ?? null) ? $issue['title'] : '';
 
-        $sid = $this->stableId($title, $num);
-        if ($sid === null) {
-            return null; // un-prefixed / PROPOSAL / unrecognized → not carded (definitional skip)
-        }
+        $sid = $this->stableId($title, $num);   // null for a non-prefixed issue (#4553)
 
         // Own gate: the repo must opt into coord-card creation. Loaded like the
         // PR-move classifier does — absent mapping / opt-out ⇒ byte-identical no-op.
@@ -759,6 +757,14 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         $mapping = $writeback?->mappingFor($ctx->scopeId);
         if ($mapping === null || ! $mapping->createCoordCards) {
             return null;
+        }
+
+        // Per-issue population gate (#4553): a non-prefixed issue (null sid) is carded
+        // ONLY under population=all, keyed by github_issue by-ref. Under the default
+        // (prefixed) a non-prefixed issue is skipped — byte-identical DL-198. A prefixed
+        // issue cards under both populations (tag key), so it is never gated here.
+        if ($sid === null && $mapping->issuePopulation !== WritebackMapping::POPULATION_ALL) {
+            return null; // un-prefixed / PROPOSAL / unrecognized under prefixed ⇒ not carded
         }
 
         $itype = $this->coordItype($title);   // mirror the reconcile's _itype (see method) — NOT the anchored sid prefix
@@ -824,17 +830,21 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         $title = is_string($issue['title'] ?? null) ? $issue['title'] : '';
 
         // The move-set MUST equal the create-set: a card that was never created under
-        // this sid can't be correlated by it. Same anchored helper, no second rule.
+        // this key can't be correlated by it. Same anchored helper, no second rule.
+        // sid is null for a non-prefixed issue (#4553) — carded (and thus movable) only
+        // under population=all, where the handler correlates it by github_issue by-ref.
         $sid = $this->stableId($title, $num);
-        if ($sid === null) {
-            return null; // un-prefixed / PROPOSAL / unrecognized → never carded → nothing to move
-        }
 
         $configDir = (string) config('bridge.config_dir');
         $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
         $mapping = $writeback?->mappingFor($ctx->scopeId);
         if ($mapping === null || ! $mapping->moveCoordCards) {
             return null;
+        }
+        // Per-issue population gate (#4553), mirroring the create leg so the move-set
+        // stays equal to the create-set: a non-prefixed issue moves ONLY under population=all.
+        if ($sid === null && $mapping->issuePopulation !== WritebackMapping::POPULATION_ALL) {
+            return null; // un-prefixed / PROPOSAL / unrecognized under prefixed → never carded → nothing to move
         }
 
         return new ClassifyResult(targets: [

@@ -57,15 +57,17 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         $disposition = $p['disposition'] ?? null;
         // The disposition is an allow-list of what the classifier can emit — an
         // unrecognized value must never fall through to a move.
+        // sid is NO LONGER always required (#4553): a non-prefixed issue carries an empty
+        // sid legitimately and is correlated by github_issue by-ref.
         if (! is_string($repo) || $repo === ''
             || ! is_numeric($issueNumber)
-            || ! is_string($sid) || $sid === ''
             || ($disposition !== 'terminal' && $disposition !== 'revive')) {
-            Log::warning('kanban_coord_card_move: malformed payload (repo/issue_number/sid/disposition); ignoring', ['payload' => $p]);
+            Log::warning('kanban_coord_card_move: malformed payload (repo/issue_number/disposition); ignoring', ['payload' => $p]);
 
             return;
         }
         $issueNumber = (int) $issueNumber;
+        $isPrefixed = is_string($sid) && $sid !== '';
 
         $configDir = (string) config('bridge.config_dir');
         $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
@@ -85,14 +87,33 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             return;
         }
 
-        $tag = "id:{$sid}";
+        // Per-issue correlation (#4553), mirroring the create leg so the move-set equals the
+        // create-set. Prefixed → the `id:<sid>` tag. Non-prefixed → github_issue by-ref
+        // (live only under population=all). Under `all` a prefixed card is dual-keyed, so we
+        // union both lookups to also catch the prefix-change edge (a card first created
+        // non-prefixed whose closing event now carries a prefix, or vice-versa).
+        $byRef = $mapping->issuePopulation === WritebackMapping::POPULATION_ALL;
+        if (! $isPrefixed && ! $byRef) {
+            // No derivable correlation key: a null-sid target under population=prefixed. The
+            // classifier never emits this; nothing to move.
+            Log::warning('kanban_coord_card_move: malformed payload (empty sid with population=prefixed — no correlation key); ignoring', ['payload' => $p]);
+
+            return;
+        }
+
         $client = WritebackClientFactory::make();   // throws (→ 5xx) on a missing/insecure token
         try {
-            $ids = $client->cardsByTag($mapping->boardId, $tag);
+            $ids = [];
+            if ($isPrefixed) {
+                $ids = $client->cardsByTag($mapping->boardId, "id:{$sid}");
+            }
+            if ($byRef) {
+                $ids = array_values(array_unique(array_merge($ids, $client->correlateIssue($mapping->boardId, $issueNumber, $repo))));
+            }
             if ($ids === []) {
                 // Never carded (create leg off / pre-ship issue), or the reconcile hasn't
                 // run yet. Nothing to move — and this leg never creates.
-                Log::info('kanban_coord_card_move: no card carries tag; nothing to move', ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag]);
+                Log::info('kanban_coord_card_move: no card correlated; nothing to move', ['repo' => $repo, 'issue' => $issueNumber, 'sid' => $sid, 'by_ref' => $byRef]);
 
                 return;
             }
@@ -127,7 +148,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
     }
 
     /** Apply one card's disposition. Throws RequestException; the caller isolates per-card. */
-    private function moveOne(KanbanClient $client, WritebackMapping $mapping, int $id, string $disposition, string $sid, string $repo, int $issueNumber): void
+    private function moveOne(KanbanClient $client, WritebackMapping $mapping, int $id, string $disposition, ?string $sid, string $repo, int $issueNumber): void
     {
         $card = $client->getCard($id);
         // Tag-collision guard: only ever act on the mapped board.

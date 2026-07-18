@@ -130,4 +130,43 @@ final class CoordConfigTerminals
 
         return array_keys($names);
     }
+
+    /**
+     * The distinct `issue_population` value(s) the coordination config resolves for a
+     * BOARD ID (#4553) — the reconcile's source of truth for which coord issues it cards
+     * (`kanban.boards[].issue_population`, sola's finalized surface). Same board-id join +
+     * REPLACE_ME skip as {@see terminalNamesForBoardId}. Per sola's contract an
+     * entry-present-but-key-absent resolves to 'prefixed' (the reconcile default); anything
+     * that is not literally 'all' is treated as 'prefixed' (a typo on the reconcile side
+     * then surfaces as a DISAGREE against a bridge on 'all', which is the safe direction).
+     *
+     * Returns [] ONLY when NO entry carries this board id — reserved for "cannot verify"
+     * (the coord config doesn't know this board), kept distinct from ['prefixed'] so an
+     * unset $COORD_CONFIG is never read as agreement.
+     *
+     * @param  array<string, mixed>  $config
+     * @return list<string>
+     */
+    public static function issuePopulationsForBoardId(array $config, int $boardId): array
+    {
+        $kanban = $config['kanban'] ?? null;
+        $boards = is_array($kanban) ? ($kanban['boards'] ?? null) : null;
+
+        $values = [];
+        foreach (is_array($boards) ? $boards : [] as $boardCfg) {
+            if (! is_array($boardCfg) || ! is_numeric($boardCfg['board_id'] ?? null)) {
+                continue;
+            }
+            if ((int) $boardCfg['board_id'] !== $boardId) {
+                continue;
+            }
+            $raw = $boardCfg['issue_population'] ?? null;
+            $resolved = (is_string($raw) && $raw === WritebackMapping::POPULATION_ALL)
+                ? WritebackMapping::POPULATION_ALL
+                : WritebackMapping::POPULATION_PREFIXED;
+            $values[$resolved] = true;
+        }
+
+        return array_keys($values);
+    }
 }
