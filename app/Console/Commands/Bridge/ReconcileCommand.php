@@ -83,9 +83,8 @@ class ReconcileCommand extends BridgeCommand
             return self::FAILURE;
         }
 
-        $configDir = (string) config('bridge.config_dir');
         try {
-            $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+            $writeback = WritebackConfig::loadDefault();
         } catch (ConfigException $e) {
             $this->error('writeback.json: '.$e->getMessage());
 

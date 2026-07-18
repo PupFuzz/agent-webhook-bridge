@@ -69,8 +69,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         $issueNumber = (int) $issueNumber;
         $isPrefixed = is_string($sid) && $sid !== '';
 
-        $configDir = (string) config('bridge.config_dir');
-        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $writeback = WritebackConfig::loadDefault();
         if ($writeback === null) {
             Log::warning('kanban_coord_card_move: writeback not configured; ignoring', ['repo' => $repo, 'issue' => $issueNumber]);
 

@@ -111,8 +111,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             return [];
         }
         $repo = $ctx->scopeId;
-        $configDir = (string) config('bridge.config_dir');
-        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $writeback = WritebackConfig::loadDefault();
         $mapping = $writeback?->mappingFor($repo);
         if ($mapping === null || ! $mapping->promoteOnRelease) {
             return [];
@@ -156,8 +155,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         }
 
         $repo = $scopeId;   // GitHubAdapter sets scope_id = repository.full_name
-        $configDir = (string) config('bridge.config_dir');
-        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $writeback = WritebackConfig::loadDefault();
         $mapping = $writeback?->mappingFor($repo);
         if ($mapping === null) {
             return new ClassifyResult;   // repo not configured for writeback
@@ -412,8 +410,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         }
 
         $repo = $scopeId;
-        $configDir = (string) config('bridge.config_dir');
-        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $writeback = WritebackConfig::loadDefault();
         $mapping = $writeback?->mappingFor($repo);
         if ($mapping === null) {
             return new ClassifyResult;   // repo not configured for writeback

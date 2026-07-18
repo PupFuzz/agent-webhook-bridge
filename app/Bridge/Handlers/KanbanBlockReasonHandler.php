@@ -64,8 +64,7 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             return;
         }
 
-        $configDir = (string) config('bridge.config_dir');
-        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $writeback = WritebackConfig::loadDefault();
         if ($writeback === null) {
             Log::warning('kanban_block_reason: writeback is not configured (no writeback.json); ignoring', ['card_id' => $cardId, 'repo' => $repo]);
 
