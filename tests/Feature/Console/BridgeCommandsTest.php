@@ -136,6 +136,56 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(1);
     }
 
+    public function test_check_warns_when_explicit_wake_membership_omits_comment_to(): void
+    {
+        // DL-213: comment_to is a fleet default, but an install that set wake_membership
+        // explicitly overrides it — bridge:check surfaces that its directed-reply wakes
+        // are dark (warn, never fail). coord-message family is on (unset families default).
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
+            ."  config:\n    wake_membership: [to_me, to_all]\n");
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('omits comment_to')
+            ->assertExitCode(0);   // warn, not fail
+    }
+
+    public function test_check_does_not_warn_when_wake_membership_is_absent(): void
+    {
+        // The absent-key install inherits the default (now WITH comment_to) — no gap, no warn.
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n");
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('omits comment_to')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_does_not_warn_when_wake_membership_includes_comment_to(): void
+    {
+        // Explicit list that already carries comment_to → no gap, no warn.
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
+            ."  config:\n    wake_membership: [to_me, to_all, comment_to]\n");
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('omits comment_to')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_fails_on_malformed_wake_membership(): void
+    {
+        // A non-list value throws at parse (the classify path would 5xx on it) — the check
+        // surfaces it per-agent and fails, instead of crashing the whole run.
+        File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\CoordinationClassifier\n"
+            ."  config:\n    wake_membership: not-a-list\n");
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('wake_membership')
+            ->assertExitCode(1);
+    }
+
     public function test_check_reports_retention_on_when_enabled_and_usable(): void
     {
         // The posture line is the anti-DL-012 signal; pin that a healthy config

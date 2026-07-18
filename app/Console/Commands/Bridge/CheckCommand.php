@@ -329,6 +329,29 @@ class CheckCommand extends BridgeCommand
                     $ok = false;
                 }
 
+                // DL-213 (#4632): comment_to is now in the wake_membership fleet DEFAULT.
+                // The flip only reaches installs with NO explicit wake_membership — an
+                // install that set it explicitly before the flip OVERRIDES the default, so
+                // its directed-reply wakes stay dark, and the flip must not silently rewrite
+                // a deliberate operator config. Surface exactly that population (coord-message
+                // on + explicit wake_membership + comment_to omitted); an absent-key install
+                // needs no warn (the default now covers it). wake_membership is lazily parsed
+                // (like ci_failure_workflow_patterns above), so a malformed value first throws
+                // here — catch it per-agent rather than aborting the whole check.
+                $families = $cfg->classifierConfig->strings('families');
+                $coordMessageOn = $families === [] || in_array('coord-message', $families, true);
+                if ($coordMessageOn && $cfg->classifierConfig->has('wake_membership')) {
+                    try {
+                        $membership = $cfg->classifierConfig->strings('wake_membership');
+                        if (! in_array('comment_to', $membership, true)) {
+                            $this->warn("agent {$name}: classifier.config.wake_membership = [".implode(', ', $membership)."] is set explicitly and omits comment_to — a counterparty's comment addressed TO you on a thread you neither opened nor were labelled on will NOT live-wake you (the common post-a-reply-and-wait flow). comment_to is now in the fleet default; add it to your explicit list to catch directed replies, or leave it off to keep them dark deliberately.");
+                        }
+                    } catch (Throwable $e) {
+                        $this->error("agent {$name}: classifier.config.wake_membership — ".$e->getMessage());
+                        $ok = false;
+                    }
+                }
+
                 foreach ($cfg->subscriptions as $sub) {
                     if ($sub->provider === 'github') {
                         $githubScopeConsumers[$sub->scopeId][] = [

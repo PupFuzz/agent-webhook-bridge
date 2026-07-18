@@ -51,6 +51,18 @@ class ClassifierConfigTest extends TestCase
         $this->assertSame([], $cfg->section('missing_section'));
     }
 
+    public function test_has_distinguishes_an_explicit_key_from_a_defaulted_one(): void
+    {
+        // DL-213: the explicit-vs-default distinction a warn needs — an explicitly-set
+        // key (even to a falsy/empty value) reads present; an absent one reads absent
+        // regardless of what strings()'s default would supply.
+        $cfg = ClassifierConfig::fromClassifierSection(['config' => ['wake_membership' => ['to_me'], 'empty_key' => []]]);
+
+        $this->assertTrue($cfg->has('wake_membership'));
+        $this->assertTrue($cfg->has('empty_key'));       // present-but-empty is still present
+        $this->assertFalse($cfg->has('never_set'));
+    }
+
     public function test_string_groups_parses_and_lowercases(): void
     {
         $cfg = ClassifierConfig::fromClassifierSection([
