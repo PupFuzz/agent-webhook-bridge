@@ -190,20 +190,19 @@ final class RetentionService
     }
 
     /**
-     * Bound one seen-cursor to the ids that still exist, through the canonical
-     * BridgePaths cursor primitives so the writer (bridge:inbox) and this sweep
-     * agree on the shape (DL-212). Skips the write when nothing aged out, so the
-     * every-run sweep doesn't churn an unchanged cursor's mtime.
+     * Bound one seen-cursor to the ids that still exist, through the locked cursor
+     * RMW so a concurrent bridge:inbox advance can't clobber this intersection nor
+     * be clobbered by it (DL-212 shape, card #4630 lock). updateSeenLocked skips the
+     * write when nothing aged out, so the every-run sweep doesn't churn an unchanged
+     * cursor's mtime.
      *
      * @param  list<string>  $keepIds
      */
     private function pruneSeen(string $seenPath, array $keepIds): void
     {
-        $current = BridgePaths::readSeen($seenPath);
-        $keep = array_values(array_intersect($current, $keepIds));
-        if ($keep === $current) {
-            return;
-        }
-        BridgePaths::writeSeen($seenPath, $keep);
+        BridgePaths::updateSeenLocked(
+            $seenPath,
+            fn (array $current) => array_values(array_intersect($current, $keepIds)),
+        );
     }
 }

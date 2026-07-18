@@ -73,7 +73,12 @@ class InboxCommand extends BridgeCommand
         $reachesConsumer = $hookEvent === null || in_array($hookEvent, self::ADDITIONAL_CONTEXT_EVENTS, true);
         if ($reachesConsumer && ! $this->option('no-cursor-advance')) {
             $newIds = array_map(fn (array $line) => (string) $line['id'], $unseen);
-            BridgePaths::writeSeen($seenPath, array_values(array_unique([...$seen, ...$newIds])));
+            // Merge onto the cursor read UNDER the lock, not $seen from line 41 — a
+            // prune sweep between that read and here must not be clobbered (card #4630).
+            BridgePaths::updateSeenLocked(
+                $seenPath,
+                fn (array $seen) => array_values(array_unique([...$seen, ...$newIds])),
+            );
         }
 
         return self::SUCCESS;
