@@ -104,7 +104,7 @@ final class WebhookProvisioner
         // recreate a subscription the receiver then 500s. Refuse; operator
         // chmods + re-runs.
         if (SecretFile::isInsecure($secretPath)) {
-            return ProvisionResult::cannotReconcile($kind, $secretPath.' (group/world-readable — chmod 600)');
+            return ProvisionResult::cannotReconcile($kind, SecretFile::permsMessage($secretPath));
         }
         $secret = is_file($secretPath) ? trim((string) file_get_contents($secretPath)) : '';
         if ($secret === '') {

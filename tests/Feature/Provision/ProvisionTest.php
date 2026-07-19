@@ -145,8 +145,12 @@ class ProvisionTest extends TestCase
 
         Http::fake(['*' => Http::response(['data' => [['id' => 3, 'url' => $this->receiverUrl, 'active' => false]]])]);
 
-        // DL-010: don't reuse + re-push a co-tenant-readable secret upstream.
-        $this->artisan('bridge:provision', ['--reconcile' => true])->assertExitCode(1);
+        // DL-010: don't reuse + re-push a co-tenant-readable secret upstream. The refusal
+        // detail reuses SecretFile::permsMessage (the mode-bearing form) — the "(mode NNNN)"
+        // token distinguishes it from the pre-consolidation "(group/world-readable — chmod 600)".
+        $this->artisan('bridge:provision', ['--reconcile' => true])
+            ->expectsOutputToContain('group/world-readable (mode 0644)')
+            ->assertExitCode(1);
         Http::assertNotSent(fn (Request $r) => $r->method() === 'DELETE' || $r->method() === 'POST');
     }
 
