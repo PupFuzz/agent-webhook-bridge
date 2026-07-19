@@ -8,6 +8,21 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
+## [0.62.1] - 2026-07-19
+
+**Patch — governance-docs + dependency bumps only; zero runtime code change.** 7 substantive commits since v0.62.0 (PRs #336, #337, four dependabot merges #331–#334, plus a docs-only solo-orientation sync). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change; no `app/` file touched.**
+
+### Changed
+- **#336** — **docs: the ask-before-every-PR checkpoint is retired** (CLAUDE.md rule #5). The dev-PR lifecycle (open → wait-for-green → self-merge) is documented as fully pre-authorized; the hard gate remains solely "only the user merges to `main`".
+- **#337** — **docs: the custom security-surface extra-approval gate is dropped** (CLAUDE.md rule #5), folding that surface into the standard fully-autonomous dev flow + user-gated release.
+- **docs: solo orientation synced to coord v0.8.0** (`CLAUDE_AGENTBOARD.md`; coder/mechanic subagent model + USER-GATING pointer).
+
+### Security / dependencies
+- **#331** — **actions/setup-node 6.4.0 → 7.0.0** (CI-only, `channel-server-supply-chain.yml`). The v7 default-node change is inert here: the step pins `node-version: '20'` explicitly.
+- **#332** — **PupFuzz/agent-board-toolkit/promote 0.12.1 → 0.17.0** (release CI, `release-promote-cards.yml`). Interface verified compatible against `promote/action.yml` at the new pin — all five inputs (`writeback-token`, `expected-host`, `api-base`, `dls`, `dry-run`) unchanged; the action runs only on merge-to-main release events.
+- **#333** — **laravel/framework 13.19.0 → 13.20.0** (framework minor; full SQLite + MariaDB matrix green on the PR).
+- **#334** — **nunomaduro/collision 8.9.4 → 8.9.5** (dev-dependency patch).
+
 ## [0.62.0] - 2026-07-19
 
 **Minor — a new opt-in `coord_non_addressed_disposition` inbox-stage seam (DL-215) + a seen-cursor read-modify-write race fix (DL-216), plus a dedup/refactor batch (audit findings F7, F8, F10–F14) and two CI-hygiene fixes.** 11 PRs since v0.61.0 (#319–#329). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change; the one new feature is opt-in ⇒ absent-config byte-identical.**

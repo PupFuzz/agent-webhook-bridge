@@ -242,13 +242,14 @@ action.
   the cheapest tier (Haiku):** this seat *decides what to delegate and verifies what comes
   back*, and a weak model there decomposes badly and can't check strong-model output — the
   rework costs more than the tier saved.
-- **A delegated subtask** — tier it by *that subtask's difficulty*, in a fresh subagent:
+- **A delegated subtask** — dispatch to a fresh **`coder`**/**`mechanic`** subagent, tiered
+  by *that subtask's difficulty*:
   - **Mechanical / bounded / tool-verifiable** (lint sweeps, file-by-file transforms,
-    artifact regen, bulk search) → **cheapest-tier (Haiku) subagent.** Low risk: you verify
-    the result with a **tool** (tests green, SHA matches, grep clean), not with judgment, so
+    artifact regen, bulk search) → the **`mechanic`** (cheapest tier). Low risk: you verify
+    the result with a **tool** (tests green, SHA matches, grep clean), not judgment, so
     the tier gap is safe.
   - **Isolated hard reasoning** (a gnarly algorithm, a security analysis) that doesn't need
-    your session history → **top-tier (Opus) subagent.** You pay the premium only on a small
+    your session history → the **`coder`** (top tier). You pay the premium only on a small
     fresh context, not on your whole accreted session.
 
 **Verifier ≥ producer for judgment calls.** When a subagent's output is *judgment-based* and
@@ -258,12 +259,11 @@ spawn a peer-tier reviewer subagent. Never let a cheaper seat rubber-stamp reaso
 actually check. (When the check *is* mechanical, tier doesn't matter — the tool is the
 verifier.)
 
-**Delegate vs. inline.** Delegate when the subtask is **(a) self-contained** (fully
-specifiable in the subagent's prompt; doesn't need your conversation history), **(b)
-substantial** (many tool calls / long output — the re-send cost compounds), and **(c)
-topically disjoint** from your current thread. Keep it **inline** when it is trivial, reuses
-your live context heavily, or needs tight mid-flight steering — a subagent runs to completion
-and returns one result, so you can't steer it partway.
+**Fresh-subagent-by-default for coding.** Any coding task beyond a few trivial lines —
+feature, bugfix, refactor, test — defaults to a **fresh `coder`** subagent (or **`mechanic`**
+for a fully-specified mechanical procedure), one-per-task so work never accretes onto your
+session. Keep it **inline** only when trivial, context-heavy, or needing tight mid-flight
+steering — a subagent runs to completion and returns one result, so you can't steer it partway.
 
 ---
 
@@ -299,6 +299,11 @@ whole queue on one open question.
 ---
 
 ## User-action gating
+
+> **Full model — `USER-GATING.md`** (a canonical framework doc, in the plugin's `docs/`
+> directory — read it in place). The role-parameterized user-gating cluster is owned there; read
+> §1 (cost model), §2 (shared core), §3c (solo surface — merge authority IS the gate model), and
+> §4a (your reserved-surfaces list). The detail below is solo's operative surface.
 
 The `USER ACTION REQUIRED` banner is the uniform display format for human-facing asks. Use
 it whenever you are surfacing a gate, a genuine question, or an irreversible action that
