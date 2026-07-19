@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Bridge\Adapters\WebhookAdapterFactory;
+use App\Bridge\Http\PlainTextResponse;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
 use App\Bridge\Validation\ProviderName;
@@ -124,6 +125,6 @@ class VerifyHmacSignature
 
     private function fail(string $reason, int $code): Response
     {
-        return response($reason, $code, ['Content-Type' => 'text/plain; charset=utf-8']);
+        return PlainTextResponse::make($reason, $code);
     }
 }
