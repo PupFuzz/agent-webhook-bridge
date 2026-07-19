@@ -274,10 +274,7 @@ final class DispatchService
                     }
                     $handler->handle($target, $agent);
                 } catch (Throwable $e) {
-                    // Store class + message only — NOT (string) $e, which is the full
-                    // trace + absolute server paths and would leak into the
-                    // operator-readable error_message. The trace stays in the log.
-                    $note = $e::class.': '.$e->getMessage();
+                    $note = self::exceptionNote($e);
                     Log::warning('bridge dispatch: handler failed', [
                         'agent' => $agent->agentName, 'handler' => $target->handler,
                         'error' => $note, 'exception' => $e,
@@ -375,10 +372,7 @@ final class DispatchService
 
     private function recordError(AgentDispatch $dispatch, Throwable $e): void
     {
-        // class + message only (no trace/paths) in the stored, operator-readable
-        // field; the full trace stays in the log. processed_at stays null →
-        // the row is replayable (an errored dispatch must re-run).
-        $message = $e::class.': '.$e->getMessage();
+        $message = self::exceptionNote($e);
         // reason => null clears a prior pass's drop reason on a --force replay
         // transition; processed_at is deliberately left untouched (null) so the
         // row stays replayable.
@@ -386,6 +380,16 @@ final class DispatchService
         Log::warning('bridge dispatch: classifier failed', [
             'agent' => $dispatch->agent_name, 'error' => $message, 'exception' => $e,
         ]);
+    }
+
+    /**
+     * Format an exception for the stored, operator-readable `error_message`:
+     * class + message ONLY, never `(string) $e` (the full trace + absolute server
+     * paths — that stays in the log, not the DB field).
+     */
+    private static function exceptionNote(Throwable $e): string
+    {
+        return $e::class.': '.$e->getMessage();
     }
 
     /**

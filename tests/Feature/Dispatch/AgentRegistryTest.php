@@ -68,6 +68,22 @@ class AgentRegistryTest extends TestCase
         $this->assertNull($registry->byGithubUserId(null));
     }
 
+    public function test_non_numeric_id_does_not_false_match_an_id_zero_agent(): void
+    {
+        // A non-numeric id must be rejected by the shared numeric guard, NOT
+        // `(int)`-coerced to 0 — otherwise it would false-match an agent whose
+        // immutable id happens to be 0.
+        $registry = $this->registry([
+            ['name' => 'zero-agent', 'kanban_user_id' => 0, 'github_user_id' => 0],
+        ]);
+
+        $this->assertNull($registry->byKanbanUserId('not-a-number'));
+        $this->assertNull($registry->byGithubUserId('nope'));
+        // Sanity: the genuine 0 still resolves.
+        $this->assertSame('zero-agent', $registry->byKanbanUserId(0)?->name);
+        $this->assertSame('zero-agent', $registry->byGithubUserId(0)?->name);
+    }
+
     public function test_actor_from_event_kanban(): void
     {
         $registry = $this->registry([['name' => 'prod-agent', 'kanban_user_id' => 137]]);
