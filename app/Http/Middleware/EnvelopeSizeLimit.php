@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Bridge\Http\PlainTextResponse;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -33,6 +34,6 @@ class EnvelopeSizeLimit
 
     private function tooLarge(): Response
     {
-        return response('body_too_large', 413, ['Content-Type' => 'text/plain; charset=utf-8']);
+        return PlainTextResponse::make('body_too_large', 413);
     }
 }

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Webhook;
 use App\Bridge\Adapters\WebhookAdapterFactory;
 use App\Bridge\Dispatch\DispatchService;
 use App\Bridge\Exceptions\InvalidEnvelopeException;
+use App\Bridge\Http\PlainTextResponse;
 use App\Bridge\Retention\RetentionGate;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
@@ -71,6 +72,6 @@ class WebhookController extends Controller
 
     private function plain(string $body, int $code): Response
     {
-        return response($body, $code, ['Content-Type' => 'text/plain; charset=utf-8']);
+        return PlainTextResponse::make($body, $code);
     }
 }
