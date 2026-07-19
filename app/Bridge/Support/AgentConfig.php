@@ -273,22 +273,15 @@ final class AgentConfig
     /**
      * Read a top-level section that MUST be a mapping when present. An absent or
      * null section defaults to empty; a present non-mapping value (e.g. a scalar
-     * `classifier: SomeName`) is malformed and throws rather than degrading.
+     * `classifier: SomeName`) is malformed and throws rather than degrading. The
+     * message names the bare top-level key.
      *
      * @param  array<mixed>  $raw
      * @return array<mixed>
      */
     private static function requireMapping(array $raw, string $key): array
     {
-        $value = $raw[$key] ?? null;
-        if ($value === null) {
-            return [];
-        }
-        if (! is_array($value)) {
-            throw new ConfigException("{$key} must be a mapping");
-        }
-
-        return $value;
+        return ConfigMapping::require($raw, $key, $key);
     }
 
     /**
