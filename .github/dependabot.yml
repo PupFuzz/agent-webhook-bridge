@@ -2,8 +2,24 @@
 #
 # Two ecosystems (the pip ecosystem was removed with the v0.12 Laravel
 # rewrite — DL-001):
-#   * github-actions — pinned actions in .github/workflows/*.yml
+#   * github-actions — pinned actions in .github/workflows/*.yml AND in
+#     composite actions under .github/actions/<name>/action.yml
 #   * composer       — Laravel + bridge PHP deps (composer.json)
+#
+# github-actions scanning: `directory: "/"` covers only .github/workflows +
+# a ROOT action.yml — NOT composite actions in subdirectories, so a pin inside
+# .github/actions/<name>/action.yml drifts silently behind its workflow twin
+# (the root cause of the setup-php drift in card #4502). The second `directories`
+# entry adds each composite-action folder so dependabot maintains those pins too.
+# `/.github/actions/*` matches one level down — GitHub's composite-action
+# convention (`.github/actions/<name>/action.yml`); it is scoped UNDER
+# .github/actions (which "/" never scans) so it can't re-match .github/workflows
+# and mint duplicate PRs (dependabot-core#10884).
+#   Tradeoff (accepted, no `groups` key): an action pinned in BOTH a workflow and
+#   the composite — e.g. shivammathur/setup-php in security.yml + setup-app —
+#   opens one PR per location (two per bump). Each PR bumps a genuinely distinct
+#   file and auto-merges on green; grouping the whole ecosystem to coalesce them
+#   is a broader delivery change than this fix warrants.
 #
 # Weekly cadence; target dev (not main) so PRs flow through the normal
 # review + auto-merge-on-green path. No auto-merge — per feedback-git-workflow
@@ -13,7 +29,9 @@
 version: 2
 updates:
   - package-ecosystem: github-actions
-    directory: "/"
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: weekly
       day: monday
