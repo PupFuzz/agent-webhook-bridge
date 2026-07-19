@@ -246,20 +246,27 @@ final class AgentRegistry
 
     public function byKanbanUserId(int|string|null $uid): ?RegisteredAgent
     {
-        if ($uid === null || ! is_numeric($uid)) {
-            return null;
-        }
+        $uid = self::numericUid($uid);
 
-        return $this->byKanbanUid[(int) $uid] ?? null;
+        return $uid === null ? null : ($this->byKanbanUid[$uid] ?? null);
     }
 
     public function byGithubUserId(int|string|null $uid): ?RegisteredAgent
     {
-        if ($uid === null || ! is_numeric($uid)) {
-            return null;
-        }
+        $uid = self::numericUid($uid);
 
-        return $this->byGithubUid[(int) $uid] ?? null;
+        return $uid === null ? null : ($this->byGithubUid[$uid] ?? null);
+    }
+
+    /**
+     * Normalize a raw actor id to the immutable integer key the lookups use, or
+     * null when it is absent / non-numeric (so a non-numeric id never `(int)`-
+     * coerces to 0 and false-matches an agent). The single guard for every
+     * numeric-id lookup on this registry.
+     */
+    private static function numericUid(int|string|null $uid): ?int
+    {
+        return ($uid !== null && is_numeric($uid)) ? (int) $uid : null;
     }
 
     public function byName(string $name): ?RegisteredAgent
@@ -275,7 +282,9 @@ final class AgentRegistry
      */
     public function isSharedGithubId(int|string|null $id): bool
     {
-        return $id !== null && is_numeric($id) && isset($this->sharedGithubIds[(int) $id]);
+        $id = self::numericUid($id);
+
+        return $id !== null && isset($this->sharedGithubIds[$id]);
     }
 
     /**
@@ -316,11 +325,11 @@ final class AgentRegistry
      */
     private function githubActor(?string $actorId, array $payload): Actor
     {
-        if ($actorId === null || ! is_numeric($actorId)) {
+        $id = self::numericUid($actorId);
+        if ($id === null) {
             return new Actor(id: $actorId, name: null, isKnownAgent: false, rawEnvelope: $payload);
         }
 
-        $id = (int) $actorId;
         $this->warnLoginDrift($id, $payload);
 
         // Shared account → can't attribute to one agent; defer to the classifier.
