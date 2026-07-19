@@ -1,5 +1,7 @@
 <?php
 
+use App\Bridge\Support\CsvEnv;
+
 return [
 
     /*
@@ -238,10 +240,7 @@ return [
 
     'spawn' => [
         'enabled' => (bool) env('BRIDGE_SPAWN_ENABLED', false),
-        'allowlist' => array_values(array_filter(
-            array_map('trim', explode(',', (string) env('BRIDGE_SPAWN_ALLOWLIST', ''))),
-            fn (string $p) => $p !== '',
-        )),
+        'allowlist' => CsvEnv::parse((string) env('BRIDGE_SPAWN_ALLOWLIST', '')),
         // Absolute path to the `setsid` launcher. Null ⇒ auto-detect
         // (/usr/bin/setsid, /bin/setsid). Pinned absolute so a payload env PATH
         // can't redirect which setsid runs (allowlist bypass otherwise).
@@ -281,9 +280,6 @@ return [
     |
     */
 
-    'global_echo_ids' => array_values(array_filter(
-        array_map('trim', explode(',', (string) env('BRIDGE_GLOBAL_ECHO_IDS', ''))),
-        fn (string $id) => $id !== '',
-    )),
+    'global_echo_ids' => CsvEnv::parse((string) env('BRIDGE_GLOBAL_ECHO_IDS', '')),
 
 ];

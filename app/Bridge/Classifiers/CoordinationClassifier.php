@@ -59,7 +59,11 @@ use App\Bridge\Writeback\WritebackMapping;
  *     post-a-reply-and-wait flow is otherwise dark out of the box; it is additive-only
  *     and echo-safe (keys on the comment's directed `TO:` line, not authorship).
  *     `from_me` (wake on ALL activity on threads you opened) stays opt-in — it is the
- *     over-wake/self-wake knob.
+ *     over-wake/self-wake knob. `coord_non_addressed_disposition: inbox_stage` (DL-215,
+ *     the coord-message sibling of `impl_non_wake_disposition`) softens the recipient
+ *     gate: a NON-addressed coordination event, which DEFAULT-DROPS (`drop`), instead
+ *     stages a normal coord Intent with NO channel_push — a durable inbox backstop for
+ *     a PM whose completeness net is the bridge inbox rather than a SessionStart sweep.
  *   - `kanban-triage` — kanban `task.created` for a HUMAN-filed, UNTRIAGED card
  *     (DL-168): pairs the inbox `new_card` Intent with a channel_push to the
  *     triage owner. Folded in from the retired standalone KanbanTriageClassifier
@@ -318,7 +322,14 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 $forMe = false;  // addressed to someone else — narrow, unconditional
             }
         }
-        if (! $forMe) {
+        // Recipient gate → wake disposition. An ADDRESSED event ($forMe) live-wakes.
+        // A NON-addressed event DEFAULT-DROPS (`drop` — lean inbox, byte-identical to
+        // the pre-seam behavior). `coord_non_addressed_disposition: inbox_stage` instead
+        // stages it to the durable inbox with NO channel_push — the PM completeness
+        // backstop that does not depend on live-wake (the coord-message sibling of
+        // `impl_non_wake_disposition`; DL-215). Only the recipient gate softens: the
+        // earlier subject/noise drops already returned null for both dispositions.
+        if (! $forMe && $cfg->string('coord_non_addressed_disposition', 'drop') !== 'inbox_stage') {
             return null;
         }
 
@@ -360,7 +371,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
 
         return new ClassifyResult(
             intents: [$intent],
-            targets: $this->wakePush($intent, $ctx),
+            targets: $forMe ? $this->wakePush($intent, $ctx) : [],   // non-addressed inbox_stage: staged, never woken
             reattributedActor: $reattributed,
         );
     }
@@ -752,8 +763,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
 
         // Own gate: the repo must opt into coord-card creation. Loaded like the
         // PR-move classifier does — absent mapping / opt-out ⇒ byte-identical no-op.
-        $configDir = (string) config('bridge.config_dir');
-        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $writeback = WritebackConfig::loadDefault();
         $mapping = $writeback?->mappingFor($ctx->scopeId);
         if ($mapping === null || ! $mapping->createCoordCards) {
             return null;
@@ -835,8 +845,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         // under population=all, where the handler correlates it by github_issue by-ref.
         $sid = $this->stableId($title, $num);
 
-        $configDir = (string) config('bridge.config_dir');
-        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $writeback = WritebackConfig::loadDefault();
         $mapping = $writeback?->mappingFor($ctx->scopeId);
         if ($mapping === null || ! $mapping->moveCoordCards) {
             return null;

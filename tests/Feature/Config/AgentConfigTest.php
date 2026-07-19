@@ -274,14 +274,34 @@ class AgentConfigTest extends TestCase
     public function test_non_mapping_classifier_section_throws(): void
     {
         // A plausible typo: `classifier: SomeName` instead of `{class: SomeName}`.
+        // The strict-mapping message names the bare top-level key (no prefix).
         $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('classifier must be a mapping');
         AgentConfig::fromArray('a', $this->raw(['classifier' => 'SomeClassName']));
     }
 
     public function test_non_mapping_surface_section_throws(): void
     {
         $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('surface must be a mapping');
         AgentConfig::fromArray('a', $this->raw(['surface' => 'yes']));
+    }
+
+    public function test_non_mapping_channel_section_throws(): void
+    {
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('channel must be a mapping');
+        AgentConfig::fromArray('a', $this->raw(['channel' => 'notamap']));
+    }
+
+    public function test_tolerant_section_coerces_non_mapping_to_empty_without_throwing(): void
+    {
+        // Guards the DELIBERATELY tolerant twin (AgentConfig::section): a scalar
+        // `api` block is coerced to [] silently — it must NOT be routed through the
+        // strict requireMapping helper (which would throw here).
+        $cfg = AgentConfig::fromArray('a', $this->raw(['api' => 'not-a-mapping']));
+
+        $this->assertSame([], $cfg->tokenPathOverrides);
     }
 
     public function test_unknown_top_level_key_warns(): void

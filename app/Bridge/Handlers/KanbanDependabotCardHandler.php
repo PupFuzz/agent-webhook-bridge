@@ -65,8 +65,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
         $title = is_string($p['pr_title'] ?? null) && $p['pr_title'] !== '' ? $p['pr_title'] : "Dependabot PR #{$prNumber}";
         $url = is_string($p['pr_url'] ?? null) ? $p['pr_url'] : '';
 
-        $configDir = (string) config('bridge.config_dir');
-        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $writeback = WritebackConfig::loadDefault();
         if ($writeback === null) {
             Log::warning('kanban_dependabot_card: writeback not configured; ignoring', ['repo' => $repo, 'pr' => $prNumber]);
 

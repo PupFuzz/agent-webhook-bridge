@@ -224,14 +224,7 @@ final class KanbanClient
         }
         $data = $this->http()->get("/boards/{$boardId}/tasks/by-ref.json", $query)->throw()->json('data');
 
-        $ids = [];
-        foreach (is_array($data) ? $data : [] as $card) {
-            if (is_array($card) && isset($card['id']) && is_numeric($card['id'])) {
-                $ids[] = (int) $card['id'];
-            }
-        }
-
-        return $ids;
+        return self::idList($data);
     }
 
     /**
@@ -252,14 +245,7 @@ final class KanbanClient
     {
         $data = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId} tags:\"{$tag}\"", 'limit' => self::SEARCH_LIMIT])->throw()->json('data');
 
-        $ids = [];
-        foreach (is_array($data) ? $data : [] as $card) {
-            if (is_array($card) && isset($card['id']) && is_numeric($card['id'])) {
-                $ids[] = (int) $card['id'];
-            }
-        }
-
-        return $ids;
+        return self::idList($data);
     }
 
     /**
@@ -455,14 +441,8 @@ final class KanbanClient
     public function boardSwimlaneIds(int $boardId): array
     {
         $swimlanes = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data.swimlanes');
-        $ids = [];
-        foreach (is_array($swimlanes) ? $swimlanes : [] as $s) {
-            if (is_array($s) && isset($s['id']) && is_numeric($s['id'])) {
-                $ids[] = (int) $s['id'];
-            }
-        }
 
-        return $ids;
+        return self::idList($swimlanes);
     }
 
     /**
@@ -501,14 +481,10 @@ final class KanbanClient
      */
     public function boardStageOrder(int $boardId): array
     {
-        $workflows = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data.workflows');
         $order = [];
-        foreach (is_array($workflows) ? $workflows : [] as $wf) {
-            $stages = is_array($wf) && is_array($wf['stages'] ?? null) ? $wf['stages'] : [];
-            foreach ($stages as $s) {
-                if (is_array($s) && isset($s['id'], $s['position']) && is_numeric($s['id']) && is_numeric($s['position'])) {
-                    $order[(int) $s['id']] = (float) $s['position'];
-                }
+        foreach ($this->preloadStages($boardId) as $s) {
+            if (isset($s['id'], $s['position']) && is_numeric($s['id']) && is_numeric($s['position'])) {
+                $order[(int) $s['id']] = (float) $s['position'];
             }
         }
 
@@ -532,18 +508,59 @@ final class KanbanClient
      */
     public function boardStageIdsByName(int $boardId): array
     {
-        $workflows = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data.workflows');
         $byName = [];
-        foreach (is_array($workflows) ? $workflows : [] as $wf) {
-            $stages = is_array($wf) && is_array($wf['stages'] ?? null) ? $wf['stages'] : [];
-            foreach ($stages as $s) {
-                if (is_array($s) && isset($s['id'], $s['name']) && is_numeric($s['id']) && is_string($s['name']) && $s['name'] !== '') {
-                    $byName[$s['name']] = (int) $s['id'];
-                }
+        foreach ($this->preloadStages($boardId) as $s) {
+            if (isset($s['id'], $s['name']) && is_numeric($s['id']) && is_string($s['name']) && $s['name'] !== '') {
+                $byName[$s['name']] = (int) $s['id'];
             }
         }
 
         return $byName;
+    }
+
+    /**
+     * Extract a `list<int>` of numeric top-level `id`s from a decoded kanban
+     * collection — the shape shared by the by-ref, tag-search, and preload-swimlane
+     * reads (each a plain "the rows' ids" projection). A non-array element, or one
+     * without a numeric `id`, is skipped. NOT for the scan-correlation loops
+     * ({@see correlateDl}/{@see correlatePr}/{@see correlateIssue}), whose id read
+     * is ANDed with a payload match, nor the `[id => …]` map extractors.
+     *
+     * @return list<int>
+     */
+    private static function idList(mixed $rows): array
+    {
+        $ids = [];
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            if (is_array($row) && isset($row['id']) && is_numeric($row['id'])) {
+                $ids[] = (int) $row['id'];
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Yield each stage array across a board's workflows from the lightweight
+     * preload read — the shared fetch + `workflows[].stages[]` descent behind
+     * {@see boardStageOrder()} and {@see boardStageIdsByName()}, which diverge only
+     * in the per-stage field guard and how they accumulate (so each keeps its own).
+     * A non-array workflow, a missing/non-array `stages`, or a non-array stage is
+     * skipped — a caller sees only array stages.
+     *
+     * @return iterable<array<string, mixed>>
+     */
+    private function preloadStages(int $boardId): iterable
+    {
+        $workflows = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data.workflows');
+        foreach (is_array($workflows) ? $workflows : [] as $wf) {
+            $stages = is_array($wf) && is_array($wf['stages'] ?? null) ? $wf['stages'] : [];
+            foreach ($stages as $s) {
+                if (is_array($s)) {
+                    yield $s;
+                }
+            }
+        }
     }
 
     /**

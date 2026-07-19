@@ -135,15 +135,12 @@ final class WritebackAlertNotifier
     /** The configured alert channel, or null when writeback / alert_channel is absent. */
     private function alertChannel(): ?AlertChannel
     {
-        $configDir = (string) config('bridge.config_dir');
-        if ($configDir === '') {
-            return null;
-        }
         // A malformed writeback.json throws here; the move handler surfaces that
         // as a 5xx and bridge:check as an error — for the alert path it just means
-        // no channel, so swallow it (the alert is purely additive to the log).
+        // no channel, so swallow it (the alert is purely additive to the log). An
+        // unset config dir / absent writeback.json ⇒ loadDefault returns null ⇒ no channel.
         try {
-            $writeback = WritebackConfig::load($configDir);
+            $writeback = WritebackConfig::loadDefault();
         } catch (\Throwable) {
             return null;
         }

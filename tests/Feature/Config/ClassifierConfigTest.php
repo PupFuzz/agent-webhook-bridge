@@ -51,6 +51,14 @@ class ClassifierConfigTest extends TestCase
         $this->assertSame([], $cfg->section('missing_section'));
     }
 
+    public function test_section_non_mapping_throws_with_the_prefixed_label(): void
+    {
+        $cfg = ClassifierConfig::fromClassifierSection(['config' => ['impl_ci_wake' => 'scalar']]);
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('classifier.config.impl_ci_wake must be a mapping');
+        $cfg->section('impl_ci_wake');
+    }
+
     public function test_has_distinguishes_an_explicit_key_from_a_defaulted_one(): void
     {
         // DL-213: the explicit-vs-default distinction a warn needs — an explicitly-set

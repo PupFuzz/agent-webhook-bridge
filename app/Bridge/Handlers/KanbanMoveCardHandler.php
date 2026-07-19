@@ -114,8 +114,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             return;
         }
 
-        $configDir = (string) config('bridge.config_dir');
-        $writeback = $configDir !== '' ? WritebackConfig::load($configDir) : null;
+        $writeback = WritebackConfig::loadDefault();
         if ($writeback === null) {
             // No writeback.json — the move can't be configured; a target reached
             // us anyway. Permanent: log + no-op (don't 5xx-retry a config gap).

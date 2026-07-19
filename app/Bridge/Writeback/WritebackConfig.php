@@ -310,6 +310,21 @@ final class WritebackConfig
     }
 
     /**
+     * Resolve the policy from the default config dir (`bridge.config_dir`), or
+     * null when the config dir is unset OR `writeback.json` is absent (writeback
+     * off). Folds the `config('bridge.config_dir')` → `load()` resolve that every
+     * event-time caller (handlers + writeback classifiers) repeats; each caller
+     * keeps its own fail branch — a `ConfigException` from a malformed file still
+     * propagates for the caller to log/no-op/alert as it already does.
+     */
+    public static function loadDefault(): ?self
+    {
+        $configDir = (string) config('bridge.config_dir');
+
+        return $configDir !== '' ? self::load($configDir) : null;
+    }
+
+    /**
      * Parse the optional top-level `alert_channel` (FR-4). Deliberately NOT
      * fail-closed like the mappings above: a malformed alert_channel must not
      * disable the whole writeback (every card move would go dark for an opt-in
