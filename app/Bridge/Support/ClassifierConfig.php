@@ -84,15 +84,7 @@ final class ClassifierConfig
      */
     public function section(string $key): array
     {
-        $value = $this->raw[$key] ?? null;
-        if ($value === null) {
-            return [];
-        }
-        if (! is_array($value)) {
-            throw new ConfigException("classifier.config.{$key} must be a mapping");
-        }
-
-        return $value;
+        return ConfigMapping::require($this->raw, $key, "classifier.config.{$key}");
     }
 
     /**
