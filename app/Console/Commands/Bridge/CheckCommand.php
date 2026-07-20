@@ -20,6 +20,7 @@ use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
+use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Validation\EndpointValidationException;
 use App\Bridge\Validation\LocalhostUrl;
 use App\Bridge\Writeback\AlertChannel;
@@ -879,7 +880,85 @@ class CheckCommand extends BridgeCommand
         // consumes it. Independent of writeback (a coord agent has no writeback).
         $this->checkEventFollowsConsumer($githubScopeConsumers);
 
+        // DL-217: board-tools health. Warn-never-fail (the feature is opt-in) — a
+        // silent-inert misconfig (unreadable/colliding token, a swimlane/stage not
+        // on the board, a non-member service user) is exactly what an agent seat
+        // discovers only as an empty/broken tool window, so surface it pre-deploy.
+        $this->checkBoardTools($configs);
+
         return $ok ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * DL-217 board-tools preflight. For each agent with an ENABLED `board_tools`
+     * block: (a) the token-file readability + token-collision scan (via the same
+     * BoardToolAgentResolver the controller uses, so check and runtime agree on
+     * which agents are usable); (b) the create stage + swimlane(s) exist on the
+     * board; and (c) the service user's MEMBERSHIP of board_id — kanban scopes
+     * reads by the token user's board membership, so a non-member gets a
+     * silently-empty read indistinguishable from "no cards", which the tool then
+     * returns as an empty window. All warn-level (DL-026): a temporarily-
+     * unreachable kanban or a genuinely-empty board must not FAIL the check.
+     *
+     * @param  list<AgentConfig>  $configs
+     */
+    private function checkBoardTools(array $configs): void
+    {
+        $enabled = array_values(array_filter($configs, fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled));
+        if ($enabled === []) {
+            return;
+        }
+
+        // Token readability + collision scan — the resolver accumulates both.
+        $resolver = new BoardToolAgentResolver($configs);
+        foreach ($resolver->problems() as $problem) {
+            $this->warn($problem);
+        }
+
+        try {
+            $client = WritebackClientFactory::make();
+        } catch (Throwable $e) {
+            $this->warn('board_tools: enabled for '.count($enabled).' agent(s) but the kanban writeback client is unavailable ('.$e->getMessage().') — the tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.');
+
+            return;
+        }
+
+        foreach ($enabled as $cfg) {
+            $bt = $cfg->boardTools;
+            if ($bt === null || $bt->boardId === null) {
+                continue;   // defensive: enabled ⇒ boardId non-null by construction
+            }
+            $name = $cfg->agentName;
+            try {
+                $vis = $client->visibility($bt->boardId);
+                if ($vis['total'] === 0) {
+                    $this->warn("board_tools: agent {$name}: the writeback token sees 0 cards on board {$bt->boardId} — EITHER the board is empty (fine) OR the service user is not a member / board_id is wrong (then board_my_cards returns an empty window and board_create_card's correlation reads blind). Verify membership + board_id if you expect cards.");
+                } else {
+                    $this->info("board_tools: agent {$name}: writeback token can see board {$bt->boardId}");
+                }
+
+                $swimlaneIds = $client->boardSwimlaneIds($bt->boardId);
+                foreach (array_filter([$bt->swimlaneId, $bt->sharedSwimlaneId], fn ($id) => $id !== null) as $swimlaneId) {
+                    if (! in_array($swimlaneId, $swimlaneIds, true)) {
+                        $this->warn("board_tools: agent {$name}: swimlane_id {$swimlaneId} is not on board {$bt->boardId} — board_create_card will 422 (create) or board_my_cards will read empty until fixed.");
+                    }
+                }
+
+                $stageIds = array_keys($client->boardStageOrder($bt->boardId));
+                if ($bt->createStageId !== null && $stageIds !== [] && ! in_array($bt->createStageId, $stageIds, true)) {
+                    $this->warn("board_tools: agent {$name}: create_stage_id {$bt->createStageId} is not a stage on board {$bt->boardId} — every board_create_card will 422 until fixed.");
+                }
+
+                if ($bt->coordBoardId !== null) {
+                    $coordVis = $client->visibility($bt->coordBoardId);
+                    if ($coordVis['total'] === 0) {
+                        $this->warn("board_tools: agent {$name}: coord_board_id {$bt->coordBoardId} reads 0 cards — the coordination leg returns empty if the service user is not a member or the id is wrong.");
+                    }
+                }
+            } catch (Throwable $e) {
+                $this->warn("board_tools: agent {$name}: could not read board {$bt->boardId} with the writeback token — ".$e->getMessage());
+            }
+        }
     }
 
     /**
