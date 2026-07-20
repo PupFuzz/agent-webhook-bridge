@@ -1,3 +1,4 @@
+<!-- BEGIN coord:solo-orientation (synced from coord v0.10.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **What this is.** The solo-agent orientation generated from the Agent Board Framework
@@ -168,6 +169,14 @@ prompted:
   behind reality, with no event left to wake you into fixing it.
 - **Check your context weight at each boundary** (§ Context budget) — momentum never skips a
   boundary reset.
+- **Your human's message preempts the queue — answer in your very next output.** A message that
+  arrives mid-turn surfaces at a tool-result boundary with "address as you continue"; answer it in
+  your **next text output, before resuming any queued work** — never after "one more tool call".
+  Structurally: route long-running work through background dispatch (async subagents, background
+  shell) rather than long foreground calls — mid-turn messages can only reach you at tool-result
+  boundaries, so a long blocking call IS unresponsiveness — and end your turn once background work
+  is dispatched, so your human's next message gets a normal, immediate turn instead of queuing
+  behind your tools. The self-drive loop never outranks the person driving it.
 
 Bounded, not a license: roll-on **never crosses an ask-first gate** (§ Ask-first gates) — it
 changes pacing, not authority — and an item whose design is still unsettled doesn't roll; it
@@ -408,7 +417,13 @@ you manage your own context budget. Three signals guide you:
 **Clearing your context** between independent tasks keeps per-turn token cost low. To clear
 safely: your work must be committed/pushed AND the handoff written (session-end ritual steps
 1–4 above). `/clear` discards your in-context memory; only the branch, your board state, and
-your state handoff survive. **Never run it with uncommitted work or mid-task.**
+your state handoff survive. **Never run it with uncommitted work or mid-task — and never while
+ANY message from your human this session is unanswered.** Because a message may still be
+*queued* mid-turn (messages surface only at tool-result boundaries), a clean board state is not
+proof the chat is clean: **end the turn first** so anything queued surfaces, and self-clear only
+in a later turn that begins with nothing new from your human. An unanswered question a
+self-clear eats is unrecoverable — the post-clear re-orientation loads your handoff, not the
+conversation.
 
 **How (GNU `screen` platform):** as your VERY LAST action of the turn, run `clear-agent.sh`
 (on PATH; self-detects your screen session via `$STY`) — or `clear-agent.sh <your-session>`
@@ -455,3 +470,4 @@ setup and must not be applied here:
   the whole fleet, and the self-drive loop (§ Staying continuously busy) is your equivalent.
 - **Inbox / agent-to-agent threads** — you have no counterparties sending you
   coordination threads. There is no inbox to check.
+<!-- END coord:solo-orientation -->
