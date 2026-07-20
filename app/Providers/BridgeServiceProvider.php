@@ -7,6 +7,7 @@ use App\Bridge\Dispatch\IntentLog;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\SubscriptionRegistry;
+use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
@@ -37,6 +38,12 @@ class BridgeServiceProvider extends ServiceProvider
             HandlerRegistry::class,
             fn (): HandlerRegistry => new HandlerRegistry((bool) config('bridge.spawn.enabled')),
         );
+
+        // Board-tools registry (DL-217), a container singleton like HandlerRegistry
+        // so an operator can register custom tools against the exact instance the
+        // controller resolves. Carries no per-request state (the shipped tools are
+        // stateless), so a per-process instance is correct.
+        $this->app->singleton(BoardToolsRegistry::class, fn (): BoardToolsRegistry => new BoardToolsRegistry);
 
         $this->app->bind(DispatchService::class, function (): DispatchService {
             $configDir = (string) config('bridge.config_dir');
