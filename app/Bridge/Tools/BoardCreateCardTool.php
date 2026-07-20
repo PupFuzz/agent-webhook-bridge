@@ -166,7 +166,9 @@ final class BoardCreateCardTool implements Tool
             // printable ASCII, or carrying a kanban tag-search metacharacter
             // (" * _ %), would defeat the ASCII casefold below vs MariaDB's `_ci`
             // Unicode folding, or mis-split/wildcard-over-match the tokenizer.
-            if (preg_match('/^[\x20-\x7E]+$/', $tag) !== 1 || strpbrk($tag, '"*_%') !== false) {
+            // `D` anchor: PCRE `$` otherwise matches before a trailing "\n", so a
+            // "tag\n" would pass — self-contained, not reliant on TrimStrings.
+            if (preg_match('/^[\x20-\x7E]+$/D', $tag) !== 1 || strpbrk($tag, '"*_%') !== false) {
                 throw new ToolRefusalException("board_create_card: the tag `{$tag}` contains a character outside printable ASCII or a kanban tag-search metacharacter (\" * _ %) — these defeat the case-insensitive reserved-tag guard or mis-match the kanban tokenizer");
             }
             // Casefold the reserved match: the kanban tag search this guards is
@@ -196,7 +198,7 @@ final class BoardCreateCardTool implements Tool
             return null;
         }
         $key = $args['idempotency_key'];
-        if (! is_string($key) || preg_match('/^[A-Za-z0-9.-]{1,64}$/', $key) !== 1) {
+        if (! is_string($key) || preg_match('/^[A-Za-z0-9.-]{1,64}$/D', $key) !== 1) {
             throw new ToolRefusalException('board_create_card: `idempotency_key` must match [A-Za-z0-9.-]{1,64} — other characters (notably " * _ %) are kanban tag-search metacharacters that could correlate the wrong card');
         }
 
