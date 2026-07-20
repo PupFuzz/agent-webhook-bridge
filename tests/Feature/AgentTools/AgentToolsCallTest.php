@@ -125,6 +125,22 @@ class AgentToolsCallTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_install_with_no_board_tools_configured_refuses_every_bearer(): void
+    {
+        // Deactivation is by "no resolvable bearer", not route-absence: with no
+        // `board_tools` block on ANY agent, the roster indexes zero tokens, so any
+        // bearer resolves to no agent → 401 (and nothing is created). This is the
+        // end-to-end no-op assertion for the fail-closed opt-in.
+        File::put($this->dir.'/me.yml', "identity:\n  kanban_user_id: ".crc32('me')."\nsubscriptions: []\n");
+        Http::fake();
+
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']], bearer: $this->token)
+            ->assertStatus(401);
+        $this->callTool(['tool' => 'board_my_cards'], bearer: 'any-other-bearer')
+            ->assertStatus(401);
+        Http::assertNothingSent();
+    }
+
     // ─── board_create_card: scope + sanitization ─────────────────────────────
 
     public function test_create_forces_swimlane_from_config_ignoring_caller(): void
@@ -162,6 +178,95 @@ class AgentToolsCallTest extends TestCase
         $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'tags' => [$tag]]])
             ->assertStatus(422);
         Http::assertNothingSent();
+    }
+
+    /**
+     * The reserved-tag guard is case-INSENSITIVE: the kanban tag search it
+     * protects folds under a `_ci` collation, so a case-exact guard would let a
+     * mixed/upper-case reserved tag through to poison another agent's lowercase
+     * idempotency/provenance probe. Every case-variant here must 422.
+     *
+     * @return list<array{string}>
+     */
+    public static function caseVariantReservedTagCases(): array
+    {
+        return [
+            ['IDEM:agentB:daily'], ['Idem:x'], ['Created-By:victim'], ['ID:foo'],
+            ['TYPE:bug'], ['Triaged'], ['TRIAGED'], [' triaged '],
+        ];
+    }
+
+    #[DataProvider('caseVariantReservedTagCases')]
+    public function test_case_variant_reserved_caller_tag_is_refused_and_creates_nothing(string $tag): void
+    {
+        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
+
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'tags' => [$tag]]])
+            ->assertStatus(422);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * The tag-search metacharacters (" * _ %) and any non-ASCII byte are refused:
+     * they defeat the ASCII casefold vs MariaDB's `_ci` folding, or mis-split /
+     * wildcard-over-match the kanban tokenizer.
+     *
+     * @return list<array{string}>
+     */
+    public static function outOfCharsetTagCases(): array
+    {
+        return [['bad"quote'], ['star*tag'], ['under_score'], ['per%cent'], ['café']];
+    }
+
+    #[DataProvider('outOfCharsetTagCases')]
+    public function test_out_of_charset_caller_tag_is_refused_and_creates_nothing(string $tag): void
+    {
+        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
+
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'tags' => [$tag]]])
+            ->assertStatus(422);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * Regression guard: the charset constraint must NOT reject ordinary ASCII
+     * labels, and a non-reserved colon (not a reserved PREFIX) is allowed.
+     *
+     * @return list<array{string}>
+     */
+    public static function legitimateTagCases(): array
+    {
+        return [['feature'], ['needs-review'], ['priority:high']];
+    }
+
+    #[DataProvider('legitimateTagCases')]
+    public function test_legitimate_caller_tag_is_accepted(string $tag): void
+    {
+        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 77]], 201)]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'tags' => [$tag]]]);
+
+        $res->assertStatus(200)->assertJsonPath('result.card_id', 77);
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && in_array($tag, $r['task']['tags'], true));
+    }
+
+    public function test_idempotency_key_is_normalized_to_lowercase(): void
+    {
+        // The stored/searched idem tag must be lowercased: a mixed-case key
+        // `Report` produces the same `idem:me:report` needle as a lowercase call,
+        // so the two correlate to the SAME card.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]])]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'Report']]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.created', false)
+            ->assertJsonPath('result.idempotent_hit', true)
+            ->assertJsonPath('result.card_id', 7);
+        // The correlation needle sent to kanban is lowercased (idem:me:report).
+        Http::assertSent(fn ($r) => str_contains($r->url(), '/tasks/search.json')
+            && str_contains(urldecode($r->url()), 'idem:me:report'));
     }
 
     public function test_out_of_charset_idempotency_key_is_refused_and_creates_nothing(): void
