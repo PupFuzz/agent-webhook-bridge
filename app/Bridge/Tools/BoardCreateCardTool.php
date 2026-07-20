@@ -85,8 +85,11 @@ final class BoardCreateCardTool implements Tool
         if ($idemTag !== null) {
             $live = $client->cardsByTag($boardId, $idemTag);
             if (count($live) > 1) {
-                $survivor = CardCollapse::toSurvivor($client, array_fill_keys($live, []), 'board_create_card', ['agent' => $agentName, 'idem_tag' => $idemTag]);
-                $newId = is_numeric($survivor['id'] ?? null) ? (int) $survivor['id'] : (min($live));
+                CardCollapse::toSurvivor($client, array_fill_keys($live, []), 'board_create_card', ['agent' => $agentName, 'idem_tag' => $idemTag]);
+                // The collapse keeps the deterministic lowest id (so racing workers
+                // converge); report that survivor, not the id kanban happened to
+                // return to THIS worker.
+                $newId = min($live);
             }
         }
 
