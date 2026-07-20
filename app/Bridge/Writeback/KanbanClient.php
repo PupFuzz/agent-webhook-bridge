@@ -249,6 +249,93 @@ final class KanbanClient
     }
 
     /**
+     * The full card rows in a board's swimlane (DL-217, board_my_cards) — a
+     * scoped `q=board_id=<b> swimlane_id=<s>` search, NEVER the ~215KB full-board
+     * read. The `swimlane_id=` q-term is a kanban QueryParser sibling of
+     * `workflow_stage_id=` (functional prerequisite; an un-upgraded kanban routes
+     * the unknown token to free-text and returns EMPTY — broken-but-safe, never
+     * the whole board). Returns the RAW rows: the caller (the tool) applies the
+     * defense-in-depth row filter that drops+logs any row whose own `swimlane_id`
+     * field does not match — the bridge-enforced read-isolation boundary, since
+     * kanban scopes reads by the token user's BOARD membership, never by swimlane.
+     * Paged to completion like {@see readBoard} (a busy swimlane can exceed one
+     * page). Distinct from {@see cardsByTag}/{@see idList}, which project to ids
+     * only — board_my_cards needs each row's name/stage/tags/payload.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function swimlaneCards(int $boardId, int $swimlaneId): array
+    {
+        $cards = [];
+        for ($page = 1; $page <= self::MAX_PAGES; $page++) {
+            $json = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId} swimlane_id={$swimlaneId}", 'limit' => self::SEARCH_LIMIT, 'page' => $page])->throw()->json();
+            $batch = is_array($json) ? ($json['data'] ?? null) : null;
+            $rows = is_array($batch) ? $batch : [];
+            foreach ($rows as $row) {
+                if (is_array($row)) {
+                    $cards[] = $row;
+                }
+            }
+
+            $links = is_array($json) ? ($json['links'] ?? null) : null;
+            if (is_array($links) && array_key_exists('next', $links)) {
+                if ($links['next'] === null) {
+                    return $cards;
+                }
+            } elseif (count($rows) < self::SEARCH_LIMIT) {
+                return $cards;
+            }
+        }
+
+        return $cards;
+    }
+
+    /**
+     * The full card rows on a board carrying a given tag (DL-217, coord read leg)
+     * — the row-returning twin of {@see cardsByTag} (which projects to ids). One
+     * exact `q=board_id=<b> tags:"<tag>"` search; board-scoped so no `source`
+     * qualifier is needed. Used to fetch coordination cards addressed to an agent
+     * via its configured address_tags.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function cardRowsByTag(int $boardId, string $tag): array
+    {
+        $data = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId} tags:\"{$tag}\"", 'limit' => self::SEARCH_LIMIT])->throw()->json('data');
+
+        $cards = [];
+        foreach (is_array($data) ? $data : [] as $row) {
+            if (is_array($row)) {
+                $cards[] = $row;
+            }
+        }
+
+        return $cards;
+    }
+
+    /**
+     * Stage id → NAME for a board, off the same `preload.json` read as
+     * {@see boardStageIdsByName()} (the inverse direction). board_my_cards groups
+     * the agent's cards by stage NAME (DL-217), and the search rows carry only the
+     * numeric `workflow_stage_id`, so this resolves the display label. A stage
+     * lacking an id or name is skipped; empty when the read carries no stages
+     * (the caller then falls back to the raw id).
+     *
+     * @return array<int, string>
+     */
+    public function boardStageNames(int $boardId): array
+    {
+        $byId = [];
+        foreach ($this->preloadStages($boardId) as $s) {
+            if (isset($s['id'], $s['name']) && is_numeric($s['id']) && is_string($s['name']) && $s['name'] !== '') {
+                $byId[(int) $s['id']] = $s['name'];
+            }
+        }
+
+        return $byId;
+    }
+
+    /**
      * Cheap board-visibility probe for `bridge:check` (DL-029): a single
      * `limit=1` search — answers "can this token see the board, and how big is
      * it?" without the full correlation read, independent of the correlation

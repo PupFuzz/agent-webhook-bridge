@@ -12,9 +12,11 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
         // Webhook routes load OUTSIDE the web group — no CSRF, no session.
-        // They carry only their own HMAC + size-limit middleware.
+        // They carry only their own HMAC + size-limit middleware. The board-tools
+        // ingress (DL-217) loads the same way, carrying its own loopback gate.
         then: function (): void {
             Route::group([], base_path('routes/webhooks.php'));
+            Route::group([], base_path('routes/agent-tools.php'));
         },
     )
     ->withMiddleware(function (Middleware $middleware): void {

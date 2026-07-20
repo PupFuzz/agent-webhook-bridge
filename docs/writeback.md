@@ -1,6 +1,6 @@
 # GitHub-PR → kanban card-move writeback (FR #2016)
 
-The bridge can keep a kanban card in sync with its PR's lifecycle **deterministically, with no agent in the loop** — a GitHub `pull_request` webhook moves the card to a stage, and a branch-create `push` promotes the card to In Progress (DL-160). This is the bridge's only *writeback* (it is otherwise surface-only / one-way). Design + rationale: `CLAUDE_DECISIONS.md` DL-009 (the seam) → DL-018/019/020/021 (the implementation) → DL-160 (the branch-create → In-Progress trigger).
+The bridge can keep a kanban card in sync with its PR's lifecycle **deterministically, with no agent in the loop** — a GitHub `pull_request` webhook moves the card to a stage, and a branch-create `push` promotes the card to In Progress (DL-160). This is the bridge's only *event-driven* writeback. The bridge is no longer purely one-way: the two-way board tools (DL-217, [`docs/board-tools.md`](board-tools.md)) add an agent-initiated request/response surface (`board_my_cards` / `board_create_card`) over the channel — but that is a distinct, loopback-gated ingress with its own audit trail, not this GitHub-event writeback. Design + rationale: `CLAUDE_DECISIONS.md` DL-009 (the seam) → DL-018/019/020/021 (the implementation) → DL-160 (the branch-create → In-Progress trigger).
 
 ## How it works
 

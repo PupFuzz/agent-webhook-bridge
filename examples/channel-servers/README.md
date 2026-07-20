@@ -243,6 +243,45 @@ See [`docs/multi-host.md`](../../docs/multi-host.md) for the full SSH-tunneled m
 | `BRIDGE_CHANNEL_PORT` | `8788` | HTTP port (only when `TRANSPORT=http`) |
 | `BRIDGE_CHANNEL_NAME` | `agent-webhook-bridge` | MCP server name; the `source="..."` attribute on the `<channel>` tag |
 | `BRIDGE_CHANNEL_TOKEN` | unset | Optional bearer token; required for `TRANSPORT=http` on multi-user hosts |
+| `BRIDGE_CHANNEL_TOOLS` | unset | Set to `1` to advertise the two-way board tools (DL-217). Absent ⇒ this server advertises no `tools` capability (nothing dead). |
+| `BRIDGE_TOOLS_ENDPOINT` | unset | The bridge's loopback URL for the tool-call ingress, e.g. `http://127.0.0.1:8787/agent-tools/call`. Required when `BRIDGE_CHANNEL_TOOLS=1`. |
+| `BRIDGE_TOOLS_TOKEN` | unset | The per-agent Bearer the server presents to the bridge. Required when `BRIDGE_CHANNEL_TOOLS=1` (or use `BRIDGE_TOOLS_TOKEN_FILE`). |
+| `BRIDGE_TOOLS_TOKEN_FILE` | unset | Alternative to `BRIDGE_TOOLS_TOKEN`: a `0600` file path to read the bearer from (an HTTP install may alias this to the channel token file). |
+
+---
+
+## Two-way board tools (DL-217)
+
+By default this server is one-way: the bridge pushes wake events, the server
+surfaces them as `notifications/claude/channel`, no reply. When
+`BRIDGE_CHANNEL_TOOLS=1`, the server ALSO advertises two request/response MCP
+tools — `board_my_cards` and `board_create_card` — and acts as a **dumb proxy**
+for them: on a `tools/call` it forwards `{tool, args}` to `BRIDGE_TOOLS_ENDPOINT`
+with `Authorization: Bearer <BRIDGE_TOOLS_TOKEN>` and returns the bridge's
+response verbatim. It carries **no board logic, no kanban token, and no retry** —
+all validation, scoping, and idempotency live in the bridge.
+
+If the tools are advertised but the endpoint or bearer is unset, a `tools/call`
+returns a **structured refusal naming the missing config** (no call is made).
+
+The bridge side is loopback-gated: same-box installs point `BRIDGE_TOOLS_ENDPOINT`
+at `127.0.0.1`; multi-host needs a forward SSH tunnel — see
+[`docs/multi-host.md § Board tools (two-way) forward leg`](../../docs/multi-host.md#board-tools-two-way-forward-leg).
+Full agent-facing reference: [`docs/board-tools.md`](../../docs/board-tools.md).
+Enable the matching per-agent `board_tools:` config block —
+[`docs/config-schema.md § board_tools`](../../docs/config-schema.md).
+
+Example `.mcp.json` env for a same-box tools-enabled install:
+
+```jsonc
+"env": {
+  "BRIDGE_CHANNEL_TRANSPORT": "unix",
+  "BRIDGE_CHANNEL_NAME": "kanbanboard-agent",
+  "BRIDGE_CHANNEL_TOOLS": "1",
+  "BRIDGE_TOOLS_ENDPOINT": "http://127.0.0.1:8787/agent-tools/call",
+  "BRIDGE_TOOLS_TOKEN_FILE": "/home/you/.config/agent-webhook-bridge/kanbanboard-agent-tools-token"
+}
+```
 
 ---
 
