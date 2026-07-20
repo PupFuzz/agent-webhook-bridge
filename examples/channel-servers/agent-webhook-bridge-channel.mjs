@@ -32,6 +32,10 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -40,6 +44,79 @@ import os from 'node:os';
 const SERVER_NAME = process.env.BRIDGE_CHANNEL_NAME || 'agent-webhook-bridge';
 const TRANSPORT = (process.env.BRIDGE_CHANNEL_TRANSPORT || 'unix').toLowerCase();
 const SHARED_TOKEN = process.env.BRIDGE_CHANNEL_TOKEN || '';
+
+// Two-way board tools (DL-217), OFF by default. When BRIDGE_CHANNEL_TOOLS=1
+// (set by provision when the install enables the feature) this server ALSO
+// advertises the `tools` MCP capability and PROXIES tools/call to the bridge's
+// loopback POST /agent-tools/call with the per-agent bearer. It stays a DUMB
+// PIPE: no board logic, no kanban token, no retry. A non-adopting install leaves
+// this unset and advertises nothing dead. The bridge endpoint + bearer:
+//   BRIDGE_TOOLS_ENDPOINT    — the bridge's loopback URL for the call ingress,
+//                              e.g. http://127.0.0.1:8787/agent-tools/call
+//   BRIDGE_TOOLS_TOKEN       — the bearer value, OR
+//   BRIDGE_TOOLS_TOKEN_FILE  — a path (chmod 600) to read it from (an HTTP install
+//                              may alias this to the channel token file).
+const TOOLS_ENABLED = process.env.BRIDGE_CHANNEL_TOOLS === '1';
+const TOOLS_ENDPOINT = process.env.BRIDGE_TOOLS_ENDPOINT || '';
+
+function resolveToolsToken() {
+  if (process.env.BRIDGE_TOOLS_TOKEN) {
+    return process.env.BRIDGE_TOOLS_TOKEN;
+  }
+  const file = process.env.BRIDGE_TOOLS_TOKEN_FILE;
+  if (file) {
+    try {
+      return fs.readFileSync(file, 'utf8').trim();
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
+// The v1 tool surface, hard-coded to mirror the bridge contract (DL-217). Kept
+// here because tools/list must advertise a schema; the bridge remains the single
+// authority on validation/scoping — this is the MCP surface, not board logic. If
+// the bridge contract changes, update both (a reference example server, by design).
+const TOOL_DEFINITIONS = [
+  {
+    name: 'board_my_cards',
+    description:
+      'Return YOUR OWN cards on the board (your product swimlane grouped by stage, ' +
+      'plus any shared/coordination cards your bridge identity is scoped to). Read-only; ' +
+      'the kanban token never leaves the bridge. No arguments.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'board_create_card',
+    description:
+      'Create a card in YOUR OWN swimlane (the swimlane is forced from your bridge ' +
+      'identity — you cannot target another lane). The card is born untriaged and ' +
+      'surfaces to the triage pass. Pass an idempotency_key to make retries safe.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Card title (required).' },
+        description: { type: 'string', description: 'Card body (optional).' },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional caller tags. Reserved prefixes (created-by:, idem:, id:, type:) ' +
+            'and the bare tag "triaged" are refused.',
+        },
+        idempotency_key: {
+          type: 'string',
+          description:
+            'Optional but recommended: [A-Za-z0-9.-]{1,64}. Re-using it returns the ' +
+            'same card instead of creating a duplicate.',
+        },
+      },
+      required: ['title'],
+      additionalProperties: false,
+    },
+  },
+];
 
 function defaultSocketPath() {
   // Per-uid + per-server-name default. Multi-agent operators get distinct
@@ -121,19 +198,96 @@ if (TRANSPORT !== 'unix' && TRANSPORT !== 'http') {
 const INSTRUCTIONS = [
   `Events from the agent-webhook-bridge arrive as <channel source="${SERVER_NAME}" kind="..." target_id="...">.`,
   'The body is JSON: {"intent": {kind, target_id, payload, ...}}.',
-  'These are one-way: read them and act, no reply expected.',
+  'These channel EVENTS are one-way notifications: read them and act — no reply is sent back through the event.',
   'kind identifies what happened upstream (e.g. card_updated, card_assigned); target_id names the resource; payload carries handler-specific data.',
+  ...(TOOLS_ENABLED
+    ? [
+        'This server ALSO exposes request/response board tools scoped to YOUR channel identity:',
+        'board_my_cards (read your own cards) and board_create_card (create a card in your own swimlane) —',
+        'call them to see or capture board work without a kanban token; the write scope is your own swimlane, forced by the bridge.',
+      ]
+    : []),
 ].join(' ');
+
+const capabilities = { experimental: { 'claude/channel': {} } };
+if (TOOLS_ENABLED) {
+  capabilities.tools = {};
+}
 
 const mcp = new Server(
   { name: SERVER_NAME, version: '0.1.0' },
   {
-    capabilities: { experimental: { 'claude/channel': {} } },
+    capabilities,
     instructions: INSTRUCTIONS,
   },
 );
 
+// Register the tools surface BEFORE connect so the capability and its handlers
+// are live from the first request. A structured refusal (not a thrown error)
+// names the activating config when the bridge endpoint/bearer is half-set, so a
+// caller reaching a partially-configured install gets an actionable message.
+if (TOOLS_ENABLED) {
+  mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFINITIONS }));
+
+  mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const toolName = request.params.name;
+    const args = request.params.arguments || {};
+    const token = resolveToolsToken();
+    if (!TOOLS_ENDPOINT || !token) {
+      const missing = [
+        TOOLS_ENDPOINT ? null : 'BRIDGE_TOOLS_ENDPOINT',
+        token ? null : 'BRIDGE_TOOLS_TOKEN (or BRIDGE_TOOLS_TOKEN_FILE)',
+      ].filter(Boolean);
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text:
+              `board tools are advertised (BRIDGE_CHANNEL_TOOLS=1) but not fully configured on this ` +
+              `channel server: set ${missing.join(' and ')}. No call was made to the bridge.`,
+          },
+        ],
+      };
+    }
+
+    // Dumb pipe: forward {tool, args} verbatim, no retry, no board logic.
+    try {
+      const res = await fetch(TOOLS_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ tool: toolName, args }),
+      });
+      const text = await res.text();
+      return {
+        isError: !res.ok,
+        content: [{ type: 'text', text }],
+      };
+    } catch (err) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: `could not reach the bridge tool endpoint ${TOOLS_ENDPOINT}: ${err && err.message ? err.message : err}`,
+          },
+        ],
+      };
+    }
+  });
+}
+
 await mcp.connect(new StdioServerTransport());
+
+if (TOOLS_ENABLED) {
+  console.error(
+    `[${SERVER_NAME}] board tools ENABLED (BRIDGE_CHANNEL_TOOLS=1) — proxying tools/call to ` +
+      `${TOOLS_ENDPOINT || '(BRIDGE_TOOLS_ENDPOINT unset)'}`,
+  );
+}
 
 // Per the channels spec, the `meta` keys we send must match this regex —
 // Claude Code silently drops any key containing other characters. Values
