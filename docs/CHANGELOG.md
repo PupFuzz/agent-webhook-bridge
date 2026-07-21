@@ -8,6 +8,14 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-07-21
+
+**Minor — the bridge's `KanbanClient` sends FLAT v3 write bodies (the missed kanban DL-219 companion), plus a PR-title correlation-conflict fix.** 2 PRs since v0.63.0 (#346, #345). **⚠ LOCKSTEP: deploy this simultaneously with the kanban-flat upgrade (v0.36.0) and toolkit v0.20.0 — a wrapped bridge 422s against a flat kanban (and vice-versa); there is no shim.**
+
+### Fixed
+- **#346 (DL-219, roundtable #118)** — **`KanbanClient` now sends task-write bodies FLAT (top-level), dropping the `{"task":{…}}` wrapper.** kanban v0.36.0 (its DL-219) unified the v3 write API to flat top-level fields and now STRICT-REJECTS an unknown top-level `task` key (422, no shim) — and the bridge writeback was a **missed consumer** of that cutover (kanban's DL-219 note said "no other known consumers"). All four write sites drop the wrapper: `moveCard` (`{workflow_stage_id}`), `stampCorrelationRefs` (`{payload}`), `setBlockReason` (`{block_reason}`), `createCard` (posts the assembled fields flat). `archiveCard`'s `{"_action":"archive"}` is a top-level control key, unaffected. Unconditional cutover (no version probe) matching the no-shim server change. Exhaustive `app/` audit confirmed these were the only wrapped task-writes (every other `/tasks` call is a GET; `KanbanProvisionClient` posts only to `/webhooks`). Tests updated across 9 files asserting the flat body shape; red-when-reverted (reverting to wrapped reds 56 assertions).
+- **#345 (DL-218, card#4815, roundtable-triggered)** — **PR-title / branch card-correlation no longer hijacked by a foreign `DL-NNN`.** When a PR title or branch ref carried a `DL-NNN` that resolved to a card DIFFERENT from a co-present explicit `card#<id>` (e.g. "guard against DL-219 (card#4811)"), the DL silently won and the intended `card#` was dropped. `GitHubPrCardMoveClassifier` now detects the conflict via a shared `cardConflicts()` predicate at all THREE resolution sites (PR move, branch-create `started`, draft overlay), warns loudly, prefers the explicit `card#`, and excludes the foreign DL from being stamped onto it. 4 conflict tests (incl. the bundled-DL edge), all red-when-reverted.
+
 ## [0.63.0] - 2026-07-21
 
 **Minor — two-way board tools (DL-217): an agent-initiated request/response surface over the existing channel, plus a release-CI dependency bump and a solo-orientation doc sync.** 2 PRs since v0.62.1 (#341 + dependabot #340). **Opt-in, fail-closed end to end ⇒ absent the new per-agent `board_tools` config AND the channel server's `BRIDGE_CHANNEL_TOOLS=1`, behavior is byte-identical. No migration, no new required `.env`, no receiver accept/reject change, no token-scope change.**
