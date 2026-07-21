@@ -516,6 +516,35 @@ class GitHubPrCardMoveClassifierTest extends TestCase
             && str_contains((string) $msg, 'authoritative'))->once();
     }
 
+    public function test_conflicting_card_token_over_a_bundled_dl_drops_the_other_dl_cards(): void
+    {
+        // DL-218 edge (the intended ruling, pinned): a ONE-TO-MANY DL (bundled PR) that
+        // ALSO carries a card# NOT in the resolved set → the explicit card# is
+        // authoritative, so ONLY it moves and the OTHER DL-resolved cards are dropped
+        // (the rejected "warn+skip" alternative would have moved none). The warning
+        // NAMES the dropped card ids for the ledger, so the drop is diagnosable, not
+        // silent. (Revert the fix ⇒ DL-9's cards 7 AND 8 move ⇒ RED.)
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 7, 'payload' => ['dl_number' => 'DL-9']],
+            ['id' => 8, 'payload' => ['dl_number' => 'DL-9']],
+        ]])]);   // DL-9 → [7, 8]
+        Log::spy();
+
+        $result = $this->classify('pull_request.closed', [
+            'number' => 148, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'DL-9 bundled fix card#4811', 'head' => ['ref' => 'f'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertCount(1, $move);                                  // ONLY the card#, not 7 & 8
+        $this->assertSame(4811, $move[0]->payload['card_id']);
+        $this->assertSame(148, $move[0]->payload['stamp_pr']);
+        $this->assertArrayNotHasKey('stamp_dl', $move[0]->payload);    // the bundled foreign DL is not stamped
+        // The warning names BOTH dropped DL card ids (7,8) alongside the chosen card#.
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, '7,8')
+            && str_contains((string) $msg, 'card#4811'))->once();
+    }
+
     public function test_card_token_on_a_branch_create_push_emits_started(): void
     {
         Http::fake();
