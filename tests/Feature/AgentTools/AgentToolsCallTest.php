@@ -153,13 +153,13 @@ class AgentToolsCallTest extends TestCase
 
         $res->assertStatus(200)->assertJsonPath('result.card_id', 42);
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && $r['task']['swimlane_id'] === 4          // FORCED from config, not 999
-            && $r['task']['board_id'] === 10
-            && $r['task']['workflow_stage_id'] === 55
-            && $r['task']['name'] === 'capture me'
-            && $r['task']['description'] === 'body'
-            && $r['task']['payload'] === []             // {} in v1
-            && in_array('created-by:me', $r['task']['tags'], true));
+            && $r['swimlane_id'] === 4          // FORCED from config, not 999
+            && $r['board_id'] === 10
+            && $r['workflow_stage_id'] === 55
+            && $r['name'] === 'capture me'
+            && $r['description'] === 'body'
+            && $r['payload'] === []             // {} in v1
+            && in_array('created-by:me', $r['tags'], true));
     }
 
     /**
@@ -248,7 +248,7 @@ class AgentToolsCallTest extends TestCase
 
         $res->assertStatus(200)->assertJsonPath('result.card_id', 77);
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && in_array($tag, $r['task']['tags'], true));
+            && in_array($tag, $r['tags'], true));
     }
 
     public function test_idempotency_key_is_normalized_to_lowercase(): void

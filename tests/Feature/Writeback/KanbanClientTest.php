@@ -36,7 +36,8 @@ class KanbanClientTest extends TestCase
 
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
             && str_contains($r->url(), '/tasks/5.json')
-            && $r['task'] === ['workflow_stage_id' => 52]);   // column-only, no other fields
+            && $r['workflow_stage_id'] === 52   // DL-219: flat top-level field, NOT under a task wrapper
+            && ! isset($r['task']));            // column-only, no other fields
     }
 
     public function test_non_2xx_throws(): void
@@ -357,7 +358,8 @@ class KanbanClientTest extends TestCase
         $this->client()->createCard(8, 50, 'x', ['pr_number' => 1], ['dependencies'], 31);
 
         Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && ($r['task']['swimlane_id'] ?? null) === 31);
+            && ! isset($r['task'])   // DL-219: task fields posted flat at top level, no wrapper
+            && ($r['swimlane_id'] ?? null) === 31);
     }
 
     public function test_create_card_without_swimlane_omits_the_key(): void
@@ -367,7 +369,8 @@ class KanbanClientTest extends TestCase
         $this->client()->createCard(8, 50, 'x', [], []);   // no swimlane
 
         Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && ! array_key_exists('swimlane_id', $r['task']));
+            && ! isset($r['task'])
+            && ! array_key_exists('swimlane_id', $r->data()));
     }
 
     public function test_create_card_dependabot_caller_omits_the_new_coord_fields(): void
@@ -379,10 +382,11 @@ class KanbanClientTest extends TestCase
         $this->client()->createCard(8, 50, 'x', ['pr_number' => 1], ['dependencies'], 31);
 
         Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && ! array_key_exists('description', $r['task'])
-            && ! array_key_exists('priority', $r['task'])
-            && ! array_key_exists('external_id', $r['task'])
-            && ! array_key_exists('external_link', $r['task']));
+            && ! isset($r['task'])
+            && ! array_key_exists('description', $r->data())
+            && ! array_key_exists('priority', $r->data())
+            && ! array_key_exists('external_id', $r->data())
+            && ! array_key_exists('external_link', $r->data()));
     }
 
     public function test_create_card_sets_the_new_coord_fields_when_given(): void
@@ -394,12 +398,13 @@ class KanbanClientTest extends TestCase
         $this->client()->createCard(8, 21, '[QUERY] x', [], ['id:QUERY-4', 'type:query'], null, 'Coordination thread o/r#4', 0, 'https://github.com/o/r/issues/4');
 
         Http::assertSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && $r['task']['description'] === 'Coordination thread o/r#4'
-            && $r['task']['priority'] === 0
-            && ! array_key_exists('external_id', $r['task'])
-            && $r['task']['external_link'] === 'https://github.com/o/r/issues/4'
-            && $r['task']['tags'] === ['id:QUERY-4', 'type:query']
-            && ! array_key_exists('swimlane_id', $r['task']));
+            && ! isset($r['task'])
+            && $r['description'] === 'Coordination thread o/r#4'
+            && $r['priority'] === 0
+            && ! array_key_exists('external_id', $r->data())
+            && $r['external_link'] === 'https://github.com/o/r/issues/4'
+            && $r['tags'] === ['id:QUERY-4', 'type:query']
+            && ! array_key_exists('swimlane_id', $r->data()));
     }
 
     public function test_create_card_priority_zero_is_still_sent(): void
@@ -410,7 +415,7 @@ class KanbanClientTest extends TestCase
 
         $this->client()->createCard(8, 21, 'x', [], [], null, 'd', 0, 'https://x');
 
-        Http::assertSent(fn (Request $r) => array_key_exists('priority', $r['task']) && $r['task']['priority'] === 0);
+        Http::assertSent(fn (Request $r) => ! isset($r['task']) && array_key_exists('priority', $r->data()) && $r['priority'] === 0);
     }
 
     // ---- cardsByTag (DL-198 coord-card adoption key) ----

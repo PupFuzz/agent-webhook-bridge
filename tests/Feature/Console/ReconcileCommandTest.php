@@ -168,7 +168,7 @@ class ReconcileCommandTest extends TestCase
         $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
             && str_contains($r->url(), '/tasks/5.json')
-            && $r['task'] === ['workflow_stage_id' => 52]);
+            && $r->data() === ['workflow_stage_id' => 52]);
     }
 
     public function test_backward_drift_is_reported_but_never_moved(): void
