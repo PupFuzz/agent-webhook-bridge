@@ -457,18 +457,92 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame(77, $result->targets[0]->payload['card_id']);
     }
 
-    public function test_dl_token_wins_over_card_token_and_the_ignored_token_is_logged(): void
+    public function test_dl_wins_when_a_co_present_card_token_names_the_same_card(): void
     {
         // FR-7 precedence (framework v0.2.229): DL-NNN is the ratified, more-specific
-        // contract; when both appear the card# is ignored LOUDLY (degraded-states-loud).
+        // contract. When a co-present card# names the SAME card the DL resolves to it
+        // is redundant — the DL wins and nothing is dropped (logged for the ledger).
         $this->fakeBoardCards();
         Log::spy();
 
-        $result = $this->classify('pull_request.opened', ['title' => 'Fix DL-9 thing card#3410', 'head' => ['ref' => 'f']]);
+        // DL-9 correlates to card 7; card#7 agrees ⇒ no conflict.
+        $result = $this->classify('pull_request.opened', ['title' => 'Fix DL-9 thing card#7', 'head' => ['ref' => 'f']]);
 
         $this->assertCount(1, $result->targets);
-        $this->assertSame(7, $result->targets[0]->payload['card_id']);   // DL-9 correlates to card 7
-        Log::shouldHaveReceived('info')->withArgs(fn ($msg) => str_contains((string) $msg, 'card#3410'))->once();
+        $this->assertSame(7, $result->targets[0]->payload['card_id']);
+        Log::shouldHaveReceived('info')->withArgs(fn ($msg) => str_contains((string) $msg, 'same card'))->once();
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    public function test_dl_only_move_targets_the_resolved_card(): void
+    {
+        // FR-7 (1): a lone resolving DL with no card# → move that card, no warn.
+        $this->fakeBoardCards();
+        Log::spy();
+
+        // DL-42 correlates to card 5.
+        $result = $this->classify('pull_request.opened', ['title' => 'Ship DL-42', 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(1, $result->targets);
+        $this->assertSame(5, $result->targets[0]->payload['card_id']);
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    public function test_conflicting_card_token_overrides_the_dl_and_warns(): void
+    {
+        // DL-218 / card#4811 incident: a DL in the title resolves to a card DIFFERENT
+        // from a co-present explicit card# — a descriptive/foreign DL mention must not
+        // hijack the move. The explicit card# is authoritative: move it, not the DL
+        // card, and warn LOUDLY. (Revert the fix ⇒ DL-9's card 7 is targeted ⇒ RED.)
+        $this->fakeBoardCards();   // DL-9 → card 7
+        Log::spy();
+
+        // "Static guard against DL-9 re-introduction (card#4811)" — DL-9 resolves to
+        // card 7, but the intended card is #4811.
+        $result = $this->classify('pull_request.closed', [
+            'number' => 148, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'Static guard against DL-9 re-introduction card#4811', 'head' => ['ref' => 'f'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertCount(1, $move);
+        $this->assertSame(4811, $move[0]->payload['card_id']);   // the explicit card#, NOT DL-9's card 7
+        $this->assertSame('merged', $move[0]->payload['outcome']);
+        $this->assertSame(148, $move[0]->payload['stamp_pr']);   // card# path stamps the PR number
+        // The foreign DL-9 (it belongs to card 7) must NOT be stamped onto card#4811,
+        // or the move-hijack re-emerges as a correlation poison.
+        $this->assertArrayNotHasKey('stamp_dl', $move[0]->payload);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'card#4811')
+            && str_contains((string) $msg, 'authoritative'))->once();
+    }
+
+    public function test_conflicting_card_token_over_a_bundled_dl_drops_the_other_dl_cards(): void
+    {
+        // DL-218 edge (the intended ruling, pinned): a ONE-TO-MANY DL (bundled PR) that
+        // ALSO carries a card# NOT in the resolved set → the explicit card# is
+        // authoritative, so ONLY it moves and the OTHER DL-resolved cards are dropped
+        // (the rejected "warn+skip" alternative would have moved none). The warning
+        // NAMES the dropped card ids for the ledger, so the drop is diagnosable, not
+        // silent. (Revert the fix ⇒ DL-9's cards 7 AND 8 move ⇒ RED.)
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 7, 'payload' => ['dl_number' => 'DL-9']],
+            ['id' => 8, 'payload' => ['dl_number' => 'DL-9']],
+        ]])]);   // DL-9 → [7, 8]
+        Log::spy();
+
+        $result = $this->classify('pull_request.closed', [
+            'number' => 148, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'DL-9 bundled fix card#4811', 'head' => ['ref' => 'f'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertCount(1, $move);                                  // ONLY the card#, not 7 & 8
+        $this->assertSame(4811, $move[0]->payload['card_id']);
+        $this->assertSame(148, $move[0]->payload['stamp_pr']);
+        $this->assertArrayNotHasKey('stamp_dl', $move[0]->payload);    // the bundled foreign DL is not stamped
+        // The warning names BOTH dropped DL card ids (7,8) alongside the chosen card#.
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, '7,8')
+            && str_contains((string) $msg, 'card#4811'))->once();
     }
 
     public function test_card_token_on_a_branch_create_push_emits_started(): void
@@ -535,6 +609,28 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertCount(1, $result->targets);
         $this->assertSame(3410, $result->targets[0]->payload['card_id']);
         $this->assertSame('started', $result->targets[0]->payload['outcome']);
+    }
+
+    public function test_conflicting_card_token_overrides_the_dl_on_a_branch_create_push(): void
+    {
+        // DL-218 sibling (classifyPush, SAME harm — a stage move): a branch like
+        // `card-4811-guard-DL-9` where DL-9 resolves to a DIFFERENT card (7) must not
+        // hijack the `started` move. The explicit card# is authoritative: move card
+        // 4811, warn loudly, and do NOT stamp the foreign DL-9 (no PR on a push, so no
+        // stamp_pr either). (Revert the classifier ⇒ DL-9's card 7 is targeted ⇒ RED.)
+        $this->fakeBoardCards();   // DL-9 → card 7
+        Log::spy();
+
+        $result = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/card-4811-guard-DL-9-reintro']);
+
+        $this->assertCount(1, $result->targets);
+        $p = $result->targets[0]->payload;
+        $this->assertSame(4811, $p['card_id']);   // the explicit card#, NOT DL-9's card 7
+        $this->assertSame('started', $p['outcome']);
+        $this->assertArrayNotHasKey('stamp_dl', $p);   // the foreign DL-9 is not stamped
+        $this->assertArrayNotHasKey('stamp_pr', $p);   // no PR on a push
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'card#4811')
+            && str_contains((string) $msg, 'authoritative'))->once();
     }
 
     // --- DL-201 / roundtable #48: dash alias + DL-shaped boundary + near-miss warn.
@@ -746,6 +842,28 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame('5', $t->targetId);   // card id is the target id
         $this->assertSame(['repo' => 'owner/repo', 'action' => 'set'], $t->payload);
         $this->assertSame([], $r->intents);   // machine-only
+    }
+
+    public function test_draft_overlay_prefers_the_card_token_on_a_conflict(): void
+    {
+        // DL-218 sibling (correlatedCardIds, LOWER harm — a block-reason marker, not a
+        // stage move): a draft PR whose DL resolves to a DIFFERENT card than a present
+        // card# must mark the INTENDED card# blocked, not the foreign-DL card. Same
+        // conflict predicate; the overlay path stays SILENT by design (the move path
+        // logs — here converted_to_draft carries no move outcome, so nothing logs).
+        // (Revert the classifier ⇒ DL-9's card 7 gets the marker ⇒ RED.)
+        $this->enableDraftOverlay();
+        $this->fakeBoardCards();   // DL-9 → card 7
+        Log::spy();
+
+        $r = $this->classify('pull_request.converted_to_draft', ['title' => 'DL-9 wip card#4811', 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(1, $r->targets);
+        $t = $r->targets[0];
+        $this->assertSame('kanban_block_reason', $t->handler);
+        $this->assertSame('4811', $t->targetId);   // the explicit card#, NOT DL-9's card 7
+        $this->assertSame(['repo' => 'owner/repo', 'action' => 'set'], $t->payload);
+        Log::shouldNotHaveReceived('warning');   // overlay path is silent (no double-log)
     }
 
     public function test_ready_for_review_emits_block_reason_clear_when_opted_in(): void

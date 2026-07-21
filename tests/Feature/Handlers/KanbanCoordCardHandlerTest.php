@@ -73,15 +73,16 @@ class KanbanCoordCardHandlerTest extends TestCase
         $this->handle();
 
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && $r['task']['board_id'] === 8
-            && $r['task']['workflow_stage_id'] === 21
-            && $r['task']['name'] === '[QUERY] can we ship?'
-            && $r['task']['description'] === 'Coordination thread org/coord#4'
-            && $r['task']['priority'] === 0
-            && ! array_key_exists('external_id', $r['task'])   // NOT set — build_create omits it + (board_id,external_id) uniqueness 422 risk
-            && $r['task']['external_link'] === 'https://github.com/org/coord/issues/4'
-            && $r['task']['tags'] === ['id:QUERY-4', 'type:query']   // id:/type: only — no repo:
-            && $r['task']['payload'] === []);
+            && ! isset($r['task'])   // DL-219: create body is flat, no task wrapper
+            && $r['board_id'] === 8
+            && $r['workflow_stage_id'] === 21
+            && $r['name'] === '[QUERY] can we ship?'
+            && $r['description'] === 'Coordination thread org/coord#4'
+            && $r['priority'] === 0
+            && ! array_key_exists('external_id', $r->data())   // NOT set — build_create omits it + (board_id,external_id) uniqueness 422 risk
+            && $r['external_link'] === 'https://github.com/org/coord/issues/4'
+            && $r['tags'] === ['id:QUERY-4', 'type:query']   // id:/type: only — no repo:
+            && $r['payload'] === []);
     }
 
     public function test_brief_gets_priority_one(): void
@@ -93,8 +94,8 @@ class KanbanCoordCardHandlerTest extends TestCase
 
         $this->handle(['sid' => 'BRIEF-4', 'itype' => 'brief']);
 
-        Http::assertSent(fn ($r) => $r->method() === 'POST' && $r['task']['priority'] === 1
-            && $r['task']['tags'] === ['id:BRIEF-4', 'type:brief']);
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && ! isset($r['task']) && $r['priority'] === 1
+            && $r['tags'] === ['id:BRIEF-4', 'type:brief']);
     }
 
     public function test_swimlane_id_is_applied_when_mapped(): void
@@ -107,7 +108,7 @@ class KanbanCoordCardHandlerTest extends TestCase
 
         $this->handle();
 
-        Http::assertSent(fn ($r) => $r->method() === 'POST' && ($r['task']['swimlane_id'] ?? null) === 31);
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && ! isset($r['task']) && ($r['swimlane_id'] ?? null) === 31);
     }
 
     public function test_existing_card_with_the_tag_is_a_skip_no_create(): void
@@ -196,9 +197,10 @@ class KanbanCoordCardHandlerTest extends TestCase
         $this->handle(['sid' => null, 'itype' => 'task', 'title' => 'a plain non-prefixed title']);
 
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && $r['task']['tags'] === ['type:task']              // NO id: tag on the by-ref path
-            && $r['task']['payload'] === ['issue_number' => 4]   // stamped so it is by-ref findable
-            && $r['task']['external_link'] === 'https://github.com/org/coord/issues/4');
+            && ! isset($r['task'])
+            && $r['tags'] === ['type:task']              // NO id: tag on the by-ref path
+            && $r['payload'] === ['issue_number' => 4]   // stamped so it is by-ref findable
+            && $r['external_link'] === 'https://github.com/org/coord/issues/4');
         // correlated by-ref, not by tag
         Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains(urldecode($r->url()), 'system=github_issue')
             && str_contains(urldecode($r->url()), 'ref=4'));
@@ -229,8 +231,9 @@ class KanbanCoordCardHandlerTest extends TestCase
         $this->handle();   // default payload: sid=QUERY-4, itype=query
 
         Http::assertSent(fn ($r) => $r->method() === 'POST'
-            && $r['task']['tags'] === ['id:QUERY-4', 'type:query']
-            && $r['task']['payload'] === ['issue_number' => 4]);   // dual-keyed
+            && ! isset($r['task'])
+            && $r['tags'] === ['id:QUERY-4', 'type:query']
+            && $r['payload'] === ['issue_number' => 4]);   // dual-keyed
         Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/search.json'));   // tag pre-check ran
         Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains(urldecode($r->url()), 'system=github_issue'));   // by-ref pre-check ran
     }
@@ -314,7 +317,8 @@ class KanbanCoordCardHandlerTest extends TestCase
         $handler->handle($target, $agent);
 
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && $r['task']['workflow_stage_id'] === 21
-            && $r['task']['tags'] === ['id:QUERY-4', 'type:query']);
+            && ! isset($r['task'])
+            && $r['workflow_stage_id'] === 21
+            && $r['tags'] === ['id:QUERY-4', 'type:query']);
     }
 }

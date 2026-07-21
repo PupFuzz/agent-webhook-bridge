@@ -76,7 +76,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
             && str_contains($r->url(), '/tasks/5.json')
-            && $r['task'] === ['workflow_stage_id' => 52]
+            && $r->data() === ['workflow_stage_id' => 52]
             && $r->hasHeader('Authorization', 'Bearer wb-token'));
     }
 
@@ -282,7 +282,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
             && str_contains($r->url(), '/tasks/5.json')
-            && $r['task'] === ['workflow_stage_id' => 49]);
+            && $r->data() === ['workflow_stage_id' => 49]);
     }
 
     public function test_started_does_not_regress_an_already_progressed_card(): void
@@ -339,7 +339,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload(['outcome' => 'started']));
 
-        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 49]);
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 49]);
     }
 
     public function test_started_refused_when_card_has_a_block_reason(): void
@@ -387,7 +387,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload(['outcome' => 'started']));
 
-        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 49]);
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 49]);
     }
 
     public function test_payload_board_id_is_ignored_config_is_authoritative(): void
@@ -405,7 +405,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload(['board_id' => 999]));
 
-        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 52]);
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 52]);
     }
 
     // --- #2935: no-regression guard for the four PR-driven outcomes ---
@@ -451,7 +451,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload(['outcome' => 'opened']));
 
-        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 50]);
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
     }
 
     public function test_merged_does_not_regress_a_released_card(): void
@@ -475,7 +475,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload(['outcome' => 'closed_unmerged']));
 
-        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 49]);
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 49]);
     }
 
     public function test_closed_unmerged_does_not_resurrect_a_released_card(): void
@@ -502,7 +502,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload(['outcome' => 'opened']));
 
-        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 50]);
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
     }
 
     public function test_board_stage_order_preload_is_read_once_across_cards_on_one_instance(): void
@@ -536,7 +536,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         // Both cards still moved forward (49 In-Progress → 50 In-Review) — and to
         // their OWN card URLs, not the same one twice.
         $movedCards = collect(Http::recorded())
-            ->filter(fn ($pair) => $pair[0]->method() === 'PATCH' && $pair[0]['task'] === ['workflow_stage_id' => 50])
+            ->filter(fn ($pair) => $pair[0]->method() === 'PATCH' && $pair[0]->data() === ['workflow_stage_id' => 50])
             ->map(fn ($pair) => $pair[0]->url())
             ->sort()
             ->values()
@@ -708,7 +708,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         // dl_number stored zero-padded (DL-%04d); pr_number as an int.
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
-            && $r['task'] === ['payload' => ['dl_number' => 'DL-0042', 'pr_number' => 77]]);
+            && $r->data() === ['payload' => ['dl_number' => 'DL-0042', 'pr_number' => 77]]);
     }
 
     public function test_stamp_is_add_if_missing_never_overwrites_an_existing_dl(): void
@@ -726,7 +726,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         // only pr_number stamped — the existing dl_number is NOT overwritten.
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
-            && $r['task'] === ['payload' => ['pr_number' => 77]]);
+            && $r->data() === ['payload' => ['pr_number' => 77]]);
     }
 
     public function test_stamp_is_add_if_missing_stamps_dl_when_only_pr_present(): void
@@ -745,7 +745,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
 
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
-            && $r['task'] === ['payload' => ['dl_number' => 'DL-0042']]);
+            && $r->data() === ['payload' => ['dl_number' => 'DL-0042']]);
     }
 
     public function test_no_stamp_patch_when_card_already_carries_both_refs(): void
@@ -760,7 +760,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
 
-        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['task']['payload']));
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['payload']));
     }
 
     public function test_already_in_stage_self_heals_the_stamp_without_moving(): void
@@ -775,9 +775,9 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
 
-        Http::assertNotSent(fn (Request $r) => isset($r['task']['workflow_stage_id']));  // no move
+        Http::assertNotSent(fn (Request $r) => isset($r['workflow_stage_id']));  // no move
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
-            && $r['task'] === ['payload' => ['dl_number' => 'DL-0042', 'pr_number' => 77]]);
+            && $r->data() === ['payload' => ['dl_number' => 'DL-0042', 'pr_number' => 77]]);
     }
 
     public function test_stamp_permanent_4xx_is_swallowed_move_still_succeeds(): void
@@ -794,7 +794,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         // Must NOT throw: a permanent stamp failure is log + no-op (the move succeeded).
         $this->handle($this->payload(['stamp_dl' => 'DL-42']));
 
-        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['task']['payload']));  // stamp was attempted
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['payload']));  // stamp was attempted
     }
 
     public function test_stamp_transient_5xx_propagates_for_redelivery(): void
@@ -826,7 +826,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload());
 
-        Http::assertNotSent(fn (Request $r) => isset($r['task']['payload']));
+        Http::assertNotSent(fn (Request $r) => isset($r['payload']));
     }
 
     // --- DL-194: auto-unpark a parked card on branch-cut (started + unpark_from_stages) ---
@@ -877,7 +877,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload(['outcome' => 'started']));
 
-        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 49]);
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 49]);
         Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
             && $r['type'] === 'writeback_auto_unparked'
             && $r['reason'] === 'auto_unparked'
@@ -898,7 +898,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload(['outcome' => 'started']));
 
-        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 49]);
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 49]);
         $this->assertSame(1, $this->alertPushCount());
         Log::shouldHaveReceived('warning')->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'auto-unparked') && $ctx['hold_signal'] === 'block_reason');
     }
@@ -1076,7 +1076,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload(['outcome' => 'started']));
 
-        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['task']['workflow_stage_id']));   // no move
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['workflow_stage_id']));   // no move
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));   // no alert
     }
 
@@ -1149,7 +1149,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload(['outcome' => 'reopened']));
 
-        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 50]);
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
     }
 
     public function test_reopened_on_a_non_abandoned_card_is_forward_only_like_opened(): void
@@ -1161,7 +1161,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload(['outcome' => 'reopened']));
 
-        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 50]);
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
     }
 
     public function test_reopened_does_not_revive_a_terminal_card(): void
@@ -1198,7 +1198,7 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $this->handle($this->payload(['outcome' => 'reopened']));
 
-        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r['task'] === ['workflow_stage_id' => 50]);
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 50]);
         Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
             && $r['type'] === 'writeback_revived_on_reopen'
             && $r['reason'] === 'revived_on_reopen'
