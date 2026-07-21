@@ -582,6 +582,28 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame('started', $result->targets[0]->payload['outcome']);
     }
 
+    public function test_conflicting_card_token_overrides_the_dl_on_a_branch_create_push(): void
+    {
+        // DL-218 sibling (classifyPush, SAME harm — a stage move): a branch like
+        // `card-4811-guard-DL-9` where DL-9 resolves to a DIFFERENT card (7) must not
+        // hijack the `started` move. The explicit card# is authoritative: move card
+        // 4811, warn loudly, and do NOT stamp the foreign DL-9 (no PR on a push, so no
+        // stamp_pr either). (Revert the classifier ⇒ DL-9's card 7 is targeted ⇒ RED.)
+        $this->fakeBoardCards();   // DL-9 → card 7
+        Log::spy();
+
+        $result = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/card-4811-guard-DL-9-reintro']);
+
+        $this->assertCount(1, $result->targets);
+        $p = $result->targets[0]->payload;
+        $this->assertSame(4811, $p['card_id']);   // the explicit card#, NOT DL-9's card 7
+        $this->assertSame('started', $p['outcome']);
+        $this->assertArrayNotHasKey('stamp_dl', $p);   // the foreign DL-9 is not stamped
+        $this->assertArrayNotHasKey('stamp_pr', $p);   // no PR on a push
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'card#4811')
+            && str_contains((string) $msg, 'authoritative'))->once();
+    }
+
     // --- DL-201 / roundtable #48: dash alias + DL-shaped boundary + near-miss warn.
     // The regex decisions are the guard (hostile-input matrix, mutation-checked):
     // reintroducing the trailing \b REDs the underscore tests; dropping the dash
@@ -791,6 +813,28 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame('5', $t->targetId);   // card id is the target id
         $this->assertSame(['repo' => 'owner/repo', 'action' => 'set'], $t->payload);
         $this->assertSame([], $r->intents);   // machine-only
+    }
+
+    public function test_draft_overlay_prefers_the_card_token_on_a_conflict(): void
+    {
+        // DL-218 sibling (correlatedCardIds, LOWER harm — a block-reason marker, not a
+        // stage move): a draft PR whose DL resolves to a DIFFERENT card than a present
+        // card# must mark the INTENDED card# blocked, not the foreign-DL card. Same
+        // conflict predicate; the overlay path stays SILENT by design (the move path
+        // logs — here converted_to_draft carries no move outcome, so nothing logs).
+        // (Revert the classifier ⇒ DL-9's card 7 gets the marker ⇒ RED.)
+        $this->enableDraftOverlay();
+        $this->fakeBoardCards();   // DL-9 → card 7
+        Log::spy();
+
+        $r = $this->classify('pull_request.converted_to_draft', ['title' => 'DL-9 wip card#4811', 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(1, $r->targets);
+        $t = $r->targets[0];
+        $this->assertSame('kanban_block_reason', $t->handler);
+        $this->assertSame('4811', $t->targetId);   // the explicit card#, NOT DL-9's card 7
+        $this->assertSame(['repo' => 'owner/repo', 'action' => 'set'], $t->payload);
+        Log::shouldNotHaveReceived('warning');   // overlay path is silent (no double-log)
     }
 
     public function test_ready_for_review_emits_block_reason_clear_when_opted_in(): void
