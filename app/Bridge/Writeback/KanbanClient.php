@@ -55,7 +55,7 @@ final class KanbanClient
     /** Move the card to a workflow stage (column-only; never touches payload/other fields). */
     public function moveCard(int $cardId, int $stageId): void
     {
-        $this->http()->patch("/tasks/{$cardId}.json", ['task' => ['workflow_stage_id' => $stageId]])->throw();
+        $this->http()->patch("/tasks/{$cardId}.json", ['workflow_stage_id' => $stageId])->throw();
     }
 
     /**
@@ -70,25 +70,28 @@ final class KanbanClient
      */
     public function stampCorrelationRefs(int $cardId, array $refs): void
     {
-        $this->http()->patch("/tasks/{$cardId}.json", ['task' => ['payload' => $refs]])->throw();
+        $this->http()->patch("/tasks/{$cardId}.json", ['payload' => $refs])->throw();
     }
 
     /**
      * Set (or clear) a card's `block_reason` field (DL-193) — a plain fillable
-     * field write, so a `{"task":{"block_reason":…}}` PATCH, mirroring {@see moveCard}
-     * (which is column-only and never touches this field). Passing null clears the
-     * reason. The add-if-missing / clear-if-ours decision is the caller's (from the
-     * card it already read); this is the thin write verb. Throws on non-2xx.
+     * field write, so a flat `{"block_reason":…}` PATCH (kanban DL-219 dropped the
+     * `{"task":{…}}` wrapper and now strict-rejects a top-level `task` key), mirroring
+     * {@see moveCard} (which is column-only and never touches this field). Passing null
+     * clears the reason. The add-if-missing / clear-if-ours decision is the caller's
+     * (from the card it already read); this is the thin write verb. Throws on non-2xx.
      */
     public function setBlockReason(int $cardId, ?string $reason): void
     {
-        $this->http()->patch("/tasks/{$cardId}.json", ['task' => ['block_reason' => $reason]])->throw();
+        $this->http()->patch("/tasks/{$cardId}.json", ['block_reason' => $reason])->throw();
     }
 
     /**
      * Archive (retire) a card via the kanban lifecycle verb (DL-161). Archiving
-     * is a TOP-LEVEL `_action`, NOT a field write: a `{"task":{"archived_at":…}}`
-     * PATCH returns 200 but silently no-ops, so we send `{"_action":"archive"}`.
+     * is a TOP-LEVEL `_action`, NOT a field write: a flat `{"archived_at":…}` PATCH
+     * returns 200 but silently no-ops, so we send `{"_action":"archive"}`. (`_action`
+     * was always top-level; kanban DL-219's flattening only affects field writes, and
+     * the strict-key reject targets the `task` wrapper — not this control key.)
      * Returns whether the response CONFIRMS the archive (`data.archived_at` set):
      * `false` is a 200-that-didn't-archive — a wrong-verb / contract break the
      * caller must surface, NOT swallow. It's returned (not thrown) because that
@@ -509,7 +512,7 @@ final class KanbanClient
         if ($externalLink !== null) {
             $task['external_link'] = $externalLink;
         }
-        $data = $this->http()->post('/tasks.json', ['task' => $task])->throw()->json('data');
+        $data = $this->http()->post('/tasks.json', $task)->throw()->json('data');
         if (! is_array($data) || ! isset($data['id']) || ! is_numeric($data['id'])) {
             throw new \RuntimeException('kanban createCard: response carried no task id');
         }

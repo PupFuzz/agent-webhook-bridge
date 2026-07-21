@@ -72,7 +72,8 @@ class KanbanBlockReasonHandlerTest extends TestCase
 
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
             && str_contains($r->url(), '/tasks/5.json')
-            && $r['task'] === ['block_reason' => KanbanBlockReasonHandler::MARKER]
+            && ! isset($r['task'])   // DL-219: block_reason written flat, not under a task wrapper
+            && $r['block_reason'] === KanbanBlockReasonHandler::MARKER
             && $r->hasHeader('Authorization', 'Bearer wb-token'));
     }
 
@@ -91,7 +92,8 @@ class KanbanBlockReasonHandlerTest extends TestCase
         $this->handle('set');
 
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
-            && $r['task'] === ['block_reason' => KanbanBlockReasonHandler::MARKER]);
+            && ! isset($r['task'])
+            && $r['block_reason'] === KanbanBlockReasonHandler::MARKER);
     }
 
     public function test_set_leaves_a_human_block_reason_untouched(): void
@@ -131,7 +133,9 @@ class KanbanBlockReasonHandlerTest extends TestCase
         $this->handle('clear');
 
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
-            && $r['task'] === ['block_reason' => null]);
+            && ! isset($r['task'])
+            && array_key_exists('block_reason', $r->data())
+            && $r['block_reason'] === null);
     }
 
     public function test_clear_leaves_a_human_block_reason_intact(): void

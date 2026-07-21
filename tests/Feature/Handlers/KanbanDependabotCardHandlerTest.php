@@ -65,16 +65,16 @@ class KanbanDependabotCardHandlerTest extends TestCase
         $this->handle('opened');
 
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && $r['task']['board_id'] === 8
-            && $r['task']['workflow_stage_id'] === 50
-            && $r['task']['payload']['pr_number'] === 42
-            && $r['task']['payload']['pr_url'] === 'https://github.com/owner/repo/pull/42'
-            && $r['task']['payload']['origin'] === 'dependabot'
+            && $r['board_id'] === 8
+            && $r['workflow_stage_id'] === 50
+            && $r['payload']['pr_number'] === 42
+            && $r['payload']['pr_url'] === 'https://github.com/owner/repo/pull/42'
+            && $r['payload']['origin'] === 'dependabot'
             // Lock the payload key SET to the constant bridge:check validates (#2949),
             // so the create payload and the check's required-key list can't drift.
-            && array_keys($r['task']['payload']) === KanbanDependabotCardHandler::CREATE_PAYLOAD_KEYS
-            && in_array('dependencies', $r['task']['tags'], true)
-            && in_array('triaged', $r['task']['tags'], true));
+            && array_keys($r['payload']) === KanbanDependabotCardHandler::CREATE_PAYLOAD_KEYS
+            && in_array('dependencies', $r['tags'], true)
+            && in_array('triaged', $r['tags'], true));
     }
 
     public function test_mapping_swimlane_id_is_applied_to_a_created_card(): void
@@ -96,7 +96,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
         $this->handle('opened');
 
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && ($r['task']['swimlane_id'] ?? null) === 31);
+            && ($r['swimlane_id'] ?? null) === 31);
     }
 
     public function test_no_swimlane_id_omits_the_key_from_the_create(): void
@@ -110,7 +110,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
         $this->handle('opened');
 
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && ! array_key_exists('swimlane_id', $r['task']));
+            && ! array_key_exists('swimlane_id', $r->data()));
     }
 
     public function test_existing_card_is_moved_not_recreated(): void
@@ -122,7 +122,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
 
         $this->handle('merged');   // existing card at 50, target stage 52
 
-        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['task']['workflow_stage_id'] === 52);
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['workflow_stage_id'] === 52);
         Http::assertNotSent(fn ($r) => $r->method() === 'POST');
     }
 
@@ -139,7 +139,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
 
         $this->handle('merged');   // event repo is owner/repo (setUp); card url is Owner/Repo
 
-        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['task']['workflow_stage_id'] === 52);
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['workflow_stage_id'] === 52);
     }
 
     public function test_already_in_target_stage_is_a_noop(): void
@@ -173,7 +173,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
         $this->handle('closed_unmerged');   // DL-161: dependabot close-unmerged retires the card
 
         Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['_action'] === 'archive');
-        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && isset($r['task']['workflow_stage_id']));   // archived, not moved
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && isset($r['workflow_stage_id']));   // archived, not moved
         Http::assertNotSent(fn ($r) => $r->method() === 'POST');
     }
 
@@ -320,9 +320,9 @@ class KanbanDependabotCardHandlerTest extends TestCase
         $this->handle('merged');   // target stage 52
 
         Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/8.json') && ($r['_action'] ?? null) === 'archive');
-        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && ($r['task']['workflow_stage_id'] ?? null) === 52);
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && ($r['workflow_stage_id'] ?? null) === 52);
         // The archived duplicate is never moved.
-        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/8.json') && isset($r['task']['workflow_stage_id']));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/8.json') && isset($r['workflow_stage_id']));
     }
 
     public function test_card_with_unparseable_pr_url_is_never_archived(): void
@@ -375,9 +375,9 @@ class KanbanDependabotCardHandlerTest extends TestCase
         $this->handle('opened', 166);
 
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && in_array('id:DEV-pr-166', $r['task']['tags'], true)
-            && in_array('dependencies', $r['task']['tags'], true)
-            && in_array('triaged', $r['task']['tags'], true));
+            && in_array('id:DEV-pr-166', $r['tags'], true)
+            && in_array('dependencies', $r['tags'], true)
+            && in_array('triaged', $r['tags'], true));
     }
 
     public function test_card_id_tag_template_supports_repo_placeholder(): void
@@ -405,7 +405,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
         );
 
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && in_array('id:dep:magento#166', $r['task']['tags'], true));
+            && in_array('id:dep:magento#166', $r['tags'], true));
     }
 
     public function test_no_card_id_tag_template_leaves_tags_back_compat(): void
@@ -420,6 +420,6 @@ class KanbanDependabotCardHandlerTest extends TestCase
         $this->handle('opened');
 
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
-            && $r['task']['tags'] === ['dependencies', 'triaged']);
+            && $r['tags'] === ['dependencies', 'triaged']);
     }
 }

@@ -83,7 +83,7 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
     {
         Http::assertSent(fn ($r) => $r->method() === 'PATCH'
             && str_contains($r->url(), '/tasks/7.json')
-            && ($r->data()['task']['workflow_stage_id'] ?? null) === $stage);
+            && ($r->data()['workflow_stage_id'] ?? null) === $stage);
     }
 
     private function assertNoMove(): void
@@ -365,7 +365,7 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
 
         Http::assertSent(fn ($r) => $r->method() === 'PATCH'
             && str_contains($r->url(), '/tasks/9.json')
-            && ($r->data()['task']['workflow_stage_id'] ?? null) === 99);
+            && ($r->data()['workflow_stage_id'] ?? null) === 99);
     }
 
     public function test_a_5xx_on_one_card_still_propagates_for_redelivery(): void

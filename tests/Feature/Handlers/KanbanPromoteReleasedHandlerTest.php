@@ -86,7 +86,8 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
     {
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
             && str_contains($r->url(), "/tasks/{$cardId}.json")
-            && $r['task'] === ['workflow_stage_id' => $stage]);
+            && ! isset($r['task'])   // DL-219: flat move body, no task wrapper
+            && $r['workflow_stage_id'] === $stage);
     }
 
     private function assertNotMoved(int $cardId): void
