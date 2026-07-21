@@ -8,8 +8,18 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-07-21
+
+**Minor — two-way board tools (DL-217): an agent-initiated request/response surface over the existing channel, plus a release-CI dependency bump and a solo-orientation doc sync.** 2 PRs since v0.62.1 (#341 + dependabot #340). **Opt-in, fail-closed end to end ⇒ absent the new per-agent `board_tools` config AND the channel server's `BRIDGE_CHANNEL_TOOLS=1`, behavior is byte-identical. No migration, no new required `.env`, no receiver accept/reject change, no token-scope change.**
+
 ### Added
 - **DL-217 (card #4719, roundtable #102) — two-way board tools.** The bridge gains an agent-initiated request/response surface over the existing channel, exposing two channel-identity-scoped MCP tools so an impl seat with **no kanban token and no toolkit** gets a board window: `board_my_cards` (read-proxy — your own product swimlane grouped by stage + a shared swimlane + coordination cards addressed to you; the kanban token never leaves the bridge) and `board_create_card` (create a card in **your own** swimlane — forced from config, args cannot name a lane; born untriaged). **Opt-in, fail-closed end to end: absent a per-agent `board_tools` block AND absent the channel server's `BRIDGE_CHANNEL_TOOLS=1`, behavior is byte-identical.** New pieces: the Node channel server advertises a `tools` capability + proxies `tools/call` to the bridge over HTTP loopback with a per-agent bearer (dumb pipe — no board logic, no token, no retry); a new loopback-gated `POST /agent-tools/call` (the `LoopbackOnly` middleware gates the TCP peer `127.0.0.0/8` + `::1`, sound under the no-`TrustProxies` posture; the per-agent bearer is defense-in-depth on top, resolved iterate-and-`hash_equals`, fail-closed on unreadable token per-agent and on token collision for both); own-swimlane forced-scope create with reserved-tag (`created-by:`/`idem:`/`id:`/`type:`/bare `triaged`) + idempotency-key charset sanitization and the full DL-198 correlate-before-create + `CardCollapse` idempotency; a fail-closed swimlane row filter on reads. `bridge:check` gains board-tools probes (token readability, token collision, swimlane/stage existence, service-user board membership). **Functional prerequisite:** kanban's `tasks/search.json` needs the `swimlane_id=` q-term (a sibling of `workflow_stage_id=`); an un-upgraded kanban returns empty (broken-but-safe). Docs: new `docs/board-tools.md`, the channel-server README section, the MCP `instructions` string (reworded — channel events stay one-way notifications, the tools are the new request/response surface), and corrections to standing one-way claims in `docs/writeback.md`, `docs/multi-host.md` (incl. the pre-existing FALSE `no-port-forwarding` "still permits `-R`" claim — `no-port-forwarding` forbids both `-L` and `-R`), and `CLAUDE_ARCHITECTURE.md`.
+
+### Changed
+- **docs: solo orientation synced to coord v0.10.0** (`CLAUDE_AGENTBOARD.md`; operator-responsiveness rules + the managed orientation block).
+
+### Security / dependencies
+- **#340** — **PupFuzz/agent-board-toolkit/promote 0.17.0 → 0.19.0** (release CI, `release-promote-cards.yml`). Interface verified compatible against `promote/action.yml` at the new pin (`1965ee3`) — all five inputs (`writeback-token`, `expected-host`, `api-base`, `dls`, `dry-run`) unchanged; the action runs only on the merge-to-main release event.
 
 ## [0.62.1] - 2026-07-19
 
