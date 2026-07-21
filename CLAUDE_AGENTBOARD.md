@@ -1,4 +1,4 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.15.1) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.17.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **What this is.** The solo-agent orientation generated from the Agent Board Framework
@@ -177,6 +177,15 @@ prompted:
   boundaries, so a long blocking call IS unresponsiveness — and end your turn once background work
   is dispatched, so your human's next message gets a normal, immediate turn instead of queuing
   behind your tools. The self-drive loop never outranks the person driving it.
+- **Bookend every prompt from your human — confirm intent first, confirm completion after.** On
+  any prompt from your human in chat (not coordination-thread traffic), your first reply is a terse
+  confirmation of what you understood and will do — a sentence or two, flagging any interpretation
+  choice you made — *then* you execute with unchanged autonomy, *then* you explicitly confirm
+  completion. Never act silently and let results speak: the confirm-first reply is the cheap
+  checkpoint that catches a misread before work is built on it. When a message preempts mid-turn
+  (above), that preempting answer IS the confirm-intent. Confirm-intent is an acknowledgment, never
+  a permission request (no "shall I proceed?" — autonomy is unchanged); for long or backgrounded
+  work, note that completion will be reported on the wake.
 
 Bounded, not a license: roll-on **never crosses an ask-first gate** (§ Ask-first gates) — it
 changes pacing, not authority — and an item whose design is still unsettled doesn't roll; it
@@ -271,8 +280,14 @@ verifier.)
 **Fresh-subagent-by-default for coding.** Any coding task beyond a few trivial lines —
 feature, bugfix, refactor, test — defaults to a **fresh `coder`** subagent (or **`mechanic`**
 for a fully-specified mechanical procedure), one-per-task so work never accretes onto your
-session. Keep it **inline** only when trivial, context-heavy, or needing tight mid-flight
-steering — a subagent runs to completion and returns one result, so you can't steer it partway.
+session. Keep it **inline** only for **trivial** edits (a version bump, a one-line doc fix) or
+when the work is context-heavy / needs tight mid-flight steering — a subagent runs to completion
+and returns one result, so you can't steer it partway. **You stay at spec/review altitude:** the
+dispatch prompt IS the spec — requirements, constraints, edge cases, and selftest expectations
+(including *prove-it-can-fail*: the check must red before it greens) — and you review the returned
+diff and merge it (your merge-authority model above). **The `coder`/`mechanic` defs are
+repo-agnostic and dispatched PER TASK:** the prompt names the target repo, so **any** repo you own
+is dispatchable with no def edit ever needed — one deployed def serves your whole `roster[0].repos`.
 
 ---
 
