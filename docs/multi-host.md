@@ -25,7 +25,7 @@ If both run on the same host, use the [Unix domain socket transport](../examples
 
 ## Threat model
 
-- **Outbound from B only**: firewall permits no inbound. B is always the active party.
+- **Outbound from B only**: firewall permits no inbound. At the *network* layer B is always the active party (it opens the SSH connection). Note the application-layer exception introduced by the two-way board tools (DL-217): a `tools/call` travels B→A (the channel server on B calls the bridge on A), so that leg needs its OWN forward tunnel — see [§ Board tools (two-way) forward leg](#board-tools-two-way-forward-leg) below. The channel-push wake path remains A→B as drawn.
 - **SSH key pair**: wire is encrypted; auth is public-key. The bridge-user account on A is the SSH endpoint.
 - **Bearer token (defense-in-depth)**: the bridge POSTs `Authorization: Bearer <token>`. The channel server on B validates it. SSH protects the wire; the token protects against same-host compromise on A.
 - **No durable-delivery guarantee**: when the tunnel is down, the bridge gets `connection refused` and records the dispatch as done-with-note. **Always pair `channel_push` with `Intent` emission** in your classifier so `php artisan bridge:inbox` surfaces the event next session — see [`docs/customization.md § channel_push`](customization.md) and [`CLAUDE_DECISIONS.md`](../CLAUDE_DECISIONS.md).
@@ -135,7 +135,16 @@ Add the public key from host B to the bridge-user `~/.ssh/authorized_keys` on A.
 command="echo 'tunnel-only key; no shell access'",no-pty,no-X11-forwarding,no-agent-forwarding,no-port-forwarding,permitopen="127.0.0.1:8788" ssh-ed25519 AAAA... bridge-tunnel@host-B
 ```
 
-`permitopen="127.0.0.1:8788"` is the load-bearing restriction — without it the key could forward arbitrary ports. `command=...` prevents shell access; `no-port-forwarding` blocks `-L` forwards while still permitting the `-R` configured server-side.
+`command=...` prevents shell access. **⚠ Correction (DL-217 review):** the `permitopen`/`no-port-forwarding` line above is WRONG as written. Per the OpenSSH `sshd` man page, `no-port-forwarding` forbids **all** client-requested forwarding — both `-L` **and** `-R` — and `permitopen` cannot re-grant what `no-port-forwarding` denies. As written, the reverse tunnel this page depends on likely **cannot establish at all** (prod is same-host, so the multi-host page has plausibly never been field-exercised). The correct restriction is to **drop `no-port-forwarding`** and scope with the positive allow-lists instead:
+
+```
+command="echo 'tunnel-only key; no shell access'",no-pty,no-X11-forwarding,no-agent-forwarding,permitlisten="127.0.0.1:8788",permitopen="127.0.0.1:8787" ssh-ed25519 AAAA... bridge-tunnel@host-B
+```
+
+- `permitlisten="127.0.0.1:8788"` scopes the **reverse** (`-R`) tunnel that carries A→B channel pushes.
+- `permitopen="127.0.0.1:8787"` scopes the **forward** (`-L`) tunnel the two-way board tools (DL-217) need for the B→A `tools/call` (point it at A's bridge HTTP port). Omit it if you are not enabling board tools.
+
+Verify the tunnels actually come up (a `no-port-forwarding` key silently refuses them); this correction's prescriptions are exercised for real when the multi-host leg is first built (prod today is same-host).
 
 Verify:
 
@@ -270,6 +279,36 @@ Expected: `forwarded` (HTTP 202). The Claude Code session on host B receives `<c
 | `curl` returns 200 but Claude Code shows nothing | Channel server isn't bound (Claude Code session closed) OR `--dangerously-load-development-channels` flag missing | Run `/mcp` in the Claude Code session; check `~/.claude/debug/<session-id>.txt` for spawn errors |
 | Bridge logs `process_error` constantly | Tunnel is up but channel server crashed | Restart the Claude Code session on B (the server dies and respawns with the session) |
 | `connection refused` only sometimes | Tunnel flapping during autossh reconnect | Standard. The silent-drop guard ensures the Intent emission still feeds `php artisan bridge:inbox` for next-session catch-up |
+
+## Board tools (two-way) forward leg
+
+The channel-push wake path drawn above is A→B (the bridge pushes; the channel
+server surfaces). The two-way board tools (DL-217) reverse the direction for the
+call itself: an agent invokes `board_my_cards` / `board_create_card`, the channel
+server on B forwards `{tool, args}` to the bridge on A over HTTP, and the bridge
+replies. That B→A call does **not** ride the existing `-R` reverse tunnel (which
+only carries A→B pushes) — it needs its OWN **forward** (`-L`) tunnel that
+terminates on A's already-open sshd, so there are still zero inbound firewall
+holes:
+
+```bash
+# On host B, alongside the -R wake tunnel: forward B's loopback :8787 to A's bridge port.
+ssh -N -L 127.0.0.1:8787:127.0.0.1:8787 bridge-user@host-A
+```
+
+Then point the channel server's `BRIDGE_TOOLS_ENDPOINT` at the local end
+(`http://127.0.0.1:8787/agent-tools/call`) and set `BRIDGE_TOOLS_TOKEN` (or
+`BRIDGE_TOOLS_TOKEN_FILE`). On A, the board-tools ingress is loopback-gated: the
+`-L` tunnel terminates on A's loopback, so the bridge sees the peer as
+`127.0.0.1` and admits it, then the per-agent bearer authenticates the call. The
+`authorized_keys` restriction that permits this leg is the `permitopen=` line in
+[§ 4](#4-on-host-a--restrict-the-bridge-user-ssh-key) above — and remember
+`no-port-forwarding` must be **dropped** for either tunnel to establish.
+
+> Same-box installs (the prod topology today) need none of this — the channel
+> server calls `http://127.0.0.1:<bridge-port>/agent-tools/call` directly. This
+> forward-tunnel leg is exercised for real only when the first genuinely
+> multi-host board-tools seat is built.
 
 ## What this runbook does NOT cover
 

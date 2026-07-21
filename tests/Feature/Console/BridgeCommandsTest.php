@@ -2253,4 +2253,70 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(0, $code);
         $this->assertStringContainsString('nothing is listening', $out);
     }
+
+    // ─── DL-217 board_tools probes ───────────────────────────────────────────
+
+    private function writeSecret(string $path, string $value): void
+    {
+        File::ensureDirectoryExists(dirname($path));
+        File::put($path, $value);
+        chmod($path, 0o600);
+    }
+
+    private function writeBoardToolsAgent(string $name, string $tokenValue, int $swimlaneId = 4, int $createStageId = 55): void
+    {
+        $tokenFile = $this->dir."/{$name}-tools-token";
+        $this->writeSecret($tokenFile, $tokenValue);
+        File::put($this->dir."/{$name}.yml", "identity:\n  kanban_user_id: ".crc32($name)."\nsubscriptions: []\n"
+            ."board_tools:\n  enabled: true\n  auth:\n    token_path: {$tokenFile}\n  board_id: 10\n  swimlane_id: {$swimlaneId}\n  create_stage_id: {$createStageId}\n");
+    }
+
+    private function fakeBoardOk(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]]),
+            '*/boards/10/preload.json' => Http::response(['data' => [
+                'swimlanes' => [['id' => 4], ['id' => 9]],
+                'workflows' => [['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1], ['id' => 55, 'name' => 'Doing', 'position' => 2]]]],
+            ]]),
+            '*/tasks/by-ref.json*' => Http::response(['data' => []]),
+        ]);
+    }
+
+    public function test_check_warns_when_board_tools_swimlane_not_on_board(): void
+    {
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
+        $this->writeBoardToolsAgent('impl', 'tok-impl-1', swimlaneId: 999);      // 999 not on the board
+        $this->fakeBoardOk();
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('swimlane_id 999 is not on board 10')
+            ->assertExitCode(0);   // warn, never fail
+    }
+
+    public function test_check_warns_when_board_tools_token_collides(): void
+    {
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
+        $this->writeBoardToolsAgent('impl-a', 'same-token');
+        $this->writeBoardToolsAgent('impl-b', 'same-token');
+        $this->fakeBoardOk();
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('the same auth token is shared by multiple agents')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_healthy_board_tools_reports_ok(): void
+    {
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
+        $this->writeBoardToolsAgent('impl', 'tok-impl-1');
+        $this->fakeBoardOk();
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('board_tools: agent impl: writeback token can see board 10')
+            ->assertExitCode(0);
+    }
 }

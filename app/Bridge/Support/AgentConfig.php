@@ -23,7 +23,8 @@ use Symfony\Component\Yaml\Yaml;
  * Sections: `identity` (the agent's own immutable upstream ids — they build the
  * AgentRegistry and auto-seed self echo-suppression), `subscriptions`,
  * `echo_suppression` (lists OTHER agents only; self is derived from the filename
- * + identity ids), `classifier`, `channel`, `surface`.
+ * + identity ids), `classifier`, `channel`, `surface`, `board_tools` (DL-217 —
+ * the channel-identity-scoped board window; absent ⇒ no-op).
  */
 final class AgentConfig
 {
@@ -31,7 +32,7 @@ final class AgentConfig
      * @var list<string>
      */
     private const KNOWN_TOP_LEVEL_KEYS = [
-        'identity', 'subscriptions', 'echo_suppression', 'surface', 'classifier', 'channel', 'api',
+        'identity', 'subscriptions', 'echo_suppression', 'surface', 'classifier', 'channel', 'api', 'board_tools',
     ];
 
     /**
@@ -50,6 +51,7 @@ final class AgentConfig
         public readonly array $tokenPathOverrides,
         public readonly bool $surfaceSilentDropWarnings,
         public readonly array $raw,
+        public readonly ?BoardToolsConfig $boardTools = null,
     ) {}
 
     public static function load(string $agentName, string $configDir): self
@@ -123,6 +125,10 @@ final class AgentConfig
 
         $channel = self::resolveChannel(self::requireMapping($raw, 'channel'));
 
+        // board_tools (DL-217): absent ⇒ null (byte-identical no-op); present-but-
+        // malformed ⇒ throws here (fail-loud at load), mirroring create_coord_cards.
+        $boardTools = BoardToolsConfig::fromArray($raw);
+
         return new self(
             agentName: $agentName,
             identity: $identity,
@@ -134,6 +140,7 @@ final class AgentConfig
             tokenPathOverrides: self::resolveTokenOverrides(self::section($raw, 'api')),
             surfaceSilentDropWarnings: $silentDrop,
             raw: $raw,
+            boardTools: $boardTools,
         );
     }
 
