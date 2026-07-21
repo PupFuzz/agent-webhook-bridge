@@ -8,6 +8,16 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
+## [0.64.1] - 2026-07-21
+
+**Patch — release-CI dependency pin + a solo-orientation doc sync; zero runtime code change.** 2 PRs since v0.64.0 (#350, #348). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change; no `app/` file touched.**
+
+### Security / dependencies
+- **#350** — **PupFuzz/agent-board-toolkit/promote 0.19.0 → 0.20.0** (release CI, `release-promote-cards.yml`). The old pin 422s the wrapped `{"task":{…}}` promote body against a flat kanban (the DL-219 cutover — v0.64.0); v0.20.0 sends flat write bodies matching the flat v3 write API. **This pin runs only on the merge-to-`main` release event, so it takes effect only on `main` — this release activates it.**
+
+### Changed
+- **docs: solo orientation synced to coord v0.15.1** (`CLAUDE_AGENTBOARD.md`; internal agent-framework orientation stamp).
+
 ## [0.64.0] - 2026-07-21
 
 **Minor — the bridge's `KanbanClient` sends FLAT v3 write bodies (the missed kanban DL-219 companion), plus a PR-title correlation-conflict fix.** 2 PRs since v0.63.0 (#346, #345). **⚠ LOCKSTEP: deploy this simultaneously with the kanban-flat upgrade (v0.36.0) and toolkit v0.20.0 — a wrapped bridge 422s against a flat kanban (and vice-versa); there is no shim.**
