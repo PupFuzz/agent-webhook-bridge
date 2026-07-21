@@ -457,18 +457,63 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame(77, $result->targets[0]->payload['card_id']);
     }
 
-    public function test_dl_token_wins_over_card_token_and_the_ignored_token_is_logged(): void
+    public function test_dl_wins_when_a_co_present_card_token_names_the_same_card(): void
     {
         // FR-7 precedence (framework v0.2.229): DL-NNN is the ratified, more-specific
-        // contract; when both appear the card# is ignored LOUDLY (degraded-states-loud).
+        // contract. When a co-present card# names the SAME card the DL resolves to it
+        // is redundant — the DL wins and nothing is dropped (logged for the ledger).
         $this->fakeBoardCards();
         Log::spy();
 
-        $result = $this->classify('pull_request.opened', ['title' => 'Fix DL-9 thing card#3410', 'head' => ['ref' => 'f']]);
+        // DL-9 correlates to card 7; card#7 agrees ⇒ no conflict.
+        $result = $this->classify('pull_request.opened', ['title' => 'Fix DL-9 thing card#7', 'head' => ['ref' => 'f']]);
 
         $this->assertCount(1, $result->targets);
-        $this->assertSame(7, $result->targets[0]->payload['card_id']);   // DL-9 correlates to card 7
-        Log::shouldHaveReceived('info')->withArgs(fn ($msg) => str_contains((string) $msg, 'card#3410'))->once();
+        $this->assertSame(7, $result->targets[0]->payload['card_id']);
+        Log::shouldHaveReceived('info')->withArgs(fn ($msg) => str_contains((string) $msg, 'same card'))->once();
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    public function test_dl_only_move_targets_the_resolved_card(): void
+    {
+        // FR-7 (1): a lone resolving DL with no card# → move that card, no warn.
+        $this->fakeBoardCards();
+        Log::spy();
+
+        // DL-42 correlates to card 5.
+        $result = $this->classify('pull_request.opened', ['title' => 'Ship DL-42', 'head' => ['ref' => 'f']]);
+
+        $this->assertCount(1, $result->targets);
+        $this->assertSame(5, $result->targets[0]->payload['card_id']);
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    public function test_conflicting_card_token_overrides_the_dl_and_warns(): void
+    {
+        // DL-218 / card#4811 incident: a DL in the title resolves to a card DIFFERENT
+        // from a co-present explicit card# — a descriptive/foreign DL mention must not
+        // hijack the move. The explicit card# is authoritative: move it, not the DL
+        // card, and warn LOUDLY. (Revert the fix ⇒ DL-9's card 7 is targeted ⇒ RED.)
+        $this->fakeBoardCards();   // DL-9 → card 7
+        Log::spy();
+
+        // "Static guard against DL-9 re-introduction (card#4811)" — DL-9 resolves to
+        // card 7, but the intended card is #4811.
+        $result = $this->classify('pull_request.closed', [
+            'number' => 148, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'Static guard against DL-9 re-introduction card#4811', 'head' => ['ref' => 'f'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertCount(1, $move);
+        $this->assertSame(4811, $move[0]->payload['card_id']);   // the explicit card#, NOT DL-9's card 7
+        $this->assertSame('merged', $move[0]->payload['outcome']);
+        $this->assertSame(148, $move[0]->payload['stamp_pr']);   // card# path stamps the PR number
+        // The foreign DL-9 (it belongs to card 7) must NOT be stamped onto card#4811,
+        // or the move-hijack re-emerges as a correlation poison.
+        $this->assertArrayNotHasKey('stamp_dl', $move[0]->payload);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'card#4811')
+            && str_contains((string) $msg, 'authoritative'))->once();
     }
 
     public function test_card_token_on_a_branch_create_push_emits_started(): void

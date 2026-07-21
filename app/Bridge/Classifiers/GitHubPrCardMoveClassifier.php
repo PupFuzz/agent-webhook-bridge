@@ -27,10 +27,15 @@ use Illuminate\Support\Facades\Log;
  * only supplies which card + outcome.
  *
  * Token resolution is try-in-order-with-fallback (framework #112), keyed on the
- * OUTCOME of a token not its presence: a `DL-NNN` that resolves wins (a co-present
- * `card#` is logged as ignored); a `DL-NNN` that resolves to no card falls through
- * to a present `card#`; a token present but resolving to nothing is warned loudly
- * (a decision-logged-but-unstamped card — never a silent no-op). The card# fallback
+ * OUTCOME of a token not its presence: a `DL-NNN` that resolves wins — UNLESS a
+ * co-present explicit `card#` names a DIFFERENT card than the DL resolved to, which
+ * is a CONFLICT (DL-218 / card#4811 incident): a descriptive or foreign DL mention
+ * in a title must not silently hijack the move to the DL's card and drop the intended
+ * card#, so the explicit card# is treated as authoritative — warn loudly, then move +
+ * stamp the card# card. A co-present card# that AGREES with the DL is redundant (DL
+ * wins, nothing dropped). A `DL-NNN` that resolves to no card falls through to a
+ * present `card#`; a token present but resolving to nothing is warned loudly (a
+ * decision-logged-but-unstamped card — never a silent no-op). The card# fallback
  * stays board-scoped via the durable handler's existing board-membership guard.
  *
  * Emits NO intents (the writeback is machine-only, "no agent in the loop"). A PR
@@ -223,6 +228,12 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             return new ClassifyResult(targets: $overlayTargets);   // no card-first token in the PR → move no-op (overlay may also be empty)
         }
 
+        // A DL that resolved to a DIFFERENT card than a co-present card# (the DL-218
+        // conflict) is FOREIGN to the card# card — it must not be stamped onto it, or
+        // the move-hijack simply re-emerges as a correlation-poison (card#4811 would
+        // thereafter answer to the foreign DL). Recorded here, excluded at stamp time.
+        $conflictDl = null;
+
         // FR-7 try-in-order-with-fallback (framework #112): resolve on the OUTCOME
         // of a token, not its mere presence. (1) DL resolves → use it. (2) DL
         // unresolved → fall through to a present card#. (4) a token was present but
@@ -245,25 +256,40 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
             $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
             if ($cardIds !== []) {
-                // (1)/(3) DL resolved → it wins. A present card# is ignored LOUDLY:
-                // a PR naming two cards is almost always an operator error, and "the
-                // DL card moved but my card# didn't" must be diagnosable from the ledger.
-                if ($cardToken !== null) {
-                    Log::info("kanban_move_card: PR carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# token is ignored");
-                }
+                // A co-present card# is a CONFLICT only when it names a card the DL
+                // did NOT resolve to (DL-218 / card#4811 incident): a descriptive or
+                // foreign DL mention in a title — e.g. "Static guard against DL-219
+                // re-introduction (card#4811)", where DL-219 resolves to a DIFFERENT
+                // card — must not silently hijack the move to the DL's card and drop
+                // the intended card#. The explicit card# is the specific, intentional
+                // token, so on a conflict it is authoritative: warn LOUDLY and fall
+                // through to the card# path below (which builds the move AND stamps
+                // refs). When the card# agrees with the DL (or is absent) the DL wins,
+                // byte-identically to before.
+                $conflict = $cardToken !== null && ! in_array((int) $cardToken, $cardIds, true);
+                if (! $conflict) {
+                    // (1)/(3) DL resolved → it wins. A co-present card# that names the
+                    // SAME card is redundant, logged for the ledger (nothing dropped).
+                    if ($cardToken !== null) {
+                        Log::info("kanban_move_card: PR carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# names the same card, so nothing is dropped");
+                    }
 
-                return new ClassifyResult(targets: array_merge($this->moveTargets($cardIds, $repo, $moveOutcome), $overlayTargets));
-            }
-            // (4) DL present but nothing resolved and no card# fallback → a
-            // high-value miss (a decision-logged-but-unstamped card is the live
-            // footgun this fallback exists for). Warn loudly; never silent no-op.
-            if ($cardToken === null) {
+                    return new ClassifyResult(targets: array_merge($this->moveTargets($cardIds, $repo, $moveOutcome), $overlayTargets));
+                }
+                Log::warning('kanban_move_card: PR carries '.$dl.' (resolves to card(s) '.implode(',', $cardIds).") AND a DIFFERENT card#{$cardToken} — treating the explicit card# as authoritative (foreign-DL-mention guard, DL-218); moving card#{$cardToken}, not the DL card(s)");
+                $conflictDl = $dl;   // foreign to the card# card → do not stamp it
+                // fall through to the card# path below (do NOT return the DL targets)
+            } elseif ($cardToken === null) {
+                // (4) DL present but nothing resolved and no card# fallback → a
+                // high-value miss (a decision-logged-but-unstamped card is the live
+                // footgun this fallback exists for). Warn loudly; never silent no-op.
                 Log::warning("kanban_move_card: PR carries {$dl} but no card tracks it and no card# fallback token is present — no move (FR-7 high-value miss)");
 
                 return new ClassifyResult(targets: $overlayTargets);
+            } else {
+                // (2) DL unresolved → fall through to the present card#.
+                Log::info("kanban_move_card: {$dl} resolved to no card — falling through to card#{$cardToken} (FR-7 try-in-order)");
             }
-            // (2) DL unresolved → fall through to the present card#.
-            Log::info("kanban_move_card: {$dl} resolved to no card — falling through to card#{$cardToken} (FR-7 try-in-order)");
         }
 
         // card#<task-id> (FR-7): direct native-id selection — reached when DL is
@@ -277,7 +303,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 'card_id' => $cardToken,
                 'repo' => $repo,
                 'outcome' => $moveOutcome,
-            ], $this->stampRefs($this->titleAndHead($payload), $this->prNumber($payload)))),
+            ], $this->stampRefs($this->titleAndHead($payload), $this->prNumber($payload), $conflictDl))),
         ], $overlayTargets));
     }
 
@@ -557,16 +583,22 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * title carries a feature card's DL — could poison its `pr_number`. Includes
      * the DL token ONLY when EXACTLY ONE `DL-NNN` appears in $text: a bundled /
      * release-shaped PR carrying several DLs (or a single FOREIGN, unresolved DL
-     * alongside a `card#` for a different card) must never stamp one. The PR number
-     * is included when present (it is this card's PR — the card# selected it).
+     * alongside a `card#` for a different card) must never stamp one. `$excludeDl`
+     * is the same guard for the RESOLVED-foreign case (DL-218): a sole DL that
+     * correlated to a DIFFERENT card is foreign to the card# card, so it is passed
+     * here to be dropped even though it is the lone match. The PR number is included
+     * when present (it is this card's PR — the card# selected it).
      *
      * @return array{stamp_dl?: string, stamp_pr?: int}
      */
-    private function stampRefs(string $text, ?int $prNumber): array
+    private function stampRefs(string $text, ?int $prNumber, ?string $excludeDl = null): array
     {
         $refs = [];
         if (preg_match_all(self::DL_TOKEN_PATTERN, $text, $m) === 1) {
-            $refs['stamp_dl'] = 'DL-'.$m[1][0];
+            $sole = 'DL-'.$m[1][0];
+            if ($sole !== $excludeDl) {
+                $refs['stamp_dl'] = $sole;
+            }
         }
         if ($prNumber !== null) {
             $refs['stamp_pr'] = $prNumber;
