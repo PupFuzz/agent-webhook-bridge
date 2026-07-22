@@ -109,7 +109,7 @@ Absent ⇒ byte-identical no-op. A present block is **fail-closed at load**: `en
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `enabled` | bool | `false` | Non-bool throws. `false` ⇒ a well-formed no-op that may omit the fields below. |
-| `auth.token_path` | abs path to a file | — (**required when enabled**) | The per-agent Bearer the channel server presents. Same secret-file class as every other token (read fail-closed, `0600`). An HTTP-channel install MAY alias it to `channel.auth.token_path`; a UDS install gets a fresh file. Provision-minted. |
+| `auth.token_path` | abs path to a file | — (**required when enabled**) | The per-agent Bearer the channel server presents. Same secret-file class as every other token (read fail-closed, `0600`). An HTTP-channel install MAY alias it to `channel.auth.token_path`; a UDS install gets a fresh file. Minted by `bridge:provision-tools` (idempotent, collision-checked). |
 | `board_id` | int | — (**required when enabled**) | The product board the tools read/write. The service (writeback-token) user must be a MEMBER — kanban scopes reads by board membership, so a non-member gets a silently-empty window (`bridge:check` warns). |
 | `swimlane_id` | int | — (**required when enabled**) | THE agent's own swimlane — the write scope (forced on create; a caller cannot name a lane) AND the read-isolation boundary (a fail-closed row filter drops any returned row not in this lane). |
 | `create_stage_id` | int | — (**required when enabled**) | The column tool-created cards land in (typically backlog). Must exist on the board (`bridge:check` warns). |

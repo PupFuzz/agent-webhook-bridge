@@ -2319,4 +2319,205 @@ class BridgeCommandsTest extends TestCase
             ->expectsOutputToContain('board_tools: agent impl: writeback token can see board 10')
             ->assertExitCode(0);
     }
+
+    // ─── DL-217 bridge:check --probe-tools live probe ────────────────────────
+
+    /**
+     * Board-config fakes (writeback token board reads) PLUS the live tool-call
+     * endpoint fake, so bridge:check --probe-tools is otherwise clean and the exit
+     * code is driven by the probe alone.
+     *
+     * @param  array<string, mixed>  $endpointResponse
+     */
+    private function fakeProbe(string $endpoint, array $endpointResponse, int $status = 200): void
+    {
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => [
+                'swimlanes' => [['id' => 4], ['id' => 9]],
+                'workflows' => [['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1], ['id' => 55, 'name' => 'Doing', 'position' => 2]]]],
+            ]]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]]),
+            '*/tasks/by-ref.json*' => Http::response(['data' => []]),
+            $endpoint => Http::response($endpointResponse, $status),
+        ]);
+    }
+
+    public function test_check_probe_tools_reports_ok_on_scoped_200(): void
+    {
+        $endpoint = 'http://127.0.0.1/agent-tools/call';
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
+        $this->writeBoardToolsAgent('impl', 'tok-impl-1');   // board 10, swimlane 4
+        $this->fakeProbe($endpoint, ['ok' => true, 'tool' => 'board_my_cards', 'result' => [
+            'board_id' => 10, 'swimlane_id' => 4, 'cards_by_stage' => ['Backlog' => []],
+        ]]);
+
+        $this->artisan('bridge:check', ['--probe-tools' => $endpoint])
+            ->expectsOutputToContain('window scoped to board 10 / swimlane 4')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_probe_tools_403_names_the_loopback_cause_and_fails(): void
+    {
+        $endpoint = 'http://bad-host/agent-tools/call';
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
+        $this->writeBoardToolsAgent('impl', 'tok-impl-1');
+        $this->fakeProbe($endpoint, ['ok' => false, 'error' => 'this endpoint is reachable from loopback only'], 403);
+
+        $this->artisan('bridge:check', ['--probe-tools' => $endpoint])
+            ->expectsOutputToContain('loopback gate refused')
+            ->assertExitCode(1);
+    }
+
+    public function test_check_probe_tools_401_names_the_token_path_and_fails(): void
+    {
+        $endpoint = 'http://127.0.0.1/agent-tools/call';
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
+        $this->writeBoardToolsAgent('impl', 'tok-impl-1');
+        $this->fakeProbe($endpoint, ['ok' => false, 'error' => 'unrecognized bearer token'], 401);
+
+        $this->artisan('bridge:check', ['--probe-tools' => $endpoint])
+            ->expectsOutputToContain('bearer rejected')
+            ->assertExitCode(1);
+    }
+
+    public function test_check_probe_tools_isolation_mismatch_fails(): void
+    {
+        $endpoint = 'http://127.0.0.1/agent-tools/call';
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
+        $this->writeBoardToolsAgent('impl', 'tok-impl-1');   // configured swimlane 4
+        // The endpoint returns a window scoped to a DIFFERENT swimlane (99) than config.
+        $this->fakeProbe($endpoint, ['ok' => true, 'tool' => 'board_my_cards', 'result' => [
+            'board_id' => 10, 'swimlane_id' => 99, 'cards_by_stage' => [],
+        ]]);
+
+        $this->artisan('bridge:check', ['--probe-tools' => $endpoint])
+            ->expectsOutputToContain('ISOLATION MISMATCH')
+            ->assertExitCode(1);
+    }
+
+    public function test_check_probe_tools_missing_bearer_fails(): void
+    {
+        // An enabled agent with no minted bearer is a BROKEN enablement — the probe
+        // certifies before the operator flips traffic on, so it must fail, not warn.
+        $endpoint = 'http://127.0.0.1/agent-tools/call';
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
+        $this->writeBoardToolsAgent('impl', 'tok-impl-1');
+        File::delete($this->dir.'/impl-tools-token');
+        $this->fakeProbe($endpoint, ['ok' => true]);
+
+        $this->artisan('bridge:check', ['--probe-tools' => $endpoint])
+            ->expectsOutputToContain('cannot certify this agent')
+            ->assertExitCode(1);
+    }
+
+    // ─── DL-217 bridge:provision-tools ───────────────────────────────────────
+
+    private function writeToolsAgentYaml(string $name, string $tokenPath, bool $enabled = true): void
+    {
+        $block = $enabled
+            ? "board_tools:\n  enabled: true\n  auth:\n    token_path: {$tokenPath}\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n"
+            : '';
+        File::put($this->dir."/{$name}.yml", "identity:\n  kanban_user_id: ".crc32($name)."\nsubscriptions: []\n".$block);
+    }
+
+    public function test_provision_tools_mints_an_absent_bearer_0600(): void
+    {
+        $tokenPath = $this->dir.'/impl-board-tools-token';
+        $this->writeToolsAgentYaml('impl', $tokenPath);
+        $this->assertFileDoesNotExist($tokenPath);
+
+        $this->artisan('bridge:provision-tools')
+            ->expectsOutputToContain('MINTED')
+            ->assertExitCode(0);
+
+        $this->assertFileExists($tokenPath);
+        $this->assertSame('0600', substr(sprintf('%o', fileperms($tokenPath)), -4));
+        $this->assertSame(64, strlen(trim((string) file_get_contents($tokenPath))));   // bin2hex(32) = 64 hex chars
+    }
+
+    public function test_provision_tools_never_prints_the_token_value(): void
+    {
+        $tokenPath = $this->dir.'/impl-board-tools-token';
+        $this->writeToolsAgentYaml('impl', $tokenPath);
+
+        $this->artisan('bridge:provision-tools')->assertExitCode(0);
+
+        $value = trim((string) file_get_contents($tokenPath));
+        // The minted value must never appear in the artisan buffer.
+        $this->artisan('bridge:provision-tools')
+            ->doesntExpectOutputToContain($value)
+            ->assertExitCode(0);
+    }
+
+    public function test_provision_tools_leaves_an_existing_secure_bearer_alone(): void
+    {
+        $tokenPath = $this->dir.'/impl-board-tools-token';
+        $this->writeToolsAgentYaml('impl', $tokenPath);
+        $this->writeSecret($tokenPath, 'already-here');   // gitleaks:allow — test fixture
+
+        $this->artisan('bridge:provision-tools')
+            ->expectsOutputToContain('already minted')
+            ->assertExitCode(0);
+
+        $this->assertSame('already-here', trim((string) file_get_contents($tokenPath)));
+    }
+
+    public function test_provision_tools_fails_on_insecure_bearer_perms(): void
+    {
+        $tokenPath = $this->dir.'/impl-board-tools-token';
+        $this->writeToolsAgentYaml('impl', $tokenPath);
+        File::put($tokenPath, 'exposed');   // gitleaks:allow — test fixture
+        chmod($tokenPath, 0o644);           // group/world-readable
+
+        $this->artisan('bridge:provision-tools')
+            ->expectsOutputToContain('FAIL')
+            ->assertExitCode(1);
+    }
+
+    public function test_provision_tools_dry_run_mints_nothing(): void
+    {
+        $tokenPath = $this->dir.'/impl-board-tools-token';
+        $this->writeToolsAgentYaml('impl', $tokenPath);
+
+        $this->artisan('bridge:provision-tools', ['--dry-run' => true])
+            ->expectsOutputToContain('DRY-RUN')
+            ->assertExitCode(0);
+
+        $this->assertFileDoesNotExist($tokenPath);
+    }
+
+    public function test_provision_tools_fails_both_agents_on_token_collision(): void
+    {
+        $shared = $this->dir.'/shared-board-tools-token';
+        $this->writeToolsAgentYaml('impl-a', $shared);
+        $this->writeToolsAgentYaml('impl-b', $shared);
+        $this->writeSecret($shared, 'same-token');   // gitleaks:allow — test fixture
+
+        $this->artisan('bridge:provision-tools')
+            ->expectsOutputToContain('impl-a, impl-b')
+            ->assertExitCode(1);
+    }
+
+    public function test_provision_tools_skeleton_for_named_agent_without_block(): void
+    {
+        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n");
+
+        $this->artisan('bridge:provision-tools', ['--agent' => 'impl'])
+            ->expectsOutputToContain('board_tools:')
+            ->assertExitCode(1);
+    }
+
+    public function test_provision_tools_skips_agent_without_block_when_unfiltered(): void
+    {
+        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n");
+
+        $this->artisan('bridge:provision-tools')
+            ->expectsOutputToContain('no board_tools block')
+            ->assertExitCode(0);
+    }
 }

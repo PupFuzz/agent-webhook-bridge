@@ -267,12 +267,13 @@ All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR`
 ## Commands
 
 ```bash
-php artisan bridge:check                              # validate .env, dirs, DB, agent YAMLs
+php artisan bridge:check [--probe-tools=<endpoint>]   # validate .env, dirs, DB, agent YAMLs; --probe-tools live-probes the board-tools path (DL-220)
 php artisan bridge:stats                              # event/dispatch counts; errored (replayable) count
 php artisan bridge:inspect {id}                       # one webhook event + its dispatch ledger
 php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an event
 php artisan bridge:inbox [--hook-format=auto|claude-code|plain]              # surface unseen inbox intents
 php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile]   # ensure kanban subscriptions (--reconcile fixes drift)
+php artisan bridge:provision-tools [--dry-run] [--agent=]                    # mint per-agent board-tools bearers (DL-217/DL-220; idempotent, collision-checked)
 php artisan bridge:prune --older-than=30d [--null-payloads-older-than=7d] [--dry-run]   # retention, manual/unbounded (the receiver self-prunes — DL-199)
 php artisan bridge:reconcile [--fix] [--repo=owner/repo] [--max-moves=20]     # board-vs-GitHub drift reconciler (report-only unless --fix)
 ```
