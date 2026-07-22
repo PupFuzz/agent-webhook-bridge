@@ -8,6 +8,19 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-07-22
+
+**Minor — the board-tools same-box enablement package (DL-220): `bridge:provision-tools` mints the per-agent bearer, `bridge:check --probe-tools` live-certifies the loopback+bearer path, the Apache/FPM endpoint runbook lands, and the no-`TrustProxies` gate posture is test-pinned. Plus channel-server dependency bumps and a solo-orientation doc sync.** 3 PRs since v0.64.1 (#357, #356, #355). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change. Both new commands/flags are additive; absent them, behavior is byte-identical.**
+
+### Added
+- **#357 (DL-220, card#4846, roundtable #102)** — **board-tools same-box enablement package**, closing the delivery gaps aimla-pm's first-validation pass found on the v0.63.0 surface. (1) **`bridge:provision-tools {--agent=} {--dry-run}`** mints each enabled agent's `board_tools` bearer at its configured `auth.token_path` — the bearer DL-217 specified as *provision-minted* but `bridge:provision` never delivered: 0600 umask-safe (perms pinned before the secret bytes land), idempotent (an existing secure file is a no-op), fail-loud on insecure perms (DL-010 posture), cross-agent collision detection at mint time (a collision fail-closes both agents at request time — surfaced at provision instead of on the first live call); never edits agent YAML (an explicitly-named agent without the block gets a paste-ready skeleton + non-zero exit). (2) **`bridge:check --probe-tools=<endpoint>`** — opt-in live probe: a real `board_my_cards` per enabled agent over the actual network path (TLS verify on), certifying reachability, bearer→agent resolution, and the swimlane-isolation scope header; failure modes name their cause (403 → the endpoint-recipe trap; 401 → bearer path/collision; connection refused → vhost); a missing/unreadable bearer FAILS the probe (an explicit certification run must not exit 0 over a broken enablement). (3) **`docs/board-tools.md` § Same-box enablement (Apache/FPM)** — the end-to-end runbook, leading with the endpoint trap: `https://<public-host>/…` on-box FAILS the loopback gate (the kernel's local-route source selection makes the TCP peer the box's public IP); the recipe is an `/etc/hosts` loopback pin of the bridge hostname + the real-hostname https endpoint (TLS verification stays ON). (4) **XFF posture pin** — the `LoopbackOnly` gate is sound only while no `TrustProxies` middleware exists (mod_proxy_fcgi forwards the true TCP peer as `REMOTE_ADDR`; a forged `X-Forwarded-For` is never consulted); that posture was documented but unpinned — two new feature tests (external peer + spoofed loopback XFF → 403 with no outbound call; loopback peer + external XFF → admitted) go red the moment a `trustProxies` registration lands, mutation-proven.
+
+### Security / dependencies
+- **#356 (card#4838)** — **channel-server transitive dep bumps** (`examples/channel-servers`, lockfile-only): body-parser 2.2.2 → 2.3.0, fast-uri 3.1.2 → 3.1.4, hono 4.12.26 → 4.12.31 — consolidating dependabot #343/#353/#354, which each failed the DL-038 version-bump-guard (dependabot cannot bump the snapshot version, and three separate bumps would conflict). Snapshot version 0.5.0 → 0.5.1; `npm audit --audit-level=high` clean (2 pre-existing moderates on `@hono/node-server` via the MCP SDK, below the gate). The #357 README correction bumps the snapshot again, 0.5.1 → 0.5.2.
+
+### Changed
+- **docs: solo orientation synced to coord v0.17.0** (#355; `CLAUDE_AGENTBOARD.md` — human-prompt bookends; repo-agnostic subagent dispatch).
+
 ## [0.64.1] - 2026-07-21
 
 **Patch — release-CI dependency pin + a solo-orientation doc sync; zero runtime code change.** 2 PRs since v0.64.0 (#350, #348). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change; no `app/` file touched.**
