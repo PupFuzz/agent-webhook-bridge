@@ -106,12 +106,107 @@ agent session ──MCP tools/call──▶ channel server ──HTTP loopback +
   the agent name is derived from the token, never from the request. A shared/colliding
   token fails closed for *both* agents.
 - **Network:** the `/agent-tools/call` route is **loopback-gated** — the TCP peer
-  must be `127.0.0.0/8` or `::1`. Same-box installs call `127.0.0.1` directly;
+  must be `127.0.0.0/8` or `::1`. For the same-box endpoint value (NOT simply
+  "use the public hostname" — see the trap below) follow
+  [§ Same-box enablement (Apache/FPM)](#same-box-enablement-apachefpm);
   multi-host needs a forward SSH tunnel — see
   [`docs/multi-host.md § Board tools (two-way) forward leg`](multi-host.md#board-tools-two-way-forward-leg).
+- **Provisioning:** `bridge:provision-tools` mints each enabled agent's bearer
+  (0600, idempotent, collision-checked). It never edits agent YAML — for an agent
+  without a `board_tools:` block it prints a paste-ready skeleton.
 - **Preflight:** `bridge:check` probes each enabled agent's token readability,
   token collisions, swimlane/stage existence, and the service user's board
-  membership.
+  membership. `bridge:check --probe-tools=<endpoint>` additionally exercises the
+  REAL loopback+bearer path end to end (see the runbook below).
 
 Audit trail: one structured log line per call (agent, tool, outcome). A queryable
 `tool_calls` ledger table is the named v2 upgrade if operators want it.
+
+## Same-box enablement (Apache/FPM)
+
+The end-to-end runbook for the common topology: the bridge served by an Apache
+vhost (`*:443`/`*:80`) proxying to PHP-FPM, with the agent's channel server on
+the **same box**.
+
+### 1. Pick the endpoint — the obvious value is the wrong one
+
+`BRIDGE_TOOLS_ENDPOINT=https://<your-public-bridge-host>/agent-tools/call`
+**fails the loopback gate**: DNS resolves the name to the box's public IP, and
+when the kernel connects to its own public address it source-selects that
+public IP — so the TCP peer the gate tests is **not** loopback, and the call is
+(correctly) refused with 403. The recipe that keeps TLS verification ON:
+
+1. Loopback-pin the bridge's own vhost name in `/etc/hosts`:
+
+   ```
+   127.0.0.1 <bridge-hostname>
+   ```
+
+2. Point the channel server at it:
+
+   ```
+   BRIDGE_TOOLS_ENDPOINT=https://<bridge-hostname>/agent-tools/call
+   ```
+
+The connection now goes to `127.0.0.1` (the gate passes), SNI/Host still name
+the real vhost (Apache routes it correctly), and the certificate still matches
+the hostname (no verify-off hack anywhere).
+
+Plain `http://127.0.0.1/agent-tools/call` also works, but **only when the
+bridge vhost is what answers a bare-IP Host on `:80`** — on a box with several
+vhosts, a request whose Host is `127.0.0.1` lands in the *default* vhost, which
+may not be the bridge. Prefer the `/etc/hosts` recipe; use the bare-IP form only
+on a single-vhost box.
+
+### 2. Why the gate is proxy-safe on this topology
+
+mod_proxy_fcgi forwards Apache's **own TCP connection peer** as `REMOTE_ADDR`
+(this is not the separate-reverse-proxy-hop pattern where the app sees the proxy
+as the peer). The app registers **no TrustProxies middleware**, so
+`$request->ip()` returns that raw peer — a forged `X-Forwarded-For` is never
+consulted, in either direction. This posture is **test-pinned**: the XFF-spoof
+tests in `AgentToolsCallTest` go red the moment a `trustProxies` registration
+lands.
+
+### 3. Mint the bearer
+
+```bash
+php artisan bridge:provision-tools                # all agents with an enabled board_tools block
+php artisan bridge:provision-tools --agent=<name> # one agent; without a block, prints the paste-ready skeleton
+```
+
+Idempotent: an existing secure (0600) bearer is left alone; an insecure one is a
+hard failure; a token value shared by two agents fails both by name. The token
+value is never printed.
+
+### 4. Declare the `board_tools:` block
+
+Per agent YAML — see [`docs/config-schema.md § board_tools`](config-schema.md).
+`bridge:provision-tools --agent=<name>` prints the skeleton if the block is
+absent.
+
+### 5. Configure the channel server
+
+```
+BRIDGE_CHANNEL_TOOLS=1
+BRIDGE_TOOLS_ENDPOINT=<the value from step 1>
+BRIDGE_TOOLS_TOKEN_FILE=<the bearer path from step 3>
+```
+
+### 6. Verify BEFORE flipping traffic
+
+```bash
+php artisan bridge:check --probe-tools=<the endpoint from step 1>
+```
+
+This exercises the real network path per enabled agent: a live `board_my_cards`
+call proving the endpoint is reachable, the loopback gate admits it, the bearer
+resolves to the right agent, and the returned window is scoped to that agent's
+configured board/swimlane. Each failure mode names its likely cause (403 → the
+step-1 trap; 401 → bearer mismatch/collision; connection refused → wrong
+vhost/endpoint). Non-2xx or a scope mismatch exits non-zero.
+
+### 7. Restart the channel server
+
+Restart the agent's channel MCP server so it re-reads its env; the tools are now
+advertised and live.

@@ -33,8 +33,11 @@ use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 use App\Models\WebhookEvent;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Symfony\Component\Process\ExecutableFinder;
 use Throwable;
 
@@ -44,7 +47,7 @@ use Throwable;
  */
 class CheckCommand extends BridgeCommand
 {
-    protected $signature = 'bridge:check';
+    protected $signature = 'bridge:check {--probe-tools= : POST a live board_my_cards to this /agent-tools/call endpoint per enabled agent (opt-in — verifies the same-box loopback recipe end to end; the endpoint is the value the channel server uses, e.g. https://<bridge-hostname>/agent-tools/call)}';
 
     protected $description = 'Validate the bridge install config (dirs, DB connectivity, agent YAMLs)';
 
@@ -886,6 +889,16 @@ class CheckCommand extends BridgeCommand
         // discovers only as an empty/broken tool window, so surface it pre-deploy.
         $this->checkBoardTools($configs);
 
+        // DL-217: opt-in live board-tools probe. Offline by default (like the rest of
+        // this command's local checks); when --probe-tools names the endpoint the
+        // channel server will use, exercise the real loopback path end to end. A
+        // non-2xx or an isolation mismatch is a HARD failure (it certifies a broken
+        // enablement), unlike the offline warns above.
+        $probeEndpoint = $this->strOption('probe-tools');
+        if ($probeEndpoint !== null && ! $this->probeBoardToolsEndpoint($configs, $probeEndpoint)) {
+            $ok = false;
+        }
+
         return $ok ? self::SUCCESS : self::FAILURE;
     }
 
@@ -959,6 +972,116 @@ class CheckCommand extends BridgeCommand
                 $this->warn("board_tools: agent {$name}: could not read board {$bt->boardId} with the writeback token — ".$e->getMessage());
             }
         }
+    }
+
+    /**
+     * DL-217 live board-tools probe (opt-in, --probe-tools=<endpoint>). For each
+     * agent with an enabled board_tools block and a readable bearer, POST a
+     * board_my_cards over the REAL network path (TLS verify on) to the endpoint the
+     * channel server will use, and certify the round trip:
+     *  - the loopback gate admits the call (a 403 names the on-box public-IP peer trap);
+     *  - the bearer authenticates (a 401 names the token path / collision);
+     *  - the returned window is scoped to THIS agent's configured lane. board_my_cards
+     *    does NOT expose a per-row swimlane_id (projectCard drops it), so the observable
+     *    that the fail-closed row filter ran is the result HEADER: result.board_id /
+     *    result.swimlane_id must equal the configured scope. A mismatch is an isolation
+     *    violation.
+     * A connection failure, non-2xx, or isolation mismatch returns false (→ non-zero
+     * exit) — this probe certifies the enablement, so unlike the offline warns it FAILS.
+     *
+     * @param  list<AgentConfig>  $configs
+     */
+    private function probeBoardToolsEndpoint(array $configs, string $endpoint): bool
+    {
+        $enabled = array_values(array_filter($configs, fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled));
+        if ($enabled === []) {
+            $this->warn('board_tools probe: --probe-tools was given but no agent has an enabled board_tools block — nothing to probe.');
+
+            return true;   // nothing to certify is not a failure
+        }
+
+        $ok = true;
+        foreach ($enabled as $cfg) {
+            $bt = $cfg->boardTools;
+            if ($bt === null || $bt->tokenPath === null) {
+                continue;   // defensive: enabled ⇒ tokenPath non-null by construction
+            }
+            $name = $cfg->agentName;
+            // An enabled agent whose bearer can't be presented IS a broken enablement —
+            // the probe certifies before the operator flips traffic on, so these fail
+            // (unlike the offline checks, which only warn).
+            try {
+                $token = SecretFile::read($bt->tokenPath);
+            } catch (Throwable $e) {
+                $this->error("board_tools probe: agent {$name}: bearer not readable — {$e->getMessage()} (chmod 600); cannot certify this agent.");
+                $ok = false;
+
+                continue;
+            }
+            if ($token === null) {
+                $this->error("board_tools probe: agent {$name}: no bearer at {$bt->tokenPath} — run bridge:provision-tools; cannot certify this agent.");
+                $ok = false;
+
+                continue;
+            }
+
+            try {
+                $resp = Http::withToken($token)->acceptJson()->timeout(10)
+                    ->post($endpoint, ['tool' => 'board_my_cards', 'args' => (object) []]);
+            } catch (ConnectionException $e) {
+                $this->error("board_tools probe: agent {$name}: could NOT connect to {$endpoint} ({$e->getMessage()}) — the bridge vhost/endpoint is wrong or not answering. Verify the channel server's BRIDGE_TOOLS_ENDPOINT and that the bridge vhost serves /agent-tools/call.");
+                $ok = false;
+
+                continue;
+            }
+
+            $status = $resp->status();
+            if ($status === 403) {
+                $this->error("board_tools probe: agent {$name}: {$endpoint} → 403 (loopback gate refused). The request's TCP peer is not loopback — an https://<public-host>/… endpoint makes the kernel pick the box's PUBLIC IP as the source. Use the /etc/hosts recipe (127.0.0.1 <bridge-hostname> + BRIDGE_TOOLS_ENDPOINT=https://<bridge-hostname>/agent-tools/call) — see docs/board-tools.md § Same-box enablement.");
+                $ok = false;
+
+                continue;
+            }
+            if ($status === 401) {
+                $this->error("board_tools probe: agent {$name}: {$endpoint} → 401 (bearer rejected). The presented token resolves to no agent — verify the bearer at {$bt->tokenPath} matches what the channel server presents (BRIDGE_TOOLS_TOKEN / _FILE), and that it does not collide with another agent's.");
+                $ok = false;
+
+                continue;
+            }
+            if (! $resp->successful()) {
+                $this->error("board_tools probe: agent {$name}: {$endpoint} → HTTP {$status} — the tool call did not succeed ({$this->probeErrorDetail($resp)}).");
+                $ok = false;
+
+                continue;
+            }
+
+            $result = $resp->json('result');
+            if (! is_array($result)) {
+                $this->error("board_tools probe: agent {$name}: 200 but the response carries no `result` object — cannot confirm board_my_cards ran ({$this->probeErrorDetail($resp)}).");
+                $ok = false;
+
+                continue;
+            }
+            $gotBoard = is_numeric($result['board_id'] ?? null) ? (int) $result['board_id'] : null;
+            $gotSwimlane = is_numeric($result['swimlane_id'] ?? null) ? (int) $result['swimlane_id'] : null;
+            if ($gotBoard !== $bt->boardId || $gotSwimlane !== $bt->swimlaneId) {
+                $this->error("board_tools probe: agent {$name}: ISOLATION MISMATCH — board_my_cards returned board_id=".($gotBoard ?? 'null').' swimlane_id='.($gotSwimlane ?? 'null').", but this agent is configured for board {$bt->boardId} / swimlane {$bt->swimlaneId}. The window is not scoped to the configured lane.");
+                $ok = false;
+
+                continue;
+            }
+            $stageGroups = is_array($result['cards_by_stage'] ?? null) ? count($result['cards_by_stage']) : 0;
+            $this->info("board_tools probe: agent {$name}: {$endpoint} → 200; window scoped to board {$bt->boardId} / swimlane {$bt->swimlaneId} ({$stageGroups} stage group(s)). board_my_cards does not expose a per-row swimlane, so the returned scope header matching config is the observable that the bridge-side isolation filter ran.");
+        }
+
+        return $ok;
+    }
+
+    private function probeErrorDetail(Response $resp): string
+    {
+        $error = $resp->json('error');
+
+        return is_string($error) && $error !== '' ? "error: {$error}" : 'body: '.substr($resp->body(), 0, 200);
     }
 
     /**

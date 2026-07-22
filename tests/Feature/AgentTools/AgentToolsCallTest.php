@@ -98,6 +98,35 @@ class AgentToolsCallTest extends TestCase
             ->assertStatus(200);
     }
 
+    public function test_external_peer_with_spoofed_loopback_xff_is_refused(): void
+    {
+        // Posture pin (DL-220): the gate reads the TCP peer ($request->ip()), and
+        // X-Forwarded-For is UNTRUSTED (no TrustProxies), so a spoofed XFF claiming
+        // 127.0.0.1 cannot make an external peer look local. This test goes RED the
+        // moment a TrustProxies registration lands (the gate would then honor the
+        // forged header and admit the external peer) — that is the point of pinning it.
+        Http::fake();
+
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']], server: [
+            'REMOTE_ADDR' => '203.0.113.9',
+            'HTTP_X_FORWARDED_FOR' => '127.0.0.1',
+        ])->assertStatus(403);
+        Http::assertNothingSent();
+    }
+
+    public function test_loopback_peer_with_external_xff_is_admitted(): void
+    {
+        // The mirror of the spoof case: a loopback peer carrying an EXTERNAL XFF is
+        // still admitted — the header is inert in BOTH directions (it neither grants
+        // nor revokes access), proving the gate keys solely on the real TCP peer.
+        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
+
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']], server: [
+            'REMOTE_ADDR' => '127.0.0.1',
+            'HTTP_X_FORWARDED_FOR' => '203.0.113.9',
+        ])->assertStatus(200);
+    }
+
     // ─── bearer resolution ───────────────────────────────────────────────────
 
     public function test_missing_bearer_is_refused(): void
