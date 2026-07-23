@@ -744,16 +744,20 @@ class GitHubPrCardMoveClassifierTest extends TestCase
 
     // --- FR #3866: the card# fallback target carries correlation-key stamp hints ---
 
-    public function test_card_fallback_stamps_pr_number_and_no_dl_when_only_a_card_token_is_present(): void
+    public function test_card_fallback_stamps_pr_number_and_url_and_no_dl_when_only_a_card_token_is_present(): void
     {
-        // card# only (no DL) → stamp the PR number so release-promote can correlate;
-        // there is no DL to stamp.
+        // card# only (no DL) → stamp the PR number AND url (card#4852) so release-promote
+        // and kanban's by-ref source derivation can correlate; there is no DL to stamp.
         Http::fake();
-        $result = $this->classify('pull_request.opened', ['title' => 'Fix a thing card#3410', 'head' => ['ref' => 'f'], 'number' => 77]);
+        $result = $this->classify('pull_request.opened', [
+            'title' => 'Fix a thing card#3410', 'head' => ['ref' => 'f'], 'number' => 77,
+            'html_url' => 'https://github.com/owner/repo/pull/77',
+        ]);
 
         $p = $result->targets[0]->payload;
         $this->assertSame(3410, $p['card_id']);
         $this->assertSame(77, $p['stamp_pr']);
+        $this->assertSame('https://github.com/owner/repo/pull/77', $p['stamp_pr_url']);
         $this->assertArrayNotHasKey('stamp_dl', $p);
     }
 
@@ -784,18 +788,71 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame(90, $p['stamp_pr']);
     }
 
-    public function test_dl_resolved_target_carries_no_stamp_refs(): void
+    public function test_dl_resolved_target_carries_pr_refs_but_never_stamp_dl(): void
     {
-        // Finding #1: a DL-resolved card already carries dl_number, so stamping it
-        // delivers nothing — and threading pr_number there would poison a feature
-        // card from a release PR whose title names its DL. The DL path stamps NOTHING.
+        // card#4852: a DL-only feature PR (no card#) resolves to card 5. The move target
+        // now carries the PR provenance (stamp_pr + stamp_pr_url) so release-promote and
+        // kanban's by-ref source derivation can correlate — but NEVER stamp_dl: the card
+        // already carries the dl_number that resolved it, so re-stamping delivers nothing
+        // and could poison. (Revert branch B to a bare moveTargets ⇒ no stamp_pr/
+        // stamp_pr_url ⇒ RED.)
         $this->fakeBoardCards();
-        $result = $this->classify('pull_request.opened', ['title' => 'DL-42 ship it', 'number' => 77]);
+        $result = $this->classify('pull_request.opened', [
+            'title' => 'DL-42 ship it', 'number' => 77, 'html_url' => 'https://github.com/owner/repo/pull/77',
+        ]);
 
         $p = $result->targets[0]->payload;
         $this->assertSame(5, $p['card_id']);
+        $this->assertSame(77, $p['stamp_pr']);
+        $this->assertSame('https://github.com/owner/repo/pull/77', $p['stamp_pr_url']);
         $this->assertArrayNotHasKey('stamp_dl', $p);
+    }
+
+    public function test_multi_dl_title_moves_but_stamps_nothing_on_the_dl_path(): void
+    {
+        // card#4852 hardening (review consider): a title carrying 2+ DL tokens is
+        // bundled/descriptive (release-shaped) — its OWN pr_number/pr_url are foreign
+        // to the resolved card, so the DL path must not stamp them; add-if-missing at
+        // the handler must not be the only poison guard. The move itself still fires
+        // (pre-existing DL-resolution behavior). (Revert the sole-DL gate at the
+        // DL-win branch ⇒ stamp_pr/stamp_pr_url appear ⇒ RED.)
+        $this->fakeBoardCards();
+        $result = $this->classify('pull_request.opened', [
+            'title' => 'DL-42 hardening against the DL-218 class', 'number' => 99,
+            'html_url' => 'https://github.com/owner/repo/pull/99',
+        ]);
+
+        $p = $result->targets[0]->payload;
+        $this->assertSame(5, $p['card_id']);   // still moved — the gate is stamp-only
         $this->assertArrayNotHasKey('stamp_pr', $p);
+        $this->assertArrayNotHasKey('stamp_pr_url', $p);
+        $this->assertArrayNotHasKey('stamp_dl', $p);
+    }
+
+    public function test_bundled_dl_stamps_pr_refs_on_every_resolved_card(): void
+    {
+        // card#4852 + DL-148: a bundled DL resolving to N cards moves them ALL, and every
+        // move target carries the PR provenance (stamp_pr + stamp_pr_url), none carries
+        // stamp_dl. (Revert branch B ⇒ bare moveTargets ⇒ no stamp refs on any ⇒ RED.)
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 7, 'payload' => ['dl_number' => 'DL-9']],
+            ['id' => 8, 'payload' => ['dl_number' => 'DL-9']],
+        ]])]);   // DL-9 → [7, 8]
+
+        $result = $this->classify('pull_request.closed', [
+            'number' => 148, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'DL-9 bundled fix', 'head' => ['ref' => 'f'],
+            'html_url' => 'https://github.com/owner/repo/pull/148',
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertCount(2, $move);
+        foreach ($move as $t) {
+            $this->assertContains($t->payload['card_id'], [7, 8]);
+            $this->assertSame(148, $t->payload['stamp_pr']);
+            $this->assertSame('https://github.com/owner/repo/pull/148', $t->payload['stamp_pr_url']);
+            $this->assertArrayNotHasKey('stamp_dl', $t->payload);
+        }
     }
 
     public function test_push_card_fallback_stamps_the_sole_branch_dl_and_no_pr(): void
