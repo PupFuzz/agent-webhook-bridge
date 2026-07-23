@@ -64,10 +64,14 @@ jobs:
           fi
 
       - name: Promote tracking cards
-        uses: PupFuzz/agent-board-toolkit/promote@7bf08f533303c3923d7f0ba519a0980ccbf1a54b  # v0.20.0
+        uses: PupFuzz/agent-board-toolkit/promote@ddb7330158f6b98b0b62c3e32ab38bbc53f2b405  # v0.21.0
         with:
           writeback-token: ${{ secrets.KANBAN_WRITEBACK_TOKEN }}
           expected-host: ${{ vars.KANBAN_EXPECTED_HOST }}
           api-base: ${{ vars.KANBAN_API_BASE }}
           dls: ${{ github.event.inputs.dls }}
+          # Source-stage guard: only cards currently in Shipped-to-Dev (board 8
+          # stage 52) are promoted; a matched card elsewhere is skipped, so a
+          # stale/recycled DL or PR stamp can't resurrect a declined/backlog card.
+          shipped-stage-ids: '52'
           dry-run: ${{ github.event.inputs.dry_run }}
