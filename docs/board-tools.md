@@ -102,17 +102,25 @@ term is efficiency + defense-in-depth, not the boundary.
 ## How it is wired (operator view)
 
 There are **two front doors** into the same dispatch machinery, selected per agent
-by `board_tools.transport` (`http`, the default | `ssh`). Both resolve the caller's
+by `board_tools.transport` (`http` | `ssh`, the default **since v0.68.0 / DL-225**;
+before v0.68.0 the default was `http`). Both resolve the caller's
 identity, then run the identical `BoardToolDispatcher` onto the shared least-privilege
 writeback client — so the response body is byte-identical whichever door served it.
 
+> **⚠ Upgrading to v0.68.0:** the unset-`transport` default flipped `http` → `ssh`.
+> A block relying on the old implicit `http` default must set `transport: http`
+> explicitly before upgrading to keep the loopback path — otherwise it reads as `ssh`,
+> the bearer stops resolving over the HTTP door, and the call fails closed (401).
+> `bridge:check` warns pre-upgrade for an agent on `ssh` by the default with no
+> completed ssh setup.
+
 ```
-# HTTP transport (default):
+# HTTP transport:
 agent session ──MCP tools/call──▶ channel server ──HTTP loopback + bearer──▶ bridge ──kanban token──▶ board
                                   (dumb proxy,                              (loopback gate + per-agent
                                    no board token)                          bearer + ToolRegistry)
 
-# SSH-forced-command transport (card 4952 — no bearer, no forwarding):
+# SSH-forced-command transport (card 4952 — no bearer, no forwarding; the default since v0.68.0):
 agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdout──▶ bridge:tools-call --agent=X ──kanban token──▶ board
                                   (spawns ssh, no command;             (identity = pinned --agent;
                                    sshd forces the command)             ToolRegistry)
@@ -144,9 +152,13 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
 - **Provisioning:** `bridge:provision-tools` mints each enabled **http** agent's
   bearer (0600, idempotent, collision-checked). It never edits agent YAML — for an
   agent without a `board_tools:` block it prints a paste-ready skeleton. For an
-  **ssh** agent it mints no secret (the private key is host B's) — it scaffolds by
-  print (the pinned forced-command line, the FIPS-approved keygen recipe, the
-  `Match User` sshd drop-in, and the `sudo bridge:check` certification step).
+  **ssh** agent it mints no secret (the private key is host B's) — it GENERATES a
+  guided, idempotent root-run setup script (DL-226; still operator-run) that
+  append-or-verifies the pinned forced-command line, an sshd `Match User` drop-in with
+  `PasswordAuthentication no` **and** the `ClientAliveInterval`/`ClientAliveCountMax`/
+  `MaxSessions` backstop directives `bridge:check` hard-asserts, a validate-then-reload,
+  and documents the FIPS ECDSA P-256 keygen to run first on host B. Run it as
+  `sudo bash <script>`, then certify with `bridge:check --probe-tools-ssh=<user@host>`.
 - **Preflight:** `bridge:check` probes each enabled agent's token readability,
   token collisions, swimlane/stage existence, and the service user's board
   membership. For an **ssh** agent it also probes (offline) the pinned

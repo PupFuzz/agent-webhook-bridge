@@ -64,8 +64,10 @@ class BoardToolsConfigTest extends TestCase
 
     public function test_default_block_on_http_channel_defaults_enabled_reusing_channel_token(): void
     {
+        // transport: http is explicit here (DL-225 flipped the unset default to ssh) so
+        // this still exercises the HTTP default-enabled channel-token-reuse path.
         $bt = $this->config(
-            ['board_tools' => ['board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]],
+            ['board_tools' => ['transport' => 'http', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]],
             $this->httpChannel,
         )->boardTools;
 
@@ -84,7 +86,7 @@ class BoardToolsConfigTest extends TestCase
     public function test_default_block_http_no_bearer_suppresses_with_reason(): void
     {
         $bt = $this->config(
-            ['board_tools' => ['board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]],
+            ['board_tools' => ['transport' => 'http', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]],
             ['url' => 'http://127.0.0.1:8788'],   // HTTP, but no channel token, no alias
         )->boardTools;
 
@@ -100,7 +102,7 @@ class BoardToolsConfigTest extends TestCase
     public function test_default_block_without_http_channel_suppresses(): void
     {
         $bt = $this->config(
-            ['board_tools' => ['board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]],
+            ['board_tools' => ['transport' => 'http', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]],
             // no channel block → no url, no token
         )->boardTools;
 
@@ -115,6 +117,7 @@ class BoardToolsConfigTest extends TestCase
     {
         $bt = $this->config(['board_tools' => [
             'enabled' => true,
+            'transport' => 'http',
             'auth' => ['token_path' => '/secrets/tools-token'],
             'board_id' => 10,
             'swimlane_id' => 4,
@@ -141,6 +144,7 @@ class BoardToolsConfigTest extends TestCase
         $bt = $this->config(
             ['board_tools' => [
                 'enabled' => true,
+                'transport' => 'http',
                 'auth' => ['token_path' => '/secrets/alias-token'],
                 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
             ]],
@@ -156,7 +160,7 @@ class BoardToolsConfigTest extends TestCase
     public function test_explicit_enabled_reuses_channel_token_when_no_alias(): void
     {
         $bt = $this->config(
-            ['board_tools' => ['enabled' => true, 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]],
+            ['board_tools' => ['enabled' => true, 'transport' => 'http', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]],
             $this->httpChannel,
         )->boardTools;
 
@@ -175,6 +179,7 @@ class BoardToolsConfigTest extends TestCase
         $this->expectExceptionMessage('no channel token exists to reuse');
         $this->config(['board_tools' => [
             'enabled' => true,
+            'transport' => 'http',
             'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
         ]]);
     }
@@ -186,7 +191,7 @@ class BoardToolsConfigTest extends TestCase
         $this->expectException(ConfigException::class);
         $this->expectExceptionMessage('no bearer');
         $this->config(
-            ['board_tools' => ['enabled' => true, 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]],
+            ['board_tools' => ['enabled' => true, 'transport' => 'http', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]],
             ['url' => 'http://127.0.0.1:8788'],   // HTTP, no token, no alias
         );
     }
@@ -198,6 +203,7 @@ class BoardToolsConfigTest extends TestCase
         $this->expectException(ConfigException::class);
         $this->config(['board_tools' => [
             'enabled' => true,
+            'transport' => 'http',
             'auth' => ['token_path' => '/t'],
             'board_id' => 10, 'create_stage_id' => 55,
         ]]);
@@ -265,6 +271,7 @@ class BoardToolsConfigTest extends TestCase
         $this->expectException(ConfigException::class);
         $this->config(['board_tools' => [
             'enabled' => true,
+            'transport' => 'http',
             'auth' => ['token_path' => '/t'],
             'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
             'address_tags' => ['repo:me'],
@@ -276,6 +283,7 @@ class BoardToolsConfigTest extends TestCase
         $this->expectException(ConfigException::class);
         $this->config(['board_tools' => [
             'enabled' => true,
+            'transport' => 'http',
             'auth' => ['token_path' => '/t'],
             'board_id' => '10', 'swimlane_id' => 4, 'create_stage_id' => 55,
         ]]);
@@ -283,13 +291,35 @@ class BoardToolsConfigTest extends TestCase
 
     // ─── transport (card 4952) ───────────────────────────────────────────────
 
-    public function test_transport_defaults_to_http_when_absent(): void
+    public function test_transport_defaults_to_ssh_when_absent(): void
     {
+        // DL-225 (v0.68.0) flipped the unset default from http → ssh. An absent
+        // transport key now reads as ssh, and transportExplicit is false (the advisory
+        // in bridge:check keys on that). An ssh block needs no bearer/channel, so this
+        // enables even with an HTTP channel present.
         $bt = $this->config(
             ['board_tools' => ['board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]],
             $this->httpChannel,
         )->boardTools;
-        $this->assertSame('http', $bt->transport);
+        $this->assertSame('ssh', $bt->transport);
+        $this->assertFalse($bt->transportExplicit);
+        $this->assertTrue($bt->enabled);
+    }
+
+    public function test_transport_explicit_flag_is_true_when_key_present(): void
+    {
+        $http = $this->config(
+            ['board_tools' => ['transport' => 'http', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]],
+            $this->httpChannel,
+        )->boardTools;
+        $this->assertSame('http', $http->transport);
+        $this->assertTrue($http->transportExplicit);
+
+        $ssh = $this->config(['board_tools' => [
+            'transport' => 'ssh', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ]])->boardTools;
+        $this->assertSame('ssh', $ssh->transport);
+        $this->assertTrue($ssh->transportExplicit);
     }
 
     public function test_ssh_transport_enables_without_a_bearer_or_channel(): void
@@ -389,7 +419,7 @@ class BoardToolsConfigTest extends TestCase
         // real token_path → that alias). None throws for the ssh reason.
         $bt = $this->config(
             ['board_tools' => [
-                'enabled' => true, 'auth' => $auth,
+                'enabled' => true, 'transport' => 'http', 'auth' => $auth,
                 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
             ]],
             $this->httpChannel,
@@ -418,7 +448,9 @@ class BoardToolsConfigTest extends TestCase
             'scalar block' => [['board_tools' => 'yes'], $http, 'must be a mapping'],
             'non-bool enabled' => [['board_tools' => array_merge(['enabled' => 'nope'], $scope)], $http, 'boolean'],
             'partial scope' => [['board_tools' => ['board_id' => 10, 'create_stage_id' => 55]], $http, 'swimlane_id'],
-            'no bearer' => [['board_tools' => $scope], ['url' => 'http://127.0.0.1:8788'], 'no bearer'],
+            // transport: http is explicit — under the DL-225 ssh default an unset block
+            // needs no bearer and would enable; this case pins the HTTP no-bearer suppress.
+            'no bearer' => [['board_tools' => array_merge(['transport' => 'http'], $scope)], ['url' => 'http://127.0.0.1:8788'], 'no bearer'],
             'bad optional int' => [['board_tools' => array_merge($scope, ['shared_swimlane_id' => 'x'])], $http, 'shared_swimlane_id'],
             'bad address_tags' => [['board_tools' => array_merge($scope, ['coord_board_id' => 11, 'address_tags' => 'x'])], $http, 'address_tags'],
         ];

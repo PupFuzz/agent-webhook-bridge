@@ -206,6 +206,40 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(1);
     }
 
+    /** An agent that landed on ssh via the DL-225 default (no explicit transport: key). */
+    private function writeImplicitDefaultSshAgent(): void
+    {
+        $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb');   // gitleaks:allow — test fixture
+        File::put($this->dir.'/me.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
+            ."board_tools:\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");   // NO transport: key
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+    }
+
+    public function test_check_advises_when_agent_is_on_ssh_by_the_v0680_default_without_setup(): void
+    {
+        // DL-225 pre-upgrade advisory: an agent with no explicit transport: key now reads
+        // as ssh, and with no completed ssh setup its loopback path breaks on upgrade.
+        // Empty authorized_keys + non-root ⇒ incomplete ⇒ the advisory FIRES (warn, exit 0).
+        Http::fake();
+        $this->writeImplicitDefaultSshAgent();
+        $this->bindSshEnv('');   // no pinned line, unprivileged → setup incomplete
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('on ssh by the v0.68.0 default')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_does_not_advise_when_transport_is_explicit(): void
+    {
+        // Negative control: an EXPLICIT transport: ssh choice is intentional — the
+        // advisory must NOT fire even though this setup is equally incomplete.
+        Http::fake();
+        $this->writeSshAgent();   // explicit transport: ssh
+        $this->bindSshEnv('');    // equally incomplete setup
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('on ssh by the v0.68.0 default')
+            ->assertExitCode(0);
+    }
+
     public function test_check_warns_when_ci_failure_workflow_patterns_is_set(): void
     {
         // DL-197: the failure-name filter inverts the family's fail-loud posture — a
@@ -2365,7 +2399,7 @@ class BridgeCommandsTest extends TestCase
         $tokenFile = $this->dir."/{$name}-tools-token";
         $this->writeSecret($tokenFile, $tokenValue);
         File::put($this->dir."/{$name}.yml", "identity:\n  kanban_user_id: ".crc32($name)."\nsubscriptions: []\n"
-            ."board_tools:\n  enabled: true\n  auth:\n    token_path: {$tokenFile}\n  board_id: 10\n  swimlane_id: {$swimlaneId}\n  create_stage_id: {$createStageId}\n");
+            ."board_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$tokenFile}\n  board_id: 10\n  swimlane_id: {$swimlaneId}\n  create_stage_id: {$createStageId}\n");
     }
 
     private function fakeBoardOk(): void
@@ -2555,7 +2589,7 @@ class BridgeCommandsTest extends TestCase
     private function writeToolsAgentYaml(string $name, string $tokenPath, bool $enabled = true): void
     {
         $block = $enabled
-            ? "board_tools:\n  enabled: true\n  auth:\n    token_path: {$tokenPath}\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n"
+            ? "board_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$tokenPath}\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n"
             : '';
         File::put($this->dir."/{$name}.yml", "identity:\n  kanban_user_id: ".crc32($name)."\nsubscriptions: []\n".$block);
     }
@@ -2575,20 +2609,37 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(64, strlen(trim((string) file_get_contents($tokenPath))));   // bin2hex(32) = 64 hex chars
     }
 
-    public function test_provision_tools_scaffolds_an_ssh_agent_and_never_ed25519(): void
+    public function test_provision_tools_generates_the_guided_ssh_setup_script(): void
     {
-        // card 4952: an ssh-transport agent mints NO bridge-side secret — provision-tools
-        // scaffolds by print (pinned line + FIPS keygen + Match User + sudo bridge:check)
-        // and exits 0. The keygen recipe must NEVER hardcode ed25519 (a FIPS sshd rejects it).
+        // card 4952 / DL-226: an ssh-transport agent mints NO bridge-side secret —
+        // provision-tools GENERATES + prints a guided root-run setup script (still
+        // operator-run) and exits 0. The script carries the forced-command line, the
+        // FIPS ECDSA keygen (NEVER ed25519 — a FIPS sshd rejects it), the sshd Match
+        // drop-in with PasswordAuthentication no + the three backstop directives
+        // bridge:check hard-asserts, an sshd reload, and idempotent append-or-verify.
         File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
             ."board_tools:\n  transport: ssh\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
 
         $this->artisan('bridge:provision-tools')
-            ->expectsOutputToContain('bridge:tools-call --agent=impl')
-            ->expectsOutputToContain('ssh-keygen -t ecdsa')
-            ->expectsOutputToContain('Match User')
-            ->expectsOutputToContain('sudo bridge:check')
+            // forced-command line: enumerated no-* flags (FIPS-safe), agent substituted
+            ->expectsOutputToContain('bridge:tools-call --agent=impl",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding')
+            ->expectsOutputToContain('PASTE HOST-B PUBLIC KEY')
+            // (d) FIPS ECDSA P-256 keygen, never ed25519
+            ->expectsOutputToContain('ssh-keygen -t ecdsa -b 256')
             ->doesntExpectOutputToContain('ssh-keygen -t ed25519')
+            // (b) sshd Match drop-in: password-auth closed + the 3 backstop directives >0
+            ->expectsOutputToContain('Match User')
+            ->expectsOutputToContain('PasswordAuthentication no')
+            ->expectsOutputToContain('ClientAliveInterval 300')
+            ->expectsOutputToContain('ClientAliveCountMax 2')
+            ->expectsOutputToContain('MaxSessions 10')
+            // (c) validate-then-reload
+            ->expectsOutputToContain('sshd -t')
+            ->expectsOutputToContain('reload')
+            // idempotency: append-or-verify, never clobber
+            ->expectsOutputToContain('already present')
+            // certify step
+            ->expectsOutputToContain('bridge:check --probe-tools-ssh')
             ->assertExitCode(0);
 
         // No bridge-side token file was created for the ssh agent.
@@ -2686,7 +2737,7 @@ class BridgeCommandsTest extends TestCase
         $this->writeSecret($channelTokenFile, 'chan-token');   // gitleaks:allow — test fixture
         File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: ".crc32('impl')."\nsubscriptions: []\n"
             ."channel:\n  url: http://127.0.0.1:8788\n  auth:\n    token_path: {$channelTokenFile}\n"
-            ."board_tools:\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+            ."board_tools:\n  transport: http\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
 
         $this->artisan('bridge:provision-tools')
             ->expectsOutputToContain('reuses the channel token')

@@ -1036,20 +1036,50 @@ class CheckCommand extends BridgeCommand
         // agents sharing one account (incl. the all-unset default) emit posture once,
         // byte-identical to pre-4977.
         $postureProbes = [];
+        $agentAccount = [];       // agentName => resolved forced-command account
+        $agentIncomplete = [];    // agentName => any non-ok pinned-line finding
+        $accountIncomplete = [];  // account   => any non-ok posture/backstop finding
         foreach ($sshAgents as $cfg) {
             $probe = new SshTransportProbe($env, $cfg->boardTools?->sshAccount);
             foreach ($probe->probePinnedLine($cfg->agentName) as $finding) {
+                if ($finding['severity'] !== 'ok') {
+                    $agentIncomplete[$cfg->agentName] = true;
+                }
                 if (! $this->emitSshFinding($finding)) {
                     $ok = false;
                 }
             }
-            $postureProbes[$probe->forcedCommandAccount()] = $probe;
+            $account = $probe->forcedCommandAccount();
+            $agentAccount[$cfg->agentName] = $account;
+            $postureProbes[$account] = $probe;
         }
-        foreach ($postureProbes as $probe) {
+        foreach ($postureProbes as $account => $probe) {
             foreach ($probe->probeSshdPosture() as $finding) {
+                if ($finding['severity'] !== 'ok') {
+                    $accountIncomplete[$account] = true;
+                }
                 if (! $this->emitSshFinding($finding)) {
                     $ok = false;
                 }
+            }
+        }
+
+        // v0.68.0 pre-upgrade advisory (DL-225): an agent that landed on the ssh
+        // transport via the flipped default (no explicit `transport:` key) whose ssh
+        // setup is not yet complete will lose its loopback HTTP path on upgrade — the
+        // implicit-http block now reads as ssh, so the bearer stops resolving and the
+        // call fails closed (401). Advisory only (never flips $ok): the runtime break
+        // is already loud, this is the pre-deploy heads-up. An EXPLICIT `transport:`
+        // choice is intentional and never advised.
+        foreach ($sshAgents as $cfg) {
+            $bt = $cfg->boardTools;
+            if ($bt === null || $bt->transportExplicit) {
+                continue;
+            }
+            $incomplete = ($agentIncomplete[$cfg->agentName] ?? false)
+                || ($accountIncomplete[$agentAccount[$cfg->agentName]] ?? false);
+            if ($incomplete) {
+                $this->warn("board_tools ssh: agent {$cfg->agentName} is on ssh by the v0.68.0 default (no explicit transport:); its ssh setup is incomplete or could not be verified from here — pin `transport: http` to keep the loopback path, or complete ssh setup and run `sudo bridge:check` to certify.");
             }
         }
 

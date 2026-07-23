@@ -350,7 +350,12 @@ command="php /path/to/agent-webhook-bridge/artisan bridge:tools-call --agent=<ag
 ```
 
 `bridge:provision-tools --agent=<agent>` (with the agent's `board_tools.transport:
-ssh` block present) prints this exact line pre-filled for your install.
+ssh` block present) **generates a guided, idempotent root-run setup script** (DL-226)
+that embeds this exact line pre-filled for your install — alongside the sshd `Match
+User` drop-in (§ 3), the FIPS keygen guidance (§ 1), and a validate-then-reload. Review
+it, then run it as root (`sudo bash <script>`); it append-or-verifies each piece and
+never clobbers existing config. Certify afterward with `bridge:check
+--probe-tools-ssh=<user@host-A>`.
 
 ### 3. On host A — scope the sshd hardening to the bridge user
 
