@@ -691,7 +691,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->assertSame(2, $alertPushes, 'a failed first push must re-arm the signature for the next delivery');
     }
 
-    // --- FR #3866: stamp correlation refs (dl_number / pr_number) add-if-missing ---
+    // --- FR #3866 / card#4852: stamp correlation refs (dl_number / pr_number / pr_url) add-if-missing ---
 
     public function test_card_fallback_move_stamps_missing_dl_and_pr(): void
     {
@@ -759,6 +759,42 @@ class KanbanMoveCardHandlerTest extends TestCase
         ]);
 
         $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['payload']));
+    }
+
+    public function test_stamp_pr_url_add_if_missing_when_card_has_no_pr_url(): void
+    {
+        // card#4852: a move target carrying stamp_pr_url stamps pr_url onto a card whose
+        // payload.pr_url is empty — the flat DL-219 PATCH body carries it alongside pr_number.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])  // GET: no pr_url
+                ->push(['data' => ['id' => 5]])   // move
+                ->push(['data' => ['id' => 5]]),  // stamp
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 77, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/77']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['payload' => ['pr_number' => 77, 'pr_url' => 'https://github.com/owner/repo/pull/77']]);
+    }
+
+    public function test_stamp_pr_url_is_never_overwritten_when_card_already_has_one(): void
+    {
+        // card#4852 add-if-missing: an existing pr_url is authoritative — a stamp hint for
+        // a different url must NOT overwrite it (mirrors the dl_number/pr_number guards).
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_url' => 'https://github.com/owner/repo/pull/1']]])  // GET: pr_url already set
+                ->push(['data' => ['id' => 5]]),  // move only — nothing to stamp
+        ]);
+
+        $this->handle($this->payload(['stamp_pr_url' => 'https://github.com/owner/repo/pull/77']));
 
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && isset($r['payload']));
     }
