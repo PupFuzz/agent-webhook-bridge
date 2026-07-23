@@ -125,9 +125,14 @@ final class AgentConfig
 
         $channel = self::resolveChannel(self::requireMapping($raw, 'channel'));
 
-        // board_tools (DL-217): absent ⇒ null (byte-identical no-op); present-but-
-        // malformed ⇒ throws here (fail-loud at load), mirroring create_coord_cards.
-        $boardTools = BoardToolsConfig::fromArray($raw);
+        // board_tools (DL-217, default-ON per v7): absent ⇒ null (byte-identical
+        // no-op); an EXPLICIT block (enabled: true) that is malformed ⇒ throws here
+        // (fail-loud at load); a DEFAULT-class block (no enabled key, or a non-array/
+        // non-bool one) that cannot be satisfied ⇒ SUPPRESSES (enabled=false +
+        // suppressedReason, bridge:check FAILs), never throws — so one under-configured
+        // agent can't 5xx the fleet. Passes the resolved channel (above) so the bearer
+        // can default to the channel token; fromArray never re-parses $raw['channel'].
+        $boardTools = BoardToolsConfig::fromArray($raw, $channel);
 
         return new self(
             agentName: $agentName,
