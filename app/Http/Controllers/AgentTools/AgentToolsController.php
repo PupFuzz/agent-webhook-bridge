@@ -3,15 +3,11 @@
 namespace App\Http\Controllers\AgentTools;
 
 use App\Bridge\Exceptions\ConfigException;
-use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Tools\BoardToolAgentResolver;
-use App\Bridge\Tools\BoardToolsRegistry;
-use App\Bridge\Writeback\WritebackClientFactory;
-use Illuminate\Http\Client\RequestException;
+use App\Bridge\Tools\BoardToolDispatcher;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 
 /**
  * POST /agent-tools/call — the Laravel side of the two-way board tools (DL-217).
@@ -28,7 +24,7 @@ use Illuminate\Support\Facades\Log;
  */
 final class AgentToolsController
 {
-    public function call(Request $request, BoardToolsRegistry $tools): JsonResponse
+    public function call(Request $request, BoardToolDispatcher $dispatcher): JsonResponse
     {
         $bearer = $this->bearer($request);
         if ($bearer === null) {
@@ -50,45 +46,17 @@ final class AgentToolsController
             return $this->refuse(401, 'unrecognized bearer token');
         }
 
+        // The tool key is extracted from the HTTP body here (this door's transport
+        // shape); everything after agent-resolution — tool resolution, args
+        // validation, writeback, invocation, exception→status mapping — lives in
+        // the shared dispatcher so the ssh door yields the byte-identical body.
         $toolName = $request->input('tool');
-        if (! is_string($toolName) || $toolName === '') {
-            return $this->refuse(422, 'request must carry a non-empty `tool`');
+        if (! is_string($toolName)) {
+            $toolName = '';
         }
-        $tool = $tools->resolve($toolName);
-        if ($tool === null) {
-            return $this->refuse(422, "unknown tool `{$toolName}` (known: ".implode(', ', $tools->known()).')');
-        }
+        $outcome = $dispatcher->dispatch($toolName, $request->input('args', []), $agent->config, $agent->agentName);
 
-        $args = $request->input('args', []);
-        if (! is_array($args)) {
-            return $this->refuse(422, '`args` must be an object');
-        }
-
-        try {
-            $client = WritebackClientFactory::make();   // ConfigException on a missing/insecure writeback token
-        } catch (ConfigException $e) {
-            Log::warning('agent-tools: writeback client unavailable', ['agent' => $agent->agentName, 'tool' => $toolName, 'error' => $e->getMessage()]);
-
-            return $this->refuse(503, 'board tools are not fully configured on this bridge (writeback token)');
-        }
-
-        try {
-            $result = $tool->call($args, $agent->config, $client, $agent->agentName);
-        } catch (ToolRefusalException $e) {
-            Log::info('agent-tools: refused', ['agent' => $agent->agentName, 'tool' => $toolName, 'reason' => $e->getMessage()]);
-
-            return $this->refuse(422, $e->getMessage());
-        } catch (RequestException $e) {
-            // A kanban error (4xx/5xx from upstream) — the caller may retry; do not
-            // leak the upstream body.
-            Log::warning('agent-tools: upstream kanban error', ['agent' => $agent->agentName, 'tool' => $toolName, 'status' => $e->response->status()]);
-
-            return $this->refuse(502, 'upstream board error');
-        }
-
-        Log::info('agent-tools: ok', ['agent' => $agent->agentName, 'tool' => $toolName]);
-
-        return response()->json(['ok' => true, 'tool' => $toolName, 'result' => $result]);
+        return response()->json($outcome->body(), $outcome->status);
     }
 
     private function bearer(Request $request): ?string
