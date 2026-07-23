@@ -90,8 +90,17 @@ class ProvisionToolsCommand extends BridgeCommand
 
                 continue;
             }
+            if ($bt->transport === 'ssh') {
+                // ssh agents mint NO bridge-side secret (the private key is host-B's,
+                // and this command never edits authorized_keys) — scaffold-by-print IS
+                // the provisioning action for this transport (card 4952). Informational,
+                // exit 0.
+                $this->printSshScaffold($cfg->agentName);
+
+                continue;
+            }
             if ($bt->tokenPath === null) {
-                continue;   // defensive: enabled ⇒ tokenPath non-null by construction
+                continue;   // defensive: an enabled HTTP agent ⇒ tokenPath non-null by construction (ssh agents handled above)
             }
             if ($bt->bearerFromChannel) {
                 // Default path: the tools bearer reuses the agent's channel token —
@@ -199,6 +208,40 @@ class ProvisionToolsCommand extends BridgeCommand
         touch($path);
         chmod($path, 0o600);
         file_put_contents($path, $value, LOCK_EX);
+    }
+
+    /**
+     * Scaffold-by-print the SSH-forced-command transport wiring for an ssh agent
+     * (card 4952). Prints, never edits: the authorized_keys pinned line to install on
+     * THIS (bridge) host, the FIPS-approved keygen recipe to run on host B (NEVER
+     * ed25519 — a FIPS sshd rejects it), the `Match User` sshd hardening drop-in, and
+     * the `sudo bridge:check` certification gate (DR2-3a: ssh enablement is NOT
+     * certified until a root bridge:check verifies the sshd posture).
+     */
+    private function printSshScaffold(string $agentName): void
+    {
+        $user = (string) (getenv('USER') ?: '<bridge-user>');
+        $artisan = base_path('artisan');
+        $this->info("[{$agentName}] ssh transport — scaffold only (no secret is minted on the bridge; the private key lives on host B). Install the pieces below, then run `sudo bridge:check` to certify.");
+        $this->line('');
+        $this->line('# 1. On host B (the CALLING host), generate a FIPS-approved board-tools key.');
+        $this->line('#    ECDSA P-256 is FIPS-approved; a FIPS sshd REJECTS ed25519 — do not use it here.');
+        $this->line("    ssh-keygen -t ecdsa -b 256 -f ~/.ssh/{$agentName}-board-tools -C '{$agentName}-board-tools'");
+        $this->line('#    (Non-FIPS host may choose another algorithm; the recipe is parameterized, not pinned.)');
+        $this->line('');
+        $this->line("# 2. On THIS (bridge) host, add ONE line to the {$user} authorized_keys, forcing");
+        $this->line('#    the command and denying pty + all forwarding (the enumerated form works on');
+        $this->line('#    FIPS and non-FIPS; restrict is the non-FIPS shorthand). Paste host B public key:');
+        $this->line('    command="php '.$artisan.' bridge:tools-call --agent='.$agentName.'",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding <PASTE HOST-B PUBLIC KEY>');
+        $this->line('');
+        $this->line('# 3. Scope the sshd hardening to the bridge user with a Match drop-in (box-wide is');
+        $this->line('#    opt-in). Closes the password-auth path that would bypass the forced command:');
+        $this->line("    # /etc/ssh/sshd_config.d/{$user}-board-tools.conf");
+        $this->line("    Match User {$user}");
+        $this->line('        PasswordAuthentication no');
+        $this->line('');
+        $this->line('# 4. Certify (the sshd-posture legs need root):');
+        $this->line('    sudo bridge:check');
     }
 
     private function printSkeleton(string $agentName): void
