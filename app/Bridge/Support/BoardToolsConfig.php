@@ -71,6 +71,12 @@ use App\Bridge\Exceptions\ConfigException;
  *  - suppressedReason  non-null ONLY on the default-suppressed path (always null
  *                    when enabled or explicitly disabled); the message bridge:check
  *                    renders as a FAIL.
+ *  - sshAccount      optional OS account name the SSH forced command runs as. Only
+ *                    meaningful for transport 'ssh' — it tells the bridge:check probe
+ *                    which account's sshd posture / authorized_keys to certify
+ *                    (default: the invoking run-user). Parse-and-store; the probe
+ *                    decides how to use it. Null ⇒ the invoking account (byte-identical
+ *                    to pre-4977).
  */
 final class BoardToolsConfig
 {
@@ -89,6 +95,7 @@ final class BoardToolsConfig
         public readonly bool $bearerFromChannel = false,
         public readonly ?string $suppressedReason = null,
         public readonly string $transport = 'http',
+        public readonly ?string $sshAccount = null,
     ) {}
 
     /**
@@ -190,6 +197,7 @@ final class BoardToolsConfig
         $sharedSwimlaneId = self::optionalInt($block, 'shared_swimlane_id');
         $coordBoardId = self::optionalInt($block, 'coord_board_id');
         $addressTags = self::parseAddressTags($block, $coordBoardId);
+        $sshAccount = self::optionalString($block, 'ssh_account');
 
         return new self(
             enabled: true,
@@ -202,6 +210,7 @@ final class BoardToolsConfig
             addressTags: $addressTags,
             bearerFromChannel: $bearerFromChannel,
             transport: $transport,
+            sshAccount: $sshAccount,
         );
     }
 
@@ -308,6 +317,22 @@ final class BoardToolsConfig
         $value = $block[$key];
         if (! is_int($value)) {
             throw new ConfigException("board_tools.{$key} must be an integer when set");
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param  array<mixed>  $block
+     */
+    private static function optionalString(array $block, string $key): ?string
+    {
+        if (! array_key_exists($key, $block) || $block[$key] === null) {
+            return null;
+        }
+        $value = $block[$key];
+        if (! is_string($value) || $value === '') {
+            throw new ConfigException("board_tools.{$key} must be a non-empty string when set");
         }
 
         return $value;
