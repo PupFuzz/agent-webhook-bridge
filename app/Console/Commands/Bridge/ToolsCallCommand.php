@@ -125,6 +125,10 @@ class ToolsCallCommand extends BridgeCommand
         if (! is_string($raw)) {
             return ['', 'could not read STDIN'];
         }
+        // `timed_out` is socket-reliable but UNVERIFIED on the plain pipe sshd hands
+        // a forced command on fd 0 — this deadline may be a no-op there. The
+        // authoritative idle/concurrency backstop is sshd itself (ClientAliveInterval/
+        // ClientAliveCountMax + MaxSessions/MaxStartups); see docs/multi-host.md.
         $meta = stream_get_meta_data($in);
         if (! empty($meta['timed_out'])) {
             return ['', 'STDIN read timed out (no EOF within '.self::STDIN_TIMEOUT_SECS.'s)'];

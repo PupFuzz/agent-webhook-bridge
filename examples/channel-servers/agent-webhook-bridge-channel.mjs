@@ -80,6 +80,12 @@ const TOOLS_ENDPOINT = process.env.BRIDGE_TOOLS_ENDPOINT || '';
 const TOOLS_SSH_TARGET = process.env.BRIDGE_TOOLS_SSH_TARGET || '';
 const TOOLS_SSH_KEY = process.env.BRIDGE_TOOLS_SSH_KEY || '';
 const TOOLS_SSH_PORT = process.env.BRIDGE_TOOLS_SSH_PORT || '';
+// Overall client-side deadline for one ssh board-tools round-trip. `-o ConnectTimeout`
+// (below) bounds only the TCP/handshake; this caps the WHOLE call so a host that
+// connects then hangs — or a wedged forced command — cannot pin the tools/call
+// indefinitely or leak the child. Mirrors the PHP probe posture
+// (SystemSshProbeEnvironment::sshRoundTrip: ConnectTimeout=10 + a 30s process timeout).
+const TOOLS_SSH_DEADLINE_MS = 60000;
 
 // Bearer precedence (pinned): explicit BRIDGE_TOOLS_TOKEN (non-empty), else the
 // explicit BRIDGE_TOOLS_TOKEN_FILE (non-empty path) — and a configured-but-unreadable
@@ -325,7 +331,7 @@ function relayBridgeResponse(rawBody, legSuccess, sourceLabel) {
 // child's stdin, and CAPTURE (never inherit) its stdout — so this server's OWN stdout
 // stays the MCP JSON-RPC frame channel. Accumulate the full child stdout, then relay.
 async function callToolOverSsh(payload) {
-  const args = ['-o', 'BatchMode=yes'];
+  const args = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
   if (TOOLS_SSH_KEY) {
     args.push('-i', TOOLS_SSH_KEY);
   }
@@ -335,21 +341,29 @@ async function callToolOverSsh(payload) {
   args.push(TOOLS_SSH_TARGET);
 
   return await new Promise((resolve) => {
+    // One error shape for every ssh failure (spawn, child error, deadline) — a single
+    // formatter, matching the isError result the parse-failure/relay path yields.
+    const fail = (text) =>
+      resolve({ isError: true, content: [{ type: 'text', text }] });
+
     let child;
     try {
       child = spawn('ssh', args, { stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (err) {
-      resolve({
-        isError: true,
-        content: [
-          {
-            type: 'text',
-            text: `could not spawn ssh to ${TOOLS_SSH_TARGET}: ${err && err.message ? err.message : err}`,
-          },
-        ],
-      });
+      fail(
+        `could not spawn ssh to ${TOOLS_SSH_TARGET}: ${err && err.message ? err.message : err}`,
+      );
       return;
     }
+    // Overall deadline: ConnectTimeout bounds only the connect, so a host that
+    // connects then hangs would pin this call forever and leak the child. Kill it and
+    // fail; cleared on any resolution so no dangling timer keeps the event loop alive.
+    const deadline = setTimeout(() => {
+      child.kill('SIGKILL');
+      fail(
+        `ssh to ${TOOLS_SSH_TARGET} exceeded the ${TOOLS_SSH_DEADLINE_MS}ms deadline`,
+      );
+    }, TOOLS_SSH_DEADLINE_MS);
     let stdout = '';
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -361,17 +375,13 @@ async function callToolOverSsh(payload) {
       );
     });
     child.on('error', (err) => {
-      resolve({
-        isError: true,
-        content: [
-          {
-            type: 'text',
-            text: `ssh to ${TOOLS_SSH_TARGET} failed: ${err && err.message ? err.message : err}`,
-          },
-        ],
-      });
+      clearTimeout(deadline);
+      fail(
+        `ssh to ${TOOLS_SSH_TARGET} failed: ${err && err.message ? err.message : err}`,
+      );
     });
     child.on('close', (code) => {
+      clearTimeout(deadline);
       resolve(relayBridgeResponse(stdout, code === 0, `ssh ${TOOLS_SSH_TARGET}`));
     });
     child.stdin.write(payload);

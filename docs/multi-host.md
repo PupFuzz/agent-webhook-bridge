@@ -364,6 +364,14 @@ Match User <bridge-user>
     PasswordAuthentication no
 ```
 
+> **Operator note — idle/concurrency backstop.** `bridge:tools-call` carries a
+> best-effort in-process stdin deadline, but that guard is socket-reliable and
+> **unverified** on the plain pipe sshd hands a forced command — so treat **sshd** as
+> the authoritative backstop. Add `ClientAliveInterval`/`ClientAliveCountMax` to the
+> `Match User` block above to reap an idle session that never sends EOF, and set
+> `MaxSessions` (Match-scoped) plus the global `MaxStartups` to bound concurrent and
+> pre-auth channels against a flood.
+
 ### 4. On host B — point the channel server at the ssh target
 
 ```bash
