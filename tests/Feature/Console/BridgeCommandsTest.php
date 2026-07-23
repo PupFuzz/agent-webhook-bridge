@@ -2295,8 +2295,12 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);   // warn, never fail
     }
 
-    public function test_check_warns_when_board_tools_token_collides(): void
+    public function test_check_fails_when_board_tools_token_collides(): void
     {
+        // Under default-ON a token collision is a broken enablement (tools DEAD for
+        // both agents), so bridge:check FAILs — the opt-in-era WARN (exit 0) is
+        // superseded (DL-217 v5/v7). Reverting the resolver's typed problem to a warn
+        // reds this on the exit code.
         config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
         $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
         $this->writeBoardToolsAgent('impl-a', 'same-token');
@@ -2305,7 +2309,7 @@ class BridgeCommandsTest extends TestCase
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('the same auth token is shared by multiple agents')
-            ->assertExitCode(0);
+            ->assertExitCode(1);
     }
 
     public function test_check_healthy_board_tools_reports_ok(): void
@@ -2318,6 +2322,40 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:check')
             ->expectsOutputToContain('board_tools: agent impl: writeback token can see board 10')
             ->assertExitCode(0);
+    }
+
+    public function test_check_fails_on_a_suppressed_default_board_tools_block(): void
+    {
+        // A DEFAULT-class block (no enabled key) that cannot be satisfied is INERT
+        // (enabled=false) — the only place its failure surfaces is the all-configs
+        // suppressedReason scan. See it fail once (canon #9): reverting the scan reds
+        // this on the exit code. Missing swimlane_id on an HTTP channel → suppressed.
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
+        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: ".crc32('impl')."\nsubscriptions: []\n"
+            ."channel:\n  url: http://127.0.0.1:8788\n  auth:\n    token_path: /secrets/channel-token\n"
+            ."board_tools:\n  board_id: 10\n  create_stage_id: 55\n");   // no swimlane_id
+        $this->fakeBoardOk();
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('a default-on block could not be satisfied')
+            ->assertExitCode(1);
+    }
+
+    public function test_check_fails_on_an_unreadable_board_tools_bearer(): void
+    {
+        // Under default-ON a dead bearer is a broken enablement → FAIL (was WARN/exit
+        // 0). The enabled agent's token file is removed, so the resolver accumulates a
+        // typed bearer_unreadable problem the check renders as an error.
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+        $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
+        $this->writeBoardToolsAgent('impl', 'tok-impl-1');
+        File::delete($this->dir.'/impl-tools-token');   // bearer now unreadable
+        $this->fakeBoardOk();
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('board tools disabled for this agent')
+            ->assertExitCode(1);
     }
 
     // ─── DL-217 bridge:check --probe-tools live probe ────────────────────────
@@ -2519,5 +2557,25 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:provision-tools')
             ->expectsOutputToContain('no board_tools block')
             ->assertExitCode(0);
+    }
+
+    public function test_provision_tools_skips_a_channel_token_reuse_agent(): void
+    {
+        // Default-ON reuse: a DEFAULT board_tools block (no explicit auth.token_path)
+        // on an HTTP channel reuses the channel token as the bearer — there is nothing
+        // to mint (the command is the explicit-override path). Minting into the channel
+        // token file would clobber channel auth, so it must SKIP.
+        $channelTokenFile = $this->dir.'/impl-channel-token';
+        $this->writeSecret($channelTokenFile, 'chan-token');   // gitleaks:allow — test fixture
+        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: ".crc32('impl')."\nsubscriptions: []\n"
+            ."channel:\n  url: http://127.0.0.1:8788\n  auth:\n    token_path: {$channelTokenFile}\n"
+            ."board_tools:\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+
+        $this->artisan('bridge:provision-tools')
+            ->expectsOutputToContain('reuses the channel token')
+            ->assertExitCode(0);
+
+        // The channel token file is untouched (never minted over).
+        $this->assertSame('chan-token', trim((string) file_get_contents($channelTokenFile)));
     }
 }

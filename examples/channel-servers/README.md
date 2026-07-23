@@ -242,24 +242,27 @@ See [`docs/multi-host.md`](../../docs/multi-host.md) for the full SSH-tunneled m
 | `BRIDGE_CHANNEL_SOCKET` | `$XDG_RUNTIME_DIR/agent-webhook-bridge-channel-${BRIDGE_CHANNEL_NAME}.sock` | UDS path; required if `XDG_RUNTIME_DIR` is unset (macOS / containers) |
 | `BRIDGE_CHANNEL_PORT` | `8788` | HTTP port (only when `TRANSPORT=http`) |
 | `BRIDGE_CHANNEL_NAME` | `agent-webhook-bridge` | MCP server name; the `source="..."` attribute on the `<channel>` tag |
-| `BRIDGE_CHANNEL_TOKEN` | unset | Optional bearer token; required for `TRANSPORT=http` on multi-user hosts |
-| `BRIDGE_CHANNEL_TOOLS` | unset | Set to `1` to advertise the two-way board tools (DL-217). Absent ⇒ this server advertises no `tools` capability (nothing dead). |
-| `BRIDGE_TOOLS_ENDPOINT` | unset | The bridge's loopback URL for the tool-call ingress, e.g. `http://127.0.0.1:8787/agent-tools/call`. Required when `BRIDGE_CHANNEL_TOOLS=1`. |
-| `BRIDGE_TOOLS_TOKEN` | unset | The per-agent Bearer the server presents to the bridge. Required when `BRIDGE_CHANNEL_TOOLS=1` (or use `BRIDGE_TOOLS_TOKEN_FILE`). |
-| `BRIDGE_TOOLS_TOKEN_FILE` | unset | Alternative to `BRIDGE_TOOLS_TOKEN`: a `0600` file path to read the bearer from (an HTTP install may alias this to the channel token file). |
+| `BRIDGE_CHANNEL_TOKEN` | unset | Optional bearer token; required for `TRANSPORT=http` on multi-user hosts. Also the **fallback tools bearer** (see `BRIDGE_TOOLS_TOKEN`). |
+| `BRIDGE_CHANNEL_TOOLS` | unset | Tri-state advertise of the two-way board tools (DL-217). `1` ⇒ force ON. `0` or `` (empty) ⇒ OFF. **Unset** ⇒ advertise **iff** `BRIDGE_TOOLS_ENDPOINT` is set AND a bearer resolves — so wiring the endpoint line turns the tools on for free, and a bare channel agent advertises nothing. |
+| `BRIDGE_TOOLS_ENDPOINT` | unset | The bridge's loopback URL for the tool-call ingress, e.g. `http://127.0.0.1:8787/agent-tools/call`. Required to advertise (force-on or default). |
+| `BRIDGE_TOOLS_TOKEN` | unset | The per-agent Bearer the server presents to the bridge. Precedence: this (non-empty), else `BRIDGE_TOOLS_TOKEN_FILE`, else the `BRIDGE_CHANNEL_TOKEN` fallback. An empty value does not "configure" the source. |
+| `BRIDGE_TOOLS_TOKEN_FILE` | unset | A `0600` file path to read the bearer from (an HTTP install may alias this to the channel token file). A **configured-but-unreadable** file short-circuits to no bearer (it does NOT fall through to `BRIDGE_CHANNEL_TOKEN`). |
 
 ---
 
 ## Two-way board tools (DL-217)
 
 By default this server is one-way: the bridge pushes wake events, the server
-surfaces them as `notifications/claude/channel`, no reply. When
-`BRIDGE_CHANNEL_TOOLS=1`, the server ALSO advertises two request/response MCP
-tools — `board_my_cards` and `board_create_card` — and acts as a **dumb proxy**
-for them: on a `tools/call` it forwards `{tool, args}` to `BRIDGE_TOOLS_ENDPOINT`
-with `Authorization: Bearer <BRIDGE_TOOLS_TOKEN>` and returns the bridge's
-response verbatim. It carries **no board logic, no kanban token, and no retry** —
-all validation, scoping, and idempotency live in the bridge.
+surfaces them as `notifications/claude/channel`, no reply. When board tools are
+advertised (tri-state — see `BRIDGE_CHANNEL_TOOLS` in the env table: `=1` force-on,
+or **unset with `BRIDGE_TOOLS_ENDPOINT` + a resolvable bearer**), the server ALSO
+advertises two request/response MCP tools — `board_my_cards` and
+`board_create_card` — and acts as a **dumb proxy** for them: on a `tools/call` it
+forwards `{tool, args}` to `BRIDGE_TOOLS_ENDPOINT` with the resolved
+`Authorization: Bearer <token>` and returns the bridge's response verbatim. It
+carries **no board logic, no kanban token, and no retry** — all validation,
+scoping, and idempotency live in the bridge. A bare channel agent with no tools
+wiring advertises no `tools` capability (nothing dead).
 
 If the tools are advertised but the endpoint or bearer is unset, a `tools/call`
 returns a **structured refusal naming the missing config** (no call is made).

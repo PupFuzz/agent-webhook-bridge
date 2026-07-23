@@ -14,11 +14,20 @@ Two tools ship in v1:
 
 ## Discovering them
 
-If your channel server advertises tools (`BRIDGE_CHANNEL_TOOLS=1`), your MCP
-client lists `board_my_cards` and `board_create_card`. The channel server's own
-`instructions` string also names them. If the tools are advertised but the
-channel server is only half-configured (missing `BRIDGE_TOOLS_ENDPOINT` or the
-bearer), a call returns a **structured refusal naming the missing config** — it
+If your channel server advertises tools, your MCP client lists `board_my_cards`
+and `board_create_card`, and the server's own `instructions` string names them.
+The channel server advertises on a **tri-state** (`BRIDGE_CHANNEL_TOOLS`):
+
+- `=1` → force ON.
+- `=0` or `` (empty) → OFF (explicit opt-out).
+- **unset** → advertise **iff** `BRIDGE_TOOLS_ENDPOINT` is set **and** a bearer
+  resolves (`BRIDGE_TOOLS_TOKEN` / `BRIDGE_TOOLS_TOKEN_FILE`, or the
+  `BRIDGE_CHANNEL_TOKEN` fallback). Wire the one endpoint line and the tools come
+  on for free; a bare channel agent with no tools wiring advertises nothing.
+
+If the tools are advertised but the channel server is only half-configured
+(missing `BRIDGE_TOOLS_ENDPOINT` or the bearer — reachable under the `=1`
+force-on), a call returns a **structured refusal naming the missing config** — it
 never silently no-ops.
 
 ## `board_my_cards`
@@ -100,11 +109,15 @@ agent session ──MCP tools/call──▶ channel server ──HTTP loopback +
 
 - **Config:** each participating agent's YAML carries a `board_tools:` block —
   see [`docs/config-schema.md § board_tools`](config-schema.md). Absent ⇒
-  byte-identical no-op.
-- **Auth:** the channel server presents a per-agent bearer (`board_tools.auth.token_path`).
-  The bridge resolves it to the agent (iterate-and-`hash_equals` over the roster);
-  the agent name is derived from the token, never from the request. A shared/colliding
-  token fails closed for *both* agents.
+  byte-identical no-op. A present block **defaults ON** where it can be satisfied
+  (complete scope + a resolvable bearer); an unsatisfiable default block suppresses
+  itself and `bridge:check` FAILs naming it (use `enabled: false` to stage silently).
+- **Auth:** the channel server presents a per-agent bearer. By default that bearer
+  is the agent's **channel token** (`channel.auth.token_path`) — no new credential;
+  an explicit `board_tools.auth.token_path` is honored first as a deprecation alias.
+  The bridge resolves the bearer to the agent (iterate-and-`hash_equals` over the
+  roster); the agent name is derived from the token, never from the request. A
+  shared/colliding token fails closed for *both* agents.
 - **Network:** the `/agent-tools/call` route is **loopback-gated** — the TCP peer
   must be `127.0.0.0/8` or `::1`. For the same-box endpoint value (NOT simply
   "use the public hostname" — see the trap below) follow
@@ -198,16 +211,24 @@ consulted, in either direction. This posture is **test-pinned**: the XFF-spoof
 tests in `AgentToolsCallTest` go red the moment a `trustProxies` registration
 lands.
 
-### 3. Mint the bearer
+### 3. Mint the bearer (only for a DEDICATED tools bearer)
+
+**Default path — skip this step.** Under the default-ON model the tools bearer
+reuses the agent's **channel token** (`channel.auth.token_path`), so there is
+nothing to mint; point `BRIDGE_TOOLS_TOKEN_FILE` at that same channel-token file
+(or omit it and let the `BRIDGE_CHANNEL_TOKEN` fallback resolve it). Run
+`bridge:provision-tools` only when you want a **dedicated** tools bearer, declared
+as an explicit `board_tools.auth.token_path` (the alias):
 
 ```bash
-php artisan bridge:provision-tools                # all agents with an enabled board_tools block
+php artisan bridge:provision-tools                # all agents with an explicit board_tools.auth.token_path
 php artisan bridge:provision-tools --agent=<name> # one agent; without a block, prints the paste-ready skeleton
 ```
 
 Idempotent: an existing secure (0600) bearer is left alone; an insecure one is a
-hard failure; a token value shared by two agents fails both by name. The token
-value is never printed.
+hard failure; a token value shared by two agents fails both by name. Agents that
+reuse the channel token are skipped (nothing to mint). The token value is never
+printed.
 
 ### 4. Declare the `board_tools:` block
 

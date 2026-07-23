@@ -12,19 +12,37 @@ use App\Bridge\Exceptions\ConfigException;
  * repo-keyed writeback.json: `swimlane_id` here IS the write scope, forced from
  * config so a caller can never name another lane.
  *
- * Parse posture MIRRORS create_coord_cards (see WritebackMapping / DL-198):
- * absent ⇒ byte-identical no-op (fromArray returns null); present-but-malformed
- * ⇒ throws at load (fail-loud — a provisioning bug must be loud, never a silent
- * fail-open). A present block MUST carry `enabled`; when enabled, the write
- * scope (board_id / swimlane_id / create_stage_id) and `auth.token_path` are
- * required (a half-configured tool cannot POST → fail closed at load, not
- * silently at dispatch).
+ * Classification (DL-217 → default-ON, structural per v7). The block is CLASSIFIED
+ * before it is parsed, and that class decides whether a malformation THROWS or
+ * SUPPRESSES:
+ *   1. `board_tools` ABSENT ⇒ null config (byte-identical no-op).
+ *   2. EXPLICIT (`enabled: true`, strict bool) ⇒ the DL-217 fail-loud posture:
+ *      requireBearer / requireInt / optionalInt / parseAddressTags all THROW on
+ *      malformation. An operator-written assertion that cannot be satisfied is
+ *      malformed config; loud-at-load stands.
+ *   3. DISABLED (`enabled: false`, strict bool) ⇒ well-formed no-op (staging /
+ *      opt-out); the rest of the block is not parsed.
+ *   4. EVERYTHING ELSE PRESENT ⇒ DEFAULT-CLASS, and it NEVER throws: a non-array
+ *      block, a non-bool `enabled` (incl. bare `enabled:` → null — array_key_exists
+ *      discriminates absent from null), or `enabled` absent with an unsatisfiable
+ *      requirement all SUPPRESS (enabled=false + a suppressedReason). A default that
+ *      cannot be satisfied disables itself LOUDLY-at-check (bridge:check FAILs on any
+ *      suppressedReason), never fatally-at-load — so one under-configured agent can
+ *      never 5xx the whole fleet via SubscriptionRegistry.
+ *
+ * Bearer resolution (single site): `tokenPath := board_tools.auth.token_path (the
+ * deprecation ALIAS, honored first) ?? the agent's channel token
+ * (channel.auth.token_path)`. INVARIANT: `enabled === true ⟹ tokenPath !== null`.
  *
  *  - tokenPath       absolute path to the Bearer token file the Node channel
  *                    server presents; read fail-closed at request time by
  *                    SecretFile (0600 perms enforced). Same secret-file CLASS as
- *                    every other token, provision-minted (Q4). Null only when
- *                    disabled.
+ *                    every other token. Null only when disabled/suppressed.
+ *  - bearerFromChannel  true when tokenPath defaulted to the channel token (no
+ *                    explicit auth.token_path alias). bridge:provision-tools skips
+ *                    such agents (nothing to mint — the channel token is
+ *                    provisioned elsewhere), and a collision message on them names
+ *                    the channel token as the fix site.
  *  - boardId         the product board the tools read/write.
  *  - swimlaneId      THE agent's own swimlane — the write scope, not caller-
  *                    choosable, and the read-isolation boundary (kanban scopes
@@ -38,6 +56,9 @@ use App\Bridge\Exceptions\ConfigException;
  *  - addressTags     optional: the `repo:<self>` (etc.) tags a coord card must
  *                    carry to be "addressed to me"; only consulted when
  *                    coordBoardId is set.
+ *  - suppressedReason  non-null ONLY on the default-suppressed path (always null
+ *                    when enabled or explicitly disabled); the message bridge:check
+ *                    renders as a FAIL.
  */
 final class BoardToolsConfig
 {
@@ -53,45 +74,101 @@ final class BoardToolsConfig
         public readonly ?int $sharedSwimlaneId,
         public readonly ?int $coordBoardId,
         public readonly array $addressTags,
+        public readonly bool $bearerFromChannel = false,
+        public readonly ?string $suppressedReason = null,
     ) {}
 
     /**
      * Parse the top-level `board_tools` block from a per-agent config. Absent ⇒
-     * null (the byte-identical no-op). Present ⇒ shape-validated fail-closed.
+     * null (the byte-identical no-op). See the class docblock for the four
+     * classification branches. `$channel` is the agent's already-resolved channel
+     * config (AgentConfig resolves it BEFORE board_tools); its token is the default
+     * bearer when the block carries no `auth.token_path` alias.
      *
      * @param  array<mixed>  $raw  the whole per-agent config array
      */
-    public static function fromArray(array $raw): ?self
+    public static function fromArray(array $raw, ?ChannelConfig $channel = null): ?self
     {
         if (! array_key_exists('board_tools', $raw)) {
-            return null;
+            return null;   // (1) absent
         }
         $block = $raw['board_tools'];
-        if (! is_array($block)) {
-            throw new ConfigException('board_tools must be a mapping');
+        $isArray = is_array($block);
+        $enabledKeyPresent = $isArray && array_key_exists('enabled', $block);
+
+        // (2) EXPLICIT: is_array AND enabled === true (strict) — fail-loud on any
+        // malformation (require*/parse* throw; an unsatisfiable explicit assertion
+        // is malformed config).
+        if ($enabledKeyPresent && $block['enabled'] === true) {
+            return self::build($block, $channel);
         }
 
-        $enabled = $block['enabled'] ?? false;
-        if (! is_bool($enabled)) {
-            throw new ConfigException('board_tools.enabled must be a boolean');
+        // (3) DISABLED: is_array AND enabled === false (strict) — well-formed no-op.
+        if ($enabledKeyPresent && $block['enabled'] === false) {
+            return self::disabled();
         }
 
-        // A disabled block is a well-formed no-op: it may omit the scope fields
-        // entirely (an operator staging the block before minting the token).
-        if (! $enabled) {
-            return new self(
-                enabled: false,
-                tokenPath: null,
-                boardId: null,
-                swimlaneId: null,
-                createStageId: null,
-                sharedSwimlaneId: null,
-                coordBoardId: null,
-                addressTags: [],
-            );
+        // (4) DEFAULT-CLASS: everything else present — NEVER throws.
+        if (! $isArray) {
+            return self::suppressed('board_tools must be a mapping — default-on suppressed');
+        }
+        if ($enabledKeyPresent) {
+            // enabled is present but not a strict bool (a string, an int, or bare
+            // `enabled:` → null). A "false"-string classifying as default-then-on
+            // would fail OPEN on a typo, so suppress rather than attempt enablement.
+            return self::suppressed('board_tools.enabled must be a boolean (only true/false — symfony/yaml does not booleanize yes/no/on) — default-on suppressed');
         }
 
-        $tokenPath = self::requireTokenPath($block);
+        // enabled absent → attempt satisfaction with the SAME require*/optional*/
+        // parse* calls as the explicit path; any ConfigException suppresses.
+        try {
+            return self::build($block, $channel);
+        } catch (ConfigException $e) {
+            return self::suppressed($e->getMessage());
+        }
+    }
+
+    private static function disabled(): self
+    {
+        return new self(
+            enabled: false,
+            tokenPath: null,
+            boardId: null,
+            swimlaneId: null,
+            createStageId: null,
+            sharedSwimlaneId: null,
+            coordBoardId: null,
+            addressTags: [],
+        );
+    }
+
+    private static function suppressed(string $reason): self
+    {
+        return new self(
+            enabled: false,
+            tokenPath: null,
+            boardId: null,
+            swimlaneId: null,
+            createStageId: null,
+            sharedSwimlaneId: null,
+            coordBoardId: null,
+            addressTags: [],
+            suppressedReason: $reason,
+        );
+    }
+
+    /**
+     * Resolve the full scope into an enabled config. Shared by the explicit path
+     * (throws propagate) and the default path (the caller catches ConfigException
+     * and suppresses). Every helper here throws ONLY a board_tools-scoped
+     * ConfigException — expandUser cannot throw (unlike expandRuntimeTokens, which
+     * stays out of this call graph); a future field parsed here must preserve that.
+     *
+     * @param  array<mixed>  $block
+     */
+    private static function build(array $block, ?ChannelConfig $channel): self
+    {
+        [$tokenPath, $bearerFromChannel] = self::requireBearer($block, $channel);
         $boardId = self::requireInt($block, 'board_id');
         $swimlaneId = self::requireInt($block, 'swimlane_id');
         $createStageId = self::requireInt($block, 'create_stage_id');
@@ -108,24 +185,49 @@ final class BoardToolsConfig
             sharedSwimlaneId: $sharedSwimlaneId,
             coordBoardId: $coordBoardId,
             addressTags: $addressTags,
+            bearerFromChannel: $bearerFromChannel,
         );
     }
 
     /**
+     * The tools bearer PATH and whether it defaulted to the channel token. The
+     * `board_tools.auth.token_path` alias is honored FIRST (deprecation path,
+     * bridge:check warns); absent, the bearer reuses the agent's channel token.
+     * Throws (transport-aware) only when NEITHER exists — an enabled block with no
+     * bearer is unsatisfiable (explicit ⇒ fatal at load; default ⇒ suppressed by
+     * the caller).
+     *
      * @param  array<mixed>  $block
+     * @return array{0: string, 1: bool} [tokenPath, bearerFromChannel]
      */
-    private static function requireTokenPath(array $block): string
+    private static function requireBearer(array $block, ?ChannelConfig $channel): array
     {
         $auth = $block['auth'] ?? null;
-        if (! is_array($auth)) {
-            throw new ConfigException('board_tools.auth must be a mapping with a token_path (board_tools is enabled)');
-        }
-        $raw = $auth['token_path'] ?? null;
-        if (! is_string($raw) || $raw === '') {
-            throw new ConfigException('board_tools.auth.token_path must be a non-empty path (board_tools is enabled)');
+        if ($auth !== null) {
+            if (! is_array($auth)) {
+                throw new ConfigException('board_tools.auth must be a mapping with a token_path');
+            }
+            $raw = $auth['token_path'] ?? null;
+            if ($raw !== null) {
+                if (! is_string($raw) || $raw === '') {
+                    throw new ConfigException('board_tools.auth.token_path must be a non-empty path');
+                }
+
+                return [PathHelper::expandUser($raw), false];
+            }
         }
 
-        return PathHelper::expandUser($raw);
+        // No alias → reuse the agent's channel token (the default bearer).
+        if ($channel !== null && $channel->tokenPath !== null) {
+            return [$channel->tokenPath, true];
+        }
+
+        // Unsatisfiable — name the cure by transport.
+        if ($channel !== null && $channel->url !== null) {
+            throw new ConfigException('board_tools enabled but no bearer: set channel.auth.token_path (reused automatically) or board_tools.auth.token_path');
+        }
+
+        throw new ConfigException('board_tools enabled but no channel token exists to reuse (no HTTP channel) — set board_tools.auth.token_path, or use the HTTP transport (channel.url) with a channel.auth.token_path');
     }
 
     /**

@@ -154,6 +154,39 @@ class AgentToolsCallTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_default_block_reusing_the_channel_token_authenticates(): void
+    {
+        // The default-ON flip end to end: an agent with a DEFAULT board_tools block
+        // (no enabled key, no auth) on an HTTP channel reuses its CHANNEL token as the
+        // tools bearer — the resolver indexes it, so presenting that channel-token
+        // value authenticates and the read runs.
+        $channelTokenFile = $this->dir.'/you-channel-token';
+        $channelToken = 'you-channel-token-value';   // gitleaks:allow — test fixture
+        $this->writeSecret($channelTokenFile, $channelToken);
+        File::put($this->dir.'/you.yml', "identity:\n  kanban_user_id: ".crc32('you')."\nsubscriptions: []\n"
+            ."channel:\n  url: http://127.0.0.1:8788\n  auth:\n    token_path: {$channelTokenFile}\n"
+            ."board_tools:\n  board_id: 20\n  swimlane_id: 7\n  create_stage_id: 99\n");
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []]), '*/boards/*/preload.json' => Http::response(['data' => ['swimlanes' => [['id' => 7]], 'workflows' => [['stages' => [['id' => 99, 'name' => 'Backlog', 'position' => 1]]]]]])]);
+
+        $this->callTool(['tool' => 'board_my_cards'], bearer: $channelToken)->assertStatus(200);
+    }
+
+    public function test_mixed_source_collision_fails_both_agents_closed(): void
+    {
+        // Agent A ('me') presents its explicit ALIAS token; agent B reuses its CHANNEL
+        // token — and both files hold the SAME value. The bearer is ambiguous, so BOTH
+        // are excluded from the index and the shared value authenticates as neither.
+        $channelTokenFile = $this->dir.'/you-channel-token';
+        $this->writeSecret($channelTokenFile, $this->token);   // same value as agent A's alias
+        File::put($this->dir.'/you.yml', "identity:\n  kanban_user_id: ".crc32('you')."\nsubscriptions: []\n"
+            ."channel:\n  url: http://127.0.0.1:8788\n  auth:\n    token_path: {$channelTokenFile}\n"
+            ."board_tools:\n  board_id: 20\n  swimlane_id: 7\n  create_stage_id: 99\n");
+        Http::fake();
+
+        $this->callTool(['tool' => 'board_my_cards'])->assertStatus(401);
+        Http::assertNothingSent();
+    }
+
     public function test_install_with_no_board_tools_configured_refuses_every_bearer(): void
     {
         // Deactivation is by "no resolvable bearer", not route-absence: with no

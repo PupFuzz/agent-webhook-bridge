@@ -105,11 +105,18 @@ Non-array `subscriptions`, or an entry that isn't a mapping, throws at load. Onl
 | `auth.token_path` | abs path to a file | `null` | Bearer token for the **HTTP transport** (`url`). **Rejected at load unless `url` is set** (DL-008). Read fail-closed at push: must be `0600`, non-empty (else the push errors, inbox backstops it). |
 
 ### `board_tools:` (optional, DL-217) — the two-way board window (`board_my_cards` / `board_create_card`)
-Absent ⇒ byte-identical no-op. A present block is **fail-closed at load**: `enabled` must be a boolean, and when enabled the scope fields + `auth.token_path` are required (a half-configured tool can't POST → throws at load, not silently at dispatch). See [`docs/board-tools.md`](board-tools.md).
+Absent ⇒ byte-identical no-op. A present block **defaults ON** (DL-217 v7): it does NOT need an `enabled` key. The classification decides throw-vs-suppress:
+
+- **`enabled: true`** (explicit) ⇒ **fail-loud at load**: the scope fields + a resolvable bearer are required, and any malformation throws (an operator assertion that can't be satisfied is malformed config).
+- **`enabled: false`** ⇒ a well-formed no-op (staging / opt-out); the fields below may be omitted. **Use this to stage a block silently** — a partial block on an HTTP agent with no `enabled` key otherwise suppresses AND `bridge:check` FAILs.
+- **No `enabled` key** (the recommended default) ⇒ the block is attempted; if it can be satisfied (complete scope + a resolvable bearer) it comes **ON**, otherwise it **suppresses** (stays OFF, carries a reason `bridge:check` renders as a **FAIL** — never a load throw, so one under-configured agent can't 5xx the fleet).
+- A **non-mapping** block or a **non-bool `enabled`** ⇒ suppressed (never enabled). `enabled` accepts ONLY `true`/`false`: `symfony/yaml` does **not** booleanize `yes`/`no`/`on`/`1` (those are strings/ints), so they suppress with a message naming the cure.
+
+See [`docs/board-tools.md`](board-tools.md).
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `enabled` | bool | `false` | Non-bool throws. `false` ⇒ a well-formed no-op that may omit the fields below. |
-| `auth.token_path` | abs path to a file | — (**required when enabled**) | The per-agent Bearer the channel server presents. Same secret-file class as every other token (read fail-closed, `0600`). An HTTP-channel install MAY alias it to `channel.auth.token_path`; a UDS install gets a fresh file. Minted by `bridge:provision-tools` (idempotent, collision-checked). |
+| `enabled` | bool | *(absent ⇒ default-ON where satisfiable)* | Only `true`/`false`. `true` ⇒ fail-loud; `false` ⇒ well-formed no-op (may omit the fields below); absent ⇒ default-ON-where-satisfiable-else-suppress; non-bool (incl. bare `enabled:` → null) ⇒ suppressed. |
+| `auth.token_path` | abs path to a file | — (deprecation **alias**; else the channel token) | The per-agent Bearer the channel server presents. **By default the bearer is the agent's channel token** (`channel.auth.token_path`) — no new credential, no mint. Set `auth.token_path` only for a **dedicated** tools bearer (honored FIRST as a deprecation alias; `bridge:provision-tools` mints it, idempotent + collision-checked). Same secret-file class (read fail-closed, `0600`). An enabled block with NO alias and NO channel token is unsatisfiable (explicit ⇒ throws; default ⇒ suppresses). |
 | `board_id` | int | — (**required when enabled**) | The product board the tools read/write. The service (writeback-token) user must be a MEMBER — kanban scopes reads by board membership, so a non-member gets a silently-empty window (`bridge:check` warns). |
 | `swimlane_id` | int | — (**required when enabled**) | THE agent's own swimlane — the write scope (forced on create; a caller cannot name a lane) AND the read-isolation boundary (a fail-closed row filter drops any returned row not in this lane). |
 | `create_stage_id` | int | — (**required when enabled**) | The column tool-created cards land in (typically backlog). Must exist on the board (`bridge:check` warns). |
