@@ -53,11 +53,15 @@ final class BoardToolAgentResolver
         $candidates = [];
         foreach ($configs as $cfg) {
             $bt = $cfg->boardTools;
-            // `tokenPath === null` here is an INVARIANT ASSERTION, not a live
-            // fallback: enabled === true ⟹ tokenPath !== null (BoardToolsConfig
-            // guarantees it — a suppressed/disabled config is enabled=false). The
-            // check is a belt-and-suspenders skip, unreachable for an enabled agent.
-            if ($bt === null || ! $bt->enabled || $bt->tokenPath === null) {
+            // This is the HTTP token→agent index — an ssh-transport agent must NEVER
+            // be reachable by presenting a bearer over the HTTP door (its identity is
+            // the pinned forced-command --agent, not a token). The `transport !==
+            // 'http'` exclusion is the load-bearing skip. `tokenPath === null` is then
+            // a belt-and-suspenders skip: for an enabled HTTP agent the invariant
+            // enabled ⟹ tokenPath !== null holds, and a contradictory ssh+auth block
+            // is already loader-rejected (DR2-1) — so this second clause only ever
+            // fires on the transport-excluded rows the first clause already caught.
+            if ($bt === null || ! $bt->enabled || $bt->transport !== 'http' || $bt->tokenPath === null) {
                 continue;
             }
             $token = $this->readToken($cfg->agentName, $bt->tokenPath);

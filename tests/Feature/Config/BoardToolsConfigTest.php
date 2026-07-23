@@ -281,6 +281,125 @@ class BoardToolsConfigTest extends TestCase
         ]]);
     }
 
+    // ─── transport (card 4952) ───────────────────────────────────────────────
+
+    public function test_transport_defaults_to_http_when_absent(): void
+    {
+        $bt = $this->config(
+            ['board_tools' => ['board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55]],
+            $this->httpChannel,
+        )->boardTools;
+        $this->assertSame('http', $bt->transport);
+    }
+
+    public function test_ssh_transport_enables_without_a_bearer_or_channel(): void
+    {
+        // ssh identity is the forced-command --agent — no bearer, no channel needed. A
+        // default-class ssh block ENABLES even with no channel (unlike http, which
+        // suppresses without a bearer).
+        $bt = $this->config(['board_tools' => [
+            'transport' => 'ssh', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ]])->boardTools;
+
+        $this->assertNotNull($bt);
+        $this->assertTrue($bt->enabled);
+        $this->assertSame('ssh', $bt->transport);
+        $this->assertNull($bt->tokenPath);
+        $this->assertFalse($bt->bearerFromChannel);
+        $this->assertNull($bt->suppressedReason);
+    }
+
+    public function test_ssh_transport_keeps_int_checks_fail_loud(): void
+    {
+        // The narrow-load-shape: ssh lifts ONLY the bearer — a bad board_id still throws.
+        $this->expectException(ConfigException::class);
+        $this->config(['board_tools' => [
+            'enabled' => true, 'transport' => 'ssh', 'board_id' => 'x', 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ]]);
+    }
+
+    public function test_bad_transport_value_throws_on_explicit_path(): void
+    {
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('transport');
+        $this->config(['board_tools' => [
+            'enabled' => true, 'transport' => 'grpc', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ]], $this->httpChannel);
+    }
+
+    public function test_bad_transport_value_suppresses_on_default_path(): void
+    {
+        $bt = $this->config(['board_tools' => [
+            'transport' => 'grpc', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ]], $this->httpChannel)->boardTools;
+
+        $this->assertNotNull($bt);
+        $this->assertFalse($bt->enabled);
+        $this->assertStringContainsString('transport', (string) $bt->suppressedReason);
+    }
+
+    // ─── DR2-1 contradiction predicate: ssh + ANY auth key fails-closed ───────
+
+    /**
+     * The four `auth` shapes that must ALL trip the ssh contradiction (an ssh block
+     * carries no bearer): bare `auth:` (null), `auth: {}`, `auth: {token_path: null}`,
+     * and a real token_path.
+     *
+     * @return array<string, array{0: mixed}>
+     */
+    public static function sshAuthShapes(): array
+    {
+        return [
+            'bare auth null' => [null],
+            'empty auth map' => [[]],
+            'auth token_path null' => [['token_path' => null]],
+            'auth real token_path' => [['token_path' => '/secrets/tools-token']],
+        ];
+    }
+
+    #[DataProvider('sshAuthShapes')]
+    public function test_ssh_with_any_auth_key_throws_on_explicit_path(mixed $auth): void
+    {
+        $this->expectException(ConfigException::class);
+        $this->config(['board_tools' => [
+            'enabled' => true, 'transport' => 'ssh', 'auth' => $auth,
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ]]);
+    }
+
+    #[DataProvider('sshAuthShapes')]
+    public function test_ssh_with_any_auth_key_suppresses_on_default_path(mixed $auth): void
+    {
+        $bt = $this->config(['board_tools' => [
+            'transport' => 'ssh', 'auth' => $auth,
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ]])->boardTools;
+
+        $this->assertNotNull($bt);
+        $this->assertFalse($bt->enabled, 'an ssh+auth contradiction must not enable');
+        $this->assertNull($bt->tokenPath);
+        $this->assertNotNull($bt->suppressedReason);
+    }
+
+    #[DataProvider('sshAuthShapes')]
+    public function test_http_with_the_same_auth_shapes_never_fires_the_ssh_rule(mixed $auth): void
+    {
+        // The contradiction is ssh-only: under http, these auth shapes keep their
+        // existing behavior (bare/empty/null → fall through to the channel token; a
+        // real token_path → that alias). None throws for the ssh reason.
+        $bt = $this->config(
+            ['board_tools' => [
+                'enabled' => true, 'auth' => $auth,
+                'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+            ]],
+            $this->httpChannel,
+        )->boardTools;
+
+        $this->assertNotNull($bt);
+        $this->assertTrue($bt->enabled);
+        $this->assertSame('http', $bt->transport);
+    }
+
     // ─── the fleet-outage regression: every default-class malformation LOADS ─
     // ─── (no throw) + carries a case-specific suppressedReason ───────────────
 

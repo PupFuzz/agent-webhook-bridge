@@ -4,6 +4,7 @@ namespace Tests\Feature\Console;
 
 use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Writeback\KanbanClient;
 use App\Console\Commands\Bridge\InboxCommand;
 use App\Console\Commands\Bridge\ReplayCommand;
@@ -107,6 +108,97 @@ class BridgeCommandsTest extends TestCase
             ->expectsOutputToContain('writeback token')
             ->assertExitCode(0);   // warn, not fail
         Http::assertNothingSent();
+    }
+
+    private function writeSshAgent(): void
+    {
+        $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb');   // gitleaks:allow — test fixture
+        File::put($this->dir.'/me.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
+            ."board_tools:\n  transport: ssh\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+        config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
+    }
+
+    private function bindSshEnv(string $authorizedKeys, bool $isRoot = false, bool $fips = false, ?string $sshdConfig = null): void
+    {
+        $this->app->instance(SshProbeEnvironment::class, new class($authorizedKeys, $isRoot, $fips, $sshdConfig) implements SshProbeEnvironment
+        {
+            public function __construct(private string $keys, private bool $root, private bool $fips, private ?string $sshd) {}
+
+            public function isRoot(): bool
+            {
+                return $this->root;
+            }
+
+            public function fipsEnabled(): bool
+            {
+                return $this->fips;
+            }
+
+            public function runUser(): string
+            {
+                return 'bridge';
+            }
+
+            public function runUserHome(): string
+            {
+                return '/home/bridge';
+            }
+
+            public function sshdEffectiveConfig(?string $forUser = null): ?string
+            {
+                return $this->root ? $this->sshd : null;
+            }
+
+            public function readAuthorizedKeys(string $path): ?string
+            {
+                return $this->keys === '' ? null : $this->keys;
+            }
+
+            public function sshRoundTrip(string $target, string $stdin): array
+            {
+                return ['exit' => 1, 'stdout' => '', 'stderr' => 'not used'];
+            }
+        });
+    }
+
+    public function test_check_fails_when_ssh_pinned_line_grants_pty(): void
+    {
+        // A present-but-bad forced-command line (restrict,pty) flips bridge:check to
+        // FAILURE via the offline SSH-transport probe.
+        Http::fake();
+        $this->writeSshAgent();
+        $this->bindSshEnv('command="php artisan bridge:tools-call --agent=me",restrict,pty ssh-ed25519 AAAA me');
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('still grants')
+            ->assertExitCode(1);
+    }
+
+    public function test_check_passes_with_good_ssh_line_unprivileged_posture_warns(): void
+    {
+        // A good pinned line + a non-root run (sshd posture UNVERIFIED → warn, never a
+        // false OK, never a hard red) stays exit 0.
+        Http::fake();
+        $this->writeSshAgent();
+        $this->bindSshEnv('command="php artisan bridge:tools-call --agent=me",restrict ssh-ed25519 AAAA me');
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('UNVERIFIED')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_fails_when_ssh_password_auth_is_enabled(): void
+    {
+        // As root, sshd -T shows PasswordAuthentication yes — a parallel auth path that
+        // bypasses the forced command → FAIL.
+        Http::fake();
+        $this->writeSshAgent();
+        $this->bindSshEnv(
+            'command="php artisan bridge:tools-call --agent=me",restrict ssh-ed25519 AAAA me',
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile .ssh/authorized_keys\npasswordauthentication yes\n",
+        );
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('PasswordAuthentication')
+            ->assertExitCode(1);
     }
 
     public function test_check_warns_when_ci_failure_workflow_patterns_is_set(): void
@@ -2476,6 +2568,26 @@ class BridgeCommandsTest extends TestCase
         $this->assertFileExists($tokenPath);
         $this->assertSame('0600', substr(sprintf('%o', fileperms($tokenPath)), -4));
         $this->assertSame(64, strlen(trim((string) file_get_contents($tokenPath))));   // bin2hex(32) = 64 hex chars
+    }
+
+    public function test_provision_tools_scaffolds_an_ssh_agent_and_never_ed25519(): void
+    {
+        // card 4952: an ssh-transport agent mints NO bridge-side secret — provision-tools
+        // scaffolds by print (pinned line + FIPS keygen + Match User + sudo bridge:check)
+        // and exits 0. The keygen recipe must NEVER hardcode ed25519 (a FIPS sshd rejects it).
+        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
+            ."board_tools:\n  transport: ssh\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+
+        $this->artisan('bridge:provision-tools')
+            ->expectsOutputToContain('bridge:tools-call --agent=impl')
+            ->expectsOutputToContain('ssh-keygen -t ecdsa')
+            ->expectsOutputToContain('Match User')
+            ->expectsOutputToContain('sudo bridge:check')
+            ->doesntExpectOutputToContain('ssh-keygen -t ed25519')
+            ->assertExitCode(0);
+
+        // No bridge-side token file was created for the ssh agent.
+        $this->assertFileDoesNotExist($this->dir.'/impl-board-tools-token');
     }
 
     public function test_provision_tools_never_prints_the_token_value(): void
