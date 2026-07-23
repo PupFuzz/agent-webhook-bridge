@@ -9,6 +9,8 @@ use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
+use App\Bridge\Tools\SshProbeEnvironment;
+use App\Bridge\Tools\SystemSshProbeEnvironment;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
@@ -53,6 +55,11 @@ class BridgeServiceProvider extends ServiceProvider
         // resolution machinery the HTTP controller and the ssh-forced-command
         // command both dispatch through, over the ONE registry singleton above.
         $this->app->singleton(BoardToolDispatcher::class, fn (): BoardToolDispatcher => new BoardToolDispatcher($this->app->make(BoardToolsRegistry::class)));
+
+        // The host-facts seam for the bridge:check SSH-transport probe (card 4952) —
+        // the default reads the real host; a test binds an in-memory fake to drive the
+        // root-gated / FIPS / sshd legs.
+        $this->app->bind(SshProbeEnvironment::class, SystemSshProbeEnvironment::class);
 
         $this->app->bind(DispatchService::class, function (): DispatchService {
             $configDir = (string) config('bridge.config_dir');
