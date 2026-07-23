@@ -30,8 +30,9 @@ use App\Bridge\Exceptions\ConfigException;
  *      suppressedReason), never fatally-at-load — so one under-configured agent can
  *      never 5xx the whole fleet via SubscriptionRegistry.
  *
- * Transport (card 4952): `transport: http|ssh` (default `http`) selects which
- * FRONT DOOR authenticates the call. `http` ⇒ the loopback POST resolves the
+ * Transport (card 4952): `transport: http|ssh` (default `ssh` since v0.68.0 /
+ * DL-225 — an unset key now reads as `ssh`, NOT the pre-0.68.0 `http`) selects
+ * which FRONT DOOR authenticates the call. `http` ⇒ the loopback POST resolves the
  * agent by bearer (the channel token post-DL-222). `ssh` ⇒ the SSH-forced-command
  * `bridge:tools-call` resolves the agent by the pinned `--agent` name and carries
  * NO bearer — so an ssh block that also writes `board_tools.auth` is contradictory
@@ -94,8 +95,13 @@ final class BoardToolsConfig
         public readonly array $addressTags,
         public readonly bool $bearerFromChannel = false,
         public readonly ?string $suppressedReason = null,
-        public readonly string $transport = 'http',
+        public readonly string $transport = 'ssh',
         public readonly ?string $sshAccount = null,
+        // true iff a `transport` key was PRESENT in the parsed block; false when it
+        // fell through to the default. bridge:check's v0.68.0 pre-upgrade advisory
+        // (DL-225) keys on this to flag agents that landed on ssh by the flipped
+        // default rather than by an explicit operator choice.
+        public readonly bool $transportExplicit = false,
     ) {}
 
     /**
@@ -189,6 +195,7 @@ final class BoardToolsConfig
     private static function build(array $block, ?ChannelConfig $channel): self
     {
         // Transport is parsed FIRST — it gates whether a bearer is required at all.
+        $transportExplicit = array_key_exists('transport', $block);
         $transport = self::parseTransport($block);
         [$tokenPath, $bearerFromChannel] = self::requireBearer($block, $channel, $transport);
         $boardId = self::requireInt($block, 'board_id');
@@ -211,25 +218,29 @@ final class BoardToolsConfig
             bearerFromChannel: $bearerFromChannel,
             transport: $transport,
             sshAccount: $sshAccount,
+            transportExplicit: $transportExplicit,
         );
     }
 
     /**
-     * The board-tools transport: `http` (default) or `ssh`. An absent key is
-     * `http` (byte-identical to every pre-4952 config). A bad value THROWS — like
-     * every other malformation, it fails loud on the explicit path and suppresses
-     * on the default path (the caller catches ConfigException); never fail-open.
+     * The board-tools transport: `http` or `ssh` (default `ssh` since v0.68.0 /
+     * DL-225). An absent key reads as `ssh` — the pre-0.68.0 default was `http`, so
+     * a config relying on the implicit default must now pin `transport: http`
+     * explicitly to keep the loopback path (see the UPGRADING note). A bad value
+     * THROWS — like every other malformation, it fails loud on the explicit path and
+     * suppresses on the default path (the caller catches ConfigException); never
+     * fail-open.
      *
      * @param  array<mixed>  $block
      */
     private static function parseTransport(array $block): string
     {
         if (! array_key_exists('transport', $block)) {
-            return 'http';
+            return 'ssh';
         }
         $transport = $block['transport'];
         if ($transport !== 'http' && $transport !== 'ssh') {
-            throw new ConfigException("board_tools.transport must be 'http' or 'ssh' (default http)");
+            throw new ConfigException("board_tools.transport must be 'http' or 'ssh' (default ssh)");
         }
 
         return $transport;

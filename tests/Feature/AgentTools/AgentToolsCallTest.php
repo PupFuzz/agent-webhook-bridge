@@ -56,7 +56,7 @@ class AgentToolsCallTest extends TestCase
         $tokenFile = $this->dir."/{$name}-tools-token";
         $this->writeSecret($tokenFile, $tokenValue);
 
-        $yaml = "identity:\n  kanban_user_id: ".crc32($name)."\nsubscriptions: []\nboard_tools:\n  enabled: true\n  auth:\n    token_path: {$tokenFile}\n  board_id: {$scope['board_id']}\n  swimlane_id: {$scope['swimlane_id']}\n  create_stage_id: {$scope['create_stage_id']}\n".($extra ?? '');
+        $yaml = "identity:\n  kanban_user_id: ".crc32($name)."\nsubscriptions: []\nboard_tools:\n  enabled: true\n  transport: http\n  auth:\n    token_path: {$tokenFile}\n  board_id: {$scope['board_id']}\n  swimlane_id: {$scope['swimlane_id']}\n  create_stage_id: {$scope['create_stage_id']}\n".($extra ?? '');
         File::put($this->dir."/{$name}.yml", $yaml);
     }
 
@@ -165,7 +165,7 @@ class AgentToolsCallTest extends TestCase
         $this->writeSecret($channelTokenFile, $channelToken);
         File::put($this->dir.'/you.yml', "identity:\n  kanban_user_id: ".crc32('you')."\nsubscriptions: []\n"
             ."channel:\n  url: http://127.0.0.1:8788\n  auth:\n    token_path: {$channelTokenFile}\n"
-            ."board_tools:\n  board_id: 20\n  swimlane_id: 7\n  create_stage_id: 99\n");
+            ."board_tools:\n  transport: http\n  board_id: 20\n  swimlane_id: 7\n  create_stage_id: 99\n");
         Http::fake(['*/tasks/search.json*' => Http::response(['data' => []]), '*/boards/*/preload.json' => Http::response(['data' => ['swimlanes' => [['id' => 7]], 'workflows' => [['stages' => [['id' => 99, 'name' => 'Backlog', 'position' => 1]]]]]])]);
 
         $this->callTool(['tool' => 'board_my_cards'], bearer: $channelToken)->assertStatus(200);
@@ -180,7 +180,7 @@ class AgentToolsCallTest extends TestCase
         $this->writeSecret($channelTokenFile, $this->token);   // same value as agent A's alias
         File::put($this->dir.'/you.yml', "identity:\n  kanban_user_id: ".crc32('you')."\nsubscriptions: []\n"
             ."channel:\n  url: http://127.0.0.1:8788\n  auth:\n    token_path: {$channelTokenFile}\n"
-            ."board_tools:\n  board_id: 20\n  swimlane_id: 7\n  create_stage_id: 99\n");
+            ."board_tools:\n  transport: http\n  board_id: 20\n  swimlane_id: 7\n  create_stage_id: 99\n");
         Http::fake();
 
         $this->callTool(['tool' => 'board_my_cards'])->assertStatus(401);

@@ -163,7 +163,7 @@ class ToolsCallCommandTest extends TestCase
         $this->writeSecret($channelTokenFile, 'chan-value');   // gitleaks:allow — test fixture
         File::put($this->dir.'/me.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
             ."channel:\n  url: http://127.0.0.1:8788\n  auth:\n    token_path: {$channelTokenFile}\n"
-            ."board_tools:\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+            ."board_tools:\n  transport: http\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
 
         $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']));
         $this->assertSame(2, $r['exit']);
