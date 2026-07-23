@@ -374,9 +374,12 @@ Match User <bridge-user>
 > deliberately holds stdin open. `bridge:check` therefore **asserts** the
 > Match-resolved sshd config for the forced-command account has `ClientAliveInterval`>0
 > (reaps a client that has gone away — they detect a dead transport), a bounded idle
-> window `ClientAliveInterval × ClientAliveCountMax`, and a `MaxSessions` cap; a missing
-> directive **fails** the check with the exact directive + this `Match User` remedy.
-> Set the global `MaxStartups` too, to bound pre-auth channels.
+> window `ClientAliveInterval × ClientAliveCountMax` with **`ClientAliveCountMax`>0**
+> (`0` DISABLES the client-alive disconnect, leaving the window unbounded — sshd emits
+> the directive by default, so absence is not the failure to look for), and a
+> **`MaxSessions`>0** cap; a missing **or non-positive** directive **fails** the check
+> with the exact directive + this `Match User` remedy. Set the global `MaxStartups` too,
+> to bound pre-auth channels.
 
 > **`sudo bridge:check` + a distinct forced-command account (card 4977).** When you
 > certify as root (`sudo bridge:check`, needed for the root-gated `sshd -T` legs) but
@@ -385,7 +388,10 @@ Match User <bridge-user>
 > resolves the *invoking* account (root under sudo) and would certify **root's** sshd
 > posture and read **`/root/.ssh/authorized_keys`** — false-negativing the very seat it
 > targets. With it set, the posture, `authorized_keys` (`%h`/`%u`), and the backstop all
-> resolve `<bridge-user>`. Leave it unset when the forced command runs as the invoking
+> resolve `<bridge-user>`. If a **configured** `ssh_account` does not resolve to an OS
+> account on the host, the account-dependent legs **fail** honestly (*"…does not resolve
+> to an OS account…"*) rather than certify against a phantom `/.ssh/authorized_keys`
+> built from an empty home. Leave it unset when the forced command runs as the invoking
 > account (byte-identical to before).
 
 ### 4. On host B — point the channel server at the ssh target

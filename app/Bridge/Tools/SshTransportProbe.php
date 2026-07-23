@@ -50,10 +50,32 @@ final class SshTransportProbe
     }
 
     /**
+     * A CONFIGURED ssh_account that does not resolve to an OS account (homeForUser ⇒ '')
+     * cannot be certified — every account-dependent leg would otherwise build a phantom
+     * path from an empty home (e.g. `/.ssh/authorized_keys`) and mis-certify against it.
+     * Gated strictly on a non-null sshAccount: the unset fallback (runUserHome, which can
+     * also be '') keeps its pre-4977 non-authoritative warn behavior, untouched.
+     *
+     * @return string|null the fail message, or null when there is nothing to report
+     */
+    private function configuredAccountUnresolved(): ?string
+    {
+        if ($this->sshAccount !== null && $this->env->homeForUser($this->sshAccount) === '') {
+            return "board_tools.ssh_account '{$this->sshAccount}' does not resolve to an OS account on this host — the SSH transport cannot be certified";
+        }
+
+        return null;
+    }
+
+    /**
      * @return list<array{severity: string, message: string}>
      */
     public function probePinnedLine(string $agentName): array
     {
+        if (($unresolved = $this->configuredAccountUnresolved()) !== null) {
+            return [$this->fail($unresolved)];
+        }
+
         $findings = [];
         [$path, $authoritative] = $this->authorizedKeysPath();
         $content = $this->env->readAuthorizedKeys($path);
@@ -113,6 +135,10 @@ final class SshTransportProbe
      */
     public function probeSshdPosture(): array
     {
+        if (($unresolved = $this->configuredAccountUnresolved()) !== null) {
+            return [$this->fail($unresolved)];
+        }
+
         $user = $this->forcedCommandAccount();
         $cfg = $this->env->sshdEffectiveConfig($user);
         if ($cfg === null) {
@@ -137,11 +163,13 @@ final class SshTransportProbe
      * output the posture leg does and asserts:
      *   - ClientAliveInterval > 0 (0 = no server-side idle timeout — a hung holder
      *     never drops),
-     *   - ClientAliveCountMax present (the idle window = interval × countmax is
-     *     bounded), and
-     *   - MaxSessions present (concurrent sessions per connection are capped).
-     * A missing/unbounded directive FAILs with the exact directive + a `Match User`
-     * remedy; a bounded config reports the computed idle bound.
+     *   - ClientAliveCountMax > 0 (0 DISABLES sshd's client-alive disconnect, leaving the
+     *     idle window unbounded; sshd -T always emits it with a default, so `=== null`
+     *     never catches the real failure state), and
+     *   - MaxSessions > 0 (concurrent sessions per connection capped; a non-positive value
+     *     fail-shuts the forced command entirely, but must still not report ok).
+     * A missing/non-positive directive FAILs with the exact directive + a `Match User`
+     * remedy; only an all-positive config reports the computed idle bound.
      *
      * @return array{severity: string, message: string}
      */
@@ -155,11 +183,15 @@ final class SshTransportProbe
         if ($interval === null || $interval <= 0) {
             $problems[] = 'ClientAliveInterval is '.($interval === null ? 'unset' : (string) $interval).' (no server-side idle timeout — a hung key-holder never drops)';
         }
-        if ($countMax === null) {
-            $problems[] = 'ClientAliveCountMax is unset (the idle window ClientAliveInterval × ClientAliveCountMax is unbounded)';
+        if ($countMax === null || $countMax <= 0) {
+            $problems[] = 'ClientAliveCountMax is '.($countMax === null
+                ? 'unset (the idle window ClientAliveInterval × ClientAliveCountMax is unbounded)'
+                : $countMax.' (a non-positive ClientAliveCountMax DISABLES sshd\'s client-alive idle disconnect — a hung key-holder never drops)');
         }
-        if ($maxSessions === null) {
-            $problems[] = 'MaxSessions is unset (concurrent sessions per connection are uncapped)';
+        if ($maxSessions === null || $maxSessions <= 0) {
+            $problems[] = 'MaxSessions is '.($maxSessions === null
+                ? 'unset (concurrent sessions per connection are uncapped)'
+                : $maxSessions.' (a non-positive MaxSessions blocks the forced command entirely — the ssh transport cannot open a session)');
         }
 
         if ($problems !== []) {

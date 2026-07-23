@@ -254,6 +254,81 @@ class SshTransportProbeTest extends TestCase
         $this->assertStringContainsString('600s idle bound', $backstop['message']);   // 300 × 2
     }
 
+    public function test_backstop_fails_when_client_alive_count_max_is_zero(): void
+    {
+        // ClientAliveCountMax 0 DISABLES sshd's client-alive disconnect — the exact
+        // unbounded-idle case. sshd -T always emits the directive, so a `=== null` guard
+        // never catches it; the guard must reject the non-positive value.
+        $env = new FakeSshProbeEnvironment(
+            authorizedKeys: self::GOOD_LINE,
+            isRoot: true,
+            sshdConfig: "passwordauthentication no\nclientaliveinterval 300\nclientalivecountmax 0\nmaxsessions 10\n",
+        );
+        $findings = (new SshTransportProbe($env))->probeSshdPosture();
+        $backstop = $this->firstMatching($findings, 'idle/concurrency backstop');
+        $this->assertNotNull($backstop);
+        $this->assertSame('fail', $backstop['severity']);
+        $this->assertStringContainsString('ClientAliveCountMax', $backstop['message']);
+    }
+
+    public function test_backstop_fails_when_max_sessions_is_zero(): void
+    {
+        // MaxSessions 0 fail-shuts the forced command — still must not report ok.
+        $env = new FakeSshProbeEnvironment(
+            authorizedKeys: self::GOOD_LINE,
+            isRoot: true,
+            sshdConfig: "passwordauthentication no\nclientaliveinterval 300\nclientalivecountmax 2\nmaxsessions 0\n",
+        );
+        $findings = (new SshTransportProbe($env))->probeSshdPosture();
+        $backstop = $this->firstMatching($findings, 'idle/concurrency backstop');
+        $this->assertNotNull($backstop);
+        $this->assertSame('fail', $backstop['severity']);
+        $this->assertStringContainsString('MaxSessions', $backstop['message']);
+    }
+
+    // ─── configured ssh_account that does not resolve (card 4977, Defect 2) ────
+
+    public function test_configured_ssh_account_that_does_not_resolve_fails_not_phantom_path(): void
+    {
+        // A configured ssh_account with no OS account (homeForUser ⇒ '') must fail honestly
+        // on every account-dependent leg — never certify against a phantom
+        // '/.ssh/authorized_keys' built from the empty home.
+        $env = new FakeSshProbeEnvironment(
+            authorizedKeys: self::GOOD_LINE,
+            isRoot: true,
+            sshdConfig: "passwordauthentication no\nauthorizedkeysfile %h/.ssh/authorized_keys\n".self::BACKSTOP_OK,
+            userHomes: ['ghost' => ''],   // '' models an account posix_getpwnam cannot resolve
+        );
+        $probe = new SshTransportProbe($env, 'ghost');
+
+        $pinned = $probe->probePinnedLine('me');
+        $posture = $probe->probeSshdPosture();
+
+        $this->assertTrue($this->hasSeverity($pinned, 'fail'));
+        $this->assertFalse($this->hasSeverity($pinned, 'ok'));
+        $this->assertTrue($this->hasSeverity($posture, 'fail'));
+        $this->assertNotNull($this->firstMatching($pinned, 'does not resolve to an OS account'));
+        // No phantom-path read attempted (the leg fails before authorizedKeysPath).
+        $this->assertNotContains('/.ssh/authorized_keys', $env->readPaths);
+    }
+
+    public function test_unset_account_with_empty_run_user_home_is_unchanged_warn_not_hard_fail(): void
+    {
+        // canon #6: the UNSET fallback path (runUserHome ⇒ '') is a pre-existing edge,
+        // deliberately unchanged — it stays a non-authoritative warn, never the new
+        // configured-account hard-fail. Pins that the Defect-2 gate is sshAccount-strict.
+        $env = new FakeSshProbeEnvironment(
+            authorizedKeys: '',   // nothing readable at the assumed default path
+            runUserHome: '',
+        );
+        $probe = new SshTransportProbe($env);   // no ssh_account
+
+        $findings = $probe->probePinnedLine('me');
+
+        $this->assertTrue($this->hasSeverity($findings, 'warn'));
+        $this->assertFalse($this->hasSeverity($findings, 'fail'));
+    }
+
     // ─── live probe ───────────────────────────────────────────────────────────
 
     public function test_live_probe_clean_matching_scope_passes(): void
