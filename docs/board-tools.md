@@ -101,12 +101,29 @@ term is efficiency + defense-in-depth, not the boundary.
 
 ## How it is wired (operator view)
 
+There are **two front doors** into the same dispatch machinery, selected per agent
+by `board_tools.transport` (`http`, the default | `ssh`). Both resolve the caller's
+identity, then run the identical `BoardToolDispatcher` onto the shared least-privilege
+writeback client — so the response body is byte-identical whichever door served it.
+
 ```
+# HTTP transport (default):
 agent session ──MCP tools/call──▶ channel server ──HTTP loopback + bearer──▶ bridge ──kanban token──▶ board
                                   (dumb proxy,                              (loopback gate + per-agent
                                    no board token)                          bearer + ToolRegistry)
+
+# SSH-forced-command transport (card 4952 — no bearer, no forwarding):
+agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdout──▶ bridge:tools-call --agent=X ──kanban token──▶ board
+                                  (spawns ssh, no command;             (identity = pinned --agent;
+                                   sshd forces the command)             ToolRegistry)
 ```
 
+- **Transport (`http` | `ssh`):** `http` resolves the agent by **bearer** over the
+  loopback POST; `ssh` resolves it by the **pinned forced-command `--agent`** and
+  carries **no bearer**. Pick one per agent (single-valued, v1). The ssh door is the
+  only cross-host transport that works on a seat locked to `AllowTcpForwarding remote`
+  (where the HTTP forward tunnel is blocked) — see
+  [`docs/multi-host.md § Board tools (two-way) SSH-forced-command transport`](multi-host.md#board-tools-two-way-ssh-forced-command-transport-card-4952).
 - **Config:** each participating agent's YAML carries a `board_tools:` block —
   see [`docs/config-schema.md § board_tools`](config-schema.md). Absent ⇒
   byte-identical no-op. A present block **defaults ON** where it can be satisfied
@@ -124,13 +141,29 @@ agent session ──MCP tools/call──▶ channel server ──HTTP loopback +
   [§ Same-box enablement (Apache/FPM)](#same-box-enablement-apachefpm);
   multi-host needs a forward SSH tunnel — see
   [`docs/multi-host.md § Board tools (two-way) forward leg`](multi-host.md#board-tools-two-way-forward-leg).
-- **Provisioning:** `bridge:provision-tools` mints each enabled agent's bearer
-  (0600, idempotent, collision-checked). It never edits agent YAML — for an agent
-  without a `board_tools:` block it prints a paste-ready skeleton.
+- **Provisioning:** `bridge:provision-tools` mints each enabled **http** agent's
+  bearer (0600, idempotent, collision-checked). It never edits agent YAML — for an
+  agent without a `board_tools:` block it prints a paste-ready skeleton. For an
+  **ssh** agent it mints no secret (the private key is host B's) — it scaffolds by
+  print (the pinned forced-command line, the FIPS-approved keygen recipe, the
+  `Match User` sshd drop-in, and the `sudo bridge:check` certification step).
 - **Preflight:** `bridge:check` probes each enabled agent's token readability,
   token collisions, swimlane/stage existence, and the service user's board
-  membership. `bridge:check --probe-tools=<endpoint>` additionally exercises the
-  REAL loopback+bearer path end to end (see the runbook below).
+  membership. For an **ssh** agent it also probes (offline) the pinned
+  `authorized_keys` line — that it forces `bridge:tools-call --agent=X`, denies
+  pty + all forwarding (outcome-based, not a `restrict` keyword match), carries a
+  FIPS-approved key on a FIPS seat, and (root-gated) that `PasswordAuthentication`
+  is disabled for the forced-command account and its sshd idle/concurrency backstop
+  (`ClientAliveInterval`/`ClientAliveCountMax`/`MaxSessions` — each must be **positive**;
+  a `0` or missing directive fails, since `ClientAliveCountMax 0` disables the idle
+  disconnect) is complete (card 4977).
+  These legs certify the **forced-command account** — when `bridge:check` runs under
+  `sudo` but that account is not `root`, set `board_tools.ssh_account` so the probe
+  targets it, not the invoking root (a configured account that does not resolve to an OS
+  account **fails** rather than certify a phantom path; see `docs/multi-host.md § 3`).
+  `bridge:check --probe-tools=<endpoint>` exercises
+  the REAL HTTP loopback+bearer path; `bridge:check --probe-tools-ssh=<user@host>`
+  the REAL ssh round-trip (see the runbook below).
 
 Audit trail: one structured log line per call (agent, tool, outcome). A queryable
 `tool_calls` ledger table is the named v2 upgrade if operators want it.

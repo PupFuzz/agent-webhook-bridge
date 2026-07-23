@@ -21,6 +21,8 @@ use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
 use App\Bridge\Tools\BoardToolAgentResolver;
+use App\Bridge\Tools\SshProbeEnvironment;
+use App\Bridge\Tools\SshTransportProbe;
 use App\Bridge\Validation\EndpointValidationException;
 use App\Bridge\Validation\LocalhostUrl;
 use App\Bridge\Writeback\AlertChannel;
@@ -47,7 +49,8 @@ use Throwable;
  */
 class CheckCommand extends BridgeCommand
 {
-    protected $signature = 'bridge:check {--probe-tools= : POST a live board_my_cards to this /agent-tools/call endpoint per enabled agent (opt-in — verifies the same-box loopback recipe end to end; the endpoint is the value the channel server uses, e.g. https://<bridge-hostname>/agent-tools/call)}';
+    protected $signature = 'bridge:check {--probe-tools= : POST a live board_my_cards to this /agent-tools/call endpoint per enabled agent (opt-in — verifies the same-box loopback recipe end to end; the endpoint is the value the channel server uses, e.g. https://<bridge-hostname>/agent-tools/call)}
+                            {--probe-tools-ssh= : round-trip a live board_my_cards over ssh to this <user@host> (opt-in — certifies the SSH-forced-command board-tools transport end to end; card 4952)}';
 
     protected $description = 'Validate the bridge install config (dirs, DB connectivity, agent YAMLs)';
 
@@ -902,6 +905,14 @@ class CheckCommand extends BridgeCommand
             $ok = false;
         }
 
+        // card 4952: opt-in live ssh round-trip. Certifies the SSH-forced-command
+        // transport end to end (reachable, JSON-clean stdout, ok:true, scope header
+        // matches a configured ssh agent's lane). A failure is a HARD failure.
+        $probeSshTarget = $this->strOption('probe-tools-ssh');
+        if ($probeSshTarget !== null && ! $this->probeBoardToolsSsh($configs, $probeSshTarget)) {
+            $ok = false;
+        }
+
         return $ok ? self::SUCCESS : self::FAILURE;
     }
 
@@ -993,7 +1004,79 @@ class CheckCommand extends BridgeCommand
             }
         }
 
+        // SSH-transport pinned-line + sshd-posture probe (card 4952) — offline, runs
+        // in the default bridge:check. A present-but-bad forced-command line (grants
+        // pty/forwarding), an ambiguous/absent-authoritative line, or a FIPS-rejected
+        // key FAILs; an UNVERIFIABLE (non-root / relocated keyfile) leg WARNs and
+        // names the `sudo bridge:check` cert step — never a false OK, never a hard red.
+        $sshAgents = array_values(array_filter($enabled, fn (AgentConfig $c) => $c->boardTools?->transport === 'ssh'));
+        if ($sshAgents !== [] && ! $this->checkSshTransport($sshAgents)) {
+            $ok = false;
+        }
+
         return $ok;
+    }
+
+    /**
+     * The offline SSH-transport probe (card 4952): per enabled ssh agent, verify the
+     * pinned authorized_keys line forces bridge:tools-call --agent=X and denies
+     * pty+forwarding (OUTCOME-based, never a `restrict` keyword match) + a FIPS key
+     * algo on a FIPS seat; once, verify the sshd password-auth posture (root-gated).
+     * Only a `fail` finding flips the exit.
+     *
+     * @param  list<AgentConfig>  $sshAgents
+     */
+    private function checkSshTransport(array $sshAgents): bool
+    {
+        $ok = true;
+        $env = $this->laravel->make(SshProbeEnvironment::class);
+        // The forced-command account (board_tools.ssh_account, default the invoking
+        // run-user) is per-agent, so the pinned-line + keys resolution is per-agent.
+        // The sshd-posture leg is per-ACCOUNT — dedupe by resolved account so N ssh
+        // agents sharing one account (incl. the all-unset default) emit posture once,
+        // byte-identical to pre-4977.
+        $postureProbes = [];
+        foreach ($sshAgents as $cfg) {
+            $probe = new SshTransportProbe($env, $cfg->boardTools?->sshAccount);
+            foreach ($probe->probePinnedLine($cfg->agentName) as $finding) {
+                if (! $this->emitSshFinding($finding)) {
+                    $ok = false;
+                }
+            }
+            $postureProbes[$probe->forcedCommandAccount()] = $probe;
+        }
+        foreach ($postureProbes as $probe) {
+            foreach ($probe->probeSshdPosture() as $finding) {
+                if (! $this->emitSshFinding($finding)) {
+                    $ok = false;
+                }
+            }
+        }
+
+        return $ok;
+    }
+
+    /**
+     * Render one probe finding through the existing info/warn/error convention.
+     * Returns false (→ flip the caller's $ok) ONLY on a `fail`.
+     *
+     * @param  array{severity: string, message: string}  $finding
+     */
+    private function emitSshFinding(array $finding): bool
+    {
+        $message = 'board_tools ssh: '.$finding['message'];
+        if ($finding['severity'] === 'fail') {
+            $this->error($message);
+
+            return false;
+        }
+        if ($finding['severity'] === 'warn') {
+            $this->warn($message);
+        } else {
+            $this->info($message);
+        }
+
+        return true;
     }
 
     /**
@@ -1025,10 +1108,18 @@ class CheckCommand extends BridgeCommand
         $ok = true;
         foreach ($enabled as $cfg) {
             $bt = $cfg->boardTools;
-            if ($bt === null || $bt->tokenPath === null) {
-                continue;   // defensive: enabled ⇒ tokenPath non-null by construction
-            }
             $name = $cfg->agentName;
+            // F6 (card 4952): --probe-tools is the HTTP loopback probe. An ssh-transport
+            // agent has no bearer/endpoint to exercise here — silently skipping it would
+            // certify NOTHING (canon #9). Name the right probe instead of a false OK.
+            if ($bt !== null && $bt->transport === 'ssh') {
+                $this->warn("board_tools probe: agent {$name}: uses the ssh transport — --probe-tools (HTTP) cannot certify it; run --probe-tools-ssh=<user@host> instead.");
+
+                continue;
+            }
+            if ($bt === null || $bt->tokenPath === null) {
+                continue;   // defensive: an enabled HTTP agent ⇒ tokenPath non-null by construction (ssh agents handled above)
+            }
             // An enabled agent whose bearer can't be presented IS a broken enablement —
             // the probe certifies before the operator flips traffic on, so these fail
             // (unlike the offline checks, which only warn).
@@ -1094,6 +1185,41 @@ class CheckCommand extends BridgeCommand
             }
             $stageGroups = is_array($result['cards_by_stage'] ?? null) ? count($result['cards_by_stage']) : 0;
             $this->info("board_tools probe: agent {$name}: {$endpoint} → 200; window scoped to board {$bt->boardId} / swimlane {$bt->swimlaneId} ({$stageGroups} stage group(s)). board_my_cards does not expose a per-row swimlane, so the returned scope header matching config is the observable that the bridge-side isolation filter ran.");
+        }
+
+        return $ok;
+    }
+
+    /**
+     * card 4952 live ssh probe (opt-in, --probe-tools-ssh=<user@host>). Round-trip a
+     * real board_my_cards over the ssh-forced-command transport and certify the scope
+     * header matches a configured ssh agent's lane. A failure is HARD (→ non-zero exit),
+     * like --probe-tools: it certifies the enablement.
+     *
+     * @param  list<AgentConfig>  $configs
+     */
+    private function probeBoardToolsSsh(array $configs, string $target): bool
+    {
+        $sshAgents = array_values(array_filter(
+            $configs,
+            fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled && $c->boardTools->transport === 'ssh',
+        ));
+        if ($sshAgents === []) {
+            $this->warn('board_tools ssh probe: --probe-tools-ssh was given but no agent has an enabled ssh-transport board_tools block — nothing to certify.');
+
+            return true;
+        }
+
+        $expected = array_map(
+            fn (AgentConfig $c) => ['agent' => $c->agentName, 'board_id' => $c->boardTools?->boardId, 'swimlane_id' => $c->boardTools?->swimlaneId],
+            $sshAgents,
+        );
+        $probe = new SshTransportProbe($this->laravel->make(SshProbeEnvironment::class));
+        $ok = true;
+        foreach ($probe->probeLive($target, $expected) as $finding) {
+            if (! $this->emitSshFinding($finding)) {
+                $ok = false;
+            }
         }
 
         return $ok;

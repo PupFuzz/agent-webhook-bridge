@@ -7,7 +7,10 @@ use App\Bridge\Dispatch\IntentLog;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\SubscriptionRegistry;
+use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
+use App\Bridge\Tools\SshProbeEnvironment;
+use App\Bridge\Tools\SystemSshProbeEnvironment;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
@@ -40,10 +43,23 @@ class BridgeServiceProvider extends ServiceProvider
         );
 
         // Board-tools registry (DL-217), a container singleton like HandlerRegistry
-        // so an operator can register custom tools against the exact instance the
-        // controller resolves. Carries no per-request state (the shipped tools are
-        // stateless), so a per-process instance is correct.
+        // so an operator can register custom tools against the exact instance BOTH
+        // front doors resolve. Carries no per-request state (the shipped tools are
+        // stateless). "Singleton" here means ONE instance PER PROCESS — the FPM
+        // worker serving the HTTP door and the CLI process running bridge:tools-call
+        // are different processes with their own container, so operator-registered
+        // tools must be wired in a ServiceProvider (loaded by both), not per-request.
         $this->app->singleton(BoardToolsRegistry::class, fn (): BoardToolsRegistry => new BoardToolsRegistry);
+
+        // Board-tools dispatcher (Finding A, card 4952) — the shared post-agent-
+        // resolution machinery the HTTP controller and the ssh-forced-command
+        // command both dispatch through, over the ONE registry singleton above.
+        $this->app->singleton(BoardToolDispatcher::class, fn (): BoardToolDispatcher => new BoardToolDispatcher($this->app->make(BoardToolsRegistry::class)));
+
+        // The host-facts seam for the bridge:check SSH-transport probe (card 4952) —
+        // the default reads the real host; a test binds an in-memory fake to drive the
+        // root-gated / FIPS / sshd legs.
+        $this->app->bind(SshProbeEnvironment::class, SystemSshProbeEnvironment::class);
 
         $this->app->bind(DispatchService::class, function (): DispatchService {
             $configDir = (string) config('bridge.config_dir');

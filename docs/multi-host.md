@@ -143,6 +143,7 @@ command="echo 'tunnel-only key; no shell access'",no-pty,no-X11-forwarding,no-ag
 
 - `permitlisten="127.0.0.1:8788"` scopes the **reverse** (`-R`) tunnel that carries A→B channel pushes.
 - `permitopen="127.0.0.1:8787"` scopes the **forward** (`-L`) tunnel the two-way board tools (DL-217) need for the B→A `tools/call` (point it at A's bridge HTTP port). Omit it if you are not enabling board tools.
+- **⚠ FIPS key-algorithm caveat (card 4952):** the `ssh-ed25519 AAAA...` above is illustrative for a **non-FIPS** host. A FIPS-mode sshd **rejects any ed25519 auth key** (ed25519 is not a FIPS-approved algorithm), so on a FIPS seat this wake key must also be **ECDSA P-256** — generate it with `ssh-keygen -t ecdsa -b 256` and paste that public key instead. The restriction tokens are unchanged; only the key algorithm differs.
 
 Verify the tunnels actually come up (a `no-port-forwarding` key silently refuses them); this correction's prescriptions are exercised for real when the multi-host leg is first built (prod today is same-host).
 
@@ -309,6 +310,122 @@ Then point the channel server's `BRIDGE_TOOLS_ENDPOINT` at the local end
 > server calls `http://127.0.0.1:<bridge-port>/agent-tools/call` directly. This
 > forward-tunnel leg is exercised for real only when the first genuinely
 > multi-host board-tools seat is built.
+
+## Board tools (two-way) SSH-forced-command transport (card 4952)
+
+The forward-leg above carries the B→A `tools/call` over an HTTP loopback that a
+`-L` **forward** tunnel terminates on A. That requires the bridge-user key to
+permit forwarding (`permitopen=`). **On a seat locked to `AllowTcpForwarding
+remote`** (a common hardening — a `Match User <bridge-user>` drop-in that permits
+only the `-R` wake tunnel), `-L` forward tunnels are **blocked**, so the
+HTTP-loopback board-tools path literally cannot run. The **SSH-forced-command
+transport** is the alternative: the `tools/call` rides the ssh channel's own
+stdin/stdout — **no forwarding at all** — so it is the only cross-host board-tools
+transport that works on an as-hardened `AllowTcpForwarding remote` seat. (Same-box
+installs also gain a no-root, no-vhost path.) It is a **distinct** key from the `-R`
+wake key: a forced-command key and a `permitlisten`-tunnel key are mutually
+exclusive on one key.
+
+The bridge exposes it as the `bridge:tools-call` console command; the channel
+server on B spawns `ssh` (with **no** command — sshd substitutes the pinned one),
+writes `{tool, args}` to its stdin, and reads the single JSON envelope from its
+stdout.
+
+### 1. On host B — generate a FIPS-approved board-tools key
+
+```bash
+# ECDSA P-256 is FIPS-approved; a FIPS sshd REJECTS ed25519 — do not use it here.
+# A non-FIPS host may choose another algorithm; the recipe is parameterized, not pinned.
+ssh-keygen -t ecdsa -b 256 -f ~/.ssh/<agent>-board-tools -C '<agent>-board-tools'
+```
+
+### 2. On host A — pin the forced command in the bridge-user `authorized_keys`
+
+Add ONE line forcing `bridge:tools-call --agent=<agent>` and denying pty + all
+forwarding. The enumerated `no-*` form works on FIPS **and** non-FIPS (`restrict`
+is the non-FIPS shorthand). Paste host B's **public** key:
+
+```
+command="php /path/to/agent-webhook-bridge/artisan bridge:tools-call --agent=<agent>",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding <PASTE HOST-B PUBLIC KEY>
+```
+
+`bridge:provision-tools --agent=<agent>` (with the agent's `board_tools.transport:
+ssh` block present) prints this exact line pre-filled for your install.
+
+### 3. On host A — scope the sshd hardening to the bridge user
+
+A `Match User` drop-in closes the password-auth path that would otherwise bypass
+the forced command (box-wide is opt-in) **and** pins the idle/concurrency backstop.
+All of it is **required** and `bridge:check`-verified (card 4977):
+
+```
+# /etc/ssh/sshd_config.d/<bridge-user>-board-tools.conf
+Match User <bridge-user>
+    PasswordAuthentication no
+    ClientAliveInterval 300
+    ClientAliveCountMax 2
+    MaxSessions 10
+```
+
+> **Idle/concurrency backstop — now verified (card 4977).** `bridge:tools-call`
+> carries a best-effort in-process stdin deadline, but that guard is socket-reliable
+> and **unverified** on the plain pipe sshd hands a forced command — so **sshd** is the
+> authoritative backstop, and it is the only real bound on a key-holder that
+> deliberately holds stdin open. `bridge:check` therefore **asserts** the
+> Match-resolved sshd config for the forced-command account has `ClientAliveInterval`>0
+> (reaps a client that has gone away — they detect a dead transport), a bounded idle
+> window `ClientAliveInterval × ClientAliveCountMax` with **`ClientAliveCountMax`>0**
+> (`0` DISABLES the client-alive disconnect, leaving the window unbounded — sshd emits
+> the directive by default, so absence is not the failure to look for), and a
+> **`MaxSessions`>0** cap; a missing **or non-positive** directive **fails** the check
+> with the exact directive + this `Match User` remedy. Set the global `MaxStartups` too,
+> to bound pre-auth channels.
+
+> **`sudo bridge:check` + a distinct forced-command account (card 4977).** When you
+> certify as root (`sudo bridge:check`, needed for the root-gated `sshd -T` legs) but
+> the forced command runs as a **different** OS account than `root`, set
+> **`board_tools.ssh_account: <bridge-user>`** in the agent config. Absent it, the probe
+> resolves the *invoking* account (root under sudo) and would certify **root's** sshd
+> posture and read **`/root/.ssh/authorized_keys`** — false-negativing the very seat it
+> targets. With it set, the posture, `authorized_keys` (`%h`/`%u`), and the backstop all
+> resolve `<bridge-user>`. If a **configured** `ssh_account` does not resolve to an OS
+> account on the host, the account-dependent legs **fail** honestly (*"…does not resolve
+> to an OS account…"*) rather than certify against a phantom `/.ssh/authorized_keys`
+> built from an empty home. Leave it unset when the forced command runs as the invoking
+> account (byte-identical to before).
+
+### 4. On host B — point the channel server at the ssh target
+
+```bash
+export BRIDGE_TOOLS_SSH_TARGET=<bridge-user>@host-A   # NOT with BRIDGE_TOOLS_ENDPOINT — the two are mutually exclusive
+export BRIDGE_TOOLS_SSH_KEY=~/.ssh/<agent>-board-tools   # optional (-i)
+# export BRIDGE_TOOLS_SSH_PORT=22                        # optional (-p)
+```
+
+The ssh transport carries **no bearer** — identity is the pinned `--agent`, so no
+`BRIDGE_TOOLS_TOKEN` is set. It **coexists** with the `-R` wake tunnel and the
+existing HTTP forward-leg seats (each seat picks exactly one board-tools
+transport).
+
+### 5. On host A — certify
+
+```bash
+# The sshd-posture legs need root; run once as root to certify the enablement.
+sudo bridge:check                                   # offline: pinned line + FIPS key + sshd posture
+bridge:check --probe-tools-ssh=<bridge-user>@host-A # live round-trip (from a host that can reach A)
+```
+
+`bridge:check` fails if the pinned line grants a pty/forwarding, if a FIPS seat's
+key is ed25519, if `PasswordAuthentication` is not disabled for the forced-command
+account, or if that account's sshd idle/concurrency backstop is incomplete
+(`ClientAliveInterval`/`ClientAliveCountMax`/`MaxSessions` — card 4977); run
+unprivileged it emits an explicit **UNVERIFIED** warn for the root-gated sshd legs
+(never a false OK). Under `sudo` with a distinct forced-command account, set
+`board_tools.ssh_account` (see step 3) so these legs certify that account, not root.
+
+> Live-fire rides the witnesses (aimla same-box + sola cross-host+FIPS). The
+> `sshd -T` root requirement and a FIPS sshd's `restrict` behavior are reasoned
+> from the OpenSSH man page, confirmed on a real FIPS seat when sola's seat fires.
 
 ## What this runbook does NOT cover
 

@@ -30,9 +30,21 @@ use App\Bridge\Exceptions\ConfigException;
  *      suppressedReason), never fatally-at-load — so one under-configured agent can
  *      never 5xx the whole fleet via SubscriptionRegistry.
  *
- * Bearer resolution (single site): `tokenPath := board_tools.auth.token_path (the
- * deprecation ALIAS, honored first) ?? the agent's channel token
- * (channel.auth.token_path)`. INVARIANT: `enabled === true ⟹ tokenPath !== null`.
+ * Transport (card 4952): `transport: http|ssh` (default `http`) selects which
+ * FRONT DOOR authenticates the call. `http` ⇒ the loopback POST resolves the
+ * agent by bearer (the channel token post-DL-222). `ssh` ⇒ the SSH-forced-command
+ * `bridge:tools-call` resolves the agent by the pinned `--agent` name and carries
+ * NO bearer — so an ssh block that also writes `board_tools.auth` is contradictory
+ * and fails (explicit ⇒ throw, default ⇒ suppress).
+ *
+ * Bearer resolution (single site, HTTP transport only): `tokenPath :=
+ * board_tools.auth.token_path (the deprecation ALIAS, honored first) ?? the
+ * agent's channel token (channel.auth.token_path)`. INVARIANT (transport-scoped):
+ * for `transport: 'http'`, `enabled === true ⟹ tokenPath !== null`. For
+ * `transport: 'ssh'`, an enabled config legitimately has `tokenPath === null` —
+ * identity is the forced-command `--agent`, not a bearer, so consumers that key
+ * off the HTTP index (BoardToolAgentResolver, the --probe-tools loop) must
+ * exclude ssh agents explicitly.
  *
  *  - tokenPath       absolute path to the Bearer token file the Node channel
  *                    server presents; read fail-closed at request time by
@@ -59,6 +71,12 @@ use App\Bridge\Exceptions\ConfigException;
  *  - suppressedReason  non-null ONLY on the default-suppressed path (always null
  *                    when enabled or explicitly disabled); the message bridge:check
  *                    renders as a FAIL.
+ *  - sshAccount      optional OS account name the SSH forced command runs as. Only
+ *                    meaningful for transport 'ssh' — it tells the bridge:check probe
+ *                    which account's sshd posture / authorized_keys to certify
+ *                    (default: the invoking run-user). Parse-and-store; the probe
+ *                    decides how to use it. Null ⇒ the invoking account (byte-identical
+ *                    to pre-4977).
  */
 final class BoardToolsConfig
 {
@@ -76,6 +94,8 @@ final class BoardToolsConfig
         public readonly array $addressTags,
         public readonly bool $bearerFromChannel = false,
         public readonly ?string $suppressedReason = null,
+        public readonly string $transport = 'http',
+        public readonly ?string $sshAccount = null,
     ) {}
 
     /**
@@ -168,13 +188,16 @@ final class BoardToolsConfig
      */
     private static function build(array $block, ?ChannelConfig $channel): self
     {
-        [$tokenPath, $bearerFromChannel] = self::requireBearer($block, $channel);
+        // Transport is parsed FIRST — it gates whether a bearer is required at all.
+        $transport = self::parseTransport($block);
+        [$tokenPath, $bearerFromChannel] = self::requireBearer($block, $channel, $transport);
         $boardId = self::requireInt($block, 'board_id');
         $swimlaneId = self::requireInt($block, 'swimlane_id');
         $createStageId = self::requireInt($block, 'create_stage_id');
         $sharedSwimlaneId = self::optionalInt($block, 'shared_swimlane_id');
         $coordBoardId = self::optionalInt($block, 'coord_board_id');
         $addressTags = self::parseAddressTags($block, $coordBoardId);
+        $sshAccount = self::optionalString($block, 'ssh_account');
 
         return new self(
             enabled: true,
@@ -186,22 +209,62 @@ final class BoardToolsConfig
             coordBoardId: $coordBoardId,
             addressTags: $addressTags,
             bearerFromChannel: $bearerFromChannel,
+            transport: $transport,
+            sshAccount: $sshAccount,
         );
     }
 
     /**
-     * The tools bearer PATH and whether it defaulted to the channel token. The
-     * `board_tools.auth.token_path` alias is honored FIRST (deprecation path,
-     * bridge:check warns); absent, the bearer reuses the agent's channel token.
-     * Throws (transport-aware) only when NEITHER exists — an enabled block with no
-     * bearer is unsatisfiable (explicit ⇒ fatal at load; default ⇒ suppressed by
-     * the caller).
+     * The board-tools transport: `http` (default) or `ssh`. An absent key is
+     * `http` (byte-identical to every pre-4952 config). A bad value THROWS — like
+     * every other malformation, it fails loud on the explicit path and suppresses
+     * on the default path (the caller catches ConfigException); never fail-open.
      *
      * @param  array<mixed>  $block
-     * @return array{0: string, 1: bool} [tokenPath, bearerFromChannel]
      */
-    private static function requireBearer(array $block, ?ChannelConfig $channel): array
+    private static function parseTransport(array $block): string
     {
+        if (! array_key_exists('transport', $block)) {
+            return 'http';
+        }
+        $transport = $block['transport'];
+        if ($transport !== 'http' && $transport !== 'ssh') {
+            throw new ConfigException("board_tools.transport must be 'http' or 'ssh' (default http)");
+        }
+
+        return $transport;
+    }
+
+    /**
+     * The tools bearer PATH and whether it defaulted to the channel token.
+     *
+     * For `transport: 'ssh'` there is NO bearer — identity is the pinned
+     * forced-command `--agent`, resolved by name — so this returns `[null, false]`.
+     * BUT any `board_tools.auth` key the operator wrote is a bearer intent ssh
+     * cannot honor: a contradictory block that must FAIL, not be silently swallowed
+     * (DR2-1, maximally fail-closed). `array_key_exists('auth', $block)` is pinned
+     * over `$block['auth'] ?? null` so it also catches bare `auth:` (→ null) and
+     * `auth: {}`. The throw is a board_tools-scoped ConfigException, so it inherits
+     * the 4-branch throw/suppress classification (explicit ⇒ fatal at load, default
+     * ⇒ suppressed by the caller) — no new fork.
+     *
+     * For `transport: 'http'`, the `board_tools.auth.token_path` alias is honored
+     * FIRST (deprecation path, bridge:check warns); absent, the bearer reuses the
+     * agent's channel token; throws only when NEITHER exists (unsatisfiable).
+     *
+     * @param  array<mixed>  $block
+     * @return array{0: ?string, 1: bool} [tokenPath, bearerFromChannel]
+     */
+    private static function requireBearer(array $block, ?ChannelConfig $channel, string $transport): array
+    {
+        if ($transport === 'ssh') {
+            if (array_key_exists('auth', $block)) {
+                throw new ConfigException('board_tools.transport: ssh authenticates by the forced-command --agent identity and carries NO bearer — remove board_tools.auth');
+            }
+
+            return [null, false];
+        }
+
         $auth = $block['auth'] ?? null;
         if ($auth !== null) {
             if (! is_array($auth)) {
@@ -254,6 +317,22 @@ final class BoardToolsConfig
         $value = $block[$key];
         if (! is_int($value)) {
             throw new ConfigException("board_tools.{$key} must be an integer when set");
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param  array<mixed>  $block
+     */
+    private static function optionalString(array $block, string $key): ?string
+    {
+        if (! array_key_exists($key, $block) || $block[$key] === null) {
+            return null;
+        }
+        $value = $block[$key];
+        if (! is_string($value) || $value === '') {
+            throw new ConfigException("board_tools.{$key} must be a non-empty string when set");
         }
 
         return $value;
