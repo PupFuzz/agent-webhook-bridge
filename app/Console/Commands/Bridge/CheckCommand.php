@@ -883,11 +883,14 @@ class CheckCommand extends BridgeCommand
         // consumes it. Independent of writeback (a coord agent has no writeback).
         $this->checkEventFollowsConsumer($githubScopeConsumers);
 
-        // DL-217: board-tools health. Warn-never-fail (the feature is opt-in) — a
-        // silent-inert misconfig (unreadable/colliding token, a swimlane/stage not
-        // on the board, a non-member service user) is exactly what an agent seat
-        // discovers only as an empty/broken tool window, so surface it pre-deploy.
-        $this->checkBoardTools($configs);
+        // DL-217 (default-ON per v7): board-tools health. A default-on block that
+        // could not be satisfied (suppressedReason) and a dead/ambiguous bearer FAIL
+        // (a broken enablement, not opt-in); the board-STATE checks (swimlane/stage on
+        // board, service-user membership) stay WARN (DL-220 split — a transient/empty
+        // kanban read must not FAIL the install check).
+        if (! $this->checkBoardTools($configs)) {
+            $ok = false;
+        }
 
         // DL-217: opt-in live board-tools probe. Offline by default (like the rest of
         // this command's local checks); when --probe-tools names the endpoint the
@@ -903,29 +906,46 @@ class CheckCommand extends BridgeCommand
     }
 
     /**
-     * DL-217 board-tools preflight. For each agent with an ENABLED `board_tools`
-     * block: (a) the token-file readability + token-collision scan (via the same
-     * BoardToolAgentResolver the controller uses, so check and runtime agree on
-     * which agents are usable); (b) the create stage + swimlane(s) exist on the
-     * board; and (c) the service user's MEMBERSHIP of board_id — kanban scopes
-     * reads by the token user's board membership, so a non-member gets a
-     * silently-empty read indistinguishable from "no cards", which the tool then
-     * returns as an empty window. All warn-level (DL-026): a temporarily-
-     * unreachable kanban or a genuinely-empty board must not FAIL the check.
+     * DL-217 board-tools preflight (default-ON per v7). Returns false (→ non-zero
+     * exit) on a HARD failure; WARN-level findings never flip it. Three severities:
+     *  - A DEFAULT-on block that could not satisfy itself (suppressedReason) → FAIL.
+     *    Scanned across ALL configs FIRST, independent of the enabled-subset below —
+     *    a fleet whose only board_tools agent is suppressed must FAIL, not silently
+     *    return at the `enabled === []` guard.
+     *  - A dead (unreadable) or ambiguous (colliding) bearer → FAIL (broken enablement).
+     *  - Board STATE (create stage + swimlane(s) on the board; the service user's
+     *    MEMBERSHIP of board_id) → WARN (DL-026/DL-220): a temporarily-unreachable
+     *    kanban or a genuinely-empty board must not FAIL the check.
      *
      * @param  list<AgentConfig>  $configs
      */
-    private function checkBoardTools(array $configs): void
+    private function checkBoardTools(array $configs): bool
     {
-        $enabled = array_values(array_filter($configs, fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled));
-        if ($enabled === []) {
-            return;
+        $ok = true;
+
+        // FIRST — all-configs suppressedReason scan (before the enabled-subset early
+        // return AND before the writeback-client try/catch). A default-on block that
+        // could not be satisfied is enabled=false, so the checks below skip it silently;
+        // this is the only place its failure surfaces (P2-closed-by-construction).
+        foreach ($configs as $cfg) {
+            $bt = $cfg->boardTools;
+            if ($bt !== null && $bt->suppressedReason !== null) {
+                $this->error("board_tools: agent {$cfg->agentName}: {$bt->suppressedReason} — board tools are OFF for this agent (a default-on block could not be satisfied). Fix the config, or set enabled: false to stage it silently.");
+                $ok = false;
+            }
         }
 
-        // Token readability + collision scan — the resolver accumulates both.
+        $enabled = array_values(array_filter($configs, fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled));
+        if ($enabled === []) {
+            return $ok;
+        }
+
+        // Token readability + collision scan — typed problems, both FAIL under
+        // default-ON (a dead/ambiguous bearer is a broken enablement).
         $resolver = new BoardToolAgentResolver($configs);
         foreach ($resolver->problems() as $problem) {
-            $this->warn($problem);
+            $this->error($problem['message']);
+            $ok = false;
         }
 
         try {
@@ -933,7 +953,7 @@ class CheckCommand extends BridgeCommand
         } catch (Throwable $e) {
             $this->warn('board_tools: enabled for '.count($enabled).' agent(s) but the kanban writeback client is unavailable ('.$e->getMessage().') — the tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.');
 
-            return;
+            return $ok;
         }
 
         foreach ($enabled as $cfg) {
@@ -972,6 +992,8 @@ class CheckCommand extends BridgeCommand
                 $this->warn("board_tools: agent {$name}: could not read board {$bt->boardId} with the writeback token — ".$e->getMessage());
             }
         }
+
+        return $ok;
     }
 
     /**

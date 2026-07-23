@@ -274,7 +274,21 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                         Log::info("kanban_move_card: PR carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# names the same card, so nothing is dropped");
                     }
 
-                    return new ClassifyResult(targets: array_merge($this->moveTargets($cardIds, $repo, $moveOutcome), $overlayTargets));
+                    // The DL-resolved card(s) also carry the PR provenance refs, with
+                    // the resolved DL EXCLUDED — the card already carries its
+                    // `dl_number` (that is HOW it resolved), so re-stamping it delivers
+                    // nothing and could poison; only `pr_number`/`pr_url` are stamped
+                    // (card#4852), add-if-missing at the handler. Gated on the SOLE-DL
+                    // shape: a title carrying 2+ DLs is bundled/descriptive (release-
+                    // shaped), so its own PR refs are foreign to this card — without
+                    // this gate, add-if-missing would be the only poison guard. The
+                    // explicit-card# path below stamps regardless (its card# token
+                    // asserts "this PR tracks this card"); no such assertion exists here.
+                    $stampRefs = preg_match_all(self::DL_TOKEN_PATTERN, $this->titleAndHead($payload)) === 1
+                        ? $this->stampRefs($this->titleAndHead($payload), $this->prNumber($payload), $this->prUrl($payload), $dl)
+                        : [];
+
+                    return new ClassifyResult(targets: array_merge($this->moveTargets($cardIds, $repo, $moveOutcome, $stampRefs), $overlayTargets));
                 }
                 Log::warning('kanban_move_card: PR carries '.$dl.' (resolves to card(s) '.implode(',', $cardIds).") AND a DIFFERENT card#{$cardToken} — treating the explicit card# as authoritative (foreign-DL-mention guard, DL-218); moving card#{$cardToken}, not the DL card(s)");
                 $conflictDl = $dl;   // foreign to the card# card → do not stamp it
@@ -295,15 +309,17 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         // card#<task-id> (FR-7): direct native-id selection — reached when DL is
         // absent, or present-but-unresolved with a card# fallback. Board+stage stay
         // operator config; the durable handler rejects a card not on the mapped
-        // board and applies the same no-regression guards as a DL move. This is the
-        // ONLY path that carries stamp refs (FR #3866): the card selected by native
-        // id is the one that strands unstamped for release-promote correlation.
+        // board and applies the same no-regression guards as a DL move. Carries stamp
+        // refs (FR #3866): the card selected by native id is the one that strands
+        // unstamped for release-promote correlation. (The DL-win path above also
+        // stamps its PR refs — card#4852 — just never the `dl_number` the card
+        // already carries.)
         return new ClassifyResult(targets: array_merge([
             ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: array_merge([
                 'card_id' => $cardToken,
                 'repo' => $repo,
                 'outcome' => $moveOutcome,
-            ], $this->stampRefs($this->titleAndHead($payload), $this->prNumber($payload), $conflictDl))),
+            ], $this->stampRefs($this->titleAndHead($payload), $this->prNumber($payload), $this->prUrl($payload), $conflictDl))),
         ], $overlayTargets));
     }
 
@@ -325,20 +341,24 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
 
     /**
      * Build one `kanban_move_card` target per resolved card id — each with the card
-     * id as its distinct target_id so they don't coalesce (DL-003/DL-148).
+     * id as its distinct target_id so they don't coalesce (DL-003/DL-148). `$stampRefs`
+     * (card#4852) is merged into every target's payload: the DL-win path passes the PR
+     * provenance refs (`stamp_pr`/`stamp_pr_url`, never `stamp_dl`); the `started` push
+     * path passes none, so `[]` keeps it byte-identical.
      *
      * @param  list<int>  $cardIds
+     * @param  array{stamp_dl?: string, stamp_pr?: int, stamp_pr_url?: string}  $stampRefs
      * @return list<ReactionTarget>
      */
-    private function moveTargets(array $cardIds, string $repo, string $outcome): array
+    private function moveTargets(array $cardIds, string $repo, string $outcome, array $stampRefs = []): array
     {
         $targets = [];
         foreach ($cardIds as $cardId) {
-            $targets[] = ReactionTarget::make('kanban_move_card', (string) $cardId, payload: [
+            $targets[] = ReactionTarget::make('kanban_move_card', (string) $cardId, payload: array_merge([
                 'card_id' => $cardId,
                 'repo' => $repo,
                 'outcome' => $outcome,
-            ]);
+            ], $stampRefs));
         }
 
         return $targets;
@@ -517,7 +537,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 'card_id' => $cardToken,
                 'repo' => $repo,
                 'outcome' => 'started',
-            ], $this->stampRefs($branch, null, $conflictDl))),
+            ], $this->stampRefs($branch, null, null, $conflictDl))),
         ]);
     }
 
@@ -612,22 +632,23 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     }
 
     /**
-     * The correlation refs to STAMP onto a card selected by the `card#` fallback
-     * (FR #3866) — the durable handler writes them add-if-missing. Only the card#
-     * path stamps: a DL-resolved card already carries its `dl_number` (that is HOW
-     * it resolved), so stamping it delivers nothing and — via a release PR whose
-     * title carries a feature card's DL — could poison its `pr_number`. Includes
-     * the DL token ONLY when EXACTLY ONE `DL-NNN` appears in $text: a bundled /
-     * release-shaped PR carrying several DLs (or a single FOREIGN, unresolved DL
-     * alongside a `card#` for a different card) must never stamp one. `$excludeDl`
-     * is the same guard for the RESOLVED-foreign case (DL-218): a sole DL that
-     * correlated to a DIFFERENT card is foreign to the card# card, so it is passed
-     * here to be dropped even though it is the lone match. The PR number is included
-     * when present (it is this card's PR — the card# selected it).
+     * The correlation refs to STAMP onto a moved card — the durable handler writes
+     * them add-if-missing (FR #3866). Two callers: the `card#` fallback (which may
+     * pass a resolving DL to stamp) and the DL-win path (which passes its resolved DL
+     * as `$excludeDl` so the card is NOT re-stamped with the `dl_number` it already
+     * carries — card#4852). Includes the DL token ONLY when EXACTLY ONE `DL-NNN`
+     * appears in $text: a bundled / release-shaped PR carrying several DLs (or a
+     * single FOREIGN, unresolved DL alongside a `card#` for a different card) must
+     * never stamp one. `$excludeDl` is the same guard for the RESOLVED-foreign case
+     * (DL-218) and for the DL-win case: a sole DL that is foreign to (or already on)
+     * the target card is passed here to be dropped even though it is the lone match.
+     * The PR number and URL are provenance included when present (this card's PR) —
+     * add-if-missing at the handler protects an existing value, so a release PR whose
+     * title merely names a feature card's DL cannot overwrite that card's own PR refs.
      *
-     * @return array{stamp_dl?: string, stamp_pr?: int}
+     * @return array{stamp_dl?: string, stamp_pr?: int, stamp_pr_url?: string}
      */
-    private function stampRefs(string $text, ?int $prNumber, ?string $excludeDl = null): array
+    private function stampRefs(string $text, ?int $prNumber, ?string $prUrl = null, ?string $excludeDl = null): array
     {
         $refs = [];
         if (preg_match_all(self::DL_TOKEN_PATTERN, $text, $m) === 1) {
@@ -638,6 +659,9 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         }
         if ($prNumber !== null) {
             $refs['stamp_pr'] = $prNumber;
+        }
+        if ($prUrl !== null && $prUrl !== '') {
+            $refs['stamp_pr_url'] = $prUrl;
         }
 
         return $refs;
@@ -667,5 +691,20 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         $n = $pr['number'] ?? null;
 
         return is_numeric($n) ? (int) $n : null;
+    }
+
+    /**
+     * The PR's `html_url` — the `pr_url` correlation ref (card#4852), which drives
+     * kanban's multi-repo by-ref `source` derivation. Null when absent (e.g. a push,
+     * which carries no PR).
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function prUrl(array $payload): ?string
+    {
+        $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
+        $url = $pr['html_url'] ?? null;
+
+        return is_string($url) && $url !== '' ? $url : null;
     }
 }

@@ -45,20 +45,33 @@ const SERVER_NAME = process.env.BRIDGE_CHANNEL_NAME || 'agent-webhook-bridge';
 const TRANSPORT = (process.env.BRIDGE_CHANNEL_TRANSPORT || 'unix').toLowerCase();
 const SHARED_TOKEN = process.env.BRIDGE_CHANNEL_TOKEN || '';
 
-// Two-way board tools (DL-217), OFF by default. When BRIDGE_CHANNEL_TOOLS=1
-// (set by provision when the install enables the feature) this server ALSO
-// advertises the `tools` MCP capability and PROXIES tools/call to the bridge's
-// loopback POST /agent-tools/call with the per-agent bearer. It stays a DUMB
-// PIPE: no board logic, no kanban token, no retry. A non-adopting install leaves
-// this unset and advertises nothing dead. The bridge endpoint + bearer:
+// Two-way board tools (DL-217), advertised on a TRI-STATE. When on, this server
+// ALSO advertises the `tools` MCP capability and PROXIES tools/call to the bridge's
+// loopback POST /agent-tools/call with the per-agent bearer. It stays a DUMB PIPE:
+// no board logic, no kanban token, no retry. The advertise decision:
+//   BRIDGE_CHANNEL_TOOLS === '1'  → force ON.
+//   BRIDGE_CHANNEL_TOOLS === '0' or ''  → OFF (explicit opt-out; an empty string
+//                                          does NOT enable).
+//   BRIDGE_CHANNEL_TOOLS unset  → advertise IFF BRIDGE_TOOLS_ENDPOINT is set AND a
+//                                 bearer resolves (wire the one endpoint line and
+//                                 the tools come on for free; a bare channel agent
+//                                 with no tools wiring advertises nothing).
+// The bridge endpoint + bearer:
 //   BRIDGE_TOOLS_ENDPOINT    — the bridge's loopback URL for the call ingress,
 //                              e.g. http://127.0.0.1:8787/agent-tools/call
 //   BRIDGE_TOOLS_TOKEN       — the bearer value, OR
-//   BRIDGE_TOOLS_TOKEN_FILE  — a path (chmod 600) to read it from (an HTTP install
-//                              may alias this to the channel token file).
-const TOOLS_ENABLED = process.env.BRIDGE_CHANNEL_TOOLS === '1';
+//   BRIDGE_TOOLS_TOKEN_FILE  — a path (chmod 600) to read it from, OR
+//   (fallback) BRIDGE_CHANNEL_TOKEN — reused when neither explicit tools token is
+//                              configured (the default-ON model: the impl↔PM shared
+//                              channel token IS the bearer, no new credential).
+const CHANNEL_TOOLS_ENV = process.env.BRIDGE_CHANNEL_TOOLS;
 const TOOLS_ENDPOINT = process.env.BRIDGE_TOOLS_ENDPOINT || '';
 
+// Bearer precedence (pinned): explicit BRIDGE_TOOLS_TOKEN (non-empty), else the
+// explicit BRIDGE_TOOLS_TOKEN_FILE (non-empty path) — and a configured-but-unreadable
+// FILE SHORT-CIRCUITS to '' (never silently falling through to the channel token),
+// else the BRIDGE_CHANNEL_TOKEN fallback. An empty-string env var does not
+// "configure" a source (it is treated as unset for this chain).
 function resolveToolsToken() {
   if (process.env.BRIDGE_TOOLS_TOKEN) {
     return process.env.BRIDGE_TOOLS_TOKEN;
@@ -68,11 +81,27 @@ function resolveToolsToken() {
     try {
       return fs.readFileSync(file, 'utf8').trim();
     } catch {
-      return '';
+      return '';   // configured-but-unreadable file short-circuits; no fallthrough
     }
+  }
+  if (process.env.BRIDGE_CHANNEL_TOKEN) {
+    return process.env.BRIDGE_CHANNEL_TOKEN;
   }
   return '';
 }
+
+function shouldAdvertiseTools() {
+  if (CHANNEL_TOOLS_ENV === '1') {
+    return true;
+  }
+  if (CHANNEL_TOOLS_ENV === '0' || CHANNEL_TOOLS_ENV === '') {
+    return false;
+  }
+  // Unset: observable-intent default — the endpoint line is set AND a bearer resolves.
+  return TOOLS_ENDPOINT !== '' && resolveToolsToken() !== '';
+}
+
+const TOOLS_ENABLED = shouldAdvertiseTools();
 
 // The v1 tool surface, hard-coded to mirror the bridge contract (DL-217). Kept
 // here because tools/list must advertise a schema; the bridge remains the single
@@ -283,8 +312,9 @@ if (TOOLS_ENABLED) {
 await mcp.connect(new StdioServerTransport());
 
 if (TOOLS_ENABLED) {
+  const why = CHANNEL_TOOLS_ENV === '1' ? 'BRIDGE_CHANNEL_TOOLS=1' : 'endpoint+bearer present (default-on)';
   console.error(
-    `[${SERVER_NAME}] board tools ENABLED (BRIDGE_CHANNEL_TOOLS=1) — proxying tools/call to ` +
+    `[${SERVER_NAME}] board tools ENABLED (${why}) — proxying tools/call to ` +
       `${TOOLS_ENDPOINT || '(BRIDGE_TOOLS_ENDPOINT unset)'}`,
   );
 }

@@ -8,8 +8,12 @@ use App\Bridge\Support\SubscriptionRegistry;
 use Throwable;
 
 /**
- * Mint the per-agent board-tools Bearer (DL-217) for each agent that declares an
- * ENABLED `board_tools` block. Idempotent: an existing 0600 token is left alone
+ * Mint the per-agent board-tools Bearer (DL-217) — the EXPLICIT-OVERRIDE path.
+ * Under the default-ON model an agent reuses its channel token as the tools bearer
+ * (nothing to mint); this command mints only for an agent that declares a DEDICATED
+ * `board_tools.auth.token_path` (agents reusing the channel token are skipped —
+ * their channel token is provisioned elsewhere). Idempotent: an existing 0600 token
+ * is left alone
  * ("already minted"); an absent one is minted (cryptographically random, written
  * 0600); an existing group/world-readable one is a hard FAILURE (a co-tenant could
  * read it and drive the board as that agent — the DL-010 posture, mirroring
@@ -27,7 +31,7 @@ class ProvisionToolsCommand extends BridgeCommand
 {
     protected $signature = 'bridge:provision-tools {--agent= : limit to one agent} {--dry-run : preview, change nothing}';
 
-    protected $description = 'Mint the per-agent board-tools Bearer token(s) for agents with an enabled board_tools block (DL-217)';
+    protected $description = 'Mint the per-agent board-tools Bearer token(s) for agents with a DEDICATED board_tools.auth.token_path (DL-217; channel-token-reuse agents need no mint)';
 
     public function handle(): int
     {
@@ -74,8 +78,27 @@ class ProvisionToolsCommand extends BridgeCommand
                 continue;
             }
 
-            if (! $bt->enabled || $bt->tokenPath === null) {
-                $this->info("{$label} SKIP — board_tools is present but disabled; set enabled: true (with an auth.token_path) to provision the bearer");
+            if (! $bt->enabled) {
+                // Disabled (enabled: false) OR default-suppressed (a default-on block
+                // that could not be satisfied). Nothing to mint either way; the
+                // suppressed case is where bridge:check FAILs, so name it.
+                if ($bt->suppressedReason !== null) {
+                    $this->warn("{$label} SKIP — board_tools present but default-on could not be satisfied ({$bt->suppressedReason}); bridge:check FAILs on it. Fix the config, or set enabled: false to stage it silently.");
+                } else {
+                    $this->info("{$label} SKIP — board_tools is disabled (enabled: false); nothing to mint.");
+                }
+
+                continue;
+            }
+            if ($bt->tokenPath === null) {
+                continue;   // defensive: enabled ⇒ tokenPath non-null by construction
+            }
+            if ($bt->bearerFromChannel) {
+                // Default path: the tools bearer reuses the agent's channel token —
+                // there is no dedicated board_tools.auth.token_path to mint here (the
+                // channel token is provisioned elsewhere). This command is the
+                // explicit-override path only.
+                $this->info("{$label} SKIP — board_tools reuses the channel token as its bearer (no explicit board_tools.auth.token_path) — nothing to mint here.");
 
                 continue;
             }
@@ -133,7 +156,7 @@ class ProvisionToolsCommand extends BridgeCommand
                 continue;
             }
             $bt = $cfg->boardTools;
-            if ($bt === null || ! $bt->enabled || $bt->tokenPath === null
+            if ($bt === null || ! $bt->enabled || $bt->tokenPath === null || $bt->bearerFromChannel
                 || ! is_file($bt->tokenPath) || SecretFile::isInsecure($bt->tokenPath)) {
                 continue;
             }
@@ -180,12 +203,9 @@ class ProvisionToolsCommand extends BridgeCommand
 
     private function printSkeleton(string $agentName): void
     {
-        $this->warn("[{$agentName}] no board_tools block — add the block below to {$agentName}.yml (fill the placeholders), then re-run bridge:provision-tools --agent={$agentName} to mint the bearer. This command does NOT edit YAML.");
+        $this->warn("[{$agentName}] no board_tools block — add the block below to {$agentName}.yml (fill the placeholders). With an HTTP channel that already sets channel.auth.token_path, board tools default ON and reuse that channel token as the bearer — nothing to mint. Add an explicit auth.token_path (commented below) only for a DEDICATED tools bearer, then re-run this command to mint it. This command does NOT edit YAML.");
         foreach ([
             'board_tools:',
-            '  enabled: true',
-            '  auth:',
-            "    token_path: /abs/path/to/{$agentName}-board-tools-token   # this command mints it (chmod 600)",
             '  board_id: <your product board id>',
             '  swimlane_id: <your own swimlane id — the forced write scope + read-isolation boundary>',
             '  create_stage_id: <the stage new cards land in, e.g. backlog>',
@@ -193,6 +213,11 @@ class ProvisionToolsCommand extends BridgeCommand
             '  # shared_swimlane_id: <a shared cross-system swimlane also included in board_my_cards>',
             '  # coord_board_id: <a coordination board to read cards addressed to you from>',
             '  # address_tags: ["repo:<self>"]   # requires coord_board_id',
+            '  # For a DEDICATED tools bearer instead of reusing the channel token,',
+            '  # add the two lines below and re-run bridge:provision-tools to mint it (chmod 600):',
+            '  #   enabled: true',
+            '  #   auth:',
+            "  #     token_path: /abs/path/to/{$agentName}-board-tools-token",
         ] as $line) {
             $this->line($line);
         }

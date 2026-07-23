@@ -323,12 +323,13 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
     }
 
     /**
-     * Stamp the card's correlation refs (`dl_number` / `pr_number`) add-if-missing (#3866),
-     * so a card the writeback moved by native id (the `card#` fallback) becomes visible to
-     * release-promote's `dl_number`/`pr_number` correlation instead of stranding in
-     * Shipped-to-Dev. ONLY the card# path supplies `stamp_dl`/`stamp_pr` — a DL-resolved
-     * card already carries its `dl_number` (that is HOW it resolved), so a DL-driven move
-     * stamps nothing. NEVER overwrites an existing value: the card's already-read payload
+     * Stamp the card's correlation refs (`dl_number` / `pr_number` / `pr_url`) add-if-missing
+     * (#3866 / card#4852), so a card the writeback moved becomes visible to release-promote's
+     * `dl_number`/`pr_number` correlation and kanban's by-ref `source` derivation (`pr_url`)
+     * instead of stranding in Shipped-to-Dev. The `card#` fallback path supplies `stamp_dl`
+     * plus the PR refs; the DL-win path supplies the PR refs only (`stamp_pr`/`stamp_pr_url`) —
+     * a DL-resolved card already carries its `dl_number` (that is HOW it resolved), so it is
+     * never re-stamped. NEVER overwrites an existing value: the card's already-read payload
      * is the authority for "missing" (no extra read). Called only once the card is
      * legitimately at/entering its target stage (a self-heal no-op or a guard-passed move),
      * never from a reject-guarded event.
@@ -340,7 +341,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * window where a swallowed transient failure would strand the card unstamped forever.
      *
      * @param  array<string, mixed>  $card  the card as already read by getCard()
-     * @param  array<string, mixed>  $payload  the target payload (may carry stamp_dl/stamp_pr)
+     * @param  array<string, mixed>  $payload  the target payload (may carry stamp_dl/stamp_pr/stamp_pr_url)
      */
     private function stampCorrelationRefs(array $card, array $payload, int $cardId, KanbanClient $client): void
     {
@@ -360,6 +361,13 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         $stampPr = $payload['stamp_pr'] ?? null;
         if (is_numeric($stampPr) && ($current['pr_number'] ?? '') === '') {
             $refs['pr_number'] = (int) $stampPr;
+        }
+
+        // pr_url (card#4852) — a registered payload key that drives kanban's multi-repo
+        // by-ref `source` derivation. Add-if-missing, exactly like pr_number above.
+        $stampPrUrl = $payload['stamp_pr_url'] ?? null;
+        if (is_string($stampPrUrl) && $stampPrUrl !== '' && ($current['pr_url'] ?? '') === '') {
+            $refs['pr_url'] = $stampPrUrl;
         }
 
         if ($refs === []) {

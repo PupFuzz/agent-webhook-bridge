@@ -59,7 +59,7 @@ final class KanbanClient
     }
 
     /**
-     * Stamp correlation refs (dl_number / pr_number) onto a card's payload — a DELTA
+     * Stamp correlation refs (dl_number / pr_number / pr_url) onto a card's payload — a DELTA
      * PATCH that relies on the kanban per-key payload merge (kanban #2180): only the
      * keys in $refs are written; every other custom field is left as-is (and a
      * concurrent edit to one survives). Distinct from {@see moveCard}, which stays

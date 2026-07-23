@@ -36,7 +36,10 @@ final class BoardToolAgentResolver
     private array $entries = [];
 
     /**
-     * @var list<string> non-fatal problems (unreadable token, collision) for bridge:check
+     * @var list<array{type: string, message: string}> problems (bearer_unreadable |
+     *                                                 collision) for bridge:check to render — TYPED so the check can split severity
+     *                                                 (under default-ON both types FAIL: a dead/ambiguous bearer is a broken
+     *                                                 enablement, not a transient board-state warn).
      */
     private array $problems = [];
 
@@ -50,6 +53,10 @@ final class BoardToolAgentResolver
         $candidates = [];
         foreach ($configs as $cfg) {
             $bt = $cfg->boardTools;
+            // `tokenPath === null` here is an INVARIANT ASSERTION, not a live
+            // fallback: enabled === true ⟹ tokenPath !== null (BoardToolsConfig
+            // guarantees it — a suppressed/disabled config is enabled=false). The
+            // check is a belt-and-suspenders skip, unreachable for an enabled agent.
             if ($bt === null || ! $bt->enabled || $bt->tokenPath === null) {
                 continue;
             }
@@ -77,14 +84,24 @@ final class BoardToolAgentResolver
         }
         foreach (array_keys($collidedTokens) as $token) {
             $sharers = [];
+            $allFromChannel = true;
             foreach ($candidates as $c) {
                 if ($c['token'] === $token) {
                     $sharers[] = $c['agent'];
+                    if (! $c['config']->bearerFromChannel) {
+                        $allFromChannel = false;
+                    }
                 }
             }
             sort($sharers);
-            $message = 'board_tools: the same auth token is shared by multiple agents ('.implode(', ', $sharers).') — board tools are DISABLED for all of them (an ambiguous bearer cannot authenticate). Mint a distinct token per agent.';
-            $this->problems[] = $message;
+            // Source-aware cure: when every sharer reuses its channel token as the
+            // bearer, the fix is distinct CHANNEL tokens (there is nothing to mint);
+            // otherwise at least one carries an explicit alias, so mint distinct ones.
+            $cure = $allFromChannel
+                ? 'Each reuses its channel token as the bearer — give each agent a DISTINCT channel token (channel.auth.token_path).'
+                : 'Mint a DISTINCT token per agent (board_tools.auth.token_path).';
+            $message = 'board_tools: the same auth token is shared by multiple agents ('.implode(', ', $sharers).') — board tools are DISABLED for all of them (an ambiguous bearer cannot authenticate). '.$cure;
+            $this->problems[] = ['type' => 'collision', 'message' => $message];
             Log::warning($message);
         }
     }
@@ -109,11 +126,12 @@ final class BoardToolAgentResolver
     }
 
     /**
-     * Non-fatal problems accumulated at build (unreadable token files, token
-     * collisions) — rendered by bridge:check so a silent per-agent lockout is
-     * loud pre-deploy.
+     * Problems accumulated at build (unreadable token files, token collisions) —
+     * rendered by bridge:check so a silent per-agent lockout is loud pre-deploy.
+     * Each entry is TYPED (bearer_unreadable | collision) so the check can split
+     * severity.
      *
-     * @return list<string>
+     * @return list<array{type: string, message: string}>
      */
     public function problems(): array
     {
@@ -125,12 +143,12 @@ final class BoardToolAgentResolver
         try {
             $token = SecretFile::read($path);
         } catch (InsecureSecretPermsException $e) {
-            $this->problems[] = "board_tools: agent {$agentName}: ".$e->getMessage().' — board tools disabled for this agent until fixed';
+            $this->problems[] = ['type' => 'bearer_unreadable', 'message' => "board_tools: agent {$agentName}: ".$e->getMessage().' — board tools disabled for this agent until fixed'];
 
             return null;
         }
         if ($token === null || $token === '') {
-            $this->problems[] = "board_tools: agent {$agentName}: no token at {$path} — board tools disabled for this agent until a token (chmod 600) is placed";
+            $this->problems[] = ['type' => 'bearer_unreadable', 'message' => "board_tools: agent {$agentName}: no token at {$path} — board tools disabled for this agent until a token (chmod 600) is placed"];
 
             return null;
         }
