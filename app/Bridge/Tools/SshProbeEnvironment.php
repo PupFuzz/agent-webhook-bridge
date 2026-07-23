@@ -22,6 +22,14 @@ interface SshProbeEnvironment
     public function runUserHome(): string;
 
     /**
+     * The home directory of a NAMED OS account (posix_getpwnam), or '' when it
+     * cannot be resolved. Used to resolve the forced-command account's home when
+     * board_tools.ssh_account names an account other than the invoking one; the
+     * invoking account still routes through runUserHome().
+     */
+    public function homeForUser(string $user): string;
+
+    /**
      * The EFFECTIVE (Match-resolved) sshd config text from `sshd -T [-C user=<user>]`,
      * or null when it cannot be run (not root — `sshd -T` loads host private keys — or
      * no sshd binary). Null means UNVERIFIED, never "posture is fine".

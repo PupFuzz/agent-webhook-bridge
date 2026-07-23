@@ -153,7 +153,12 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   `authorized_keys` line — that it forces `bridge:tools-call --agent=X`, denies
   pty + all forwarding (outcome-based, not a `restrict` keyword match), carries a
   FIPS-approved key on a FIPS seat, and (root-gated) that `PasswordAuthentication`
-  is disabled for the bridge user. `bridge:check --probe-tools=<endpoint>` exercises
+  is disabled for the forced-command account and its sshd idle/concurrency backstop
+  (`ClientAliveInterval`/`ClientAliveCountMax`/`MaxSessions`) is complete (card 4977).
+  These legs certify the **forced-command account** — when `bridge:check` runs under
+  `sudo` but that account is not `root`, set `board_tools.ssh_account` so the probe
+  targets it, not the invoking root (see `docs/multi-host.md § 3`).
+  `bridge:check --probe-tools=<endpoint>` exercises
   the REAL HTTP loopback+bearer path; `bridge:check --probe-tools-ssh=<user@host>`
   the REAL ssh round-trip (see the runbook below).
 

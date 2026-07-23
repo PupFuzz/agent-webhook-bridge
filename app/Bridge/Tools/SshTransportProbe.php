@@ -25,7 +25,29 @@ namespace App\Bridge\Tools;
  */
 final class SshTransportProbe
 {
-    public function __construct(private SshProbeEnvironment $env) {}
+    /**
+     * @param  ?string  $sshAccount  the OS account the SSH forced command runs as
+     *                               (board_tools.ssh_account). Null ⇒ the invoking
+     *                               run-user (byte-identical to pre-4977).
+     */
+    public function __construct(private SshProbeEnvironment $env, private ?string $sshAccount = null) {}
+
+    /**
+     * The OS account the forced command runs as — what sshd posture and
+     * authorized_keys must be certified against. Defaults to the invoking run-user.
+     */
+    public function forcedCommandAccount(): string
+    {
+        return $this->sshAccount ?? $this->env->runUser();
+    }
+
+    /** The forced-command account's home (for the default authorized_keys path + %h). */
+    private function forcedCommandHome(): string
+    {
+        return $this->sshAccount !== null
+            ? $this->env->homeForUser($this->sshAccount)
+            : $this->env->runUserHome();
+    }
 
     /**
      * @return list<array{severity: string, message: string}>
@@ -82,24 +104,82 @@ final class SshTransportProbe
     }
 
     /**
-     * The sshd password-auth posture leg (root-gated), plus the non-root cert nudge.
-     * Called ONCE (the bridge user's posture is not per-agent).
+     * The sshd password-auth posture leg (root-gated), plus the non-root cert nudge
+     * and the idle/concurrency backstop — all against the forced-command account
+     * (board_tools.ssh_account, default the invoking run-user). Called once per
+     * distinct forced-command account.
      *
      * @return list<array{severity: string, message: string}>
      */
     public function probeSshdPosture(): array
     {
-        $user = $this->env->runUser();
+        $user = $this->forcedCommandAccount();
         $cfg = $this->env->sshdEffectiveConfig($user);
         if ($cfg === null) {
             return [$this->warn("sshd posture UNVERIFIED for user {$user} (sshd -T needs root) — run `sudo bridge:check` once to certify PasswordAuthentication no for the bridge user; until then the ssh transport is NOT certified")];
         }
 
+        $findings = [];
         if (preg_match('/^passwordauthentication\s+no\b/im', $cfg) === 1) {
-            return [$this->ok("sshd PasswordAuthentication is disabled for user {$user} (the parallel auth path that would bypass the forced command is closed)")];
+            $findings[] = $this->ok("sshd PasswordAuthentication is disabled for user {$user} (the parallel auth path that would bypass the forced command is closed)");
+        } else {
+            $findings[] = $this->fail("sshd PasswordAuthentication is NOT disabled for user {$user} — a password login bypasses the board-tools forced command. Add a `Match User {$user}` drop-in with `PasswordAuthentication no`");
+        }
+        $findings[] = $this->sshdIdleConcurrencyBackstop($cfg, $user);
+
+        return $findings;
+    }
+
+    /**
+     * The sshd-side idle/concurrency backstop — with the forced command as the sole
+     * entry point, sshd's own idle timeout and session cap are the ONLY real bound on
+     * a hung key-holder. Reads the SAME Match-resolved `sshd -T -C user=<account>`
+     * output the posture leg does and asserts:
+     *   - ClientAliveInterval > 0 (0 = no server-side idle timeout — a hung holder
+     *     never drops),
+     *   - ClientAliveCountMax present (the idle window = interval × countmax is
+     *     bounded), and
+     *   - MaxSessions present (concurrent sessions per connection are capped).
+     * A missing/unbounded directive FAILs with the exact directive + a `Match User`
+     * remedy; a bounded config reports the computed idle bound.
+     *
+     * @return array{severity: string, message: string}
+     */
+    private function sshdIdleConcurrencyBackstop(string $cfg, string $user): array
+    {
+        $interval = $this->sshdDirectiveInt($cfg, 'clientaliveinterval');
+        $countMax = $this->sshdDirectiveInt($cfg, 'clientalivecountmax');
+        $maxSessions = $this->sshdDirectiveInt($cfg, 'maxsessions');
+
+        $problems = [];
+        if ($interval === null || $interval <= 0) {
+            $problems[] = 'ClientAliveInterval is '.($interval === null ? 'unset' : (string) $interval).' (no server-side idle timeout — a hung key-holder never drops)';
+        }
+        if ($countMax === null) {
+            $problems[] = 'ClientAliveCountMax is unset (the idle window ClientAliveInterval × ClientAliveCountMax is unbounded)';
+        }
+        if ($maxSessions === null) {
+            $problems[] = 'MaxSessions is unset (concurrent sessions per connection are uncapped)';
         }
 
-        return [$this->fail("sshd PasswordAuthentication is NOT disabled for user {$user} — a password login bypasses the board-tools forced command. Add a `Match User {$user}` drop-in with `PasswordAuthentication no`")];
+        if ($problems !== []) {
+            return $this->fail("sshd idle/concurrency backstop for user {$user} is incomplete: ".implode('; ', $problems).". These are the only real bound on a hung board-tools key-holder — add a `Match User {$user}` drop-in with `ClientAliveInterval 300`, `ClientAliveCountMax 2`, and `MaxSessions 10`");
+        }
+
+        $idleBound = $interval * $countMax;
+
+        return $this->ok("sshd idle/concurrency backstop for user {$user}: ClientAliveInterval {$interval}s × ClientAliveCountMax {$countMax} = {$idleBound}s idle bound; MaxSessions {$maxSessions}");
+    }
+
+    private function sshdDirectiveInt(string $cfg, string $directive): ?int
+    {
+        foreach (preg_split('/\n/', $cfg) ?: [] as $line) {
+            if (preg_match('/^\s*'.preg_quote($directive, '/').'\s+(-?\d+)\b/i', $line, $m) === 1) {
+                return (int) $m[1];
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -147,7 +227,10 @@ final class SshTransportProbe
     private function authorizedKeysPath(): array
     {
         if ($this->env->isRoot()) {
-            $cfg = $this->env->sshdEffectiveConfig();
+            // Resolve the AuthorizedKeysFile from the forced-command account's
+            // Match-resolved config; unset ⇒ null (the global config, byte-identical
+            // to pre-4977 which passed no -C).
+            $cfg = $this->env->sshdEffectiveConfig($this->sshAccount);
             if ($cfg !== null) {
                 $resolved = $this->extractAuthorizedKeysFile($cfg);
                 if ($resolved !== null) {
@@ -156,7 +239,7 @@ final class SshTransportProbe
             }
         }
 
-        return [rtrim($this->env->runUserHome(), '/').'/.ssh/authorized_keys', false];
+        return [rtrim($this->forcedCommandHome(), '/').'/.ssh/authorized_keys', false];
     }
 
     private function extractAuthorizedKeysFile(string $sshdConfig): ?string
@@ -167,9 +250,9 @@ final class SshTransportProbe
                 if ($first === '') {
                     return null;
                 }
-                $first = str_replace(['%h', '%u'], [$this->env->runUserHome(), $this->env->runUser()], $first);
+                $first = str_replace(['%h', '%u'], [$this->forcedCommandHome(), $this->forcedCommandAccount()], $first);
                 if ($first[0] !== '/') {
-                    $first = rtrim($this->env->runUserHome(), '/').'/'.$first;
+                    $first = rtrim($this->forcedCommandHome(), '/').'/'.$first;
                 }
 
                 return $first;

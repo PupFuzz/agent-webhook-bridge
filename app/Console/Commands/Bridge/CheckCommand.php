@@ -1029,17 +1029,27 @@ class CheckCommand extends BridgeCommand
     private function checkSshTransport(array $sshAgents): bool
     {
         $ok = true;
-        $probe = new SshTransportProbe($this->laravel->make(SshProbeEnvironment::class));
+        $env = $this->laravel->make(SshProbeEnvironment::class);
+        // The forced-command account (board_tools.ssh_account, default the invoking
+        // run-user) is per-agent, so the pinned-line + keys resolution is per-agent.
+        // The sshd-posture leg is per-ACCOUNT — dedupe by resolved account so N ssh
+        // agents sharing one account (incl. the all-unset default) emit posture once,
+        // byte-identical to pre-4977.
+        $postureProbes = [];
         foreach ($sshAgents as $cfg) {
+            $probe = new SshTransportProbe($env, $cfg->boardTools?->sshAccount);
             foreach ($probe->probePinnedLine($cfg->agentName) as $finding) {
                 if (! $this->emitSshFinding($finding)) {
                     $ok = false;
                 }
             }
+            $postureProbes[$probe->forcedCommandAccount()] = $probe;
         }
-        foreach ($probe->probeSshdPosture() as $finding) {
-            if (! $this->emitSshFinding($finding)) {
-                $ok = false;
+        foreach ($postureProbes as $probe) {
+            foreach ($probe->probeSshdPosture() as $finding) {
+                if (! $this->emitSshFinding($finding)) {
+                    $ok = false;
+                }
             }
         }
 

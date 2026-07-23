@@ -144,6 +144,11 @@ class BridgeCommandsTest extends TestCase
                 return '/home/bridge';
             }
 
+            public function homeForUser(string $user): string
+            {
+                return "/home/{$user}";
+            }
+
             public function sshdEffectiveConfig(?string $forUser = null): ?string
             {
                 return $this->root ? $this->sshd : null;

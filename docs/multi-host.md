@@ -355,23 +355,38 @@ ssh` block present) prints this exact line pre-filled for your install.
 ### 3. On host A — scope the sshd hardening to the bridge user
 
 A `Match User` drop-in closes the password-auth path that would otherwise bypass
-the forced command (box-wide is opt-in). This is **required** and
-`bridge:check`-verified:
+the forced command (box-wide is opt-in) **and** pins the idle/concurrency backstop.
+All of it is **required** and `bridge:check`-verified (card 4977):
 
 ```
 # /etc/ssh/sshd_config.d/<bridge-user>-board-tools.conf
 Match User <bridge-user>
     PasswordAuthentication no
+    ClientAliveInterval 300
+    ClientAliveCountMax 2
+    MaxSessions 10
 ```
 
-> **Operator note — idle/concurrency backstop.** `bridge:tools-call` carries a
-> best-effort in-process stdin deadline, but that guard is socket-reliable and
-> **unverified** on the plain pipe sshd hands a forced command — so treat **sshd** as
-> the authoritative backstop. Add `ClientAliveInterval`/`ClientAliveCountMax` to the
-> `Match User` block above to reap a session whose client has gone away (they detect a
-> dead transport, not a live client deliberately holding stdin open), and set
-> `MaxSessions` (Match-scoped) plus the global `MaxStartups` to bound concurrent and
-> pre-auth channels — the caps are what bound a deliberate hang by a key-holder.
+> **Idle/concurrency backstop — now verified (card 4977).** `bridge:tools-call`
+> carries a best-effort in-process stdin deadline, but that guard is socket-reliable
+> and **unverified** on the plain pipe sshd hands a forced command — so **sshd** is the
+> authoritative backstop, and it is the only real bound on a key-holder that
+> deliberately holds stdin open. `bridge:check` therefore **asserts** the
+> Match-resolved sshd config for the forced-command account has `ClientAliveInterval`>0
+> (reaps a client that has gone away — they detect a dead transport), a bounded idle
+> window `ClientAliveInterval × ClientAliveCountMax`, and a `MaxSessions` cap; a missing
+> directive **fails** the check with the exact directive + this `Match User` remedy.
+> Set the global `MaxStartups` too, to bound pre-auth channels.
+
+> **`sudo bridge:check` + a distinct forced-command account (card 4977).** When you
+> certify as root (`sudo bridge:check`, needed for the root-gated `sshd -T` legs) but
+> the forced command runs as a **different** OS account than `root`, set
+> **`board_tools.ssh_account: <bridge-user>`** in the agent config. Absent it, the probe
+> resolves the *invoking* account (root under sudo) and would certify **root's** sshd
+> posture and read **`/root/.ssh/authorized_keys`** — false-negativing the very seat it
+> targets. With it set, the posture, `authorized_keys` (`%h`/`%u`), and the backstop all
+> resolve `<bridge-user>`. Leave it unset when the forced command runs as the invoking
+> account (byte-identical to before).
 
 ### 4. On host B — point the channel server at the ssh target
 
@@ -395,9 +410,12 @@ bridge:check --probe-tools-ssh=<bridge-user>@host-A # live round-trip (from a ho
 ```
 
 `bridge:check` fails if the pinned line grants a pty/forwarding, if a FIPS seat's
-key is ed25519, or if `PasswordAuthentication` is not disabled for the bridge user;
-run unprivileged it emits an explicit **UNVERIFIED** warn for the root-gated sshd
-legs (never a false OK).
+key is ed25519, if `PasswordAuthentication` is not disabled for the forced-command
+account, or if that account's sshd idle/concurrency backstop is incomplete
+(`ClientAliveInterval`/`ClientAliveCountMax`/`MaxSessions` — card 4977); run
+unprivileged it emits an explicit **UNVERIFIED** warn for the root-gated sshd legs
+(never a false OK). Under `sudo` with a distinct forced-command account, set
+`board_tools.ssh_account` (see step 3) so these legs certify that account, not root.
 
 > Live-fire rides the witnesses (aimla same-box + sola cross-host+FIPS). The
 > `sshd -T` root requirement and a FIPS sshd's `restrict` behavior are reasoned
