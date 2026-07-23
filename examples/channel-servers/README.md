@@ -265,10 +265,10 @@ If the tools are advertised but the endpoint or bearer is unset, a `tools/call`
 returns a **structured refusal naming the missing config** (no call is made).
 
 The bridge side is loopback-gated: same-box installs point `BRIDGE_TOOLS_ENDPOINT`
-at a loopback peer — a bare-listener bridge (like the `:8787` example below) via
-`http://127.0.0.1:<port>/...`, but an Apache/TLS-fronted bridge needs the
-`/etc/hosts` loopback-pin recipe (`https://<public-host>/...` FAILS the gate:
-the kernel source-selects the box's public IP) — see
+at a loopback peer (`https://<public-host>/...` FAILS the gate: the kernel
+source-selects the box's public IP). An Apache/TLS-fronted bridge has two
+recipes — a dedicated loopback-port vhost (the `:8787` shape below) or the
+`/etc/hosts` loopback-pin — see
 [`docs/board-tools.md § Same-box enablement (Apache/FPM)`](../../docs/board-tools.md#same-box-enablement-apachefpm).
 Multi-host needs a forward SSH tunnel — see
 [`docs/multi-host.md § Board tools (two-way) forward leg`](../../docs/multi-host.md#board-tools-two-way-forward-leg).

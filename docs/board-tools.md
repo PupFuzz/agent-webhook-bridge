@@ -128,6 +128,15 @@ The end-to-end runbook for the common topology: the bridge served by an Apache
 vhost (`*:443`/`*:80`) proxying to PHP-FPM, with the agent's channel server on
 the **same box**.
 
+> **Multi-user box? This is a two-party runbook.** The steps below assume one
+> actor owns the whole box. On a multi-user install (each agent its own OS
+> user), the steps split by privilege: **step 1** (`/etc/hosts` pin or the
+> loopback-port vhost) is **root's**; **steps 5 and 7** (the channel server's
+> env + restart) and placing the bearer belong to the **agent's own OS user**;
+> the config/mint/check steps (3, 4, 6) run as the bridge's operator user.
+> Hand the sequence to the right actors up front rather than discovering the
+> boundary step by step.
+
 ### 1. Pick the endpoint — the obvious value is the wrong one
 
 `BRIDGE_TOOLS_ENDPOINT=https://<your-public-bridge-host>/agent-tools/call`
@@ -155,8 +164,29 @@ the hostname (no verify-off hack anywhere).
 Plain `http://127.0.0.1/agent-tools/call` also works, but **only when the
 bridge vhost is what answers a bare-IP Host on `:80`** — on a box with several
 vhosts, a request whose Host is `127.0.0.1` lands in the *default* vhost, which
-may not be the bridge. Prefer the `/etc/hosts` recipe; use the bare-IP form only
-on a single-vhost box.
+may not be the bridge.
+
+**The loopback-port vhost (first-class alternative).** The `/etc/hosts` pin is
+a box-global DNS side-effect some operators refuse, and the bare-IP form dies
+on a multi-vhost box. A dedicated loopback listener sidesteps both:
+
+```apache
+Listen 127.0.0.1:8787
+<VirtualHost 127.0.0.1:8787>
+    DocumentRoot /path/to/bridge/public
+    # same FPM proxy config as the main bridge vhost
+</VirtualHost>
+```
+
+```
+BRIDGE_TOOLS_ENDPOINT=http://127.0.0.1:8787/agent-tools/call
+```
+
+The port is bound to loopback only (never exposed), no DNS is touched, Host
+ambiguity is impossible (the vhost is selected by the listener, not by name),
+and TLS is unnecessary on a same-box loopback hop. One-time root step, same
+class as the `/etc/hosts` line — pick whichever your box's policy prefers.
+This is the shape the channel-server README's example env already uses.
 
 ### 2. Why the gate is proxy-safe on this topology
 
