@@ -368,9 +368,10 @@ Match User <bridge-user>
 > best-effort in-process stdin deadline, but that guard is socket-reliable and
 > **unverified** on the plain pipe sshd hands a forced command — so treat **sshd** as
 > the authoritative backstop. Add `ClientAliveInterval`/`ClientAliveCountMax` to the
-> `Match User` block above to reap an idle session that never sends EOF, and set
+> `Match User` block above to reap a session whose client has gone away (they detect a
+> dead transport, not a live client deliberately holding stdin open), and set
 > `MaxSessions` (Match-scoped) plus the global `MaxStartups` to bound concurrent and
-> pre-auth channels against a flood.
+> pre-auth channels — the caps are what bound a deliberate hang by a key-holder.
 
 ### 4. On host B — point the channel server at the ssh target
 
