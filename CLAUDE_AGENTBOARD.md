@@ -1,4 +1,4 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.17.0) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.20.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **What this is.** The solo-agent orientation generated from the Agent Board Framework
@@ -277,12 +277,27 @@ spawn a peer-tier reviewer subagent. Never let a cheaper seat rubber-stamp reaso
 actually check. (When the check *is* mechanical, tier doesn't matter — the tool is the
 verifier.)
 
-**Fresh-subagent-by-default for coding.** Any coding task beyond a few trivial lines —
-feature, bugfix, refactor, test — defaults to a **fresh `coder`** subagent (or **`mechanic`**
-for a fully-specified mechanical procedure), one-per-task so work never accretes onto your
-session. Keep it **inline** only for **trivial** edits (a version bump, a one-line doc fix) or
-when the work is context-heavy / needs tight mid-flight steering — a subagent runs to completion
-and returns one result, so you can't steer it partway. **You stay at spec/review altitude:** the
+**Subagent dispatch is REQUIRED for non-trivial coding (card#4870).** Any coding task beyond a
+few trivial lines — feature, bugfix, refactor, test — **MUST** be dispatched to a **fresh
+`coder`** subagent (or **`mechanic`** for a fully-specified mechanical procedure), one-per-task
+so work never accretes onto your session. Inline is legitimate **only for trivial** edits (a
+version bump, a one-line doc fix) — that trivial-tier carve-out is the *sole* exception.
+"Context-heavy" or "needs tight mid-flight steering" is **not** a licence to absorb non-trivial
+work inline: a subagent runs to completion and returns one result, so you can't steer it
+partway — scope the dispatch so it doesn't need partway steering, or steer across successive
+dispatches.
+
+**STOP-and-retry on API / limit termination (card#4870).** If a subagent you dispatched is
+terminated by an API error or a usage/spend limit, **STOP that work entirely — NO inline
+fallback of any kind.** The limit applies to your own session exactly as it does to the
+subagent — a functioning seat implies functioning dispatch — so a subagent death on the cap is
+a **wait-out condition, never a licence** to absorb the work into your session (which silently
+bloats your seat context = billed tokens, and hides the limit condition from your human).
+Instead: surface the stop + the **verbatim** error to your human, park the task where it stands,
+pull only non-dispatch work (review, scoping) or idle-with-reason, and **retry the dispatch
+later**. A forced inline build is never a legitimate path.
+
+**You stay at spec/review altitude:** the
 dispatch prompt IS the spec — requirements, constraints, edge cases, and selftest expectations
 (including *prove-it-can-fail*: the check must red before it greens) — and you review the returned
 diff and merge it (your merge-authority model above). **The `coder`/`mechanic` defs are
@@ -421,11 +436,13 @@ you manage your own context budget. Three signals guide you:
 
 - **Your harness's context-% indicator** (if your `statusLine` exposes it — `coord:init-solo`
   wires the `context-sensor.sh` statusLine). Watch it; you are your own backstop.
-- **The automated backstop warning** — `coord:init-solo` 4(e) installs the
-  `context-backstop.py` PostToolUse hook, which injects a one-shot warning when your fill
-  crosses `context_budget.backstop_pct` (default 0.80): finish the in-flight step, write your
-  handoff, self-clear at the next clean boundary. It is edge-triggered (once per crossing) —
-  treat it as the cost-ceiling catch, not the routine trigger (the boundary rule below is).
+- **The automated backstop** — `coord:init-solo` 4(e) installs the `context-backstop.py`
+  PostToolUse hook. Two nudges: (A) a one-shot edge-triggered warning when your fill crosses
+  `context_budget.backstop_pct` (default 0.80; a coarse near-window catch), and (B) a **throttled
+  CLEAR nudge** carrying the clear-decision token-arithmetic verdict + net savings (card#4874, the
+  cost-optimal signal). Either way: finish the in-flight step, write your handoff, self-clear at the
+  next clean boundary. Treat it as the cost-ceiling catch, not the routine trigger (the boundary rule
+  below is). Mechanism: `docs/CONTEXT-RESET.md`.
 - **Task boundaries.** The clearest safe clear point is the completion of one independent
   board item — work is committed/pushed, PR is open or merged — before pulling the next.
 
@@ -454,16 +471,14 @@ clear is the *deliberate* reset that minimizes tokens between independent tasks.
 
 ## Compliance
 
-`doc_policy.compliance` is **off by default** (`coordination.config.json`) — standard
-engineering framing applies: code changes are motivated by functional reasons (security
-posture, reliability, consistency), with no special regulatory-framing rules in force. Branch
-/ commit / PR-title metadata leads with the functional change regardless.
-
-If `doc_policy.compliance` is **on**, follow the compliance memory pack for that project —
-how code changes are motivated in the repo paper trail, how regulatory context is referenced,
-and (where the project maintains one) the claim/capability-boundary discipline. The base
-protocol is compliance-neutral; the framing rules are project policy gated by that knob, not
-protocol mechanics.
+> **Owned by `CONFIG.md` (§ Field reference — `doc_policy`) + the compliance memory pack
+> (activated by the knob).** `doc_policy.compliance` is **off by default** — standard engineering
+> framing applies: code changes are motivated by functional reasons (security posture, reliability,
+> consistency), and branch / commit / PR-title metadata leads with the functional change. If it is
+> **on**, follow the compliance pack's **motivation-framing rule** for that project — how code
+> changes are motivated in the repo paper trail, how regulatory context is referenced, and (where
+> the project maintains one) the claim/capability-boundary discipline. These framing rules are
+> project policy gated by the knob, not protocol mechanics.
 
 ---
 
