@@ -28,17 +28,17 @@ When a release mixes a feature with fixes, lean minor; a fixes/refactors/docs-on
 
 ## Release flow
 
-Hybrid policy: ask before opening every PR; auto-merge dev-targeted on green; only the user merges to main.
+Policy (per `CLAUDE.md` rule #5 — the ask-before-opening checkpoint is retired): open PRs autonomously; auto-merge dev-targeted on green; only the user merges to main.
 
 1. **Pick the next version.** Read `VERSION`, pick the next semver per the bump-sizing rule above.
 2. **Feature branch off `dev`.** Name: `release/v<version>` or `chore/release-v<version>`.
 3. **Bump `VERSION`** to the new semver.
 4. **Update `docs/CHANGELOG.md`.** Move `[Unreleased]` content into a `## [X.Y.Z] - YYYY-MM-DD` heading, then re-seed `[Unreleased]` as empty.
-5. **ASK user** before opening the PR.
-6. Open release-prep PR `release/...` → `dev` with full release notes in the PR body.
+5. Run the pre-PR review loop (CLAUDE.md rule #1) on the release surface.
+6. Open the release-prep PR `release/...` → `dev` with full release notes in the PR body (no ask — PR-opening is pre-authorized per CLAUDE.md rule #5).
 7. Wait for ALL CI checks (Tests + Security + any future workflow) to complete + pass.
 8. **Auto-merge** the release-prep PR to `dev` on green (it targets `dev`).
-9. **ASK user** before opening the release PR `release/v<version>` → `main`. **CRITICAL: the PR head must be the `release/v<version>` branch, NOT `dev` directly.** GitHub's "Automatically delete head branches" repo setting auto-deletes whichever branch is the merged PR's head — if you set head=`dev`, `dev` gets deleted when the user merges. Repo settings can't reliably exclude `dev` on the free plan (branch protection rules require Pro for private repos), so the discipline lives in the branch-naming convention.
+9. Open the release PR `release/v<version>` → `main` (no ask to open; the user-merge gate in step 11 is the control point). **CRITICAL: the PR head must be the `release/v<version>` branch, NOT `dev` directly.** GitHub's "Automatically delete head branches" repo setting auto-deletes whichever branch is the merged PR's head — if you set head=`dev`, `dev` gets deleted when the user merges. Repo settings can't reliably exclude `dev` on the free plan (branch protection rules require Pro for private repos), so the discipline lives in the branch-naming convention.
 10. Wait for ALL CI checks on the release → main PR.
 11. **Notify user it's ready to merge.** Claude does NOT run `gh pr merge` against a `main`-targeted PR regardless of CI state.
 12. **After user merges to `main` and confirms the merge to Claude:** that confirmation is the standing authorization for the back-merge sync PR — Claude does NOT ask again. (The tag + GitHub Release are minted automatically by `auto-tag-version.yml`; Claude does not hand-tag.)
