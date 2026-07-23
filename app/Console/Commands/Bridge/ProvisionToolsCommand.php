@@ -92,10 +92,10 @@ class ProvisionToolsCommand extends BridgeCommand
             }
             if ($bt->transport === 'ssh') {
                 // ssh agents mint NO bridge-side secret (the private key is host-B's,
-                // and this command never edits authorized_keys) — scaffold-by-print IS
-                // the provisioning action for this transport (card 4952). Informational,
-                // exit 0.
-                $this->printSshScaffold($cfg->agentName);
+                // and this command never edits authorized_keys) — GENERATING the guided
+                // root-run setup script IS the provisioning action for this transport
+                // (card 4952 / DL-226). Informational, exit 0.
+                $this->printSshScaffold($cfg->agentName, $bt->sshAccount);
 
                 continue;
             }
@@ -211,37 +211,97 @@ class ProvisionToolsCommand extends BridgeCommand
     }
 
     /**
-     * Scaffold-by-print the SSH-forced-command transport wiring for an ssh agent
-     * (card 4952). Prints, never edits: the authorized_keys pinned line to install on
-     * THIS (bridge) host, the FIPS-approved keygen recipe to run on host B (NEVER
-     * ed25519 — a FIPS sshd rejects it), the `Match User` sshd hardening drop-in, and
-     * the `sudo bridge:check` certification gate (DR2-3a: ssh enablement is NOT
-     * certified until a root bridge:check verifies the sshd posture).
+     * GENERATE + print the guided root-run SSH-transport setup script for an ssh agent
+     * (card 4952 / DL-226). "Guided" = generate + verify, NOT silent automation: the
+     * script is printed for the operator to review and run as root on THIS (bridge)
+     * host (`sudo bash <script>`) — root surfaces stay operator-run. It wires
+     * IDEMPOTENTLY (append-or-verify; it never clobbers existing config):
+     *   (a) the forced-command authorized_keys line (enumerated no-* flags — FIPS-safe;
+     *       the artisan path + agent are substituted, host B's PUBLIC key is a filled-in
+     *       placeholder),
+     *   (b) an sshd `Match User <account>` drop-in setting `PasswordAuthentication no`
+     *       AND the three idle/concurrency backstop directives bridge:check now
+     *       HARD-ASSERTS via probeSshdPosture (ClientAliveInterval / ClientAliveCountMax
+     *       / MaxSessions, all > 0 — so this script's output PASSES that leg),
+     *   (c) an sshd validate-then-reload (validate before reload so a bad drop-in never
+     *       takes sshd down), and it documents
+     *   (d) the FIPS ECDSA P-256 keygen to run FIRST on host B (NEVER ed25519 — a FIPS
+     *       sshd rejects it).
+     * The operator then certifies with `bridge:check --probe-tools-ssh=<user@host>`
+     * (a real board_my_cards round-trip). The private key never touches the bridge.
+     *
+     * @param  ?string  $sshAccount  board_tools.ssh_account (null ⇒ the invoking run-user)
      */
-    private function printSshScaffold(string $agentName): void
+    private function printSshScaffold(string $agentName, ?string $sshAccount = null): void
     {
-        $user = (string) (getenv('USER') ?: '<bridge-user>');
+        $account = $sshAccount ?? (string) (getenv('USER') ?: '<bridge-user>');
         $artisan = base_path('artisan');
-        $this->info("[{$agentName}] ssh transport — scaffold only (no secret is minted on the bridge; the private key lives on host B). Install the pieces below, then run `sudo bridge:check` to certify.");
+        $forced = 'command="php '.$artisan.' bridge:tools-call --agent='.$agentName.'",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding';
+
+        $this->info("[{$agentName}] ssh transport — GENERATED setup script below (no secret is minted on the bridge; the private key lives on host B). Review it, save it, and run it on THIS host as root: `sudo bash <script>`. It is idempotent (append-or-verify; never clobbers existing config). Then certify from host B with `bridge:check --probe-tools-ssh=<user@this-host>`.");
         $this->line('');
-        $this->line('# 1. On host B (the CALLING host), generate a FIPS-approved board-tools key.');
-        $this->line('#    ECDSA P-256 is FIPS-approved; a FIPS sshd REJECTS ed25519 — do not use it here.');
-        $this->line("    ssh-keygen -t ecdsa -b 256 -f ~/.ssh/{$agentName}-board-tools -C '{$agentName}-board-tools'");
-        $this->line('#    (Non-FIPS host may choose another algorithm; the recipe is parameterized, not pinned.)');
-        $this->line('');
-        $this->line("# 2. On THIS (bridge) host, add ONE line to the {$user} authorized_keys, forcing");
-        $this->line('#    the command and denying pty + all forwarding (the enumerated form works on');
-        $this->line('#    FIPS and non-FIPS; restrict is the non-FIPS shorthand). Paste host B public key:');
-        $this->line('    command="php '.$artisan.' bridge:tools-call --agent='.$agentName.'",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding <PASTE HOST-B PUBLIC KEY>');
-        $this->line('');
-        $this->line('# 3. Scope the sshd hardening to the bridge user with a Match drop-in (box-wide is');
-        $this->line('#    opt-in). Closes the password-auth path that would bypass the forced command:');
-        $this->line("    # /etc/ssh/sshd_config.d/{$user}-board-tools.conf");
-        $this->line("    Match User {$user}");
-        $this->line('        PasswordAuthentication no');
-        $this->line('');
-        $this->line('# 4. Certify (the sshd-posture legs need root):');
-        $this->line('    sudo bridge:check');
+        foreach ([
+            '#!/usr/bin/env bash',
+            "# bridge board-tools ssh setup — agent: {$agentName}, account: {$account}",
+            '# GENERATED by bridge:provision-tools (DL-226). Run on the BRIDGE host as root.',
+            'set -euo pipefail',
+            '',
+            "AGENT='{$agentName}'",
+            "SSH_ACCOUNT='{$account}'",
+            'DROPIN="/etc/ssh/sshd_config.d/${SSH_ACCOUNT}-board-tools.conf"',
+            '',
+            '# (d) On HOST B (the CALLING host) FIRST, generate a FIPS-approved key and copy',
+            '#     its PUBLIC half here. ECDSA P-256 is FIPS-approved; a FIPS sshd REJECTS',
+            '#     ed25519. Non-FIPS hosts may choose another algorithm. Run THIS on host B:',
+            "#       ssh-keygen -t ecdsa -b 256 -f ~/.ssh/{$agentName}-board-tools -C '{$agentName}-board-tools'",
+            '#     then paste the contents of that .pub file below.',
+            "HOST_B_PUBKEY='PASTE HOST-B PUBLIC KEY HERE'",
+            '',
+            "if [ \"\$HOST_B_PUBKEY\" = 'PASTE HOST-B PUBLIC KEY HERE' ]; then",
+            '  echo "ERROR: set HOST_B_PUBKEY to host B\'s public key before running." >&2',
+            '  exit 1',
+            'fi',
+            '',
+            '# (a) Forced-command authorized_keys line (append-or-verify; enumerated no-*',
+            '#     flags work on FIPS and non-FIPS seats). Denies pty + all forwarding.',
+            "FORCED='{$forced}'",
+            'HOME_DIR="$(getent passwd "$SSH_ACCOUNT" | cut -d: -f6)"',
+            'if [ -z "$HOME_DIR" ]; then echo "ERROR: account $SSH_ACCOUNT has no home dir" >&2; exit 1; fi',
+            'AUTHZ="${HOME_DIR}/.ssh/authorized_keys"',
+            'install -d -m 700 -o "$SSH_ACCOUNT" "${HOME_DIR}/.ssh"',
+            'touch "$AUTHZ"; chmod 600 "$AUTHZ"; chown "$SSH_ACCOUNT" "$AUTHZ"',
+            'if grep -qF -- "bridge:tools-call --agent=${AGENT}\"" "$AUTHZ"; then',
+            '  echo "authorized_keys: a forced-command line for agent ${AGENT} already present — leaving it (verify it pins the intended key)."',
+            'else',
+            '  printf \'%s\\n\' "${FORCED} ${HOST_B_PUBKEY}" >> "$AUTHZ"',
+            '  echo "authorized_keys: appended the forced-command line for agent ${AGENT}."',
+            'fi',
+            '',
+            '# (b) sshd Match drop-in (append-or-verify): closes the parallel password-auth',
+            '#     path AND sets the idle/concurrency backstop bridge:check HARD-ASSERTS',
+            '#     (ClientAliveInterval / ClientAliveCountMax / MaxSessions, all > 0).',
+            'if [ -f "$DROPIN" ]; then',
+            '  echo "sshd drop-in $DROPIN already exists — leaving it (verify it sets PasswordAuthentication no + ClientAliveInterval/ClientAliveCountMax/MaxSessions > 0)."',
+            'else',
+            '  cat > "$DROPIN" <<EOF',
+            'Match User ${SSH_ACCOUNT}',
+            '    PasswordAuthentication no',
+            '    ClientAliveInterval 300',
+            '    ClientAliveCountMax 2',
+            '    MaxSessions 10',
+            'EOF',
+            '  chmod 644 "$DROPIN"',
+            '  echo "sshd drop-in written: $DROPIN"',
+            'fi',
+            '',
+            '# (c) Validate BEFORE reload so a bad drop-in never takes sshd down.',
+            'sshd -t',
+            'systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || service ssh reload',
+            '',
+            'echo "Done. Certify from host B: bridge:check --probe-tools-ssh=<user@this-host>"',
+        ] as $line) {
+            $this->line($line);
+        }
     }
 
     private function printSkeleton(string $agentName): void
