@@ -40,6 +40,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { spawn } from 'node:child_process';
 
 const SERVER_NAME = process.env.BRIDGE_CHANNEL_NAME || 'agent-webhook-bridge';
 const TRANSPORT = (process.env.BRIDGE_CHANNEL_TRANSPORT || 'unix').toLowerCase();
@@ -56,7 +57,10 @@ const SHARED_TOKEN = process.env.BRIDGE_CHANNEL_TOKEN || '';
 //                                 bearer resolves (wire the one endpoint line and
 //                                 the tools come on for free; a bare channel agent
 //                                 with no tools wiring advertises nothing).
-// The bridge endpoint + bearer:
+// The transport is EXCLUSIVE (single-valued per seat, v1): either the HTTP loopback
+// endpoint OR the SSH-forced-command target — never both (a startup refuse enforces it).
+//
+// HTTP transport (BRIDGE_TOOLS_ENDPOINT + a bearer):
 //   BRIDGE_TOOLS_ENDPOINT    — the bridge's loopback URL for the call ingress,
 //                              e.g. http://127.0.0.1:8787/agent-tools/call
 //   BRIDGE_TOOLS_TOKEN       — the bearer value, OR
@@ -64,8 +68,18 @@ const SHARED_TOKEN = process.env.BRIDGE_CHANNEL_TOKEN || '';
 //   (fallback) BRIDGE_CHANNEL_TOKEN — reused when neither explicit tools token is
 //                              configured (the default-ON model: the impl↔PM shared
 //                              channel token IS the bearer, no new credential).
+//
+// SSH-forced-command transport (card 4952 — no bearer, no forwarding, works on an
+// AllowTcpForwarding-remote seat where the HTTP loopback tunnel cannot):
+//   BRIDGE_TOOLS_SSH_TARGET  — user@host of the bridge box; the client passes NO
+//                              command (sshd substitutes the pinned bridge:tools-call).
+//   BRIDGE_TOOLS_SSH_KEY     — optional path to the identity key (-i).
+//   BRIDGE_TOOLS_SSH_PORT    — optional ssh port (-p).
 const CHANNEL_TOOLS_ENV = process.env.BRIDGE_CHANNEL_TOOLS;
 const TOOLS_ENDPOINT = process.env.BRIDGE_TOOLS_ENDPOINT || '';
+const TOOLS_SSH_TARGET = process.env.BRIDGE_TOOLS_SSH_TARGET || '';
+const TOOLS_SSH_KEY = process.env.BRIDGE_TOOLS_SSH_KEY || '';
+const TOOLS_SSH_PORT = process.env.BRIDGE_TOOLS_SSH_PORT || '';
 
 // Bearer precedence (pinned): explicit BRIDGE_TOOLS_TOKEN (non-empty), else the
 // explicit BRIDGE_TOOLS_TOKEN_FILE (non-empty path) — and a configured-but-unreadable
@@ -97,7 +111,12 @@ function shouldAdvertiseTools() {
   if (CHANNEL_TOOLS_ENV === '0' || CHANNEL_TOOLS_ENV === '') {
     return false;
   }
-  // Unset: observable-intent default — the endpoint line is set AND a bearer resolves.
+  // Unset: observable-intent default. The ssh branch is BEARER-FREE (DR2-5) — an ssh
+  // target alone enables it, with NO token term (an `&& token` here would leave an
+  // ssh-only seat dark). The HTTP branch still needs the endpoint line AND a bearer.
+  if (TOOLS_SSH_TARGET !== '') {
+    return true;
+  }
   return TOOLS_ENDPOINT !== '' && resolveToolsToken() !== '';
 }
 
@@ -224,6 +243,18 @@ if (TRANSPORT !== 'unix' && TRANSPORT !== 'http') {
   process.exit(2);
 }
 
+// The board-tools transport is single-valued per seat (v1). This refuse runs
+// UNCONDITIONALLY — OUTSIDE the TOOLS_ENABLED guard (DR2-5) — so a
+// BRIDGE_CHANNEL_TOOLS=0 seat with both env vars set is still caught, not silently
+// skipped past the advertise gate.
+if (TOOLS_SSH_TARGET !== '' && TOOLS_ENDPOINT !== '') {
+  console.error(
+    `[${SERVER_NAME}] BRIDGE_TOOLS_SSH_TARGET and BRIDGE_TOOLS_ENDPOINT are both set — ` +
+      `choose exactly ONE board-tools transport (single-valued per seat).`,
+  );
+  process.exit(2);
+}
+
 const INSTRUCTIONS = [
   `Events from the agent-webhook-bridge arrive as <channel source="${SERVER_NAME}" kind="..." target_id="...">.`,
   'The body is JSON: {"intent": {kind, target_id, payload, ...}}.',
@@ -255,12 +286,139 @@ const mcp = new Server(
 // are live from the first request. A structured refusal (not a thrown error)
 // names the activating config when the bridge endpoint/bearer is half-set, so a
 // caller reaching a partially-configured install gets an actionable message.
+// Strip obvious credential substrings from a raw-body snippet before it is relayed
+// into a tool result (a PHP trace could echo an Authorization/Bearer line).
+function scrubSnippet(body) {
+  return String(body)
+    .replace(/(authorization|bearer)[^\n]*/gi, '[redacted]')
+    .slice(0, 500);
+}
+
+// The ONE relay contract for BOTH transports (DR2-2, canon #5 — fixed at the second
+// caller). Accumulate the FULL body (DR2-9), then JSON.parse-or-isError. The success
+// signal is LEG-SUPPLIED (res.ok / clean ssh exit), NEVER inferred from the body — a
+// 200 (or exit 0) with a php-warning-prepended body is a CORRUPT result, so it is
+// isError:true, not a silently-broken isError:false. On parse failure a truncated,
+// credential-scrubbed snippet keeps a non-JSON 502 page diagnosable.
+function relayBridgeResponse(rawBody, legSuccess, sourceLabel) {
+  try {
+    JSON.parse(rawBody);
+  } catch {
+    return {
+      isError: true,
+      content: [
+        {
+          type: 'text',
+          text: `non-JSON response from the bridge (${sourceLabel}): ${scrubSnippet(rawBody)}`,
+        },
+      ],
+    };
+  }
+  return {
+    isError: !legSuccess,
+    content: [{ type: 'text', text: rawBody }],
+  };
+}
+
+// SSH-forced-command transport: spawn `ssh [-i key] [-p port] <target>` with NO
+// command (sshd substitutes the pinned bridge:tools-call), write {tool, args} to the
+// child's stdin, and CAPTURE (never inherit) its stdout — so this server's OWN stdout
+// stays the MCP JSON-RPC frame channel. Accumulate the full child stdout, then relay.
+async function callToolOverSsh(payload) {
+  const args = ['-o', 'BatchMode=yes'];
+  if (TOOLS_SSH_KEY) {
+    args.push('-i', TOOLS_SSH_KEY);
+  }
+  if (TOOLS_SSH_PORT) {
+    args.push('-p', TOOLS_SSH_PORT);
+  }
+  args.push(TOOLS_SSH_TARGET);
+
+  return await new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn('ssh', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (err) {
+      resolve({
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: `could not spawn ssh to ${TOOLS_SSH_TARGET}: ${err && err.message ? err.message : err}`,
+          },
+        ],
+      });
+      return;
+    }
+    let stdout = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      // Diagnostics only — never mixed into the tool result.
+      console.error(
+        `[${SERVER_NAME}] ssh ${TOOLS_SSH_TARGET} stderr: ${chunk.toString().trimEnd()}`,
+      );
+    });
+    child.on('error', (err) => {
+      resolve({
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: `ssh to ${TOOLS_SSH_TARGET} failed: ${err && err.message ? err.message : err}`,
+          },
+        ],
+      });
+    });
+    child.on('close', (code) => {
+      resolve(relayBridgeResponse(stdout, code === 0, `ssh ${TOOLS_SSH_TARGET}`));
+    });
+    child.stdin.write(payload);
+    child.stdin.end();
+  });
+}
+
+// HTTP loopback transport: POST {tool, args} with the per-agent bearer.
+async function callToolOverHttp(payload, token) {
+  try {
+    const res = await fetch(TOOLS_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: payload,
+    });
+    const text = await res.text();
+    return relayBridgeResponse(text, res.ok, TOOLS_ENDPOINT);
+  } catch (err) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: 'text',
+          text: `could not reach the bridge tool endpoint ${TOOLS_ENDPOINT}: ${err && err.message ? err.message : err}`,
+        },
+      ],
+    };
+  }
+}
+
 if (TOOLS_ENABLED) {
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFINITIONS }));
 
   mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
     const toolName = request.params.name;
     const args = request.params.arguments || {};
+    const payload = JSON.stringify({ tool: toolName, args });
+
+    // Guard branches on the TRANSPORT (DR2-5), not on a bearer: the ssh transport
+    // carries no bearer, so `!token` must not gate it.
+    if (TOOLS_SSH_TARGET) {
+      return await callToolOverSsh(payload);
+    }
+
     const token = resolveToolsToken();
     if (!TOOLS_ENDPOINT || !token) {
       const missing = [
@@ -281,41 +439,24 @@ if (TOOLS_ENABLED) {
     }
 
     // Dumb pipe: forward {tool, args} verbatim, no retry, no board logic.
-    try {
-      const res = await fetch(TOOLS_ENDPOINT, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ tool: toolName, args }),
-      });
-      const text = await res.text();
-      return {
-        isError: !res.ok,
-        content: [{ type: 'text', text }],
-      };
-    } catch (err) {
-      return {
-        isError: true,
-        content: [
-          {
-            type: 'text',
-            text: `could not reach the bridge tool endpoint ${TOOLS_ENDPOINT}: ${err && err.message ? err.message : err}`,
-          },
-        ],
-      };
-    }
+    return await callToolOverHttp(payload, token);
   });
 }
 
 await mcp.connect(new StdioServerTransport());
 
 if (TOOLS_ENABLED) {
-  const why = CHANNEL_TOOLS_ENV === '1' ? 'BRIDGE_CHANNEL_TOOLS=1' : 'endpoint+bearer present (default-on)';
+  const target = TOOLS_SSH_TARGET
+    ? `ssh:${TOOLS_SSH_TARGET}`
+    : TOOLS_ENDPOINT || '(BRIDGE_TOOLS_ENDPOINT unset)';
+  const why =
+    CHANNEL_TOOLS_ENV === '1'
+      ? 'BRIDGE_CHANNEL_TOOLS=1'
+      : TOOLS_SSH_TARGET
+        ? 'ssh target present (default-on)'
+        : 'endpoint+bearer present (default-on)';
   console.error(
-    `[${SERVER_NAME}] board tools ENABLED (${why}) — proxying tools/call to ` +
-      `${TOOLS_ENDPOINT || '(BRIDGE_TOOLS_ENDPOINT unset)'}`,
+    `[${SERVER_NAME}] board tools ENABLED (${why}) — proxying tools/call to ${target}`,
   );
 }
 
