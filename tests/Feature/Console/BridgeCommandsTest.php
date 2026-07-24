@@ -2609,121 +2609,40 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(64, strlen(trim((string) file_get_contents($tokenPath))));   // bin2hex(32) = 64 hex chars
     }
 
-    public function test_provision_tools_generates_the_guided_ssh_setup_script(): void
+    public function test_provision_tools_prints_the_ssh_role_invocations(): void
     {
-        // card 4952 / DL-226: an ssh-transport agent mints NO bridge-side secret —
-        // provision-tools GENERATES + prints a guided root-run setup script (still
-        // operator-run) and exits 0. The script carries the forced-command line, the
-        // FIPS ECDSA keygen (NEVER ed25519 — a FIPS sshd rejects it), the sshd Match
-        // drop-in with PasswordAuthentication no + the three backstop directives
-        // bridge:check hard-asserts, an sshd reload, and idempotent append-or-verify.
+        // FR #5010 §2: an ssh-transport agent mints NO bridge-side secret. provision-tools
+        // now PRINTS the ready-to-run `provision-board-tools.py --role a|b` invocations
+        // with this agent's params filled in (--agent from config, --artisan from
+        // base_path, --ssh-account from board_tools.ssh_account) — replacing the old
+        // generated root-run bash script. The static python program owns both legs; its
+        // full-line pubkey validator supersedes the prefix-only generated-bash guard
+        // (#5033), so no `HOST_B_PUBKEY`/`case … ecdsa-*` scaffold appears at all.
         File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
-            ."board_tools:\n  transport: ssh\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+            ."board_tools:\n  transport: ssh\n  ssh_account: bridge-user\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
+
+        $artisan = base_path('artisan');
+        $script = base_path('bin/provision-board-tools.py');
 
         $this->artisan('bridge:provision-tools')
-            // forced-command line: enumerated no-* flags (FIPS-safe), agent substituted
-            ->expectsOutputToContain('bridge:tools-call --agent=impl",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding')
-            // The pubkey paste placeholder still names the value line the operator fills,
-            // but the guard now tests the SHAPE of a key (a naive sed can't accidentally
-            // satisfy it) rather than re-comparing the placeholder literal.
-            ->expectsOutputToContain('PASTE HOST-B PUBLIC KEY')
-            ->expectsOutputToContain('case "$HOST_B_PUBKEY" in')
-            ->expectsOutputToContain('ecdsa-*|ssh-*|sk-*')
-            // (d) FIPS ECDSA P-256 keygen, never ed25519
-            ->expectsOutputToContain('ssh-keygen -t ecdsa -b 256')
-            ->doesntExpectOutputToContain('ssh-keygen -t ed25519')
-            // (b) sshd Match drop-in: password-auth closed + the 3 backstop directives >0
-            ->expectsOutputToContain('Match User')
-            ->expectsOutputToContain('PasswordAuthentication no')
-            ->expectsOutputToContain('ClientAliveInterval 300')
-            ->expectsOutputToContain('ClientAliveCountMax 2')
-            ->expectsOutputToContain('MaxSessions 10')
-            // (c) validate-then-reload
-            ->expectsOutputToContain('sshd -t')
-            ->expectsOutputToContain('reload')
-            // idempotency: append-or-verify, never clobber
-            ->expectsOutputToContain('already present')
-            // certify step
-            ->expectsOutputToContain('bridge:check --probe-tools-ssh')
+            // host-A leg: run as root, --role a with agent filled in + the python path
+            ->expectsOutputToContain("sudo python3 {$script} --role a --agent impl")
+            // --artisan + --ssh-account resolved from base_path + the configured account
+            ->expectsOutputToContain("--artisan {$artisan} --ssh-account bridge-user --pubkey-stdin")
+            // same-box hint (§6): hand the .pub path to --role a --pubkey-from
+            ->expectsOutputToContain('--pubkey-from')
+            // host-B leg: --role b on the calling seat, ssh-target user from ssh_account
+            ->expectsOutputToContain('python3 provision-board-tools.py --role b --agent impl')
+            ->expectsOutputToContain('--ssh-target bridge-user@<host-A>')
+            // cert hint retained
+            ->expectsOutputToContain('bridge:check --probe-tools-ssh=bridge-user@<host-A>')
+            // the old generated-bash scaffold (+ its prefix-only pubkey guard, #5033) is gone
+            ->doesntExpectOutputToContain('HOST_B_PUBKEY')
+            ->doesntExpectOutputToContain('ecdsa-*|ssh-*|sk-*')
             ->assertExitCode(0);
 
         // No bridge-side token file was created for the ssh agent.
         $this->assertFileDoesNotExist($this->dir.'/impl-board-tools-token');
-    }
-
-    public function test_provision_tools_ssh_pubkey_guard_survives_a_naive_sed_injection(): void
-    {
-        // card 5009 / roundtable #141: the generated ssh setup script must not carry the
-        // pubkey paste placeholder TWICE (value line + guard). When it did, the obvious
-        // operator move `sed s|PASTE HOST-B PUBLIC KEY HERE|<key>|` (first-match-per-line)
-        // rewrote BOTH occurrences, so the guard compared the injected key against itself
-        // → always true → the script died with the "set HOST_B_PUBKEY" error AFTER a
-        // correct-looking injection. The guard now tests a key's SHAPE, which a value-line
-        // substitution cannot accidentally satisfy.
-        File::put($this->dir.'/impl.yml', "identity:\n  kanban_user_id: 1\nsubscriptions: []\n"
-            ."board_tools:\n  transport: ssh\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n");
-
-        Artisan::call('bridge:provision-tools');
-        $script = Artisan::output();
-
-        // The placeholder appears ONCE (the value line only) — never on a guard line.
-        // Red-when-reverted: the pre-fix guard repeated the literal → count was 2.
-        $this->assertSame(1, substr_count($script, 'PASTE HOST-B PUBLIC KEY HERE'));
-
-        // Functional proof on the real surface (bash): the guard must REJECT the untouched
-        // placeholder and ACCEPT a key injected by a naive first-match-per-line sed over
-        // the WHOLE script (exactly the substitution an operator would run).
-        $guard = $this->extractPubkeyGuard($script);
-        $this->assertNotSame('', $guard, 'could not locate the HOST_B_PUBKEY guard in the generated script');
-        $this->assertSame(1, $this->runBashGuard($guard), 'guard must reject the untouched placeholder');
-
-        $injected = implode("\n", array_map(
-            fn (string $line): string => (string) preg_replace(
-                '/PASTE HOST-B PUBLIC KEY HERE/', 'ecdsa-sha2-nistp256 AAAAFAKEKEYFORTEST', $line, 1
-            ),
-            explode("\n", $script)
-        ));
-        // The injection touched exactly the one placeholder occurrence.
-        $this->assertSame(0, substr_count($injected, 'PASTE HOST-B PUBLIC KEY HERE'));
-        $injectedGuard = $this->extractPubkeyGuard($injected);
-        $this->assertSame(0, $this->runBashGuard($injectedGuard), 'guard must accept a naively-sed-injected key');
-    }
-
-    /**
-     * Slice the self-contained HOST_B_PUBKEY assignment + case guard out of the
-     * generated setup script (the value line through the first `esac`).
-     */
-    private function extractPubkeyGuard(string $script): string
-    {
-        $out = [];
-        $inGuard = false;
-        foreach (explode("\n", $script) as $line) {
-            if (! $inGuard && str_starts_with(trim($line), 'HOST_B_PUBKEY=')) {
-                $inGuard = true;
-            }
-            if ($inGuard) {
-                $out[] = $line;
-                if (trim($line) === 'esac') {
-                    break;
-                }
-            }
-        }
-
-        return $inGuard ? implode("\n", $out) : '';
-    }
-
-    /**
-     * Run an extracted guard fragment under bash and return its exit code. The guard
-     * `exit 1`s on a bad key; a passing guard falls through, so a trailing `exit 0`
-     * makes a clean pass observable as 0.
-     */
-    private function runBashGuard(string $guard): int
-    {
-        $file = $this->dir.'/guard-'.uniqid().'.sh';
-        File::put($file, "set -u\n".$guard."\nexit 0\n");
-        exec('bash '.escapeshellarg($file).' 2>/dev/null', $ignored, $code);
-
-        return $code;
     }
 
     public function test_provision_tools_never_prints_the_token_value(): void
