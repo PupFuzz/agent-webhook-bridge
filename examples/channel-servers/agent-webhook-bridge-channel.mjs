@@ -132,6 +132,48 @@ function shouldAdvertiseTools() {
 
 const TOOLS_ENABLED = shouldAdvertiseTools();
 
+// clear_context is a LOCAL-EXEC self-management tool (card 5089), advertised on a gate
+// that is ORTHOGONAL to the board tools above: it NEVER proxies to the bridge, so it has
+// no endpoint/bearer/transport term. It can be advertised when the board tools are not,
+// and vice versa. The helper it spawns clears THIS agent's own screen/tmux window.
+const CLEAR_AGENT_HELPER = 'clear-agent.sh';
+
+// Idiomatic PATH resolution: search $PATH left-to-right for an executable `name`, exactly
+// as a shell would, and return the first hit's resolved path (or null). No hardcoded dir.
+function resolveOnPath(name) {
+  const raw = process.env.PATH || '';
+  if (!raw) {
+    return null;
+  }
+  for (const dir of raw.split(path.delimiter)) {
+    if (!dir) {
+      continue;
+    }
+    const candidate = path.join(dir, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // not in this dir, or present but not executable — keep searching
+    }
+  }
+  return null;
+}
+
+// Advertise clear_context IFF this seat is inside a screen/tmux session ($STY set) AND the
+// clear-agent.sh helper is resolvable on PATH. Mirrors shouldAdvertiseTools()'s env-reading
+// style but shares NONE of its terms — a bare-channel seat with tools off can still arm
+// clear_context, and a fully board-tools-wired seat with no $STY/helper does not.
+function shouldAdvertiseClearContext() {
+  return Boolean(process.env.STY) && resolveOnPath(CLEAR_AGENT_HELPER) !== null;
+}
+
+const CLEAR_CONTEXT_ENABLED = shouldAdvertiseClearContext();
+
+// The tools MCP capability + the tools/list and tools/call handlers come on when EITHER
+// tool family is advertised — the two gates are independent.
+const ADVERTISE_ANY_TOOL = TOOLS_ENABLED || CLEAR_CONTEXT_ENABLED;
+
 // The v1 tool surface, hard-coded to mirror the bridge contract (DL-217). Kept
 // here because tools/list must advertise a schema; the bridge remains the single
 // authority on validation/scoping — this is the MCP surface, not board logic. If
@@ -175,6 +217,21 @@ const TOOL_DEFINITIONS = [
     },
   },
 ];
+
+// LOCAL-EXEC self-management tool (card 5089). NOT part of TOOL_DEFINITIONS — those are
+// proxied to the bridge; this one is spawned locally and never leaves the host. The
+// description carries the operational guardrails as usage guidance for the model.
+const CLEAR_CONTEXT_TOOL = {
+  name: 'clear_context',
+  description:
+    "Clear THIS agent's context to save tokens. Run it as the FINAL ACTION of a turn, " +
+    'AFTER you have committed your work and posted any handoff/status. NEVER call it ' +
+    'mid-task, with uncommitted work, or while a human message is unanswered or queued. ' +
+    'It EXECUTES a clear you have ALREADY DECIDED on — it does not decide for you. ' +
+    'Local-exec only (never proxied to the bridge); it returns immediately and the clear ' +
+    'terminates this session. No arguments.',
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+};
 
 function defaultSocketPath() {
   // Per-uid + per-server-name default. Multi-agent operators get distinct
@@ -298,10 +355,17 @@ const INSTRUCTIONS = [
         'call them to see or capture board work without a kanban token; the write scope is your own swimlane, forced by the bridge.',
       ]
     : []),
+  ...(CLEAR_CONTEXT_ENABLED
+    ? [
+        'This server ALSO exposes clear_context — a LOCAL self-management tool that clears THIS',
+        "agent's own context to save tokens. Call it ONLY as the final action of a turn, after you",
+        'have committed work and posted any handoff; never mid-task or with a human message unanswered.',
+      ]
+    : []),
 ].join(' ');
 
 const capabilities = { experimental: { 'claude/channel': {} } };
-if (TOOLS_ENABLED) {
+if (ADVERTISE_ANY_TOOL) {
   capabilities.tools = {};
 }
 
@@ -409,11 +473,80 @@ async function callToolOverHttp(payload, token) {
   }
 }
 
-if (TOOLS_ENABLED) {
-  mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFINITIONS }));
+// LOCAL-EXEC self-management (card 5089): spawn the clear-agent.sh helper DETACHED and
+// return immediately — this NEVER proxies to the bridge (orthogonal to the board tools).
+// The clear terminates THIS session, so we do not await the child; detached + unref +
+// ignored stdio let it outlive this process's stdio pipe. Called-but-not-armed ($STY unset
+// or the helper absent) returns a STRUCTURED MCP error, never a silent no-op.
+function handleClearContext() {
+  const helper = resolveOnPath(CLEAR_AGENT_HELPER);
+  if (!process.env.STY || !helper) {
+    const missing = [
+      process.env.STY ? null : '$STY is unset (no screen/tmux session detected)',
+      helper ? null : `${CLEAR_AGENT_HELPER} is not on PATH`,
+    ].filter(Boolean);
+    return {
+      isError: true,
+      content: [
+        {
+          type: 'text',
+          text: `clear_context is not armed on this seat: ${missing.join(' and ')}. No clear was run.`,
+        },
+      ],
+    };
+  }
+  try {
+    const child = spawn(helper, [], { detached: true, stdio: 'ignore' });
+    child.unref();
+  } catch (err) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: 'text',
+          text: `clear_context could not spawn ${helper}: ${err && err.message ? err.message : err}`,
+        },
+      ],
+    };
+  }
+  return {
+    content: [
+      {
+        type: 'text',
+        text: `clear_context: spawned ${helper} (detached) — this session will be cleared momentarily.`,
+      },
+    ],
+  };
+}
+
+if (ADVERTISE_ANY_TOOL) {
+  mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      ...(TOOLS_ENABLED ? TOOL_DEFINITIONS : []),
+      ...(CLEAR_CONTEXT_ENABLED ? [CLEAR_CONTEXT_TOOL] : []),
+    ],
+  }));
 
   mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
     const toolName = request.params.name;
+
+    // clear_context is LOCAL-EXEC and orthogonal to the board tools — branch BEFORE the
+    // bridge proxy (ssh/http) so it never leaves this host, even when board tools are on.
+    // Handled unconditionally (not gated on CLEAR_CONTEXT_ENABLED) so a not-armed call
+    // gets the structured "not armed" error instead of being proxied as a board tool.
+    if (toolName === 'clear_context') {
+      return handleClearContext();
+    }
+
+    // Past here it's a board tool. If board tools are not enabled on this seat, only
+    // clear_context was advertised, so any other name is unknown — never proxy it.
+    if (!TOOLS_ENABLED) {
+      return {
+        isError: true,
+        content: [{ type: 'text', text: `unknown tool '${toolName}'` }],
+      };
+    }
+
     const args = request.params.arguments || {};
     const payload = JSON.stringify({ tool: toolName, args });
 
@@ -461,6 +594,12 @@ if (TOOLS_ENABLED) {
         : 'endpoint+bearer present (default-on)';
   console.error(
     `[${SERVER_NAME}] board tools ENABLED (${why}) — proxying tools/call to ${target}`,
+  );
+}
+
+if (CLEAR_CONTEXT_ENABLED) {
+  console.error(
+    `[${SERVER_NAME}] clear_context ENABLED (local-exec; $STY set + ${CLEAR_AGENT_HELPER} on PATH)`,
   );
 }
 

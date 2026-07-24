@@ -2,7 +2,8 @@
 """End-to-end SSH board-tools enablement (FR #5010).
 
 One program, `--role a|b`. `--role a` runs on the bridge box (Linux, root): it pins
-the host-B public key behind an SSH forced command and writes the sshd drop-in.
+the host-B public key behind an SSH forced command (that forced command is the sole
+board-tools security boundary — no account-level sshd hardening, card 5091).
 `--role b` runs on the calling seat (cross-platform): it generates the FIPS key,
 deploys the bundled channel-server snapshot, and merges the seat's `.mcp.json`.
 
@@ -107,6 +108,30 @@ def is_authorized_key_shape(s: object) -> bool:
     if "\r" in s or "\n" in s:
         return False
     return _KEY_LINE_RE.fullmatch(s) is not None
+
+
+DEFAULT_FORCED_COMMAND_TIMEOUT = 300
+
+
+def build_forced_command(agent: str, artisan: str, timeout_secs: int) -> str:
+    """The `authorized_keys` forced-command line (options included) for one agent.
+
+    The forced command is the SOLE board-tools security boundary (card 5091). Card 5092
+    adds a KEY-scoped hard bound on a hung key-holder: `timeout -k 10 <n> php <artisan>
+    bridge:tools-call …` caps each invocation's wall-clock at the COMMAND level — the one
+    place a bound survives on an ssh-account that doubles as the operator's interactive
+    login (an account-level sshd ClientAlive/Match drop-in would disrupt that operator, so
+    it was retired — see multi-host.md § 3). `-k 10` escalates to SIGKILL 10s after SIGTERM
+    so a holder that traps SIGTERM is still reaped. `timeout_secs <= 0` disables the wrapper
+    (operator opt-out). Pure — the single source of the pinned command string.
+    """
+    inner = f"php {artisan} bridge:tools-call --agent={agent}"
+    if timeout_secs > 0:
+        inner = f"timeout -k 10 {timeout_secs} {inner}"
+    return (
+        f'command="{inner}"'
+        ",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding"
+    )
 
 
 def _args_hold_channel_mjs(args: object, resolve) -> bool:
@@ -431,6 +456,9 @@ def run_role_a(args) -> int:
         _fail(f"--artisan {artisan!r} must match ^[A-Za-z0-9_./-]+$")
     if not account or not _SSH_ACCOUNT_RE.fullmatch(account):
         _fail(f"--ssh-account {account!r} must match ^[a-z_][a-z0-9_-]*$")
+    timeout_secs = args.forced_command_timeout
+    if timeout_secs < 0:
+        _fail(f"--forced-command-timeout {timeout_secs} must be >= 0 (0 disables the bound)")
 
     pubkey = _read_pubkey(args)
 
@@ -439,10 +467,7 @@ def run_role_a(args) -> int:
     except KeyError:
         _fail(f"account {account!r} does not exist on this host")
 
-    forced = (
-        f'command="php {artisan} bridge:tools-call --agent={agent}"'
-        ",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding"
-    )
+    forced = build_forced_command(agent, artisan, timeout_secs)
     guard = f'bridge:tools-call --agent={agent}"'
     supplied_core = " ".join(pubkey.split()[:2])
 
@@ -477,48 +502,14 @@ def run_role_a(args) -> int:
     os.chmod(authz, 0o600)
     os.chown(authz, pw.pw_uid, pw.pw_gid)
 
-    _write_sshd_dropin(account)
-
-    _run_checked(["sshd", "-t"], "sshd -t rejected the resulting config")
-    if not any(
-        _run_ok(cmd)
-        for cmd in (
-            ["systemctl", "reload", "sshd"],
-            ["systemctl", "reload", "ssh"],
-            ["service", "ssh", "reload"],
-        )
-    ):
-        _fail("could not reload sshd (tried systemctl reload sshd/ssh and service ssh reload)")
-
+    # No account-level sshd hardening (card 5091): the forced-command authorized_keys
+    # entry IS the board-tools security boundary. Disabling password auth for the account
+    # (the removed drop-in) locks out an operator whose interactive login shares this
+    # account — the deployment reality — while adding no boundary the forced-command line
+    # does not already impose. authorized_keys is read per connection, so there is nothing
+    # to validate or reload here.
     print(f"Done. Certify from host B: bridge:check --probe-tools-ssh=<{account}@host-A>")
     return 0
-
-
-def _write_sshd_dropin(account: str) -> None:
-    directives = {
-        "PasswordAuthentication": "no",
-        "ClientAliveInterval": "300",
-        "ClientAliveCountMax": "2",
-        "MaxSessions": "10",
-    }
-    path = f"/etc/ssh/sshd_config.d/{account}-board-tools.conf"
-    if os.path.isfile(path):
-        with open(path, encoding="utf-8") as fh:
-            body = fh.read()
-        missing = [d for d in directives if not re.search(rf"^\s*{d}\b", body, re.MULTILINE)]
-        if missing:
-            print(
-                f"WARNING: sshd drop-in {path} exists but is missing directive(s): "
-                f"{', '.join(missing)} — leaving it (not clobbering); fix by hand or remove and re-run."
-            )
-        else:
-            print(f"sshd drop-in {path} already present and complete — leaving it.")
-        return
-    lines = [f"Match User {account}"] + [f"    {k} {v}" for k, v in directives.items()]
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines) + "\n")
-    os.chmod(path, 0o644)
-    print(f"sshd drop-in written: {path}")
 
 
 # --------------------------------------------------------------------------- #
@@ -990,13 +981,6 @@ def _run_checked(cmd, err: str) -> None:
         _fail(f"{err}: {e}")
 
 
-def _run_ok(cmd) -> bool:
-    try:
-        return subprocess.run(cmd, capture_output=True).returncode == 0
-    except OSError:
-        return False
-
-
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -1013,6 +997,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ssh-account", help="[role a] the OS account the forced command runs as")
     p.add_argument("--pubkey-stdin", action="store_true", help="[role a] read the host-B public key from stdin")
     p.add_argument("--pubkey-from", help="[role a] read the host-B public key from this path (same-box)")
+    p.add_argument(
+        "--forced-command-timeout",
+        type=int,
+        default=DEFAULT_FORCED_COMMAND_TIMEOUT,
+        help="[role a] hard wall-clock cap (seconds) on each forced-command invocation, "
+        "key-scoped; 0 disables (card 5092)",
+    )
 
     # host B
     p.add_argument("--ssh-target", help="[role b] user@host of the bridge box")

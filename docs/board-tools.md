@@ -25,6 +25,14 @@ The channel server advertises on a **tri-state** (`BRIDGE_CHANNEL_TOOLS`):
   `BRIDGE_CHANNEL_TOKEN` fallback). Wire the one endpoint line and the tools come
   on for free; a bare channel agent with no tools wiring advertises nothing.
 
+> **Not the only tool the channel server can list.** The reference channel server
+> also carries a **local-exec** self-management tool, `clear_context`, on a gate
+> that is **orthogonal** to `BRIDGE_CHANNEL_TOOLS` — it is advertised iff `STY` is
+> set and `clear-agent.sh` is on `PATH`, and it is **never** proxied to the bridge
+> (it spawns the local helper detached to clear the agent's own context). It is not
+> a board tool; see the channel-server README's "Local self-management tool"
+> section. The board-tool contract below is unaffected by it.
+
 If the tools are advertised but the channel server is only half-configured
 (missing `BRIDGE_TOOLS_ENDPOINT` or the bearer — reachable under the `=1`
 force-on), a call returns a **structured refusal naming the missing config** — it
@@ -158,10 +166,10 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   `--artisan` from the install path, `--ssh-account` from `board_tools.ssh_account`).
   The static `bin/provision-board-tools.py` program owns both legs from a single
   source that cannot drift: `--role a` (root, Linux, on the bridge box) pins the
-  forced-command `authorized_keys` line and writes the sshd `Match User` drop-in
-  (`PasswordAuthentication no` + the `ClientAliveInterval`/`ClientAliveCountMax`/
-  `MaxSessions` backstop directives `bridge:check` hard-asserts) with a
-  validate-then-reload; `--role b` (the calling seat, cross-platform python) generates
+  forced-command `authorized_keys` line — the **sole** security boundary — and makes
+  **no** `sshd_config` change (card 5091 retired the account-level `Match User`
+  hardening; see `docs/multi-host.md § 3`); `--role b` (the calling seat, cross-platform
+  python) generates
   the FIPS ECDSA P-256 key, deploys the bundled channel-server snapshot, and merges
   `.mcp.json`. The merge **force-sets the SSH tools transport keys** it owns
   (`BRIDGE_TOOLS_SSH_TARGET`/`_KEY`/`_PORT`) but only **creates the live-wake channel
@@ -194,16 +202,15 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   token collisions, swimlane/stage existence, and the service user's board
   membership. For an **ssh** agent it also probes (offline) the pinned
   `authorized_keys` line — that it forces `bridge:tools-call --agent=X`, denies
-  pty + all forwarding (outcome-based, not a `restrict` keyword match), carries a
-  FIPS-approved key on a FIPS seat, and (root-gated) that `PasswordAuthentication`
-  is disabled for the forced-command account and its sshd idle/concurrency backstop
-  (`ClientAliveInterval`/`ClientAliveCountMax`/`MaxSessions` — each must be **positive**;
-  a `0` or missing directive fails, since `ClientAliveCountMax 0` disables the idle
-  disconnect) is complete (card 4977).
-  These legs certify the **forced-command account** — when `bridge:check` runs under
-  `sudo` but that account is not `root`, set `board_tools.ssh_account` so the probe
-  targets it, not the invoking root (a configured account that does not resolve to an OS
-  account **fails** rather than certify a phantom path; see `docs/multi-host.md § 3`).
+  pty + all forwarding (outcome-based, not a `restrict` keyword match), and carries a
+  FIPS-approved key on a FIPS seat. That pinned forced-command line is the **sole**
+  security boundary; `bridge:check` asserts **no** sshd posture (card 5091 retired the
+  account-level `Match User` hardening — see `docs/multi-host.md § 3`).
+  The pinned-line check certifies the **forced-command account** — when `bridge:check`
+  runs under `sudo` but that account is not `root`, set `board_tools.ssh_account` so the
+  probe reads its `authorized_keys`, not the invoking root's (a configured account that
+  does not resolve to an OS account **fails** rather than certify a phantom path; see
+  `docs/multi-host.md § 3`).
   `bridge:check --probe-tools=<endpoint>` exercises
   the REAL HTTP loopback+bearer path; `bridge:check --probe-tools-ssh=<user@host>`
   the REAL ssh round-trip (see the runbook below).
@@ -337,3 +344,57 @@ vhost/endpoint). Non-2xx or a scope mismatch exits non-zero.
 
 Restart the agent's channel MCP server so it re-reads its env; the tools are now
 advertised and live.
+
+## Same-box SSH enablement — the one-shot wrapper (card 5090)
+
+The SSH transport (`board_tools.transport: ssh`, the default since v0.68.0) is the
+no-root-per-call, forwarding-uniform door. Its two legs — `--role b` on the agent's
+seat, `--role a` as root on the bridge box — are documented above under **Provisioning**
+and, for the cross-device topology, in
+[`docs/multi-host.md`](multi-host.md). When both legs land on **one box** (the agent's
+Claude seat and the bridge share the machine, each as its own OS user), the two-leg dance
+plus the interstitial "make the tool readable / resolve the project dir / capture the
+pubkey path / chown storage" chores collapse into a single root-run wrapper:
+
+```bash
+sudo bin/provision-board-tools-samebox.py --agent <name> --ssh-account <host-A user>
+```
+
+It orchestrates, on `127.0.0.1`:
+
+1. **Preflight (fail-closed, before any mutation).** Validates: running as root; both OS
+   users exist (`getent passwd` on the agent user and the ssh-account); the agent's
+   `.mcp.json` resolves **unambiguously** under its home (→ `--project-dir` + the
+   `mcpServers` key → `--channel-name`); both checkouts' `provision-board-tools.py` and
+   the host-A `artisan` are present; and `php` is on PATH. Every failure names its fix; no
+   step is silently skipped.
+2. **`--role b` as the agent user**, from the **agent's own checkout**
+   (`sudo -H -u <agent> python3 <agent-checkout>/bin/provision-board-tools.py --role b …`),
+   with `--ssh-target <ssh-account>@127.0.0.1`. It captures the printed public-key path and
+   validates it exists + is readable (no `--self-cert` yet — the key is not pinned on host
+   A until step 3).
+3. **`--role a` as root**, from the **host-A checkout**, pinning that captured key by path
+   (`--pubkey-from`, no paste).
+4. Prints the one unavoidable **manual step**: restart the agent's Claude session so the
+   channel re-spawns and reads the merged `.mcp.json`.
+5. Certifies with `php <host-A artisan> bridge:check`.
+6. `chown -R <ssh-account>:<ssh-account>` on the host-A `storage/` (a root-run `artisan`
+   can leave root-owned logs).
+
+`--dry-run` runs the read-only preflight and prints the exact argv for both legs without
+changing anything. Overrides — `--agent-home`, `--agent-bin`, `--hostA-checkout`,
+`--project-dir`, `--channel-name` — pin any value discovery can't (or shouldn't) infer,
+e.g. an agent with several `.mcp.json` under its home. Re-running is safe: the underlying
+`--role a`/`--role b` are idempotent (append-or-verify `authorized_keys`, create-if-absent
+`.mcp.json` merge, skip-if-present keygen) and the wrapper adds no non-idempotent state.
+
+**Why no global `bin/` staging (version isolation).** The wrapper runs **each agent's own
+checkout's** `provision-board-tools.py` for its leg — the agent user runs the agent's
+version, root runs the host-A install's version. It deliberately does **not** copy the tool
+into a shared path such as `/usr/local/bin`: two agents on one host can be pinned to
+**different bridge versions**, and a single shared global path would let a redeploy of one
+clobber the other. If the agent's own copy is missing, or not readable by the agent user,
+the wrapper **fails with an actionable message** telling the operator to give the agent its
+own checkout — it never falls back to a shared/global copy. (Contrast the cross-device
+flow, where each host trivially has its own checkout; on a shared box that separation must
+be asserted, which is what the preflight does.)

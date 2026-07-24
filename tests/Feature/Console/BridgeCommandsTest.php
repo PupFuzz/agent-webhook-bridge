@@ -178,22 +178,25 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(1);
     }
 
-    public function test_check_passes_with_good_ssh_line_unprivileged_posture_warns(): void
+    public function test_check_passes_with_good_ssh_line_unprivileged(): void
     {
-        // A good pinned line + a non-root run (sshd posture UNVERIFIED → warn, never a
-        // false OK, never a hard red) stays exit 0.
+        // A good pinned line + a non-root run stays exit 0. The account sshd posture is no
+        // longer probed (card 5091 retired it), so there is no UNVERIFIED posture warn.
         Http::fake();
         $this->writeSshAgent();
         $this->bindSshEnv('command="php artisan bridge:tools-call --agent=me",restrict ssh-ed25519 AAAA me');
         $this->artisan('bridge:check')
-            ->expectsOutputToContain('UNVERIFIED')
+            ->doesntExpectOutputToContain('PasswordAuthentication')
             ->assertExitCode(0);
     }
 
-    public function test_check_fails_when_ssh_password_auth_is_enabled(): void
+    public function test_check_ignores_account_password_auth_posture(): void
     {
-        // As root, sshd -T shows PasswordAuthentication yes — a parallel auth path that
-        // bypasses the forced command → FAIL.
+        // Card 5091 (red-when-reverted): the ssh-account routinely doubles as the operator's
+        // interactive login, so bridge:check must NOT flip red on its PasswordAuthentication /
+        // idle posture — the pinned forced-command key is the sole boundary. As root with a good
+        // pinned line at the authoritative path, PasswordAuthentication yes is now IGNORED (was a
+        // hard FAIL). Reintroducing the posture leg turns this exit-0 assertion red.
         Http::fake();
         $this->writeSshAgent();
         $this->bindSshEnv(
@@ -202,8 +205,8 @@ class BridgeCommandsTest extends TestCase
             sshdConfig: "authorizedkeysfile .ssh/authorized_keys\npasswordauthentication yes\n",
         );
         $this->artisan('bridge:check')
-            ->expectsOutputToContain('PasswordAuthentication')
-            ->assertExitCode(1);
+            ->doesntExpectOutputToContain('PasswordAuthentication')
+            ->assertExitCode(0);
     }
 
     /** An agent that landed on ssh via the DL-225 default (no explicit transport: key). */

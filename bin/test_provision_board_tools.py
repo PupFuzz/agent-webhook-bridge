@@ -756,5 +756,72 @@ class NpmInvocation(unittest.TestCase):
         self.assertIn("npm ci", str(cm.exception))
 
 
+class NoAccountLevelSshdHardening(unittest.TestCase):
+    """Card 5091 (USER-FOUND, security): `--role a` must NOT disable PasswordAuthentication
+    (or otherwise harden sshd) at the ACCOUNT level. The ssh-account routinely doubles as the
+    operator's interactive login, so a `Match User <acct> { PasswordAuthentication no }` drop-in
+    plus a forced-command-only authorized_keys leaves no interactive path — operator lockout.
+    The forced-command authorized_keys entry is the sole board-tools security boundary; the
+    account-level drop-in added no boundary it does not already impose. Reverting (re-adding the
+    drop-in) turns these RED.
+    """
+
+    _SRC = os.path.join(_HERE, "provision-board-tools.py")
+
+    def test_no_write_sshd_dropin_symbol(self):
+        self.assertFalse(
+            hasattr(pbt, "_write_sshd_dropin"),
+            "the account-level sshd drop-in (operator-lockout, card 5091) must not return",
+        )
+
+    def test_source_never_writes_the_sshd_dropin(self):
+        # The lockout mechanism was a drop-in written to /etc/ssh/sshd_config.d/<acct>-board-tools.conf.
+        # Guarding the write PATH (not the concept) keeps the test precise: it stays green while the
+        # fix is documented in prose, and goes red only if the drop-in write actually returns.
+        with open(self._SRC, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn(
+            "sshd_config.d",
+            src,
+            "provisioning must not write an sshd drop-in — that is the card-5091 lockout path",
+        )
+
+
+class BuildForcedCommand(unittest.TestCase):
+    """Card 5092: the forced command carries a KEY-scoped hard timeout so a hung key-holder
+    is bounded at the command level (the one bound that survives on a shared operator login,
+    after card 5091 retired the account-level sshd idle backstop)."""
+
+    _ARTISAN = "/opt/bridge/artisan"
+
+    def test_default_timeout_wraps_the_command(self):
+        line = pbt.build_forced_command("me", self._ARTISAN, pbt.DEFAULT_FORCED_COMMAND_TIMEOUT)
+        # red-when-reverted: dropping the wrapper removes `timeout` from the pinned command.
+        self.assertIn(
+            f'command="timeout -k 10 {pbt.DEFAULT_FORCED_COMMAND_TIMEOUT} php {self._ARTISAN} '
+            'bridge:tools-call --agent=me"',
+            line,
+        )
+
+    def test_options_preserved(self):
+        line = pbt.build_forced_command("me", self._ARTISAN, 300)
+        self.assertTrue(line.endswith(",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding"))
+
+    def test_guard_substring_intact_for_idempotency(self):
+        # run_role_a's idempotency guard matches on this substring — the timeout prefix must
+        # not break it, or a re-run would fail to detect an existing pinned line.
+        line = pbt.build_forced_command("me", self._ARTISAN, 300)
+        self.assertIn('bridge:tools-call --agent=me"', line)
+
+    def test_zero_disables_the_wrapper(self):
+        line = pbt.build_forced_command("me", self._ARTISAN, 0)
+        self.assertNotIn("timeout", line)
+        self.assertIn(f'command="php {self._ARTISAN} bridge:tools-call --agent=me"', line)
+
+    def test_custom_timeout_value(self):
+        line = pbt.build_forced_command("agent-1", self._ARTISAN, 45)
+        self.assertIn("timeout -k 10 45 php", line)
+
+
 if __name__ == "__main__":
     unittest.main()

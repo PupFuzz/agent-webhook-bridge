@@ -1032,31 +1032,19 @@ class CheckCommand extends BridgeCommand
         $env = $this->laravel->make(SshProbeEnvironment::class);
         // The forced-command account (board_tools.ssh_account, default the invoking
         // run-user) is per-agent, so the pinned-line + keys resolution is per-agent.
-        // The sshd-posture leg is per-ACCOUNT — dedupe by resolved account so N ssh
-        // agents sharing one account (incl. the all-unset default) emit posture once,
-        // byte-identical to pre-4977.
-        $postureProbes = [];
-        $agentAccount = [];       // agentName => resolved forced-command account
+        // The board-tools security boundary is the forced-command authorized_keys entry
+        // (checked per-agent via probePinnedLine), not the account's sshd posture: card 5091
+        // retired the account-level `Match User` hardening (PasswordAuthentication no +
+        // ClientAlive/MaxSessions) because the ssh-account routinely doubles as the operator's
+        // interactive login, so hardening it locked the operator out. bridge:check certifies
+        // the transport by the pinned key + the live round-trip (--probe-tools-ssh), never by
+        // the account's password/idle posture.
         $agentIncomplete = [];    // agentName => any non-ok pinned-line finding
-        $accountIncomplete = [];  // account   => any non-ok posture/backstop finding
         foreach ($sshAgents as $cfg) {
             $probe = new SshTransportProbe($env, $cfg->boardTools?->sshAccount);
             foreach ($probe->probePinnedLine($cfg->agentName) as $finding) {
                 if ($finding['severity'] !== 'ok') {
                     $agentIncomplete[$cfg->agentName] = true;
-                }
-                if (! $this->emitSshFinding($finding)) {
-                    $ok = false;
-                }
-            }
-            $account = $probe->forcedCommandAccount();
-            $agentAccount[$cfg->agentName] = $account;
-            $postureProbes[$account] = $probe;
-        }
-        foreach ($postureProbes as $account => $probe) {
-            foreach ($probe->probeSshdPosture() as $finding) {
-                if ($finding['severity'] !== 'ok') {
-                    $accountIncomplete[$account] = true;
                 }
                 if (! $this->emitSshFinding($finding)) {
                     $ok = false;
@@ -1076,8 +1064,7 @@ class CheckCommand extends BridgeCommand
             if ($bt === null || $bt->transportExplicit) {
                 continue;
             }
-            $incomplete = ($agentIncomplete[$cfg->agentName] ?? false)
-                || ($accountIncomplete[$agentAccount[$cfg->agentName]] ?? false);
+            $incomplete = $agentIncomplete[$cfg->agentName] ?? false;
             if ($incomplete) {
                 $this->warn("board_tools ssh: agent {$cfg->agentName} is on ssh by the v0.68.0 default (no explicit transport:); its ssh setup is incomplete or could not be verified from here — pin `transport: http` to keep the loopback path, or complete ssh setup and run `sudo bridge:check` to certify.");
             }
