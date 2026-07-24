@@ -124,13 +124,22 @@ def _args_hold_channel_mjs(args: object, resolve) -> bool:
     return False
 
 
-def merge_mcp_json(existing_text, channel_name, mjs_path, env, *, resolve=os.path.realpath):
+def merge_mcp_json(existing_text, channel_name, mjs_path, env, env_defaults=None, *, resolve=os.path.realpath):
     """Return the merged `.mcp.json` config dict. Pure — no file I/O.
 
     `existing_text` is the current file contents, or None when the file is absent.
     Raises ValueError on unparseable existing JSON (refuse, change nothing) or when
-    `mcpServers.<channel_name>` is held by a foreign server. Sets the SSH transport
-    and actively deletes the HTTP sibling transport keys (never BRIDGE_CHANNEL_TOKEN).
+    `mcpServers.<channel_name>` is held by a foreign server.
+
+    Two env classes, kept explicit so this one merge site never re-clobbers a live
+    channel config:
+      - `env` (force-set): keys this provisioner OWNS — the SSH tools transport —
+        written UNCONDITIONALLY (overwrite). Setting BRIDGE_TOOLS_SSH_TARGET also
+        actively deletes the HTTP sibling tools keys (never BRIDGE_CHANNEL_TOKEN).
+      - `env_defaults` (create-if-absent): keys the SEAT owns — the live-wake channel
+        config (BRIDGE_CHANNEL_TRANSPORT / _NAME) — written with setdefault, so a
+        fresh seat is bootstrapped but an existing seat's channel transport is never
+        overwritten out from under it.
     """
     if existing_text is None:
         config: dict = {}
@@ -170,6 +179,8 @@ def merge_mcp_json(existing_text, channel_name, mjs_path, env, *, resolve=os.pat
     if not isinstance(env_block, dict):
         env_block = {}
     env_block.update(env)
+    for key, value in (env_defaults or {}).items():
+        env_block.setdefault(key, value)
     if "BRIDGE_TOOLS_SSH_TARGET" in env_block:
         for key in HTTP_SIBLING_TOOLS_KEYS:
             env_block.pop(key, None)
@@ -522,15 +533,22 @@ def run_role_b(args) -> int:
     mjs_path = os.path.join(deploy_dir, CHANNEL_MJS_BASENAME)
     _deploy_snapshot(deploy_dir)
 
-    env = {
-        "BRIDGE_CHANNEL_TRANSPORT": "unix",
-        "BRIDGE_CHANNEL_NAME": args.channel_name,
+    # Tools transport keys this provisioner OWNS — force-set (overwrite) on every re-run.
+    force_env = {
         "BRIDGE_TOOLS_SSH_TARGET": args.ssh_target,
     }
     if args.ssh_key:
-        env["BRIDGE_TOOLS_SSH_KEY"] = args.ssh_key
+        force_env["BRIDGE_TOOLS_SSH_KEY"] = args.ssh_key
     if args.ssh_port:
-        env["BRIDGE_TOOLS_SSH_PORT"] = str(args.ssh_port)
+        force_env["BRIDGE_TOOLS_SSH_PORT"] = str(args.ssh_port)
+
+    # Channel-governing keys the SEAT owns — create-if-absent only, so a board-tools
+    # re-provision never rewrites a live-wake channel that already runs the HTTP
+    # transport (which would switch the listener transport out from under the seat).
+    channel_defaults = {
+        "BRIDGE_CHANNEL_TRANSPORT": "unix",
+        "BRIDGE_CHANNEL_NAME": args.channel_name,
+    }
 
     mcp_path = os.path.join(os.path.abspath(args.project_dir), ".mcp.json")
     existing_text = None
@@ -538,7 +556,7 @@ def run_role_b(args) -> int:
         with open(mcp_path, encoding="utf-8") as fh:
             existing_text = fh.read()
     try:
-        merged = merge_mcp_json(existing_text, args.channel_name, mjs_path, env)
+        merged = merge_mcp_json(existing_text, args.channel_name, mjs_path, force_env, channel_defaults)
     except ValueError as e:
         _fail(str(e))
     with open(mcp_path, "w", encoding="utf-8") as fh:

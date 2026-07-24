@@ -67,28 +67,59 @@ class AuthorizedKeyShape(unittest.TestCase):
 
 
 class MergeMcpJson(unittest.TestCase):
+    # Mirrors run_role_b's split: tools transport keys are force-set (overwrite);
+    # channel-governing keys are create-if-absent (setdefault).
     def _ssh_env(self):
+        return {"BRIDGE_TOOLS_SSH_TARGET": "bridge-user@host-A"}
+
+    def _channel_defaults(self):
         return {
             "BRIDGE_CHANNEL_TRANSPORT": "unix",
             "BRIDGE_CHANNEL_NAME": "kanbanboard-agent",
-            "BRIDGE_TOOLS_SSH_TARGET": "bridge-user@host-A",
         }
 
     def test_create_if_absent_writes_full_entry(self):
         out = pbt.merge_mcp_json(
             None, "kanbanboard-agent", "/deploy/agent-webhook-bridge-channel.mjs",
-            self._ssh_env(), resolve=_IDENTITY,
+            self._ssh_env(), self._channel_defaults(), resolve=_IDENTITY,
         )
         entry = out["mcpServers"]["kanbanboard-agent"]
         self.assertEqual(entry["command"], "node")
         self.assertEqual(entry["args"], ["/deploy/agent-webhook-bridge-channel.mjs"])
         self.assertEqual(entry["env"]["BRIDGE_TOOLS_SSH_TARGET"], "bridge-user@host-A")
+        # Fresh seat: the channel defaults bootstrap a complete, working entry.
+        self.assertEqual(entry["env"]["BRIDGE_CHANNEL_TRANSPORT"], "unix")
+        self.assertEqual(entry["env"]["BRIDGE_CHANNEL_NAME"], "kanbanboard-agent")
+
+    def test_existing_channel_transport_preserved(self):
+        # An existing seat already running the documented _alternative_http_setup HTTP
+        # live-wake fallback. A board-tools re-provision must NOT rewrite the channel
+        # transport to "unix" (that would kill live-wake), but MUST set the tools target.
+        existing = json.dumps({
+            "mcpServers": {
+                "kanbanboard-agent": {
+                    "command": "node",
+                    "args": ["/deploy/agent-webhook-bridge-channel.mjs"],
+                    "env": {
+                        "BRIDGE_CHANNEL_TRANSPORT": "http",
+                        "BRIDGE_CHANNEL_NAME": "kanbanboard-agent",
+                    },
+                }
+            }
+        })
+        out = pbt.merge_mcp_json(
+            existing, "kanbanboard-agent", "/deploy/agent-webhook-bridge-channel.mjs",
+            self._ssh_env(), self._channel_defaults(), resolve=_IDENTITY,
+        )
+        env = out["mcpServers"]["kanbanboard-agent"]["env"]
+        self.assertEqual(env["BRIDGE_CHANNEL_TRANSPORT"], "http")
+        self.assertEqual(env["BRIDGE_TOOLS_SSH_TARGET"], "bridge-user@host-A")
 
     def test_unparseable_raises(self):
         with self.assertRaises(ValueError):
             pbt.merge_mcp_json(
                 "{ not json", "kanbanboard-agent", "/d/agent-webhook-bridge-channel.mjs",
-                self._ssh_env(), resolve=_IDENTITY,
+                self._ssh_env(), self._channel_defaults(), resolve=_IDENTITY,
             )
 
     def test_foreign_server_name_refuses(self):
@@ -104,7 +135,7 @@ class MergeMcpJson(unittest.TestCase):
         with self.assertRaises(ValueError):
             pbt.merge_mcp_json(
                 existing, "kanbanboard-agent", "/d/agent-webhook-bridge-channel.mjs",
-                self._ssh_env(), resolve=_IDENTITY,
+                self._ssh_env(), self._channel_defaults(), resolve=_IDENTITY,
             )
 
     def test_own_prior_entry_after_deploy_move_not_foreign(self):
@@ -121,7 +152,7 @@ class MergeMcpJson(unittest.TestCase):
         })
         out = pbt.merge_mcp_json(
             existing, "kanbanboard-agent", "/new/checkout/agent-webhook-bridge-channel.mjs",
-            self._ssh_env(), resolve=_IDENTITY,
+            self._ssh_env(), self._channel_defaults(), resolve=_IDENTITY,
         )
         self.assertEqual(
             out["mcpServers"]["kanbanboard-agent"]["args"],
@@ -137,7 +168,7 @@ class MergeMcpJson(unittest.TestCase):
         })
         out = pbt.merge_mcp_json(
             existing, "kanbanboard-agent", "/d/agent-webhook-bridge-channel.mjs",
-            self._ssh_env(), resolve=_IDENTITY,
+            self._ssh_env(), self._channel_defaults(), resolve=_IDENTITY,
         )
         self.assertEqual(out["_comment"], "keep me")
         self.assertIn("other-server", out["mcpServers"])
@@ -162,7 +193,7 @@ class MergeMcpJson(unittest.TestCase):
         })
         out = pbt.merge_mcp_json(
             existing, "kanbanboard-agent", "/deploy/agent-webhook-bridge-channel.mjs",
-            self._ssh_env(), resolve=_IDENTITY,
+            self._ssh_env(), self._channel_defaults(), resolve=_IDENTITY,
         )
         env = out["mcpServers"]["kanbanboard-agent"]["env"]
         self.assertEqual(env["BRIDGE_TOOLS_SSH_TARGET"], "bridge-user@host-A")

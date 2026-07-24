@@ -163,7 +163,12 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   `MaxSessions` backstop directives `bridge:check` hard-asserts) with a
   validate-then-reload; `--role b` (the calling seat, cross-platform python) generates
   the FIPS ECDSA P-256 key, deploys the bundled channel-server snapshot, and merges
-  `.mcp.json`. Its pubkey validator is a **full-line shape check** (rejects multi-line /
+  `.mcp.json`. The merge **force-sets the SSH tools transport keys** it owns
+  (`BRIDGE_TOOLS_SSH_TARGET`/`_KEY`/`_PORT`) but only **creates the live-wake channel
+  vars (`BRIDGE_CHANNEL_TRANSPORT`/`_NAME`) if absent** — a re-provision never
+  overwrites an existing seat's channel transport (e.g. an HTTP live-wake fallback),
+  only bootstrapping the `unix` default on a fresh `.mcp.json`. Its pubkey validator is
+  a **full-line shape check** (rejects multi-line /
   CRLF pastes), superseding the prefix-only guard the old generated bash carried.
   Run the host-A line as root on the bridge box and the host-B line on the calling seat;
   a same-box Linux run hands the `.pub` path to `--role a --pubkey-from` (no paste).
