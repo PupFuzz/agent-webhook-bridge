@@ -51,6 +51,12 @@ export BRIDGE_CHANNEL_TOKEN="$(openssl rand -base64 48 | tr -d /=+ | head -c 64)
 echo "Save this token securely: $BRIDGE_CHANNEL_TOKEN"
 ```
 
+> **Distinct port per seat on a shared box.** `BRIDGE_CHANNEL_PORT` defaults to `8788`
+> fleet-wide, so a **second** `http`-transport channel server on the same host collides on
+> that port. The collision is loud and fail-closed — the second server refuses to start,
+> writes an `EADDRINUSE` `.FAILED` marker, and exits — but a multi-seat box (e.g. two agents
+> on one Windows machine) must give each seat a distinct `BRIDGE_CHANNEL_PORT` to run both.
+
 ### 2. On host B — configure Claude Code for HTTP transport
 
 Drop `.mcp.json` in your Claude Code project root:
@@ -350,12 +356,14 @@ command="php /path/to/agent-webhook-bridge/artisan bridge:tools-call --agent=<ag
 ```
 
 `bridge:provision-tools --agent=<agent>` (with the agent's `board_tools.transport:
-ssh` block present) **generates a guided, idempotent root-run setup script** (DL-226)
-that embeds this exact line pre-filled for your install — alongside the sshd `Match
-User` drop-in (§ 3), the FIPS keygen guidance (§ 1), and a validate-then-reload. Review
-it, then run it as root (`sudo bash <script>`); it append-or-verifies each piece and
-never clobbers existing config. Certify afterward with `bridge:check
---probe-tools-ssh=<user@host-A>`.
+ssh` block present) **prints the ready-to-run `provision-board-tools.py --role a|b`
+invocation** for each leg (FR #5010 §2), with this agent's params filled in. The
+`--role a` line (run as root on host A) pins this exact forced-command line and writes
+the sshd `Match User` drop-in (§ 3) with a validate-then-reload; the `--role b` line
+(run on host B) generates the FIPS key (§ 1), deploys the channel snapshot, and merges
+`.mcp.json`. Both legs are idempotent (append-or-verify; never clobber existing config)
+and fail-closed. A same-box Linux run hands the `.pub` path to `--role a --pubkey-from`
+(no paste). Certify afterward with `bridge:check --probe-tools-ssh=<user@host-A>`.
 
 ### 3. On host A — scope the sshd hardening to the bridge user
 
