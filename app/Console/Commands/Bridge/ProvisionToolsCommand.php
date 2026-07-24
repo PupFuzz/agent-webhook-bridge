@@ -218,7 +218,8 @@ class ProvisionToolsCommand extends BridgeCommand
      * provisioning is emitting the exact two-leg invocation with this agent's params
      * filled in (`--agent` from the config, `--artisan` from base_path, `--ssh-account`
      * from board_tools.ssh_account). The static python program owns both legs:
-     * `--role a` (root, Linux) pins the forced-command key + sshd drop-in; `--role b`
+     * `--role a` (root, Linux) pins the forced-command key (the sole board-tools security
+     * boundary — no account-level sshd hardening, card 5091); `--role b`
      * (the calling seat, cross-platform) generates the FIPS key, deploys the channel
      * snapshot, and merges `.mcp.json`. A single source cannot drift, and its full-line
      * pubkey validator supersedes the prefix-only guard the old generated bash carried
@@ -235,7 +236,7 @@ class ProvisionToolsCommand extends BridgeCommand
         $this->info("[{$agentName}] ssh transport — no bridge-side secret is minted (the private key lives on host B). Run the two ready-to-run provisioning invocations below: the host-A line as ROOT on THIS (bridge) box, the host-B line on the calling seat. Both legs are idempotent and fail-closed.");
         $this->line('');
         foreach ([
-            '# host A — run as ROOT on this (bridge) box (pins the forced-command key + writes the sshd drop-in):',
+            '# host A — run as ROOT on this (bridge) box (pins the forced-command key — the sole board-tools boundary; no sshd drop-in):',
             "sudo python3 {$script} --role a --agent {$agentName} \\",
             "     --artisan {$artisan} --ssh-account {$account} --pubkey-stdin",
             "#   (paste host B's PUBLIC key on stdin; same-box instead: --pubkey-from <path-to-.pub>)",

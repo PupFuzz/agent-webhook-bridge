@@ -358,54 +358,46 @@ command="php /path/to/agent-webhook-bridge/artisan bridge:tools-call --agent=<ag
 `bridge:provision-tools --agent=<agent>` (with the agent's `board_tools.transport:
 ssh` block present) **prints the ready-to-run `provision-board-tools.py --role a|b`
 invocation** for each leg (FR #5010 §2), with this agent's params filled in. The
-`--role a` line (run as root on host A) pins this exact forced-command line and writes
-the sshd `Match User` drop-in (§ 3) with a validate-then-reload; the `--role b` line
+`--role a` line (run as root on host A) pins this exact forced-command line — the sole
+security boundary (§ 3) — and makes no `sshd_config` change; the `--role b` line
 (run on host B) generates the FIPS key (§ 1), deploys the channel snapshot, and merges
 `.mcp.json`. Both legs are idempotent (append-or-verify; never clobber existing config)
 and fail-closed. A same-box Linux run hands the `.pub` path to `--role a --pubkey-from`
 (no paste). Certify afterward with `bridge:check --probe-tools-ssh=<user@host-A>`.
 
-### 3. On host A — scope the sshd hardening to the bridge user
+### 3. The security boundary — the forced-command key (no sshd drop-in)
 
-A `Match User` drop-in closes the password-auth path that would otherwise bypass
-the forced command (box-wide is opt-in) **and** pins the idle/concurrency backstop.
-All of it is **required** and `bridge:check`-verified (card 4977):
+The **sole** security boundary for the board-tools SSH transport is the pinned
+forced-command `authorized_keys` line (§ 2): sshd substitutes
+`bridge:tools-call --agent=<agent>` for whatever the key-holder sends, and the
+enumerated `no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding` flags
+deny an interactive shell and every forwarding channel regardless of how sshd is
+otherwise configured. `provision-board-tools.py --role a` writes **only** that line;
+it makes **no** change to `sshd_config`.
 
-```
-# /etc/ssh/sshd_config.d/<bridge-user>-board-tools.conf
-Match User <bridge-user>
-    PasswordAuthentication no
-    ClientAliveInterval 300
-    ClientAliveCountMax 2
-    MaxSessions 10
-```
-
-> **Idle/concurrency backstop — now verified (card 4977).** `bridge:tools-call`
-> carries a best-effort in-process stdin deadline, but that guard is socket-reliable
-> and **unverified** on the plain pipe sshd hands a forced command — so **sshd** is the
-> authoritative backstop, and it is the only real bound on a key-holder that
-> deliberately holds stdin open. `bridge:check` therefore **asserts** the
-> Match-resolved sshd config for the forced-command account has `ClientAliveInterval`>0
-> (reaps a client that has gone away — they detect a dead transport), a bounded idle
-> window `ClientAliveInterval × ClientAliveCountMax` with **`ClientAliveCountMax`>0**
-> (`0` DISABLES the client-alive disconnect, leaving the window unbounded — sshd emits
-> the directive by default, so absence is not the failure to look for), and a
-> **`MaxSessions`>0** cap; a missing **or non-positive** directive **fails** the check
-> with the exact directive + this `Match User` remedy. Set the global `MaxStartups` too,
-> to bound pre-auth channels.
+> **No account-level sshd hardening (card 5091).** Earlier releases had `--role a`
+> write a `Match User <bridge-user>` sshd drop-in (`PasswordAuthentication no` +
+> `ClientAliveInterval`/`ClientAliveCountMax`/`MaxSessions`) and had `bridge:check`
+> hard-assert that posture. That is **retired**: the drop-in is account-scoped, so it
+> locked out an operator whose own interactive login shares the ssh account — the
+> deployment reality. The forced command already denies pty and all forwarding on its
+> own key regardless of sshd config, so it stands alone as the boundary. `bridge:check`
+> no longer asserts any account sshd posture (no `PasswordAuthentication`,
+> `ClientAlive*`, or `MaxSessions` check). Operators remain free to apply box-wide sshd
+> hardening themselves, but the bridge neither writes nor requires it.
 
 > **`sudo bridge:check` + a distinct forced-command account (card 4977).** When you
-> certify as root (`sudo bridge:check`, needed for the root-gated `sshd -T` legs) but
-> the forced command runs as a **different** OS account than `root`, set
-> **`board_tools.ssh_account: <bridge-user>`** in the agent config. Absent it, the probe
-> resolves the *invoking* account (root under sudo) and would certify **root's** sshd
-> posture and read **`/root/.ssh/authorized_keys`** — false-negativing the very seat it
-> targets. With it set, the posture, `authorized_keys` (`%h`/`%u`), and the backstop all
-> resolve `<bridge-user>`. If a **configured** `ssh_account` does not resolve to an OS
-> account on the host, the account-dependent legs **fail** honestly (*"…does not resolve
-> to an OS account…"*) rather than certify against a phantom `/.ssh/authorized_keys`
-> built from an empty home. Leave it unset when the forced command runs as the invoking
-> account (byte-identical to before).
+> certify as root (`sudo bridge:check`, needed to read a non-invoking account's `0600`
+> `authorized_keys`) but the forced command runs as a **different** OS account than
+> `root`, set **`board_tools.ssh_account: <bridge-user>`** in the agent config. Absent
+> it, the probe resolves the *invoking* account (root under sudo) and would read
+> **`/root/.ssh/authorized_keys`** — false-negativing the very seat it targets. With it
+> set, the `authorized_keys` (`%h`/`%u`) pinned-line check resolves `<bridge-user>`. If a
+> **configured** `ssh_account` does not resolve to an OS account on the host, the
+> account-dependent legs **fail** honestly (*"…does not resolve to an OS account…"*)
+> rather than certify against a phantom `/.ssh/authorized_keys` built from an empty home.
+> Leave it unset when the forced command runs as the invoking account (byte-identical to
+> before).
 
 ### 4. On host B — point the channel server at the ssh target
 
@@ -423,22 +415,23 @@ transport).
 ### 5. On host A — certify
 
 ```bash
-# The sshd-posture legs need root; run once as root to certify the enablement.
-sudo bridge:check                                   # offline: pinned line + FIPS key + sshd posture
+# Reading a forced-command account's 0600 authorized_keys needs root when it is not the
+# invoking account; run once as root (with board_tools.ssh_account set) to certify offline.
+sudo bridge:check                                   # offline: pinned line + FIPS key
 bridge:check --probe-tools-ssh=<bridge-user>@host-A # live round-trip (from a host that can reach A)
 ```
 
-`bridge:check` fails if the pinned line grants a pty/forwarding, if a FIPS seat's
-key is ed25519, if `PasswordAuthentication` is not disabled for the forced-command
-account, or if that account's sshd idle/concurrency backstop is incomplete
-(`ClientAliveInterval`/`ClientAliveCountMax`/`MaxSessions` — card 4977); run
-unprivileged it emits an explicit **UNVERIFIED** warn for the root-gated sshd legs
-(never a false OK). Under `sudo` with a distinct forced-command account, set
-`board_tools.ssh_account` (see step 3) so these legs certify that account, not root.
+`bridge:check` fails if the pinned line grants a pty/forwarding or if a FIPS seat's
+key is ed25519; it asserts **no** sshd posture (card 5091 retired the account-level
+hardening — see § 3). Run where it cannot read the forced-command account's
+`authorized_keys` (unprivileged, distinct account) it emits an explicit
+**UNVERIFIED** warn for that leg (never a false OK). Under `sudo` with a distinct
+forced-command account, set `board_tools.ssh_account` (see step 3) so the pinned-line
+check certifies that account, not root.
 
-> Live-fire rides the witnesses (aimla same-box + sola cross-host+FIPS). The
-> `sshd -T` root requirement and a FIPS sshd's `restrict` behavior are reasoned
-> from the OpenSSH man page, confirmed on a real FIPS seat when sola's seat fires.
+> Live-fire rides the witnesses (aimla same-box + sola cross-host+FIPS). A FIPS sshd's
+> `restrict` behavior is reasoned from the OpenSSH man page, confirmed on a real FIPS
+> seat when sola's seat fires.
 
 ## What this runbook does NOT cover
 

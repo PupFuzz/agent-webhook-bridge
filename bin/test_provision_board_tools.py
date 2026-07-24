@@ -756,5 +756,36 @@ class NpmInvocation(unittest.TestCase):
         self.assertIn("npm ci", str(cm.exception))
 
 
+class NoAccountLevelSshdHardening(unittest.TestCase):
+    """Card 5091 (USER-FOUND, security): `--role a` must NOT disable PasswordAuthentication
+    (or otherwise harden sshd) at the ACCOUNT level. The ssh-account routinely doubles as the
+    operator's interactive login, so a `Match User <acct> { PasswordAuthentication no }` drop-in
+    plus a forced-command-only authorized_keys leaves no interactive path — operator lockout.
+    The forced-command authorized_keys entry is the sole board-tools security boundary; the
+    account-level drop-in added no boundary it does not already impose. Reverting (re-adding the
+    drop-in) turns these RED.
+    """
+
+    _SRC = os.path.join(_HERE, "provision-board-tools.py")
+
+    def test_no_write_sshd_dropin_symbol(self):
+        self.assertFalse(
+            hasattr(pbt, "_write_sshd_dropin"),
+            "the account-level sshd drop-in (operator-lockout, card 5091) must not return",
+        )
+
+    def test_source_never_writes_the_sshd_dropin(self):
+        # The lockout mechanism was a drop-in written to /etc/ssh/sshd_config.d/<acct>-board-tools.conf.
+        # Guarding the write PATH (not the concept) keeps the test precise: it stays green while the
+        # fix is documented in prose, and goes red only if the drop-in write actually returns.
+        with open(self._SRC, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn(
+            "sshd_config.d",
+            src,
+            "provisioning must not write an sshd drop-in — that is the card-5091 lockout path",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
