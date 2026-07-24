@@ -408,6 +408,21 @@ def _write_sshd_dropin(account: str) -> None:
 # --------------------------------------------------------------------------- #
 # Host-B leg (`--role b`) — cross-platform (POSIX path implemented; Windows gated)
 # --------------------------------------------------------------------------- #
+def channel_transport_default(os_name=os.name):
+    """The fresh-seat live-wake channel transport, by platform.
+
+    Windows returns "http": Node on Win32 rejects filesystem socket paths (EACCES)
+    and the channel server refuses a `unix` transport with no socket (process.exit(2)),
+    so `unix` is unusable on a fresh Windows seat — `http` is the only working transport
+    (empirically certified, roundtable #145). POSIX returns "unix" (unchanged default).
+
+    Pure and os_name-parameterized so both branches are unit-testable without a real
+    Windows host; run_role_b's Windows path is otherwise gated at _host_b_home() before
+    this value is consumed.
+    """
+    return "http" if os_name == "nt" else "unix"
+
+
 def run_role_b(args) -> int:
     if not _AGENT_RE.fullmatch(args.agent):
         _fail(f"--agent {args.agent!r} must match ^[a-z0-9_-]+$")
@@ -443,7 +458,7 @@ def run_role_b(args) -> int:
     # re-provision never rewrites a live-wake channel that already runs the HTTP
     # transport (which would switch the listener transport out from under the seat).
     channel_defaults = {
-        "BRIDGE_CHANNEL_TRANSPORT": "unix",
+        "BRIDGE_CHANNEL_TRANSPORT": channel_transport_default(),
         "BRIDGE_CHANNEL_NAME": args.channel_name,
     }
 
