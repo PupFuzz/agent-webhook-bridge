@@ -10,15 +10,12 @@ use PHPUnit\Framework\TestCase;
  * The bridge:check SSH-transport probe (card 4952, Finding D). Drives every root-gated /
  * FIPS / sshd branch through an in-memory {@see SshProbeEnvironment} fake — no root, no
  * sshd, no /proc. Asserts the DR2-3 severity split (unverifiable ⇒ warn, present-but-bad
- * ⇒ fail) and the FIPS-ed25519 + password-auth reds.
+ * ⇒ fail) and the FIPS-ed25519 red. (The sshd account-posture leg was retired in card 5091 —
+ * see test_posture_probe_is_retired_no_account_hardening_assertions.)
  */
 class SshTransportProbeTest extends TestCase
 {
     private const GOOD_LINE = 'command="php artisan bridge:tools-call --agent=me",restrict ssh-ed25519 AAAAKEYBLOB me';
-
-    // A bounded sshd idle/concurrency backstop (ClientAlive* + MaxSessions all set) so
-    // a posture fixture testing password-auth does not also trip the new backstop.
-    private const BACKSTOP_OK = "clientaliveinterval 300\nclientalivecountmax 2\nmaxsessions 10\n";
 
     /** @param array{severity: string, message: string}[] $findings */
     private function hasSeverity(array $findings, string $severity): bool
@@ -115,37 +112,19 @@ class SshTransportProbeTest extends TestCase
         $this->assertFalse($this->hasSeverity($findings, 'fail'));
     }
 
-    // ─── sshd password-auth posture ───────────────────────────────────────────
+    // ─── retired: sshd account posture (card 5091) ────────────────────────────
+    // The password-auth + idle/concurrency posture assertions were REMOVED: they demanded
+    // the account-level `Match User` drop-in that card 5091 retired (it locked out an
+    // operator sharing the ssh-account). The sole board-tools boundary is now the pinned
+    // forced-command key (probePinnedLine, above) + the live round-trip (probeLive, below).
+    // The absence guard below fails RED if probeSshdPosture is reintroduced.
 
-    public function test_posture_unverified_when_not_root_warns_never_fails(): void
+    public function test_posture_probe_is_retired_no_account_hardening_assertions(): void
     {
-        $env = new FakeSshProbeEnvironment(authorizedKeys: self::GOOD_LINE);   // isRoot false → sshdConfig null
-        $findings = (new SshTransportProbe($env))->probeSshdPosture();
-        $this->assertTrue($this->hasSeverity($findings, 'warn'));
-        $this->assertFalse($this->hasSeverity($findings, 'fail'));
-    }
-
-    public function test_password_auth_enabled_fails(): void
-    {
-        $env = new FakeSshProbeEnvironment(
-            authorizedKeys: self::GOOD_LINE,
-            isRoot: true,
-            sshdConfig: "passwordauthentication yes\nauthorizedkeysfile .ssh/authorized_keys\n".self::BACKSTOP_OK,
+        $this->assertFalse(
+            method_exists(SshTransportProbe::class, 'probeSshdPosture'),
+            'the retired sshd account-posture leg (operator-lockout, card 5091) must not return',
         );
-        $findings = (new SshTransportProbe($env))->probeSshdPosture();
-        $this->assertTrue($this->hasSeverity($findings, 'fail'));
-    }
-
-    public function test_password_auth_disabled_passes(): void
-    {
-        $env = new FakeSshProbeEnvironment(
-            authorizedKeys: self::GOOD_LINE,
-            isRoot: true,
-            sshdConfig: "passwordauthentication no\nauthorizedkeysfile .ssh/authorized_keys\n".self::BACKSTOP_OK,
-        );
-        $findings = (new SshTransportProbe($env))->probeSshdPosture();
-        $this->assertTrue($this->hasSeverity($findings, 'ok'));
-        $this->assertFalse($this->hasSeverity($findings, 'fail'));
     }
 
     // ─── forced-command account resolution (card 4977) ───────────────────────
@@ -153,30 +132,28 @@ class SshTransportProbeTest extends TestCase
     public function test_split_topology_resolves_the_configured_ssh_account_not_the_invoker(): void
     {
         // Invoking account is root (sudo bridge:check); the forced command runs as
-        // `device`. The posture query, authorized_keys resolution, and backstop must
-        // ALL target `device`, never root.
+        // `device`. The authorized_keys resolution must target `device`, never root.
         $env = new FakeSshProbeEnvironment(
             authorizedKeys: self::GOOD_LINE,
             isRoot: true,
-            sshdConfig: "authorizedkeysfile %h/.ssh/authorized_keys\npasswordauthentication no\n".self::BACKSTOP_OK,
+            sshdConfig: "authorizedkeysfile %h/.ssh/authorized_keys\n",
             runUser: 'root',
             runUserHome: '/root',
             userHomes: ['device' => '/home/device'],
         );
         $probe = new SshTransportProbe($env, 'device');
 
-        $probe->probePinnedLine('me');
-        $findings = $probe->probeSshdPosture();
+        $findings = $probe->probePinnedLine('me');
 
         // authorized_keys resolved via device's %h, NOT /root/...
         $this->assertContains('/home/device/.ssh/authorized_keys', $env->readPaths);
         $this->assertNotContains('/root/.ssh/authorized_keys', $env->readPaths);
 
-        // Every sshd -T query targeted `device`, never root.
+        // The sshd -T AuthorizedKeysFile lookup targeted `device`, never root.
         $this->assertContains('device', $env->sshdQueriedUsers);
         $this->assertNotContains('root', $env->sshdQueriedUsers);
 
-        // The posture + backstop asserts evaluated device's Match block (bounded ⇒ ok, no fail).
+        // The pinned forced-command line for device resolved clean.
         $this->assertFalse($this->hasSeverity($findings, 'fail'));
         $this->assertTrue($this->hasSeverity($findings, 'ok'));
     }
@@ -184,106 +161,23 @@ class SshTransportProbeTest extends TestCase
     public function test_fallback_unset_account_queries_the_invoking_account_exactly_as_before(): void
     {
         // canon #6: ssh_account unset ⇒ byte-identical to pre-4977 — the authorized_keys
-        // sshd query passes NO -C (null), the keys path uses the invoking run-user's home,
-        // and posture queries the invoking run-user.
+        // sshd query passes NO -C (null) and the keys path uses the invoking run-user's home.
         $env = new FakeSshProbeEnvironment(
             authorizedKeys: self::GOOD_LINE,
             isRoot: true,
-            sshdConfig: "authorizedkeysfile .ssh/authorized_keys\npasswordauthentication no\n".self::BACKSTOP_OK,
+            sshdConfig: "authorizedkeysfile .ssh/authorized_keys\n",
             runUser: 'bridge',
             runUserHome: '/home/bridge',
         );
         $probe = new SshTransportProbe($env);   // no ssh_account
 
         $probe->probePinnedLine('me');
-        $probe->probeSshdPosture();
 
         $this->assertSame('bridge', $probe->forcedCommandAccount());
         // The keys-path sshd query passed no -C (null) — byte-identical to pre-4977.
         $this->assertContains(null, $env->sshdQueriedUsers);
-        // Posture queried the invoking run-user, never a foreign account.
-        $this->assertContains('bridge', $env->sshdQueriedUsers);
         // The default keys path used the invoking run-user's home.
         $this->assertContains('/home/bridge/.ssh/authorized_keys', $env->readPaths);
-    }
-
-    // ─── sshd idle/concurrency backstop (card 4977) ───────────────────────────
-
-    public function test_backstop_fails_when_client_alive_and_max_sessions_are_unset(): void
-    {
-        $env = new FakeSshProbeEnvironment(
-            authorizedKeys: self::GOOD_LINE,
-            isRoot: true,
-            sshdConfig: "passwordauthentication no\nauthorizedkeysfile .ssh/authorized_keys\n",   // no ClientAlive*/MaxSessions
-        );
-        $findings = (new SshTransportProbe($env))->probeSshdPosture();
-        $backstop = $this->firstMatching($findings, 'idle/concurrency backstop');
-        $this->assertNotNull($backstop);
-        $this->assertSame('fail', $backstop['severity']);
-        $this->assertStringContainsString('ClientAliveInterval', $backstop['message']);
-        $this->assertStringContainsString('MaxSessions', $backstop['message']);
-        $this->assertStringContainsString('Match User', $backstop['message']);
-    }
-
-    public function test_backstop_fails_when_client_alive_interval_is_zero(): void
-    {
-        // interval 0 = sshd keepalive disabled = unbounded idle, even with the others set.
-        $env = new FakeSshProbeEnvironment(
-            authorizedKeys: self::GOOD_LINE,
-            isRoot: true,
-            sshdConfig: "passwordauthentication no\nclientaliveinterval 0\nclientalivecountmax 3\nmaxsessions 10\n",
-        );
-        $findings = (new SshTransportProbe($env))->probeSshdPosture();
-        $backstop = $this->firstMatching($findings, 'idle/concurrency backstop');
-        $this->assertNotNull($backstop);
-        $this->assertSame('fail', $backstop['severity']);
-        $this->assertStringContainsString('ClientAliveInterval', $backstop['message']);
-    }
-
-    public function test_backstop_ok_when_bounded(): void
-    {
-        $env = new FakeSshProbeEnvironment(
-            authorizedKeys: self::GOOD_LINE,
-            isRoot: true,
-            sshdConfig: "passwordauthentication no\n".self::BACKSTOP_OK,
-        );
-        $findings = (new SshTransportProbe($env))->probeSshdPosture();
-        $backstop = $this->firstMatching($findings, 'idle/concurrency backstop');
-        $this->assertNotNull($backstop);
-        $this->assertSame('ok', $backstop['severity']);
-        $this->assertStringContainsString('600s idle bound', $backstop['message']);   // 300 × 2
-    }
-
-    public function test_backstop_fails_when_client_alive_count_max_is_zero(): void
-    {
-        // ClientAliveCountMax 0 DISABLES sshd's client-alive disconnect — the exact
-        // unbounded-idle case. sshd -T always emits the directive, so a `=== null` guard
-        // never catches it; the guard must reject the non-positive value.
-        $env = new FakeSshProbeEnvironment(
-            authorizedKeys: self::GOOD_LINE,
-            isRoot: true,
-            sshdConfig: "passwordauthentication no\nclientaliveinterval 300\nclientalivecountmax 0\nmaxsessions 10\n",
-        );
-        $findings = (new SshTransportProbe($env))->probeSshdPosture();
-        $backstop = $this->firstMatching($findings, 'idle/concurrency backstop');
-        $this->assertNotNull($backstop);
-        $this->assertSame('fail', $backstop['severity']);
-        $this->assertStringContainsString('ClientAliveCountMax', $backstop['message']);
-    }
-
-    public function test_backstop_fails_when_max_sessions_is_zero(): void
-    {
-        // MaxSessions 0 fail-shuts the forced command — still must not report ok.
-        $env = new FakeSshProbeEnvironment(
-            authorizedKeys: self::GOOD_LINE,
-            isRoot: true,
-            sshdConfig: "passwordauthentication no\nclientaliveinterval 300\nclientalivecountmax 2\nmaxsessions 0\n",
-        );
-        $findings = (new SshTransportProbe($env))->probeSshdPosture();
-        $backstop = $this->firstMatching($findings, 'idle/concurrency backstop');
-        $this->assertNotNull($backstop);
-        $this->assertSame('fail', $backstop['severity']);
-        $this->assertStringContainsString('MaxSessions', $backstop['message']);
     }
 
     // ─── configured ssh_account that does not resolve (card 4977, Defect 2) ────
@@ -296,17 +190,15 @@ class SshTransportProbeTest extends TestCase
         $env = new FakeSshProbeEnvironment(
             authorizedKeys: self::GOOD_LINE,
             isRoot: true,
-            sshdConfig: "passwordauthentication no\nauthorizedkeysfile %h/.ssh/authorized_keys\n".self::BACKSTOP_OK,
+            sshdConfig: "authorizedkeysfile %h/.ssh/authorized_keys\n",
             userHomes: ['ghost' => ''],   // '' models an account posix_getpwnam cannot resolve
         );
         $probe = new SshTransportProbe($env, 'ghost');
 
         $pinned = $probe->probePinnedLine('me');
-        $posture = $probe->probeSshdPosture();
 
         $this->assertTrue($this->hasSeverity($pinned, 'fail'));
         $this->assertFalse($this->hasSeverity($pinned, 'ok'));
-        $this->assertTrue($this->hasSeverity($posture, 'fail'));
         $this->assertNotNull($this->firstMatching($pinned, 'does not resolve to an OS account'));
         // No phantom-path read attempted (the leg fails before authorizedKeysPath).
         $this->assertNotContains('/.ssh/authorized_keys', $env->readPaths);
