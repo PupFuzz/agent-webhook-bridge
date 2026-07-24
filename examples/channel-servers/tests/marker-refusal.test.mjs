@@ -4,12 +4,13 @@
 // live-wake unless a marker file is written. These tests spawn the real channel
 // server as a child process and assert the marker appears.
 //
-// Run: `node --test examples/channel-servers/tests/` (there is no CI job wiring
-// yet — the "Channel-server supply chain" workflow only runs `npm ci` + `npm
-// audit`; this file is the first unit-level harness for the server).
+// Run: `node --test examples/channel-servers/tests/`. The "Channel-server supply
+// chain" workflow runs this suite as a CI step (after `npm ci`), so a regression in
+// any refuse-and-exit marker contract fails the PR.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import net from 'node:net';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -144,37 +145,66 @@ test('conflicting BRIDGE_TOOLS_SSH_TARGET + BRIDGE_TOOLS_ENDPOINT writes a FAILE
   assert.match(body, /both set/, 'marker should describe the dual-tools-transport misconfiguration');
 });
 
-// The http server.on('error') non-EADDRINUSE fall-through now writes a marker
-// before the bare `throw err` (mirrors the unix fall-through, D1 path 2). Unlike
-// the unix EACCES fall-through — which is Win32-only (POSIX never throws EACCES
-// for a socket path collision; it yields EADDRINUSE) — the http fall-through IS
-// POSIX-reproducible: a NON-root process binding a privileged port (80) gets
-// EACCES, a non-EADDRINUSE error that lands in the fall-through. The bare throw
-// escapes the async 'error' handler as an uncaughtException ⇒ exit 1 (not 2), so
-// this asserts on the marker, not the exit code. Skipped under root (a root
-// process binds :80 successfully, no error to drive). Red-when-reverted: drop the
-// writeFailureMarker before `throw err` and the marker assertion fails.
-test(
-  'http transport non-EADDRINUSE bind error writes a FAILED marker before throwing',
-  { skip: process.getuid && process.getuid() === 0 ? 'requires non-root (root binds :80 with no EACCES)' : false },
-  () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'marker-httpthrow-'));
-    const name = 'test-agent-httpthrow';
-    const port = '80'; // privileged → EACCES for a non-root bind
-    const res = spawnSync(process.execPath, [SERVER], {
-      env: windowsShapedEnv(tmp, {
-        BRIDGE_CHANNEL_TRANSPORT: 'http',
-        BRIDGE_CHANNEL_NAME: name,
-        BRIDGE_CHANNEL_PORT: port,
-      }),
-      encoding: 'utf8',
-      timeout: 15000,
-    });
+// Probe whether binding `port` on 127.0.0.1 fails with EACCES in THIS environment
+// — the exact non-EADDRINUSE error that drives the http fall-through the test below
+// asserts on. Resolves to the error code ('EACCES' | 'EADDRINUSE' | …) or 'BINDABLE'
+// when the bind succeeds (the throwaway listener is closed before resolving, so it
+// never occupies the port the server is about to try). Runs before the child so the
+// precondition is EMPIRICAL, not inferred from uid.
+function probePrivilegedBind(port) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', (err) => resolve(err && err.code ? err.code : 'UNKNOWN'));
+    probe.listen(port, '127.0.0.1', () => probe.close(() => resolve('BINDABLE')));
+  });
+}
 
-    const marker = path.join(tmp, `agent-webhook-bridge-channel-${name}.http-${port}.FAILED`);
-    assert.ok(fs.existsSync(marker), `expected marker at ${marker}; stderr was:\n${res.stderr}`);
-    const body = fs.readFileSync(marker, 'utf8');
-    assert.match(body, /failed to bind http/, 'marker should describe the failed http bind');
-    assert.match(body, /EACCES/, 'marker should capture the underlying err.code');
-  },
-);
+// The http server.on('error') non-EADDRINUSE fall-through writes a marker before
+// the bare `throw err` (mirrors the unix fall-through, D1 path 2). Unlike the unix
+// EACCES fall-through — which is Win32-only (POSIX never throws EACCES for a socket
+// path collision; it yields EADDRINUSE) — the http fall-through IS POSIX-reproducible:
+// a process that CANNOT bind a privileged port gets EACCES, a non-EADDRINUSE error
+// that lands in the fall-through. The bare throw escapes the async 'error' handler as
+// an uncaughtException ⇒ exit 1 (not 2), so this asserts on the marker, not the exit
+// code. Red-when-reverted: drop the writeFailureMarker before `throw err` and the
+// marker assertion fails.
+//
+// Privileged-bind strategy (hardened): the earlier version hard-coded port 80 and
+// skipped only under root (`getuid() === 0`). That inference is wrong on any host
+// where a non-root process CAN bind a low port — a container with
+// `net.ipv4.ip_unprivileged_port_start` lowered to 0 binds :80 as an ordinary user,
+// so the server would start, write NO marker, and the assertion would false-FAIL
+// (and hang to the 15s timeout). Instead we PROBE the real bind result for the chosen
+// port and only run the assertion when it genuinely yields EACCES; every other
+// outcome (BINDABLE under root/lowered-sysctl, EADDRINUSE if the port is occupied)
+// skips with a reason. Port 1023 (privileged, but effectively never bound by a
+// service) minimises the occupied-port skip vs. :80 on a dev box.
+const PRIVILEGED_PORT = '1023';
+test('http transport non-EADDRINUSE bind error writes a FAILED marker before throwing', async (t) => {
+  const bindResult = await probePrivilegedBind(Number(PRIVILEGED_PORT));
+  if (bindResult !== 'EACCES') {
+    t.skip(
+      `needs a privileged-port bind that fails with EACCES to drive the non-EADDRINUSE ` +
+        `fall-through; binding 127.0.0.1:${PRIVILEGED_PORT} here yielded '${bindResult}'`,
+    );
+    return;
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'marker-httpthrow-'));
+  const name = 'test-agent-httpthrow';
+  const res = spawnSync(process.execPath, [SERVER], {
+    env: windowsShapedEnv(tmp, {
+      BRIDGE_CHANNEL_TRANSPORT: 'http',
+      BRIDGE_CHANNEL_NAME: name,
+      BRIDGE_CHANNEL_PORT: PRIVILEGED_PORT,
+    }),
+    encoding: 'utf8',
+    timeout: 15000,
+  });
+
+  const marker = path.join(tmp, `agent-webhook-bridge-channel-${name}.http-${PRIVILEGED_PORT}.FAILED`);
+  assert.ok(fs.existsSync(marker), `expected marker at ${marker}; stderr was:\n${res.stderr}`);
+  const body = fs.readFileSync(marker, 'utf8');
+  assert.match(body, /failed to bind http/, 'marker should describe the failed http bind');
+  assert.match(body, /EACCES/, 'marker should capture the underlying err.code');
+});

@@ -3,14 +3,18 @@ name: Channel-server supply chain
 # Guards the committed examples/channel-servers/ dependency tree (the reference
 # Claude Code channel MCP server that reads a bearer token + accepts loopback
 # POSTs as the agent's OS user — a real trust boundary, so a pinned + reviewed
-# tree matters). Three checks:
+# tree matters). Four checks:
 #   1. `npm ci` — fails if package.json and package-lock.json have drifted
 #      (the committed lockfile must stay reproducible: lock regenerated whenever
 #      the dep range changes).
-#   2. `npm audit` — FAILS loudly on a high/critical CVE in the pinned tree, so a
+#   2. `node --test tests/` — the channel server's unit harness (the marker-refusal
+#      regression suite for the FR #2444 refuse-and-exit paths). A refuse path that
+#      stops writing its `.FAILED` marker leaves a seat invisibly deaf to live-wake,
+#      so this fails the PR the moment that contract regresses.
+#   3. `npm audit` — FAILS loudly on a high/critical CVE in the pinned tree, so a
 #      vulnerable-but-pinned dependency can't rot silently (the "degraded states
 #      must be loud" posture). You then bump the dep + re-commit the lock.
-#   3. version-bump-guard — consumers COPY this dir into their own deployment
+#   4. version-bump-guard — consumers COPY this dir into their own deployment
 #      (per the README), so a downstream snapshot drifts silently when these
 #      files change. FAILS a PR that touches a shipped channel-server file
 #      without bumping package.json `version` — the one field a snapshot can
@@ -54,6 +58,9 @@ jobs:
 
       - name: Reproducible install (fails on package.json/lock drift)
         run: npm ci --ignore-scripts
+
+      - name: Unit tests (node --test)
+        run: node --test tests/
 
       - name: Audit the pinned tree (fail on high/critical CVE)
         run: npm audit --audit-level=high
