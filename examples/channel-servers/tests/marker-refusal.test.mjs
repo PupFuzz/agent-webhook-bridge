@@ -87,3 +87,94 @@ test('unix transport bind collision writes the marker as <socket>.FAILED', () =>
   const marker = `${sock}.FAILED`;
   assert.ok(fs.existsSync(marker), `expected marker at ${marker}; stderr was:\n${res.stderr}`);
 });
+
+// Consolidation (roundtable #145, canon #5/#7): every startup config-validation
+// refuse-and-exit routes through refuseDeaf(), so the two sites below — which
+// previously exited WITHOUT a marker — now leave one. In the http-shaped state
+// markerPath() resolves to os.tmpdir()/…http-<port>.FAILED. Both are
+// red-when-reverted: drop the site's refuseDeaf/marker and the marker assertion
+// fails.
+
+// An invalid BRIDGE_CHANNEL_TRANSPORT value must refuse with a marker (was a
+// marker-less console.error → exit(2) before consolidation).
+test('invalid BRIDGE_CHANNEL_TRANSPORT writes a FAILED marker before exiting', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'marker-badtrans-'));
+  const name = 'test-agent-badtrans';
+  const port = '8797';
+  const res = spawnSync(process.execPath, [SERVER], {
+    env: windowsShapedEnv(tmp, {
+      BRIDGE_CHANNEL_TRANSPORT: 'bogus',
+      BRIDGE_CHANNEL_NAME: name,
+      BRIDGE_CHANNEL_PORT: port,
+    }),
+    encoding: 'utf8',
+    timeout: 15000,
+  });
+
+  assert.equal(res.status, 2, `expected exit 2, got ${res.status} (stderr: ${res.stderr})`);
+  const marker = path.join(tmp, `agent-webhook-bridge-channel-${name}.http-${port}.FAILED`);
+  assert.ok(fs.existsSync(marker), `expected marker at ${marker}; stderr was:\n${res.stderr}`);
+  const body = fs.readFileSync(marker, 'utf8');
+  assert.match(body, /BRIDGE_CHANNEL_TRANSPORT must be/, 'marker should describe the invalid-transport misconfiguration');
+});
+
+// Both board-tools transports set at once must refuse with a marker (was a
+// marker-less console.error → exit(2) before consolidation). Uses a valid http
+// transport so the refuse is the tools-conflict check, not the transport check.
+test('conflicting BRIDGE_TOOLS_SSH_TARGET + BRIDGE_TOOLS_ENDPOINT writes a FAILED marker before exiting', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'marker-toolsconflict-'));
+  const name = 'test-agent-toolsconflict';
+  const port = '8796';
+  const res = spawnSync(process.execPath, [SERVER], {
+    env: windowsShapedEnv(tmp, {
+      BRIDGE_CHANNEL_TRANSPORT: 'http',
+      BRIDGE_CHANNEL_NAME: name,
+      BRIDGE_CHANNEL_PORT: port,
+      BRIDGE_TOOLS_SSH_TARGET: 'user@host',
+      BRIDGE_TOOLS_ENDPOINT: 'http://127.0.0.1:9/agent-tools/call',
+    }),
+    encoding: 'utf8',
+    timeout: 15000,
+  });
+
+  assert.equal(res.status, 2, `expected exit 2, got ${res.status} (stderr: ${res.stderr})`);
+  const marker = path.join(tmp, `agent-webhook-bridge-channel-${name}.http-${port}.FAILED`);
+  assert.ok(fs.existsSync(marker), `expected marker at ${marker}; stderr was:\n${res.stderr}`);
+  const body = fs.readFileSync(marker, 'utf8');
+  assert.match(body, /both set/, 'marker should describe the dual-tools-transport misconfiguration');
+});
+
+// The http server.on('error') non-EADDRINUSE fall-through now writes a marker
+// before the bare `throw err` (mirrors the unix fall-through, D1 path 2). Unlike
+// the unix EACCES fall-through — which is Win32-only (POSIX never throws EACCES
+// for a socket path collision; it yields EADDRINUSE) — the http fall-through IS
+// POSIX-reproducible: a NON-root process binding a privileged port (80) gets
+// EACCES, a non-EADDRINUSE error that lands in the fall-through. The bare throw
+// escapes the async 'error' handler as an uncaughtException ⇒ exit 1 (not 2), so
+// this asserts on the marker, not the exit code. Skipped under root (a root
+// process binds :80 successfully, no error to drive). Red-when-reverted: drop the
+// writeFailureMarker before `throw err` and the marker assertion fails.
+test(
+  'http transport non-EADDRINUSE bind error writes a FAILED marker before throwing',
+  { skip: process.getuid && process.getuid() === 0 ? 'requires non-root (root binds :80 with no EACCES)' : false },
+  () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'marker-httpthrow-'));
+    const name = 'test-agent-httpthrow';
+    const port = '80'; // privileged → EACCES for a non-root bind
+    const res = spawnSync(process.execPath, [SERVER], {
+      env: windowsShapedEnv(tmp, {
+        BRIDGE_CHANNEL_TRANSPORT: 'http',
+        BRIDGE_CHANNEL_NAME: name,
+        BRIDGE_CHANNEL_PORT: port,
+      }),
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+
+    const marker = path.join(tmp, `agent-webhook-bridge-channel-${name}.http-${port}.FAILED`);
+    assert.ok(fs.existsSync(marker), `expected marker at ${marker}; stderr was:\n${res.stderr}`);
+    const body = fs.readFileSync(marker, 'utf8');
+    assert.match(body, /failed to bind http/, 'marker should describe the failed http bind');
+    assert.match(body, /EACCES/, 'marker should capture the underlying err.code');
+  },
+);
