@@ -33,6 +33,8 @@ npm ci
 
 `npm ci` installs the **exact pinned tree** from the committed `package-lock.json` (and fails if it has drifted from `package.json`) — a reproducible install for this copied-and-run reference, instead of `npm install` re-resolving a fresh dependency tree per host. The channel server reads a bearer token and accepts loopback POSTs as the agent's OS user, so a pinned, reviewed tree is the right control at that trust boundary.
 
+The server is two files: the entry point `agent-webhook-bridge-channel.mjs` and its sibling `channel-lib.mjs` (a handful of pure helpers, imported relatively). Copy or symlink the **whole directory** (as above) so both travel together — cherry-picking only the entry file breaks the import.
+
 ### Staying in sync with the canonical reference
 
 If you **copied** this directory (rather than symlinked it), it's a snapshot that can drift when the bridge updates these files (e.g. a lockfile re-pin or an `npm ci`/Node-version change). The **`version` in `package.json` is the drift signal**: it's bumped on every change to the shipped channel-server files (a CI gate enforces it), so compare your copy's version against the bridge's `examples/channel-servers/package.json` at the release you're on. If the canonical is higher, re-sync (re-copy the directory and `npm ci`). A **symlink** never drifts and needs no check.
