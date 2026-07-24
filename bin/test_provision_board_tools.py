@@ -418,6 +418,28 @@ class WindowsKeyAclDecision(unittest.TestCase):
         aces = [(self._OWNER, {"R"}), (other, {"W"})]
         self.assertEqual(pbt.evaluate_key_acl_decision(aces, self._OWNER), "ok")
 
+    # --- fail-closed-on-ambiguity refuse cases (RED-when-reverted) -------- #
+    def test_empty_ace_list_refuses(self):
+        # A vacuous accept over an empty/unparsed ACL cannot be certified safe.
+        self.assertEqual(pbt.evaluate_key_acl_decision([], self._OWNER), "refuse")
+
+    def test_non_allowed_hex_mask_token_refuses(self):
+        # A non-allowed principal holding a rights token icacls rendered as a hex mask
+        # (unknown to our classifier) might confer read — fail closed.
+        other = "S-1-5-21-1111111111-2222222222-3333333333-1107"
+        aces = [(self._OWNER, {"R"}), (other, {"0X1200A9"})]
+        self.assertEqual(pbt.evaluate_key_acl_decision(aces, self._OWNER), "refuse")
+
+    def test_full_allowed_set_still_ok(self):
+        # The exact ACL the hardening (/inheritance:r + /grant:r *SID:R) produces —
+        # proves the fail-closed additions did not flip a legit accept.
+        aces = [
+            (self._OWNER, {"R"}),
+            (pbt.SYSTEM_SID, {"F"}),
+            (pbt.ADMINISTRATORS_SID, {"F"}),
+        ]
+        self.assertEqual(pbt.evaluate_key_acl_decision(aces, self._OWNER), "ok")
+
 
 class WindowsKeyDirDecision(unittest.TestCase):
     """aimla Minor: refuse a world/Users-WRITABLE .ssh directory."""
@@ -440,6 +462,12 @@ class WindowsKeyDirDecision(unittest.TestCase):
 
     def test_everyone_writable_dir_refuses(self):
         aces = [(self._OWNER, {"F"}), (pbt.EVERYONE_SID, {"M"})]
+        self.assertEqual(pbt.evaluate_key_dir_decision(aces, self._OWNER), "refuse")
+
+    def test_untrusted_writer_hex_mask_token_refuses(self):
+        # An untrusted writer holding an unknown hex-mask token might confer write —
+        # fail closed (write-side sibling of the key-decision unknown-token hardening).
+        aces = [(self._OWNER, {"F"}), (pbt.USERS_SID, {"0X1301BF"})]
         self.assertEqual(pbt.evaluate_key_dir_decision(aces, self._OWNER), "refuse")
 
 

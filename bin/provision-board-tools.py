@@ -58,6 +58,11 @@ EVERYONE_SID = "S-1-1-0"
 # (F=full, M=modify, RX=read&execute, R=read, W=write, D=delete; G*=generic; *D=specific.)
 _ICACLS_READ_RIGHTS = frozenset({"F", "M", "RX", "R", "RD", "RC", "GR", "GA"})
 _ICACLS_WRITE_RIGHTS = frozenset({"F", "M", "W", "WD", "AD", "GW", "GA"})
+# The tokens we can classify. A token outside this universe (a hex mask like 0x1200a9,
+# or an icacls-output-format-drift token) is UNKNOWN: we cannot prove it does not confer
+# read/write, so — this being a private-key ACL — we fail closed and treat it as if it
+# does both (see _rights_confer_read / _rights_confer_write).
+_ICACLS_RECOGNIZED_RIGHTS = _ICACLS_READ_RIGHTS | _ICACLS_WRITE_RIGHTS
 # Inheritance / propagation flags icacls prints in the same parenthesised groups as
 # rights — these are NOT access rights and must not be read as such.
 _ICACLS_FLAG_TOKENS = frozenset({"OI", "CI", "IO", "NP", "I"})
@@ -269,11 +274,13 @@ def resolve_known_hosts_action(existing_content, host, port, scanned_lines) -> s
 
 
 def _rights_confer_read(rights) -> bool:
-    return bool({r.upper() for r in rights} & _ICACLS_READ_RIGHTS)
+    toks = {r.upper() for r in rights}
+    return bool(toks & _ICACLS_READ_RIGHTS) or bool(toks - _ICACLS_RECOGNIZED_RIGHTS)
 
 
 def _rights_confer_write(rights) -> bool:
-    return bool({r.upper() for r in rights} & _ICACLS_WRITE_RIGHTS)
+    toks = {r.upper() for r in rights}
+    return bool(toks & _ICACLS_WRITE_RIGHTS) or bool(toks - _ICACLS_RECOGNIZED_RIGHTS)
 
 
 def evaluate_key_acl_decision(aces, owner_sid) -> str:
@@ -288,7 +295,14 @@ def evaluate_key_acl_decision(aces, owner_sid) -> str:
     Refuse-if-BROADER only: a narrower ACL (e.g. owner-only) is "ok"; owner readability
     itself is proven by the authoritative `ssh -i` round-trip (--self-cert), not here.
     Pinned by SID so it is locale-independent (icacls prints localized names).
+
+    Fail-closed on ambiguity (defense-in-depth for a private key): an EMPTY `aces` cannot
+    be certified safe (an unparsed / format-drifted ACL) ⇒ "refuse"; and a non-allowed
+    principal holding an unrecognized/unparseable rights token (a hex mask, a drift token)
+    is treated as read-conferring by `_rights_confer_read` ⇒ "refuse".
     """
+    if not aces:
+        return "refuse"
     allowed_readers = {owner_sid, SYSTEM_SID, ADMINISTRATORS_SID}
     for sid, rights in aces:
         if _rights_confer_read(rights) and sid not in allowed_readers:
