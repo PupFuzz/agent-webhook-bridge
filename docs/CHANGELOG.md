@@ -8,6 +8,13 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
+## [0.68.1] - 2026-07-23
+
+**Patch — `bridge:provision-tools`'s generated ssh setup-script pubkey guard now survives a naive `sed` injection (DL-226 follow-on).** 1 PR since v0.68.0 (#375). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change; the change is confined to the ssh-path generated-script template.**
+
+### Fixed
+- **#375 (card#5009, roundtable #141)** — **the generated root-run ssh setup script's `HOST_B_PUBKEY` guard now survives a naive `sed` injection.** The DL-226 script carried the paste placeholder (`PASTE HOST-B PUBLIC KEY HERE`) on **both** the value-assignment line and an equality guard; a first-match-per-line `sed 's|PASTE...|<key>|'` rewrote both, so the guard compared the injected key against itself and always passed — the script died with `ERROR: set HOST_B_PUBKEY` even after a correct paste (cost aimla's operator a cycle during the first live same-box ssh enablement). The placeholder now appears exactly once (value line only); the guard is replaced with a positive key-shape test (`case … in ecdsa-*|ssh-*|sk-*`) that greens only once a real key is in place, regardless of how the value line was edited — covers FIPS ECDSA P-256, ed25519/rsa, and `sk-*` security keys. Considered-and-rejected: reading the pubkey from a keyfile at generation time (`provision-tools` is topology-agnostic — host B may be a different machine, so the path isn't config-derivable without baking in a same-box assumption; tracked separately as the one-command end-to-end enablement, FR #5010). Regression test extracts the real generated guard string and executes it under bash, red-when-reverted (exit 1 on the untouched placeholder / exit 0 after a naive sed injection). 1342/1342 phpunit, phpstan L7 0, pint clean.
+
 ## [0.68.0] - 2026-07-23
 
 **Minor — SSH becomes the DEFAULT board-tools transport (DL-225) + a guided, idempotent ssh-setup script in `bridge:provision-tools` (DL-226).** The two-front-door work (DL-223/DL-224) shipped ssh as an opt-in; the fleet direction (roundtable #133/#138) is ssh-first, so an unset `board_tools.transport` now reads as `ssh` instead of `http`. Plus `bridge:provision-tools` graduates from print-only scaffolding to GENERATING a root-run setup script whose output PASSES the `bridge:check` sshd backstop.
