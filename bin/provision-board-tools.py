@@ -9,6 +9,16 @@ deploys the bundled channel-server snapshot, and merges the seat's `.mcp.json`.
 The two legs share one key-shape validator and one `.mcp.json` merge contract
 (the pure functions below) so the two contracts are defined exactly once and
 cannot drift between legs.
+
+Windows host-B leg status (canon #9 — honest boundary): the `os.name == "nt"`
+branches (`_host_b_home`, `_harden_private_key_perms_windows`, `_seed_known_hosts`,
+`_require_win_openssh`, and the icacls ACL enumeration/decision) were validated on a
+real en-US Windows 11 seat, and the `--self-cert` ssh -i round-trip (spec §5.6) is the
+authoritative perm check; the icacls SID-based ACL assertion is defense-in-depth, not
+the authoritative check. Locale caveat: the icacls name→SID table matches en-US
+account names — on a localized Windows the icacls path fails CLOSED on an unresolved
+principal (a spurious refuse, never an unsafe accept); a durable SID-direct resolution
+is tracked separately.
 """
 
 from __future__ import annotations
@@ -36,9 +46,26 @@ HTTP_SIBLING_TOOLS_KEYS = (
     "BRIDGE_TOOLS_TOKEN_FILE",
 )
 
-WINDOWS_GATED_MSG = (
-    "Windows host-B leg gated on aimla AC-1..5 review (roundtable #141) — not yet certified"
-)
+# Well-known Windows SIDs (locale-independent) — the icacls ACL decision is pinned by
+# SID, not by the localized account name icacls prints.
+SYSTEM_SID = "S-1-5-18"
+ADMINISTRATORS_SID = "S-1-5-32-544"
+USERS_SID = "S-1-5-32-545"
+AUTHENTICATED_USERS_SID = "S-1-5-11"
+EVERYONE_SID = "S-1-1-0"
+
+# icacls simple-rights tokens that confer READ of the private-key bytes / WRITE of a dir.
+# (F=full, M=modify, RX=read&execute, R=read, W=write, D=delete; G*=generic; *D=specific.)
+_ICACLS_READ_RIGHTS = frozenset({"F", "M", "RX", "R", "RD", "RC", "GR", "GA"})
+_ICACLS_WRITE_RIGHTS = frozenset({"F", "M", "W", "WD", "AD", "GW", "GA"})
+# The tokens we can classify. A token outside this universe (a hex mask like 0x1200a9,
+# or an icacls-output-format-drift token) is UNKNOWN: we cannot prove it does not confer
+# read/write, so — this being a private-key ACL — we fail closed and treat it as if it
+# does both (see _rights_confer_read / _rights_confer_write).
+_ICACLS_RECOGNIZED_RIGHTS = _ICACLS_READ_RIGHTS | _ICACLS_WRITE_RIGHTS
+# Inheritance / propagation flags icacls prints in the same parenthesised groups as
+# rights — these are NOT access rights and must not be read as such.
+_ICACLS_FLAG_TOKENS = frozenset({"OI", "CI", "IO", "NP", "I"})
 
 # Complete positive allowlist of authorized_keys key types (never a prefix test —
 # a prefix test is defeated by a multi-line paste whose first line matches).
@@ -246,6 +273,93 @@ def resolve_known_hosts_action(existing_content, host, port, scanned_lines) -> s
     return "append"
 
 
+def _rights_confer_read(rights) -> bool:
+    toks = {r.upper() for r in rights}
+    return bool(toks & _ICACLS_READ_RIGHTS) or bool(toks - _ICACLS_RECOGNIZED_RIGHTS)
+
+
+def _rights_confer_write(rights) -> bool:
+    toks = {r.upper() for r in rights}
+    return bool(toks & _ICACLS_WRITE_RIGHTS) or bool(toks - _ICACLS_RECOGNIZED_RIGHTS)
+
+
+def evaluate_key_acl_decision(aces, owner_sid) -> str:
+    """Decide whether a Windows private-key ACL is `chmod 600`-equivalent — pure, no I/O.
+
+    `aces` is the parsed icacls ACL: a list of `(sid, rights_tokens)` where rights_tokens
+    is an iterable of icacls right letters (R, RX, F, M, ...). Returns:
+      "refuse" — some principal BEYOND {owner, SYSTEM, Administrators} can read the key
+                 (a world/Users-readable private key is the banned silent failure);
+      "ok"     — only the owner (plus Win32-OpenSSH's tolerated SYSTEM + Administrators,
+                 which is compatibility, not a hole) can read it.
+    Refuse-if-BROADER only: a narrower ACL (e.g. owner-only) is "ok"; owner readability
+    itself is proven by the authoritative `ssh -i` round-trip (--self-cert), not here.
+    Pinned by SID so it is locale-independent (icacls prints localized names).
+
+    Fail-closed on ambiguity (defense-in-depth for a private key): an EMPTY `aces` cannot
+    be certified safe (an unparsed / format-drifted ACL) ⇒ "refuse"; and a non-allowed
+    principal holding an unrecognized/unparseable rights token (a hex mask, a drift token)
+    is treated as read-conferring by `_rights_confer_read` ⇒ "refuse".
+    """
+    if not aces:
+        return "refuse"
+    allowed_readers = {owner_sid, SYSTEM_SID, ADMINISTRATORS_SID}
+    for sid, rights in aces:
+        if _rights_confer_read(rights) and sid not in allowed_readers:
+            return "refuse"
+    return "ok"
+
+
+def evaluate_key_dir_decision(aces, owner_sid) -> str:
+    """Decide whether the `.ssh` directory ACL is safe — pure, no I/O. (aimla Minor.)
+
+    A world/Users-writable key directory lets a local attacker swap the key regardless
+    of the file ACL, so refuse if Everyone / Users / Authenticated Users can WRITE it.
+    Returns "refuse" or "ok". `owner_sid` is accepted for signature symmetry with the
+    key decision (the untrusted-writer set is fixed and never includes the owner).
+    """
+    untrusted_writers = {EVERYONE_SID, USERS_SID, AUTHENTICATED_USERS_SID}
+    for sid, rights in aces:
+        if sid in untrusted_writers and _rights_confer_write(rights):
+            return "refuse"
+    return "ok"
+
+
+def parse_icacls_aces(text, path, name_to_sid) -> list:
+    """Parse `icacls <path>` stdout into `[(sid, {rights tokens})]` — pure given `name_to_sid`.
+
+    `name_to_sid(principal)` maps an icacls-printed account name (or raw SID) to a SID;
+    an unresolvable principal keeps its raw name so the decision treats it as untrusted
+    (fail closed). The first data line is prefixed with `path`; that prefix is stripped.
+    Each ACE is `PRINCIPAL:(GRP)(GRP)...`; PRINCIPAL may contain spaces/backslashes
+    (`NT AUTHORITY\\SYSTEM`) so the split anchors on the `:(...)` rights suffix, not `:`.
+    """
+    aces = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if low.startswith("successfully processed") or "failed processing" in low:
+            continue
+        if line.startswith(path):
+            line = line[len(path):].strip()
+        mo = re.match(r"^(.*?):((?:\([^)]*\))+)$", line)
+        if not mo:
+            continue
+        principal = mo.group(1).strip()
+        if not principal:
+            continue
+        rights = set()
+        for grp in re.findall(r"\(([^)]*)\)", mo.group(2)):
+            for tok in grp.split(","):
+                tok = tok.strip().upper()
+                if tok and tok not in _ICACLS_FLAG_TOKENS:
+                    rights.add(tok)
+        aces.append((name_to_sid(principal), rights))
+    return aces
+
+
 # --------------------------------------------------------------------------- #
 # Shared helpers
 # --------------------------------------------------------------------------- #
@@ -406,7 +520,7 @@ def _write_sshd_dropin(account: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Host-B leg (`--role b`) — cross-platform (POSIX path implemented; Windows gated)
+# Host-B leg (`--role b`) — cross-platform (POSIX + Windows paths implemented)
 # --------------------------------------------------------------------------- #
 def channel_transport_default(os_name=os.name):
     """The fresh-seat live-wake channel transport, by platform.
@@ -417,8 +531,7 @@ def channel_transport_default(os_name=os.name):
     (empirically certified, roundtable #145). POSIX returns "unix" (unchanged default).
 
     Pure and os_name-parameterized so both branches are unit-testable without a real
-    Windows host; run_role_b's Windows path is otherwise gated at _host_b_home() before
-    this value is consumed.
+    Windows host.
     """
     return "http" if os_name == "nt" else "unix"
 
@@ -426,6 +539,9 @@ def channel_transport_default(os_name=os.name):
 def run_role_b(args) -> int:
     if not _AGENT_RE.fullmatch(args.agent):
         _fail(f"--agent {args.agent!r} must match ^[a-z0-9_-]+$")
+
+    if os.name == "nt":
+        _require_win_openssh()
 
     home = _host_b_home()
     key_dir = os.path.join(home, ".ssh")
@@ -497,7 +613,11 @@ def run_role_b(args) -> int:
 
 def _host_b_home() -> str:
     if os.name == "nt":
-        raise NotImplementedError(WINDOWS_GATED_MSG)
+        # AC-2/AC-3: %USERPROFILE% (not $HOME); no elevation — all writes live here.
+        home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+        if not home:
+            _fail("%USERPROFILE% is not set — cannot locate the Windows host-B home directory")
+        return home
     return os.path.expanduser("~")
 
 
@@ -516,7 +636,8 @@ def _keygen(agent: str, key_path: str) -> None:
 
 def _harden_private_key_perms(key_path: str) -> None:
     if os.name == "nt":
-        raise NotImplementedError(WINDOWS_GATED_MSG)
+        _harden_private_key_perms_windows(key_path)
+        return
     import stat
 
     os.chmod(key_path, 0o600)
@@ -527,14 +648,132 @@ def _harden_private_key_perms(key_path: str) -> None:
         )
 
 
+def _whoami_user() -> tuple:
+    """(account_name, SID) of the invoking Windows user via `whoami /user /fo list`."""
+    try:
+        proc = subprocess.run(
+            ["whoami", "/user", "/fo", "list"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        _fail(f"could not resolve the invoking user's SID (`whoami /user`): {e}")
+    if proc.returncode != 0:
+        _fail(f"`whoami /user` failed (exit {proc.returncode}): {proc.stderr.strip()}")
+    name = sid = None
+    for line in proc.stdout.splitlines():
+        if ":" not in line:
+            continue
+        key, val = line.split(":", 1)
+        key = key.strip().lower()
+        val = val.strip()
+        if key == "user name":
+            name = val
+        elif key == "sid":
+            sid = val
+    if not sid or not sid.upper().startswith("S-1-"):
+        _fail("could not parse a SID from `whoami /user /fo list` output")
+    return name, sid
+
+
+def _make_name_to_sid(owner_name, owner_sid):
+    """A resolver mapping icacls-printed principals to SIDs (well-known + the owner).
+
+    Unknown principals keep their raw name so the ACL decision treats them as untrusted
+    (fail closed). Name matching is the locale-dependent seam: the table below is en-US
+    only — on a localized Windows, BUILTIN\\Users / NT AUTHORITY\\SYSTEM etc. print under
+    localized names and do NOT match here, so the decision refuses (spurious refuse, never
+    an unsafe accept). The well-known accounts resolve to fixed SIDs so the DECISION is
+    locale-independent for the tolerated set once the name is matched. Both sides are
+    folded with `.upper()` because `whoami` prints the account lowercase (`pc\\user`)
+    while `icacls` prints it uppercase (`PC\\user`).
+    """
+    known = {
+        r"NT AUTHORITY\SYSTEM": SYSTEM_SID,
+        r"BUILTIN\ADMINISTRATORS": ADMINISTRATORS_SID,
+        r"BUILTIN\USERS": USERS_SID,
+        r"NT AUTHORITY\AUTHENTICATED USERS": AUTHENTICATED_USERS_SID,
+        "EVERYONE": EVERYONE_SID,
+    }
+
+    def resolve(principal: str) -> str:
+        if principal.upper().startswith("S-1-"):
+            return principal
+        up = principal.upper()
+        if owner_name and up == owner_name.upper():
+            return owner_sid
+        return known.get(up, principal)
+
+    return resolve
+
+
+def _enumerate_icacls_aces(path: str, owner_name, owner_sid) -> list:
+    try:
+        proc = subprocess.run(["icacls", path], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        _fail(f"icacls enumeration of {path} failed: {e}")
+    if proc.returncode != 0:
+        _fail(f"icacls enumeration of {path} failed (exit {proc.returncode}): {proc.stderr.strip()}")
+    return parse_icacls_aces(proc.stdout, path, _make_name_to_sid(owner_name, owner_sid))
+
+
+def _harden_private_key_perms_windows(key_path: str) -> None:
+    """AC-1: chmod-600 semantics on Windows via icacls, granting the owner by SID.
+
+    Grants read to the invoking user's SID (never `"%USERNAME%":R`, a cmd.exe-ism a
+    non-shell python passes literally), then enforces refuse-if-broader over the SID-based
+    ACL. The `ssh.exe -i` round-trip (--self-cert) stays the authoritative perm check;
+    this icacls assertion is defense-in-depth. No elevation — all under %USERPROFILE%.
+    """
+    owner_name, owner_sid = _whoami_user()
+
+    # Break inheritance, then grant read to ONLY the invoking user, by SID.
+    _run_checked(["icacls", key_path, "/inheritance:r"], "icacls /inheritance:r failed")
+    _run_checked(["icacls", key_path, "/grant:r", f"*{owner_sid}:R"], "icacls /grant failed")
+
+    aces = _enumerate_icacls_aces(key_path, owner_name, owner_sid)
+    if evaluate_key_acl_decision(aces, owner_sid) == "refuse":
+        _fail(
+            f"private key {key_path} is readable by a principal beyond "
+            f"{{owner, SYSTEM, Administrators}} after the icacls grant — refusing "
+            f"(a world/Users-readable private key fails closed; the ssh -i round-trip is authoritative)."
+        )
+
+    # aimla Minor: a world/Users-writable key directory lets a local attacker swap the
+    # key regardless of the file ACL.
+    key_dir = os.path.dirname(key_path)
+    dir_aces = _enumerate_icacls_aces(key_dir, owner_name, owner_sid)
+    if evaluate_key_dir_decision(dir_aces, owner_sid) == "refuse":
+        _fail(
+            f"the key directory {key_dir} is world/Users-writable — refusing "
+            f"(a writable key dir lets a local attacker swap the key regardless of the file ACL)."
+        )
+
+    print(
+        f"icacls: {key_path} restricted to owner {owner_name} (SID {owner_sid}); "
+        f"SYSTEM/Administrators tolerated. The ssh -i round-trip (--self-cert) is the authoritative check."
+    )
+
+
+def _require_win_openssh() -> None:
+    """AC-1/Minor: fail closed if the Win32-OpenSSH client isn't installed (parallel to
+    the Node precheck) — the whole leg is `-i <key>` over ssh.exe/ssh-keygen.exe, and the
+    known_hosts seed shells out to ssh-keyscan bare."""
+    for exe in ("ssh.exe", "ssh-keygen.exe", "ssh-keyscan"):
+        if shutil.which(exe) is None:
+            _fail(
+                f"{exe} not found on PATH — install the Windows OpenSSH Client feature "
+                f"(Settings > Optional features > OpenSSH Client, or PowerShell "
+                f"`Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0`) and re-run"
+            )
+
+
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
 def _seed_known_hosts(host: str, port) -> None:
-    if os.name == "nt":
-        raise NotImplementedError(WINDOWS_GATED_MSG)  # %USERPROFILE%\.ssh\known_hosts
-
-    known_hosts = os.path.join(os.path.expanduser("~"), ".ssh", "known_hosts")
+    # AC-6: same append/skip/refuse decision logic as POSIX (resolve_known_hosts_action);
+    # only the home path differs — %USERPROFILE%\.ssh\known_hosts on Windows. ssh-keyscan
+    # / ssh-keygen resolve to their .exe via CreateProcess on Windows.
+    known_hosts = os.path.join(_host_b_home(), ".ssh", "known_hosts")
     scan_cmd = ["ssh-keyscan", "-H"]
     if port and int(port) != 22:
         scan_cmd += ["-p", str(port)]
@@ -545,9 +784,13 @@ def _seed_known_hosts(host: str, port) -> None:
         _fail(f"ssh-keyscan of {host} failed: {e}")
     scanned = [ln for ln in proc.stdout.splitlines() if ln.strip() and not ln.startswith("#")]
     if not scanned:
+        # Report the true cause (canon #10): an empty scan is not necessarily a network
+        # problem — a Win32-OpenSSH PQ-KEX mismatch also presents as empty-scan — so
+        # surface ssh-keyscan's own exit code and stderr rather than guessing "unreachable".
         _fail(
-            f"ssh-keyscan returned no host keys for {host} (unreachable / no sshd?) — cannot seed "
-            f"known_hosts; the first board-tools call would fail closed on host-key verification"
+            f"ssh-keyscan returned no host keys for {host} (exit {proc.returncode}) — cannot seed "
+            f"known_hosts; the first board-tools call would fail closed on host-key verification. "
+            f"ssh-keyscan stderr: {proc.stderr.strip() or '(empty)'}"
         )
 
     existing = ""
