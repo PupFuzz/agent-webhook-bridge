@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 import unittest
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location(
@@ -560,6 +561,66 @@ class NameToSidResolver(unittest.TestCase):
         self.assertEqual(r(r"DESKTOP-ABC\me"), self._OWNER)        # icacls-cased (upper)
         aces = [(r(r"DESKTOP-ABC\me"), {"R"})]
         self.assertEqual(pbt.evaluate_key_acl_decision(aces, self._OWNER), "ok")
+
+
+class SelfCert(unittest.TestCase):
+    """--self-cert must certify the ROUND-TRIP, not just that stdout is JSON.
+
+    An error envelope returned at a non-zero exit code is a FAILED probe; the
+    pre-fix code parsed it as JSON and printed OK, so the check could not fail.
+    RED-when-reverted: drop the returncode / ok / error gate and the error-envelope
+    cases below stop raising SystemExit.
+    """
+
+    def _run(self, stdout, returncode):
+        completed = mock.Mock(stdout=stdout, stderr="", returncode=returncode)
+        with mock.patch.object(pbt.subprocess, "run", return_value=completed):
+            return pbt._self_cert("agent@host", None, None)
+
+    def test_error_envelope_at_nonzero_exit_fails(self):
+        with self.assertRaises(SystemExit):
+            self._run(json.dumps({"ok": False, "error": "unknown agent"}), 2)
+
+    def test_ok_false_at_exit_zero_fails(self):
+        with self.assertRaises(SystemExit):
+            self._run(json.dumps({"ok": False}), 0)
+
+    def test_nonempty_error_at_exit_zero_fails(self):
+        with self.assertRaises(SystemExit):
+            self._run(json.dumps({"error": "boom"}), 0)
+
+    def test_parseable_json_at_nonzero_exit_fails(self):
+        # A well-formed envelope with no ok/error keys but a non-zero exit is still
+        # a failed round-trip — the returncode gate alone must catch the exit-2 case.
+        with self.assertRaises(SystemExit):
+            self._run(json.dumps({"cards": []}), 2)
+
+    def test_unparseable_stdout_fails(self):
+        with self.assertRaises(SystemExit):
+            self._run("not json", 0)
+
+    def test_bare_list_at_exit_zero_fails(self):
+        # A real board_my_cards envelope is always a dict; a bare list is parseable
+        # JSON but not a valid envelope, so it must not certify.
+        with self.assertRaises(SystemExit):
+            self._run(json.dumps([]), 0)
+
+    def test_json_string_at_exit_zero_fails(self):
+        with self.assertRaises(SystemExit):
+            self._run(json.dumps("ok"), 0)
+
+    def test_json_number_at_exit_zero_fails(self):
+        with self.assertRaises(SystemExit):
+            self._run(json.dumps(0), 0)
+
+    def test_success_envelope_passes(self):
+        self.assertEqual(
+            self._run(json.dumps({"ok": True, "cards": []}), 0), 0
+        )
+
+    def test_ok_absent_error_empty_at_exit_zero_passes(self):
+        # No ok/error keys, clean exit -> the pre-fix "parseable envelope" pass holds.
+        self.assertEqual(self._run(json.dumps({"cards": []}), 0), 0)
 
 
 if __name__ == "__main__":

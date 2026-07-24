@@ -909,13 +909,21 @@ def _self_cert(target: str, ssh_key, ssh_port) -> int:
     except (OSError, subprocess.TimeoutExpired) as e:
         _fail(f"--self-cert: ssh to {target} failed: {e}")
     try:
-        json.loads(proc.stdout)
+        envelope = json.loads(proc.stdout)
     except ValueError:
         _fail(
             f"--self-cert: ssh {target} returned no parseable JSON envelope "
             f"(exit {proc.returncode}; stderr: {proc.stderr.strip()})"
         )
-    print(f"--self-cert: OK — {target} returned a parseable board_my_cards envelope.")
+    is_bad_envelope = not isinstance(envelope, dict) or (
+        ("ok" in envelope and not envelope["ok"]) or bool(envelope.get("error"))
+    )
+    if proc.returncode != 0 or is_bad_envelope:
+        _fail(
+            f"--self-cert: ssh {target} returned an error envelope "
+            f"(exit {proc.returncode}; envelope: {json.dumps(envelope)[:200]})"
+        )
+    print(f"--self-cert: OK — {target} certified a healthy board_my_cards round-trip.")
     return 0
 
 
