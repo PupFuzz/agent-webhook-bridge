@@ -1,4 +1,4 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.20.0) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.23.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **What this is.** The solo-agent orientation generated from the Agent Board Framework
@@ -281,7 +281,10 @@ verifier.)
 few trivial lines — feature, bugfix, refactor, test — **MUST** be dispatched to a **fresh
 `coder`** subagent (or **`mechanic`** for a fully-specified mechanical procedure), one-per-task
 so work never accretes onto your session. Inline is legitimate **only for trivial** edits (a
-version bump, a one-line doc fix) — that trivial-tier carve-out is the *sole* exception.
+version bump, a one-line doc fix) — that trivial-tier carve-out is the *sole* exception **while
+dispatch is available** (the one other inline path, `inline (dispatch-prohibited: …)`, applies only
+when an operator/environment directive prohibits dispatch for the session up front — see the
+coord-thread `Built:` spec, card#5046).
 "Context-heavy" or "needs tight mid-flight steering" is **not** a licence to absorb non-trivial
 work inline: a subagent runs to completion and returns one result, so you can't steer it
 partway — scope the dispatch so it doesn't need partway steering, or steer across successive
@@ -295,7 +298,11 @@ a **wait-out condition, never a licence** to absorb the work into your session (
 bloats your seat context = billed tokens, and hides the limit condition from your human).
 Instead: surface the stop + the **verbatim** error to your human, park the task where it stands,
 pull only non-dispatch work (review, scoping) or idle-with-reason, and **retry the dispatch
-later**. A forced inline build is never a legitimate path.
+later**. An inline build to substitute for a **terminated** subagent is never a legitimate path.
+(Distinct, legitimate case — do not conflate: when an explicit operator/environment directive
+**prohibits dispatch for the session up front**, non-trivial work built inline is legitimate and
+carries the `inline (dispatch-prohibited: …)` `Built:` value — see the coord-thread `Built:` spec,
+card#5046. A *termination* is not that: it stays STOP-and-retry.)
 
 **You stay at spec/review altitude:** the
 dispatch prompt IS the spec — requirements, constraints, edge cases, and selftest expectations
@@ -417,6 +424,17 @@ up.
    (URL + state), the board state snapshot for each repo, and any blocker. The authoritative
    in-flight state is your open PRs and board cards (durable + visible); this file captures
    "where I left off / what I planned next."
+   **§5 write-time contract:** because your open PRs + board cards are the SoT, **point — don't
+   restate** their status here. If a PR's review plane or a board card already owns a status,
+   record the *pointer* (`PR 88 · plane-2`, `card #140 · Doing`), not a durable copy of the value —
+   a restated PR/card status is a shadow that goes stale when the SoT moves. Log verification
+   **acts** + pointers, never the verified value itself (see `docs/task-tracking-standard.md`
+   §5.1, the re-accretion guard).
+   **Fence the live region (v1.5):** wrap the ENTIRE live carry-forward/status region in the
+   `<!-- coord:status-region -->` … `<!-- /coord:status-region -->` fence. INSIDE the fence, any line
+   with a status-token (SHA / `vX.Y.Z` / merge-state / `stage:`) must carry `(this cycle)` (a
+   verification act) or a SoT pointer (`see #N` / `→ #N`) — the `session-end-skip-lint` backstop
+   inspects only in-fence lines and WARNs "status-region unscanned" if the fence is dropped.
 5. **Save lessons learned to memory.** Durable takeaways from the session — a repo or tooling
    gotcha, a bridge or board mechanics quirk, a reusable pattern — go to your agent memory
    dir (one fact per file, per the memory convention). Memory is for durable knowledge;
@@ -449,13 +467,27 @@ you manage your own context budget. Three signals guide you:
 **Clearing your context** between independent tasks keeps per-turn token cost low. To clear
 safely: your work must be committed/pushed AND the handoff written (session-end ritual steps
 1–4 above). `/clear` discards your in-context memory; only the branch, your board state, and
-your state handoff survive. **Never run it with uncommitted work or mid-task — and never while
-ANY message from your human this session is unanswered.** Because a message may still be
-*queued* mid-turn (messages surface only at tool-result boundaries), a clean board state is not
-proof the chat is clean: **end the turn first** so anything queued surfaces, and self-clear only
-in a later turn that begins with nothing new from your human. An unanswered question a
-self-clear eats is unrecoverable — the post-clear re-orientation loads your handoff, not the
-conversation.
+your state handoff survive — so an unanswered question a self-clear eats is unrecoverable. Never
+run it with uncommitted work or mid-task. Do NOT clear mid-decision, mid-gate, or with an
+unanswered message from your human in front of you. Otherwise clear as the **FINAL ACTION of THIS
+turn — do not defer.** Decide with two questions, both answerable **NOW**: **(1)** Is a message
+from your human unanswered this turn? **(2)** Am I mid-decision / mid-gate / in an open exchange
+with your human? Both **NO** → clear this turn. "Could a message arrive?" is **not** question (1)
+— a message that arrives opens its own turn and is never lost by clearing now. **A channel/
+coordination event from another agent is not a message from your human and is not a hold.**
+<!-- MIRROR: this chat-gate + channel-event exemption is a lockstep copy — same prose in
+     pm-CLAUDE.md, docs/CONTEXT-RESET.md, and hooks/context-backstop.py (which carries it
+     twice: WARNING + platform-line) = five copies across four files. Edit all five; the copy
+     registry is CONTEXT-RESET.md § "Mirror registry". -->
+
+**A decided self-clear is a commit point — freeze inbound, then land it.** Once you've *decided* to
+clear (a CLEAR at a clean boundary), stop **proactively pulling** new inbound — no inbox refresh,
+comment poll, or new thread: write your handoff, reach the nearest clean micro-boundary, and clear.
+Reading new inbound after the decision burns the tokens the clear exists to save and can spawn fresh
+work that keeps the decided clear from ever landing; **unread inbound is safe** and resurfaces on the
+post-clear resume. This does **not** override the your-human-message preempt above (push vs. pull): a
+message *thrust into* the running turn is still answered first and **defers** the clear; a
+not-yet-*read* inbox does not. Full protocol: `docs/CONTEXT-RESET.md § Performing a decided clear`.
 
 **How (GNU `screen` platform):** as your VERY LAST action of the turn, run `clear-agent.sh`
 (on PATH; self-detects your screen session via `$STY`) — or `clear-agent.sh <your-session>`
