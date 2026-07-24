@@ -1,0 +1,30 @@
+name: provision-tools python unit tests
+
+# The bin/provision-board-tools.py provisioning program (FR #5010) is a standalone
+# stdlib Python tool. Its pure functions (full-line key validator, .mcp.json merge)
+# carry red-when-reverted unit tests; this job runs them in CI so the "CI-tested"
+# guarantee the design rests on is real, not decorative. Path-filtered: only fires
+# when the tool or its tests change.
+
+on:
+  pull_request:
+    paths:
+      - 'bin/provision-board-tools.py'
+      - 'bin/test_provision_board_tools.py'
+      - '.github/workflows/provision-tools-python.yml'
+  push:
+    branches: [dev, main]
+    paths:
+      - 'bin/provision-board-tools.py'
+      - 'bin/test_provision_board_tools.py'
+
+permissions:
+  contents: read
+
+jobs:
+  python-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - name: Run provision-board-tools unit tests
+        run: python3 -m unittest bin.test_provision_board_tools -v

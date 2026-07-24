@@ -152,13 +152,29 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
 - **Provisioning:** `bridge:provision-tools` mints each enabled **http** agent's
   bearer (0600, idempotent, collision-checked). It never edits agent YAML — for an
   agent without a `board_tools:` block it prints a paste-ready skeleton. For an
-  **ssh** agent it mints no secret (the private key is host B's) — it GENERATES a
-  guided, idempotent root-run setup script (DL-226; still operator-run) that
-  append-or-verifies the pinned forced-command line, an sshd `Match User` drop-in with
-  `PasswordAuthentication no` **and** the `ClientAliveInterval`/`ClientAliveCountMax`/
-  `MaxSessions` backstop directives `bridge:check` hard-asserts, a validate-then-reload,
-  and documents the FIPS ECDSA P-256 keygen to run first on host B. Run it as
-  `sudo bash <script>`, then certify with `bridge:check --probe-tools-ssh=<user@host>`.
+  **ssh** agent it mints no secret (the private key is host B's) — it **prints the
+  ready-to-run `provision-board-tools.py --role a|b` invocation** for each leg
+  (FR #5010 §2), with this agent's params filled in (`--agent` from the config,
+  `--artisan` from the install path, `--ssh-account` from `board_tools.ssh_account`).
+  The static `bin/provision-board-tools.py` program owns both legs from a single
+  source that cannot drift: `--role a` (root, Linux, on the bridge box) pins the
+  forced-command `authorized_keys` line and writes the sshd `Match User` drop-in
+  (`PasswordAuthentication no` + the `ClientAliveInterval`/`ClientAliveCountMax`/
+  `MaxSessions` backstop directives `bridge:check` hard-asserts) with a
+  validate-then-reload; `--role b` (the calling seat, cross-platform python) generates
+  the FIPS ECDSA P-256 key, deploys the bundled channel-server snapshot, and merges
+  `.mcp.json`. The merge **force-sets the SSH tools transport keys** it owns
+  (`BRIDGE_TOOLS_SSH_TARGET`/`_KEY`/`_PORT`) but only **creates the live-wake channel
+  vars (`BRIDGE_CHANNEL_TRANSPORT`/`_NAME`) if absent** — a re-provision never
+  overwrites an existing seat's channel transport (e.g. an HTTP live-wake fallback),
+  only bootstrapping the `unix` default on a fresh `.mcp.json`. Its pubkey validator is
+  a **full-line shape check** (rejects multi-line /
+  CRLF pastes), superseding the prefix-only guard the old generated bash carried.
+  Run the host-A line as root on the bridge box and the host-B line on the calling seat;
+  a same-box Linux run hands the `.pub` path to `--role a --pubkey-from` (no paste).
+  Windows host B is spec-complete (the host-B leg is cross-platform python; the Windows
+  path is gated pending a Windows-seat certification). Certify afterward with
+  `bridge:check --probe-tools-ssh=<user@host>`.
 - **Preflight:** `bridge:check` probes each enabled agent's token readability,
   token collisions, swimlane/stage existence, and the service user's board
   membership. For an **ssh** agent it also probes (offline) the pinned
