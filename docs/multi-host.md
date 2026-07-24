@@ -375,6 +375,17 @@ deny an interactive shell and every forwarding channel regardless of how sshd is
 otherwise configured. `provision-board-tools.py --role a` writes **only** that line;
 it makes **no** change to `sshd_config`.
 
+The pinned command is wrapped in `timeout -k 10 <n>` (default `n`=300s), so each
+invocation is bounded at the **command level** — `command="timeout -k 10 300 php
+<artisan> bridge:tools-call --agent=<agent>"`. This is the **key-scoped** replacement
+for the retired account-level idle backstop (card 5092): a hung or deliberately-stalling
+key-holder is reaped after `n` seconds (SIGTERM, then SIGKILL 10s later), and — unlike an
+sshd `ClientAlive`/`Match` directive — it binds only THIS key, never the operator's own
+interactive logins on a shared account. Tune with `--forced-command-timeout <seconds>`
+(`0` disables it). Existing pinned keys keep their current command until re-provisioned —
+re-run `--role a` for the same agent after removing the old `authorized_keys` line to
+upgrade an already-pinned key to the bounded form.
+
 > **No account-level sshd hardening (card 5091).** Earlier releases had `--role a`
 > write a `Match User <bridge-user>` sshd drop-in (`PasswordAuthentication no` +
 > `ClientAliveInterval`/`ClientAliveCountMax`/`MaxSessions`) and had `bridge:check`

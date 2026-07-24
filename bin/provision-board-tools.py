@@ -110,6 +110,30 @@ def is_authorized_key_shape(s: object) -> bool:
     return _KEY_LINE_RE.fullmatch(s) is not None
 
 
+DEFAULT_FORCED_COMMAND_TIMEOUT = 300
+
+
+def build_forced_command(agent: str, artisan: str, timeout_secs: int) -> str:
+    """The `authorized_keys` forced-command line (options included) for one agent.
+
+    The forced command is the SOLE board-tools security boundary (card 5091). Card 5092
+    adds a KEY-scoped hard bound on a hung key-holder: `timeout -k 10 <n> php <artisan>
+    bridge:tools-call …` caps each invocation's wall-clock at the COMMAND level — the one
+    place a bound survives on an ssh-account that doubles as the operator's interactive
+    login (an account-level sshd ClientAlive/Match drop-in would disrupt that operator, so
+    it was retired — see multi-host.md § 3). `-k 10` escalates to SIGKILL 10s after SIGTERM
+    so a holder that traps SIGTERM is still reaped. `timeout_secs <= 0` disables the wrapper
+    (operator opt-out). Pure — the single source of the pinned command string.
+    """
+    inner = f"php {artisan} bridge:tools-call --agent={agent}"
+    if timeout_secs > 0:
+        inner = f"timeout -k 10 {timeout_secs} {inner}"
+    return (
+        f'command="{inner}"'
+        ",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding"
+    )
+
+
 def _args_hold_channel_mjs(args: object, resolve) -> bool:
     """True iff any element of `args` resolves to the channel server .mjs by BASENAME.
 
@@ -432,6 +456,9 @@ def run_role_a(args) -> int:
         _fail(f"--artisan {artisan!r} must match ^[A-Za-z0-9_./-]+$")
     if not account or not _SSH_ACCOUNT_RE.fullmatch(account):
         _fail(f"--ssh-account {account!r} must match ^[a-z_][a-z0-9_-]*$")
+    timeout_secs = args.forced_command_timeout
+    if timeout_secs < 0:
+        _fail(f"--forced-command-timeout {timeout_secs} must be >= 0 (0 disables the bound)")
 
     pubkey = _read_pubkey(args)
 
@@ -440,10 +467,7 @@ def run_role_a(args) -> int:
     except KeyError:
         _fail(f"account {account!r} does not exist on this host")
 
-    forced = (
-        f'command="php {artisan} bridge:tools-call --agent={agent}"'
-        ",no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding"
-    )
+    forced = build_forced_command(agent, artisan, timeout_secs)
     guard = f'bridge:tools-call --agent={agent}"'
     supplied_core = " ".join(pubkey.split()[:2])
 
@@ -973,6 +997,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ssh-account", help="[role a] the OS account the forced command runs as")
     p.add_argument("--pubkey-stdin", action="store_true", help="[role a] read the host-B public key from stdin")
     p.add_argument("--pubkey-from", help="[role a] read the host-B public key from this path (same-box)")
+    p.add_argument(
+        "--forced-command-timeout",
+        type=int,
+        default=DEFAULT_FORCED_COMMAND_TIMEOUT,
+        help="[role a] hard wall-clock cap (seconds) on each forced-command invocation, "
+        "key-scoped; 0 disables (card 5092)",
+    )
 
     # host B
     p.add_argument("--ssh-target", help="[role b] user@host of the bridge box")
