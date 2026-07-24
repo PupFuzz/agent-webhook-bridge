@@ -623,5 +623,109 @@ class SelfCert(unittest.TestCase):
         self.assertEqual(self._run(json.dumps({"cards": []}), 0), 0)
 
 
+class LocaleIndependentSidResolution(unittest.TestCase):
+    """card#5053: the ACL decision is locale-independent — a LOCALIZED Windows prints its
+    well-known accounts under localized names (de-DE `Benutzer`/`Administratoren`), which the
+    en-US name table never matched, so a legitimate ACL was spuriously REFUSED. The OS lookup
+    (a LookupAccountName-equivalent, mocked here) resolves those localized names to their fixed
+    well-known SIDs, so the SID-pinned decision accepts the legit ACL while still failing closed.
+    """
+
+    _OWNER = "S-1-5-21-1111111111-2222222222-3333333333-1001"
+    _PATH = r"C:\Users\me\.ssh\kanban-solo-board-tools"
+
+    # A de-DE Windows: icacls prints these localized names; the LSA (mocked) still maps them
+    # to the invariant well-known SIDs. `SYSTEM` happens to be un-localized; the BUILTIN group
+    # and the domain qualifier are localized (`VORDEFINIERT` = "BUILTIN", `NT-AUTORITÄT`).
+    _DE = {
+        r"VORDEFINIERT\Administratoren": pbt.ADMINISTRATORS_SID,
+        r"NT-AUTORITÄT\SYSTEM": pbt.SYSTEM_SID,
+        r"VORDEFINIERT\Benutzer": pbt.USERS_SID,
+    }
+
+    def _de_lookup(self, calls=None):
+        def lookup(principal):
+            if calls is not None:
+                calls.append(principal)
+            return self._DE.get(principal)
+        return lookup
+
+    def _resolver(self, os_lookup):
+        return pbt._make_name_to_sid(r"PC\me", self._OWNER, os_lookup=os_lookup)
+
+    def test_localized_legit_acl_accepted(self):
+        # owner + localized Administrators + localized SYSTEM — the exact tolerated set, but
+        # under de-DE names. RED-when-reverted: revert _make_name_to_sid to the en-US table
+        # only and the localized names stay raw (untrusted readers) -> the decision REFUSES.
+        out = (
+            self._PATH + r" PC\me:(R)" + "\n"
+            r"                     VORDEFINIERT\Administratoren:(I)(F)" + "\n"
+            r"                     NT-AUTORITÄT\SYSTEM:(I)(F)" + "\n"
+            "\n"
+            "Successfully processed 1 files; Failed processing 0 files.\n"
+        )
+        aces = pbt.parse_icacls_aces(out, self._PATH, self._resolver(self._de_lookup()))
+        by_sid = dict(aces)
+        self.assertEqual(by_sid[pbt.ADMINISTRATORS_SID], {"F"})
+        self.assertEqual(by_sid[pbt.SYSTEM_SID], {"F"})
+        self.assertEqual(pbt.evaluate_key_acl_decision(aces, self._OWNER), "ok")
+
+    def test_localized_users_reader_still_refuses(self):
+        # Fail-closed preserved: a genuinely-broad ACL (localized `Benutzer` = Users, readable)
+        # resolves to USERS_SID and is NOT in the tolerated set -> refuse, even though we could
+        # resolve the localized name. Locale independence does not soften the decision.
+        out = (
+            self._PATH + r" PC\me:(R)" + "\n"
+            r"                     VORDEFINIERT\Benutzer:(I)(RX)" + "\n"
+        )
+        aces = pbt.parse_icacls_aces(out, self._PATH, self._resolver(self._de_lookup()))
+        self.assertIn((pbt.USERS_SID, {"RX"}), aces)
+        self.assertEqual(pbt.evaluate_key_acl_decision(aces, self._OWNER), "refuse")
+
+    def test_unresolvable_localized_principal_refuses(self):
+        # The OS lookup cannot resolve the name and it is absent from the en-US fallback ->
+        # kept raw -> untrusted reader -> refuse (fail closed on an unknown principal).
+        out = (
+            self._PATH + r" PC\me:(R)" + "\n"
+            r"                     PC\Angreifer:(R)" + "\n"
+        )
+        aces = pbt.parse_icacls_aces(out, self._PATH, self._resolver(lambda _p: None))
+        self.assertIn((r"PC\Angreifer", {"R"}), aces)
+        self.assertEqual(pbt.evaluate_key_acl_decision(aces, self._OWNER), "refuse")
+
+    def test_os_lookup_is_authoritative_over_en_us_table(self):
+        # A resolver whose OS lookup returns a SID resolves via that lookup — the authoritative,
+        # locale-independent path — for a name the en-US table does not carry.
+        r = self._resolver(self._de_lookup())
+        self.assertEqual(r(r"VORDEFINIERT\Administratoren"), pbt.ADMINISTRATORS_SID)
+
+    def test_en_us_table_is_harmless_offline_fallback(self):
+        # OS lookup unavailable (returns None) -> the invariant en-US name table still resolves
+        # well-known accounts, preserving the pre-existing en-US behavior with no OS dependency.
+        r = self._resolver(lambda _p: None)
+        self.assertEqual(r(r"NT AUTHORITY\SYSTEM"), pbt.SYSTEM_SID)
+        self.assertEqual(r(r"BUILTIN\Administrators"), pbt.ADMINISTRATORS_SID)
+
+    def test_resolution_is_cached_per_principal(self):
+        # A repeated principal costs exactly one OS lookup (a subprocess on Windows).
+        calls = []
+        r = self._resolver(self._de_lookup(calls))
+        r(r"VORDEFINIERT\Benutzer")
+        r(r"VORDEFINIERT\Benutzer")
+        self.assertEqual(calls, [r"VORDEFINIERT\Benutzer"])
+
+    def test_owner_short_circuits_before_os_lookup(self):
+        # The owner (authoritative from whoami) never hits the OS lookup.
+        calls = []
+        r = self._resolver(self._de_lookup(calls))
+        self.assertEqual(r(r"PC\me"), self._OWNER)
+        self.assertEqual(calls, [])
+
+    def test_lookup_account_sid_is_noop_off_windows(self):
+        # On this (non-nt) host the real lookup must not shell out and returns None
+        # deterministically, so the decision path is exercisable without Windows.
+        self.assertIsNone(pbt._lookup_account_sid(r"BUILTIN\Users"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,10 +15,12 @@ branches (`_host_b_home`, `_harden_private_key_perms_windows`, `_seed_known_host
 `_require_win_openssh`, and the icacls ACL enumeration/decision) were validated on a
 real en-US Windows 11 seat, and the `--self-cert` ssh -i round-trip (spec §5.6) is the
 authoritative perm check; the icacls SID-based ACL assertion is defense-in-depth, not
-the authoritative check. Locale caveat: the icacls name→SID table matches en-US
-account names — on a localized Windows the icacls path fails CLOSED on an unresolved
-principal (a spurious refuse, never an unsafe accept); a durable SID-direct resolution
-is tracked separately.
+the authoritative check. Locale independence: icacls prints LOCALIZED account names, but
+the ACL decision is pinned by well-known SID; principals are resolved to their SIDs via
+the OS (a LookupAccountName-equivalent through PowerShell's `NTAccount.Translate`), which
+returns the same fixed SIDs regardless of UI language. The en-US name table survives only
+as an offline fallback when that lookup is unavailable; an unresolvable principal is kept
+raw so the decision fails CLOSED (a spurious refuse, never an unsafe accept).
 """
 
 from __future__ import annotations
@@ -674,25 +676,58 @@ def _whoami_user() -> tuple:
     return name, sid
 
 
-def _make_name_to_sid(owner_name, owner_sid):
-    """A resolver mapping icacls-printed principals to SIDs (well-known + the owner).
+def _lookup_account_sid(principal: str) -> "str | None":
+    """Resolve an account name to its SID via the OS — locale-independent, no-op off Windows.
 
-    Unknown principals keep their raw name so the ACL decision treats them as untrusted
-    (fail closed). Name matching is the locale-dependent seam: the table below is en-US
-    only — on a localized Windows, BUILTIN\\Users / NT AUTHORITY\\SYSTEM etc. print under
-    localized names and do NOT match here, so the decision refuses (spurious refuse, never
-    an unsafe accept). The well-known accounts resolve to fixed SIDs so the DECISION is
-    locale-independent for the tolerated set once the name is matched. Both sides are
-    folded with `.upper()` because `whoami` prints the account lowercase (`pc\\user`)
-    while `icacls` prints it uppercase (`PC\\user`).
+    A LookupAccountName-equivalent: PowerShell's `NTAccount.Translate` asks the LSA, which
+    knows the LOCALIZED display name of every account, so `VORDEFINIERT\\Administratoren`
+    (de-DE) and `BUILTIN\\Administrators` (en-US) both translate to S-1-5-32-544. Returns the
+    SID string, or None when the lookup is unavailable / the name does not resolve (⇒ the
+    caller falls back / keeps the name raw ⇒ fail closed). Injection-safe: the principal is
+    passed through the environment, never interpolated into the command.
     """
-    known = {
+    if os.name != "nt":
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                "([System.Security.Principal.NTAccount]$env:BRIDGE_ACL_PRINCIPAL)"
+                ".Translate([System.Security.Principal.SecurityIdentifier]).Value",
+            ],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, "BRIDGE_ACL_PRINCIPAL": principal},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    out = proc.stdout.strip()
+    return out if out.upper().startswith("S-1-") else None
+
+
+def _make_name_to_sid(owner_name, owner_sid, os_lookup=_lookup_account_sid):
+    """A resolver mapping icacls-printed principals to SIDs — locale-independent.
+
+    Resolution order per principal: (1) a raw SID passes through; (2) the owner (known from
+    `whoami /user`, the authoritative source of the owner's real SID); (3) the OS lookup
+    (`os_lookup`, a LookupAccountName-equivalent) — this is the authoritative, LOCALE-
+    INDEPENDENT path, so a localized well-known name (de-DE `Benutzer`, fr-FR `Utilisateurs`)
+    still resolves to its fixed well-known SID; (4) the en-US name table as a harmless offline
+    fallback for when the OS lookup is unavailable (its well-known en-US name→SID mappings are
+    invariant, so they can never disagree with the OS); (5) otherwise the raw name is kept, so
+    the SID-pinned decision treats the principal as untrusted (fail closed). Names are folded
+    with `.upper()` because `whoami` prints the account lowercase (`pc\\user`) while `icacls`
+    prints it uppercase (`PC\\user`). Resolutions are cached so repeat principals cost one lookup.
+    """
+    en_us_fallback = {
         r"NT AUTHORITY\SYSTEM": SYSTEM_SID,
         r"BUILTIN\ADMINISTRATORS": ADMINISTRATORS_SID,
         r"BUILTIN\USERS": USERS_SID,
         r"NT AUTHORITY\AUTHENTICATED USERS": AUTHENTICATED_USERS_SID,
         "EVERYONE": EVERYONE_SID,
     }
+    cache: dict = {}
 
     def resolve(principal: str) -> str:
         if principal.upper().startswith("S-1-"):
@@ -700,7 +735,11 @@ def _make_name_to_sid(owner_name, owner_sid):
         up = principal.upper()
         if owner_name and up == owner_name.upper():
             return owner_sid
-        return known.get(up, principal)
+        if up in cache:
+            return cache[up]
+        resolved = os_lookup(principal) or en_us_fallback.get(up, principal)
+        cache[up] = resolved
+        return resolved
 
     return resolve
 
