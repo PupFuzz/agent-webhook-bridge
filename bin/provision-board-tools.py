@@ -924,14 +924,31 @@ def _require_node_20() -> None:
         _fail(f"Node >= 20 is required on host B (found {out}) — the channel server needs it to start")
 
 
+def _npm_argv(args, os_name=os.name):
+    """npm on Windows is npm.cmd — a batch script CreateProcess cannot launch by bare name
+    (PATHEXT is a shell concept) nor by full path (CreateProcess execs PE binaries only). Route
+    through cmd.exe (a real .exe) so it resolves npm.cmd via its own PATHEXT; POSIX runs npm
+    directly. Pure + os_name-parameterized so both branches unit-test without a real Windows box."""
+    if os_name == "nt":
+        return ["cmd", "/c", "npm", *args]
+    return ["npm", *args]
+
+
 def _npm_ci(deploy_dir: str) -> None:
     _require_node_20()
     try:
-        subprocess.run(["npm", "ci"], cwd=deploy_dir, check=True)
+        subprocess.run(_npm_argv(["ci"]), cwd=deploy_dir, check=True)
+    except FileNotFoundError:
+        _fail(
+            "could not launch npm — the npm executable was not found on PATH. Install Node 20+ "
+            "(it bundles npm) and ensure it is on PATH, then re-run. This is an invocation "
+            "problem, not a connectivity failure."
+        )
     except (OSError, subprocess.CalledProcessError):
         _fail(
             "`npm ci` failed in the deployed snapshot — a missing node_modules is a channel "
-            "server that will not start. Fix connectivity/proxy and re-run (never reported success)."
+            "server that will not start. Fix the underlying npm error reported above (a bad "
+            "lockfile, or a network/proxy problem) and re-run (never reported success)."
         )
 
 

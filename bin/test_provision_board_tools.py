@@ -727,5 +727,34 @@ class LocaleIndependentSidResolution(unittest.TestCase):
         self.assertIsNone(pbt._lookup_account_sid(r"BUILTIN\Users"))
 
 
+class NpmInvocation(unittest.TestCase):
+    def test_windows_routes_npm_through_cmd(self):
+        # npm is npm.cmd on Windows; CreateProcess can't launch it by bare name — must go via cmd.exe.
+        self.assertEqual(pbt._npm_argv(["ci"], os_name="nt"), ["cmd", "/c", "npm", "ci"])
+
+    def test_posix_invokes_npm_directly(self):
+        self.assertEqual(pbt._npm_argv(["ci"], os_name="posix"), ["npm", "ci"])
+
+    def test_missing_npm_reported_as_invocation_not_connectivity(self):
+        with mock.patch.object(pbt, "_require_node_20", lambda: None), \
+             mock.patch.object(pbt.subprocess, "run", side_effect=FileNotFoundError()):
+            with self.assertRaises(SystemExit) as cm:
+                pbt._npm_ci("/tmp/does-not-matter")
+        msg = str(cm.exception).lower()
+        self.assertIn("not found", msg)
+        # RED against the old mislabel, which told the operator to "Fix connectivity/proxy".
+        # The new message names connectivity only to negate it ("not a connectivity failure"),
+        # so match the actual mislabel directive rather than the bare word.
+        self.assertNotIn("fix connectivity", msg)
+
+    def test_npm_ci_nonzero_exit_reports_ci_failure(self):
+        with mock.patch.object(pbt, "_require_node_20", lambda: None), \
+             mock.patch.object(pbt.subprocess, "run",
+                               side_effect=pbt.subprocess.CalledProcessError(1, "npm ci")):
+            with self.assertRaises(SystemExit) as cm:
+                pbt._npm_ci("/tmp/does-not-matter")
+        self.assertIn("npm ci", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

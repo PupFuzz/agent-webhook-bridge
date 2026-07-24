@@ -41,6 +41,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
+// Pure, side-effect-free helpers, split into a sibling module ONLY so they can be
+// unit-tested directly (this file self-executes on import). Plain ESM, no build
+// step; consumers copy the whole directory so the sibling travels with this entry.
+import { deriveMeta, relayBridgeResponse } from './channel-lib.mjs';
 
 const SERVER_NAME = process.env.BRIDGE_CHANNEL_NAME || 'agent-webhook-bridge';
 const TRANSPORT = (process.env.BRIDGE_CHANNEL_TRANSPORT || 'unix').toLowerCase();
@@ -313,39 +317,8 @@ const mcp = new Server(
 // are live from the first request. A structured refusal (not a thrown error)
 // names the activating config when the bridge endpoint/bearer is half-set, so a
 // caller reaching a partially-configured install gets an actionable message.
-// Strip obvious credential substrings from a raw-body snippet before it is relayed
-// into a tool result (a PHP trace could echo an Authorization/Bearer line).
-function scrubSnippet(body) {
-  return String(body)
-    .replace(/(authorization|bearer)[^\n]*/gi, '[redacted]')
-    .slice(0, 500);
-}
-
-// The ONE relay contract for BOTH transports (DR2-2, canon #5 — fixed at the second
-// caller). Accumulate the FULL body (DR2-9), then JSON.parse-or-isError. The success
-// signal is LEG-SUPPLIED (res.ok / clean ssh exit), NEVER inferred from the body — a
-// 200 (or exit 0) with a php-warning-prepended body is a CORRUPT result, so it is
-// isError:true, not a silently-broken isError:false. On parse failure a truncated,
-// credential-scrubbed snippet keeps a non-JSON 502 page diagnosable.
-function relayBridgeResponse(rawBody, legSuccess, sourceLabel) {
-  try {
-    JSON.parse(rawBody);
-  } catch {
-    return {
-      isError: true,
-      content: [
-        {
-          type: 'text',
-          text: `non-JSON response from the bridge (${sourceLabel}): ${scrubSnippet(rawBody)}`,
-        },
-      ],
-    };
-  }
-  return {
-    isError: !legSuccess,
-    content: [{ type: 'text', text: rawBody }],
-  };
-}
+// `scrubSnippet` + `relayBridgeResponse` (the credential-scrubbing relay contract)
+// are pure — they live in ./channel-lib.mjs and are imported at the top of this file.
 
 // SSH-forced-command transport: spawn `ssh [-i key] [-p port] <target>` with NO
 // command (sshd substitutes the pinned bridge:tools-call), write {tool, args} to the
@@ -499,24 +472,8 @@ if (TOOLS_ENABLED) {
 // keys downstream.
 const VALID_META_KEY = /^[A-Za-z0-9_]+$/;
 
-function deriveMeta(body) {
-  const meta = {};
-  try {
-    const parsed = JSON.parse(body);
-    const intent = parsed && typeof parsed === 'object' ? parsed.intent : null;
-    if (intent && typeof intent === 'object') {
-      if (typeof intent.kind === 'string') {
-        meta.kind = intent.kind;
-      }
-      if (typeof intent.target_id === 'string') {
-        meta.target_id = intent.target_id;
-      }
-    }
-  } catch {
-    // body is not JSON; meta stays empty
-  }
-  return meta;
-}
+// `deriveMeta` (envelope → meta parsing) is pure — it lives in ./channel-lib.mjs
+// and is imported at the top of this file.
 
 // Exported for operators copying this server as a starting point — when
 // they add new meta keys, the regex says what's safe to use without being
