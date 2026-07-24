@@ -355,5 +355,14 @@ class AllowlistRegexes(unittest.TestCase):
         self.assertIsNone(pbt._SSH_ACCOUNT_RE.fullmatch("bridge-user\n"))
 
 
+class ChannelTransportDefault(unittest.TestCase):
+    # RED-when-reverted: a bare `return "unix"` fails the "nt" case; a flip fails "posix".
+    def test_windows_defaults_to_http(self):
+        self.assertEqual(pbt.channel_transport_default("nt"), "http")
+
+    def test_posix_defaults_to_unix(self):
+        self.assertEqual(pbt.channel_transport_default("posix"), "unix")
+
+
 if __name__ == "__main__":
     unittest.main()
