@@ -249,6 +249,7 @@ See [`docs/multi-host.md`](../../docs/multi-host.md) for the full SSH-tunneled m
 | `BRIDGE_TOOLS_ENDPOINT` | unset | The bridge's loopback URL for the tool-call ingress, e.g. `http://127.0.0.1:8787/agent-tools/call`. Required to advertise (force-on or default). |
 | `BRIDGE_TOOLS_TOKEN` | unset | The per-agent Bearer the server presents to the bridge. Precedence: this (non-empty), else `BRIDGE_TOOLS_TOKEN_FILE`, else the `BRIDGE_CHANNEL_TOKEN` fallback. An empty value does not "configure" the source. |
 | `BRIDGE_TOOLS_TOKEN_FILE` | unset | A `0600` file path to read the bearer from (an HTTP install may alias this to the channel token file). A **configured-but-unreadable** file short-circuits to no bearer (it does NOT fall through to `BRIDGE_CHANNEL_TOKEN`). |
+| `STY` | (set by GNU `screen`) | Not a bridge setting — read only to gate the local `clear_context` tool (see below). `clear_context` is advertised **iff** `STY` is set AND `clear-agent.sh` is on `PATH`. |
 
 ---
 
@@ -292,6 +293,26 @@ Example `.mcp.json` env for a same-box tools-enabled install:
   "BRIDGE_TOOLS_TOKEN_FILE": "/home/you/.config/agent-webhook-bridge/kanbanboard-agent-tools-token"
 }
 ```
+
+---
+
+## Local self-management tool: `clear_context`
+
+Separately from the bridge-proxied board tools, the server can advertise one
+**local-exec** MCP tool, `clear_context`. It is **not** a board tool and is
+**never** proxied to the bridge — calling it spawns the local `clear-agent.sh`
+helper **detached** to clear THIS agent's own context (to save tokens) and returns
+immediately; the clear terminates the session.
+
+Its advertise gate is **orthogonal** to `BRIDGE_CHANNEL_TOOLS`: `clear_context` is
+listed **iff** `STY` is set (i.e. the session runs inside GNU `screen`) **and**
+`clear-agent.sh` resolves on `PATH`. A seat can advertise `clear_context` with the
+board tools off, and vice versa. If it is called when not armed (`STY` unset or the
+helper absent), the call returns a **structured MCP error** — never a silent no-op.
+
+The tool description carries the usage guardrails the model should honor: run it
+as the **final action of a turn**, only after committing work and posting any
+handoff, and never mid-task or while a human message is unanswered.
 
 ---
 

@@ -25,6 +25,14 @@ The channel server advertises on a **tri-state** (`BRIDGE_CHANNEL_TOOLS`):
   `BRIDGE_CHANNEL_TOKEN` fallback). Wire the one endpoint line and the tools come
   on for free; a bare channel agent with no tools wiring advertises nothing.
 
+> **Not the only tool the channel server can list.** The reference channel server
+> also carries a **local-exec** self-management tool, `clear_context`, on a gate
+> that is **orthogonal** to `BRIDGE_CHANNEL_TOOLS` — it is advertised iff `STY` is
+> set and `clear-agent.sh` is on `PATH`, and it is **never** proxied to the bridge
+> (it spawns the local helper detached to clear the agent's own context). It is not
+> a board tool; see the channel-server README's "Local self-management tool"
+> section. The board-tool contract below is unaffected by it.
+
 If the tools are advertised but the channel server is only half-configured
 (missing `BRIDGE_TOOLS_ENDPOINT` or the bearer — reachable under the `=1`
 force-on), a call returns a **structured refusal naming the missing config** — it
