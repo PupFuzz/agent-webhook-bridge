@@ -51,6 +51,12 @@ export BRIDGE_CHANNEL_TOKEN="$(openssl rand -base64 48 | tr -d /=+ | head -c 64)
 echo "Save this token securely: $BRIDGE_CHANNEL_TOKEN"
 ```
 
+> **Distinct port per seat on a shared box.** `BRIDGE_CHANNEL_PORT` defaults to `8788`
+> fleet-wide, so a **second** `http`-transport channel server on the same host collides on
+> that port. The collision is loud and fail-closed — the second server refuses to start,
+> writes an `EADDRINUSE` `.FAILED` marker, and exits — but a multi-seat box (e.g. two agents
+> on one Windows machine) must give each seat a distinct `BRIDGE_CHANNEL_PORT` to run both.
+
 ### 2. On host B — configure Claude Code for HTTP transport
 
 Drop `.mcp.json` in your Claude Code project root:

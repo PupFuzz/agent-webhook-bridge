@@ -233,11 +233,25 @@ function clearFailureMarker() {
 }
 
 if (TRANSPORT === 'unix' && !SOCKET_PATH) {
+  // markerPath() falls to its non-unix branch here (SOCKET_PATH is falsy), and
+  // XDG_RUNTIME_DIR is necessarily unset in this state (it's the only reason
+  // defaultSocketPath() returned null), so the marker resolves to
+  // os.tmpdir()/…http-<port>.FAILED — %TEMP% on Windows, where the launcher
+  // looks. Write it so a misconfigured Windows seat isn't silently deaf (FR #2444).
+  writeFailureMarker(
+    `BRIDGE_CHANNEL_TRANSPORT=unix but BRIDGE_CHANNEL_SOCKET and XDG_RUNTIME_DIR are both unset — ` +
+      `no socket path could be resolved, so THIS Claude Code session is deaf to live-wake`,
+  );
+  const remedy =
+    process.platform === 'win32'
+      ? `On Windows, Node rejects a filesystem socket path (EACCES on bind), so BRIDGE_CHANNEL_SOCKET ` +
+        `is not a usable remedy here — set BRIDGE_CHANNEL_TRANSPORT=http to use the loopback HTTP listener instead.`
+      : `Set BRIDGE_CHANNEL_SOCKET to an absolute path under a directory you own (mode 0700 preferred), ` +
+        `or export XDG_RUNTIME_DIR, or set BRIDGE_CHANNEL_TRANSPORT=http to use the HTTP listener instead.`;
   console.error(
     `[${SERVER_NAME}] BRIDGE_CHANNEL_TRANSPORT=unix but BRIDGE_CHANNEL_SOCKET is unset and ` +
-      `XDG_RUNTIME_DIR is also unset (typical on macOS / containers). ` +
-      `Set BRIDGE_CHANNEL_SOCKET to an absolute path under a directory you own (mode 0700 preferred), ` +
-      `or set BRIDGE_CHANNEL_TRANSPORT=http to use the HTTP listener instead.`,
+      `XDG_RUNTIME_DIR is also unset (typical on macOS / containers / Windows). ` +
+      remedy,
   );
   process.exit(2);
 }
@@ -596,6 +610,15 @@ if (TRANSPORT === 'unix') {
       );
       process.exit(2);
     }
+    // Any other bind error (notably the EACCES Win32 throws for a filesystem
+    // socket path) would otherwise die on the bare throw below with no marker,
+    // leaving a Windows seat silently deaf to live-wake. Capture err.code +
+    // err.message so the real cause is diagnosable (FR #2444). markerPath()
+    // resolves to <socket>.FAILED, a sibling of the path we failed to bind.
+    writeFailureMarker(
+      `failed to bind unix:${SOCKET_PATH} (${err && err.code ? err.code : 'unknown'}: ` +
+        `${err && err.message ? err.message : err}) — THIS Claude Code session is deaf to live-wake`,
+    );
     throw err;
   });
   // Set umask BEFORE listen() so the socket file is created with the
