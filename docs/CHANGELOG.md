@@ -8,6 +8,9 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
+### Fixed
+- **bridge #5074 (roundtable #145)** — **the Windows `--role b` deploy leg's `npm ci` step is now actually launchable, and a not-found npm is no longer mislabeled as connectivity.** On Windows `npm` is `npm.cmd`, a batch script `subprocess.run(..., shell=False)` (via `CreateProcess`) cannot launch by bare name (PATHEXT is a shell concept, not a `CreateProcess` one) nor by full path (`CreateProcess` execs PE binaries only) — so `_npm_ci()` failed on every Windows host-B, and the single `except (OSError, CalledProcessError)` then reported it as "Fix connectivity/proxy" (a mislabel: the deploy never reached the network). `npm ci` now routes through `cmd.exe` (a real `.exe`, which resolves `npm.cmd` via its own PATHEXT) on Windows via a pure `_npm_argv(args, os_name=os.name)` helper (POSIX runs `npm` directly, unchanged); `shell=True` stays forbidden. The `except` is split so a not-found npm (`FileNotFoundError`) is reported as an invocation problem naming the Node-20-on-PATH fix, and only a genuine non-zero `npm ci` (or other OS error) keeps the lockfile/network guidance. Linux-side unit-tested (both `_npm_argv` branches + both error paths, red-when-reverted); real Windows validation routes to sola's device agent (roundtable #145). No `shell=True`, no receiver accept/reject change, no token-scope change.
+
 ## [0.69.0] - 2026-07-24
 
 **Minor — `bridge:provision-tools` reaches cross-platform host-B feature-completeness (Linux legs + a validated Windows host-B leg), plus a channel-server fail-loud refuse primitive and its first CI test harness.** 7 PRs since v0.68.1 (#379, #380, #381, #382, #383, #384, #385). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change.** Everything here is **operator-side provisioning tooling** (`bin/provision-board-tools.py`, run on the agent's own host-B machine) or the **reference channel server** (`examples/channel-servers/`); the webhook receiver + dispatch runtime is untouched. The Windows legs were validated on a real Windows 11 seat by sola's device agent (roundtable #145); live cross-device end-to-end certification of the whole enablement remains gated on that seat (FR #5010 stays open until certified).
@@ -27,6 +30,8 @@ The changelog is **release-event only** — entries land in the release-tag comm
 - **card#5033** — **the `authorized_keys` pubkey is validated as a single well-formed line** (`is_authorized_key_shape`: rejects any CR/LF, positive key-type allowlist, pure-base64 blob), landed within the #379–381 rewrite. This structurally closes the pre-rewrite v0.68.1 scaffold's prefix-only guard, where a multi-line paste starting `ecdsa-` could inject a second, unrestricted `authorized_keys` line with no forced command.
 
 **Verification:** 1341/1341 phpunit, phpstan L7 0, pint clean; provisioner python 91/91 + reference channel-server `node --test` 5/5. Windows-specific behavior (icacls/SID/keygen, `%USERPROFILE%` paths) was validated on a real Windows 11 seat by sola's device agent (roundtable #145) — there is no Windows CI runner in-repo; full cross-device end-to-end certification of the enablement remains gated on that seat (FR #5010).
+
+> **Precision correction (see Unreleased / bridge #5074):** the "cross-platform host-B feature-completeness" headline was premature for the `--role b` **deploy** path specifically. That leg's `npm ci` step was not Windows-validated at v0.69.0 — it was unresolvable on Windows (`npm.cmd` unreachable via bare-name `CreateProcess`) and, when it failed, mislabeled as a connectivity error. Fixed in the Unreleased section above.
 
 ## [0.68.1] - 2026-07-23
 
