@@ -8,7 +8,7 @@ The changelog is **release-event only** — entries land in the release-tag comm
 
 ## [Unreleased]
 
-## [0.69.0] - 2026-07-23
+## [0.68.1] - 2026-07-23
 
 **Patch — `bridge:provision-tools`'s generated ssh setup-script pubkey guard now survives a naive `sed` injection (DL-226 follow-on).** 1 PR since v0.68.0 (#375). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change; the change is confined to the ssh-path generated-script template.**
 
