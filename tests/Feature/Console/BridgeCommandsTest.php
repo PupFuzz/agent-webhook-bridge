@@ -2746,6 +2746,120 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringNotContainsString('has its entry file and node_modules', $out);
     }
 
+    // ---- the VERSION-GATED completeness leg (DL-230) ------------------------
+    // DL-229 shipped a check that passed GREEN on the incident that motivated the
+    // whole feature: a cherry-picked entry + package.json carry the CURRENT version
+    // stamp with them, so the version leg reads "current" and every other leg is
+    // satisfied while `node` on that same directory gives ERR_MODULE_NOT_FOUND.
+    // These two run through the REAL command against the REAL checkout reference
+    // (the unit suite covers the matrix hermetically).
+
+    /**
+     * A whole-directory copy of this checkout's `examples/channel-servers`, minus
+     * $omit, plus the `node_modules` a prior `npm ci` left behind. Deliberately walks
+     * the reference itself rather than asking the probe what it holds — a fixture
+     * built from the SUT's own enumeration would agree with any answer it gave.
+     *
+     * @param  list<string>  $omit
+     */
+    private function copyOfTheReference(string $dir, array $omit = []): string
+    {
+        $reference = base_path('examples/channel-servers');
+        $walk = function (string $from, string $prefix) use (&$walk, $dir, $omit): void {
+            foreach (array_diff((array) scandir($from), ['.', '..', 'node_modules']) as $entry) {
+                $path = $from.'/'.$entry;
+                $relative = $prefix.$entry;
+                if (is_dir($path)) {
+                    $walk($path, $relative.'/');
+
+                    continue;
+                }
+                if (! in_array($relative, $omit, true)) {
+                    File::ensureDirectoryExists(dirname($dir.'/'.$relative));
+                    File::copy($path, $dir.'/'.$relative);
+                }
+            }
+        };
+        File::ensureDirectoryExists($dir);
+        $walk($reference, '');
+        File::ensureDirectoryExists($dir.'/node_modules');
+
+        return $dir;
+    }
+
+    public function test_check_fails_on_a_version_matched_snapshot_missing_a_reference_file(): void
+    {
+        // THE MOTIVATING INCIDENT. The deployed version is read from the checkout so
+        // the fixture stays version-EQUAL across every channel-server bump — the
+        // whole gate turns on that equality.
+        $deployed = $this->copyOfTheReference($this->dir.'/deployed', omit: ['channel-lib.mjs']);
+
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('is MISSING 1 of ', $out);
+        $this->assertStringContainsString('delivers: channel-lib.mjs.', $out);
+        // The verdict claims only what was STAT'ed. It does NOT say the deployment
+        // was assembled by hand: the DL-038 bump guard governs the TRACKED set while
+        // the reference set is the working tree, so an untracked stray in the
+        // checkout (a `.orig` from `git apply --3way`) puts a FAITHFUL whole-directory
+        // copy in this same population — DL-230 (f). Unit-covered hermetically.
+        $this->assertStringNotContainsString('assembled file-by-file', $out);
+        // The legs that certified this deployment green before DL-230 still do; the
+        // incident was that they were the only ones asked.
+        $this->assertStringContainsString('is current (deployed ', $out);
+        $this->assertStringContainsString('has its entry file and node_modules', $out);
+        // Distinct from every other FAIL — a different operator action.
+        $this->assertStringNotContainsString('repoint the symlink', $out);
+        $this->assertStringNotContainsString('dependencies are not installed', $out);
+    }
+
+    public function test_check_still_exits_1_when_a_blocked_subdirectory_sits_beside_a_missing_file(): void
+    {
+        // Exit-code proof for DL-230 (e): an unseeable `tests/` must not swallow a
+        // module PROVEN absent through a traversable parent. Returning the visibility
+        // WARN on the first block did exactly that — one WARN, exit 0, a dark seat at
+        // the next session start, which is this card's own defect class.
+        if (function_exists('posix_getuid') && posix_getuid() === 0) {
+            $this->markTestSkipped('root bypasses directory permission checks');
+        }
+        $deployed = $this->copyOfTheReference($this->dir.'/deployed', omit: ['channel-lib.mjs']);
+        chmod($deployed.'/tests', 0000);
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        try {
+            $code = Artisan::call('bridge:check');
+            $out = Artisan::output();
+        } finally {
+            chmod($deployed.'/tests', 0755);   // or tearDown cannot delete the tree
+        }
+
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('delivers: channel-lib.mjs.', $out);
+        $this->assertStringContainsString('could not be checked at all', $out);
+        // …and the operator still gets the traversal fix, alongside the FAIL.
+        $this->assertStringContainsString('is not visible to this user', $out);
+    }
+
+    public function test_check_accepts_a_version_matched_whole_directory_copy(): void
+    {
+        // The positive control for the test above: with nothing omitted the same
+        // fixture certifies clean, so the FAIL is caused by the omission and not by
+        // the fixture being generally unlike the reference.
+        $deployed = $this->copyOfTheReference($this->dir.'/deployed');
+        File::put($deployed.'/my-local-module.mjs', "export const x = 1;\n");   // extra files are not a finding
+
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('holds every file this checkout', $out);
+        $this->assertStringNotContainsString('is MISSING', $out);
+    }
+
     // ─── DL-217 board_tools probes ───────────────────────────────────────────
 
     private function writeSecret(string $path, string $value): void
