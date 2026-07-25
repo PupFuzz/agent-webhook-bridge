@@ -457,6 +457,32 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame(77, $result->targets[0]->payload['card_id']);
     }
 
+    public function test_card_and_dl_tokens_accept_ascii_digits_only(): void
+    {
+        // DL-231: the ratified DL-201 grammar's digit class is ASCII [0-9] in EVERY engine.
+        // PCRE `\d` is ASCII-only unless the pattern carries `/u` — so adding that one
+        // character to either token constant would silently widen this grammar to Unicode
+        // decimal digits and put this engine out of lockstep with the bash movers, which
+        // match `[0-9]` and cannot follow. This is the guard for that one-character edit;
+        // it fails if `/u` is ever added. U+0663 is ARABIC-INDIC DIGIT THREE.
+        Http::fake();
+        $arabicIndicThree = "\u{0663}";
+
+        foreach (["card#{$arabicIndicThree}", "card-{$arabicIndicThree}", "DL-{$arabicIndicThree}"] as $token) {
+            $result = $this->classify('pull_request.opened', [
+                'title' => "Fix a thing {$token}", 'head' => ['ref' => 'f'],
+            ]);
+
+            $this->assertCount(0, $result->targets, "'{$token}' must not correlate to card 3");
+        }
+
+        // Positive control: the identical shapes in ASCII DO correlate, so the assertions
+        // above are attributable to the digit class and not to the fixture.
+        $result = $this->classify('pull_request.opened', ['title' => 'Fix a thing card#3', 'head' => ['ref' => 'f']]);
+        $this->assertCount(1, $result->targets);
+        $this->assertSame(3, $result->targets[0]->payload['card_id']);
+    }
+
     public function test_dl_wins_when_a_co_present_card_token_names_the_same_card(): void
     {
         // FR-7 precedence (framework v0.2.229): DL-NNN is the ratified, more-specific
