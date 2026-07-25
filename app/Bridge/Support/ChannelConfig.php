@@ -11,6 +11,10 @@ namespace App\Bridge\Support;
  *  - tokenPath       absolute path to the Bearer token file for the HTTP
  *                    transport (DL-008); read fail-closed at push time by
  *                    ChannelToken. Null = no auth header (UDS / no-token HTTP).
+ *  - serverPath      absolute path to the DEPLOYED channel-server directory the
+ *                    agent's MCP client launches (DL-229). Operator-declared,
+ *                    never inferred; normalized to the directory at load.
+ *                    Null ⇒ bridge:check skips the snapshot legs with a notice.
  *
  * A value object (not a positional tuple) so adding the next channel field
  * doesn't silently mis-assign at the destructuring site — matches the
@@ -23,5 +27,6 @@ final class ChannelConfig
         public readonly ?string $url = null,
         public readonly bool $routeIntents = false,
         public readonly ?string $tokenPath = null,
+        public readonly ?string $serverPath = null,
     ) {}
 }

@@ -3,11 +3,13 @@
 namespace App\Bridge\Validation;
 
 /**
- * Format-only validator for a channel.socket path: a non-empty absolute path,
- * no null byte, no `..` segment. Does NOT stat() the path — existence and
- * UDS-file-type checks happen at dispatch time, since the socket server may
- * not be running at config-load. The `..` rejection prevents escaping a
- * chmod-700 parent at dispatch time.
+ * Format-only validator for the `channel:` block's filesystem paths
+ * (`channel.socket`, and `channel.server_path` since DL-229): a non-empty
+ * absolute path, no null byte, no `..` segment. Does NOT stat() the path —
+ * existence checks happen later (at dispatch time for the socket, since the
+ * socket server may not be running at config-load; at `bridge:check` time for
+ * the deployed snapshot). The `..` rejection prevents escaping a chmod-700
+ * parent at dispatch time.
  */
 final class SocketPath
 {
