@@ -93,6 +93,14 @@ subscriptions:
 #   # auth:
 #   #   token_path: ~/.config/agent-webhook-bridge/secrets/channel/your-agent-token
 #   route_intents: false
+#   # server_path: the DEPLOYED channel-server directory (or its entry .mjs) your
+#   # MCP client launches — the copy/symlink of examples/channel-servers. Optional
+#   # and never inferred (the bridge may run as a different OS user and cannot read
+#   # your .mcp.json). Declared, bridge:check FAILs on a dangling path, on a
+#   # directory with no entry .mjs in it, and on one with no node_modules (npm ci
+#   # never run), and WARNs on a stale snapshot version; undeclared, it reports
+#   # "not validated" (DL-229). No ${...} expansion here — absolute path.
+#   # server_path: /home/you/agent-webhook-bridge-prod/examples/channel-servers
 
 # ----------------------------------------------------------------------------
 # surface (optional): inbox/surfacing behaviour.

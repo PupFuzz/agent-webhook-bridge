@@ -37,6 +37,8 @@ If both run on the same host, use the [Unix domain socket transport](../examples
 - SSH access from B to A via public-key auth (no password prompts).
 - `autossh` installed on host B (`apt install autossh` or `brew install autossh`).
 
+> **Leave `channel.server_path` unset in this topology.** That key (DL-229) lets `bridge:check` validate the deployed channel-server snapshot, but it `stat`s the directory from the bridge process — which here runs on host A while the channel server lives on host B. A host-B path declared on host A resolves to nothing and reports the dangling FAIL ("repoint the symlink") for a deployment that is perfectly healthy, just on the other machine; the probe cannot tell the two apart. Snapshot drift on host B stays a host-B concern — reconcile it there by diffing against the reference (see [`../examples/channel-servers/README.md`](../examples/channel-servers/README.md) § Staying in sync).
+
 ## Setup
 
 ### 1. On host B — pick a port and generate a token

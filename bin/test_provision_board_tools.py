@@ -823,5 +823,69 @@ class BuildForcedCommand(unittest.TestCase):
         self.assertIn("timeout -k 10 45 php", line)
 
 
+class VersionComparatorLockstep(unittest.TestCase):
+    """Card 5108 / DL-229: `_version_tuple` here is the DECLARED AUTHORITY for
+    channel-server snapshot comparison semantics. `bridge:check` re-implements it in
+    PHP (`App\\Bridge\\Support\\ChannelSnapshotProbe::compareVersions`) so it can tell a
+    stale deployed snapshot from a current one WITHOUT shelling out to this script.
+
+    These vectors are the LOCKSTEP CONTRACT: the same pairs and the same verdicts are
+    asserted in `tests/Unit/Support/ChannelSnapshotProbeTest.php`
+    (`ChannelSnapshotProbeTest::versionVectors`). Change one side without the other and
+    the provisioner and `bridge:check` silently disagree about which snapshots are
+    stale — the operator re-syncs forever, or never.
+
+    The starred rows are where PHP's `version_compare()` DIVERGES from this authority
+    (it honors the pre-release/build tags `_version_tuple` deliberately drops), which
+    is why the PHP side may not use it.
+
+    CONFORMANCE BOUND (measured): the two implementations agree for ASCII-digit
+    versions whose chunks fit PHP's integer range. Outside that they cannot — this
+    `\\d` is Unicode-aware and python ints are arbitrary-precision, while PHP casts
+    non-ASCII digits to 0 and saturates at PHP_INT_MAX. Neither class is reachable
+    through an npm `version` field, so it is a documented bound, not a defect.
+    """
+
+    VECTORS = [
+        ("0.8.0", "0.8.0", 0),
+        ("0.8.0-rc1", "0.8.0", 0),      # * php version_compare says -1
+        ("0.8", "0.8.0", -1),
+        ("0.10.0", "0.9.0", 1),
+        ("0.8.0", "0.8.0+build5", 0),   # * php version_compare says +1
+        ("1.0.0-alpha", "1.0.0", 0),    # * php version_compare says -1
+        ("", "0.8.0", -1),
+    ]
+
+    @staticmethod
+    def _cmp(a: str, b: str) -> int:
+        ta, tb = pbt._version_tuple(a), pbt._version_tuple(b)
+        return (ta > tb) - (ta < tb)
+
+    def test_shared_vectors(self):
+        for a, b, expected in self.VECTORS:
+            with self.subTest(a=a, b=b):
+                self.assertEqual(self._cmp(a, b), expected)
+
+    def test_shared_vectors_antisymmetric(self):
+        for a, b, expected in self.VECTORS:
+            with self.subTest(a=b, b=a):
+                self.assertEqual(self._cmp(b, a), -expected)
+
+    def test_leading_digits_only_per_chunk(self):
+        # RED-when-reverted: a `int(chunk)` implementation raises on these instead.
+        self.assertEqual(pbt._version_tuple("0.8.0-rc1"), (0, 8, 0))
+        self.assertEqual(pbt._version_tuple("1.0.0+build5"), (1, 0, 0))
+        self.assertEqual(pbt._version_tuple(""), (0,))
+        self.assertEqual(pbt._version_tuple("v1.x"), (0, 0))
+
+    def test_deploy_snapshot_uses_this_comparator(self):
+        # The authority claim is only true while _deploy_snapshot actually decides on
+        # _version_tuple — a rewrite to a plain string/float compare would silently
+        # unbind the two implementations while every vector above still passed.
+        with open(os.path.join(_HERE, "provision-board-tools.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("if _version_tuple(deployed_version) >= _version_tuple(bundled_version):", src)
+
+
 if __name__ == "__main__":
     unittest.main()

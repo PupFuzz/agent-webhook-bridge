@@ -11,6 +11,7 @@ use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Support\ChannelSnapshotProbe;
 use App\Bridge\Support\ChannelToken;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\ExternalReferenceNormalizer;
@@ -497,6 +498,22 @@ class CheckCommand extends BridgeCommand
                             $this->info("agent {$name}: channel HTTP endpoint live — something is listening on {$host}:{$port} (the connector, or the reverse-tunnel local end).");
                         } else {
                             $this->warn("agent {$name}: channel HTTP endpoint {$host}:{$port} not answering".($errstr !== '' ? " ({$errstr})" : '').' — no live session, or the reverse tunnel is down. live-wake no-ops until it is up.');
+                        }
+                    }
+                }
+
+                // The DEPLOYED channel-server snapshot (DL-229). Everything above
+                // certifies the RUNNING process; a stale or unloadable deployment
+                // reports `channel socket live` and exits 0, and only fails at the
+                // NEXT session start — as live-wake silently never coming back. Run
+                // it for any agent with a channel endpoint (the population that
+                // respawns a server) and for any agent that declared server_path
+                // without one, so a declared key is never silently dead.
+                if ($cfg->channel->socket !== null || $cfg->channel->url !== null || $cfg->channel->serverPath !== null) {
+                    $bundled = base_path('examples/channel-servers');
+                    foreach (ChannelSnapshotProbe::probe($cfg->channel->serverPath, $bundled) as $finding) {
+                        if (! $this->emitFinding("agent {$name}: ", $finding)) {
+                            $ok = false;
                         }
                     }
                 }
@@ -1074,14 +1091,15 @@ class CheckCommand extends BridgeCommand
     }
 
     /**
-     * Render one probe finding through the existing info/warn/error convention.
-     * Returns false (→ flip the caller's $ok) ONLY on a `fail`.
+     * Render one `{severity, message}` probe finding through the existing
+     * info/warn/error convention, under the caller's line prefix. Returns false
+     * (→ flip the caller's $ok) ONLY on a `fail`.
      *
      * @param  array{severity: string, message: string}  $finding
      */
-    private function emitSshFinding(array $finding): bool
+    private function emitFinding(string $prefix, array $finding): bool
     {
-        $message = 'board_tools ssh: '.$finding['message'];
+        $message = $prefix.$finding['message'];
         if ($finding['severity'] === 'fail') {
             $this->error($message);
 
@@ -1094,6 +1112,14 @@ class CheckCommand extends BridgeCommand
         }
 
         return true;
+    }
+
+    /**
+     * @param  array{severity: string, message: string}  $finding
+     */
+    private function emitSshFinding(array $finding): bool
+    {
+        return $this->emitFinding('board_tools ssh: ', $finding);
     }
 
     /**
