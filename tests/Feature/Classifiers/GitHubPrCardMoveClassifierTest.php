@@ -457,6 +457,56 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame(77, $result->targets[0]->payload['card_id']);
     }
 
+    /**
+     * DL-233 / roundtable #159: the toolkit has accepted the glued `card4524` branch
+     * spelling since v0.17.0 while this classifier required a separator, so 14 of 80
+     * PRs moved the card locally and died silently at writeback. The separator is now
+     * optional. RED-when-reverted: restore `card[-#](\d+)` and the glued cases fail.
+     */
+    public function test_glued_card_token_correlates(): void
+    {
+        Http::fake();
+        foreach (['Fix a thing card4524', 'fix/CARD4524-slug'] as $i => $text) {
+            $result = $this->classify('pull_request.opened', $i === 0
+                ? ['title' => $text, 'head' => ['ref' => 'f']]
+                : ['title' => 'no token', 'head' => ['ref' => $text]]);
+
+            $this->assertCount(1, $result->targets, "'{$text}' must correlate");
+            $this->assertSame(4524, $result->targets[0]->payload['card_id']);
+        }
+    }
+
+    /**
+     * The glued arm's 2-digit floor, adopted from the toolkit rather than invented.
+     * It is what stops an ordinary word correlating: `card2go` names no card. A
+     * SEPARATED single digit still correlates (`card-3`), so the asymmetry is
+     * deliberate and this pins both halves.
+     */
+    public function test_glued_card_token_requires_two_digits(): void
+    {
+        Http::fake();
+        foreach (['Fix a thing card4', 'Fix a thing card2go'] as $text) {
+            $result = $this->classify('pull_request.opened', ['title' => $text, 'head' => ['ref' => 'f']]);
+            $this->assertCount(0, $result->targets, "'{$text}' must NOT correlate");
+        }
+
+        // Control: a SEPARATED single digit is still accepted.
+        $result = $this->classify('pull_request.opened', ['title' => 'Fix a thing card-3', 'head' => ['ref' => 'f']]);
+        $this->assertCount(1, $result->targets);
+        $this->assertSame(3, $result->targets[0]->payload['card_id']);
+    }
+
+    public function test_embedded_words_still_never_correlate_after_widening(): void
+    {
+        // The \b boundary is what keeps these out, and widening the separator must not
+        // weaken it — `discard4524` is the shape most at risk from an optional separator.
+        Http::fake();
+        foreach (['Refactor the discard4524 helper', 'Use a wildcard-2 match', 'a discard-1 path'] as $text) {
+            $result = $this->classify('pull_request.opened', ['title' => $text, 'head' => ['ref' => 'f']]);
+            $this->assertCount(0, $result->targets, "'{$text}' must NOT correlate");
+        }
+    }
+
     public function test_card_and_dl_tokens_accept_ascii_digits_only(): void
     {
         // DL-231: the ratified DL-201 grammar's digit class is ASCII [0-9] in EVERY engine.
@@ -719,7 +769,10 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         // the card never moves, nobody is told.
         Http::fake();
         Log::spy();   // Facade::spy() no-ops when already mocked — one spy, count totals
-        $refs = ['refs/heads/feat/card_3054-fix', 'refs/heads/feat/card3054', 'refs/heads/feat/card:3054'];
+        // `card3054` (glued) LEFT this list in DL-233 — it now correlates, and is
+        // asserted as such in test_glued_card_token_correlates. The residual
+        // near-miss shapes are the separators the grammar still does not accept.
+        $refs = ['refs/heads/feat/card_3054-fix', 'refs/heads/feat/card.3054', 'refs/heads/feat/card:3054'];
         foreach ($refs as $ref) {
             $r = $this->classifyPush(['created' => true, 'ref' => $ref]);
             $this->assertSame([], $r->targets, $ref);
