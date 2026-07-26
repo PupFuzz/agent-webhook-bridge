@@ -286,6 +286,113 @@ class CoordinationClassifierTest extends TestCase
         $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
     }
 
+    /**
+     * The bot run this knob exists to silence: a FAILING CI run, which without the
+     * deny-list wakes (see test_workflow_run_failure_wakes, same payload + config).
+     * Keying on WHO rather than the conclusion is the point — a bot's PR is the PM's
+     * including its red runs. RED-when-reverted: drop the deny gate and this wakes.
+     */
+    public function test_denied_actor_does_not_wake_even_on_a_failing_run(): void
+    {
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => [
+            'status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5, 'html_url' => 'https://r/5',
+            'triggering_actor' => ['login' => 'dependabot[bot]', 'id' => 49699333],
+        ]], 'org/impl', classifierConfig: $this->implConfig(['impl_wake_deny_actors' => ['dependabot[bot]']]));
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_denied_actor_matches_by_numeric_id_too(): void
+    {
+        // Logins rename; the numeric account id does not. Both spellings must work.
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => [
+            'status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5,
+            'triggering_actor' => ['login' => 'renamed-since', 'id' => 49699333],
+        ]], 'org/impl', classifierConfig: $this->implConfig(['impl_wake_deny_actors' => ['49699333']]));
+
+        $this->assertSame([], $r->intents);
+    }
+
+    /**
+     * THE FIELD CHOICE, pinned on a SYNTHETIC payload because it is not observable here:
+     * 200 real workflow_run payloads on this install carried 0 actor/triggering_actor
+     * divergence and only 2 re-runs, both re-run by the same account — a sample that never
+     * contained the condition. So the two are made to differ deliberately.
+     *
+     * A human re-running a bot's workflow is a human asking for that result: triggering_actor
+     * is the human ⇒ WAKES. Keying on `actor` (who triggered the ORIGINAL run) would suppress
+     * it. RED-when-reverted: read 'actor' first in implWakeActorDenied() and this goes silent.
+     */
+    public function test_human_rerun_of_a_denied_actors_workflow_still_wakes(): void
+    {
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => [
+            'status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5, 'html_url' => 'https://r/5',
+            'run_attempt' => 2,
+            'actor' => ['login' => 'dependabot[bot]', 'id' => 49699333],   // triggered the ORIGINAL run
+            'triggering_actor' => ['login' => 'a-human', 'id' => 4242],    // caused THIS run
+        ]], 'org/impl', classifierConfig: $this->implConfig(['impl_wake_deny_actors' => ['dependabot[bot]']]));
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
+    public function test_denied_actor_is_a_non_wake_not_a_drop_under_inbox_stage(): void
+    {
+        // sola's load-bearing requirement (roundtable #163): the filter must produce a
+        // non-wake that flows through impl_non_wake_disposition, never a pre-gate drop —
+        // otherwise the knob is lossy by default and un-opt-out-able. Digest, not drop.
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => [
+            'status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5, 'html_url' => 'https://r/5',
+            'triggering_actor' => ['login' => 'dependabot[bot]', 'id' => 49699333],
+        ]], 'org/impl', classifierConfig: $this->implConfig([
+            'impl_wake_deny_actors' => ['dependabot[bot]'],
+            'impl_non_wake_disposition' => 'inbox_stage',
+        ]));
+
+        $this->assertCount(1, $r->intents);          // the record survives
+        $this->assertSame([], $r->targets);          // but no live wake
+    }
+
+    public function test_denied_actor_on_a_push_keys_on_sender(): void
+    {
+        $r = $this->classify('push', [
+            'ref' => 'refs/heads/main', 'after' => 'abc1234',
+            'head_commit' => ['message' => 'chore(deps): bump lib'],
+            'sender' => ['login' => 'dependabot[bot]', 'id' => 49699333],
+        ], 'org/impl', classifierConfig: $this->implConfig([
+            'release_branch' => 'main',
+            'impl_wake_deny_actors' => ['dependabot[bot]'],
+        ]));
+
+        $this->assertSame([], $r->intents);
+    }
+
+    public function test_non_denied_actor_is_unaffected_by_a_populated_deny_list(): void
+    {
+        // The negative control that makes the suppressions attributable to the LIST rather
+        // than to the gate existing at all.
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => [
+            'status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5, 'html_url' => 'https://r/5',
+            'triggering_actor' => ['login' => 'a-human', 'id' => 4242],
+        ]], 'org/impl', classifierConfig: $this->implConfig(['impl_wake_deny_actors' => ['dependabot[bot]']]));
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
+    public function test_absent_deny_list_is_byte_identical(): void
+    {
+        // Absent ⇒ prior behavior, even for an actor an install might want denied.
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => [
+            'status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5, 'html_url' => 'https://r/5',
+            'triggering_actor' => ['login' => 'dependabot[bot]', 'id' => 49699333],
+        ]], 'org/impl', classifierConfig: $this->implConfig());
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
     public function test_workflow_run_success_non_provenance_does_not_wake(): void
     {
         $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'success', 'name' => 'CI', 'id' => 6]], 'org/impl', classifierConfig: $this->implConfig());
