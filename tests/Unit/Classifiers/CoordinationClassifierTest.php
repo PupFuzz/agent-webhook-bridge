@@ -148,6 +148,96 @@ class CoordinationClassifierTest extends TestCase
     // gate-drop (default) to durable inbox-stage-without-wake, the PM completeness
     // backstop that doesn't depend on live-wake.
 
+    // ---- coord-message: bare_reply_to_own_thread (DL-235, roundtable #160) ----
+    //
+    // `reply-dir B`: a BARE reply (no TO: line) falls back to thread membership, so an
+    // agent wakes on a reply to a thread IT opened. Measured non-conformant on 6+ seats
+    // across 3 installs, none with a digest configured, 112 dropped comments per impl
+    // agent on one. The grant is narrow BY CONSTRUCTION — bare only, own-thread only,
+    // and echo-guarded — because `from_me` (the wide knob that already existed) was
+    // ruled the wrong answer by DL-213 on echo-safety and DL-190 on over-wake.
+
+    public function test_bare_reply_on_own_thread_wakes_by_default(): void
+    {
+        // The reported gap: thread is `from:me` with no `to:me`, the reply carries no
+        // TO: line. Before DL-235 this resolved to $forMe = false and was DROPPED.
+        $r = $this->classify('issue_comment.created',
+            ['issue' => ['number' => 9, 'title' => 'T', 'body' => 'thread body', 'labels' => [['name' => 'from:me'], ['name' => 'to:other']], 'html_url' => 'https://x/9'],
+                'comment' => ['body' => "FROM: other\n\na bare reply, no TO: line"]],
+            'org/coord');
+
+        $this->assertCount(1, $r->intents);
+        $this->assertCount(1, $r->targets);   // live wake
+    }
+
+    public function test_bare_reply_the_agent_authored_itself_does_not_wake(): void
+    {
+        // THE ECHO GUARD, and the whole reason this is not `from_me`. Under a shared
+        // account every seat posts as one identity, so actor id cannot tell my own
+        // comment from a counterparty's — the body FROM: line is the only discriminator.
+        // Without this clause an authorship-keyed grant self-wakes on its author's own
+        // bare follow-up: the cure carrying the disease DL-213 named.
+        $r = $this->classify('issue_comment.created',
+            ['issue' => ['number' => 9, 'title' => 'T', 'body' => 'b', 'labels' => [['name' => 'from:me'], ['name' => 'to:other']], 'html_url' => 'https://x/9'],
+                'comment' => ['body' => "FROM: me\n\nmy own follow-up on my own thread"]],
+            'org/coord');
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_bare_reply_on_someone_elses_thread_still_does_not_wake(): void
+    {
+        // NARROW: own-thread only. A bare reply on a thread this agent neither opened
+        // nor was labelled on is still not its business — that is `to:`/`comment_to`
+        // territory, and widening here would be the over-wake DL-190 removed.
+        $r = $this->classify('issue_comment.created',
+            ['issue' => ['number' => 9, 'title' => 'T', 'body' => 'b', 'labels' => [['name' => 'from:other'], ['name' => 'to:third']], 'html_url' => 'https://x/9'],
+                'comment' => ['body' => "FROM: other\n\na bare reply"]],
+            'org/coord');
+
+        $this->assertSame([], $r->intents);
+    }
+
+    public function test_a_reply_addressed_elsewhere_on_own_thread_still_narrows(): void
+    {
+        // The unconditional narrow outranks the new grant: an explicit TO: someone-else
+        // means NOT for me, even on my own thread. The grant fires only on $addressed
+        // === null, never on false.
+        $r = $this->classify('issue_comment.created',
+            ['issue' => ['number' => 9, 'title' => 'T', 'body' => 'b', 'labels' => [['name' => 'from:me']], 'html_url' => 'https://x/9'],
+                'comment' => ['body' => "FROM: other\nTO: third\n\nnot for me"]],
+            'org/coord');
+
+        $this->assertSame([], $r->intents);
+    }
+
+    public function test_bare_reply_grant_can_be_disabled_by_an_explicit_membership_list(): void
+    {
+        // An install that deliberately wants the pre-DL-235 behavior sets the list
+        // explicitly — the default only reaches installs with no explicit key.
+        $r = $this->classify('issue_comment.created',
+            ['issue' => ['number' => 9, 'title' => 'T', 'body' => 'b', 'labels' => [['name' => 'from:me'], ['name' => 'to:other']], 'html_url' => 'https://x/9'],
+                'comment' => ['body' => "FROM: other\n\nbare"]],
+            'org/coord', classifierConfig: ['wake_membership' => ['to_me', 'to_all', 'comment_to']]);
+
+        $this->assertSame([], $r->intents);
+    }
+
+    public function test_bare_reply_with_no_from_line_still_grants(): void
+    {
+        // An unattributable author (no FROM: line) yields null !== 'me', so it grants.
+        // Correct: the narrow already denied anything addressed elsewhere, and a bare
+        // unattributed reply on a thread I opened is still a reply to me. Fail-open here
+        // is the safe direction — the failure this closes is a MISSED wake.
+        $r = $this->classify('issue_comment.created',
+            ['issue' => ['number' => 9, 'title' => 'T', 'body' => 'b', 'labels' => [['name' => 'from:me'], ['name' => 'to:other']], 'html_url' => 'https://x/9'],
+                'comment' => ['body' => 'no addressing lines at all']],
+            'org/coord');
+
+        $this->assertCount(1, $r->intents);
+    }
+
     public function test_coord_non_addressed_default_drops(): void
     {
         // DEFAULT `drop`: a non-addressed coord event yields no intent — byte-identical
