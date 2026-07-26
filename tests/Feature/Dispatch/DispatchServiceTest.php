@@ -411,6 +411,48 @@ class DispatchServiceTest extends TestCase
         $this->assertNull(AgentDispatch::firstOrFail()->error_message);
     }
 
+    /**
+     * The LIMIT of `impl_wake_deny_actors` (DL-232), pinned so its "digest, not drop"
+     * promise cannot be re-derived as universal. On a `route_intents:true` channel the
+     * dispatcher pushes EVERY staged intent unconditionally (DL-006, the test above), so an
+     * install pairing the deny-list with `impl_non_wake_disposition: inbox_stage` gets the
+     * staged intent routed — i.e. **still woken**, and the knob delivers no suppression at
+     * all. Only `drop` (the default) suppresses on such a channel.
+     *
+     * Reported by sola-pm (roundtable #160) after deploying against exactly this shape.
+     * The knob is not broken — the operator's own `route_intents:true` says "wake me on
+     * every staged intent" — but DL-232's wording implied a quiet digest unconditionally,
+     * and that is false here. This test is the counter-example.
+     */
+    public function test_deny_listed_actor_still_wakes_under_inbox_stage_on_a_route_intents_channel(): void
+    {
+        Http::fake(['*' => Http::response('ok', 200)]);
+
+        File::put($this->dir.'/prod-agent.yml',
+            "subscriptions:\n  - provider: github\n    scopes: ['org/impl']\n"
+            ."classifier:\n  class: '".CoordinationClassifier::class."'\n"
+            ."  config:\n"
+            ."    families: ['impl-ci-wake']\n"
+            ."    impl_wake_deny_actors: ['dependabot[bot]']\n"
+            ."    impl_non_wake_disposition: inbox_stage\n"
+            ."channel:\n  url: http://127.0.0.1:8788/\n  route_intents: true\n");
+
+        $dto = new EventDto(deliveryId: 'evt-deny', scopeId: 'org/impl', eventType: 'workflow_run.completed', actorId: '999');
+        $this->dispatcher()->dispatch('github', 'org/impl', $dto, [
+            'workflow_run' => [
+                'status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5,
+                'html_url' => 'https://r/5',
+                'triggering_actor' => ['login' => 'dependabot[bot]', 'id' => 49699333],
+            ],
+            'repository' => ['full_name' => 'org/impl'],
+        ]);
+
+        // The deny-list suppressed the classifier's hand-emit — and route_intents pushed
+        // the staged intent anyway. Suppression NOT achieved on this channel shape.
+        Http::assertSent(fn ($r) => $r->url() === 'http://127.0.0.1:8788/');
+        $this->assertSame(1, $this->inboxCount());
+    }
+
     public function test_coordination_classifier_hand_emit_does_not_double_push_on_route_intents(): void
     {
         // DL-191 end-to-end guard: a hand-emitting CoordinationClassifier family
