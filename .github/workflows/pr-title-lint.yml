@@ -74,7 +74,10 @@ jobs:
           card_id="${branch_lc#*/}"
           card_id="${card_id%%-*}"
 
-          # Accept a genuine "card-<exact-id>"/"card#<exact-id>" or "DL-<1-4
+          # Accept a genuine "card-<exact-id>"/"card#<exact-id>"/glued
+          # "card<exact-id>" (the separator is optional since DL-233 — the lint must
+          # accept everything the classifier correlates, or it reds a title that
+          # would have moved the card) or "DL-<1-4
           # digits>" token, bounded on BOTH sides so a coincidental substring does
           # not satisfy the check: the leading (^|[^0-9a-z_]) mirrors the
           # classifier's \b (underscore is a word char there — a title the lint
@@ -82,7 +85,7 @@ jobs:
           # "discard#3770"/"foo_card-3770"; the trailing ([^0-9]|$) rejects a
           # longer id like "card#37700". Inputs are pre-folded, so the lowercase
           # class is the whole alphabet.
-          if [[ "$title_lc" =~ (^|[^0-9a-z_])card[-#]${card_id}([^0-9]|$) ]] || [[ "$title_lc" =~ (^|[^0-9a-z_])dl-[0-9]{1,4}([^0-9]|$) ]]; then
+          if [[ "$title_lc" =~ (^|[^0-9a-z_])card[-#]?${card_id}([^0-9]|$) ]] || [[ "$title_lc" =~ (^|[^0-9a-z_])dl-[0-9]{1,4}([^0-9]|$) ]]; then
             echo "OK: title carries a correlation token for card $card_id."
             exit 0
           fi

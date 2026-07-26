@@ -45,16 +45,26 @@ use Illuminate\Support\Facades\Log;
 class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, EmitsWritebackReactions
 {
     /**
-     * The card token: `card-<id>` or `card#<id>`, case-insensitive. DL-shaped
-     * boundary — leading `\b` only, deliberately NO trailing `\b`, mirroring the
-     * DL regex one call up (DL-201 / roundtable #48): a trailing `\b` made
-     * `card#3054_fix` a SILENT no-op (`_` is a word char, so `\b` never matches
-     * digit→`_`) while `DL-200_fix` was immune to the identical input. Greedy-and-
-     * loud beats strict-and-silent: a wrong-but-parsed id fails at the card lookup
-     * with a warn; an unparsed token fails silently. Both peer installs' hook
-     * filters byte-pin to this pattern's boundary semantics.
+     * The card token: `card-<id>`, `card#<id>`, or the GLUED `card<id>`,
+     * case-insensitive. DL-shaped boundary — leading `\b` only, deliberately NO
+     * trailing `\b`, mirroring the DL regex one call up (DL-201 / roundtable #48):
+     * a trailing `\b` made `card#3054_fix` a SILENT no-op (`_` is a word char, so
+     * `\b` never matches digit→`_`) while `DL-200_fix` was immune to the identical
+     * input. Greedy-and-loud beats strict-and-silent: a wrong-but-parsed id fails
+     * at the card lookup with a warn; an unparsed token fails silently.
+     *
+     * THE GLUED ARM (DL-233 / roundtable #159) requires **≥2 digits**, while a
+     * SEPARATED token still accepts one. That asymmetry is the toolkit's, adopted
+     * rather than invented: `board-card-start` has accepted glued since v0.17.0 at
+     * `0*[0-9]{2,}`, and the 2-digit floor is what keeps an ordinary word from
+     * correlating — `card2go` names no card, but `card-3` legitimately does. The
+     * branch-reset `(?|…)` gives both arms the SAME capture group, so callers read
+     * `$m[1]` unchanged.
+     *
+     * The digit class stays ASCII (no `/u`) — see DL-231; that ratification is
+     * untouched here, this widens the SEPARATOR only.
      */
-    private const CARD_TOKEN_PATTERN = '/\bcard[-#](\d+)/i';
+    private const CARD_TOKEN_PATTERN = '/\bcard(?|[-#](\d+)|(\d{2,}))/i';
 
     /**
      * The `DL-NNN` token, case-insensitive — leading `\b` only, same boundary
