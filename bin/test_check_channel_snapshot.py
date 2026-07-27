@@ -990,15 +990,31 @@ class PipedConsumption(_TreeCase):
     """The tool's whole product is a machine-readable exit code, so `| head`, `| tee`
     and `| grep -q` are the DOCUMENTED usage — not an edge case.
 
-    ⚠ PARAMETRISED OVER BUFFERING REGIME, and that is the entire point of this class.
-    An earlier version asserted "the verdict survives a closed pipe on every exit code"
-    using fixtures that emitted 695 B and 1,512 B — which NEVER BREAK A PIPE at all
-    (one flush at interpreter exit) and left the mutation that deletes the whole output
-    handler GREEN. Worse, the three regimes behave differently, and the middle one is
-    where the damage was: measured on the shipped file under `| head -1` before the fix,
-    7,992 B -> exit 2, 15,292 B -> exit **120**, 59,092 B -> exit **120**, 118,093 B ->
-    exit 2. The >64 KiB fixture that "proved" the earlier fix sat in the one regime
-    where the in-band handler already worked.
+    ⚠ WHICH CASE DISCRIMINATES, stated correctly — because getting this wrong is what
+    produced the retracted ">64 KiB, precautionary" claim, and an inherited wrong
+    attribution sends the next reader to measure the same wrong regime.
+
+    THE DISCRIMINATING CASE IS A READER THAT CLOSES WITHOUT READING (`read_a_line=False`),
+    at ANY size. It breaks the pipe every time, and it is what reds `no-flush`,
+    `no-dup2` and `delivery-overwrites`.
+
+    THE REGIME AXIS IS A BREADTH CHECK, not the discriminator — and it is weaker than it
+    was, because the fix itself changed the timing. Output is now a single
+    `sys.stdout.write()` issued AFTER the child has exited, so a reader's `readline()`
+    cannot return until that write has begun, and for payloads within the pipe's
+    capacity the write completes before the reader's `close()` is visible: no pipe
+    breaks at all. Instrumented post-fix, 4 of the 6 `read_a_line=True` cells never
+    break one. It is kept because a future change that streams output again would make
+    the regimes diverge, and because the sizes bracket the real boundaries.
+
+    The size table that motivated all this describes the PRE-FIX file, where the write
+    happened incrementally: 7,992 B -> exit 2, 15,292 B -> **120**, 59,092 B -> **120**,
+    118,093 B -> exit 2. It is history, not a current property, and it is labelled as
+    such here so nobody re-derives a live claim from it.
+
+    The predecessor of this class asserted "the verdict survives a closed pipe on every
+    exit code" using 695 B and 1,512 B fixtures that never broke a pipe either, and left
+    the mutation deleting the whole output handler GREEN.
     """
 
     # Sized to land either side of the 8 KiB pipe-buffer / 64 KiB pipe-capacity
@@ -1041,11 +1057,19 @@ class PipedConsumption(_TreeCase):
         # measurement.
         for regime, lines in self.REGIMES.items():
             for verdict, exit_code in (("failed", 3), ("could-not-check", None)):
-                with self.subTest(regime=regime, verdict=verdict):
-                    tree = self._noisy_tree(lines, f"noisy-{regime}-{verdict}", exit_code)
-                    unpiped = self._unpiped_exit(tree)
-
-                    self.assertEqual(unpiped, self._piped_exit(tree), "piping changed the verdict")
+                tree = self._noisy_tree(lines, f"noisy-{regime}-{verdict}", exit_code)
+                unpiped = self._unpiped_exit(tree)
+                # BOTH reader behaviours. `read_a_line=True` is the breadth check and
+                # mostly does NOT break the pipe post-fix (see the class docstring);
+                # `read_a_line=False` breaks it at every size and is what actually
+                # exercises the delivery path.
+                for read_a_line in (True, False):
+                    with self.subTest(regime=regime, verdict=verdict, read_a_line=read_a_line):
+                        self.assertEqual(
+                            unpiped,
+                            self._piped_exit(tree, read_a_line=read_a_line),
+                            "piping changed the verdict",
+                        )
 
     def test_a_short_clean_run_survives_a_closed_pipe(self):
         # The LAUNCH OK path can only ever be short (it prints two lines), so it lives
@@ -1077,6 +1101,38 @@ class PipedConsumption(_TreeCase):
 
         self.assertEqual(ccs.EXIT_COULD_NOT_CHECK, code)
         self.assertNotEqual(ccs.EXIT_LAUNCH_FAILED, code)
+
+    def test_a_closed_stdout_at_startup_does_not_invert_any_verdict(self):
+        # `>&-`: fd 1 is CLOSED before the process starts, so CPython sets
+        # `sys.stdout = None`. The delivery fallback then raised `AttributeError:
+        # 'NoneType' object has no attribute 'fileno'` — a type its `except OSError`
+        # did not list — which escaped to CPython's exit-1 and reported a HEALTHY
+        # deployment as *LAUNCH FAILED, conclusive, will not come up*. The same
+        # signature as rounds 4, 5 and 6, produced by the enumeration that was left
+        # sitting INSIDE the fix meant to retire enumerations.
+        #
+        # Also reachable on Windows under `pythonw.exe` — the population the transport
+        # pin exists to serve. No other case in this suite closes fd 1, which is why
+        # 46/46 stayed green with it live.
+        cases = {
+            "healthy": (self.whole_copy("closed-fd-ok"), ccs.EXIT_LAUNCH_OK),
+            "missing-module": (self.whole_copy("closed-fd-fail", omit=["channel-lib.mjs"]), ccs.EXIT_LAUNCH_FAILED),
+            "no-entry": (self.tree("closed-fd-empty", {"package.json": "{}\n"}), ccs.EXIT_LAUNCH_FAILED),
+            "unbindable": (self.tree("closed-fd-nobind", {ccs.ENTRY_FILE: ""}), ccs.EXIT_COULD_NOT_CHECK),
+        }
+
+        for label, (path, expected) in cases.items():
+            with self.subTest(case=label):
+                with open(os.devnull) as devnull:
+                    proc = subprocess.Popen(
+                        [sys.executable, os.path.join(_HERE, "check-channel-snapshot.py"), path],
+                        stdout=devnull.fileno(), stderr=subprocess.PIPE, close_fds=True,
+                        preexec_fn=lambda: os.close(1),
+                    )
+                    err = proc.stderr.read()
+                    code = proc.wait()
+
+                self.assertEqual(expected, code, f"{label}: {err.decode('utf-8', 'replace')[:400]}")
 
     def test_the_process_exit_is_always_a_valid_verdict(self):
         # THE PROPERTY, guarded once instead of restated as prose in four places. The

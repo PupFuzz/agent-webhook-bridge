@@ -395,7 +395,21 @@ def run_launch_assert(
             file=out,
         )
         return EXIT_COULD_NOT_CHECK
-    socket_path = throwaway_socket_path(tmpdir)
+    # OWNED FROM THE MOMENT IT EXISTS. Anything that raises between `mkdtemp` and the
+    # inner `try` below used to leak the directory — observed: one
+    # /tmp/channel-launch-assert-* per suite run, from the guard case that injects a
+    # fault at `throwaway_socket_path`. Cleaned on the way out and the fault re-raised,
+    # so `main()`'s default still decides the verdict.
+    #
+    # An `except` that re-raises, NOT a `finally: rmtree`: the two refusals below return
+    # deliberately WITHOUT removing anything (if the mkdtemp construction did not hold,
+    # this run does not know what it is looking at), and a `finally` would delete the
+    # very thing they refuse to touch.
+    try:
+        socket_path = throwaway_socket_path(tmpdir)
+    except BaseException:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
 
     # THE TWO REFUSALS. Both are unreachable while the mkdtemp construction above
     # holds — which is the point of asserting them: the child UNLINKS the socket it
@@ -609,23 +623,38 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _deliver(rendered: str) -> None:
-    """Best-effort delivery of ALREADY-RENDERED output. Cannot change a verdict.
+    """Best-effort delivery of ALREADY-RENDERED output. TOTAL: it cannot raise, so it
+    cannot alter a verdict — which is why `main()` may call it outside its `try`.
 
-    The flush is IN BAND and that is the whole point. Without it, `print()` succeeds
-    into the buffer, `main()` returns, and the INTERPRETER SHUTDOWN flush hits EPIPE —
-    so no handler in this file ever runs and the process exits **120**. Measured on the
-    shipped file under the documented `| head -1`, and the regime matters:
+    ⚠ ONE `except Exception` AROUND THE WHOLE BODY, and that is the point rather than
+    laziness. The previous shape had `except OSError` around the fallback, which is a
+    hand-maintained exception list sitting INSIDE the fix whose own rationale is that
+    enumerations are the generator. It was wrong immediately: with fd 1 closed at
+    startup CPython sets `sys.stdout = None`, so the fallback raised
+    `AttributeError: 'NoneType' object has no attribute 'fileno'` — escaping to
+    CPython's exit-1, i.e. `LAUNCH FAILED, conclusive, will not come up`, about a
+    HEALTHY deployment. Reproduced with `check-channel-snapshot.py <good dir> >&-`, and
+    reachable on Windows via `pythonw.exe`, the population the transport pin serves.
 
-        7,992 B  -> exit 2    (one buffer, fails in band)
-       15,292 B  -> exit 120  }  8-64 KiB: partial write succeeds, the rest dies at
-       59,092 B  -> exit 120  }  shutdown, where nothing is listening
-      118,093 B  -> exit 2    (enough writes that one fails in band)
+    Widening `main()`'s `try` to cover delivery would have been the wrong fix: the
+    catch-all there returns COULD NOT CHECK, which would downgrade a COMPUTED verdict on
+    a delivery failure — the opposite half of the category error this file already
+    fixed. Totality is what makes both halves impossible at once.
 
-    An earlier revision of this file called the 120 "not reproducible on this platform,
-    precautionary" — measured in the >64 KiB window, the ONE regime where the in-band
-    handler already worked. It is reproducible; the fix is to make the failure happen
-    where a handler can see it, which is what the explicit flush does. The `dup2` then
+    The flush is IN BAND deliberately. Without it, `print()` succeeds into the buffer,
+    `main()` returns, and the INTERPRETER SHUTDOWN flush hits EPIPE — no handler in this
+    file runs and the process exits **120**. Measured against the pre-change file under
+    `| head -1`: 7,992 B ⇒ 2, 15,292 B ⇒ **120**, 59,092 B ⇒ **120**, 118,093 B ⇒ 2. An
+    earlier revision called that 120 "not reproducible, precautionary" — measured in the
+    >64 KiB window, the one regime where the in-band handler already ran. It was
+    reproducible; the flush moves the failure to where a handler sees it and the `dup2`
     leaves the shutdown flush nothing to fail on.
+
+    NOTE THE TIMING CHANGE, because it moved which test discriminates: output is now a
+    single `write()` after the child has exited, so for payloads within the pipe's
+    capacity the write completes before a reader's `close()` becomes visible and no pipe
+    breaks at all. The case that actually exercises this path is a reader that closes
+    WITHOUT READING — not a large payload. See `PipedConsumption`.
     """
     try:
         sys.stdout.write(rendered)
@@ -634,7 +663,7 @@ def _deliver(rendered: str) -> None:
         try:
             devnull = os.open(os.devnull, os.O_WRONLY)
             os.dup2(devnull, sys.stdout.fileno())
-        except OSError:
+        except Exception:
             pass
 
 
