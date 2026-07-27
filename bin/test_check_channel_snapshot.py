@@ -324,11 +324,16 @@ class SocketGuard(_TreeCase):
 
         self.assert_run(self.whole_copy(), ccs.EXIT_LAUNCH_OK, env=env)
 
-        # NOT ENOUGH ON ITS OWN, and the reason is the defect: the server unlinks the
-        # socket it bound, so "no socket file afterwards" is equally true of a path
-        # that was never touched and one that was bound and then DESTROYED. The
-        # persistent `.bound` witness is what separates them, and it is what goes red
-        # when the explicit env override is dropped.
+        # ⚠ DO NOT "SIMPLIFY" THIS TO THE lexists() CHECK ALONE. The obvious form is a
+        # DECORATION and was measured to be: the server UNLINKS the socket it bound, so
+        # "no socket file afterwards" is equally true of a path that was never touched
+        # and one that was bound and then DESTROYED — which is the whole damage. The
+        # first version of this test asserted only the first line below and stayed
+        # GREEN under the mutation it exists to catch (dropping the explicit
+        # BRIDGE_CHANNEL_SOCKET override from child_env), because the child dutifully
+        # created the sentinel, bound it, and removed it again. The synthetic entry
+        # therefore leaves a PERSISTENT `<socket>.bound` marker on listen, and that
+        # second assertion is the one that actually goes red.
         self.assertFalse(os.path.lexists(sentinel), "the live socket must not be left behind")
         self.assertFalse(
             os.path.lexists(sentinel + ".bound"),

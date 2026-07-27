@@ -124,7 +124,55 @@ final class ChannelSnapshotProbe
 
         // The presence leg needs NO branch-2 special case: the checkout's own copy
         // has to carry an entry file and a node_modules exactly as a snapshot does.
-        return array_merge($findings, self::presenceLeg($deployedDir));
+        $findings = array_merge($findings, self::presenceLeg($deployedDir));
+
+        // ONE launch disclosure per run that actually reached the legs (DL-237), and
+        // UNIFORM on purpose. The first shape put it on the version-EQUAL branch
+        // alone — a like-for-like replacement for the completeness leg that used to
+        // live there — and that was wrong about what the disclosure is FOR. It does
+        // not stand in for that leg; it says launchability was never measured, which
+        // is equally true on a STALE, a NEWER and a REPO-DIRECT deployment. The
+        // repo-direct case is the one that settles it: that is the topology the
+        // channel-server README recommends, and it would have gotten a fully green
+        // run with no disclosure at all — "green check, dark seat" reintroduced by
+        // the fix for it.
+        //
+        // NOT a second line beside a single action (the DL-229 (h) objection), which
+        // was weighed and does not reach this: (h) rejects two findings pointing at
+        // the SAME remediation, and this one points at a different one — run the
+        // seat-side assert, not re-copy the directory.
+        //
+        // It is also emitted UNCONDITIONALLY of what the legs found, including beside
+        // a presence FAIL. Suppressing it there would make it depend on another leg's
+        // severity, so a later change to that leg would silently change whether this
+        // appears; and the sentence stays true regardless — the legs ran, the launch
+        // still did not.
+        //
+        // The early returns above deliberately never reach here. An undeclared path,
+        // the dangling / names-a-file fatals and the not-visible WARN each already
+        // say the legs did not run, and a second not-measured line beside those IS
+        // the (h) shape.
+        return array_merge($findings, [self::launchNotMeasured($deployedDir)]);
+    }
+
+    /**
+     * The ONE "we did not launch it" disclosure, spelled once and emitted once per
+     * run that reached the legs ({@see self::probe()} on why it is uniform).
+     *
+     * `unvalidated` and never `warn`: there is no obstruction here and nothing the
+     * operator did wrong — the measurement is one this process structurally cannot
+     * make, because the bridge commonly runs as a DIFFERENT OS user than the agent
+     * (DL-227's same-box topology). Launching from here would certify that the entry
+     * loads for the BRIDGE's user — its PATH, its node, its read access — which is a
+     * proxy for the question again, and "assert the thing, not a proxy" is the whole
+     * reason the file-set compare was retired (DL-237). Per DL-236 (c) the severity
+     * never flips the exit code; it renders plain and feeds the run's closing tally.
+     *
+     * @return array{severity: string, message: string}
+     */
+    private static function launchNotMeasured(string $deployedDir): array
+    {
+        return self::unvalidated("channel server snapshot at {$deployedDir} was NOT launch-tested — bridge:check never executes node, so a green run here is not evidence the entry will LOAD at the next session start (every leg above is stat-derived: a deployment missing a module the entry imports satisfies all of them and still dies on ERR_MODULE_NOT_FOUND). Run ".self::LAUNCH_ASSERT." {$deployedDir} ON THAT SEAT, as the OS user whose session launches the channel server — launching it from here would only prove it for the bridge's user, a different PATH and a different node");
     }
 
     /**
@@ -195,12 +243,14 @@ final class ChannelSnapshotProbe
      * WARN leg: is the deployed copy older than the one this checkout ships? Never a
      * fail — a stale snapshot still launches, it just lacks newer fixes.
      *
-     * It is a DRIFT question and only a drift question. It is NOT a loadability
-     * question, and the version-EQUAL branch says so outright rather than letting a
-     * green `is current` be read as one (DL-237): the DL-230 incident — a current
-     * version stamp cherry-picked onto a deployment missing a module the entry
-     * imports — lands in exactly that branch, and nothing here would see it. The
-     * check that would is a LAUNCH, and a launch belongs to the seat.
+     * It is a DRIFT question and only a drift question — on EVERY branch, not just
+     * the stale one. A green `is current` is not a loadability verdict: the DL-230
+     * incident is a current version stamp cherry-picked onto a deployment missing a
+     * module the entry imports, and nothing in this leg would see it. The check that
+     * would is a LAUNCH, it belongs to the seat, and {@see self::probe()} discloses
+     * its absence ONCE for the whole run rather than per branch (DL-237) — so this
+     * leg deliberately says nothing about it and no branch here carries a special
+     * case for it.
      *
      * PRECONDITION (established by the caller's one gate): $deployedDir is
      * traversable by this process, so the `package.json` stat below is conclusive.
@@ -250,35 +300,13 @@ final class ChannelSnapshotProbe
             return [self::warn("channel server snapshot at {$deployedDir} is STALE (deployed {$deployed['version']} < bundled {$bundled['version']}) — the next session starts on the older copy; {$resync}. To stop it recurring, deploy as a SYMLINK to {$bundledDir} rather than a copy: it resolves into the checkout, so there is nothing left to drift (a copy is still the answer when the deployment is on another host or another OS user's filesystem — see docs/multi-host.md)")];
         }
 
-        $current = self::ok("channel server snapshot at {$deployedDir} is current (deployed {$deployed['version']} >= bundled {$bundled['version']})");
-
-        // NEWER than this checkout: nothing further to say. The `>=` in the ok above
-        // already reports it, and until DL-237 the extra line beside it existed only
-        // to announce that the completeness leg was being SKIPPED for this
-        // population — a leg that no longer runs on any branch, so the announcement
-        // would name machinery that is gone.
-        if ($comparison > 0) {
-            return [$current];
-        }
-
-        // VERSION-EQUAL: the branch the DL-230 incident lands in, and the branch that
-        // used to carry the completeness leg. That leg is retired (DL-237) because a
-        // LAUNCH is strictly more precise than the file-set compare in BOTH
-        // directions, measured rather than argued: a pruned-but-working deployment
-        // missing 6 of the 10 reference files launches and exits 0 while completeness
-        // FAILs it, and the DL-230 shape (`channel-lib.mjs` removed) dies on
-        // ERR_MODULE_NOT_FOUND while every leg left here reads healthy.
-        //
-        // The launch is NOT run from this process, and that is the ruling rather than
-        // an omission. The bridge commonly runs as a DIFFERENT OS user than the agent
-        // (DL-227's same-box topology), so launching here would certify that the entry
-        // loads for the BRIDGE's user — its PATH, its node, its read access — which is
-        // a proxy for the question again, and "assert the thing, not a proxy" is the
-        // entire reason the file compare was replaced. So this branch reports what it
-        // did NOT measure, at the severity that means exactly that (DL-236).
-        // `unvalidated` never flips the exit code (`emitFinding()` returns false only
-        // for `fail`); it renders plain and feeds the run's closing tally.
-        return [$current, self::unvalidated("channel server snapshot at {$deployedDir} was NOT launch-tested — bridge:check never executes node, so a green run here is not evidence the entry will LOAD at the next session start (a matching version stamp says nothing about the module graph: a deployment missing a module the entry imports reads current on this very leg and dies on ERR_MODULE_NOT_FOUND). Run ".self::LAUNCH_ASSERT." {$deployedDir} ON THAT SEAT, as the OS user whose session launches the channel server — launching it from here would only prove it for the bridge's user, a different PATH and a different node")];
+        // `>=`, and no second line for the NEWER case. Until DL-237 one existed, and
+        // its entire content was "completeness against X SKIPPED" — an announcement
+        // about a leg that no longer runs on any branch. Removed rather than
+        // rewritten: operator-facing output naming machinery that is gone is worse
+        // than no line. Whether the deployment will LAUNCH is not this leg's question
+        // on any branch either; {@see self::probe()} discloses that once, uniformly.
+        return [self::ok("channel server snapshot at {$deployedDir} is current (deployed {$deployed['version']} >= bundled {$bundled['version']})")];
     }
 
     /**
