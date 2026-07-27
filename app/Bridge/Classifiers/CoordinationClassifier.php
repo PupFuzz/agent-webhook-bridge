@@ -57,13 +57,19 @@ use App\Bridge\Writeback\WritebackMapping;
  * routed push (byte-identical payload) is the single wake.
  *
  *   - `coord_extra_actions` (coord-message) extends the fail-safe action allow-list
- *     per prefix; `wake_membership` (default `[to_me, to_all, comment_to]`) selects
- *     which label classes grant coord-message live-wake. `comment_to` (a body-`TO:<self>`
+ *     per prefix; `wake_membership` (default
+ *     `[to_me, to_all, comment_to, bare_reply_to_own_thread]`) selects which label
+ *     classes grant coord-message live-wake. `comment_to` (a body-`TO:<self>`
  *     grant for cross-thread pull-ins, DL-192) is default-ON since DL-213 — the
  *     post-a-reply-and-wait flow is otherwise dark out of the box; it is additive-only
  *     and echo-safe (keys on the comment's directed `TO:` line, not authorship).
  *     `from_me` (wake on ALL activity on threads you opened) stays opt-in — it is the
- *     over-wake/self-wake knob. `coord_non_addressed_disposition: inbox_stage` (DL-215,
+ *     over-wake/self-wake knob. `bare_reply_to_own_thread` (DL-235) is default-ON and is
+ *     the NARROW form `from_me` is not: it grants only on a BARE reply (no `TO:` line) to
+ *     a thread the agent opened, and only when the body's `FROM:` line is someone else —
+ *     that third clause is the echo guard that makes an authorship-keyed grant safe under
+ *     a shared account, which is exactly what DL-213 rejected `from_me` for.
+ *     `coord_non_addressed_disposition: inbox_stage` (DL-215,
  *     the coord-message sibling of `impl_non_wake_disposition`) softens the recipient
  *     gate: a NON-addressed coordination event, which DEFAULT-DROPS (`drop`), instead
  *     stages a normal coord Intent with NO channel_push — a durable inbox backstop for
@@ -314,7 +320,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         // opened nor was labelled on). The narrow is unconditional; the grant keys on
         // the directed TO: line (not authorship), so it is echo-safe under a shared
         // account: a comment the agent itself authored TO someone else does not wake it.
-        $membership = $cfg->strings('wake_membership', ['to_me', 'to_all', 'comment_to']);
+        $membership = $cfg->strings('wake_membership', ['to_me', 'to_all', 'comment_to', 'bare_reply_to_own_thread']);
         $forMe = (in_array('to_me', $membership, true) && in_array("to:{$me}", $labels, true))
             || (in_array('to_all', $membership, true) && in_array('to:all', $labels, true))
             || (in_array('from_me', $membership, true) && in_array("from:{$me}", $labels, true));
@@ -324,6 +330,34 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 $forMe = true;   // directed TO:<self> grants membership (opt-in)
             } elseif ($addressed === false) {
                 $forMe = false;  // addressed to someone else — narrow, unconditional
+            } elseif ($addressed === null
+                && in_array('bare_reply_to_own_thread', $membership, true)
+                && in_array("from:{$me}", $labels, true)
+                && RecipientAddressing::author($subject['body']) !== $me) {
+                // DL-235 / roundtable #160 — the `reply-dir B` grant, and NOTHING wider.
+                // A BARE reply (no TO: line at all, $addressed === null) on a thread this
+                // agent OPENED is addressed to it by construction — that is what a thread
+                // is — so dropping it is a silent miss. Measured across three installs:
+                // 6+ seats non-conformant, none with a digest configured, 112 dropped
+                // coordination comments per impl agent on one of them.
+                //
+                // WHY NOT `from_me`, which already exists and looks like the answer:
+                // `from_me` grants on ALL activity on an authored thread, which is
+                // strictly wider than the conformance target, and DL-213 ruled it the
+                // wrong knob on ECHO-SAFETY — it keys on thread membership, and under a
+                // shared account (every seat posting as one identity) actor id cannot
+                // tell this agent's own comment from a counterparty's. Flipping it into
+                // the default would also revert DL-190's deliberate wide→narrow flip.
+                //
+                // THE THIRD CLAUSE IS THAT ECHO GUARD, and it is why this grant is safe
+                // where `from_me` is not: it keys on the body's FROM: line — the same
+                // discriminator shared-account attribution already relies on everywhere
+                // else — so the agent's own bare follow-up on its own thread does NOT
+                // wake it. Without it, an authorship-keyed grant is the cure carrying the
+                // disease. A bare comment with NO FROM: line yields null !== $me, so an
+                // unattributable author still grants; the narrow above already denied
+                // anything addressed elsewhere.
+                $forMe = true;
             }
         }
         // Recipient gate → wake disposition. An ADDRESSED event ($forMe) live-wakes.
