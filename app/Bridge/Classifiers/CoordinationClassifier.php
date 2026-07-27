@@ -307,7 +307,8 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
 
         // Recipient gate (DL-022): membership is label-authoritative. Which label
         // classes grant live-wake membership is config-driven via `wake_membership`
-        // — DEFAULT `[to_me, to_all, comment_to]`. `from_me` stays OUT of the default
+        // — DEFAULT `[to_me, to_all, comment_to, bare_reply_to_own_thread]` (DL-235 added
+        // the fourth). `from_me` stays OUT of the default
         // (it is the over-wake knob: a coordinator opening many threads would wake on
         // every reply to them; it is the opt-in for waking on all activity on your own
         // threads).
