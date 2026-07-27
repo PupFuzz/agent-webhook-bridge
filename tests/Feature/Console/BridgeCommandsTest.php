@@ -2445,6 +2445,46 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(0, $code);
         $this->assertStringContainsString('channel.server_path not declared', $out);
         $this->assertStringContainsString('snapshot not validated', $out);
+        // card 5170: and the run DISCLOSES it in aggregate. Without the tally the
+        // only trace of a check that never ran is one line among dozens, and a
+        // zero exit reads as "everything validated".
+        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $out);
+        $this->assertStringContainsString('a green run does not mean they were validated', $out);
+    }
+
+    public function test_check_prints_no_unvalidated_tally_when_every_leg_ran(): void
+    {
+        // card 5170: SILENT at zero, not "0 unvalidated". The tally is a
+        // disclosure about checks that did not run; an install with none has
+        // nothing to disclose, and a permanent zero line is noise operators learn
+        // to skip past — which is how the next non-zero one gets missed.
+        $deployed = $this->deploySnapshot($this->dir.'/deployed', '99.0.0');
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringNotContainsString('unvalidated', $out);
+        $this->assertStringNotContainsString('check(s) reported', $out);
+    }
+
+    public function test_the_unvalidated_tally_does_not_accumulate_across_invocations(): void
+    {
+        // The console command is resolved from the container, so a second
+        // Artisan::call in the same process can reuse THIS instance — an
+        // unreset counter would report 2 for one undeclared agent, and the
+        // green-vs-never-looked signal the tally exists to give would be a
+        // number nobody can trust.
+        $this->writeAgentWithChannelServerPath(null);
+
+        Artisan::call('bridge:check');
+        Artisan::output();
+        $code = Artisan::call('bridge:check');
+        $second = Artisan::output();
+
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $second);
+        $this->assertStringNotContainsString('2 check(s) reported', $second);
     }
 
     public function test_check_fails_on_a_dangling_channel_server_path(): void

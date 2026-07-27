@@ -1,0 +1,129 @@
+<?php
+
+namespace Tests\Unit\Console;
+
+use App\Console\Commands\Bridge\CheckCommand;
+use Illuminate\Console\OutputStyle;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\TestCase;
+use ReflectionMethod;
+use ReflectionProperty;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\BufferedOutput;
+use Symfony\Component\Console\Output\OutputInterface;
+
+/**
+ * The severity→exit contract of `bridge:check`'s finding renderer (card 5170).
+ *
+ * `emitFinding` is private and reached by reflection deliberately: what is under
+ * test IS its internal severity→exit mapping, and asserting it through an observed
+ * process exit code would only pin the severities that happen to be emitted today —
+ * exactly the property that broke when a fourth severity was added.
+ */
+class CheckCommandSeverityContractTest extends TestCase
+{
+    private CheckCommand $command;
+
+    private BufferedOutput $buffer;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->command = new CheckCommand;
+        // Decorated: the rendering assertions below distinguish a styled (green
+        // `info` / yellow `warn`) line from a plain one, which is only observable
+        // when styling is emitted.
+        $this->buffer = new BufferedOutput(OutputInterface::VERBOSITY_NORMAL, true);
+        $this->command->setOutput(new OutputStyle(new ArrayInput([]), $this->buffer));
+    }
+
+    /**
+     * The WHOLE vocabulary, plus a severity that does not exist yet: the contract
+     * is `false` IFF `fail`, and it must hold for values added after this test.
+     *
+     * @return array<string, array{string, bool}>
+     */
+    public static function severities(): array
+    {
+        return [
+            'ok' => ['ok', true],
+            'warn' => ['warn', true],
+            'unvalidated' => ['unvalidated', true],
+            'fail' => ['fail', false],
+            'a severity that does not exist yet' => ['some-future-severity', true],
+        ];
+    }
+
+    #[DataProvider('severities')]
+    public function test_emit_finding_returns_false_if_and_only_if_the_severity_is_fail(string $severity, bool $expected): void
+    {
+        // This is what preserves bridge:check's exit codes BY CONSTRUCTION across
+        // any widening of the vocabulary: only the `fail` arm flips the caller's $ok.
+        $this->assertSame($expected, $this->emit($severity, 'a message'));
+    }
+
+    public function test_an_unvalidated_finding_renders_plain_never_as_certified_green(): void
+    {
+        // Green reads as "validated clean" — the exact misreading card 5170 fixes.
+        // Yellow was rejected too: an install told by docs/multi-host.md to leave
+        // channel.server_path unset would be nagged forever with no way to silence it.
+        $this->emit('unvalidated', 'channel.server_path not declared — snapshot not validated');
+        $plain = $this->buffer->fetch();
+
+        $this->assertStringContainsString('snapshot not validated', $plain);
+        $this->assertStringNotContainsString("\033[", $plain);
+
+        // Positive control: the same renderer DOES style an `ok`, so the assertion
+        // above is measuring the severity arm and not an un-styled output object.
+        $this->emit('ok', 'channel snapshot holds every file');
+        $this->assertStringContainsString("\033[", $this->buffer->fetch());
+    }
+
+    public function test_only_an_unvalidated_finding_is_tallied(): void
+    {
+        foreach (['ok', 'warn', 'fail', 'some-future-severity'] as $severity) {
+            $this->emit($severity, 'a message');
+        }
+        $this->assertSame(0, $this->tally());
+
+        $this->emit('unvalidated', 'a message');
+        $this->emit('unvalidated', 'another message');
+        $this->assertSame(2, $this->tally());
+    }
+
+    /**
+     * The DL-225 ssh advisory's incomplete-setup predicate. POSITIVE membership:
+     * the `!== 'ok'` proxy it replaced would sweep every severity added later, so
+     * an agent would be told its ssh setup is incomplete on the strength of a check
+     * nobody ran. Latent today (SshTransportProbe emits only ok/warn/fail) — this
+     * pins that it stays that way, and that today's behavior is unchanged.
+     */
+    public function test_only_warn_and_fail_mean_the_ssh_setup_is_incomplete(): void
+    {
+        $incomplete = new ReflectionMethod(CheckCommand::class, 'severityMeansSetupIncomplete');
+
+        $this->assertTrue($incomplete->invoke(null, 'warn'));
+        $this->assertTrue($incomplete->invoke(null, 'fail'));
+        $this->assertFalse($incomplete->invoke(null, 'ok'));
+        $this->assertFalse($incomplete->invoke(null, 'unvalidated'));
+        $this->assertFalse($incomplete->invoke(null, 'some-future-severity'));
+    }
+
+    private function emit(string $severity, string $message): bool
+    {
+        $emit = new ReflectionMethod($this->command, 'emitFinding');
+
+        /** @var bool $result */
+        $result = $emit->invoke($this->command, 'agent x: ', ['severity' => $severity, 'message' => $message]);
+
+        return $result;
+    }
+
+    private function tally(): int
+    {
+        /** @var int $count */
+        $count = (new ReflectionProperty(CheckCommand::class, 'unvalidatedCount'))->getValue($this->command);
+
+        return $count;
+    }
+}

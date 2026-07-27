@@ -56,6 +56,14 @@ class CheckCommand extends BridgeCommand
     protected $description = 'Validate the bridge install config (dirs, DB connectivity, agent YAMLs)';
 
     /**
+     * How many findings this run reported as `unvalidated` — checks that did NOT
+     * run, so a zero exit says nothing about them (card 5170). Reset per run in
+     * {@see self::handle()}: the container can hand back the same instance to a
+     * second `Artisan::call`, and a leaked count would over-report.
+     */
+    private int $unvalidatedCount = 0;
+
+    /**
      * Whether the RECEIVER's PHP can end a request before running terminating
      * callbacks. `bridge:check` is CLI, where fastcgi_finish_request is never
      * defined, so asking about THIS process would warn on every healthy FPM install.
@@ -80,6 +88,7 @@ class CheckCommand extends BridgeCommand
     public function handle(): int
     {
         $ok = true;
+        $this->unvalidatedCount = 0;
 
         $configDir = config('bridge.config_dir');
         if (! is_string($configDir) || $configDir === '') {
@@ -930,6 +939,15 @@ class CheckCommand extends BridgeCommand
             $ok = false;
         }
 
+        // card 5170: a green exit means nothing FAILED — it says nothing about the
+        // checks that never ran. Silent at zero: an install where everything was
+        // measured has nothing to disclaim, and an install that deliberately leaves
+        // `channel.server_path` unset is correct (docs/multi-host.md instructs it),
+        // so this discloses, it does not scold.
+        if ($this->unvalidatedCount > 0) {
+            $this->line("{$this->unvalidatedCount} check(s) reported `unvalidated` — not a failure, and not a pass either: those legs did not run, so a green run does not mean they were validated. See the lines above.");
+        }
+
         return $ok ? self::SUCCESS : self::FAILURE;
     }
 
@@ -1060,7 +1078,7 @@ class CheckCommand extends BridgeCommand
         foreach ($sshAgents as $cfg) {
             $probe = new SshTransportProbe($env, $cfg->boardTools?->sshAccount);
             foreach ($probe->probePinnedLine($cfg->agentName) as $finding) {
-                if ($finding['severity'] !== 'ok') {
+                if (self::severityMeansSetupIncomplete($finding['severity'])) {
                     $agentIncomplete[$cfg->agentName] = true;
                 }
                 if (! $this->emitSshFinding($finding)) {
@@ -1091,9 +1109,27 @@ class CheckCommand extends BridgeCommand
     }
 
     /**
+     * Whether a pinned-line finding's severity means the agent's ssh setup is
+     * INCOMPLETE (feeds the DL-225 advisory only). POSITIVE membership,
+     * deliberately: the `!== 'ok'` proxy it replaces silently absorbs any severity
+     * added to the vocabulary later — card 5170's `unvalidated` would have flagged
+     * an agent's setup incomplete on the strength of a check nobody ran.
+     */
+    private static function severityMeansSetupIncomplete(string $severity): bool
+    {
+        return in_array($severity, ['warn', 'fail'], true);
+    }
+
+    /**
      * Render one `{severity, message}` probe finding through the existing
      * info/warn/error convention, under the caller's line prefix. Returns false
-     * (→ flip the caller's $ok) ONLY on a `fail`.
+     * (→ flip the caller's $ok) ONLY on a `fail` — the exit contract is that one
+     * arm, so a new severity can never change what `bridge:check` exits.
+     *
+     * `unvalidated` (card 5170) renders PLAIN: green would read as certified by a
+     * check that never ran, and yellow would nag a documented-correct population
+     * (a multi-host install is TOLD to leave `channel.server_path` unset) with no
+     * action available to silence it.
      *
      * @param  array{severity: string, message: string}  $finding
      */
@@ -1107,6 +1143,12 @@ class CheckCommand extends BridgeCommand
         }
         if ($finding['severity'] === 'warn') {
             $this->warn($message);
+        } elseif ($finding['severity'] === 'unvalidated') {
+            // Counted HERE — the single chokepoint every probe finding flows
+            // through, so any future probe emitting the severity is tallied
+            // without touching its call site.
+            $this->unvalidatedCount++;
+            $this->line($message);
         } else {
             $this->info($message);
         }

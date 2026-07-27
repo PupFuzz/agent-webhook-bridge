@@ -10,7 +10,10 @@ namespace App\Bridge\Support;
  * copy therefore reported `channel socket live` and exited 0, and the failure only
  * materialized at the next session start — as live-wake silently never coming back.
  *
- * Severity ∈ {ok, warn, fail}; only `fail` flips `bridge:check`'s exit — the same
+ * Severity ∈ {ok, warn, unvalidated, fail}; only `fail` flips `bridge:check`'s exit.
+ * `unvalidated` (card 5170) is NOT a verdict about the deployment — it says the leg did
+ * not run, so a green `bridge:check` is not evidence the snapshot is sound; `ok` means
+ * measured-and-clean and must never carry a not-measured finding. Otherwise the same
  * `{severity, message}` finding shape the SSH transport probe emits. Branch order
  * is load-bearing (see {@see self::probe()}).
  */
@@ -40,12 +43,12 @@ final class ChannelSnapshotProbe
      * @param  ?string  $serverPath  the agent's resolved `channel.server_path` (already
      *                               normalized to a directory), or null when undeclared
      * @param  string  $bundledDir  this checkout's `examples/channel-servers`
-     * @return list<array{severity: string, message: string}>
+     * @return list<array{severity: string, message: string}> each severity ∈ {ok, warn, unvalidated, fail}
      */
     public static function probe(?string $serverPath, string $bundledDir): array
     {
         if ($serverPath === null) {
-            return [self::ok('channel.server_path not declared — snapshot not validated')];
+            return [self::unvalidated('channel.server_path not declared — snapshot not validated')];
         }
 
         // Resolve NON-STRICTLY. A strict resolve (realpath ⇒ false, or a throwing
@@ -667,6 +670,14 @@ final class ChannelSnapshotProbe
     private static function warn(string $message): array
     {
         return ['severity' => 'warn', 'message' => $message];
+    }
+
+    /**
+     * @return array{severity: string, message: string}
+     */
+    private static function unvalidated(string $message): array
+    {
+        return ['severity' => 'unvalidated', 'message' => $message];
     }
 
     /**

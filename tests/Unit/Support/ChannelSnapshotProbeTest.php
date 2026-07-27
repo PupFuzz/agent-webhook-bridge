@@ -148,6 +148,22 @@ class ChannelSnapshotProbeTest extends TestCase
         $this->assertSame([0, 0], ChannelSnapshotProbe::versionTuple('v1.x'));
     }
 
+    public function test_an_undeclared_server_path_is_unvalidated_and_never_ok(): void
+    {
+        // card 5170: the leg does not RUN here — nothing was measured. `ok` is the
+        // severity that certifies measured-and-clean, so reporting a not-measured
+        // finding under it makes "green because checked" and "green because nobody
+        // looked" the same output. The message text is unchanged; the severity is
+        // the whole fix.
+        $findings = ChannelSnapshotProbe::probe(null, $this->reference('1.2.3'));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame('unvalidated', $findings[0]['severity']);
+        $this->assertNotSame('ok', $findings[0]['severity']);
+        $this->assertStringContainsString('channel.server_path not declared', $findings[0]['message']);
+        $this->assertStringContainsString('snapshot not validated', $findings[0]['message']);
+    }
+
     // ---- the VERSION-GATED completeness leg (DL-230) -------------------------
     // The DL-229 shape passed GREEN on the incident that motivated the feature: an
     // entry + package.json cherry-picked from the CURRENT reference carry the
