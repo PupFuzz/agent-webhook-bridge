@@ -988,78 +988,148 @@ class ShippedReference(_TreeCase):
 @unittest.skipIf(_NODE is None, _NO_NODE_REASON)
 class PipedConsumption(_TreeCase):
     """The tool's whole product is a machine-readable exit code, so `| head`, `| tee`
-    and `| grep -q` are the DOCUMENTED usage — not an edge case."""
+    and `| grep -q` are the DOCUMENTED usage — not an edge case.
 
-    def _noisy_tree(self):
-        # Exits 0 without binding (the exit-2 path) after ~4000 stderr lines, which the
-        # tool then prints — enough to outrun the pipe buffer, which is what makes the
-        # broken pipe reachable at all. Short-output paths escape only by accident of
-        # block buffering.
+    ⚠ PARAMETRISED OVER BUFFERING REGIME, and that is the entire point of this class.
+    An earlier version asserted "the verdict survives a closed pipe on every exit code"
+    using fixtures that emitted 695 B and 1,512 B — which NEVER BREAK A PIPE at all
+    (one flush at interpreter exit) and left the mutation that deletes the whole output
+    handler GREEN. Worse, the three regimes behave differently, and the middle one is
+    where the damage was: measured on the shipped file under `| head -1` before the fix,
+    7,992 B -> exit 2, 15,292 B -> exit **120**, 59,092 B -> exit **120**, 118,093 B ->
+    exit 2. The >64 KiB fixture that "proved" the earlier fix sat in the one regime
+    where the in-band handler already worked.
+    """
+
+    # Sized to land either side of the 8 KiB pipe-buffer / 64 KiB pipe-capacity
+    # boundaries. Named rather than numbered so a future reader knows WHY.
+    REGIMES = {"under_8KiB": 100, "between_8_and_64KiB": 800, "over_64KiB": 4000}
+
+    def _noisy_tree(self, lines, name, exit_code=None):
+        tail = f"process.exit({exit_code});\n" if exit_code is not None else ""
         return self.tree(
-            "noisy",
+            name,
             {
                 "channel-lib.mjs": _LIB_SOURCE,
                 ccs.ENTRY_FILE: "import { hello } from './channel-lib.mjs';\n"
-                "for (let i = 0; i < 4000; i++) console.error(`line ${i} ${hello()} ${'x'.repeat(60)}`);\n",
+                f"for (let i = 0; i < {lines}; i++) console.error(`line ${{i}} ${{hello()}} ${{'x'.repeat(60)}}`);\n"
+                + tail,
             },
         )
 
-    def _run_and_close_pipe_early(self, path):
+    def _piped_exit(self, path, read_a_line=True):
         proc = subprocess.Popen(
             [sys.executable, os.path.join(_HERE, "check-channel-snapshot.py"), path],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         )
-        proc.stdout.readline()
+        if read_a_line:
+            proc.stdout.readline()
         proc.stdout.close()   # the reader goes away — exactly what `head -1` does
         return proc.wait()
 
-    def test_a_reader_that_stops_listening_does_not_invert_the_verdict(self):
-        # BrokenPipeError IS an OSError, and uncaught it exits 1 — EXIT_LAUNCH_FAILED
-        # exactly. Measured before the fix: unpiped 2, `| head -1` 1. `grep -q` closes
-        # the pipe on first match BY DESIGN, so the intended usage inverted the answer.
-        noisy = self._noisy_tree()
+    def _unpiped_exit(self, path):
+        return subprocess.run(
+            [sys.executable, os.path.join(_HERE, "check-channel-snapshot.py"), path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode
 
-        self.assertEqual(ccs.EXIT_COULD_NOT_CHECK, self._run_and_close_pipe_early(noisy))
+    def test_a_closed_pipe_never_changes_a_computed_verdict_in_any_regime(self):
+        # Both directions of the same category error. Rounds 4-6 fixed it pointed one
+        # way (an environment fault reported as a conclusive FAILED); a conclusive
+        # FAILED downgraded to COULD NOT CHECK because prose could not be delivered is
+        # equally wrong — the measurement completed, and delivery is not the
+        # measurement.
+        for regime, lines in self.REGIMES.items():
+            for verdict, exit_code in (("failed", 3), ("could-not-check", None)):
+                with self.subTest(regime=regime, verdict=verdict):
+                    tree = self._noisy_tree(lines, f"noisy-{regime}-{verdict}", exit_code)
+                    unpiped = self._unpiped_exit(tree)
 
-    def test_the_verdict_survives_a_closed_pipe_on_every_exit_code(self):
-        # …and it is not just the 2 path: a truncated pipe must never turn a 0 into a 1
-        # either, nor produce the interpreter's shutdown-flush 120.
-        for label, tree, expected in (
-            ("ok", self.whole_copy("piped-ok"), ccs.EXIT_LAUNCH_OK),
-            ("failed", self.whole_copy("piped-fail", omit=["channel-lib.mjs"]), ccs.EXIT_LAUNCH_FAILED),
-        ):
-            with self.subTest(verdict=label):
-                self.assertEqual(expected, self._run_and_close_pipe_early(tree))
+                    self.assertEqual(unpiped, self._piped_exit(tree), "piping changed the verdict")
+
+    def test_a_short_clean_run_survives_a_closed_pipe(self):
+        # The LAUNCH OK path can only ever be short (it prints two lines), so it lives
+        # in the <8 KiB regime by construction — asserted rather than assumed, and with
+        # the pipe closed before a single byte is read as well as after.
+        tree = self.whole_copy("piped-ok")
+
+        self.assertEqual(ccs.EXIT_LAUNCH_OK, self._piped_exit(tree))
+        self.assertEqual(ccs.EXIT_LAUNCH_OK, self._piped_exit(tree, read_a_line=False))
+
+    def test_an_unanticipated_fault_lands_on_could_not_check_not_on_failed(self):
+        # THE GUARD FOR THE GENERATOR ITSELF, and it was missing until the mutation that
+        # deletes the catch-all came back GREEN. Four rounds each enumerated one more
+        # exception type (OSError at the exec, at mkdtemp, BrokenPipeError at print) and
+        # left the aliasing intact: `main()` had no default, so CPython's
+        # exit-1-on-uncaught-exception IS EXIT_LAUNCH_FAILED.
+        #
+        # The probe is deliberately a type NOTHING in this file enumerates. If it were
+        # an OSError the specific handlers would catch it and this would test them
+        # instead — the point is precisely the fault nobody anticipated.
+        tree = self.whole_copy("unanticipated")
+
+        # Patched at a RUNTIME call site, not at `mkdtemp` — `run_launch_assert` binds
+        # that as a default argument at definition time, so patching the module
+        # attribute silently does nothing (it did, and this test failed green-side-up
+        # until the injection point was checked).
+        with mock.patch.object(ccs, "throwaway_socket_path", side_effect=RuntimeError("nobody enumerated this")):
+            code = ccs.main([tree])
+
+        self.assertEqual(ccs.EXIT_COULD_NOT_CHECK, code)
+        self.assertNotEqual(ccs.EXIT_LAUNCH_FAILED, code)
+
+    def test_the_process_exit_is_always_a_valid_verdict(self):
+        # THE PROPERTY, guarded once instead of restated as prose in four places. The
+        # generator behind four rounds of patches was that CPython's exit-1-on-uncaught
+        # -exception ALIASES EXIT_LAUNCH_FAILED, so any unanticipated fault became a
+        # confident "your deployment is broken" — and 120 (the shutdown-flush path) is
+        # not even in the contract. An enumeration of exception types cannot guard that;
+        # this can.
+        valid = {ccs.EXIT_LAUNCH_OK, ccs.EXIT_LAUNCH_FAILED, ccs.EXIT_COULD_NOT_CHECK}
+        empty = self.tree("prop-empty", {"package.json": "{}\n"})
+        cases = {
+            "healthy": (self.whole_copy("prop-ok"), False),
+            "missing-module": (self.whole_copy("prop-fail", omit=["channel-lib.mjs"]), False),
+            "no-entry": (empty, False),
+            "absent-path": (os.path.join(self.tmp, "nowhere"), False),
+            "noisy-mid-regime": (self._noisy_tree(800, "prop-noisy"), True),
+            "noisy-mid-regime-failed": (self._noisy_tree(800, "prop-noisy-fail", 3), True),
+        }
+
+        for label, (path, pipe) in cases.items():
+            with self.subTest(case=label):
+                code = self._piped_exit(path) if pipe else self._unpiped_exit(path)
+
+                self.assertIn(code, valid, f"{label} produced {code}, outside the exit contract")
 
 
 class ToolShape(unittest.TestCase):
-    def test_the_help_epilog_lists_every_could_not_check_cause_the_docstring_does(self):
-        # The old form asserted only that the strings "exit 2" and "COULD NOT CHECK"
-        # appeared, which cannot see a DIVERGENCE — and one had opened: the epilog listed
-        # 4 of the 6 causes, omitting exit-0-without-a-bind (the most surprising one, and
-        # the one an operator most needs explained) and signal-kill. `--help` is what an
-        # operator actually reads; a docstring they never open is not a mitigation.
+    def test_help_and_docstring_state_the_exit_contract_the_CODE_defines(self):
+        # ⚠ COMPARED AGAINST THE CODE, NOT AGAINST EACH OTHER. The previous version
+        # cross-checked the two TEXTS, so it was structurally blind to a cause missing
+        # from BOTH — which is exactly what happened (a broken pipe was a seventh cause
+        # while three places said "SIX", and 120 was outside the contract entirely).
         #
-        # Compared case-INSENSITIVELY: the two texts legitimately differ in emphasis (the
-        # docstring shouts `NOT EXECUTABLE`, the epilog does not), and a case-sensitive
-        # needle would fail on a difference that is not a divergence.
+        # The cause LIST is deliberately no longer asserted at all. It was an
+        # enumeration in a test guarding an enumeration in prose, and it drifted three
+        # times. What is asserted is what the code actually defines: the three exit
+        # VALUES, and the definitional claim that 2 means no verdict was reached. The
+        # property test above guards the rest, by measurement.
         help_text = ccs.build_parser().format_help().lower()
         doc_text = ccs.__doc__.lower()
 
-        self.assertIn("could not check", help_text)
-        self.assertIn("could not check", doc_text)
+        for value in (ccs.EXIT_LAUNCH_OK, ccs.EXIT_LAUNCH_FAILED, ccs.EXIT_COULD_NOT_CHECK):
+            self.assertIn(f"exit {value}", help_text, f"--help does not document exit {value}")
+            self.assertIn(str(value), doc_text)
 
-        for cause in (
-            "on path",              # no node on PATH at all
-            "not executable",       # a bad shim / noexec mount / fork refused
-            "untraversable",        # the path cannot be entered
-            "socket guard",         # the throwaway-socket refusal
-            "timeout",              # the backstop
-            "without ever reporting a bind",
-            "killed by a signal",
-        ):
-            self.assertIn(cause, help_text, f"--help omits a COULD NOT CHECK cause: {cause}")
-            self.assertIn(cause, doc_text, f"the module docstring omits: {cause}")
+        for text, label in ((help_text, "--help"), (doc_text, "the module docstring")):
+            self.assertIn("could not check", text, label)
+            self.assertIn("no verdict", text, f"{label} does not state what a 2 MEANS")
+
+        # And the values are distinct — the whole generator was exit 1 aliasing.
+        self.assertEqual(
+            3, len({ccs.EXIT_LAUNCH_OK, ccs.EXIT_LAUNCH_FAILED, ccs.EXIT_COULD_NOT_CHECK})
+        )
 
     def test_the_tool_is_stdlib_only(self):
         # It must survive being copied to a seat with no bridge checkout.
@@ -1071,7 +1141,7 @@ class ToolShape(unittest.TestCase):
                 module = line.split()[1].split(".")[0]
                 self.assertIn(
                     module,
-                    {"argparse", "os", "shutil", "signal", "subprocess", "sys", "tempfile"},
+                    {"argparse", "io", "os", "shutil", "signal", "subprocess", "sys", "tempfile"},
                     f"non-stdlib import: {line}",
                 )
 

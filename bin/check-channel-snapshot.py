@@ -40,22 +40,29 @@ EXIT CODES
      session start without firing now. Pinning the transport (see (a)) MOVED the
      transport into that class rather than out of it — read (a), the trade is
      deliberate.
-  2  COULD NOT CHECK. NOT a verdict in either direction — SIX causes, all of them
-     facts about this environment rather than about the deployment:
-       - no `node` on PATH at all (an environment problem, not a snapshot problem);
-       - `node` found but NOT EXECUTABLE — a shim that is not a valid executable, a
-         `noexec` mount, or a fork that could not be granted (RLIMIT_NPROC/ENOMEM).
-         Left uncaught this was the tool's worst bug: CPython exits 1 on an uncaught
-         exception, which is EXIT_LAUNCH_FAILED exactly, so an environment fault
-         reported a healthy deployment as conclusively broken;
-       - the path is missing, or untraversable by this user;
-       - the throwaway-socket guard refused;
-       - the backstop timeout fired;
-       - the child exited 0 WITHOUT ever reporting a bind (an empty or truncated
-         entry does exactly that) — an unfinished measurement, and deliberately not a
-         failure, because a failure verdict there would rest on matching a log
-         string; or the child was KILLED BY A SIGNAL, which is the same physical
-         condition as the fork failure above.
+  2  COULD NOT CHECK — DEFINED AS "no verdict was reached", not as a list.
+     The list below is ILLUSTRATIVE and deliberately not a contract: four consecutive
+     review rounds each patched one more entry in an enumeration (an OSError at the
+     exec, one at mkdtemp, a BrokenPipeError at print) while the thing that generated
+     them sat still — `main()` had no default, so CPython's exit-1-on-uncaught-exception
+     ALIASES exit 1 here. `main()` now has a catch-all, so ANY unanticipated fault
+     before a verdict is reached lands here, whether or not anyone thought of it.
+     The named ones today: no `node` on PATH at all; `node` found but NOT EXECUTABLE
+     (an ENOEXEC shim, a `noexec` mount, a fork refused under RLIMIT_NPROC/ENOMEM);
+     the path is missing, or untraversable by this user — including a symlink whose
+     TARGET's ancestor chain denies traversal, since `exists()` is false for EACCES
+     exactly as for ENOENT; the throwaway-socket guard refused; the backstop timeout
+     fired; the child exited 0 WITHOUT ever reporting a bind (an empty or truncated
+     entry does that) — an unfinished measurement, and deliberately not a failure,
+     because a failure verdict there would rest on matching a log string; or the child
+     was KILLED BY A SIGNAL, the same physical condition as the refused fork.
+
+     ONCE A VERDICT IS COMPUTED IT IS NEVER DOWNGRADED TO THIS. A reader that closes
+     the pipe (`| head`, `grep -q`) cannot turn a conclusive 0 or 1 into a 2: the
+     measurement completed, and delivering prose is not the measurement.
+
+     THE PROCESS EXIT IS ALWAYS 0, 1 OR 2 — asserted as a property over the branch
+     matrix rather than restated as prose, because prose is what drifted.
 
 TWO BUILD REQUIREMENTS, both about not BREAKING the thing being diagnosed.
 
@@ -101,6 +108,7 @@ TWO BUILD REQUIREMENTS, both about not BREAKING the thing being diagnosed.
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import shutil
 import signal
@@ -262,7 +270,11 @@ def resolve_entry(path: str):
         # that is traversable is "the target does not exist" a conclusion this run is
         # entitled to draw — and then it is as conclusive as the entry-file absence, so
         # it keeps exit 1.
-        target = os.readlink(path) if os.path.islink(path) else path
+        # `islink` is necessarily true here: `lexists` passed and `exists` did not,
+        # and a non-link with `lexists` true has `exists` true, which the branch two
+        # above already returned on. So the `else path` arm this used to carry was
+        # unreachable — deleted rather than left as a defensive shrug (canon #6).
+        target = os.readlink(path)
         if not os.path.isabs(target):
             target = os.path.join(os.path.dirname(path), target)
         if not os.access(_nearest_existing_ancestor(target), os.X_OK):
@@ -567,12 +579,14 @@ def build_parser() -> argparse.ArgumentParser:
             "exit 0 = launch OK (the module graph resolved and the server came up; NOT a "
             "steady-state or staleness verdict). "
             "exit 1 = launch FAILED, conclusively — the child's stderr is printed. "
-            "exit 2 = COULD NOT CHECK — not a verdict either way, and there are SIX causes: "
-            "no node on PATH; node present but not executable (a bad shim, a noexec mount, a "
-            "fork that could not be granted); the path is missing or untraversable; the "
-            "throwaway-socket guard refused; the backstop timeout fired; and the child exited "
-            "0 without ever reporting a bind (an empty or truncated entry does that), or was "
-            "killed by a signal."
+            "exit 2 = COULD NOT CHECK — meaning NO VERDICT WAS REACHED, not a list of "
+            "causes: any fault before a verdict is computed lands here, anticipated or not. "
+            "The named ones are no node on PATH; node present but not executable (a bad shim, "
+            "a noexec mount, a fork that could not be granted); the path missing or "
+            "untraversable; the throwaway-socket guard refusing; the backstop timeout; and the "
+            "child exiting 0 without ever reporting a bind, or being killed by a signal. Once "
+            "a verdict IS computed it is never downgraded — closing the pipe cannot change it. "
+            "The exit is always 0, 1 or 2."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -594,48 +608,88 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _deliver(rendered: str) -> None:
+    """Best-effort delivery of ALREADY-RENDERED output. Cannot change a verdict.
+
+    The flush is IN BAND and that is the whole point. Without it, `print()` succeeds
+    into the buffer, `main()` returns, and the INTERPRETER SHUTDOWN flush hits EPIPE —
+    so no handler in this file ever runs and the process exits **120**. Measured on the
+    shipped file under the documented `| head -1`, and the regime matters:
+
+        7,992 B  -> exit 2    (one buffer, fails in band)
+       15,292 B  -> exit 120  }  8-64 KiB: partial write succeeds, the rest dies at
+       59,092 B  -> exit 120  }  shutdown, where nothing is listening
+      118,093 B  -> exit 2    (enough writes that one fails in band)
+
+    An earlier revision of this file called the 120 "not reproducible on this platform,
+    precautionary" — measured in the >64 KiB window, the ONE regime where the in-band
+    handler already worked. It is reproducible; the fix is to make the failure happen
+    where a handler can see it, which is what the explicit flush does. The `dup2` then
+    leaves the shutdown flush nothing to fail on.
+    """
+    try:
+        sys.stdout.write(rendered)
+        sys.stdout.flush()
+    except Exception:
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except OSError:
+            pass
+
+
 def main(argv=None) -> int:
+    """THE DEFAULT IS THE FIX; the handlers inside `run_launch_assert` are for message
+    QUALITY, not for correctness.
+
+    The generator behind four consecutive rounds of one-more-exception-type patches was
+    right here and never moved: `main()` had no default, so CPython's exit-1-on-uncaught
+    -exception ALIASES `EXIT_LAUNCH_FAILED`. Each round enumerated one more type
+    (`OSError` at the exec, at `mkdtemp`, `BrokenPipeError` at `print`) and left the
+    aliasing intact. An enumeration is not a default, and enumerations drift and are
+    unfalsifiable at the edges — while a launch is stable because it is a MEASUREMENT.
+    The transport pin is the one guard in this tool that never came back, and its own
+    comment says why: it eliminates a hazard class rather than defending against it.
+    This is the same move for the exit contract.
+
+    TWO STRUCTURAL PROPERTIES, neither of them a list:
+
+    1. RENDER TO MEMORY, DELIVER AFTERWARDS. `run_launch_assert` writes into a
+       `StringIO` that cannot fail, so a verdict is ALWAYS computed before any I/O is
+       attempted. Delivery is a separate best-effort step. It is therefore impossible
+       for an output failure to change a verdict — not by convention, by construction.
+
+    2. A COMPUTED VERDICT IS NEVER OVERWRITTEN. The catch-all returns
+       `EXIT_COULD_NOT_CHECK` only when NO verdict was reached. Rounds 4-6 fixed this
+       category error pointed one way (an environment fault reported as a conclusive
+       FAILED); the opposite error is just as wrong — a conclusive `LAUNCH FAILED`
+       downgraded to `COULD NOT CHECK` because prose could not be handed to a reader
+       who had already stopped reading. The measurement completed; delivery is not the
+       measurement.
+
+    `Exception`, not `BaseException`: `KeyboardInterrupt` exits 130 and `SystemExit`
+    carries its own status, so neither aliases exit 1. The default is scoped to exactly
+    the class that does.
+    """
     args = build_parser().parse_args(argv)
 
+    rendered = io.StringIO()
     try:
-        return run_launch_assert(
+        code = run_launch_assert(
             args.server_path,
             live_socket=args.live_socket,
             timeout=args.timeout,
+            out=rendered,
         )
-    except OSError as err:
-        # ⚠ THE READER WENT AWAY — AND UNCAUGHT THIS INVERTS THE VERDICT.
-        # `BrokenPipeError` IS an `OSError`, so an unguarded `print()` propagates and
-        # CPython exits 1 on an uncaught exception: EXIT_LAUNCH_FAILED exactly. Measured
-        # on the exit-2 path with a child emitting ~4000 stderr lines (enough to outrun
-        # the pipe buffer, which is what makes it reachable at all):
-        #     unpiped     -> exit 2  COULD NOT CHECK
-        #     | head -1   -> exit 1  LAUNCH FAILED
-        #
-        # Not an exotic edge case — THE DOCUMENTED USAGE. The whole product is a
-        # machine-readable exit code, so `| head`, `| tee` and `| grep -q 'LAUNCH OK'`
-        # are how it is meant to be consumed, and `grep -q` closes the pipe on first
-        # match BY DESIGN. A reader that stopped listening says nothing about the
-        # deployment, so it lands where every other environment fact lands.
-        #
-        # ONE handler, not two, and that is deliberate: an earlier shape had a
-        # `BrokenPipeError` arm in front of an `OSError` arm, and since the former is a
-        # subclass of the latter, removing either ALONE changed nothing — the guard
-        # could not be shown to fail, which is the defect class this card keeps finding.
-        #
-        # The `dup2` is the documented CPython recipe for the shutdown flush retrying
-        # the write and exiting 120. HONEST BOUND: that 120 was NOT reproducible on this
-        # platform in this shape (removing the dup2 while keeping the handler still
-        # exits 2), so it is precautionary rather than a fix for something observed here
-        # — said plainly instead of claiming it prevents a measured failure. It must not
-        # print: printing is what failed.
-        if isinstance(err, BrokenPipeError):
-            try:
-                devnull = os.open(os.devnull, os.O_WRONLY)
-                os.dup2(devnull, sys.stdout.fileno())
-            except OSError:
-                pass
+    except Exception:
+        # No verdict was reached. This is the floor that makes every future
+        # unanticipated fault land on "I could not tell you" instead of "your
+        # deployment is broken".
+        _deliver(rendered.getvalue())
         return EXIT_COULD_NOT_CHECK
+
+    _deliver(rendered.getvalue())
+    return code
 
 
 if __name__ == "__main__":
