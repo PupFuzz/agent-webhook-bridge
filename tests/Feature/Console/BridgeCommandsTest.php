@@ -2448,8 +2448,11 @@ class BridgeCommandsTest extends TestCase
         // card 5170: and the run DISCLOSES it in aggregate. Without the tally the
         // only trace of a check that never ran is one line among dozens, and a
         // zero exit reads as "everything validated".
-        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $out);
-        $this->assertStringContainsString('a green run does not mean they were validated', $out);
+        $this->assertStringContainsString('1 severity-reporting check(s) reported `unvalidated`', $out);
+        $this->assertStringContainsString('this run says nothing about what they would have found', $out);
+        // And it does not over-claim: the tally counts severity-reporting checks
+        // only, so its absence is never a certificate that every leg ran.
+        $this->assertStringContainsString('no tally line does NOT mean every leg ran', $out);
     }
 
     public function test_check_prints_no_unvalidated_tally_when_every_leg_ran(): void
@@ -2483,8 +2486,8 @@ class BridgeCommandsTest extends TestCase
         $second = Artisan::output();
 
         $this->assertSame(0, $code);
-        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $second);
-        $this->assertStringNotContainsString('2 check(s) reported', $second);
+        $this->assertStringContainsString('1 severity-reporting check(s) reported `unvalidated`', $second);
+        $this->assertStringNotContainsString('2 severity-reporting check(s) reported', $second);
     }
 
     public function test_check_fails_on_a_dangling_channel_server_path(): void

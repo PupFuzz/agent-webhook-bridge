@@ -91,6 +91,29 @@ class CheckCommandSeverityContractTest extends TestCase
         $this->assertSame(2, $this->tally());
     }
 
+    public function test_a_skipped_event_consumer_advisory_is_unvalidated_not_green(): void
+    {
+        // The DL-196 advisory's fail-soft catch reported a check that DID NOT RUN
+        // with info() — green, exit 0, invisible to the tally: this card's own
+        // defect shape, a second time, in the same command.
+        //
+        // The throw is SYNTHETIC (no app is booted here, so the WebhookEvent query
+        // dies on a null connection resolver) and deliberately so — what is under
+        // test is the catch arm's rendering and counting, and the catch is
+        // `Throwable`, so the DB hiccup it exists for reaches the identical arm.
+        // Forcing a real DB failure would mean DDL inside RefreshDatabase, which
+        // passes on SQLite and reds the MariaDB matrix.
+        $advisory = new ReflectionMethod($this->command, 'checkEventFollowsConsumer');
+        $advisory->invoke($this->command, ['5' => [
+            ['agent' => 'prod-agent', 'class' => 'X', 'consumed' => ['push'], 'declared' => true],
+        ]]);
+
+        $out = $this->buffer->fetch();
+        $this->assertStringContainsString('event-consumer: check skipped', $out);
+        $this->assertStringNotContainsString("\033[", $out);
+        $this->assertSame(1, $this->tally());
+    }
+
     /**
      * The DL-225 ssh advisory's incomplete-setup predicate. POSITIVE membership:
      * the `!== 'ok'` proxy it replaced would sweep every severity added later, so

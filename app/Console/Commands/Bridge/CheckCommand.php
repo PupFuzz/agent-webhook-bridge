@@ -944,8 +944,14 @@ class CheckCommand extends BridgeCommand
         // measured has nothing to disclaim, and an install that deliberately leaves
         // `channel.server_path` unset is correct (docs/multi-host.md instructs it),
         // so this discloses, it does not scold.
+        //
+        // The wording is deliberately bounded to what the counter can support: it
+        // tallies only the checks that REPORT a severity, and most of this command's
+        // output does not. So the tally is a floor on what went unvalidated, never a
+        // certificate that everything else ran — reading its absence as "all clear"
+        // would rebuild, one level up, the exact false assurance this closes.
         if ($this->unvalidatedCount > 0) {
-            $this->line("{$this->unvalidatedCount} check(s) reported `unvalidated` — not a failure, and not a pass either: those legs did not run, so a green run does not mean they were validated. See the lines above.");
+            $this->line("{$this->unvalidatedCount} severity-reporting check(s) reported `unvalidated` — not a failure, and not a pass either: those checks did not run, so this run says nothing about what they would have found (see the lines above). This is a floor, not an inventory: only checks that report a severity are counted, so no tally line does NOT mean every leg ran.");
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;
@@ -1338,8 +1344,11 @@ class CheckCommand extends BridgeCommand
      * read CLEAN and invert the check's false-clean-impossible invariant.
      *
      * Fail-soft: wrapped so a DB hiccup can never throw out of `bridge:check`;
-     * emits only `warn`/`info`, never `error`. An empty `webhook_events` for a
-     * scope ⇒ no warns (nothing has been dropped yet — correct).
+     * emits only `warn`/`info`/`unvalidated`, never `error`. An empty
+     * `webhook_events` for a scope ⇒ no warns (nothing has been dropped yet —
+     * correct). A SKIPPED run (the catch) is `unvalidated`, not green: the
+     * advisory did not run, and card 5170 is the ruling that a check which did
+     * not run is never reported as one that passed.
      *
      * @param  array<string, list<array{agent:string, class:string, consumed:list<string>, declared:bool}>>  $githubScopeConsumers
      */
@@ -1471,8 +1480,12 @@ class CheckCommand extends BridgeCommand
                 }
             }
         } catch (Throwable $e) {
-            // Fail-soft: this advisory must never break the install check.
-            $this->info('event-consumer: check skipped — '.$e->getMessage());
+            // Fail-soft: this advisory must never break the install check. But a
+            // skipped advisory is a check that did NOT run, so it goes through the
+            // `unvalidated` vocabulary (card 5170) rather than rendering green via
+            // info() and vanishing from the tally. The bool is discarded on purpose:
+            // `unvalidated` never returns false, so fail-soft holds by construction.
+            $this->emitFinding('', ['severity' => 'unvalidated', 'message' => 'event-consumer: check skipped — '.$e->getMessage()]);
         }
     }
 

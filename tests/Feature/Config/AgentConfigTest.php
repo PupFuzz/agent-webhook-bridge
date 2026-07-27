@@ -177,8 +177,9 @@ class AgentConfigTest extends TestCase
 
     public function test_channel_server_path_defaults_null(): void
     {
-        // Absent ⇒ null; bridge:check skips the snapshot legs with a notice rather
-        // than inferring a path it cannot read (DL-229).
+        // Absent ⇒ null; bridge:check does not run the snapshot legs and reports
+        // them at severity `unvalidated` (DL-236) rather than inferring a path it
+        // cannot read (DL-229).
         $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => '/run/x.sock']]));
         $this->assertNull($cfg->channel->serverPath);
     }
