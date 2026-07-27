@@ -15,9 +15,11 @@ use App\Bridge\Support\ChannelSnapshotProbe;
 use App\Bridge\Support\ChannelToken;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\ExternalReferenceNormalizer;
+use App\Bridge\Support\Finding;
 use App\Bridge\Support\InstallGuard;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
+use App\Bridge\Support\Severity;
 use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
@@ -1089,7 +1091,7 @@ class CheckCommand extends BridgeCommand
         foreach ($sshAgents as $cfg) {
             $probe = new SshTransportProbe($env, $cfg->boardTools?->sshAccount);
             foreach ($probe->probePinnedLine($cfg->agentName) as $finding) {
-                if (self::severityMeansSetupIncomplete($finding['severity'])) {
+                if (self::severityMeansSetupIncomplete($finding->severity)) {
                     $agentIncomplete[$cfg->agentName] = true;
                 }
                 if (! $this->emitSshFinding($finding)) {
@@ -1124,53 +1126,63 @@ class CheckCommand extends BridgeCommand
      * INCOMPLETE (feeds the DL-225 advisory only). POSITIVE membership,
      * deliberately: the `!== 'ok'` proxy it replaces silently absorbs any severity
      * added to the vocabulary later — card 5170's `unvalidated` would have flagged
-     * an agent's setup incomplete on the strength of a check nobody ran.
+     * an agent's setup incomplete on the strength of a check nobody ran. Exhaustive
+     * `match` (card 5178): a fifth {@see Severity} case is a phpstan error here, not
+     * a value that silently picks a side.
      */
-    private static function severityMeansSetupIncomplete(string $severity): bool
+    private static function severityMeansSetupIncomplete(Severity $severity): bool
     {
-        return in_array($severity, ['warn', 'fail'], true);
+        return match ($severity) {
+            Severity::Warn, Severity::Fail => true,
+            Severity::Ok, Severity::Unvalidated => false,
+        };
     }
 
     /**
-     * Render one `{severity, message}` probe finding through the existing
-     * info/warn/error convention, under the caller's line prefix. Returns false
-     * (→ flip the caller's $ok) ONLY on a `fail` — the exit contract is that one
-     * arm, so a new severity can never change what `bridge:check` exits.
+     * Render one probe {@see Finding} through the existing info/warn/error
+     * convention, under the caller's line prefix. Returns false (→ flip the caller's
+     * $ok) ONLY on a `fail` — the exit contract is that one arm, so a new severity
+     * can never change what `bridge:check` exits.
      *
      * `unvalidated` (card 5170) renders PLAIN: green would read as certified by a
      * check that never ran, and yellow would nag a documented-correct population
      * (a multi-host install is TOLD to leave `channel.server_path` unset) with no
      * action available to silence it.
      *
-     * @param  array{severity: string, message: string}  $finding
+     * BOTH arms are exhaustive `match`es over the enum, the RETURN included
+     * (card 5178). The render arm alone would leave the exit decision as a
+     * fall-through, which is the shape that let an unknown severity print green in
+     * the first place — one level over. A fifth case reds phpstan at both.
      */
-    private function emitFinding(string $prefix, array $finding): bool
+    private function emitFinding(string $prefix, Finding $finding): bool
     {
-        $message = $prefix.$finding['message'];
-        if ($finding['severity'] === 'fail') {
-            $this->error($message);
+        $message = $prefix.$finding->message;
 
-            return false;
-        }
-        if ($finding['severity'] === 'warn') {
-            $this->warn($message);
-        } elseif ($finding['severity'] === 'unvalidated') {
-            // Counted HERE — the single chokepoint every probe finding flows
-            // through, so any future probe emitting the severity is tallied
-            // without touching its call site.
-            $this->unvalidatedCount++;
-            $this->line($message);
-        } else {
-            $this->info($message);
-        }
+        match ($finding->severity) {
+            Severity::Fail => $this->error($message),
+            Severity::Warn => $this->warn($message),
+            Severity::Unvalidated => $this->emitUnvalidated($message),
+            Severity::Ok => $this->info($message),
+        };
 
-        return true;
+        return match ($finding->severity) {
+            Severity::Fail => false,
+            Severity::Warn, Severity::Unvalidated, Severity::Ok => true,
+        };
     }
 
     /**
-     * @param  array{severity: string, message: string}  $finding
+     * Plain line + the run's tally. Counted HERE — the single chokepoint every probe
+     * finding flows through, so any future probe emitting the severity is tallied
+     * without touching its call site.
      */
-    private function emitSshFinding(array $finding): bool
+    private function emitUnvalidated(string $message): void
+    {
+        $this->unvalidatedCount++;
+        $this->line($message);
+    }
+
+    private function emitSshFinding(Finding $finding): bool
     {
         return $this->emitFinding('board_tools ssh: ', $finding);
     }
@@ -1493,7 +1505,7 @@ class CheckCommand extends BridgeCommand
             // That is the whole of the by-construction claim — rendering is not part
             // of it: line() throws on a message carrying an invalid formatter tag,
             // exactly as the info() here before it did, and that escape is unchanged.
-            $this->emitFinding('', ['severity' => 'unvalidated', 'message' => 'event-consumer: check skipped — '.$e->getMessage()]);
+            $this->emitFinding('', Finding::unvalidated('event-consumer: check skipped — '.$e->getMessage()));
         }
     }
 

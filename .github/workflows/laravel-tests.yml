@@ -37,7 +37,7 @@ jobs:
       - name: Pint (code style)
         run: vendor/bin/pint --test
 
-      - name: PHPStan (app/Bridge, level 7)
+      - name: PHPStan (app/Bridge + CheckCommand, level 7)
         run: vendor/bin/phpstan analyse -c phpstan-laravel.neon --no-progress
 
       - name: Doc-sync (CLAUDE_*.md PHP references resolve)

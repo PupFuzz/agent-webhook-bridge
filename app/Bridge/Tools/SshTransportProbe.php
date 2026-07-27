@@ -2,6 +2,9 @@
 
 namespace App\Bridge\Tools;
 
+use App\Bridge\Support\Finding;
+use App\Bridge\Support\Severity;
+
 /**
  * The offline SSH-transport pinned-line + sshd-posture probe for `bridge:check`
  * (Finding D, card 4952). Every assertion is OUTCOME-based and fails SAFE:
@@ -18,9 +21,13 @@ namespace App\Bridge\Tools;
  *    step (F1 + DR2-3), NEVER a false OK and NEVER a hard fail (new-surface installs
  *    stay exit-0 with a loud warn, not a CI red).
  *
- * Severity ∈ {ok, warn, fail}; only `fail` flips `bridge:check`'s exit. ABSENT
- * pinned line at an ASSUMED (non-authoritative) path ⇒ warn (the AuthorizedKeysFile
- * may be relocated); a PRESENT-BUT-BAD line, or an absent line at an AUTHORITATIVE
+ * Emits {@see Finding}s over the shared {@see Severity} vocabulary;
+ * only `fail` flips `bridge:check`'s exit. It constructs Ok/Warn/Fail today — that is a
+ * statement about these legs, not a constraint on the vocabulary: the UNVERIFIED legs
+ * above are genuine did-not-run cases, and where they belong on the warn ↔ unvalidated
+ * boundary is the open question {@see Severity} names. ABSENT pinned
+ * line at an ASSUMED (non-authoritative) path ⇒ warn (the AuthorizedKeysFile may be
+ * relocated); a PRESENT-BUT-BAD line, or an absent line at an AUTHORITATIVE
  * (root-resolved) path, ⇒ fail (DR2-3b).
  */
 final class SshTransportProbe
@@ -68,12 +75,12 @@ final class SshTransportProbe
     }
 
     /**
-     * @return list<array{severity: string, message: string}>
+     * @return list<Finding>
      */
     public function probePinnedLine(string $agentName): array
     {
         if (($unresolved = $this->configuredAccountUnresolved()) !== null) {
-            return [$this->fail($unresolved)];
+            return [Finding::fail($unresolved)];
         }
 
         $findings = [];
@@ -82,8 +89,8 @@ final class SshTransportProbe
 
         if ($content === null) {
             $findings[] = $authoritative
-                ? $this->fail("no readable authorized_keys at {$path} (resolved from sshd -T) — no pinned line for agent {$agentName}")
-                : $this->warn("could not read {$path} (assumed default; the AuthorizedKeysFile may be relocated — re-run as root to resolve it) — the pinned line for agent {$agentName} is UNVERIFIED");
+                ? Finding::fail("no readable authorized_keys at {$path} (resolved from sshd -T) — no pinned line for agent {$agentName}")
+                : Finding::warn("could not read {$path} (assumed default; the AuthorizedKeysFile may be relocated — re-run as root to resolve it) — the pinned line for agent {$agentName} is UNVERIFIED");
 
             return $findings;
         }
@@ -95,13 +102,13 @@ final class SshTransportProbe
 
         if ($matches === []) {
             $findings[] = $authoritative
-                ? $this->fail("no authorized_keys line forces bridge:tools-call --agent={$agentName} at {$path} — the ssh transport for this agent is not wired")
-                : $this->warn("no authorized_keys line forces bridge:tools-call --agent={$agentName} at {$path} (assumed default; may be at a relocated AuthorizedKeysFile) — UNVERIFIED, re-run as root");
+                ? Finding::fail("no authorized_keys line forces bridge:tools-call --agent={$agentName} at {$path} — the ssh transport for this agent is not wired")
+                : Finding::warn("no authorized_keys line forces bridge:tools-call --agent={$agentName} at {$path} (assumed default; may be at a relocated AuthorizedKeysFile) — UNVERIFIED, re-run as root");
 
             return $findings;
         }
         if (count($matches) > 1) {
-            $findings[] = $this->fail("more than one authorized_keys line forces bridge:tools-call --agent={$agentName} — ambiguous; leave exactly one");
+            $findings[] = Finding::fail("more than one authorized_keys line forces bridge:tools-call --agent={$agentName} — ambiguous; leave exactly one");
 
             return $findings;
         }
@@ -109,16 +116,16 @@ final class SshTransportProbe
         $line = $matches[0];
         if (! $line->deniesShellAndForwarding()) {
             $granted = implode(', ', $line->grantedCapabilities());
-            $findings[] = $this->fail("the pinned line for agent {$agentName} still grants: {$granted} — the forced command must deny pty + agent/X11/port-forwarding (use `restrict`, or the enumerated no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding form on a FIPS seat)");
+            $findings[] = Finding::fail("the pinned line for agent {$agentName} still grants: {$granted} — the forced command must deny pty + agent/X11/port-forwarding (use `restrict`, or the enumerated no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding form on a FIPS seat)");
         } else {
-            $findings[] = $this->ok("the pinned line for agent {$agentName} forces bridge:tools-call and denies pty + all forwarding");
+            $findings[] = Finding::ok("the pinned line for agent {$agentName} forces bridge:tools-call and denies pty + all forwarding");
         }
 
         if ($this->env->fipsEnabled()) {
             if (! $line->keyAlgorithmIsFipsApproved()) {
-                $findings[] = $this->fail("FIPS mode is enabled but the pinned key for agent {$agentName} is `".($line->keyAlgorithm ?? 'unknown').'` — a FIPS sshd rejects it (use an ECDSA P-256 key: ssh-keygen -t ecdsa -b 256)');
+                $findings[] = Finding::fail("FIPS mode is enabled but the pinned key for agent {$agentName} is `".($line->keyAlgorithm ?? 'unknown').'` — a FIPS sshd rejects it (use an ECDSA P-256 key: ssh-keygen -t ecdsa -b 256)');
             } else {
-                $findings[] = $this->ok("the pinned key for agent {$agentName} (`{$line->keyAlgorithm}`) is FIPS-approved");
+                $findings[] = Finding::ok("the pinned key for agent {$agentName} (`{$line->keyAlgorithm}`) is FIPS-approved");
             }
         }
 
@@ -133,23 +140,23 @@ final class SshTransportProbe
      * swimlane-isolation observable `--probe-tools` uses).
      *
      * @param  list<array{agent: string, board_id: ?int, swimlane_id: ?int}>  $expectedScopes
-     * @return list<array{severity: string, message: string}>
+     * @return list<Finding>
      */
     public function probeLive(string $target, array $expectedScopes): array
     {
         $r = $this->env->sshRoundTrip($target, (string) json_encode(['tool' => 'board_my_cards']));
         if ($r['exit'] !== 0) {
-            return [$this->fail("ssh {$target} exited {$r['exit']} — unreachable or the forced command failed (stderr: ".trim($r['stderr']).')')];
+            return [Finding::fail("ssh {$target} exited {$r['exit']} — unreachable or the forced command failed (stderr: ".trim($r['stderr']).')')];
         }
 
         $decoded = json_decode($r['stdout'], true);
         if (! is_array($decoded) || ! array_key_exists('ok', $decoded)) {
-            return [$this->fail("ssh {$target}: stdout is not a clean board-tools JSON envelope — got: ".substr(trim($r['stdout']), 0, 200))];
+            return [Finding::fail("ssh {$target}: stdout is not a clean board-tools JSON envelope — got: ".substr(trim($r['stdout']), 0, 200))];
         }
         if ($decoded['ok'] !== true) {
             $error = is_string($decoded['error'] ?? null) ? $decoded['error'] : 'unknown';
 
-            return [$this->fail("ssh {$target}: board_my_cards did not succeed (error: {$error})")];
+            return [Finding::fail("ssh {$target}: board_my_cards did not succeed (error: {$error})")];
         }
 
         $result = $decoded['result'] ?? null;
@@ -157,11 +164,11 @@ final class SshTransportProbe
         $gotSwimlane = is_array($result) && is_numeric($result['swimlane_id'] ?? null) ? (int) $result['swimlane_id'] : null;
         foreach ($expectedScopes as $scope) {
             if ($gotBoard === $scope['board_id'] && $gotSwimlane === $scope['swimlane_id']) {
-                return [$this->ok("ssh {$target}: board_my_cards ok; window scoped to board {$gotBoard} / swimlane {$gotSwimlane} (matches agent {$scope['agent']})")];
+                return [Finding::ok("ssh {$target}: board_my_cards ok; window scoped to board {$gotBoard} / swimlane {$gotSwimlane} (matches agent {$scope['agent']})")];
             }
         }
 
-        return [$this->fail("ssh {$target}: ISOLATION — board_my_cards returned board_id=".($gotBoard ?? 'null').' swimlane_id='.($gotSwimlane ?? 'null').' which matches no configured ssh agent lane; the window is not scoped as expected')];
+        return [Finding::fail("ssh {$target}: ISOLATION — board_my_cards returned board_id=".($gotBoard ?? 'null').' swimlane_id='.($gotSwimlane ?? 'null').' which matches no configured ssh agent lane; the window is not scoped as expected')];
     }
 
     /**
@@ -203,23 +210,5 @@ final class SshTransportProbe
         }
 
         return null;
-    }
-
-    /** @return array{severity: string, message: string} */
-    private function ok(string $message): array
-    {
-        return ['severity' => 'ok', 'message' => $message];
-    }
-
-    /** @return array{severity: string, message: string} */
-    private function warn(string $message): array
-    {
-        return ['severity' => 'warn', 'message' => $message];
-    }
-
-    /** @return array{severity: string, message: string} */
-    private function fail(string $message): array
-    {
-        return ['severity' => 'fail', 'message' => $message];
     }
 }

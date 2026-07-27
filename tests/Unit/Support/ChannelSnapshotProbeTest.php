@@ -3,6 +3,8 @@
 namespace Tests\Unit\Support;
 
 use App\Bridge\Support\ChannelSnapshotProbe;
+use App\Bridge\Support\Finding;
+use App\Bridge\Support\Severity;
 use Illuminate\Filesystem\Filesystem;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -124,10 +126,10 @@ class ChannelSnapshotProbeTest extends TestCase
         $findings = ChannelSnapshotProbe::probe(null, $this->reference('1.2.3'));
 
         $this->assertCount(1, $findings);
-        $this->assertSame('unvalidated', $findings[0]['severity']);
-        $this->assertNotSame('ok', $findings[0]['severity']);
-        $this->assertStringContainsString('channel.server_path not declared', $findings[0]['message']);
-        $this->assertStringContainsString('snapshot not validated', $findings[0]['message']);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertNotSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString('channel.server_path not declared', $findings[0]->message);
+        $this->assertStringContainsString('snapshot not validated', $findings[0]->message);
     }
 
     public function test_an_unreadable_bundled_manifest_names_its_own_remedy(): void
@@ -146,10 +148,10 @@ class ChannelSnapshotProbeTest extends TestCase
         $findings = ChannelSnapshotProbe::probe($deployed, $reference);
 
         $warn = $this->findingWith($findings, 'cannot be version-compared');
-        $this->assertSame('warn', $warn['severity']);
-        $this->assertStringContainsString('is not present', $warn['message']);
-        $this->assertStringContainsString('restore or repair it', $warn['message']);
-        $this->assertStringContainsString('check that this process can read it', $warn['message']);
+        $this->assertSame(Severity::Warn, $warn->severity);
+        $this->assertStringContainsString('is not present', $warn->message);
+        $this->assertStringContainsString('restore or repair it', $warn->message);
+        $this->assertStringContainsString('check that this process can read it', $warn->message);
     }
 
     // ---- the retired completeness leg + the UNIFORM launch disclosure (DL-237) --
@@ -187,18 +189,18 @@ class ChannelSnapshotProbeTest extends TestCase
         $this->findingWith($findings, $versionLegText);
         // …and the launch disclosure is there regardless of what it found.
         $notMeasured = $this->findingWith($findings, 'was NOT launch-tested');
-        $this->assertSame('unvalidated', $notMeasured['severity']);
-        $this->assertNotSame('ok', $notMeasured['severity']);
+        $this->assertSame(Severity::Unvalidated, $notMeasured->severity);
+        $this->assertNotSame(Severity::Ok, $notMeasured->severity);
         // EXACTLY one, never per-leg: this is a statement about the run.
         $this->assertSame(1, $this->countFindings($findings, 'was NOT launch-tested'));
         // It names the check, where it is run, and AS WHOM — the last of those is the
         // whole reason this is not a bridge:check leg.
-        $this->assertStringContainsString('bin/check-channel-snapshot.py', $notMeasured['message']);
-        $this->assertStringContainsString('ON THAT SEAT', $notMeasured['message']);
-        $this->assertStringContainsString('the OS user whose session launches the channel server', $notMeasured['message']);
+        $this->assertStringContainsString('bin/check-channel-snapshot.py', $notMeasured->message);
+        $this->assertStringContainsString('ON THAT SEAT', $notMeasured->message);
+        $this->assertStringContainsString('the OS user whose session launches the channel server', $notMeasured->message);
         // And it must never flip the exit: the deployment may be perfect, and every
         // co-located install now emits one (DL-236 (c)).
-        $this->assertSame([], $this->severities($findings, 'fail'));
+        $this->assertSame([], $this->severities($findings, Severity::Fail));
     }
 
     public function test_the_repo_direct_branch_discloses_it_too(): void
@@ -215,9 +217,9 @@ class ChannelSnapshotProbeTest extends TestCase
 
         $findings = ChannelSnapshotProbe::probe($link, $reference);
 
-        $this->assertSame('ok', $this->findingWith($findings, 'no snapshot to drift')['severity']);
+        $this->assertSame(Severity::Ok, $this->findingWith($findings, 'no snapshot to drift')->severity);
         $this->assertNoFinding($findings, 'is current (deployed');   // no version leg at all
-        $this->assertSame('unvalidated', $this->findingWith($findings, 'was NOT launch-tested')['severity']);
+        $this->assertSame(Severity::Unvalidated, $this->findingWith($findings, 'was NOT launch-tested')->severity);
         $this->assertSame(1, $this->countFindings($findings, 'was NOT launch-tested'));
     }
 
@@ -232,8 +234,8 @@ class ChannelSnapshotProbeTest extends TestCase
 
         $findings = ChannelSnapshotProbe::probe($deployed, $this->reference('1.2.3'));
 
-        $this->assertSame('fail', $this->findingWith($findings, 'dependencies are not installed')['severity']);
-        $this->assertSame('unvalidated', $this->findingWith($findings, 'was NOT launch-tested')['severity']);
+        $this->assertSame(Severity::Fail, $this->findingWith($findings, 'dependencies are not installed')->severity);
+        $this->assertSame(Severity::Unvalidated, $this->findingWith($findings, 'was NOT launch-tested')->severity);
     }
 
     /**
@@ -286,8 +288,8 @@ class ChannelSnapshotProbeTest extends TestCase
         }
 
         $this->assertCount(1, $findings);
-        $this->assertSame('warn', $findings[0]['severity']);
-        $this->assertStringContainsString('is not visible to this user', $findings[0]['message']);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
         $this->assertNoFinding($findings, 'was NOT launch-tested');
     }
 
@@ -306,8 +308,8 @@ class ChannelSnapshotProbeTest extends TestCase
             // could early-return are vacuous — they would pass just as well on a probe
             // that produced nothing at all. Pin that this branch really did run before
             // concluding anything from what it did not say.
-            $this->assertSame('ok', $this->findingWith($findings, 'has its entry file and node_modules')['severity']);
-            $this->assertSame('unvalidated', $this->findingWith($findings, 'was NOT launch-tested')['severity']);
+            $this->assertSame(Severity::Ok, $this->findingWith($findings, 'has its entry file and node_modules')->severity);
+            $this->assertSame(Severity::Unvalidated, $this->findingWith($findings, 'was NOT launch-tested')->severity);
 
             $this->assertNoFinding($findings, 'completeness');
             $this->assertNoFinding($findings, 'SKIPPED');
@@ -334,7 +336,7 @@ class ChannelSnapshotProbeTest extends TestCase
 
         $this->assertNoFinding($findings, 'could not be enumerated');
         $this->assertNoFinding($findings, 'reference set');
-        $this->assertSame('ok', $this->findingWith($findings, 'is current (deployed 1.2.3')['severity']);
+        $this->assertSame(Severity::Ok, $this->findingWith($findings, 'is current (deployed 1.2.3')->severity);
     }
 
     public function test_extra_files_in_the_deployment_are_not_a_finding(): void
@@ -350,8 +352,8 @@ class ChannelSnapshotProbeTest extends TestCase
 
         $findings = ChannelSnapshotProbe::probe($deployed, $reference);
 
-        $this->assertSame([], $this->severities($findings, 'fail'));
-        $this->assertSame('ok', $this->findingWith($findings, 'has its entry file and node_modules')['severity']);
+        $this->assertSame([], $this->severities($findings, Severity::Fail));
+        $this->assertSame(Severity::Ok, $this->findingWith($findings, 'has its entry file and node_modules')->severity);
     }
 
     /**
@@ -417,13 +419,12 @@ class ChannelSnapshotProbeTest extends TestCase
     }
 
     /**
-     * @param  list<array{severity: string, message: string}>  $findings
-     * @return array{severity: string, message: string}
+     * @param  list<Finding>  $findings
      */
-    private function findingWith(array $findings, string $needle): array
+    private function findingWith(array $findings, string $needle): Finding
     {
         foreach ($findings as $finding) {
-            if (str_contains($finding['message'], $needle)) {
+            if (str_contains($finding->message, $needle)) {
                 return $finding;
             }
         }
@@ -432,7 +433,7 @@ class ChannelSnapshotProbeTest extends TestCase
     }
 
     /**
-     * @param  list<array{severity: string, message: string}>  $findings
+     * @param  list<Finding>  $findings
      */
     private function countFindings(array $findings, string $needle): int
     {
@@ -457,24 +458,24 @@ class ChannelSnapshotProbeTest extends TestCase
     }
 
     /**
-     * @param  list<array{severity: string, message: string}>  $findings
+     * @param  list<Finding>  $findings
      */
     private function assertNoFinding(array $findings, string $needle): void
     {
         foreach ($findings as $finding) {
-            $this->assertStringNotContainsString($needle, $finding['message']);
+            $this->assertStringNotContainsString($needle, $finding->message);
         }
     }
 
     /**
-     * @param  list<array{severity: string, message: string}>  $findings
+     * @param  list<Finding>  $findings
      * @return list<string>
      */
-    private function severities(array $findings, string $severity): array
+    private function severities(array $findings, Severity $severity): array
     {
         return array_values(array_filter(
             array_column($findings, 'message'),
-            fn (string $message, int $i): bool => $findings[$i]['severity'] === $severity,
+            fn (string $message, int $i): bool => $findings[$i]->severity === $severity,
             ARRAY_FILTER_USE_BOTH,
         ));
     }

@@ -2,6 +2,8 @@
 
 namespace Tests\Unit\Console;
 
+use App\Bridge\Support\Finding;
+use App\Bridge\Support\Severity;
 use App\Console\Commands\Bridge\CheckCommand;
 use Illuminate\Console\OutputStyle;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -38,28 +40,46 @@ class CheckCommandSeverityContractTest extends TestCase
     }
 
     /**
-     * The WHOLE vocabulary, plus a severity that does not exist yet: the contract
-     * is `false` IFF `fail`, and it must hold for values added after this test.
+     * The WHOLE vocabulary, derived from the enum rather than listed (card 5178).
+     * Before `Severity` existed this provider carried a hand-written
+     * `'some-future-severity'` row standing in for "a severity added later"; that
+     * value is now unrepresentable, so the row is REPLACED, not dropped — iterating
+     * `Severity::cases()` covers every future case automatically, which is strictly
+     * more than the one hypothetical string it could pin before.
      *
-     * @return array<string, array{string, bool}>
+     * @return iterable<string, array{Severity, bool}>
      */
-    public static function severities(): array
+    public static function severities(): iterable
     {
-        return [
-            'ok' => ['ok', true],
-            'warn' => ['warn', true],
-            'unvalidated' => ['unvalidated', true],
-            'fail' => ['fail', false],
-            'a severity that does not exist yet' => ['some-future-severity', true],
-        ];
+        foreach (Severity::cases() as $case) {
+            yield $case->value => [$case, $case !== Severity::Fail];
+        }
     }
 
     #[DataProvider('severities')]
-    public function test_emit_finding_returns_false_if_and_only_if_the_severity_is_fail(string $severity, bool $expected): void
+    public function test_emit_finding_returns_false_if_and_only_if_the_severity_is_fail(Severity $severity, bool $expected): void
     {
         // This is what preserves bridge:check's exit codes BY CONSTRUCTION across
         // any widening of the vocabulary: only the `fail` arm flips the caller's $ok.
+        // A fifth case mapped to `false` in emitFinding's return match REDs here.
         $this->assertSame($expected, $this->emit($severity, 'a message'));
+    }
+
+    /**
+     * The exhaustiveness itself, asserted as an executing property rather than left
+     * to phpstan alone: every case the enum declares must reach a handled arm. A
+     * case added to `Severity` without updating either `match` in `emitFinding`
+     * raises `\UnhandledMatchError` here — the guard that survives even if the
+     * renderer ever leaves the analysed paths.
+     */
+    public function test_every_declared_severity_is_handled_by_the_renderer(): void
+    {
+        foreach (Severity::cases() as $case) {
+            $this->emit($case, "rendered {$case->value}");
+            // Handled AND emitted: an arm that swallowed the finding would leave
+            // nothing on the buffer, which no exhaustiveness check would catch.
+            $this->assertStringContainsString("rendered {$case->value}", $this->buffer->fetch());
+        }
     }
 
     public function test_an_unvalidated_finding_renders_plain_never_as_certified_green(): void
@@ -67,7 +87,7 @@ class CheckCommandSeverityContractTest extends TestCase
         // Green reads as "validated clean" — the exact misreading card 5170 fixes.
         // Yellow was rejected too: an install told by docs/multi-host.md to leave
         // channel.server_path unset would be nagged forever with no way to silence it.
-        $this->emit('unvalidated', 'channel.server_path not declared — snapshot not validated');
+        $this->emit(Severity::Unvalidated, 'channel.server_path not declared — snapshot not validated');
         $plain = $this->buffer->fetch();
 
         $this->assertStringContainsString('snapshot not validated', $plain);
@@ -75,19 +95,21 @@ class CheckCommandSeverityContractTest extends TestCase
 
         // Positive control: the same renderer DOES style an `ok`, so the assertion
         // above is measuring the severity arm and not an un-styled output object.
-        $this->emit('ok', 'channel snapshot holds every file');
+        $this->emit(Severity::Ok, 'channel snapshot holds every file');
         $this->assertStringContainsString("\033[", $this->buffer->fetch());
     }
 
     public function test_only_an_unvalidated_finding_is_tallied(): void
     {
-        foreach (['ok', 'warn', 'fail', 'some-future-severity'] as $severity) {
+        // Every case EXCEPT the tallied one, derived from the enum so a severity
+        // added later is asserted not to be tallied without editing this list.
+        foreach (array_filter(Severity::cases(), fn (Severity $s) => $s !== Severity::Unvalidated) as $severity) {
             $this->emit($severity, 'a message');
         }
         $this->assertSame(0, $this->tally());
 
-        $this->emit('unvalidated', 'a message');
-        $this->emit('unvalidated', 'another message');
+        $this->emit(Severity::Unvalidated, 'a message');
+        $this->emit(Severity::Unvalidated, 'another message');
         $this->assertSame(2, $this->tally());
     }
 
@@ -118,26 +140,29 @@ class CheckCommandSeverityContractTest extends TestCase
      * The DL-225 ssh advisory's incomplete-setup predicate. POSITIVE membership:
      * the `!== 'ok'` proxy it replaced would sweep every severity added later, so
      * an agent would be told its ssh setup is incomplete on the strength of a check
-     * nobody ran. Latent today (SshTransportProbe emits only ok/warn/fail) — this
-     * pins that it stays that way, and that today's behavior is unchanged.
+     * nobody ran. Driven off `Severity::cases()` (card 5178) so a case added later
+     * is asserted here too — the hand-written `'some-future-severity'` row this
+     * replaces could only ever stand in for ONE such value.
      */
     public function test_only_warn_and_fail_mean_the_ssh_setup_is_incomplete(): void
     {
         $incomplete = new ReflectionMethod(CheckCommand::class, 'severityMeansSetupIncomplete');
 
-        $this->assertTrue($incomplete->invoke(null, 'warn'));
-        $this->assertTrue($incomplete->invoke(null, 'fail'));
-        $this->assertFalse($incomplete->invoke(null, 'ok'));
-        $this->assertFalse($incomplete->invoke(null, 'unvalidated'));
-        $this->assertFalse($incomplete->invoke(null, 'some-future-severity'));
+        foreach (Severity::cases() as $case) {
+            $this->assertSame(
+                in_array($case, [Severity::Warn, Severity::Fail], true),
+                $incomplete->invoke(null, $case),
+                "severityMeansSetupIncomplete({$case->value})",
+            );
+        }
     }
 
-    private function emit(string $severity, string $message): bool
+    private function emit(Severity $severity, string $message): bool
     {
         $emit = new ReflectionMethod($this->command, 'emitFinding');
 
         /** @var bool $result */
-        $result = $emit->invoke($this->command, 'agent x: ', ['severity' => $severity, 'message' => $message]);
+        $result = $emit->invoke($this->command, 'agent x: ', new Finding($severity, $message));
 
         return $result;
     }
