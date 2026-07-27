@@ -1,9 +1,16 @@
 name: PR title correlation-key lint
 
 # A PR whose head branch follows the <type>/<card-id>-slug convention MUST carry
-# a `card-<id>`/`card#<id>` or `DL-NNNN` token in its title. That token is the ONLY key the
+# a card token or a `DL-NNNN` token in its title. That token is the ONLY key the
 # card-movement writeback has to correlate a merged PR back to its tracking card;
-# without it the card silently never moves. The convention was empirically
+# without it the card silently never moves.
+#
+# WHICH card spellings correlate is deliberately NOT restated here (card#5267):
+# `app/Bridge/Support/CardTokenGrammar.php` is the authority, and
+# `tests/Feature/Workflows/PrTitleLintTest.php` compares the regexes below against
+# it answer-set to answer-set. A set spelled out in this header instead would be a
+# copy nothing holds — which is how the runtime near-miss warning spent two
+# releases naming a narrower set than the code enforced. The convention was empirically
 # skipped (wave-1 2026-07-08: 8 PRs, zero automated card moves), so this converts
 # the silent "card never moves" into a loud red check with an actionable message
 # — the same silent->loud conversion as the release drift-gate.
@@ -73,7 +80,9 @@ jobs:
           # ("supports card 2") stays silent, and that ruling still holds.
           looks='(^|[^0-9a-z_])card([-#_.:]|[0-9]| #)'
           # the ratified grammar, post-DL-233: separated takes 1+ digits, glued 2+.
-          # Keep in lockstep with CARD_TOKEN_PATTERN in GitHubPrCardMoveClassifier.
+          # NOT kept in lockstep by discipline — PrTitleLintTest extracts this line
+          # and compares its ANSWER SET against CardTokenGrammar's over shared
+          # vectors, so editing either side without the other reds the suite.
           good='(^|[^0-9a-z_])card([-#][0-9]|[0-9]{2})'
 
           if grep -qE "$looks" <<<"$subject" && ! grep -qE "$good" <<<"$subject"; then

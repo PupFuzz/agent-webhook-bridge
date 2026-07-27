@@ -23,9 +23,9 @@ use Illuminate\Support\Facades\Log;
  * GitHub-CONTROLLED fields (the action + `pull_request.merged` + `base.ref`),
  * never the PR title; (b) correlating the card by the `DL-NNN` token in the PR
  * title or head branch against the mapped board's `dl_number`, OR the native-id
- * `card-<task-id>` / `card#<task-id>` token (FR-7). Which board+stage the move
- * targets is decided by the durable handler from operator config — this classifier
- * only supplies which card + outcome.
+ * card token (FR-7) in whatever spellings {@see CardTokenGrammar} accepts. Which
+ * board+stage the move targets is decided by the durable handler from operator
+ * config — this classifier only supplies which card + outcome.
  *
  * Token resolution is try-in-order-with-fallback (framework #112), keyed on the
  * OUTCOME of a token not its presence: a `DL-NNN` that resolves wins — UNLESS a
@@ -438,7 +438,8 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     /**
      * Branch-create push → `started` move target(s) (DL-160). Fires ONCE on the
      * creation of a branch (`payload.created === true`) whose ref carries a
-     * `DL-NNN` or a `card-<id>`/`card#<id>` token, so it codifies "work has begun"
+     * `DL-NNN` or a card token ({@see CardTokenGrammar} owns which spellings that
+     * is — this path runs the very same parse), so it codifies "work has begun"
      * from the artifact (the branch), not from any agent. Uses `created === true`
      * so a subsequent push to the same branch is a no-op (the move would otherwise
      * re-fire on every push). The handler's promote-from guard
@@ -572,10 +573,10 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     }
 
     /**
-     * The `card-<task-id>` / `card#<task-id>` token (FR-7, framework v0.2.229;
-     * dash alias + DL-shaped boundary DL-201) from the PR title or head branch —
+     * The card token (FR-7, framework v0.2.229) from the PR title or head branch —
      * the native-kanban-task-id correlation channel for cards that carry no DL.
-     * Same surface + matching style as {@see dlToken}.
+     * Same surface + matching style as {@see dlToken}; the accepted spellings are
+     * {@see CardTokenGrammar}'s, never re-listed here.
      *
      * @param  array<mixed>  $payload
      */
