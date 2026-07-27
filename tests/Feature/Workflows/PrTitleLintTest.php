@@ -2,8 +2,8 @@
 
 namespace Tests\Feature\Workflows;
 
-use App\Bridge\Classifiers\GitHubPrCardMoveClassifier;
 use App\Bridge\Support\CardTokenGrammar;
+use App\Bridge\Support\DlTokenGrammar;
 use Symfony\Component\Yaml\Yaml;
 use Tests\TestCase;
 
@@ -24,10 +24,20 @@ use Tests\TestCase;
  *    docblock; the tests were a hand-written snapshot that stayed green when the
  *    grammar moved, which is exactly how the near-miss WARN string spent two
  *    releases naming a narrower accept-set than the code enforced.
- *  - PINNED (the require step, `card[-#]?<id>`). It DISAGREES with the grammar on
- *    three measured shapes and is deliberately not fixed — changing what a CI gate
- *    accepts or rejects is a hard gate. The divergence is characterized below so it
- *    cannot drift unobserved, and is tracked as card#5300.
+ *  - PINNED (the require step, `card[-#]?<id>` and `dl-[0-9]{1,4}`). It DISAGREES
+ *    with the grammars on MEASURED shapes and is deliberately not fixed — changing
+ *    what a CI gate accepts or rejects is a hard gate. Each divergence is
+ *    characterized below so it cannot drift unobserved; all are tracked as card#5300.
+ *    The count deliberately lives in the tests rather than in this docblock, because
+ *    a number here is one more copy nothing holds — and it has already been wrong
+ *    once (see below).
+ *
+ * The DL half of all this arrived late: until card#5308 the DL token had no public
+ * owner, so this file reached it by REFLECTION and compared exactly three shapes by
+ * hand. {@see DlTokenGrammar} is that owner, and driving BOTH arms over their
+ * authority's whole vector set — which is what having an owner made possible —
+ * surfaced a further divergence on its first run. Hand-picked shapes are why it
+ * took three grammar edits to find.
  *
  * WHY THIS FILE EXISTS AT ALL. The lint's grammar has been edited three times (DL-201
  * widened `card[-#]`, DL-233 made the separator optional, DL-234 added the near-miss
@@ -43,6 +53,26 @@ class PrTitleLintTest extends TestCase
      * silently excusing a vector from the agreement check.
      */
     private const REQUIRE_STEP_DIVERGENCES = ['card4'];
+
+    /**
+     * The same idea for the DL half (card#5308), split by SHAPE because the two
+     * disagreements fail in opposite directions and one of them is conditional on
+     * the runner. Each list is driven by its own pin below as well as by the
+     * agreement test, so a stale exemption reds instead of silently excusing.
+     *
+     * FALSE RED: the gate's `[0-9]{1,4}` bound reds a DL the classifier parses.
+     */
+    private const REQUIRE_STEP_DL_FALSE_RED = ['DL-12345'];
+
+    /**
+     * FALSE GREEN, and only under some locales: bash resolves `[0-9]` in `[[ =~ ]]`
+     * by COLLATION, so under `en_US.UTF-8` a Unicode-digit DL satisfies the gate
+     * while the classifier (ASCII `\d`, no `/u` — DL-231) correlates it to nothing.
+     * Under `C` / `C.UTF-8` / `POSIX` the gate reds it and agrees. GNU `grep -E`
+     * does NOT do this in any of those locales, which is why the warn step is
+     * unaffected — the engine is the cause, not the pattern.
+     */
+    private const REQUIRE_STEP_DL_LOCALE_DEPENDENT = ["DL-\u{0663}"];
 
     /** Extract one step's `run:` script from the workflow by name prefix. */
     private function stepScript(string $namePrefix): string
@@ -86,8 +116,16 @@ class PrTitleLintTest extends TestCase
         return $rc === 0;
     }
 
-    /** Run a step with a given title/branch; return [exit code, combined output]. */
-    private function runStep(string $namePrefix, string $title, string $branch): array
+    /**
+     * Run a step with a given title/branch; return [exit code, combined output].
+     * `$locale` pins `LC_ALL` for the run — needed because bash resolves a `[0-9]`
+     * bracket expression by COLLATION, so the require step's answer on a
+     * Unicode-digit token depends on the runner's locale (card#5308; pinned in the
+     * characterization below). Null inherits the ambient locale, which is what every
+     * other leg wants: measured across `C`, `C.UTF-8` and `en_US.UTF-8`, they return
+     * identical answers, so only the legs that pass a locale are sensitive to it.
+     */
+    private function runStep(string $namePrefix, string $title, string $branch, ?string $locale = null): array
     {
         // No `.sh` suffix: appending one would name a DIFFERENT path than tempnam()
         // created, leaking the original empty file on every one of the ~150 runs a
@@ -97,7 +135,8 @@ class PrTitleLintTest extends TestCase
         file_put_contents($tmp, $script);
         $rc = 0;
         $out = [];
-        exec('TITLE='.escapeshellarg($title).' BRANCH='.escapeshellarg($branch)
+        exec(($locale === null ? '' : 'LC_ALL='.escapeshellarg($locale).' ')
+            .'TITLE='.escapeshellarg($title).' BRANCH='.escapeshellarg($branch)
             .' bash '.escapeshellarg($tmp).' 2>&1', $out, $rc);
         @unlink($tmp);
 
@@ -115,9 +154,18 @@ class PrTitleLintTest extends TestCase
     }
 
     /** The require step's exit code: 0 = the title carries a correlation token. */
-    private function runRequireStep(string $title, string $branch): int
+    private function runRequireStep(string $title, string $branch, ?string $locale = null): int
     {
-        return $this->runStep('Require card#/DL token', $title, $branch)[0];
+        return $this->runStep('Require card#/DL token', $title, $branch, $locale)[0];
+    }
+
+    /** @return list<string> the locales installed on this box, as `locale -a` names them. */
+    private static function availableLocales(): array
+    {
+        $out = [];
+        exec('locale -a 2>/dev/null', $out);
+
+        return array_values(array_map('trim', $out));
     }
 
     /**
@@ -131,18 +179,19 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
-     * The `DL-NNN` authority, read by reflection — deliberately, and ONLY for the
-     * divergence pin below. A hand-copied regex here would be the very defect this
-     * card closes (a remembered value that keeps passing after the thing it
-     * describes moved); reflection at least reds when the const moves. It is a
-     * private const because the DL token is a SECOND accept-set that has never been
-     * given a public owner — the finding this card's other-accept-set audit
-     * returned, filed as card#5308, not something to fix inside a
-     * characterization test.
+     * Every `DL-<alnum>` spelling in a piece of operator-facing text. A letter-run
+     * standing in for the digits (`DL-NNNN`) necessarily ENCODES a digit count —
+     * which is how this step spent three grammar edits telling operators the token
+     * was four digits against an unbounded `\d+`. A DELIMITED placeholder
+     * (`DL-<number>`) is not collected, because it asserts nothing about width.
+     *
+     * @return list<string>
      */
-    private function dlTokenPattern(): string
+    private static function dlSpellings(string $text): array
     {
-        return (string) (new \ReflectionClassConstant(GitHubPrCardMoveClassifier::class, 'DL_TOKEN_PATTERN'))->getValue();
+        preg_match_all('/\bDL-[a-z0-9]+/i', $text, $m);
+
+        return $m[0];
     }
 
     // ---------------------------------------------------------------------
@@ -383,13 +432,113 @@ class PrTitleLintTest extends TestCase
 
         // (3) FALSE RED — a 5-digit DL. The classifier's DL token is `\d+` (unbounded);
         //     the gate's is `[0-9]{1,4}`. The 4-digit control is what makes the bound
-        //     the demonstrated cause rather than an asserted one.
-        $this->assertSame(1, preg_match($this->dlTokenPattern(), 'dl-12345 fix'),
-            'the classifier parses a 5-digit DL');
-        $this->assertSame(1, $this->runRequireStep('dl-12345 fix', 'fix/999-slug'),
-            'the gate reds a title the classifier would correlate');
+        //     the demonstrated cause rather than an asserted one. Read from the public
+        //     owner since card#5308 — this used to reach a `private const` by reflection.
+        foreach (self::REQUIRE_STEP_DL_FALSE_RED as $vector) {
+            $this->assertNotNull(DlTokenGrammar::parse($vector), "'{$vector}' must still be a shape the grammar parses");
+            $this->assertSame(1, $this->runRequireStep("fix a thing {$vector}", 'fix/999-slug'),
+                "'{$vector}' must still red the gate — this is the pinned FALSE RED");
+        }
         $this->assertSame(0, $this->runRequireStep('dl-1234 fix', 'fix/999-slug'),
             'control: 4 digits pass, so the {1,4} bound is the cause');
+    }
+
+    /**
+     * The DL half of the require step is a SECOND implementation of the DL token,
+     * in bash, and before card#5308 exactly three of its shapes were checked by
+     * hand — so a further divergence could enter unobserved, and one already had
+     * (see the locale characterization below, which this loop is what found). Same
+     * treatment the card half got: drive the whole vector set through the real gate
+     * and require agreement everywhere except the vectors pinned by name.
+     */
+    public function test_the_require_steps_dl_arm_agrees_with_the_authority_but_the_pinned_ones(): void
+    {
+        $this->assertNotEmpty(DlTokenGrammar::accepted(), 'the comparison needs accepted vectors');
+        $this->assertNotEmpty(DlTokenGrammar::rejected(), 'the comparison needs rejected vectors');
+
+        $exempt = array_merge(self::REQUIRE_STEP_DL_FALSE_RED, self::REQUIRE_STEP_DL_LOCALE_DEPENDENT);
+        foreach (DlTokenGrammar::VECTORS as $vector) {
+            if (in_array($vector, $exempt, true)) {
+                continue;
+            }
+            // A branch id no DL vector can coincidentally satisfy the CARD arm with —
+            // the card arm needs a literal `card`, which no DL vector carries — so the
+            // step's verdict here is attributable to its DL arm alone.
+            $title = "fix a thing {$vector}";
+
+            $this->assertSame(
+                DlTokenGrammar::parse($title) !== null,
+                $this->runRequireStep($title, 'fix/999-slug') === 0,
+                "the gate must pass '{$title}' iff the DL grammar parses it"
+            );
+        }
+    }
+
+    /**
+     * THE FOURTH DIVERGENCE, found by the vector loop above the day it was written
+     * (card#5308) — three grammar edits of hand-picked shapes had never reached it.
+     *
+     * `[0-9]` inside bash's `[[ =~ ]]` is a COLLATION range, not an ASCII one, so
+     * under a UTF-8 collation locale U+0663 falls inside it and the gate GREENS a
+     * title carrying a DL the classifier correlates to nothing — the same FALSE
+     * GREEN shape as `card4`, and precisely the fleet-wide invariant DL-231
+     * ratified ("any other engine implementing this grammar matches ASCII digits
+     * only"). The gate is a second engine, and it does not.
+     *
+     * PINNED, not fixed: repairing it means changing what the CI gate accepts, the
+     * hard gate card#5300 owns. Both locale answers are measured here so the pin is
+     * a measurement rather than a claim, and so the C-family half proves the vector
+     * is otherwise ordinary.
+     */
+    public function test_the_require_steps_digit_class_is_a_locale_collation_range_unlike_the_authority(): void
+    {
+        $utf8Collation = 'en_US.UTF-8';
+        $available = in_array('en_US.utf8', self::availableLocales(), true);
+
+        foreach (self::REQUIRE_STEP_DL_LOCALE_DEPENDENT as $vector) {
+            $title = "fix a thing {$vector}";
+            $this->assertNull(DlTokenGrammar::parse($title),
+                'the classifier correlates a Unicode-digit DL to NOTHING (DL-231) — that is what makes a green gate false');
+
+            $this->assertSame(1, $this->runRequireStep($title, 'fix/999-slug', 'C.UTF-8'),
+                'under a C-family locale the gate reds it and agrees with the grammar');
+
+            if (! $available) {
+                $this->markTestIncomplete("no {$utf8Collation} on this box — the FALSE-GREEN half was NOT measured");
+            }
+            $this->assertSame(0, $this->runRequireStep($title, 'fix/999-slug', $utf8Collation),
+                "under {$utf8Collation} the gate PASSES a title that will never move a card — the pinned FALSE GREEN");
+
+            // The warn step is the control: same pattern class, different engine.
+            // GNU grep's `[0-9]` is ASCII in every locale measured, so the near-miss
+            // leg is unaffected — which is what identifies bash as the cause.
+            $this->assertFalse($this->grepMatches('(^|[^0-9a-z_])dl-[0-9]{1,4}([^0-9]|$)', $title),
+                'control: the same bracket range under grep -E does NOT match — the divergence is bash\'s engine');
+        }
+    }
+
+    /**
+     * THE PROSE TIE, at the only strength available across the language boundary:
+     * no PHP function can render into a YAML string, so what is tied is that the
+     * step's operator-facing text never RESTATES the digit grammar. `DL-NNNN` —
+     * the spelling this step carried for three grammar edits — encodes "four
+     * digits" against an unbounded `\d+`; a delimited `DL-<number>` encodes
+     * nothing and a real `DL-1234` is checkable, so both pass.
+     */
+    public function test_the_require_steps_operator_text_never_restates_the_dl_digit_grammar(): void
+    {
+        // Positive control FIRST: the collector must actually catch the historical
+        // defect, or "no bad spellings in the real script" would be a measurement
+        // that never happened.
+        $historical = self::dlSpellings("Fix: add the relevant 'DL-NNNN' to the PR title.");
+        $this->assertSame(['DL-NNNN'], $historical, 'the collector must see the spelling this leg exists to forbid');
+        $this->assertNull(DlTokenGrammar::parse($historical[0]), 'and the grammar must reject it');
+
+        foreach (self::dlSpellings($this->stepScript('Require card#/DL token')) as $spelling) {
+            $this->assertNotNull(DlTokenGrammar::parse($spelling),
+                "the step spells '{$spelling}' at operators: a letter-run standing in for the digits asserts a "
+                .'digit count the grammar does not enforce — use a delimited placeholder or a real token');
+        }
     }
 
     public function test_the_require_step_skips_branches_with_no_card_id(): void
