@@ -8,6 +8,7 @@ use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -45,31 +46,9 @@ use Illuminate\Support\Facades\Log;
 class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, EmitsWritebackReactions
 {
     /**
-     * The card token: `card-<id>`, `card#<id>`, or the GLUED `card<id>`,
-     * case-insensitive. DL-shaped boundary — leading `\b` only, deliberately NO
-     * trailing `\b`, mirroring the DL regex one call up (DL-201 / roundtable #48):
-     * a trailing `\b` made `card#3054_fix` a SILENT no-op (`_` is a word char, so
-     * `\b` never matches digit→`_`) while `DL-200_fix` was immune to the identical
-     * input. Greedy-and-loud beats strict-and-silent: a wrong-but-parsed id fails
-     * at the card lookup with a warn; an unparsed token fails silently.
-     *
-     * THE GLUED ARM (DL-233 / roundtable #159) requires **≥2 digits**, while a
-     * SEPARATED token still accepts one. That asymmetry is the toolkit's, adopted
-     * rather than invented: `board-card-start` has accepted glued since v0.17.0 at
-     * `0*[0-9]{2,}`, and the 2-digit floor is what keeps an ordinary word from
-     * correlating — `card2go` names no card, but `card-3` legitimately does. The
-     * branch-reset `(?|…)` gives both arms the SAME capture group, so callers read
-     * `$m[1]` unchanged.
-     *
-     * The digit class stays ASCII (no `/u`) — see DL-231; that ratification is
-     * untouched here, this widens the SEPARATOR only.
-     */
-    private const CARD_TOKEN_PATTERN = '/\bcard(?|[-#](\d+)|(\d{2,}))/i';
-
-    /**
      * The `DL-NNN` token, case-insensitive — leading `\b` only, same boundary
-     * shape as {@see self::CARD_TOKEN_PATTERN} (the card token was made to match
-     * THIS shape, DL-201). One home for the three DL parse sites.
+     * shape as {@see CardTokenGrammar} (the card token was made to match THIS
+     * shape, DL-201). One home for the three DL parse sites.
      */
     private const DL_TOKEN_PATTERN = '/\bDL-(\d+)/i';
 
@@ -495,7 +474,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         }
 
         $hasDl = preg_match(self::DL_TOKEN_PATTERN, $branch, $m) === 1;
-        $cardToken = preg_match(self::CARD_TOKEN_PATTERN, $branch, $cm) === 1 ? (int) $cm[1] : null;
+        $cardToken = CardTokenGrammar::parse($branch);
         if (! $hasDl && $cardToken === null) {
             $this->warnCardTokenNearMiss($branch, 'branch ref');
 
@@ -602,27 +581,27 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      */
     private function cardToken(array $payload): ?int
     {
-        if (preg_match(self::CARD_TOKEN_PATTERN, $this->titleAndHead($payload), $m) === 1) {
-            return (int) $m[1];
-        }
-
-        return null;
+        return CardTokenGrammar::parse($this->titleAndHead($payload));
     }
 
     /**
-     * Warn when text APPEARS to name a card but the token doesn't parse
-     * (`card_123`, `card123`, `card:123`, `card #123` — anything but the
-     * accepted `card-<id>` / `card#<id>`). An unparsed token is otherwise a
-     * silent no-op — the branch publishes, the card never moves, nobody is
-     * told — exactly as high-value a miss as an unresolvable DL (roundtable
-     * #48). Token-less text stays silent: most branches/PRs legitimately
-     * carry no card token, and a bare `card 2` (space, no `#`) is deliberately
-     * NOT a near-miss — prose like "supports card 2" in a PR title would warn.
+     * Warn when text APPEARS to name a card but the token doesn't parse. An
+     * unparsed token is otherwise a silent no-op — the branch publishes, the
+     * card never moves, nobody is told — exactly as high-value a miss as an
+     * unresolvable DL (roundtable #48). Token-less text stays silent: most
+     * branches/PRs legitimately carry no card token, and a bare `card 2`
+     * (space, no `#`) is deliberately NOT a near-miss — prose like "supports
+     * card 2" in a PR title would warn.
+     *
+     * WHICH SHAPES those are is {@see CardTokenGrammar}'s to say, and the
+     * warning renders its answer rather than repeating one: a hand-written
+     * accept-set here spent two releases telling operators that glued
+     * `card123` does not correlate, months after DL-233 made it (card#5267).
      */
     private function warnCardTokenNearMiss(string $text, string $surface): void
     {
         if (preg_match('/\bcard(?:[_:.]|\s#)?\d/i', $text) === 1) {
-            Log::warning("kanban_move_card: {$surface} appears to name a card but the token does not parse (accepted: card-<id> or card#<id>) — no move (FR-7 near-miss): {$text}");
+            Log::warning("kanban_move_card: {$surface} appears to name a card but the token does not parse (".CardTokenGrammar::describe().") — no move (FR-7 near-miss): {$text}");
         }
     }
 
