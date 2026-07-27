@@ -37,13 +37,15 @@ EXIT CODES
      not override still fires (today: `BRIDGE_TOOLS_SSH_TARGET` and
      `BRIDGE_TOOLS_ENDPOINT` both set ⇒ `refuseDeaf`), and conversely a refusal
      configured only in `.mcp.json`'s `env` block is invisible here and can fire at
-     session start without firing now. Pinning the transport (see (a)) removed the
-     other member of that class.
+     session start without firing now. Pinning the transport (see (a)) MOVED the
+     transport into that class rather than out of it — read (a), the trade is
+     deliberate.
   2  COULD NOT CHECK. NOT a verdict in either direction. Covers: no `node` on PATH
      (an environment problem, not a snapshot problem); the path is missing, or not
      traversable by this user; the throwaway-socket guard refused; the backstop
      timeout fired; and the child exited 0 WITHOUT ever reporting a bind (an empty or
-     truncated entry does exactly that) — an unfinished measurement, deliberately not
+     truncated entry does exactly that); and the child was KILLED BY A SIGNAL (an OOM-kill or a
+     cgroup reap is a fact about the machine, not about the deployment) — an unfinished measurement, deliberately not
      a failure, because a failure verdict there would rest on matching a log string.
 
 TWO BUILD REQUIREMENTS, both about not BREAKING the thing being diagnosed.
@@ -92,6 +94,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -166,6 +169,16 @@ def child_env(parent_env, socket_path: str, runtime_dir: str) -> dict:
     env["BRIDGE_CHANNEL_PORT"] = "0"
     env["XDG_RUNTIME_DIR"] = runtime_dir
     return env
+
+
+def _signal_name(number: int) -> str:
+    """`SIGKILL (9)` rather than `-9`. `Signals()` raises on a value this platform does
+    not know, which is a legitimate state on an unfamiliar kernel — fall back to the
+    number rather than dying inside a diagnostic."""
+    try:
+        return f"{signal.Signals(number).name} ({number})"
+    except ValueError:
+        return f"signal {number}"
 
 
 def bind_observed(stderr: str) -> bool:
@@ -255,7 +268,8 @@ def _pass_message(entry: str) -> str:
         "and nothing about whether this snapshot is STALE — staleness is `bridge:check`'s "
         "version leg, and a deployment the bridge process cannot traverse gets no staleness "
         "verdict from anywhere today. The bind it proves is an ephemeral loopback one this "
-        "run owns, not your configured endpoint."
+        "run owns — neither your configured endpoint NOR your configured transport, which "
+        "this run pins to `http` so it can never reach a live one."
     )
 
 
@@ -265,9 +279,11 @@ def _exited_zero_without_binding_message(entry: str) -> str:
         "nothing was proven in either direction. A healthy channel server binds and prints a "
         "listening line before stdin EOF closes it; an entry that is EMPTY, truncated at a "
         "valid parse point, or that returns before starting a listener also exits 0, and this "
-        "run cannot tell those apart. This is an unfinished measurement, NOT a pass. Check "
+        "run cannot tell those apart. This is an unfinished measurement, NOT a pass. Check that "
         "the entry file is intact — its size, and that it still ends in the listener setup — "
-        "then re-run."
+        "or, if you have CUSTOMIZED the entry (its own header invites that), whether it now "
+        f"prints a different listening line: this run looks for '{LISTENING_MARKER.strip()}'. "
+        "Then re-run."
     )
 
 
@@ -385,15 +401,46 @@ def run_launch_assert(
             print(_pass_message(entry), file=out)
             return EXIT_LAUNCH_OK
 
+        if proc.returncode < 0:
+            # KILLED BY A SIGNAL — an ENVIRONMENT fact, not a verdict about the
+            # deployment, and the same class as "no node on PATH", which is already a 2
+            # for exactly this reason. An OOM-kill or a cgroup reap produces
+            # `returncode == -9` and NO stderr at all, so reporting LAUNCH FAILED there
+            # sends an operator to re-copy a snapshot that was never given the chance to
+            # start. The signal is named readably: `-9` is an implementation detail of
+            # POSIX wait status, not something an operator should have to decode.
+            signal_name = _signal_name(-proc.returncode)
+            print(
+                f"COULD NOT CHECK: {entry} was killed by {signal_name} before it could finish "
+                "starting, so nothing was measured. That is a fact about this machine — an "
+                "out-of-memory kill or a cgroup/container reap looks exactly like this — not "
+                "about the deployment. Re-run, ideally somewhere with more headroom.",
+                file=out,
+            )
+            if (proc.stderr or "").strip():
+                print("--- child stderr ---", file=out)
+                print(proc.stderr.rstrip(), file=out)
+            return EXIT_COULD_NOT_CHECK
+
         # "will not come up" is conclusive for what this run controls, and the bound is
         # named rather than left implied: a startup refusal driven by an env var this
         # tool does NOT override still fires here (e.g. BRIDGE_TOOLS_SSH_TARGET and
         # BRIDGE_TOOLS_ENDPOINT both set ⇒ refuseDeaf). That is a real config defect
         # worth surfacing, but it belongs to the ENVIRONMENT this ran under — and a
         # refusal configured only in .mcp.json's `env` block is invisible to us, so it
-        # can fire at session start without firing here. (Pinning the transport removed
-        # the other member of that class: an invalid BRIDGE_CHANNEL_TRANSPORT can no
-        # longer reach the child.)
+        # can fire at session start without firing here.
+        #
+        # ⚠ AND PINNING THE TRANSPORT MOVED A REFUSAL *INTO* THAT CLASS RATHER THAN OUT
+        # OF IT — the opposite of what an earlier version of this comment said. An
+        # invalid BRIDGE_CHANNEL_TRANSPORT used to reach the child and refuse loudly;
+        # now it cannot reach the child at all, so it is invisible here and still fires
+        # at session start. The population is ours and it is every deployment:
+        # `.mcp.json`'s env block carries BRIDGE_CHANNEL_TRANSPORT (the shipped
+        # `.mcp.json.example` sets it, and `bin/provision-board-tools.py` writes it), so
+        # the transport the session will ACTUALLY use is the one value this assert
+        # guarantees not to exercise. Accepted anyway — a false LAUNCH FAILED on every
+        # Windows seat is the worse failure — and disclosed in the pass message rather
+        # than left for a reader to discover.
         print(
             f"LAUNCH FAILED: {entry} exited {proc.returncode} under this user's node, in this "
             "environment — this deployment will not come up at the next session start as "

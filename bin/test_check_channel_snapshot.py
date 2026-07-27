@@ -14,19 +14,38 @@ would assert the mock. Three of them are the evidence DL-237 rests on:
   - the live-socket protection, asserted directly against a sentinel in the PARENT
     environment — the guard that keeps a diagnostic from unlinking the live socket.
 
-Proven failable (each mutated once, then restored):
-  - dropping `env["BRIDGE_CHANNEL_SOCKET"] = ...` from `child_env` reds
-    `test_a_live_socket_in_the_parent_env_is_never_bound_or_unlinked` (the sentinel
-    was created AND unlinked) and `test_child_env_overrides_every_live_endpoint`.
-  - returning EXIT_LAUNCH_OK for a timeout reds `test_a_hanging_entry_is_inconclusive`.
-  - `os.path.lexists` → `False` in the refusal reds
-    `test_a_pre_existing_socket_path_refuses_and_leaves_it_alone` (the file was gone).
-  - treating any non-zero child exit as OK reds the DL-230 case.
+Proven failable — each mutated once and restored, and each entry NAMES THE GUARD that
+reds rather than a total. Collateral counts were tried and abandoned: dropping the port
+override reds 14 or 15 depending on whether port 8788 happens to be free on the box, so
+a number there is not a fact about the code. A stale or environment-dependent count
+reads as coverage, which is worse than no count.
+
+  - drop `env["BRIDGE_CHANNEL_TRANSPORT"]` → `test_the_parents_transport_never_reaches_the_child`
+    (+ the dict guard).
+  - drop `env["BRIDGE_CHANNEL_PORT"]`      → `test_the_seats_configured_port_is_never_reached`
+    (+ the dict guard, + broad collateral).
+  - drop `env["XDG_RUNTIME_DIR"]`          → `test_nothing_is_written_into_the_seats_runtime_dir`
+    (+ the dict guard).
+  - drop `env["BRIDGE_CHANNEL_SOCKET"]`    → `test_child_env_overrides_every_channel_addressing_input`
+    ALONE. The sentinel case stays GREEN, because with the transport pinned the entry
+    never reads the socket path — that is what belt-and-braces means, and the earlier
+    claim that this reds the sentinel too was measured against a DOUBLE mutation that
+    also removed the pin.
+  - disable the bind gate                  → the two exit-0-without-bind cases + the
+    customized-entry message case.
+  - let a signal-kill fall through         → `test_a_signal_killed_child_is_an_environment_fact_not_a_verdict`.
+  - report a timeout as OK                 → `test_a_hanging_entry_is_inconclusive`.
+  - `os.path.lexists` → `False`            → `test_a_pre_existing_socket_path_refuses_and_leaves_it_alone`.
+  - treat any child exit as OK             → the DL-230 case, in all three of its forms.
+  - give the probe a collaborator, or a static call outside `self::`
+                                           → `test_the_snapshot_probe_path_cannot_execute_a_process`.
+  - revert any of the three scanner fixes  → `test_the_php_scanner_stays_in_sync_on_the_shapes_that_broke_it`.
 """
 
 import importlib.util
 import io
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -155,13 +174,24 @@ def _php_code_only(source: str) -> str:
 
     Both have to go for a token scan to mean anything here: every docblock in these
     files says `bridge:check` in backticks (and the backtick IS `shell_exec`), and the
-    message strings talk about running `bin/check-channel-snapshot.py`. What is left is
-    executable code, which is the only place a process launch can hide.
+    message strings talk about running `bin/check-channel-snapshot.py`.
 
-    A hand-rolled scanner rather than a real parser, and that is a deliberate bound: it
-    is quote- and escape-aware, and it errs toward blanking MORE than it should, which
-    can only weaken the scan into a false NEGATIVE — never invent a false positive that
-    blocks a legitimate change.
+    HONEST BOUND — read this before trusting it. This is a hand-rolled scanner, not a
+    PHP parser, and an earlier version of this docstring claimed it could only fail
+    into a false NEGATIVE. That was wrong in both directions, because a mis-handled
+    escape does not widen the blanking, it FLIPS the in-string state and desyncs
+    everything after it: PHP's single-quoted `\'` was treated as a literal quote, so
+    `'don\'t `back` tick'` was read as code and CAUGHT (false positive on idiomatic
+    source), while a real `\'` in the scanned file opened a blind window in which an
+    injected `shell_exec()` was NOT caught. Both were reachable, in the very file the
+    guard protects.
+
+    Backslash now consumes the next character in BOTH quote styles, which is what keeps
+    the state machine in sync (PHP only escapes `\'` and `\\` inside single quotes, but
+    consuming two is correct for SYNC either way). `#[` is an attribute, not a comment.
+    What is still NOT handled: heredoc/nowdoc bodies, and `?>`/`<?php` interleaving.
+    Neither appears in the two scanned files, and `_php_code_only` is self-tested below
+    on the exact shapes that broke it. Treat what it backs as a TRIPWIRE, not a proof.
     """
     out = []
     i, n = 0, len(source)
@@ -169,13 +199,17 @@ def _php_code_only(source: str) -> str:
     while i < n:
         c = source[i]
         if quote:
-            if c == "\\" and quote != "'":
+            if c == "\\" and i + 1 < n:
+                # Consume the escaped character. In single quotes PHP only escapes `\'`
+                # and `\\`, but consuming two is what keeps the scanner in SYNC — the
+                # failure mode that matters is losing track of where the string ends.
                 i += 2
                 continue
-            out.append(" ")
             if c == quote:
                 quote = None
-                out[-1] = c
+                out.append(c)
+            else:
+                out.append(" ")
             i += 1
             continue
         if c in "'\"":
@@ -188,7 +222,9 @@ def _php_code_only(source: str) -> str:
             i = n if end == -1 else end + 2
             out.append(" ")
             continue
-        if source.startswith("//", i) or c == "#":
+        # `#[` opens an ATTRIBUTE, not a comment — blanking the line would erase real
+        # code (and did).
+        if source.startswith("//", i) or (c == "#" and not source.startswith("#[", i)):
             end = source.find("\n", i)
             i = n if end == -1 else end
             out.append(" ")
@@ -196,6 +232,25 @@ def _php_code_only(source: str) -> str:
         out.append(c)
         i += 1
     return "".join(out)
+
+
+# Process-launch primitives, as whole IDENTIFIERS. The boundary is load-bearing: a bare
+# `system(` substring matches `getFilesystem(`, and a bare `exec(` matches any
+# `…exec(` method. `$` and `>` are in the lookbehind so `$system(` and `->system(` are
+# method/variable calls, not the builtin.
+_EXEC_PRIMITIVES = tuple(
+    re.compile(r"(?<![A-Za-z0-9_$>\\])" + name + r"\s*\(")
+    for name in ("proc_open", "shell_exec", "passthru", "popen", "system", "exec", "pcntl_exec", "eval", "call_user_func", "call_user_func_array")
+)
+
+
+def _exec_primitives_in(php_source: str):
+    """Every process-launch/indirect-call primitive in already-comment-stripped code,
+    plus the backtick operator (which IS `shell_exec`)."""
+    found = [p.pattern for p in _EXEC_PRIMITIVES if p.search(php_source)]
+    if "`" in php_source:
+        found.append("backtick operator")
+    return found
 
 
 class _TreeCase(unittest.TestCase):
@@ -355,6 +410,50 @@ class LaunchVerdict(_TreeCase):
 
         self.assertIn("COULD NOT CHECK", text)
         self.assertNotIn("LAUNCH OK", text)
+
+    def test_a_signal_killed_child_is_an_environment_fact_not_a_verdict(self):
+        # An OOM-kill or a cgroup/container reap yields returncode -9 and NO stderr at
+        # all. Reported as LAUNCH FAILED that reads "conclusive … will not come up", and
+        # sends an operator to re-copy a deployment that was never given the chance to
+        # start. Same class as "no node on PATH", which is already a 2 for exactly this
+        # reason.
+        suicide = self.tree(
+            "sigkill",
+            {
+                ccs.ENTRY_FILE: "import './channel-lib.mjs';\n"
+                "process.kill(process.pid, 'SIGKILL');\nsetInterval(() => {}, 1000);\n",
+                "channel-lib.mjs": _LIB_SOURCE,
+            },
+        )
+
+        text = self.assert_run(suicide, ccs.EXIT_COULD_NOT_CHECK)
+
+        self.assertIn("COULD NOT CHECK", text)
+        # Named readably: `-9` is a POSIX wait-status detail, not an operator-facing fact.
+        self.assertIn("SIGKILL (9)", text)
+        self.assertNotIn("-9", text)
+        self.assertNotIn("LAUNCH FAILED", text)
+        self.assertNotIn("will not come up", text)
+
+    def test_the_pass_message_discloses_the_pinned_transport(self):
+        # The pin's cost, disclosed where the operator reads the verdict rather than
+        # left in a DL: `.mcp.json`'s env block carries BRIDGE_CHANNEL_TRANSPORT on
+        # every deployment, so the transport the session will actually use is precisely
+        # the one this assert guarantees not to exercise.
+        text = self.assert_run(self.whole_copy(), ccs.EXIT_LAUNCH_OK)
+
+        self.assertIn("NOR your configured transport", text)
+
+    def test_the_unobserved_bind_message_does_not_assume_corruption(self):
+        # A CUSTOMIZED entry that reworded its listening line lands here too, and the
+        # entry's own header invites customization — so "your file is corrupt" is a
+        # misdiagnosis for that operator.
+        empty = self.tree("empty-entry-msg", {ccs.ENTRY_FILE: ""})
+
+        text = self.assert_run(empty, ccs.EXIT_COULD_NOT_CHECK)
+
+        self.assertIn("CUSTOMIZED", text)
+        self.assertIn("different listening line", text)
 
     def test_a_hanging_entry_is_inconclusive(self):
         # BUILD REQUIREMENT (b), from the failing side: a survival-based assert would
@@ -636,48 +735,81 @@ class ToolShape(unittest.TestCase):
                 module = line.split()[1].split(".")[0]
                 self.assertIn(
                     module,
-                    {"argparse", "os", "shutil", "subprocess", "sys", "tempfile"},
+                    {"argparse", "os", "shutil", "signal", "subprocess", "sys", "tempfile"},
                     f"non-stdlib import: {line}",
                 )
 
-    def test_bridge_check_never_executes_a_process(self):
-        # THE CONSTRAINT THE WHOLE SEAT-SIDE DESIGN RESTS ON (DL-237), which had no
-        # guard: `bridge:check` must never launch the channel server, because the bridge
-        # commonly runs as a DIFFERENT OS user than the agent, so a launch from there
-        # certifies the entry loads for the wrong PATH and the wrong node — a proxy, and
-        # replacing a proxy is the entire point of this card. Grep is clean today and
-        # nothing reds if a future leg shells out.
+    def test_the_snapshot_probe_path_cannot_execute_a_process(self):
+        # THE CONSTRAINT THE SEAT-SIDE DESIGN RESTS ON (DL-237), scoped to what it can
+        # actually defend. The FIRST version of this guard claimed `bridge:check` never
+        # execs anything — which is FALSE and was false when written: `CheckCommand`
+        # reaches `ClassifierResolver::probeLoadable()`, which runs
+        # `new Process([PHP_BINARY, …])` to load a custom classifier out-of-process, and
+        # `SshProbeEnvironment` for the ssh round-trip. A guard whose stated invariant
+        # is already violated by legitimate code teaches the next reader to distrust it.
         #
-        # The scan bans process execution OUTRIGHT rather than looking for the string
-        # "node": a ban on the literal is trivially evaded by a variable, while these
-        # two files have no legitimate need to spawn anything at all. If one ever
-        # acquires a non-node reason to, this test failing is the right friction —
-        # it forces that to be weighed rather than slipped in.
-        repo = os.path.dirname(_HERE)
-        forbidden = (
-            "proc_open",
-            "shell_exec",
-            "passthru",
-            "popen(",
-            "system(",
-            "exec(",
-            "new Process",
-            "Process::",
-            "`",   # shell_exec's backtick operator
+        # The true invariant is narrower and much stronger: the SNAPSHOT PROBE is
+        # structurally incapable of reaching a process launch. It is a final class of
+        # static methods with NO imports, NO `new`, and no static call to anything but
+        # `self::` — so it cannot exec directly and cannot delegate to a collaborator
+        # that would. That closes the realistic evasion the token scan alone missed:
+        # putting the exec in a new class (`ChannelLaunchProbe::launch(…)`), which is
+        # how every other probe in this command is structured.
+        probe = os.path.join(os.path.dirname(_HERE), "app/Bridge/Support/ChannelSnapshotProbe.php")
+        with open(probe, encoding="utf-8") as fh:
+            raw = fh.read()
+        code = _php_code_only(raw)
+
+        self.assertEqual([], _exec_primitives_in(code), "the snapshot probe gained a process-launch primitive")
+        # No collaborator can be reached, so no collaborator can exec on its behalf.
+        self.assertNotIn("new ", code, "the snapshot probe instantiates something — it could now delegate an exec")
+        self.assertEqual(
+            {"self::"},
+            set(re.findall(r"[A-Za-z_\\][A-Za-z0-9_\\]*::", code)) or {"self::"},
+            "the snapshot probe makes a static call outside itself",
         )
-        for relative in (
-            "app/Bridge/Support/ChannelSnapshotProbe.php",
-            "app/Console/Commands/Bridge/CheckCommand.php",
-        ):
-            with open(os.path.join(repo, relative), encoding="utf-8") as fh:
-                source = _php_code_only(fh.read())
-            for token in forbidden:
-                self.assertNotIn(
-                    token,
-                    source,
-                    f"{relative} gained a process-execution primitive ({token!r}) — "
-                    "bridge:check must never exec, least of all node (DL-237)",
-                )
+        self.assertNotIn("\nuse ", raw, "the snapshot probe imported a class — it has no dependencies by design")
+
+    def test_the_probe_call_site_hands_the_probe_only_strings(self):
+        # The other half: `CheckCommand` may exec (see above), but the SNAPSHOT leg's
+        # call into the probe must stay a pure string-in/findings-out call, so nothing
+        # executable is smuggled in through it.
+        command = os.path.join(os.path.dirname(_HERE), "app/Console/Commands/Bridge/CheckCommand.php")
+        with open(command, encoding="utf-8") as fh:
+            code = _php_code_only(fh.read())
+
+        call_sites = re.findall(r"ChannelSnapshotProbe::(\w+)\(([^)]*)\)", code)
+
+        self.assertEqual([("probe", "$cfg->channel->serverPath, $bundled")], call_sites)
+
+    def test_the_php_scanner_stays_in_sync_on_the_shapes_that_broke_it(self):
+        # POSITIVE CONTROLS for `_php_code_only`. Every line here is a shape that
+        # previously desynced it, in one direction or the other — asserted rather than
+        # asserted-about, because a scanner nobody probes is how the guard above becomes
+        # decorative.
+        #
+        # 1. PHP's single-quoted `\'`: read as a closing quote, it flipped the state and
+        #    made the following LITERAL text read as code (false POSITIVE on idiomatic
+        #    source), and a real `\'` in the scanned file opened a blind window where an
+        #    injected exec was NOT caught (false NEGATIVE). Both directions, one bug.
+        escaped = _php_code_only(r"""$s = 'don\'t `back` tick'; $ok = 1;""")
+        self.assertEqual([], _exec_primitives_in(escaped), "a `\\'` inside a string must not leak a backtick")
+        self.assertIn("$ok = 1;", escaped, "…and the scanner must still be in sync afterwards")
+
+        blind = _php_code_only(r"""$s = 'it\'s'; shell_exec('node x');""")
+        self.assertNotEqual([], _exec_primitives_in(blind), "an exec AFTER an escaped quote must still be seen")
+
+        # 2. `#[Attr]` is an attribute, not a comment — blanking the line erased code.
+        self.assertIn("#[DataProvider]", _php_code_only("#[DataProvider]\npublic function f() {}"))
+        # …while a real `#` comment still goes.
+        self.assertNotIn("secret", _php_code_only("$a = 1; # secret\n$b = 2;"))
+
+        # 3. Whole-identifier boundaries: `getFilesystem(` is not `system(`.
+        self.assertEqual([], _exec_primitives_in("$fs = $this->getFilesystem(); $x->exec_log();"))
+        self.assertNotEqual([], _exec_primitives_in("system('id');"))
+
+        # 4. A string containing the token is not a call.
+        self.assertEqual([], _exec_primitives_in(_php_code_only("""$msg = 'run shell_exec() never';""")))
 
     def test_the_tool_is_executable(self):
         mode = os.stat(os.path.join(_HERE, "check-channel-snapshot.py")).st_mode
