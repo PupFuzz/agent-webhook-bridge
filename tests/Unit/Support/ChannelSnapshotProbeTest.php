@@ -302,6 +302,13 @@ class ChannelSnapshotProbeTest extends TestCase
             $deployed = $this->deployment($version, name: 'deployed-'.$version);
             $findings = ChannelSnapshotProbe::probe($deployed, $reference);
 
+            // POSITIVE CONTROL FIRST. Three absence assertions over a fixture that
+            // could early-return are vacuous — they would pass just as well on a probe
+            // that produced nothing at all. Pin that this branch really did run before
+            // concluding anything from what it did not say.
+            $this->assertSame('ok', $this->findingWith($findings, 'has its entry file and node_modules')['severity']);
+            $this->assertSame('unvalidated', $this->findingWith($findings, 'was NOT launch-tested')['severity']);
+
             $this->assertNoFinding($findings, 'completeness');
             $this->assertNoFinding($findings, 'SKIPPED');
             $this->assertNoFinding($findings, 'is MISSING');

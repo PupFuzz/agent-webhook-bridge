@@ -41,6 +41,13 @@ reads as coverage, which is worse than no count.
                                            → `test_the_snapshot_probe_path_cannot_execute_a_process`.
   - revert any of the three scanner fixes  → `test_the_php_scanner_stays_in_sync_on_the_shapes_that_broke_it`.
   - collapse the dangling-symlink branch   → `test_a_dangling_symlink_is_named_as_one_not_as_a_missing_path`.
+  - let an OSError escape either exec site → the two "not a deployment verdict" cases
+    (they ERROR rather than FAIL — the exception propagates, which is the defect).
+  - stop the fixture writing its witness   → `test_the_bind_witness_is_actually_produced_under_both_transports`
+    AND `test_the_http_witness_is_observed_inside_the_throwaway_dir`. Those two exist
+    because the witness was previously asserted ABSENT in two places and never once
+    observed PRESENT — and `witness()` swallows its own write errors, so if it had ever
+    stopped writing, both absence assertions would have passed forever.
 
 METHODOLOGY, because it changed a result: the env mutations must be an ASSIGNMENT
 OMISSION — delete the `env[...] = ...` line — never `del env[...]`. The latter is a
@@ -58,6 +65,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location(
@@ -98,21 +106,46 @@ _REAL_RUNTIME_DIR = None
 _REAL_RUNTIME_BEFORE = None
 
 
-def _runtime_listing(path):
+def _runtime_state(path):
+    """Name → (type, size, mtime_ns) for every entry, NOT just the name set.
+
+    A name-set compare misses the case that actually happens: a false `.FAILED` marker
+    written OVER an existing one. No name changes, and a seat that has previously been
+    deaf is exactly the state where the stale marker is already sitting there — which is
+    the incident DL-237 (e) records. `lstat` so a symlink is not followed, and sockets
+    are covered like anything else.
+    """
     try:
-        return sorted(os.listdir(path))
+        entries = sorted(os.listdir(path))
     except OSError:
         return None
+    state = {}
+    for name in entries:
+        try:
+            st = os.lstat(os.path.join(path, name))
+            state[name] = (st.st_mode, st.st_size, st.st_mtime_ns)
+        except OSError:
+            state[name] = ("unstattable",)
+    return state
 
 
 def setUpModule():
     global _MODULE_TMP, _REAL_RUNTIME_DIR, _REAL_RUNTIME_BEFORE
     _REAL_RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR")
-    _REAL_RUNTIME_BEFORE = _runtime_listing(_REAL_RUNTIME_DIR) if _REAL_RUNTIME_DIR else None
+    _REAL_RUNTIME_BEFORE = _runtime_state(_REAL_RUNTIME_DIR) if _REAL_RUNTIME_DIR else None
 
     _MODULE_TMP = tempfile.mkdtemp(prefix="channel-assert-suite-sandbox-")
-    # Assignment, not setdefault: the seat exports the real values and they must lose —
+    # ALL FOUR channel-addressing inputs, matching build requirement (a)'s own wording —
+    # not the socket and the runtime dir alone. The first version neutralised two, and
+    # under the DL-mandated port mutation the children then reached for
+    # `127.0.0.1:8788`, which is live on a seat running the HTTP transport. Damage was
+    # contained by the XDG override, but the sandbox's whole purpose is to survive
+    # exactly those mutations, so containment-by-luck is not the bar.
+    #
+    # Assignments, not setdefault: the seat exports the real values and they must lose —
     # the same rule the tool itself follows in child_env().
+    os.environ["BRIDGE_CHANNEL_TRANSPORT"] = "http"
+    os.environ["BRIDGE_CHANNEL_PORT"] = "0"
     os.environ["XDG_RUNTIME_DIR"] = _MODULE_TMP
     os.environ["BRIDGE_CHANNEL_SOCKET"] = os.path.join(_MODULE_TMP, "sandbox-channel.sock")
 
@@ -120,14 +153,20 @@ def setUpModule():
 def tearDownModule():
     try:
         if _REAL_RUNTIME_DIR is not None:
-            after = _runtime_listing(_REAL_RUNTIME_DIR)
+            after = _runtime_state(_REAL_RUNTIME_DIR)
             if after != _REAL_RUNTIME_BEFORE:
-                added = sorted(set(after or []) - set(_REAL_RUNTIME_BEFORE or []))
-                removed = sorted(set(_REAL_RUNTIME_BEFORE or []) - set(after or []))
+                before_keys, after_keys = set(_REAL_RUNTIME_BEFORE or {}), set(after or {})
+                added = sorted(after_keys - before_keys)
+                removed = sorted(before_keys - after_keys)
+                changed = sorted(
+                    k for k in before_keys & after_keys
+                    if (_REAL_RUNTIME_BEFORE or {})[k] != (after or {})[k]
+                )
                 raise AssertionError(
                     f"THIS SUITE TOUCHED LIVE STATE: {_REAL_RUNTIME_DIR} changed during the run "
-                    f"(added={added}, removed={removed}). The sandbox in setUpModule() is not "
-                    "holding — a spawned channel server reached a real endpoint."
+                    f"(added={added}, removed={removed}, changed={changed}). The sandbox in "
+                    "setUpModule() is not holding — a spawned channel server reached a real "
+                    "endpoint."
                 )
     finally:
         if _MODULE_TMP:
@@ -423,11 +462,19 @@ class LaunchVerdict(_TreeCase):
         os.symlink(target, link)
         os.rmdir(target)
 
-        text = self.assert_run(link, ccs.EXIT_COULD_NOT_CHECK)
+        # EXIT 1, not 2 — the absence is as PROVEN as the entry-file one (this branch is
+        # reached only after the ancestor's `+x` passed), so a "not a verdict either way"
+        # exit would contradict the message's own conclusion. It also has to agree with
+        # the two things that already rule on this condition: the sibling entry-absent
+        # case here, and `ChannelSnapshotProbe`, which calls a dangling path a `fail`.
+        # DL-237 alternative (a) names "two authorities on one question that silently
+        # disagree" as the defect this whole card removes.
+        text = self.assert_run(link, ccs.EXIT_LAUNCH_FAILED)
 
         self.assertIn("symlink whose target does not exist", text)
         self.assertIn("repoint the symlink", text)
         self.assertNotIn("does not exist. Nothing was measured", text)
+        self.assertNotIn("nothing was measured", text)
 
     def test_a_missing_path_could_not_be_checked(self):
         # Not exit 1: nothing was measured, and the caller's path may simply be wrong.
@@ -567,6 +614,44 @@ class LaunchVerdict(_TreeCase):
         self.assertIn("still running", text)
         self.assertIn("NOT a pass", text)
 
+    def test_a_node_that_cannot_be_executed_is_not_a_deployment_verdict(self):
+        # THE BLOCKER THIS CASE EXISTS FOR. Only TimeoutExpired was caught around
+        # subprocess.run, so every OSError from the exec escaped — and CPython's exit
+        # status for an uncaught exception is 1, which is EXIT_LAUNCH_FAILED EXACTLY. A
+        # healthy deployment was therefore reported "conclusive … will not come up"
+        # because of a fault in the machine, which the tool's own comments call the worst
+        # thing a diagnostic can produce.
+        #
+        # Reproduced with a `node` shim that is not a valid executable (ENOEXEC). The
+        # same OSError family covers `node` on a `noexec` mount — shutil.which uses
+        # os.access(X_OK), which does not model mount flags, so the path resolves
+        # happily — and a fork refused under RLIMIT_NPROC/ENOMEM, which is the SAME
+        # physical condition as the signal-kill already routed to exit 2.
+        fake_bin = self.tree("fake-bin", {"node": "this is not an executable format\n"})
+        os.chmod(os.path.join(fake_bin, "node"), 0o755)
+        env = dict(os.environ, PATH=fake_bin)
+
+        text = self.assert_run(self.whole_copy(), ccs.EXIT_COULD_NOT_CHECK, env=env)
+
+        self.assertIn("COULD NOT CHECK", text)
+        self.assertIn("could not be executed", text)
+        self.assertNotIn("LAUNCH FAILED", text)
+        self.assertNotIn("will not come up", text)
+
+    def test_a_temp_dir_that_cannot_be_created_is_not_a_deployment_verdict(self):
+        # The sibling site: mkdtemp raises the same OSError family (a full or read-only
+        # $TMPDIR), and it sat outside any handler for the same reason.
+        def refusing_mkdtemp(**kwargs):
+            raise OSError(28, "No space left on device")
+
+        text = self.assert_run(
+            self.whole_copy(), ccs.EXIT_COULD_NOT_CHECK, mkdtemp=refusing_mkdtemp
+        )
+
+        self.assertIn("COULD NOT CHECK", text)
+        self.assertIn("temp directory", text)
+        self.assertNotIn("LAUNCH FAILED", text)
+
     def test_no_node_on_path_is_an_environment_problem_not_a_verdict(self):
         # Named distinctly because the deployment may be perfect: this is a fact
         # about the box, and reporting it as a launch failure sends the operator to
@@ -687,6 +772,61 @@ class SocketGuard(_TreeCase):
         self.assert_run(self.whole_copy(), ccs.EXIT_LAUNCH_OK, env=env)
 
         self.assertEqual([], os.listdir(seat_runtime))
+
+    def test_the_bind_witness_is_actually_produced_under_both_transports(self):
+        # ⚠ THE POSITIVE CONTROL FOR EVERY WITNESS ASSERTION IN THIS FILE, and it was
+        # missing. `${SOCKET_PATH}.bound` and `bound-http-${PORT}` appeared only in the
+        # fixture and in two ABSENCE assertions — never once observed PRESENT. The
+        # fixture's `witness()` is wrapped in `try { … } catch {}`, so if it ever stopped
+        # writing, both of those tests would pass forever and the guard would be a
+        # decoration. That is exactly what DL-237 (e) records the FIRST version of the
+        # sentinel test as being, so the fix for the decoration was itself unwitnessed.
+        #
+        # Driven directly rather than through the tool, because the tool PINS the
+        # transport to `http` — so the unix witness is unreachable through it, and a
+        # mechanism proven for only one transport is half a control.
+        for transport, env_extra, witness_of in (
+            ("unix", {"BRIDGE_CHANNEL_SOCKET": os.path.join(self.tmp, "w.sock")},
+             lambda d: os.path.join(self.tmp, "w.sock.bound")),
+            ("http", {"BRIDGE_CHANNEL_PORT": "0"}, lambda d: os.path.join(d, "bound-http-0")),
+        ):
+            with self.subTest(transport=transport):
+                runtime = tempfile.mkdtemp(prefix=f"witness-{transport}-")
+                self.addCleanup(shutil.rmtree, runtime, ignore_errors=True)
+                env = dict(
+                    os.environ,
+                    BRIDGE_CHANNEL_TRANSPORT=transport,
+                    XDG_RUNTIME_DIR=runtime,
+                    **env_extra,
+                )
+                proc = subprocess.run(
+                    [_NODE, os.path.join(self.whole_copy(f"witness-tree-{transport}"), ccs.ENTRY_FILE)],
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env, timeout=15,
+                )
+
+                self.assertEqual(0, proc.returncode, proc.stderr)
+                self.assertTrue(
+                    os.path.exists(witness_of(runtime)),
+                    f"the {transport} bind witness was NOT produced — every absence "
+                    "assertion that relies on it is vacuous",
+                )
+
+    def test_the_http_witness_is_observed_inside_the_throwaway_dir(self):
+        # The other half: the witness is produced DURING a real tool run, in the
+        # throwaway directory, before the `finally: rmtree` erases it. Without this, the
+        # runtime-dir absence assertion could be green because nothing is ever written
+        # anywhere, rather than because it was written in the right place.
+        seen = {}
+        real_rmtree = shutil.rmtree
+
+        def snapshotting_rmtree(path, **kwargs):
+            seen["contents"] = sorted(os.listdir(path))
+            return real_rmtree(path, **kwargs)
+
+        with mock.patch.object(ccs.shutil, "rmtree", snapshotting_rmtree):
+            self.assert_run(self.whole_copy(), ccs.EXIT_LAUNCH_OK)
+
+        self.assertIn("bound-http-0", seen.get("contents", []))
 
     def test_a_live_socket_in_the_parent_env_is_never_bound_or_unlinked(self):
         # The unix leg, kept as DEFENCE IN DEPTH — and labelled honestly rather than
@@ -814,12 +954,33 @@ class ShippedReference(_TreeCase):
 
 
 class ToolShape(unittest.TestCase):
-    def test_the_module_docstring_and_help_both_state_the_exit_contract(self):
-        # The exit codes ARE the interface; an operator reading `--help` must not have
-        # to read the source to learn that a 2 is not a verdict.
-        for text in (ccs.__doc__, ccs.build_parser().format_help()):
-            self.assertIn("exit 2", text.lower().replace("  2 ", "exit 2 "))
-            self.assertIn("COULD NOT CHECK", text)
+    def test_the_help_epilog_lists_every_could_not_check_cause_the_docstring_does(self):
+        # The old form asserted only that the strings "exit 2" and "COULD NOT CHECK"
+        # appeared, which cannot see a DIVERGENCE — and one had opened: the epilog listed
+        # 4 of the 6 causes, omitting exit-0-without-a-bind (the most surprising one, and
+        # the one an operator most needs explained) and signal-kill. `--help` is what an
+        # operator actually reads; a docstring they never open is not a mitigation.
+        #
+        # Compared case-INSENSITIVELY: the two texts legitimately differ in emphasis (the
+        # docstring shouts `NOT EXECUTABLE`, the epilog does not), and a case-sensitive
+        # needle would fail on a difference that is not a divergence.
+        help_text = ccs.build_parser().format_help().lower()
+        doc_text = ccs.__doc__.lower()
+
+        self.assertIn("could not check", help_text)
+        self.assertIn("could not check", doc_text)
+
+        for cause in (
+            "on path",              # no node on PATH at all
+            "not executable",       # a bad shim / noexec mount / fork refused
+            "untraversable",        # the path cannot be entered
+            "socket guard",         # the throwaway-socket refusal
+            "timeout",              # the backstop
+            "without ever reporting a bind",
+            "killed by a signal",
+        ):
+            self.assertIn(cause, help_text, f"--help omits a COULD NOT CHECK cause: {cause}")
+            self.assertIn(cause, doc_text, f"the module docstring omits: {cause}")
 
     def test_the_tool_is_stdlib_only(self):
         # It must survive being copied to a seat with no bridge checkout.
@@ -844,12 +1005,20 @@ class ToolShape(unittest.TestCase):
         # this codebase's own PSR-12 style, while the assertion only caught column-0
         # imports), and `extends NodeLauncher` with an inherited method still spelled
         # `self::`. Those are closed below. `include`, bare dynamic invoke `$f(...)` and
-        # the fully-qualified `\shell_exec(` are closed too. What is NOT closed, and
-        # cannot be by an enumerated blocklist: variable-variables, a computed class
-        # name, a callable smuggled through an array. An enumerated blocklist is never
-        # complete, so the claim here is the weakest one the assertions actually
-        # support — this catches the SHAPES BELOW, and the design rests on review, not
-        # on this test.
+        # the fully-qualified `\shell_exec(` are closed too.
+        #
+        # WHAT IS NOT CLOSED, stated because an enumerated blocklist is never complete:
+        #   - variable-variables, a computed class name, a callable through an array;
+        #   - a NAMESPACED FREE FUNCTION (`\App\Bridge\Support\launchNode(...)`) — the
+        #     one shape that survives both this tripwire AND the formatter below;
+        #   - IDENTIFIER-CASE VARIANCE (`SHELL_EXEC(`, `USE `, `INCLUDE`). PHP is
+        #     case-insensitive for these and this scan is not — but `pint --preset
+        #     laravel` normalises every one of them, so the COMPOSITE gate (pint + this
+        #     test) holds where this test alone does not. That was chased to ground
+        #     rather than assumed, and it is recorded so nobody later reads this test as
+        #     covering it on its own.
+        # So the claim is the weakest one the assertions actually support: this catches
+        # the SHAPES BELOW, and the design rests on review, not on this test.
         #
         # Why it is worth keeping anyway: the realistic regression is not an adversary,
         # it is a future maintainer adding a launch leg the honest way — `use`, `new`,

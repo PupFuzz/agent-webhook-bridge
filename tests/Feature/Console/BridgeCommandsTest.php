@@ -2492,6 +2492,10 @@ class BridgeCommandsTest extends TestCase
         $code = Artisan::call('bridge:check');
         $out = Artisan::output();
         $this->assertSame(0, $code);
+        // POSITIVE CONTROL: asserting the ABSENCE of a tally proves nothing unless the
+        // command actually ran and produced output for this agent — otherwise a config
+        // that fails to load reads as "silent at zero".
+        $this->assertStringContainsString('agent config ok: prod-agent', $out);
         $this->assertStringNotContainsString('unvalidated', $out);
         $this->assertStringNotContainsString('check(s) reported', $out);
     }
@@ -2925,6 +2929,11 @@ class BridgeCommandsTest extends TestCase
         $code = Artisan::call('bridge:check');
         $out = Artisan::output();
         $this->assertSame(0, $code);
+        // POSITIVE CONTROL: five absence assertions are worth nothing if the snapshot
+        // legs never ran at all on this fixture (a mis-declared path, an early return).
+        // Prove the run reached them before reading anything into their silence.
+        $this->assertStringContainsString('is current (deployed ', $out);
+        $this->assertStringContainsString('has its entry file and node_modules', $out);
         $this->assertStringNotContainsString('is MISSING', $out);
         $this->assertStringNotContainsString('whole-directory copy of', $out);
         $this->assertStringNotContainsString('holds every file', $out);

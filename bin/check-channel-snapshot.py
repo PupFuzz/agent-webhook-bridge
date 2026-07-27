@@ -40,13 +40,22 @@ EXIT CODES
      session start without firing now. Pinning the transport (see (a)) MOVED the
      transport into that class rather than out of it — read (a), the trade is
      deliberate.
-  2  COULD NOT CHECK. NOT a verdict in either direction. Covers: no `node` on PATH
-     (an environment problem, not a snapshot problem); the path is missing, or not
-     traversable by this user; the throwaway-socket guard refused; the backstop
-     timeout fired; and the child exited 0 WITHOUT ever reporting a bind (an empty or
-     truncated entry does exactly that); and the child was KILLED BY A SIGNAL (an OOM-kill or a
-     cgroup reap is a fact about the machine, not about the deployment) — an unfinished measurement, deliberately not
-     a failure, because a failure verdict there would rest on matching a log string.
+  2  COULD NOT CHECK. NOT a verdict in either direction — SIX causes, all of them
+     facts about this environment rather than about the deployment:
+       - no `node` on PATH at all (an environment problem, not a snapshot problem);
+       - `node` found but NOT EXECUTABLE — a shim that is not a valid executable, a
+         `noexec` mount, or a fork that could not be granted (RLIMIT_NPROC/ENOMEM).
+         Left uncaught this was the tool's worst bug: CPython exits 1 on an uncaught
+         exception, which is EXIT_LAUNCH_FAILED exactly, so an environment fault
+         reported a healthy deployment as conclusively broken;
+       - the path is missing, or untraversable by this user;
+       - the throwaway-socket guard refused;
+       - the backstop timeout fired;
+       - the child exited 0 WITHOUT ever reporting a bind (an empty or truncated
+         entry does exactly that) — an unfinished measurement, and deliberately not a
+         failure, because a failure verdict there would rest on matching a log
+         string; or the child was KILLED BY A SIGNAL, which is the same physical
+         condition as the fork failure above.
 
 TWO BUILD REQUIREMENTS, both about not BREAKING the thing being diagnosed.
 
@@ -238,10 +247,11 @@ def resolve_entry(path: str):
         # behaviour, which is a defect rather than a wording choice.
         return (
             None,
-            EXIT_COULD_NOT_CHECK,
-            f"COULD NOT CHECK: {path} is a symlink whose target does not exist — the link "
-            f"went dangling, so there is nothing here to launch and nothing was measured. "
-            f"The target moved: repoint the symlink (or re-deploy the directory).",
+            EXIT_LAUNCH_FAILED,
+            f"LAUNCH FAILED: {path} is a symlink whose target does not exist — the link went "
+            f"dangling, so there is nothing here for the MCP client to launch at the next "
+            f"session start. The target moved: repoint the symlink (or re-deploy the "
+            f"directory).",
         )
     else:
         return (
@@ -331,7 +341,18 @@ def run_launch_assert(
         print(message, file=out)
         return code
 
-    tmpdir = mkdtemp(prefix="channel-launch-assert-")
+    try:
+        tmpdir = mkdtemp(prefix="channel-launch-assert-")
+    except OSError as err:
+        # Same class as everything else in this function that is a fact about the BOX:
+        # a full or read-only $TMPDIR is not a statement about the deployment.
+        print(
+            f"COULD NOT CHECK: could not create a private temp directory to hold the "
+            f"throwaway socket ({err}), so nothing was launched and nothing was measured. "
+            "Free space in $TMPDIR, or point it somewhere writable, then re-run.",
+            file=out,
+        )
+        return EXIT_COULD_NOT_CHECK
     socket_path = throwaway_socket_path(tmpdir)
 
     # THE TWO REFUSALS. Both are unreachable while the mkdtemp construction above
@@ -369,6 +390,31 @@ def run_launch_assert(
                 env=child_env(env, socket_path, tmpdir),
                 timeout=timeout,
             )
+        except OSError as err:
+            # ⚠ THE EXEC ITSELF FAILED — and left uncaught this was the worst bug in the
+            # tool: CPython's exit status for an uncaught exception is 1, which is
+            # EXIT_LAUNCH_FAILED exactly, so a healthy deployment reported "conclusive …
+            # will not come up" because of a fault in the MACHINE. Reproduced with a
+            # `node` shim that is not a valid executable (ENOEXEC, Errno 8).
+            #
+            # Every reachable cause is an environment fact, and the third one settles the
+            # routing: a `node` shim with a missing or CRLF shebang (ENOEXEC); `node` on a
+            # `noexec` mount (`shutil.which` uses os.access(X_OK), which does not model
+            # mount flags, so the path resolves happily); and a FORK FAILURE under
+            # RLIMIT_NPROC or ENOMEM (BlockingIOError) — which is the SAME PHYSICAL
+            # CONDITION as the signal-kill this tool already routes to exit 2 as "a fact
+            # about this machine, not about the deployment". Routing it anywhere else
+            # would make the tool inconsistent with its own stated principle.
+            print(
+                f"COULD NOT CHECK: `node` could not be executed at {node} ({err}), so "
+                "nothing was launched and nothing was measured. That is a fault in this "
+                "environment, not in the deployment — a shim that is not a valid "
+                "executable, a `noexec` mount, or a fork that could not be granted all "
+                "look like this. Fix the node installation or the resource limit, then "
+                "re-run.",
+                file=out,
+            )
+            return EXIT_COULD_NOT_CHECK
         except subprocess.TimeoutExpired as expired:
             partial = expired.stderr or ""
             if isinstance(partial, bytes):
@@ -484,8 +530,12 @@ def build_parser() -> argparse.ArgumentParser:
             "exit 0 = launch OK (the module graph resolved and the server came up; NOT a "
             "steady-state or staleness verdict). "
             "exit 1 = launch FAILED, conclusively — the child's stderr is printed. "
-            "exit 2 = COULD NOT CHECK (no node on PATH, path missing or untraversable, the "
-            "socket guard refused, or the backstop timeout fired) — not a verdict either way."
+            "exit 2 = COULD NOT CHECK — not a verdict either way, and there are SIX causes: "
+            "no node on PATH; node present but not executable (a bad shim, a noexec mount, a "
+            "fork that could not be granted); the path is missing or untraversable; the "
+            "throwaway-socket guard refused; the backstop timeout fired; and the child exited "
+            "0 without ever reporting a bind (an empty or truncated entry does that), or was "
+            "killed by a signal."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
