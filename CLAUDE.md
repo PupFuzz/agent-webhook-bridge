@@ -24,6 +24,15 @@ php artisan bridge:reconcile             # board-vs-GitHub drift reconciler (rep
 php artisan bridge:replay <N>            # re-dispatch a stored event by id (recovery for errored/missed dispatches)
 php artisan bridge:inspect <N>           # pretty-print one event + its dispatch ledger
 php artisan bridge:stats                 # event / dispatch counts
+
+# Seat-side (run ON the agent's box, AS the agent's own OS user — NOT the bridge's):
+python3 bin/check-channel-snapshot.py <deployed channel-server dir>
+                                         # will it LAUNCH at the next session start? (DL-237)
+                                         # 0 = launch OK · 1 = launch FAILED (node's stderr is the
+                                         # diagnosis) · 2 = could not check. stdlib-only + reference-free,
+                                         # so copy the one file to a seat with no bridge checkout.
+                                         # `bridge:check` deliberately never executes node: it runs as a
+                                         # different OS user, so a launch from there answers for the wrong one.
 ```
 
 ## Standing rules
