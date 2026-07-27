@@ -945,13 +945,16 @@ class CheckCommand extends BridgeCommand
         // `channel.server_path` unset is correct (docs/multi-host.md instructs it),
         // so this discloses, it does not scold.
         //
-        // The wording is deliberately bounded to what the counter can support: it
-        // tallies only the checks that REPORT a severity, and most of this command's
-        // output does not. So the tally is a floor on what went unvalidated, never a
-        // certificate that everything else ran — reading its absence as "all clear"
-        // would rebuild, one level up, the exact false assurance this closes.
+        // The wording is bounded to what the counter can support, and the bound is
+        // NOT "reports a severity" — that is true but inoperative, and its converse
+        // reads as a guarantee this number cannot give. The did-not-run population
+        // that ISN'T here is large and mostly DOES carry a severity: a dozen-odd
+        // couldn't-probe sites in this command report `warn` (many bypassing
+        // emitFinding entirely), and ChannelSnapshotProbe's four could-not-measure
+        // findings come through emitFinding as `warn` and are still not tallied. So
+        // the operative bound is the severity itself, and the tally is a floor.
         if ($this->unvalidatedCount > 0) {
-            $this->line("{$this->unvalidatedCount} severity-reporting check(s) reported `unvalidated` — not a failure, and not a pass either: those checks did not run, so this run says nothing about what they would have found (see the lines above). This is a floor, not an inventory: only checks that report a severity are counted, so no tally line does NOT mean every leg ran.");
+            $this->line("{$this->unvalidatedCount} check(s) reported `unvalidated` — not a failure, and not a pass either: those checks did not run, so this run says nothing about what they would have found (see the lines above). This is a floor, not an inventory: only checks reporting `unvalidated` are counted, and a check that could not run usually reports `warn` instead — so no tally line does NOT mean every leg ran.");
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;
@@ -1484,7 +1487,10 @@ class CheckCommand extends BridgeCommand
             // skipped advisory is a check that did NOT run, so it goes through the
             // `unvalidated` vocabulary (card 5170) rather than rendering green via
             // info() and vanishing from the tally. The bool is discarded on purpose:
-            // `unvalidated` never returns false, so fail-soft holds by construction.
+            // `unvalidated` never returns false, so the RETURN VALUE cannot flip $ok.
+            // That is the whole of the by-construction claim — rendering is not part
+            // of it: line() throws on a message carrying an invalid formatter tag,
+            // exactly as the info() here before it did, and that escape is unchanged.
             $this->emitFinding('', ['severity' => 'unvalidated', 'message' => 'event-consumer: check skipped — '.$e->getMessage()]);
         }
     }

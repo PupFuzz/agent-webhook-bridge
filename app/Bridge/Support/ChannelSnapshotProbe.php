@@ -233,7 +233,11 @@ final class ChannelSnapshotProbe
         // while naming a checkout file.
         $bundled = self::readManifest($bundledDir.'/package.json');
         if ($bundled['status'] !== 'ok') {
-            return [self::warn("this checkout's {$bundledDir}/package.json ".self::manifestReason($bundled['status'])." — the deployed snapshot at {$deployedDir} (version {$deployed['version']}) cannot be version-compared")];
+            // The action is SPELLED OUT, matching the unenumerable-reference warn
+            // below: both say "this checkout's X could not be read", and one of a
+            // matched pair naming its remedy while the other does not is a
+            // divergence, not a stylistic choice.
+            return [self::warn("this checkout's {$bundledDir}/package.json ".self::manifestReason($bundled['status'])." — the deployed snapshot at {$deployedDir} (version {$deployed['version']}) cannot be version-compared; that file is tracked in this checkout, so restore or repair it, and check that this process can read it")];
         }
 
         $comparison = self::compareVersions($deployed['version'], $bundled['version']);

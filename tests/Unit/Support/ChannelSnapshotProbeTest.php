@@ -164,6 +164,28 @@ class ChannelSnapshotProbeTest extends TestCase
         $this->assertStringContainsString('snapshot not validated', $findings[0]['message']);
     }
 
+    public function test_an_unreadable_bundled_manifest_names_its_own_remedy(): void
+    {
+        // This warn and the unenumerable-reference warn are a MATCHED PAIR — both
+        // say "this checkout's X could not be read" — and the reference one spells
+        // its action while this one did not. A divergence inside a pair, not a
+        // message lacking polish: the operator reads the silent one as unactionable
+        // when the fix is the same class of thing (restore/repair a tracked file).
+        // The branch had no coverage at all before this, which is how it diverged.
+        $reference = $this->tree('bundled-no-manifest', [
+            ChannelSnapshotProbe::ENTRY_FILE => "export const x = 1;\n",
+        ]);
+        $deployed = $this->deployment('1.2.3');
+
+        $findings = ChannelSnapshotProbe::probe($deployed, $reference);
+
+        $warn = $this->findingWith($findings, 'cannot be version-compared');
+        $this->assertSame('warn', $warn['severity']);
+        $this->assertStringContainsString('is not present', $warn['message']);
+        $this->assertStringContainsString('restore or repair it', $warn['message']);
+        $this->assertStringContainsString('check that this process can read it', $warn['message']);
+    }
+
     // ---- the VERSION-GATED completeness leg (DL-230) -------------------------
     // The DL-229 shape passed GREEN on the incident that motivated the feature: an
     // entry + package.json cherry-picked from the CURRENT reference carry the
