@@ -469,10 +469,20 @@ By default a **permanent** move-failure (a refused/un-actionable move — see *F
 | writeback not configured (no `writeback.json`) | `writeback_not_configured` | ⚠ degrades to log-only (see below) |
 | no mapping for repo (`Log::info`) | — | ❌ (expected "not tracked") |
 | no stage mapped for outcome (`Log::info`) | — | ❌ (expected "not tracked") |
-| `getCard` refused by kanban (4xx) | `getcard_4xx` | ✅ |
+| `getCard` refused by kanban — **404** | `getcard_404_no_such_card` | ✅ |
+| `getCard` refused by kanban — **403** | `getcard_403_not_visible_to_this_token` | ✅ |
+| `getCard` refused by kanban — any other 4xx | `getcard_4xx` | ✅ |
 | card not on the mapped board (security refusal) | `card_not_on_mapped_board` | ✅ |
 
 The "not tracked" `Log::info` branches stay **quiet** — they're the normal case for an event the operator simply hasn't mapped, not a failure.
+
+**Why the `getCard` refusal splits 404 from 403.** The belongs-to-mapped-board security refusal below it (`card_not_on_mapped_board`) reads `board_id` **out of the card**, so it can only fire for a card this token was able to READ. A card on a board the token *cannot* see returns at the `getCard` refusal instead — which makes that reason string the operator's only signal for exactly the case the security guard exists to refuse. So the two hypotheses are named separately:
+
+- **`getcard_403_not_visible_to_this_token`** — the card **exists** and is not visible to this writeback token. Check two things: a **foreign install's card id** correlated onto this bridge (a `card#`/`DL-NNN` token in a PR title naming another install's card), or this **token's scope** missing the card's board (rotation, lost board membership).
+- **`getcard_404_no_such_card`** — the different hypothesis: a deleted card, or an id that never existed.
+- **`getcard_4xx`** — the catch-all for every other 4xx (the server's own words are in the log line's `body`).
+
+All three still swallow the event (permanent → log + no-op, never a 5xx retry), and each is a distinct dedup signature, so a 404 and a 403 on the same `(repo, outcome)` do not silence each other.
 
 **Branch-#3 degradation (log-only).** The `writeback_not_configured` branch fires when there is no `writeback.json` at all — so there is also no `alert_channel` to load. That branch is therefore inherently **log-only**: the notifier loads its config from the same `writeback.json` and finds nothing, so it no-ops. (Place a `writeback.json` even if you only want the alert channel and no mappings, and the other branches signal.)
 

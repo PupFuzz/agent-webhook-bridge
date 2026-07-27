@@ -691,6 +691,85 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->assertSame(2, $alertPushes, 'a failed first push must re-arm the signature for the next delivery');
     }
 
+    // --- card#5288: the getCard 4xx refusal splits 404 (no such card) from 403 (exists, not ours) ---
+
+    public function test_getcard_404_and_403_produce_distinct_reasons_and_do_not_collapse_the_dedup(): void
+    {
+        // The DL-009 belongs-to-mapped-board guard reads board_id OUT of the card, so a
+        // card this token cannot READ returns at this branch and never reaches the guard —
+        // the reason string is the operator's ONLY signal for the case that guard exists to
+        // refuse. A single collapsed `getcard_4xx` also DEDUPED the two statuses against
+        // each other within one (repo, outcome): whichever arrived second alerted zero times.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['error' => 'not found'], 404)
+                ->push(['message' => 'forbidden'], 403),
+        ]);
+
+        $this->handle($this->payload());   // 404
+        $this->handle($this->payload());   // 403 — same (repo, outcome), different reason
+
+        $reasons = collect(Http::recorded())
+            ->filter(fn ($pair) => $this->isAlertPush($pair[0]))
+            ->map(fn ($pair) => $pair[0]['reason'])
+            ->values()->all();
+        $this->assertSame(['getcard_404_no_such_card', 'getcard_403_not_visible_to_this_token'], $reasons);
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');   // both still swallow — no move, no 5xx retry
+    }
+
+    public function test_getcard_other_4xx_keeps_the_generic_catchall_reason(): void
+    {
+        // Only 404/403 are named hypotheses; every other 4xx stays `getcard_4xx` (the
+        // catch-all), so the split adds vocabulary without silently re-labelling the rest.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::response(['message' => 'unprocessable'], 422),
+        ]);
+
+        $this->handle($this->payload());
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'getcard_4xx');
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_getcard_403_log_names_both_hypotheses(): void
+    {
+        // The reason slug is diagnostic only if the operator-facing text says WHICH two
+        // causes to check: a foreign install's card id, or this token's board scope.
+        $this->writeWriteback();
+        $this->writeToken();
+        Log::spy();
+        Http::fake(['*/tasks/5.json' => Http::response(['message' => 'forbidden'], 403)]);
+
+        $this->handle($this->payload());
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'getCard 403')
+            && str_contains($msg, 'foreign install')
+            && str_contains($msg, "token's scope")
+            && $ctx['status'] === 403
+            && $ctx['card_id'] === 5);
+    }
+
+    public function test_getcard_404_log_says_no_such_card(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Log::spy();
+        Http::fake(['*/tasks/5.json' => Http::response(['error' => 'not found'], 404)]);
+
+        $this->handle($this->payload());
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'getCard 404')
+            && str_contains($msg, 'no such card')
+            && $ctx['status'] === 404
+            && $ctx['card_id'] === 5);
+    }
+
     // --- FR #3866 / card#4852: stamp correlation refs (dl_number / pr_number / pr_url) add-if-missing ---
 
     public function test_card_fallback_move_stamps_missing_dl_and_pr(): void

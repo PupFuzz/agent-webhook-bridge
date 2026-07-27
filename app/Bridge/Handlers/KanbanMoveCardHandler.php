@@ -153,8 +153,19 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $card = $client->getCard($cardId);
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
-                Log::warning('kanban_move_card: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)', ['card_id' => $cardId] + RefusalContext::from($e));
-                $this->alerts->notify($repo, $outcome, $cardId, 'getcard_4xx');
+                // 404 and 403 are DIFFERENT operator hypotheses, and this branch returns
+                // BEFORE the belongs-to-mapped-board guard below (which reads board_id out
+                // of the card we just failed to read) — so on a 403 this reason string is
+                // the only signal the operator gets for the case that guard exists to
+                // refuse. 404 = no such card; 403 = the card exists and is not ours.
+                $refusal = RefusalContext::from($e);
+                [$reason, $message] = match ($refusal['status']) {
+                    404 => ['getcard_404_no_such_card', 'kanban_move_card: getCard 404 — no such card (deleted, or an id that never existed); ignoring (see `body` for the reason kanban gave)'],
+                    403 => ['getcard_403_not_visible_to_this_token', 'kanban_move_card: getCard 403 — the card exists but is NOT visible to this writeback token: either a foreign install\'s card id was correlated onto this bridge, or this token\'s scope is missing the card\'s board; ignoring (see `body` for the reason kanban gave)'],
+                    default => ['getcard_4xx', 'kanban_move_card: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)'],
+                };
+                Log::warning($message, ['card_id' => $cardId] + $refusal);
+                $this->alerts->notify($repo, $outcome, $cardId, $reason);
 
                 return;
             }
