@@ -1,4 +1,4 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.23.0) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.24.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **What this is.** The solo-agent orientation generated from the Agent Board Framework
@@ -468,17 +468,25 @@ you manage your own context budget. Three signals guide you:
 safely: your work must be committed/pushed AND the handoff written (session-end ritual steps
 1–4 above). `/clear` discards your in-context memory; only the branch, your board state, and
 your state handoff survive — so an unanswered question a self-clear eats is unrecoverable. Never
-run it with uncommitted work or mid-task. Do NOT clear mid-decision, mid-gate, or with an
+run it with uncommitted work or mid-task.
+<!-- MIRROR-BEGIN(chat-gate: solo-CLAUDE.md) -->
+Do NOT clear mid-decision, mid-gate, or with an
 unanswered message from your human in front of you. Otherwise clear as the **FINAL ACTION of THIS
 turn — do not defer.** Decide with two questions, both answerable **NOW**: **(1)** Is a message
 from your human unanswered this turn? **(2)** Am I mid-decision / mid-gate / in an open exchange
 with your human? Both **NO** → clear this turn. "Could a message arrive?" is **not** question (1)
-— a message that arrives opens its own turn and is never lost by clearing now. **A channel/
-coordination event from another agent is not a message from your human and is not a hold.**
-<!-- MIRROR: this chat-gate + channel-event exemption is a lockstep copy — same prose in
-     pm-CLAUDE.md, docs/CONTEXT-RESET.md, and hooks/context-backstop.py (which carries it
-     twice: WARNING + platform-line) = five copies across four files. Edit all five; the copy
-     registry is CONTEXT-RESET.md § "Mirror registry". -->
+— a message that arrives opens its own turn and is never lost by clearing now.
+**A channel/coordination event from another agent is not a message from your human and is not a
+hold.**
+<!-- MIRROR-END(chat-gate: solo-CLAUDE.md) -->
+<!-- MIRROR: the region above is a lockstep copy — same prose in pm-CLAUDE.md,
+     docs/CONTEXT-RESET.md, and hooks/context-backstop.py (which carries it twice: WARNING +
+     platform-line) = five copies across four files. Edit all five; the copy registry is
+     CONTEXT-RESET.md § "Mirror registry". The MIRROR-BEGIN/END markers are LOAD-BEARING: the
+     CI guard .githooks/chat-gate-mirror-drift.selftest.py extracts exactly what they enclose
+     and reds if any copy diverges — the two per-role tokens ("message from your human" for
+     "user message"; "open exchange with your human" for "open operator exchange") are the ONLY
+     differences it normalizes away, so do not move, rename, or drop the markers. -->
 
 **A decided self-clear is a commit point — freeze inbound, then land it.** Once you've *decided* to
 clear (a CLEAR at a clean boundary), stop **proactively pulling** new inbound — no inbox refresh,
