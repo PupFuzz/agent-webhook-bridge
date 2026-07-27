@@ -23,7 +23,9 @@ reads as coverage, which is worse than no count.
   - drop `env["BRIDGE_CHANNEL_TRANSPORT"]` → `test_the_parents_transport_never_reaches_the_child`
     (+ the dict guard).
   - drop `env["BRIDGE_CHANNEL_PORT"]`      → `test_the_seats_configured_port_is_never_reached`
-    (+ the dict guard, + broad collateral).
+    (+ the dict guard). EXACTLY those two, deterministically: `setUpModule()` pins the
+    port, so the broad collateral an earlier revision of this list recorded is a
+    PRE-SANDBOX observation and no longer true.
   - drop `env["XDG_RUNTIME_DIR"]`          → `test_nothing_is_written_into_the_seats_runtime_dir`
     (+ the dict guard).
   - drop `env["BRIDGE_CHANNEL_SOCKET"]`    → `test_child_env_overrides_every_channel_addressing_input`
@@ -475,6 +477,36 @@ class LaunchVerdict(_TreeCase):
         self.assertIn("repoint the symlink", text)
         self.assertNotIn("does not exist. Nothing was measured", text)
         self.assertNotIn("nothing was measured", text)
+
+    def test_a_symlink_whose_target_is_invisible_is_not_called_dangling(self):
+        # `lexists() and not exists()` does NOT entail "the target is gone": `exists()`
+        # is false for EACCES exactly as for ENOENT, and the `+x` proven at the top of
+        # resolve_entry() is the LINK's ancestor, which says nothing about the chain
+        # above what the link POINTS AT. Without the target-side gate this reported
+        # "the link went dangling, repoint the symlink" about an intact deployment
+        # behind a 0700 parent — a confident wrong verdict, and one that contradicted
+        # the non-symlink sibling case (which correctly says "not visible to this
+        # user") purely on whether the operator's path happened to be a symlink.
+        self.skip_as_root()
+        private = os.path.join(self.tmp, "private")
+        os.makedirs(private)
+        deployment = self.whole_copy("intact")
+        moved = os.path.join(private, "deployment")
+        shutil.move(deployment, moved)
+        link = os.path.join(self.tmp, "channel-server")
+        os.symlink(moved, link)
+
+        # PREMISE + POSITIVE CONTROL: traversable, the same link launches clean.
+        self.assertIn("LAUNCH OK", self.assert_run(link, ccs.EXIT_LAUNCH_OK))
+
+        os.chmod(private, 0o000)
+        self.addCleanup(os.chmod, private, 0o755)
+        text = self.assert_run(link, ccs.EXIT_COULD_NOT_CHECK)
+
+        self.assertIn("COULD NOT CHECK", text)
+        self.assertIn("denies this user traversal", text)
+        self.assertNotIn("went dangling", text)
+        self.assertNotIn("LAUNCH FAILED", text)
 
     def test_a_missing_path_could_not_be_checked(self):
         # Not exit 1: nothing was measured, and the caller's path may simply be wrong.
@@ -951,6 +983,53 @@ class ShippedReference(_TreeCase):
             source = fh.read()
 
         self.assertIn("from './channel-lib.mjs'", source)
+
+
+@unittest.skipIf(_NODE is None, _NO_NODE_REASON)
+class PipedConsumption(_TreeCase):
+    """The tool's whole product is a machine-readable exit code, so `| head`, `| tee`
+    and `| grep -q` are the DOCUMENTED usage — not an edge case."""
+
+    def _noisy_tree(self):
+        # Exits 0 without binding (the exit-2 path) after ~4000 stderr lines, which the
+        # tool then prints — enough to outrun the pipe buffer, which is what makes the
+        # broken pipe reachable at all. Short-output paths escape only by accident of
+        # block buffering.
+        return self.tree(
+            "noisy",
+            {
+                "channel-lib.mjs": _LIB_SOURCE,
+                ccs.ENTRY_FILE: "import { hello } from './channel-lib.mjs';\n"
+                "for (let i = 0; i < 4000; i++) console.error(`line ${i} ${hello()} ${'x'.repeat(60)}`);\n",
+            },
+        )
+
+    def _run_and_close_pipe_early(self, path):
+        proc = subprocess.Popen(
+            [sys.executable, os.path.join(_HERE, "check-channel-snapshot.py"), path],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        proc.stdout.readline()
+        proc.stdout.close()   # the reader goes away — exactly what `head -1` does
+        return proc.wait()
+
+    def test_a_reader_that_stops_listening_does_not_invert_the_verdict(self):
+        # BrokenPipeError IS an OSError, and uncaught it exits 1 — EXIT_LAUNCH_FAILED
+        # exactly. Measured before the fix: unpiped 2, `| head -1` 1. `grep -q` closes
+        # the pipe on first match BY DESIGN, so the intended usage inverted the answer.
+        noisy = self._noisy_tree()
+
+        self.assertEqual(ccs.EXIT_COULD_NOT_CHECK, self._run_and_close_pipe_early(noisy))
+
+    def test_the_verdict_survives_a_closed_pipe_on_every_exit_code(self):
+        # …and it is not just the 2 path: a truncated pipe must never turn a 0 into a 1
+        # either, nor produce the interpreter's shutdown-flush 120.
+        for label, tree, expected in (
+            ("ok", self.whole_copy("piped-ok"), ccs.EXIT_LAUNCH_OK),
+            ("failed", self.whole_copy("piped-fail", omit=["channel-lib.mjs"]), ccs.EXIT_LAUNCH_FAILED),
+        ):
+            with self.subTest(verdict=label):
+                self.assertEqual(expected, self._run_and_close_pipe_early(tree))
 
 
 class ToolShape(unittest.TestCase):

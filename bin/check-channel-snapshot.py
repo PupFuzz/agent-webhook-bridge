@@ -239,12 +239,42 @@ def resolve_entry(path: str):
             f"channel server.",
         )
     elif os.path.lexists(path):
-        # DANGLING SYMLINK, kept apart from REMOVED — one `lexists()` call, and the
-        # distinction is not cosmetic: it names a different operator action (repoint the
-        # link vs. re-deploy the directory), and the PHP sibling in this same change goes
-        # to real lengths to preserve it (`resolveNonStrict()` plus the branch-1 split).
-        # Collapsing the two here would be a divergence between two copies of one
-        # behaviour, which is a defect rather than a wording choice.
+        # A SYMLINK WHOSE TARGET DOES NOT RESOLVE — and "does not resolve" is NOT yet
+        # "does not exist". `os.path.exists()` is false for EACCES exactly as for
+        # ENOENT (the rule this function's own docstring states two branches up), and
+        # the `+x` proven at the top of this function is the LINK's ancestor, which
+        # establishes nothing about the chain above what the link POINTS AT.
+        #
+        # Measured, same link and the same intact deployment behind it, only the
+        # TARGET's ancestor mode changing:
+        #     ancestor 0755 -> exit 0, LAUNCH OK
+        #     ancestor 0000 -> exit 1, "the link went dangling, repoint the symlink"
+        # …a confident wrong verdict about a healthy deployment. It also contradicted
+        # the sibling branch above (a NON-symlink path under the same 0000 ancestor
+        # correctly gets "not visible to this user"), so whether an operator running as
+        # the wrong user was told to re-run or told their deployment was gone depended
+        # on whether their path happened to be a symlink. And it diverged from
+        # `ChannelSnapshotProbe` on the very question the exit code was aligned for:
+        # the PHP probe returns `warn` (not visible) for this shape and `fail` only for
+        # a genuinely dangling link.
+        #
+        # So gate the TARGET's chain through the same visibility rule first. Only once
+        # that is traversable is "the target does not exist" a conclusion this run is
+        # entitled to draw — and then it is as conclusive as the entry-file absence, so
+        # it keeps exit 1.
+        target = os.readlink(path) if os.path.islink(path) else path
+        if not os.path.isabs(target):
+            target = os.path.join(os.path.dirname(path), target)
+        if not os.access(_nearest_existing_ancestor(target), os.X_OK):
+            return (
+                None,
+                EXIT_COULD_NOT_CHECK,
+                f"COULD NOT CHECK: {path} points at {target}, and a directory above THAT "
+                f"denies this user traversal — so whether the target exists is a question "
+                f"this user cannot answer, and a dangling link cannot be told apart from a "
+                f"healthy one. Nothing was measured. Re-run as the OS user whose session "
+                f"launches the channel server.",
+            )
         return (
             None,
             EXIT_LAUNCH_FAILED,
@@ -448,9 +478,16 @@ def run_launch_assert(
             # is bounded to "you get told to look again" instead of "your working
             # deployment is declared broken".
             #
-            # It cannot false-withhold on a healthy snapshot: the shipped entry emits
-            # its listening line deterministically before stdin EOF can close it
-            # (measured 15/15, and 60/60 in the earlier ordering probe).
+            # It cannot false-withhold on a healthy snapshot ON POSIX, and the bound is
+            # stated because the Windows population is the entire reason the transport
+            # pin exists: under the pinned `http` transport `server.listen()` binds
+            # synchronously and queues `'listening'` on `process.nextTick`, while stdin
+            # EOF on /dev/null can only complete in the POLL phase — and the nextTick
+            # queue drains before control returns to the loop. So the ordering holds by
+            # construction there (corroborated 15/15, and 60/60 in the earlier probe),
+            # and is NOT asserted for Win32, where it is unmeasured. If it ever flips
+            # there the consequence is this exit-2 with a misdiagnosing message — never
+            # a false FAIL, which is the whole reason the marker may only withhold.
             if not bind_observed(proc.stderr):
                 print(_exited_zero_without_binding_message(entry), file=out)
                 if (proc.stderr or "").strip():
@@ -560,11 +597,45 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
 
-    return run_launch_assert(
-        args.server_path,
-        live_socket=args.live_socket,
-        timeout=args.timeout,
-    )
+    try:
+        return run_launch_assert(
+            args.server_path,
+            live_socket=args.live_socket,
+            timeout=args.timeout,
+        )
+    except OSError as err:
+        # ⚠ THE READER WENT AWAY — AND UNCAUGHT THIS INVERTS THE VERDICT.
+        # `BrokenPipeError` IS an `OSError`, so an unguarded `print()` propagates and
+        # CPython exits 1 on an uncaught exception: EXIT_LAUNCH_FAILED exactly. Measured
+        # on the exit-2 path with a child emitting ~4000 stderr lines (enough to outrun
+        # the pipe buffer, which is what makes it reachable at all):
+        #     unpiped     -> exit 2  COULD NOT CHECK
+        #     | head -1   -> exit 1  LAUNCH FAILED
+        #
+        # Not an exotic edge case — THE DOCUMENTED USAGE. The whole product is a
+        # machine-readable exit code, so `| head`, `| tee` and `| grep -q 'LAUNCH OK'`
+        # are how it is meant to be consumed, and `grep -q` closes the pipe on first
+        # match BY DESIGN. A reader that stopped listening says nothing about the
+        # deployment, so it lands where every other environment fact lands.
+        #
+        # ONE handler, not two, and that is deliberate: an earlier shape had a
+        # `BrokenPipeError` arm in front of an `OSError` arm, and since the former is a
+        # subclass of the latter, removing either ALONE changed nothing — the guard
+        # could not be shown to fail, which is the defect class this card keeps finding.
+        #
+        # The `dup2` is the documented CPython recipe for the shutdown flush retrying
+        # the write and exiting 120. HONEST BOUND: that 120 was NOT reproducible on this
+        # platform in this shape (removing the dup2 while keeping the handler still
+        # exits 2), so it is precautionary rather than a fix for something observed here
+        # — said plainly instead of claiming it prevents a measured failure. It must not
+        # print: printing is what failed.
+        if isinstance(err, BrokenPipeError):
+            try:
+                devnull = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(devnull, sys.stdout.fileno())
+            except OSError:
+                pass
+        return EXIT_COULD_NOT_CHECK
 
 
 if __name__ == "__main__":
