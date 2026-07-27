@@ -229,6 +229,20 @@ def resolve_entry(path: str):
             f"Nothing was measured. Re-run as the OS user whose session launches the "
             f"channel server.",
         )
+    elif os.path.lexists(path):
+        # DANGLING SYMLINK, kept apart from REMOVED — one `lexists()` call, and the
+        # distinction is not cosmetic: it names a different operator action (repoint the
+        # link vs. re-deploy the directory), and the PHP sibling in this same change goes
+        # to real lengths to preserve it (`resolveNonStrict()` plus the branch-1 split).
+        # Collapsing the two here would be a divergence between two copies of one
+        # behaviour, which is a defect rather than a wording choice.
+        return (
+            None,
+            EXIT_COULD_NOT_CHECK,
+            f"COULD NOT CHECK: {path} is a symlink whose target does not exist — the link "
+            f"went dangling, so there is nothing here to launch and nothing was measured. "
+            f"The target moved: repoint the symlink (or re-deploy the directory).",
+        )
     else:
         return (
             None,

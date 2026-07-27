@@ -40,6 +40,12 @@ reads as coverage, which is worse than no count.
   - give the probe a collaborator, or a static call outside `self::`
                                            → `test_the_snapshot_probe_path_cannot_execute_a_process`.
   - revert any of the three scanner fixes  → `test_the_php_scanner_stays_in_sync_on_the_shapes_that_broke_it`.
+  - collapse the dangling-symlink branch   → `test_a_dangling_symlink_is_named_as_one_not_as_a_missing_path`.
+
+METHODOLOGY, because it changed a result: the env mutations must be an ASSIGNMENT
+OMISSION — delete the `env[...] = ...` line — never `del env[...]`. The latter is a
+DIFFERENT mutation (it removes a key the parent may not have set at all) and produces a
+false negative. Every entry above was produced by omission, under the module sandbox.
 """
 
 import importlib.util
@@ -72,6 +78,61 @@ if _NODE is None:
     print("=" * 78, file=sys.stderr)
 
 _REFERENCE = os.path.join(os.path.dirname(_HERE), "examples", "channel-servers")
+
+
+# ─── LIVE-STATE SANDBOX ──────────────────────────────────────────────────────────
+# This suite spawns a REAL channel server, and its mutation testing deliberately
+# removes the very overrides that keep that server off the seat's live endpoints. Run
+# unsandboxed, that is not hypothetical: proving these guards once left a synthetic
+# witness AND a real `<live-socket>.FAILED` marker in this seat's actual
+# $XDG_RUNTIME_DIR — the FR #2444 "this session is deaf to live-wake" signal, FALSE at
+# the time (the socket was bound and accepting throughout). A test suite for a tool
+# whose entire purpose is "never touch live state" must not touch live state.
+#
+# So the two env vars that address a live endpoint are repointed at a module-scoped
+# temp dir BEFORE any case runs, and the real runtime dir is snapshotted and re-checked
+# at teardown. The teardown assertion is the part that matters: without it this is a
+# precaution nobody would notice failing.
+_MODULE_TMP = None
+_REAL_RUNTIME_DIR = None
+_REAL_RUNTIME_BEFORE = None
+
+
+def _runtime_listing(path):
+    try:
+        return sorted(os.listdir(path))
+    except OSError:
+        return None
+
+
+def setUpModule():
+    global _MODULE_TMP, _REAL_RUNTIME_DIR, _REAL_RUNTIME_BEFORE
+    _REAL_RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR")
+    _REAL_RUNTIME_BEFORE = _runtime_listing(_REAL_RUNTIME_DIR) if _REAL_RUNTIME_DIR else None
+
+    _MODULE_TMP = tempfile.mkdtemp(prefix="channel-assert-suite-sandbox-")
+    # Assignment, not setdefault: the seat exports the real values and they must lose —
+    # the same rule the tool itself follows in child_env().
+    os.environ["XDG_RUNTIME_DIR"] = _MODULE_TMP
+    os.environ["BRIDGE_CHANNEL_SOCKET"] = os.path.join(_MODULE_TMP, "sandbox-channel.sock")
+
+
+def tearDownModule():
+    try:
+        if _REAL_RUNTIME_DIR is not None:
+            after = _runtime_listing(_REAL_RUNTIME_DIR)
+            if after != _REAL_RUNTIME_BEFORE:
+                added = sorted(set(after or []) - set(_REAL_RUNTIME_BEFORE or []))
+                removed = sorted(set(_REAL_RUNTIME_BEFORE or []) - set(after or []))
+                raise AssertionError(
+                    f"THIS SUITE TOUCHED LIVE STATE: {_REAL_RUNTIME_DIR} changed during the run "
+                    f"(added={added}, removed={removed}). The sandbox in setUpModule() is not "
+                    "holding — a spawned channel server reached a real endpoint."
+                )
+    finally:
+        if _MODULE_TMP:
+            shutil.rmtree(_MODULE_TMP, ignore_errors=True)
+
 
 
 # A stand-in for the shipped entry that reproduces the two properties this tool is
@@ -156,7 +217,7 @@ process.stdin.resume();
 
 _LIB_SOURCE = "export const hello = () => 'ok';\n"
 
-# The four files a pruned deployment drops. Every one of them is in the reference set
+# The SIX files a pruned deployment drops (of the 10 the reference ships). Every one of them is in the reference set
 # the retired completeness leg enumerated, and NONE of them is load-bearing for a
 # launch — which is the whole measurement.
 _NON_LOAD_BEARING = {
@@ -238,16 +299,26 @@ def _php_code_only(source: str) -> str:
 # `system(` substring matches `getFilesystem(`, and a bare `exec(` matches any
 # `…exec(` method. `$` and `>` are in the lookbehind so `$system(` and `->system(` are
 # method/variable calls, not the builtin.
+# `\\` is NOT in the lookbehind: the fully-qualified `\\shell_exec(...)` is the idiomatic
+# form in a namespaced file, and excluding it made exactly that spelling invisible. `$`
+# and `>` stay, so `$system(` and `->system(` read as variable/method calls.
 _EXEC_PRIMITIVES = tuple(
-    re.compile(r"(?<![A-Za-z0-9_$>\\])" + name + r"\s*\(")
+    re.compile(r"(?<![A-Za-z0-9_$>])" + name + r"\s*\(")
     for name in ("proc_open", "shell_exec", "passthru", "popen", "system", "exec", "pcntl_exec", "eval", "call_user_func", "call_user_func_array")
+)
+
+# Language constructs that pull in arbitrary code and take no parentheses, plus the
+# bare dynamic invoke `$f(...)` that `call_user_func` coverage alone misses.
+_CODE_PULLERS = (
+    re.compile(r"(?<![A-Za-z0-9_$>])(include|require)(_once)?\b"),
+    re.compile(r"(?<![A-Za-z0-9_>])\$[A-Za-z_]\w*\s*\("),
 )
 
 
 def _exec_primitives_in(php_source: str):
     """Every process-launch/indirect-call primitive in already-comment-stripped code,
     plus the backtick operator (which IS `shell_exec`)."""
-    found = [p.pattern for p in _EXEC_PRIMITIVES if p.search(php_source)]
+    found = [p.pattern for p in _EXEC_PRIMITIVES + _CODE_PULLERS if p.search(php_source)]
     if "`" in php_source:
         found.append("backtick operator")
     return found
@@ -340,6 +411,24 @@ class LaunchVerdict(_TreeCase):
         self.assertIn("LAUNCH FAILED", text)
         self.assertIn(ccs.ENTRY_FILE, text)
 
+    def test_a_dangling_symlink_is_named_as_one_not_as_a_missing_path(self):
+        # The verdict was already right; the MESSAGE sent the operator after the wrong
+        # thing. "does not exist" for a dangling link points at re-deploying a directory
+        # when the action is repointing a link — and the PHP sibling in this same change
+        # keeps exactly this distinction (`resolveNonStrict()` + the branch-1 split), so
+        # collapsing it here is a divergence between two copies of one behaviour.
+        target = os.path.join(self.tmp, "moved-away")
+        link = os.path.join(self.tmp, "channel-server")
+        os.makedirs(target)
+        os.symlink(target, link)
+        os.rmdir(target)
+
+        text = self.assert_run(link, ccs.EXIT_COULD_NOT_CHECK)
+
+        self.assertIn("symlink whose target does not exist", text)
+        self.assertIn("repoint the symlink", text)
+        self.assertNotIn("does not exist. Nothing was measured", text)
+
     def test_a_missing_path_could_not_be_checked(self):
         # Not exit 1: nothing was measured, and the caller's path may simply be wrong.
         text = self.assert_run(os.path.join(self.tmp, "nowhere"), ccs.EXIT_COULD_NOT_CHECK)
@@ -431,7 +520,14 @@ class LaunchVerdict(_TreeCase):
         self.assertIn("COULD NOT CHECK", text)
         # Named readably: `-9` is a POSIX wait-status detail, not an operator-facing fact.
         self.assertIn("SIGKILL (9)", text)
-        self.assertNotIn("-9", text)
+        # ⚠ ANCHORED TO THE MESSAGE TAIL, NOT A BARE "-9". The asserted text embeds the
+        # entry PATH, rooted at mkdtemp(prefix="check-channel-snapshot-test-"), and
+        # tempfile's name alphabet is `a-z0-9_` — so 1 name in 37 begins with `9` and the
+        # path itself contains the substring `-9`. A bare assertNotIn("-9") is therefore a
+        # ~2.7% flake (measured 80/3000, and reproducible on demand by forcing the name):
+        # a test that fails for a reason unrelated to what it checks. Widening the prefix
+        # would only move the collision, not remove it.
+        self.assertNotIn("killed by -9", text)
         self.assertNotIn("LAUNCH FAILED", text)
         self.assertNotIn("will not come up", text)
 
@@ -739,36 +835,45 @@ class ToolShape(unittest.TestCase):
                     f"non-stdlib import: {line}",
                 )
 
-    def test_the_snapshot_probe_path_cannot_execute_a_process(self):
-        # THE CONSTRAINT THE SEAT-SIDE DESIGN RESTS ON (DL-237), scoped to what it can
-        # actually defend. The FIRST version of this guard claimed `bridge:check` never
-        # execs anything — which is FALSE and was false when written: `CheckCommand`
-        # reaches `ClassifierResolver::probeLoadable()`, which runs
-        # `new Process([PHP_BINARY, …])` to load a custom classifier out-of-process, and
-        # `SshProbeEnvironment` for the ssh round-trip. A guard whose stated invariant
-        # is already violated by legitimate code teaches the next reader to distrust it.
+    def test_the_snapshot_probe_path_has_no_reachable_way_to_execute(self):
+        # A TRIPWIRE, NOT A PROOF — and the prose says so because the previous two
+        # revisions of it did not. This asserted four things and then claimed they meant
+        # the class "cannot delegate to a collaborator that would" exec. Review ran five
+        # evasions against it and five passed GREEN, two of them literally delegation:
+        # an INDENTED `use LaunchesNode;` (a same-namespace trait — and `    use X;` is
+        # this codebase's own PSR-12 style, while the assertion only caught column-0
+        # imports), and `extends NodeLauncher` with an inherited method still spelled
+        # `self::`. Those are closed below. `include`, bare dynamic invoke `$f(...)` and
+        # the fully-qualified `\shell_exec(` are closed too. What is NOT closed, and
+        # cannot be by an enumerated blocklist: variable-variables, a computed class
+        # name, a callable smuggled through an array. An enumerated blocklist is never
+        # complete, so the claim here is the weakest one the assertions actually
+        # support — this catches the SHAPES BELOW, and the design rests on review, not
+        # on this test.
         #
-        # The true invariant is narrower and much stronger: the SNAPSHOT PROBE is
-        # structurally incapable of reaching a process launch. It is a final class of
-        # static methods with NO imports, NO `new`, and no static call to anything but
-        # `self::` — so it cannot exec directly and cannot delegate to a collaborator
-        # that would. That closes the realistic evasion the token scan alone missed:
-        # putting the exec in a new class (`ChannelLaunchProbe::launch(…)`), which is
-        # how every other probe in this command is structured.
+        # Why it is worth keeping anyway: the realistic regression is not an adversary,
+        # it is a future maintainer adding a launch leg the honest way — `use`, `new`,
+        # `extends`, or a plain `proc_open` — and every one of those trips this.
         probe = os.path.join(os.path.dirname(_HERE), "app/Bridge/Support/ChannelSnapshotProbe.php")
         with open(probe, encoding="utf-8") as fh:
             raw = fh.read()
         code = _php_code_only(raw)
 
         self.assertEqual([], _exec_primitives_in(code), "the snapshot probe gained a process-launch primitive")
-        # No collaborator can be reached, so no collaborator can exec on its behalf.
-        self.assertNotIn("new ", code, "the snapshot probe instantiates something — it could now delegate an exec")
-        self.assertEqual(
-            {"self::"},
-            set(re.findall(r"[A-Za-z_\\][A-Za-z0-9_\\]*::", code)) or {"self::"},
-            "the snapshot probe makes a static call outside itself",
-        )
-        self.assertNotIn("\nuse ", raw, "the snapshot probe imported a class — it has no dependencies by design")
+        self.assertNotIn("new ", code, "the snapshot probe instantiates something — it could delegate an exec")
+        # Any indentation, not just column 0 — `    use SomeTrait;` is the shape that
+        # got through, and it is how traits are actually written here.
+        self.assertNotIn("use ", code, "the snapshot probe imported a class or used a trait")
+        # No parent to inherit an exec from. Pinned as the exact declaration, so
+        # `extends NodeLauncher` cannot slip in behind a `self::` call.
+        self.assertIn("final class ChannelSnapshotProbe\n{", raw, "the probe gained a parent class")
+
+        statics = set(re.findall(r"[A-Za-z_\\][A-Za-z0-9_\\]*::", code))
+        # POSITIVE CONTROL first: an `or {"self::"}` fallback used to sit here, which
+        # made the assertion pass on an EMPTY set — indistinguishable from the regex
+        # having misfired. Prove it matched something before trusting what it did not.
+        self.assertIn("self::", statics, "the static-call regex matched nothing — it misfired")
+        self.assertEqual({"self::"}, statics, "the snapshot probe makes a static call outside itself")
 
     def test_the_probe_call_site_hands_the_probe_only_strings(self):
         # The other half: `CheckCommand` may exec (see above), but the SNAPSHOT leg's
