@@ -46,5 +46,15 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '20'
+      # WITHOUT THIS THE ONLY CASE THAT EXERCISES THE SHIPPED ENTRY ALWAYS SKIPS.
+      # `examples/channel-servers/node_modules` is gitignored, so
+      # `ShippedReference.test_this_checkout_s_own_channel_server_launches` hits its
+      # (loud) skip on every CI run — and the `examples/channel-servers/**` path filter
+      # above exists precisely for that case. A check that always skips is worse than
+      # one that cannot fail: the skip reads as coverage. `--ignore-scripts` mirrors
+      # channel-server-supply-chain.yml (no lifecycle scripts from the dependency tree).
+      - name: Install channel-server dependencies (so the shipped-entry case is real)
+        run: npm ci --ignore-scripts
+        working-directory: examples/channel-servers
       - name: Run bin/ unit tests
         run: python3 -m unittest bin.test_provision_board_tools bin.test_provision_board_tools_samebox bin.test_check_channel_snapshot -v

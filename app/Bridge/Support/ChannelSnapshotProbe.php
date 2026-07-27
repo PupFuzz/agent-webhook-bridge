@@ -36,8 +36,9 @@ final class ChannelSnapshotProbe
 
     /**
      * The seat-side launch-assert this probe DELEGATES the loadability question to
-     * (DL-237). Named in the version-equal finding because that is where the retired
-     * completeness leg used to answer it.
+     * (DL-237). Named in the one disclosure {@see self::probe()} emits per run that
+     * reached the legs — on every branch, not just where the retired completeness leg
+     * used to answer it.
      */
     private const LAUNCH_ASSERT = 'bin/check-channel-snapshot.py';
 

@@ -66,40 +66,68 @@ _ENTRY_SOURCE = """\
 import { hello } from './channel-lib.mjs';
 import net from 'node:net';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
+// Mirrors the shipped entry's addressing inputs exactly (agent-webhook-bridge-channel.mjs
+// lines 50 / 236-250 / 268-274): transport defaults to unix, the socket env wins over the
+// name-derived default, the port defaults to 8788, and XDG_RUNTIME_DIR is where a marker
+// lands. If any of those stop matching, these tests stop standing for the real thing.
+const TRANSPORT = (process.env.BRIDGE_CHANNEL_TRANSPORT || 'unix').toLowerCase();
+const PORT = Number(process.env.BRIDGE_CHANNEL_PORT || 8788);
+const XDG = process.env.XDG_RUNTIME_DIR || os.tmpdir();
 const SOCKET_PATH =
   process.env.BRIDGE_CHANNEL_SOCKET ||
   (process.env.XDG_RUNTIME_DIR
     ? path.join(process.env.XDG_RUNTIME_DIR, `channel-${process.env.BRIDGE_CHANNEL_NAME || 'x'}.sock`)
     : null);
-if (!SOCKET_PATH) {
-  console.error('no socket path could be resolved');
+
+if (TRANSPORT !== 'unix' && TRANSPORT !== 'http') {
+  // The shipped entry refuses an unknown transport and exits non-zero (refuseDeaf).
+  console.error(`refusing: BRIDGE_CHANNEL_TRANSPORT must be unix or http (got '${TRANSPORT}')`);
   process.exit(2);
 }
+if (TRANSPORT === 'unix' && !SOCKET_PATH) {
+  console.error('refusing: no socket path could be resolved');
+  process.exit(2);
+}
+
 let bound = false;
 let ended = false;
 function shutdown(code) {
-  if (bound) {
+  if (bound && TRANSPORT === 'unix') {
     try { fs.unlinkSync(SOCKET_PATH); } catch {}
   }
   process.exit(code);
+}
+// A PERSISTENT witness that an endpoint was bound. The unix socket is unlinked on the
+// way out and a TCP port simply closes, so "nothing is there afterwards" cannot tell a
+// path that was never touched from one that was bound and then destroyed — which is the
+// whole damage the throwaway overrides exist to prevent.
+function witness() {
+  const at =
+    TRANSPORT === 'unix'
+      ? `${SOCKET_PATH}.bound`
+      : path.join(XDG, `bound-http-${PORT}`);
+  try { fs.writeFileSync(at, 'bound\\n'); } catch {}
 }
 const server = net.createServer(() => {});
 server.on('error', (err) => {
   console.error(`bind failed: ${err.code}`);
   process.exit(2);
 });
-server.listen(SOCKET_PATH, () => {
+function onListening() {
   bound = true;
-  // A PERSISTENT witness that this path was bound. The socket itself is unlinked on
-  // the way out, so "the socket file is not there afterwards" cannot tell a path that
-  // was never touched from one that was bound and then destroyed — which is exactly
-  // the damage the throwaway-socket requirement exists to prevent.
-  try { fs.writeFileSync(`${SOCKET_PATH}.bound`, 'bound\\n'); } catch {}
-  console.error(`[test-channel] listening on unix:${SOCKET_PATH} ${hello()}`);
+  witness();
+  const where = TRANSPORT === 'unix' ? `unix:${SOCKET_PATH}` : `http://127.0.0.1:${PORT}`;
+  console.error(`[test-channel] listening on ${where} ${hello()}`);
   if (ended) shutdown(0);
-});
+}
+if (TRANSPORT === 'unix') {
+  server.listen(SOCKET_PATH, onListening);
+} else {
+  server.listen(PORT, '127.0.0.1', onListening);
+}
 process.stdin.on('end', () => {
   ended = true;
   if (bound) shutdown(0);
@@ -120,6 +148,54 @@ _NON_LOAD_BEARING = {
     "tests/b.test.mjs": "import 'node:test';\n",
     "tests/c.test.mjs": "import 'node:test';\n",
 }
+
+
+def _php_code_only(source: str) -> str:
+    """PHP source with comments and string LITERALS blanked out.
+
+    Both have to go for a token scan to mean anything here: every docblock in these
+    files says `bridge:check` in backticks (and the backtick IS `shell_exec`), and the
+    message strings talk about running `bin/check-channel-snapshot.py`. What is left is
+    executable code, which is the only place a process launch can hide.
+
+    A hand-rolled scanner rather than a real parser, and that is a deliberate bound: it
+    is quote- and escape-aware, and it errs toward blanking MORE than it should, which
+    can only weaken the scan into a false NEGATIVE — never invent a false positive that
+    blocks a legitimate change.
+    """
+    out = []
+    i, n = 0, len(source)
+    quote = None
+    while i < n:
+        c = source[i]
+        if quote:
+            if c == "\\" and quote != "'":
+                i += 2
+                continue
+            out.append(" ")
+            if c == quote:
+                quote = None
+                out[-1] = c
+            i += 1
+            continue
+        if c in "'\"":
+            quote = c
+            out.append(c)
+            i += 1
+            continue
+        if source.startswith("/*", i):
+            end = source.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            out.append(" ")
+            continue
+        if source.startswith("//", i) or c == "#":
+            end = source.find("\n", i)
+            i = n if end == -1 else end
+            out.append(" ")
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 class _TreeCase(unittest.TestCase):
@@ -240,6 +316,46 @@ class LaunchVerdict(_TreeCase):
 
         self.assertIn("LAUNCH OK", self.assert_run(entry, ccs.EXIT_LAUNCH_OK))
 
+    def test_an_entry_that_exits_0_without_binding_is_inconclusive(self):
+        # EXIT 0 IS NECESSARY BUT NOT SUFFICIENT. A zero-length entry — the shape a
+        # truncated copy or an interrupted write leaves — parses, runs, starts nothing
+        # and exits 0. Reporting LAUNCH OK there would make the tool's exit code say the
+        # opposite of what it measured, which is the one thing a diagnostic must never
+        # do.
+        #
+        # Exit 2, NOT exit 1, and the reason is a constraint on the whole tool: deciding
+        # FAILED on the ABSENCE of a listening line would rest the verdict on matching a
+        # log string, so rewording that line upstream would false-fail every healthy
+        # deployment on the fleet. The marker may WITHHOLD a pass; it may never produce
+        # a failure.
+        empty = self.tree("empty-entry", {ccs.ENTRY_FILE: ""})
+
+        text = self.assert_run(empty, ccs.EXIT_COULD_NOT_CHECK)
+
+        self.assertIn("COULD NOT CHECK", text)
+        self.assertIn("never reported a listening endpoint", text)
+        self.assertIn("NOT a pass", text)
+        self.assertNotIn("LAUNCH OK", text)
+        self.assertNotIn("LAUNCH FAILED", text)
+
+    def test_an_entry_truncated_at_a_valid_parse_point_is_inconclusive(self):
+        # The realistic sibling of the case above: the file is not empty, it is
+        # syntactically fine, it imports its sibling module successfully — and it stops
+        # before the listener. Every stat-derived check in `bridge:check` reads this
+        # deployment as healthy, and so would an exit-code-only launch assert.
+        truncated = self.tree(
+            "truncated",
+            {
+                ccs.ENTRY_FILE: "import { hello } from './channel-lib.mjs';\nhello();\n",
+                "channel-lib.mjs": _LIB_SOURCE,
+            },
+        )
+
+        text = self.assert_run(truncated, ccs.EXIT_COULD_NOT_CHECK)
+
+        self.assertIn("COULD NOT CHECK", text)
+        self.assertNotIn("LAUNCH OK", text)
+
     def test_a_hanging_entry_is_inconclusive(self):
         # BUILD REQUIREMENT (b), from the failing side: a survival-based assert would
         # call this a PASS. Surviving the timeout is an unfinished measurement, and
@@ -278,12 +394,16 @@ class LaunchVerdict(_TreeCase):
 class ChildEnvironment(unittest.TestCase):
     """BUILD REQUIREMENT (a), at the pure-function level."""
 
-    def test_child_env_overrides_every_live_endpoint(self):
-        # Assignments, never setdefault: the seat exports its REAL values, and each
-        # of the three is a live endpoint the child would otherwise reach for — the
-        # unix socket it binds and unlinks, the loopback port it binds under the
-        # `http` transport, and the directory a `.FAILED` marker lands in.
+    def test_child_env_overrides_every_channel_addressing_input(self):
+        # Assignments, never setdefault: the seat exports its REAL values, and each of
+        # the four is an input that steers the child at a live endpoint — the transport
+        # that decides WHICH endpoint is used at all, the unix socket it binds and
+        # unlinks, the loopback port it binds under `http`, and the directory a
+        # `.FAILED` marker lands in. This dict assertion is the PRIMARY guard: each
+        # line here reds on its own single mutation, which the behavioural witnesses
+        # below cannot all give (see the layering note in SocketGuard).
         parent = {
+            "BRIDGE_CHANNEL_TRANSPORT": "unix",
             "BRIDGE_CHANNEL_SOCKET": "/run/user/1000/live.sock",
             "BRIDGE_CHANNEL_PORT": "8788",
             "BRIDGE_CHANNEL_NAME": "seat-agent",
@@ -293,6 +413,7 @@ class ChildEnvironment(unittest.TestCase):
 
         env = ccs.child_env(parent, "/tmp/throwaway/launch-assert.sock", "/tmp/throwaway")
 
+        self.assertEqual("http", env["BRIDGE_CHANNEL_TRANSPORT"])
         self.assertEqual("/tmp/throwaway/launch-assert.sock", env["BRIDGE_CHANNEL_SOCKET"])
         self.assertEqual("0", env["BRIDGE_CHANNEL_PORT"])
         self.assertEqual("/tmp/throwaway", env["XDG_RUNTIME_DIR"])
@@ -302,6 +423,7 @@ class ChildEnvironment(unittest.TestCase):
         self.assertEqual("/usr/bin", env["PATH"])
         # …and the parent dict is not mutated.
         self.assertEqual("/run/user/1000/live.sock", parent["BRIDGE_CHANNEL_SOCKET"])
+        self.assertEqual("unix", parent["BRIDGE_CHANNEL_TRANSPORT"])
 
     def test_the_throwaway_socket_lives_inside_the_private_temp_dir(self):
         self.assertEqual(
@@ -312,28 +434,92 @@ class ChildEnvironment(unittest.TestCase):
 
 @unittest.skipIf(_NODE is None, _NO_NODE_REASON)
 class SocketGuard(_TreeCase):
-    def test_a_live_socket_in_the_parent_env_is_never_bound_or_unlinked(self):
-        # THE TEST FOR BUILD REQUIREMENT (a). `BRIDGE_CHANNEL_SOCKET` is exported into
-        # every seat's own environment and WINS over the name-derived default, so an
-        # assert that only set a throwaway NAME would bind the LIVE socket here and
-        # unlink it on exit — a diagnostic that breaks live-wake, run at exactly the
-        # moment (pre-session-start) when nothing holds the path to stop it.
-        sentinel = os.path.join(self.tmp, "live-channel.sock")
-        env = dict(os.environ, BRIDGE_CHANNEL_SOCKET=sentinel, BRIDGE_CHANNEL_NAME="live-agent")
-        self.assertFalse(os.path.lexists(sentinel), "premise: nothing holds the live path yet")
+    def test_the_parents_transport_never_reaches_the_child(self):
+        # THE WINDOWS FALSE-FAIL, at its mechanism. The entry defaults TRANSPORT to
+        # `unix` when unset, and on a Windows seat the real value is exported by the
+        # LAUNCHER process (examples/start-claude.ps1) and/or .mcp.json's `env` block —
+        # neither of which a freshly-opened PowerShell inherits. Unpinned, the child
+        # there binds a filesystem socket, Win32 rejects it with EACCES, and this tool
+        # prints LAUNCH FAILED about a healthy deployment.
+        #
+        # That exact platform failure is not reproducible on Linux, so the MECHANISM is
+        # what is asserted: a parent transport value must not reach the child. The
+        # synthetic entry refuses an unknown transport with a non-zero exit (as the
+        # shipped one does via refuseDeaf), so an unpinned run reports LAUNCH FAILED
+        # here — pure exit-code evidence, no log-string coupling. Reds on dropping the
+        # BRIDGE_CHANNEL_TRANSPORT pin, alone.
+        env = dict(os.environ, BRIDGE_CHANNEL_TRANSPORT="bogus-transport")
+
+        text = self.assert_run(self.whole_copy(), ccs.EXIT_LAUNCH_OK, env=env)
+
+        self.assertIn("LAUNCH OK", text)
+        self.assertNotIn("refusing", text)
+
+    def test_the_seats_configured_port_is_never_reached(self):
+        # The `http` leg's behavioural witness, and `http` is the FRESH-WINDOWS DEFAULT
+        # (v0.69.0) as well as what this tool now pins — so it gets the same standard of
+        # evidence as the unix leg, not a dict assertion alone.
+        #
+        # The sentinel port is HELD OPEN for the duration of the run. Without the
+        # BRIDGE_CHANNEL_PORT=0 override the child reaches for it, hits EADDRINUSE and
+        # exits non-zero, so this asserts exit 0 while the seat's configured port is
+        # occupied: proof the child never went near it. Reds on dropping that override,
+        # alone.
+        import socket
+
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        self.addCleanup(holder.close)
+        occupied = holder.getsockname()[1]
+        env = dict(os.environ, BRIDGE_CHANNEL_PORT=str(occupied))
+
+        text = self.assert_run(self.whole_copy(), ccs.EXIT_LAUNCH_OK, env=env)
+
+        self.assertIn("LAUNCH OK", text)
+
+    def test_nothing_is_written_into_the_seats_runtime_dir(self):
+        # `XDG_RUNTIME_DIR` is where the shipped entry drops its `.FAILED` marker under
+        # either transport. Without the override the child writes into the seat's REAL
+        # runtime dir, beside the live channel's own marker — a diagnostic leaving
+        # debris in the directory an operator reads to diagnose a deaf seat. The
+        # synthetic entry's http bind witness lands there by the same rule, which is
+        # what makes this observable. Reds on dropping the XDG override, alone.
+        seat_runtime = os.path.join(self.tmp, "seat-runtime")
+        os.makedirs(seat_runtime, mode=0o700)
+        env = dict(os.environ, XDG_RUNTIME_DIR=seat_runtime)
 
         self.assert_run(self.whole_copy(), ccs.EXIT_LAUNCH_OK, env=env)
 
+        self.assertEqual([], os.listdir(seat_runtime))
+
+    def test_a_live_socket_in_the_parent_env_is_never_bound_or_unlinked(self):
+        # The unix leg, kept as DEFENCE IN DEPTH — and labelled honestly rather than
+        # banked as single-mutation coverage. Pinning the transport to `http` means the
+        # entry never reads BRIDGE_CHANNEL_SOCKET at all, so this case now reds only if
+        # BOTH the transport pin and the socket override are dropped. That is exactly
+        # what "belt and braces" means; each override's own single-mutation guard is the
+        # dict assertion in ChildEnvironment.
+        #
         # ⚠ DO NOT "SIMPLIFY" THIS TO THE lexists() CHECK ALONE. The obvious form is a
         # DECORATION and was measured to be: the server UNLINKS the socket it bound, so
         # "no socket file afterwards" is equally true of a path that was never touched
         # and one that was bound and then DESTROYED — which is the whole damage. The
-        # first version of this test asserted only the first line below and stayed
-        # GREEN under the mutation it exists to catch (dropping the explicit
-        # BRIDGE_CHANNEL_SOCKET override from child_env), because the child dutifully
-        # created the sentinel, bound it, and removed it again. The synthetic entry
-        # therefore leaves a PERSISTENT `<socket>.bound` marker on listen, and that
-        # second assertion is the one that actually goes red.
+        # first version of this test asserted only the first line below and stayed GREEN
+        # under the mutation it exists to catch, because the child dutifully created the
+        # sentinel, bound it, and removed it again. The persistent `.bound` witness is
+        # the assertion that actually goes red.
+        sentinel = os.path.join(self.tmp, "live-channel.sock")
+        env = dict(
+            os.environ,
+            BRIDGE_CHANNEL_TRANSPORT="unix",
+            BRIDGE_CHANNEL_SOCKET=sentinel,
+            BRIDGE_CHANNEL_NAME="live-agent",
+        )
+        self.assertFalse(os.path.lexists(sentinel), "premise: nothing holds the live path yet")
+
+        self.assert_run(self.whole_copy(), ccs.EXIT_LAUNCH_OK, env=env)
+
         self.assertFalse(os.path.lexists(sentinel), "the live socket must not be left behind")
         self.assertFalse(
             os.path.lexists(sentinel + ".bound"),
@@ -452,6 +638,45 @@ class ToolShape(unittest.TestCase):
                     module,
                     {"argparse", "os", "shutil", "subprocess", "sys", "tempfile"},
                     f"non-stdlib import: {line}",
+                )
+
+    def test_bridge_check_never_executes_a_process(self):
+        # THE CONSTRAINT THE WHOLE SEAT-SIDE DESIGN RESTS ON (DL-237), which had no
+        # guard: `bridge:check` must never launch the channel server, because the bridge
+        # commonly runs as a DIFFERENT OS user than the agent, so a launch from there
+        # certifies the entry loads for the wrong PATH and the wrong node — a proxy, and
+        # replacing a proxy is the entire point of this card. Grep is clean today and
+        # nothing reds if a future leg shells out.
+        #
+        # The scan bans process execution OUTRIGHT rather than looking for the string
+        # "node": a ban on the literal is trivially evaded by a variable, while these
+        # two files have no legitimate need to spawn anything at all. If one ever
+        # acquires a non-node reason to, this test failing is the right friction —
+        # it forces that to be weighed rather than slipped in.
+        repo = os.path.dirname(_HERE)
+        forbidden = (
+            "proc_open",
+            "shell_exec",
+            "passthru",
+            "popen(",
+            "system(",
+            "exec(",
+            "new Process",
+            "Process::",
+            "`",   # shell_exec's backtick operator
+        )
+        for relative in (
+            "app/Bridge/Support/ChannelSnapshotProbe.php",
+            "app/Console/Commands/Bridge/CheckCommand.php",
+        ):
+            with open(os.path.join(repo, relative), encoding="utf-8") as fh:
+                source = _php_code_only(fh.read())
+            for token in forbidden:
+                self.assertNotIn(
+                    token,
+                    source,
+                    f"{relative} gained a process-execution primitive ({token!r}) — "
+                    "bridge:check must never exec, least of all node (DL-237)",
                 )
 
     def test_the_tool_is_executable(self):

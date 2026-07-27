@@ -24,21 +24,44 @@ ZERO REFERENCE ACCESS. No version, no file list, no bridge config, no bridge
 checkout — copy this one file to a seat that has none of those and it still works.
 
 EXIT CODES
-  0  LAUNCH OK. The module graph resolved and the process came up and exited
-     cleanly. Bounded claim: it says nothing about STEADY STATE (whether the server
-     stays healthy under traffic), and nothing about whether the snapshot is STALE
-     — staleness is `bridge:check`'s version leg, and a seat whose deployment the
-     bridge cannot traverse gets no staleness verdict from anywhere today.
-  1  LAUNCH FAILED. Conclusive: this deployment will not come up at the next
-     session start. The child's stderr is printed verbatim.
+  0  LAUNCH OK. The module graph resolved AND a listener bound — both, never one.
+     Bounded claim: it says nothing about STEADY STATE (whether the server stays
+     healthy under traffic), and nothing about whether the snapshot is STALE —
+     staleness is `bridge:check`'s version leg, and a seat whose deployment the
+     bridge cannot traverse gets no staleness verdict from anywhere today. The bind
+     proven is an ephemeral loopback one this run owns, not your configured
+     endpoint.
+  1  LAUNCH FAILED. Conclusive for the environment this ran in: the deployment will
+     not come up at the next session start as invoked here. The child's stderr is
+     printed verbatim. BOUND: a startup refusal driven by an env var this tool does
+     not override still fires (today: `BRIDGE_TOOLS_SSH_TARGET` and
+     `BRIDGE_TOOLS_ENDPOINT` both set ⇒ `refuseDeaf`), and conversely a refusal
+     configured only in `.mcp.json`'s `env` block is invisible here and can fire at
+     session start without firing now. Pinning the transport (see (a)) removed the
+     other member of that class.
   2  COULD NOT CHECK. NOT a verdict in either direction. Covers: no `node` on PATH
      (an environment problem, not a snapshot problem); the path is missing, or not
      traversable by this user; the throwaway-socket guard refused; the backstop
-     timeout fired.
+     timeout fired; and the child exited 0 WITHOUT ever reporting a bind (an empty or
+     truncated entry does exactly that) — an unfinished measurement, deliberately not
+     a failure, because a failure verdict there would rest on matching a log string.
 
 TWO BUILD REQUIREMENTS, both about not BREAKING the thing being diagnosed.
 
-(a) THE SOCKET IS A THROWAWAY, AND EXPLICITLY SO. In the entry,
+(a) EVERY CHANNEL-ADDRESSING INPUT THE ENTRY READS IS NEUTRALISED — not the socket
+    specifically. The general rule, because the specific one was under-specified once
+    already: enumerate the entry's addressing inputs AT SOURCE and assign a throwaway
+    for each, before shipping a new transport. Today that is four —
+    `BRIDGE_CHANNEL_TRANSPORT` (pinned to `http`), `BRIDGE_CHANNEL_SOCKET`,
+    `BRIDGE_CHANNEL_PORT` (0, ephemeral) and `XDG_RUNTIME_DIR` — all assigned in
+    `child_env()`, which is the single place it happens. Pinning the transport is the
+    load-bearing one twice over: it stops an unpinned Windows child defaulting to
+    `unix` and false-FAILing a healthy deployment, and an ephemeral loopback bind
+    eliminates the live-unix-socket hazard class outright rather than guarding against
+    it. See `child_env()` for both arguments in full.
+
+    THE SOCKET IS STILL A THROWAWAY, AND EXPLICITLY SO — belt-and-braces behind that
+    pin, and the layer that holds if the pin is ever changed. In the entry,
     `SOCKET_PATH = process.env.BRIDGE_CHANNEL_SOCKET || defaultSocketPath()`, and
     `BRIDGE_CHANNEL_NAME` / `XDG_RUNTIME_DIR` feed ONLY `defaultSocketPath()`. Every
     seat exports `BRIDGE_CHANNEL_SOCKET` into its own environment, so it WINS:
@@ -82,10 +105,12 @@ SOCKET_BASENAME = "launch-assert.sock"
 # under this, and the number is not a measurement of anything.
 DEFAULT_TIMEOUT_SECONDS = 15
 
-# The child's own listening line. Used ONLY to sharpen the wording of a PASS (was
-# the bind observed, or did stdin EOF close the process first?) — never to decide
-# the verdict, so a wording change upstream can soften this message but can never
-# make it report the wrong result.
+# The child's own listening line, and the ONE place this tool couples to the entry's
+# prose — so the coupling is deliberately ASYMMETRIC. Seeing it upgrades an exit-0 to
+# a PASS; NOT seeing it withholds the pass (exit 2, unfinished measurement) and is
+# never, ever allowed to produce a FAILURE. So the worst a reworded line upstream can
+# do is make healthy deployments report "could not check" — annoying and visible —
+# rather than declaring the fleet broken, which is what keying a FAIL on it would do.
 LISTENING_MARKER = " listening on "
 
 EXIT_LAUNCH_OK = 0
@@ -98,17 +123,45 @@ def throwaway_socket_path(tmpdir: str) -> str:
 
 
 def child_env(parent_env, socket_path: str, runtime_dir: str) -> dict:
-    """The child's environment: the parent's, with every endpoint the server could
-    reach for OVERRIDDEN to something this run owns.
+    """The child's environment: the parent's, with EVERY channel-addressing input the
+    entry reads OVERRIDDEN to something this run owns.
 
-    All three are assignments, never `setdefault` — the seat exports its real values
-    and they must LOSE. Dropping any one of them puts a live endpoint back in reach:
-    `BRIDGE_CHANNEL_SOCKET` is the unix path the server binds and unlinks,
-    `BRIDGE_CHANNEL_PORT` is the loopback port it binds under
-    `BRIDGE_CHANNEL_TRANSPORT=http`, and `XDG_RUNTIME_DIR` is where a `.FAILED`
-    marker lands (and the only input to the default socket path, which is then moot).
+    All four are assignments, never `setdefault` — the seat exports the real values and
+    they must LOSE. Dropping any one puts a live endpoint, or the wrong platform
+    default, back in reach.
+
+    `BRIDGE_CHANNEL_TRANSPORT` is pinned to `http`, and it is the LOAD-BEARING one, for
+    two separate reasons.
+
+    CORRECTNESS. The entry defaults it to `unix` when unset. On a Windows seat the value
+    is set by the LAUNCHER's process (`examples/start-claude.ps1` exports it) and/or by
+    the `env` block of `.mcp.json` — neither of which a freshly-opened PowerShell
+    inherits. An unpinned child there therefore sees it unset, defaults to `unix`, binds
+    a filesystem socket, and Node on Win32 rejects that with EACCES: this tool would
+    print LAUNCH FAILED — *conclusive*, *will not come up at the next session start* —
+    about a perfectly healthy deployment, on exactly the seat population it exists to
+    serve. A confidently-wrong verdict is the worst thing a diagnostic can produce.
+
+    SAFETY, and this is why the pin is a better fix than another guard. An ephemeral
+    loopback bind is platform-uniform and ELIMINATES the live-unix-socket hazard class
+    outright rather than defending against it: the entry never reads the socket path at
+    all under `http`, so it can never bind — and therefore never `unlinkSync` — a socket
+    the seat is using. The `BRIDGE_CHANNEL_SOCKET` override and both refusals in
+    `run_launch_assert()` become belt-and-braces behind it. They are KEPT deliberately:
+    they are the layer that still holds if this pin is ever changed, and the cost of
+    keeping them is three lines.
+
+    The trade, stated rather than buried: the assert then proves an ephemeral LOOPBACK
+    bind, not that the seat's own configured endpoint is bindable. Module-graph
+    resolution — what the DL-230 incident breaks, and the reason this tool exists —
+    happens before either transport branch and is identical under both.
+
+    `BRIDGE_CHANNEL_PORT=0` is an ephemeral port, never the seat's configured one.
+    `XDG_RUNTIME_DIR` is where a `.FAILED` marker lands under either transport (and the
+    only input to the default socket path, which the pin makes moot anyway).
     """
     env = dict(parent_env)
+    env["BRIDGE_CHANNEL_TRANSPORT"] = "http"
     env["BRIDGE_CHANNEL_SOCKET"] = socket_path
     env["BRIDGE_CHANNEL_PORT"] = "0"
     env["XDG_RUNTIME_DIR"] = runtime_dir
@@ -194,20 +247,27 @@ def resolve_entry(path: str):
     return (entry, None, None)
 
 
-def _pass_message(entry: str, stderr: str) -> str:
-    what = (
-        "the module graph resolved and the listener bound"
-        if bind_observed(stderr)
-        else "the module graph resolved and the process exited cleanly (stdin EOF closed it "
-        "before a listening line was seen, so the bind itself was not observed)"
-    )
-
+def _pass_message(entry: str) -> str:
     return (
-        f"LAUNCH OK: {entry} came up under this user's node and exited 0 — {what}.\n"
+        f"LAUNCH OK: {entry} came up under this user's node and exited 0 — the module graph "
+        "resolved and the listener bound.\n"
         "  Bounded claim: this is a launch, not a soak. It says nothing about STEADY STATE, "
         "and nothing about whether this snapshot is STALE — staleness is `bridge:check`'s "
         "version leg, and a deployment the bridge process cannot traverse gets no staleness "
-        "verdict from anywhere today."
+        "verdict from anywhere today. The bind it proves is an ephemeral loopback one this "
+        "run owns, not your configured endpoint."
+    )
+
+
+def _exited_zero_without_binding_message(entry: str) -> str:
+    return (
+        f"COULD NOT CHECK: {entry} exited 0 but never reported a listening endpoint, so "
+        "nothing was proven in either direction. A healthy channel server binds and prints a "
+        "listening line before stdin EOF closes it; an entry that is EMPTY, truncated at a "
+        "valid parse point, or that returns before starting a listener also exits 0, and this "
+        "run cannot tell those apart. This is an unfinished measurement, NOT a pass. Check "
+        "the entry file is intact — its size, and that it still ends in the listener setup — "
+        "then re-run."
     )
 
 
@@ -296,13 +356,49 @@ def run_launch_assert(
             return EXIT_COULD_NOT_CHECK
 
         if proc.returncode == 0:
-            print(_pass_message(entry, proc.stderr), file=out)
+            # EXIT 0 IS NECESSARY BUT NOT SUFFICIENT. A zero-length entry — or one
+            # truncated at a valid parse point — exits 0 having started nothing, so
+            # reporting LAUNCH OK there would be the tool's own message contradicting
+            # its own measurement: the exit code is the whole contract and it would
+            # say the opposite of what happened.
+            #
+            # WHY THIS IS EXIT 2 AND NOT EXIT 1 — read before "upgrading" it. Deciding
+            # FAILED on the ABSENCE of a listening line would make the verdict rest on
+            # matching a log string: reword that line upstream and every healthy
+            # deployment on the fleet false-fails. The verdict must never couple to the
+            # entry's startup prose. So the marker is allowed to WITHHOLD a pass — an
+            # unfinished measurement — and is never allowed to produce a failure. That
+            # asymmetry is the whole design, and it is why the failure of the coupling
+            # is bounded to "you get told to look again" instead of "your working
+            # deployment is declared broken".
+            #
+            # It cannot false-withhold on a healthy snapshot: the shipped entry emits
+            # its listening line deterministically before stdin EOF can close it
+            # (measured 15/15, and 60/60 in the earlier ordering probe).
+            if not bind_observed(proc.stderr):
+                print(_exited_zero_without_binding_message(entry), file=out)
+                if (proc.stderr or "").strip():
+                    print("--- child stderr ---", file=out)
+                    print(proc.stderr.rstrip(), file=out)
+                return EXIT_COULD_NOT_CHECK
+
+            print(_pass_message(entry), file=out)
             return EXIT_LAUNCH_OK
 
+        # "will not come up" is conclusive for what this run controls, and the bound is
+        # named rather than left implied: a startup refusal driven by an env var this
+        # tool does NOT override still fires here (e.g. BRIDGE_TOOLS_SSH_TARGET and
+        # BRIDGE_TOOLS_ENDPOINT both set ⇒ refuseDeaf). That is a real config defect
+        # worth surfacing, but it belongs to the ENVIRONMENT this ran under — and a
+        # refusal configured only in .mcp.json's `env` block is invisible to us, so it
+        # can fire at session start without firing here. (Pinning the transport removed
+        # the other member of that class: an invalid BRIDGE_CHANNEL_TRANSPORT can no
+        # longer reach the child.)
         print(
-            f"LAUNCH FAILED: {entry} exited {proc.returncode} under this user's node — this "
-            "deployment will not come up at the next session start. The child's own stderr "
-            "below is the diagnosis.",
+            f"LAUNCH FAILED: {entry} exited {proc.returncode} under this user's node, in this "
+            "environment — this deployment will not come up at the next session start as "
+            "invoked here. The child's own stderr below is the diagnosis; if it names an env "
+            "var, check whether your .mcp.json sets it differently.",
             file=out,
         )
         print("--- child stderr ---", file=out)
