@@ -19,12 +19,12 @@ namespace App\Bridge\Support;
  * PATH, a different node — which is a proxy for the question, and swapping one proxy
  * for another is what DL-237 stopped doing.
  *
- * Severity ∈ {ok, warn, unvalidated, fail}; only `fail` flips `bridge:check`'s exit.
- * `unvalidated` (card 5170) is NOT a verdict about the deployment — it says the leg did
- * not run, so a green `bridge:check` is not evidence the snapshot is sound; `ok` means
- * measured-and-clean and must never carry a not-measured finding. Otherwise the same
- * `{severity, message}` finding shape the SSH transport probe emits. Branch order
- * is load-bearing (see {@see self::probe()}).
+ * Emits {@see Finding}s over the shared {@see Severity} vocabulary — the same primitive the
+ * SSH transport probe emits; only `fail` flips `bridge:check`'s exit. `unvalidated`
+ * (card 5170) is NOT a verdict about the deployment — it says the leg did not run, so a
+ * green `bridge:check` is not evidence the snapshot is sound; `ok` means measured-and-clean
+ * and must never carry a not-measured finding. Branch order is load-bearing
+ * (see {@see self::probe()}).
  */
 final class ChannelSnapshotProbe
 {
@@ -46,12 +46,12 @@ final class ChannelSnapshotProbe
      * @param  ?string  $serverPath  the agent's resolved `channel.server_path` (already
      *                               normalized to a directory), or null when undeclared
      * @param  string  $bundledDir  this checkout's `examples/channel-servers`
-     * @return list<array{severity: string, message: string}> each severity ∈ {ok, warn, unvalidated, fail}
+     * @return list<Finding>
      */
     public static function probe(?string $serverPath, string $bundledDir): array
     {
         if ($serverPath === null) {
-            return [self::unvalidated('channel.server_path not declared — snapshot not validated')];
+            return [Finding::unvalidated('channel.server_path not declared — snapshot not validated')];
         }
 
         // Resolve NON-STRICTLY. A strict resolve (realpath ⇒ false, or a throwing
@@ -76,10 +76,10 @@ final class ChannelSnapshotProbe
             // action than a dangling link, and reporting "repoint the symlink"
             // for it sends them after a symlink that isn't the problem.
             if (file_exists($resolved)) {
-                return [self::fail("channel server path {$where} names a file, not the channel-server directory — point channel.server_path at the deployed DIRECTORY (only the ".self::ENTRY_FILE.' entry form is normalized to its directory for you)')];
+                return [Finding::fail("channel server path {$where} names a file, not the channel-server directory — point channel.server_path at the deployed DIRECTORY (only the ".self::ENTRY_FILE.' entry form is normalized to its directory for you)')];
             }
 
-            return [self::fail("channel server path does not resolve (dangling symlink or removed directory): {$where} — the MCP server will not launch at next session start; the link target moved, repoint the symlink (or re-deploy the directory)")];
+            return [Finding::fail("channel server path does not resolve (dangling symlink or removed directory): {$where} — the MCP server will not launch at next session start; the link target moved, repoint the symlink (or re-deploy the directory)")];
         }
 
         $deployedDir = realpath($resolved) ?: $resolved;
@@ -118,7 +118,7 @@ final class ChannelSnapshotProbe
             // Repo-direct: the version compare would be a self-compare — the
             // deployment and the reference are one directory, so there is no drift
             // question to answer. The presence leg below still runs on it.
-            $findings = [self::ok("channel server path {$where} IS this checkout's examples/channel-servers — no snapshot to drift, version compare skipped")];
+            $findings = [Finding::ok("channel server path {$where} IS this checkout's examples/channel-servers — no snapshot to drift, version compare skipped")];
         } else {
             $findings = self::versionLeg($deployedDir, $bundledDir);
         }
@@ -168,12 +168,10 @@ final class ChannelSnapshotProbe
      * proxy for the question again, and "assert the thing, not a proxy" is the whole
      * reason the file-set compare was retired (DL-237). Per DL-236 (c) the severity
      * never flips the exit code; it renders plain and feeds the run's closing tally.
-     *
-     * @return array{severity: string, message: string}
      */
-    private static function launchNotMeasured(string $deployedDir): array
+    private static function launchNotMeasured(string $deployedDir): Finding
     {
-        return self::unvalidated("channel server snapshot at {$deployedDir} was NOT launch-tested — bridge:check never executes node, so a green run here is not evidence the entry will LOAD at the next session start (every leg above is stat-derived: a deployment missing a module the entry imports satisfies all of them and still dies on ERR_MODULE_NOT_FOUND). Run ".self::LAUNCH_ASSERT." {$deployedDir} ON THAT SEAT, as the OS user whose session launches the channel server — launching it from here would only prove it for the bridge's user, a different PATH and a different node");
+        return Finding::unvalidated("channel server snapshot at {$deployedDir} was NOT launch-tested — bridge:check never executes node, so a green run here is not evidence the entry will LOAD at the next session start (every leg above is stat-derived: a deployment missing a module the entry imports satisfies all of them and still dies on ERR_MODULE_NOT_FOUND). Run ".self::LAUNCH_ASSERT." {$deployedDir} ON THAT SEAT, as the OS user whose session launches the channel server — launching it from here would only prove it for the bridge's user, a different PATH and a different node");
     }
 
     /**
@@ -256,7 +254,7 @@ final class ChannelSnapshotProbe
      * PRECONDITION (established by the caller's one gate): $deployedDir is
      * traversable by this process, so the `package.json` stat below is conclusive.
      *
-     * @return list<array{severity: string, message: string}>
+     * @return list<Finding>
      */
     private static function versionLeg(string $deployedDir, string $bundledDir): array
     {
@@ -275,7 +273,7 @@ final class ChannelSnapshotProbe
                 default => 'repair the manifest — its `version` field is what the staleness compare reads',
             };
 
-            return [self::warn("channel server snapshot at {$deployedDir}: package.json ".self::manifestReason($deployed['status'])." — cannot tell whether the deployed copy is stale; {$advice}")];
+            return [Finding::warn("channel server snapshot at {$deployedDir}: package.json ".self::manifestReason($deployed['status'])." — cannot tell whether the deployed copy is stale; {$advice}")];
         }
 
         // The BUNDLED manifest is this checkout's own file and deliberately does NOT
@@ -293,12 +291,12 @@ final class ChannelSnapshotProbe
             // a tracked file). DL-236 (h) fixed it; the sibling has since gone with
             // its leg (DL-237), so this is the only survivor of that pair — the
             // reason it spells its action is unchanged.
-            return [self::warn("this checkout's {$bundledDir}/package.json ".self::manifestReason($bundled['status'])." — the deployed snapshot at {$deployedDir} (version {$deployed['version']}) cannot be version-compared; that file is tracked in this checkout, so restore or repair it, and check that this process can read it")];
+            return [Finding::warn("this checkout's {$bundledDir}/package.json ".self::manifestReason($bundled['status'])." — the deployed snapshot at {$deployedDir} (version {$deployed['version']}) cannot be version-compared; that file is tracked in this checkout, so restore or repair it, and check that this process can read it")];
         }
 
         $comparison = self::compareVersions($deployed['version'], $bundled['version']);
         if ($comparison < 0) {
-            return [self::warn("channel server snapshot at {$deployedDir} is STALE (deployed {$deployed['version']} < bundled {$bundled['version']}) — the next session starts on the older copy; {$resync}. To stop it recurring, deploy as a SYMLINK to {$bundledDir} rather than a copy: it resolves into the checkout, so there is nothing left to drift (a copy is still the answer when the deployment is on another host or another OS user's filesystem — see docs/multi-host.md)")];
+            return [Finding::warn("channel server snapshot at {$deployedDir} is STALE (deployed {$deployed['version']} < bundled {$bundled['version']}) — the next session starts on the older copy; {$resync}. To stop it recurring, deploy as a SYMLINK to {$bundledDir} rather than a copy: it resolves into the checkout, so there is nothing left to drift (a copy is still the answer when the deployment is on another host or another OS user's filesystem — see docs/multi-host.md)")];
         }
 
         // `>=`, and no second line for the NEWER case. Until DL-237 one existed, and
@@ -307,7 +305,7 @@ final class ChannelSnapshotProbe
         // rewritten: operator-facing output naming machinery that is gone is worse
         // than no line. Whether the deployment will LAUNCH is not this leg's question
         // on any branch either; {@see self::probe()} discloses that once, uniformly.
-        return [self::ok("channel server snapshot at {$deployedDir} is current (deployed {$deployed['version']} >= bundled {$bundled['version']})")];
+        return [Finding::ok("channel server snapshot at {$deployedDir} is current (deployed {$deployed['version']} >= bundled {$bundled['version']})")];
     }
 
     /**
@@ -345,20 +343,20 @@ final class ChannelSnapshotProbe
      * traversable by this process, and both stats below are DIRECT CHILDREN of it,
      * so both are conclusive.
      *
-     * @return list<array{severity: string, message: string}>
+     * @return list<Finding>
      */
     private static function presenceLeg(string $deployedDir): array
     {
         $entry = $deployedDir.'/'.self::ENTRY_FILE;
         if (! is_file($entry)) {
-            return [self::fail("channel server entry {$entry} does not exist — channel.server_path does not point at a channel-server deployment; the MCP server will not launch at next session start")];
+            return [Finding::fail("channel server entry {$entry} does not exist — channel.server_path does not point at a channel-server deployment; the MCP server will not launch at next session start")];
         }
 
         if (! is_dir($deployedDir.'/'.self::NODE_MODULES)) {
-            return [self::fail("channel server dependencies are not installed at {$deployedDir} (no node_modules) — the entry's bare imports (the MCP SDK, hono) die on ERR_MODULE_NOT_FOUND at next session start; run npm ci in {$deployedDir}")];
+            return [Finding::fail("channel server dependencies are not installed at {$deployedDir} (no node_modules) — the entry's bare imports (the MCP SDK, hono) die on ERR_MODULE_NOT_FOUND at next session start; run npm ci in {$deployedDir}")];
         }
 
-        return [self::ok("channel server deployment at {$deployedDir} has its entry file and node_modules — a presence check, not a load test: nothing here executes node, and whether the installed dependency TREE is complete is npm ci's business")];
+        return [Finding::ok("channel server deployment at {$deployedDir} has its entry file and node_modules — a presence check, not a load test: nothing here executes node, and whether the installed dependency TREE is complete is npm ci's business")];
     }
 
     /**
@@ -433,9 +431,8 @@ final class ChannelSnapshotProbe
      *                           (the entry file) while `+x` on the DIRECTORY is what
      *                           the operator has to grant — naming $path there sends
      *                           them to chmod a file.
-     * @return ?array{severity: string, message: string}
      */
-    private static function visibleOrUnverified(string $path, string $display): ?array
+    private static function visibleOrUnverified(string $path, string $display): ?Finding
     {
         if (self::ancestorIsTraversable($path)) {
             return null;
@@ -451,12 +448,10 @@ final class ChannelSnapshotProbe
      * established the denial segment-by-segment as it descended, so it already knew
      * which directory had denied traversal and called this directly rather than
      * re-deriving the answer through a second stat.
-     *
-     * @return array{severity: string, message: string}
      */
-    private static function unverifiedWarn(string $display): array
+    private static function unverifiedWarn(string $display): Finding
     {
-        return self::warn("channel server path {$display} is not visible to this user — a directory above it denies this process traversal (the bridge commonly runs as a different OS user than the agent, and the deployed directory itself is often 0700), so the snapshot could NOT be validated; re-run bridge:check as the agent's user, or grant it traversal");
+        return Finding::warn("channel server path {$display} is not visible to this user — a directory above it denies this process traversal (the bridge commonly runs as a different OS user than the agent, and the deployed directory itself is often 0700), so the snapshot could NOT be validated; re-run bridge:check as the agent's user, or grant it traversal");
     }
 
     /**
@@ -498,37 +493,5 @@ final class ChannelSnapshotProbe
         }
 
         return $path;
-    }
-
-    /**
-     * @return array{severity: string, message: string}
-     */
-    private static function ok(string $message): array
-    {
-        return ['severity' => 'ok', 'message' => $message];
-    }
-
-    /**
-     * @return array{severity: string, message: string}
-     */
-    private static function warn(string $message): array
-    {
-        return ['severity' => 'warn', 'message' => $message];
-    }
-
-    /**
-     * @return array{severity: string, message: string}
-     */
-    private static function unvalidated(string $message): array
-    {
-        return ['severity' => 'unvalidated', 'message' => $message];
-    }
-
-    /**
-     * @return array{severity: string, message: string}
-     */
-    private static function fail(string $message): array
-    {
-        return ['severity' => 'fail', 'message' => $message];
     }
 }

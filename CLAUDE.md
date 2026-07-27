@@ -12,7 +12,7 @@ A webhook receiver, classifier framework, and CLI for AI agents (or operators) i
 composer install
 vendor/bin/phpunit                                  # full test suite (SQLite in-memory)
 vendor/bin/pint --test                              # code style (Laravel preset)
-vendor/bin/phpstan analyse -c phpstan-laravel.neon  # static analysis (app/Bridge, level 7)
+vendor/bin/phpstan analyse -c phpstan-laravel.neon  # static analysis (app/Bridge + CheckCommand, level 7)
 
 # Operator CLI (per-agent config under ~/.config/agent-webhook-bridge[-prod|-dev]/<agent>.yml)
 php artisan bridge:check                 # validate the install (dirs, DB connectivity, agent YAMLs)
