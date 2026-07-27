@@ -1008,9 +1008,10 @@ class PipedConsumption(_TreeCase):
     the regimes diverge, and because the sizes bracket the real boundaries.
 
     The size table that motivated all this describes the PRE-FIX file, where the write
-    happened incrementally: 7,992 B -> exit 2, 15,292 B -> **120**, 59,092 B -> **120**,
-    118,093 B -> exit 2. It is history, not a current property, and it is labelled as
-    such here so nobody re-derives a live claim from it.
+    happened incrementally. It is history, not a current property, and it is NOT copied
+    here: it lived in three places, the third went unsynced and became false in the
+    present tense, and one owner beside the code that makes it true is the fix for that.
+    See `_deliver`'s docstring in check-channel-snapshot.py.
 
     The predecessor of this class asserted "the verdict survives a closed pipe on every
     exit code" using 695 B and 1,512 B fixtures that never broke a pipe either, and left
@@ -1091,16 +1092,41 @@ class PipedConsumption(_TreeCase):
         # an OSError the specific handlers would catch it and this would test them
         # instead — the point is precisely the fault nobody anticipated.
         tree = self.whole_copy("unanticipated")
+        minted = []
 
-        # Patched at a RUNTIME call site, not at `mkdtemp` — `run_launch_assert` binds
-        # that as a default argument at definition time, so patching the module
-        # attribute silently does nothing (it did, and this test failed green-side-up
-        # until the injection point was checked).
-        with mock.patch.object(ccs, "throwaway_socket_path", side_effect=RuntimeError("nobody enumerated this")):
+        def recording_mkdtemp(**kwargs):
+            path = tempfile.mkdtemp(**kwargs)
+            minted.append(path)
+            return path
+
+        # `throwaway_socket_path` is patched at a RUNTIME call site, not `mkdtemp` —
+        # `run_launch_assert` binds that as a DEFAULT ARGUMENT at definition time, so
+        # patching the module attribute silently does nothing. That blindness has now
+        # cost two attempts in this file, which is why the injection point is named here
+        # rather than left to be rediscovered. It is also exactly the call the ownership
+        # `try` wraps, so one fixture drives both halves below.
+        def exploding(*_args, **_kwargs):
+            raise RuntimeError("nobody enumerated this")
+
+        # HALF 1 — the VERDICT, through `main()`, where the catch-all lives.
+        with mock.patch.object(ccs, "throwaway_socket_path", exploding):
             code = ccs.main([tree])
 
         self.assertEqual(ccs.EXIT_COULD_NOT_CHECK, code)
         self.assertNotEqual(ccs.EXIT_LAUNCH_FAILED, code)
+
+        # HALF 2 — the CLEANUP, driven directly because `main()` has no seam for
+        # `mkdtemp` (see above). Without this assertion the ownership guard is the one
+        # layer of six with no suite guard: removing it leaks exactly one
+        # /tmp/channel-launch-assert-* per run while every test stays GREEN, so the fix
+        # would regress in silence — the failure mode nine rounds of this branch have
+        # been about.
+        with mock.patch.object(ccs, "throwaway_socket_path", exploding):
+            with self.assertRaises(RuntimeError):
+                ccs.run_launch_assert(tree, out=io.StringIO(), mkdtemp=recording_mkdtemp)
+
+        self.assertEqual(1, len(minted), "the run did not reach mkdtemp")
+        self.assertFalse(os.path.exists(minted[0]), "a fault before the launch leaked the temp dir")
 
     def test_a_closed_stdout_at_startup_does_not_invert_any_verdict(self):
         # `>&-`: fd 1 is CLOSED before the process starts, so CPython sets

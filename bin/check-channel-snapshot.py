@@ -61,8 +61,13 @@ EXIT CODES
      the pipe (`| head`, `grep -q`) cannot turn a conclusive 0 or 1 into a 2: the
      measurement completed, and delivering prose is not the measurement.
 
-     THE PROCESS EXIT IS ALWAYS 0, 1 OR 2 — asserted as a property over the branch
-     matrix rather than restated as prose, because prose is what drifted.
+     THE PROCESS EXIT IS ALWAYS 0, 1 OR 2 for any run that reaches a decision —
+     asserted as a property over the branch matrix rather than restated as prose,
+     because prose is what drifted. ONE DOCUMENTED ESCAPE, and it is deliberate:
+     `KeyboardInterrupt` is outside the catch-all (`Exception`, not `BaseException`),
+     so Ctrl-C during a launch that may run up to `--timeout` seconds dies by signal
+     as it should — 130 from a shell, not a verdict. `SystemExit` likewise keeps its
+     own status. Neither aliases 1, which is the thing the catch-all exists to stop.
 
 TWO BUILD REQUIREMENTS, both about not BREAKING the thing being diagnosed.
 
