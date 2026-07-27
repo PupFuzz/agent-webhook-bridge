@@ -14,7 +14,9 @@ namespace App\Bridge\Support;
  *  - serverPath      absolute path to the DEPLOYED channel-server directory the
  *                    agent's MCP client launches (DL-229). Operator-declared,
  *                    never inferred; normalized to the directory at load.
- *                    Null ⇒ bridge:check skips the snapshot legs with a notice.
+ *                    Null ⇒ bridge:check does not run the snapshot legs and
+ *                    reports them at severity `unvalidated`, never `ok`
+ *                    (DL-236): a check that did not run is not a pass.
  *
  * A value object (not a positional tuple) so adding the next channel field
  * doesn't silently mis-assign at the destructuring site — matches the

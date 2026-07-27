@@ -2433,11 +2433,13 @@ class BridgeCommandsTest extends TestCase
         return $dir;
     }
 
-    public function test_check_notices_when_channel_server_path_is_not_declared(): void
+    public function test_check_reports_an_undeclared_channel_server_path_as_unvalidated(): void
     {
-        // Absent ⇒ skip with a NOTICE, never silently and never a fail: the bridge
-        // cannot infer the path (it may run as a different OS user and cannot read
-        // the agent's .mcp.json), so an undeclared seat is unvalidated, not broken.
+        // Absent ⇒ severity `unvalidated`, never silently and never a fail: the
+        // bridge cannot infer the path (it may run as a different OS user and cannot
+        // read the agent's .mcp.json), so an undeclared seat is unvalidated, not
+        // broken — and "notice" is the name DL-236 (c) rejects, so it is not used
+        // for this behavior anywhere, including in the name of its own test.
         $this->writeAgentWithChannelServerPath(null);
 
         $code = Artisan::call('bridge:check');
@@ -2445,6 +2447,52 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(0, $code);
         $this->assertStringContainsString('channel.server_path not declared', $out);
         $this->assertStringContainsString('snapshot not validated', $out);
+        // card 5170: and the run DISCLOSES it in aggregate. Without the tally the
+        // only trace of a check that never ran is one line among dozens, and a
+        // zero exit reads as "everything validated".
+        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $out);
+        $this->assertStringContainsString('this run says nothing about what they would have found', $out);
+        // And it does not over-claim: the counted population is the `unvalidated`
+        // severity, NOT "checks that report a severity" — a check that could not
+        // run usually reports `warn` and is not in this number, so the tally's
+        // absence is never a certificate that every leg ran.
+        $this->assertStringContainsString('only checks reporting `unvalidated` are counted', $out);
+        $this->assertStringContainsString('no tally line does NOT mean every leg ran', $out);
+    }
+
+    public function test_check_prints_no_unvalidated_tally_when_every_leg_ran(): void
+    {
+        // card 5170: SILENT at zero, not "0 unvalidated". The tally is a
+        // disclosure about checks that did not run; an install with none has
+        // nothing to disclose, and a permanent zero line is noise operators learn
+        // to skip past — which is how the next non-zero one gets missed.
+        $deployed = $this->deploySnapshot($this->dir.'/deployed', '99.0.0');
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringNotContainsString('unvalidated', $out);
+        $this->assertStringNotContainsString('check(s) reported', $out);
+    }
+
+    public function test_the_unvalidated_tally_does_not_accumulate_across_invocations(): void
+    {
+        // The console command is resolved from the container, so a second
+        // Artisan::call in the same process can reuse THIS instance — an
+        // unreset counter would report 2 for one undeclared agent, and the
+        // green-vs-never-looked signal the tally exists to give would be a
+        // number nobody can trust.
+        $this->writeAgentWithChannelServerPath(null);
+
+        Artisan::call('bridge:check');
+        Artisan::output();
+        $code = Artisan::call('bridge:check');
+        $second = Artisan::output();
+
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $second);
+        $this->assertStringNotContainsString('2 check(s) reported', $second);
     }
 
     public function test_check_fails_on_a_dangling_channel_server_path(): void
