@@ -148,6 +148,96 @@ class CoordinationClassifierTest extends TestCase
     // gate-drop (default) to durable inbox-stage-without-wake, the PM completeness
     // backstop that doesn't depend on live-wake.
 
+    // ---- coord-message: bare_reply_to_own_thread (DL-235, roundtable #160) ----
+    //
+    // `reply-dir B`: a BARE reply (no TO: line) falls back to thread membership, so an
+    // agent wakes on a reply to a thread IT opened. Measured non-conformant on 6+ seats
+    // across 3 installs, none with a digest configured, 112 dropped comments per impl
+    // agent on one. The grant is narrow BY CONSTRUCTION — bare only, own-thread only,
+    // and echo-guarded — because `from_me` (the wide knob that already existed) was
+    // ruled the wrong answer by DL-213 on echo-safety and DL-190 on over-wake.
+
+    public function test_bare_reply_on_own_thread_wakes_by_default(): void
+    {
+        // The reported gap: thread is `from:me` with no `to:me`, the reply carries no
+        // TO: line. Before DL-235 this resolved to $forMe = false and was DROPPED.
+        $r = $this->classify('issue_comment.created',
+            ['issue' => ['number' => 9, 'title' => 'T', 'body' => 'thread body', 'labels' => [['name' => 'from:me'], ['name' => 'to:other']], 'html_url' => 'https://x/9'],
+                'comment' => ['body' => "FROM: other\n\na bare reply, no TO: line"]],
+            'org/coord');
+
+        $this->assertCount(1, $r->intents);
+        $this->assertCount(1, $r->targets);   // live wake
+    }
+
+    public function test_bare_reply_the_agent_authored_itself_does_not_wake(): void
+    {
+        // THE ECHO GUARD, and the whole reason this is not `from_me`. Under a shared
+        // account every seat posts as one identity, so actor id cannot tell my own
+        // comment from a counterparty's — the body FROM: line is the only discriminator.
+        // Without this clause an authorship-keyed grant self-wakes on its author's own
+        // bare follow-up: the cure carrying the disease DL-213 named.
+        $r = $this->classify('issue_comment.created',
+            ['issue' => ['number' => 9, 'title' => 'T', 'body' => 'b', 'labels' => [['name' => 'from:me'], ['name' => 'to:other']], 'html_url' => 'https://x/9'],
+                'comment' => ['body' => "FROM: me\n\nmy own follow-up on my own thread"]],
+            'org/coord');
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_bare_reply_on_someone_elses_thread_still_does_not_wake(): void
+    {
+        // NARROW: own-thread only. A bare reply on a thread this agent neither opened
+        // nor was labelled on is still not its business — that is `to:`/`comment_to`
+        // territory, and widening here would be the over-wake DL-190 removed.
+        $r = $this->classify('issue_comment.created',
+            ['issue' => ['number' => 9, 'title' => 'T', 'body' => 'b', 'labels' => [['name' => 'from:other'], ['name' => 'to:third']], 'html_url' => 'https://x/9'],
+                'comment' => ['body' => "FROM: other\n\na bare reply"]],
+            'org/coord');
+
+        $this->assertSame([], $r->intents);
+    }
+
+    public function test_a_reply_addressed_elsewhere_on_own_thread_still_narrows(): void
+    {
+        // The unconditional narrow outranks the new grant: an explicit TO: someone-else
+        // means NOT for me, even on my own thread. The grant fires only on $addressed
+        // === null, never on false.
+        $r = $this->classify('issue_comment.created',
+            ['issue' => ['number' => 9, 'title' => 'T', 'body' => 'b', 'labels' => [['name' => 'from:me']], 'html_url' => 'https://x/9'],
+                'comment' => ['body' => "FROM: other\nTO: third\n\nnot for me"]],
+            'org/coord');
+
+        $this->assertSame([], $r->intents);
+    }
+
+    public function test_bare_reply_grant_can_be_disabled_by_an_explicit_membership_list(): void
+    {
+        // An install that deliberately wants the pre-DL-235 behavior sets the list
+        // explicitly — the default only reaches installs with no explicit key.
+        $r = $this->classify('issue_comment.created',
+            ['issue' => ['number' => 9, 'title' => 'T', 'body' => 'b', 'labels' => [['name' => 'from:me'], ['name' => 'to:other']], 'html_url' => 'https://x/9'],
+                'comment' => ['body' => "FROM: other\n\nbare"]],
+            'org/coord', classifierConfig: ['wake_membership' => ['to_me', 'to_all', 'comment_to']]);
+
+        $this->assertSame([], $r->intents);
+    }
+
+    public function test_bare_reply_with_no_from_line_still_grants(): void
+    {
+        // An unattributable author (no FROM: line) yields null !== 'me', so it grants.
+        // Correct: the narrow already denied anything addressed elsewhere, and a bare
+        // unattributed reply on a thread I opened is still a reply to me. Fail-open here
+        // is the safe direction — the failure this closes is a MISSED wake.
+        $r = $this->classify('issue_comment.created',
+            ['issue' => ['number' => 9, 'title' => 'T', 'body' => 'b', 'labels' => [['name' => 'from:me'], ['name' => 'to:other']], 'html_url' => 'https://x/9'],
+                'comment' => ['body' => 'no addressing lines at all']],
+            'org/coord');
+
+        $this->assertCount(1, $r->intents);
+    }
+
     public function test_coord_non_addressed_default_drops(): void
     {
         // DEFAULT `drop`: a non-addressed coord event yields no intent — byte-identical
@@ -281,6 +371,113 @@ class CoordinationClassifierTest extends TestCase
     public function test_workflow_run_failure_wakes(): void
     {
         $r = $this->classify('workflow_run.completed', ['workflow_run' => ['status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5, 'html_url' => 'https://r/5']], 'org/impl', classifierConfig: $this->implConfig());
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
+    /**
+     * The bot run this knob exists to silence: a FAILING CI run, which without the
+     * deny-list wakes (see test_workflow_run_failure_wakes, same payload + config).
+     * Keying on WHO rather than the conclusion is the point — a bot's PR is the PM's
+     * including its red runs. RED-when-reverted: drop the deny gate and this wakes.
+     */
+    public function test_denied_actor_does_not_wake_even_on_a_failing_run(): void
+    {
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => [
+            'status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5, 'html_url' => 'https://r/5',
+            'triggering_actor' => ['login' => 'dependabot[bot]', 'id' => 49699333],
+        ]], 'org/impl', classifierConfig: $this->implConfig(['impl_wake_deny_actors' => ['dependabot[bot]']]));
+
+        $this->assertSame([], $r->intents);
+        $this->assertSame([], $r->targets);
+    }
+
+    public function test_denied_actor_matches_by_numeric_id_too(): void
+    {
+        // Logins rename; the numeric account id does not. Both spellings must work.
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => [
+            'status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5,
+            'triggering_actor' => ['login' => 'renamed-since', 'id' => 49699333],
+        ]], 'org/impl', classifierConfig: $this->implConfig(['impl_wake_deny_actors' => ['49699333']]));
+
+        $this->assertSame([], $r->intents);
+    }
+
+    /**
+     * THE FIELD CHOICE, pinned on a SYNTHETIC payload because it is not observable here:
+     * 200 real workflow_run payloads on this install carried 0 actor/triggering_actor
+     * divergence and only 2 re-runs, both re-run by the same account — a sample that never
+     * contained the condition. So the two are made to differ deliberately.
+     *
+     * A human re-running a bot's workflow is a human asking for that result: triggering_actor
+     * is the human ⇒ WAKES. Keying on `actor` (who triggered the ORIGINAL run) would suppress
+     * it. RED-when-reverted: read 'actor' first in implWakeActorDenied() and this goes silent.
+     */
+    public function test_human_rerun_of_a_denied_actors_workflow_still_wakes(): void
+    {
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => [
+            'status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5, 'html_url' => 'https://r/5',
+            'run_attempt' => 2,
+            'actor' => ['login' => 'dependabot[bot]', 'id' => 49699333],   // triggered the ORIGINAL run
+            'triggering_actor' => ['login' => 'a-human', 'id' => 4242],    // caused THIS run
+        ]], 'org/impl', classifierConfig: $this->implConfig(['impl_wake_deny_actors' => ['dependabot[bot]']]));
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
+    public function test_denied_actor_is_a_non_wake_not_a_drop_under_inbox_stage(): void
+    {
+        // sola's load-bearing requirement (roundtable #163): the filter must produce a
+        // non-wake that flows through impl_non_wake_disposition, never a pre-gate drop —
+        // otherwise the knob is lossy by default and un-opt-out-able. Digest, not drop.
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => [
+            'status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5, 'html_url' => 'https://r/5',
+            'triggering_actor' => ['login' => 'dependabot[bot]', 'id' => 49699333],
+        ]], 'org/impl', classifierConfig: $this->implConfig([
+            'impl_wake_deny_actors' => ['dependabot[bot]'],
+            'impl_non_wake_disposition' => 'inbox_stage',
+        ]));
+
+        $this->assertCount(1, $r->intents);          // the record survives
+        $this->assertSame([], $r->targets);          // but no live wake
+    }
+
+    public function test_denied_actor_on_a_push_keys_on_sender(): void
+    {
+        $r = $this->classify('push', [
+            'ref' => 'refs/heads/main', 'after' => 'abc1234',
+            'head_commit' => ['message' => 'chore(deps): bump lib'],
+            'sender' => ['login' => 'dependabot[bot]', 'id' => 49699333],
+        ], 'org/impl', classifierConfig: $this->implConfig([
+            'release_branch' => 'main',
+            'impl_wake_deny_actors' => ['dependabot[bot]'],
+        ]));
+
+        $this->assertSame([], $r->intents);
+    }
+
+    public function test_non_denied_actor_is_unaffected_by_a_populated_deny_list(): void
+    {
+        // The negative control that makes the suppressions attributable to the LIST rather
+        // than to the gate existing at all.
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => [
+            'status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5, 'html_url' => 'https://r/5',
+            'triggering_actor' => ['login' => 'a-human', 'id' => 4242],
+        ]], 'org/impl', classifierConfig: $this->implConfig(['impl_wake_deny_actors' => ['dependabot[bot]']]));
+
+        $this->assertCount(1, $r->intents);
+        $this->assertSame('impl_ci_failed', $r->intents[0]->kind);
+    }
+
+    public function test_absent_deny_list_is_byte_identical(): void
+    {
+        // Absent ⇒ prior behavior, even for an actor an install might want denied.
+        $r = $this->classify('workflow_run.completed', ['workflow_run' => [
+            'status' => 'completed', 'conclusion' => 'failure', 'name' => 'CI', 'id' => 5, 'html_url' => 'https://r/5',
+            'triggering_actor' => ['login' => 'dependabot[bot]', 'id' => 49699333],
+        ]], 'org/impl', classifierConfig: $this->implConfig());
 
         $this->assertCount(1, $r->intents);
         $this->assertSame('impl_ci_failed', $r->intents[0]->kind);

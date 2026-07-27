@@ -260,11 +260,33 @@ final class AgentConfig
             throw new ConfigException('channel.auth.token_path requires the HTTP transport (channel.url) — a UDS channel uses filesystem permissions, not a Bearer token');
         }
 
+        // channel.server_path (DL-229): the DEPLOYED channel-server directory (or its
+        // entry .mjs, normalized to the directory here) the agent's MCP client launches
+        // at session start — what bridge:check certifies as a SNAPSHOT, distinct from
+        // the running socket. OPTIONAL and never inferred: the bridge may run as a
+        // different OS user and cannot read the agent's .mcp.json, so inference would
+        // produce a confident wrong answer — the operator TELLS us, exactly like
+        // board_tools.ssh_account (DL-224). Format-validated like channel.socket and
+        // deliberately NOT stat()ed here: whether the deployed copy exists is a
+        // bridge:check verdict, not a load-time fatal that would 5xx the fleet.
+        $serverPath = null;
+        $rawServerPath = $channel['server_path'] ?? null;
+        if ($rawServerPath !== null) {
+            $serverPath = is_scalar($rawServerPath) ? (string) $rawServerPath : '';
+            if (! SocketPath::isValid($serverPath)) {
+                throw new ConfigException("channel.server_path '{$serverPath}' must be an absolute path with no '..' segment or null byte");
+            }
+            if (str_ends_with($serverPath, '.mjs')) {
+                $serverPath = dirname($serverPath);
+            }
+        }
+
         return new ChannelConfig(
             socket: $socketStr,
             url: $urlStr,
             routeIntents: $routeIntents,
             tokenPath: $tokenPath,
+            serverPath: $serverPath,
         );
     }
 

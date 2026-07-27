@@ -4,6 +4,7 @@ namespace Tests\Feature\Console;
 
 use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Support\ChannelSnapshotProbe;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Writeback\KanbanClient;
 use App\Console\Commands\Bridge\InboxCommand;
@@ -2386,6 +2387,525 @@ class BridgeCommandsTest extends TestCase
         $out = Artisan::output();
         $this->assertSame(0, $code);
         $this->assertStringContainsString('nothing is listening', $out);
+    }
+
+    // ---- channel-server SNAPSHOT legs (DL-229, card 5108) -------------------
+    // bridge:check certified the running socket but never the DEPLOYED files the
+    // next session respawns from.
+
+    private function writeAgentWithChannelServerPath(?string $serverPath): void
+    {
+        $block = "channel:\n  socket: {$this->dir}/snap.sock\n";
+        if ($serverPath !== null) {
+            $block .= "  server_path: {$serverPath}\n";
+        }
+        File::put($this->dir.'/prod-agent.yml',
+            "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+            .$block);
+    }
+
+    /**
+     * A healthy deployed snapshot at $version: the entry file, a manifest, the
+     * sibling module, and installed dependencies. Pass $omit to drop one of the
+     * relative paths, $withNodeModules: false for the never-ran-npm-ci case.
+     *
+     * @param  list<string>  $omit
+     */
+    private function deploySnapshot(string $dir, string $version, array $omit = [], bool $withNodeModules = true): string
+    {
+        File::ensureDirectoryExists($dir);
+        $files = [
+            'package.json' => (string) json_encode(['name' => 'snap', 'version' => $version]),
+            ChannelSnapshotProbe::ENTRY_FILE => "import http from 'node:http';\nimport { deriveMeta } from './channel-lib.mjs';\n",
+            'channel-lib.mjs' => "export const deriveMeta = () => ({});\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            if (in_array($relative, $omit, true)) {
+                continue;
+            }
+            File::put($dir.'/'.$relative, $contents);
+        }
+        if ($withNodeModules) {
+            File::ensureDirectoryExists($dir.'/node_modules');
+        }
+
+        return $dir;
+    }
+
+    public function test_check_reports_an_undeclared_channel_server_path_as_unvalidated(): void
+    {
+        // Absent ⇒ severity `unvalidated`, never silently and never a fail: the
+        // bridge cannot infer the path (it may run as a different OS user and cannot
+        // read the agent's .mcp.json), so an undeclared seat is unvalidated, not
+        // broken — and "notice" is the name DL-236 (c) rejects, so it is not used
+        // for this behavior anywhere, including in the name of its own test.
+        $this->writeAgentWithChannelServerPath(null);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('channel.server_path not declared', $out);
+        $this->assertStringContainsString('snapshot not validated', $out);
+        // card 5170: and the run DISCLOSES it in aggregate. Without the tally the
+        // only trace of a check that never ran is one line among dozens, and a
+        // zero exit reads as "everything validated".
+        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $out);
+        $this->assertStringContainsString('this run says nothing about what they would have found', $out);
+        // And it does not over-claim: the counted population is the `unvalidated`
+        // severity, NOT "checks that report a severity" — a check that could not
+        // run usually reports `warn` and is not in this number, so the tally's
+        // absence is never a certificate that every leg ran.
+        $this->assertStringContainsString('only checks reporting `unvalidated` are counted', $out);
+        $this->assertStringContainsString('no tally line does NOT mean every leg ran', $out);
+    }
+
+    public function test_check_prints_no_unvalidated_tally_when_every_leg_ran(): void
+    {
+        // card 5170: SILENT at zero, not "0 unvalidated". The tally is a
+        // disclosure about checks that did not run; an install with none has
+        // nothing to disclose, and a permanent zero line is noise operators learn
+        // to skip past — which is how the next non-zero one gets missed.
+        $deployed = $this->deploySnapshot($this->dir.'/deployed', '99.0.0');
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringNotContainsString('unvalidated', $out);
+        $this->assertStringNotContainsString('check(s) reported', $out);
+    }
+
+    public function test_the_unvalidated_tally_does_not_accumulate_across_invocations(): void
+    {
+        // The console command is resolved from the container, so a second
+        // Artisan::call in the same process can reuse THIS instance — an
+        // unreset counter would report 2 for one undeclared agent, and the
+        // green-vs-never-looked signal the tally exists to give would be a
+        // number nobody can trust.
+        $this->writeAgentWithChannelServerPath(null);
+
+        Artisan::call('bridge:check');
+        Artisan::output();
+        $code = Artisan::call('bridge:check');
+        $second = Artisan::output();
+
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $second);
+        $this->assertStringNotContainsString('2 check(s) reported', $second);
+    }
+
+    public function test_check_fails_on_a_dangling_channel_server_path(): void
+    {
+        // Branch 1 — existence BEFORE classification. A dangling symlink resolves
+        // non-strictly to a stale path that differs from the checkout; classifying
+        // first would version-compare against a directory that is not there.
+        $target = $this->dir.'/removed-deployment';
+        $link = $this->dir.'/channel-server';
+        File::ensureDirectoryExists($target);
+        symlink($target, $link);
+        File::deleteDirectory($target);
+        $this->writeAgentWithChannelServerPath($link);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('channel server path does not resolve', $out);
+        $this->assertStringContainsString('repoint the symlink', $out);
+        // Each FAIL message is distinct — same severity, different operator action;
+        // merging them hands out the wrong instruction half the time.
+        $this->assertStringNotContainsString('dependencies are not installed', $out);
+        $this->assertStringNotContainsString('names a file', $out);
+    }
+
+    public function test_check_fails_when_the_deployment_has_no_node_modules(): void
+    {
+        // The half-completed re-sync: `cp -R` done, `npm ci` never run. Node then
+        // dies on ERR_MODULE_NOT_FOUND for the MCP SDK at the next session start,
+        // and nothing else in bridge:check sees it. A distinct FAIL because it is a
+        // distinct operator action.
+        $deployed = $this->deploySnapshot($this->dir.'/deployed', '99.0.0', withNodeModules: false);
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('dependencies are not installed', $out);
+        $this->assertStringContainsString('run npm ci in '.$deployed, $out);
+        // Distinct from the other FAILs, and it must NOT certify the deployment.
+        $this->assertStringNotContainsString('does not exist', $out);
+        $this->assertStringNotContainsString('repoint the symlink', $out);
+        $this->assertStringNotContainsString('has its entry file and node_modules', $out);
+    }
+
+    public function test_check_does_not_claim_the_entry_loads(): void
+    {
+        // A healthy snapshot is certified only for what was actually tested: no node
+        // was executed, so "loads" is a claim this probe cannot make — and the one
+        // it used to make while node died on a missing bare dependency.
+        $deployed = $this->deploySnapshot($this->dir.'/deployed', '99.0.0');
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('has its entry file and node_modules', $out);
+        $this->assertStringContainsString('a presence check, not a load test', $out);
+        $this->assertStringNotContainsString('loads', $out);
+    }
+
+    public function test_check_reports_a_server_path_that_names_a_file_as_a_file(): void
+    {
+        // The path resolves fine — it just is not a directory. AgentConfig
+        // normalizes only the `.mjs` entry suffix, so an operator pointing at
+        // `server.js` or a wrapper lands here and used to be told to "repoint the
+        // symlink" for a path with no symlink in it.
+        $wrapper = $this->dir.'/launch-channel.js';
+        File::put($wrapper, "require('./real');\n");
+        $this->writeAgentWithChannelServerPath($wrapper);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('names a file, not the channel-server directory', $out);
+        $this->assertStringNotContainsString('repoint the symlink', $out);
+        $this->assertStringNotContainsString('does not resolve', $out);
+    }
+
+    public function test_check_warns_when_the_deployed_snapshot_is_stale(): void
+    {
+        // Branch 3 — a real snapshot (resolves outside the checkout) ⇒ both legs.
+        // WARN, not fail: a stale copy still launches, it just lacks newer fixes.
+        $deployed = $this->deploySnapshot($this->dir.'/deployed', '0.0.1');
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('is STALE (deployed 0.0.1 < bundled', $out);
+        $this->assertStringContainsString('npm ci', $out);
+        // The one-time cure AND the permanent one: a symlinked deployment resolves
+        // into the checkout, so the version compare becomes a self-compare and the
+        // whole staleness class stops recurring. Named here because a re-copy fixes
+        // this instance and leaves the next one to happen.
+        $this->assertStringContainsString('deploy as a SYMLINK to '.base_path('examples/channel-servers'), $out);
+        $this->assertStringContainsString('has its entry file and node_modules', $out);
+    }
+
+    public function test_check_accepts_a_current_snapshot_and_takes_the_entry_mjs_form(): void
+    {
+        // A far-future version is "current" whatever the bundled one is, so the
+        // assertion doesn't drift with every channel-server bump. server_path is
+        // given as the ENTRY .mjs — normalized to its directory at load.
+        $deployed = $this->deploySnapshot($this->dir.'/deployed', '99.0.0');
+        $this->writeAgentWithChannelServerPath($deployed.'/agent-webhook-bridge-channel.mjs');
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('is current (deployed 99.0.0 >= bundled', $out);
+    }
+
+    public function test_check_warns_and_names_absence_when_the_deployed_package_json_is_missing(): void
+    {
+        // The version leg never crashes on it: a manifest that is not there is one
+        // of the four causes, and the only one the destructive re-copy answers.
+        // WARN, not FAIL — the entry file and node_modules are both present, so the
+        // MCP server still launches; we just cannot say whether it is current.
+        $deployed = $this->deploySnapshot($this->dir.'/deployed', '0.8.0', omit: ['package.json']);
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('package.json is not present', $out);
+        $this->assertStringContainsString('cannot tell whether the deployed copy is stale; re-copy the WHOLE directory (cp -R ', $out);
+    }
+
+    public function test_check_warns_without_destructive_advice_when_package_json_is_unreadable(): void
+    {
+        // SPLIT FROM THE ABOVE (canon #7): "missing or unreadable … cp -R" was false
+        // here (the file is right there) and its advice was wrong — a copy lands
+        // with the same ownership problem while overwriting the entry file and every
+        // other local edit on its way past. The directory stays traversable, so the
+        // hoisted visibility gate passes and this is genuinely a per-FILE read
+        // failure, not an invisible path.
+        if (function_exists('posix_getuid') && posix_getuid() === 0) {
+            $this->markTestSkipped('root reads a 0000 file');
+        }
+        $deployed = $this->deploySnapshot($this->dir.'/deployed', '0.8.0');
+        chmod($deployed.'/package.json', 0000);
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        try {
+            $code = Artisan::call('bridge:check');
+            $out = Artisan::output();
+        } finally {
+            chmod($deployed.'/package.json', 0644);
+        }
+
+        $this->assertSame(0, $code);   // warn, never a fail
+        $this->assertStringContainsString('package.json exists but is not readable by this user', $out);
+        $this->assertStringNotContainsString('is not present', $out);
+        $this->assertStringNotContainsString('cp -R', $out);
+    }
+
+    public function test_check_warns_and_names_malformation_when_package_json_does_not_parse(): void
+    {
+        // The fourth cause, and the third one "missing or unreadable" misreported.
+        // A corrupt manifest does not need a whole directory replaced.
+        $deployed = $this->deploySnapshot($this->dir.'/deployed', '0.8.0');
+        File::put($deployed.'/package.json', "{ not json at all\n");
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('package.json does not parse as a JSON object', $out);
+        $this->assertStringContainsString('repair the manifest', $out);
+        $this->assertStringNotContainsString('is not present', $out);
+        $this->assertStringNotContainsString('cp -R', $out);
+    }
+
+    public function test_check_skips_the_version_leg_for_a_repo_direct_server_path(): void
+    {
+        // Branch 2 — classified on the RESOLVED REALPATH. The symlinked topology
+        // (~/agent-webhook-bridge-channel → <checkout>/examples/channel-servers)
+        // LOOKS external but resolves internal: the snapshot IS the checkout, so a
+        // version compare would be a meaningless self-compare.
+        $link = $this->dir.'/channel-server';
+        symlink(base_path('examples/channel-servers'), $link);
+        $this->writeAgentWithChannelServerPath($link);
+
+        // The dependency leg applies HERE TOO — an agent whose MCP client launches
+        // straight out of the checkout needs node_modules exactly as much as a
+        // copied snapshot does (CLAUDE_DEPLOYMENT.md: "just run npm ci in that
+        // dir"). node_modules is gitignored, so it is present after a local npm ci
+        // and absent in CI: pin it either way rather than letting the ambient
+        // checkout decide this test's verdict.
+        $modules = base_path('examples/channel-servers/node_modules');
+        $borrowed = ! is_dir($modules);
+        if ($borrowed) {
+            File::ensureDirectoryExists($modules);
+        }
+
+        try {
+            $code = Artisan::call('bridge:check');
+            $out = Artisan::output();
+        } finally {
+            if ($borrowed) {
+                File::deleteDirectory($modules);
+            }
+        }
+
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString("IS this checkout's examples/channel-servers", $out);
+        $this->assertStringContainsString('version compare skipped', $out);
+        $this->assertStringNotContainsString('is current (deployed', $out);
+        $this->assertStringNotContainsString('is STALE (deployed', $out);
+        // The presence leg still runs on the repo-direct copy and needs NO special
+        // case for it — asserted rather than reasoned about, since the repo-direct
+        // symlink is the topology the reference README recommends.
+        $this->assertStringContainsString('has its entry file and node_modules', $out);
+    }
+
+    public function test_check_warns_rather_than_fails_when_the_path_is_invisible_to_this_user(): void
+    {
+        // A path we cannot SEE is not a path that is gone: an ancestor denying
+        // traversal makes is_dir() false exactly as a removed directory does, and the
+        // bridge routinely runs as a DIFFERENT OS user than the agent (DL-227's
+        // same-box topology). Asserting the fatal there would be the confident wrong
+        // answer this whole check exists to avoid.
+        if (function_exists('posix_getuid') && posix_getuid() === 0) {
+            $this->markTestSkipped('root bypasses directory permission checks');
+        }
+        $outer = $this->dir.'/private-home';
+        $deployed = $this->deploySnapshot($outer.'/channel-servers', '0.8.0');
+        chmod($outer, 0000);
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        try {
+            $code = Artisan::call('bridge:check');
+            $out = Artisan::output();
+        } finally {
+            chmod($outer, 0755);   // or tearDown cannot delete the tree
+        }
+
+        $this->assertSame(0, $code);   // NOT a fail — we could not conclude
+        $this->assertStringContainsString('is not visible to this user', $out);
+        $this->assertStringContainsString('could NOT be validated', $out);
+        $this->assertStringNotContainsString('does not resolve', $out);
+    }
+
+    public function test_check_warns_rather_than_fails_when_the_deployed_directory_itself_denies_traversal(): void
+    {
+        // The SIBLING of the test above, and the topology DL-227 is actually built
+        // around: the deployment directory ITSELF is 0700 to the bridge's user.
+        // Statting a directory needs +x on its PARENT, not on itself, so is_dir()
+        // returns TRUE here and the existence branch is skipped entirely — every
+        // downstream stat (package.json, the entry file) then hits the same
+        // EACCES/ENOENT ambiguity with no guard, and a healthy, current deployment
+        // was reported as "does not point at a channel-server deployment" with
+        // `cp -R` remediation that would overwrite it.
+        if (function_exists('posix_getuid') && posix_getuid() === 0) {
+            $this->markTestSkipped('root bypasses directory permission checks');
+        }
+        $deployed = $this->deploySnapshot($this->dir.'/deployed', '99.0.0');
+        chmod($deployed, 0000);
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        try {
+            $this->assertTrue(is_dir($deployed), 'the premise: the leaf denies traversal but still stats as a directory');
+            $code = Artisan::call('bridge:check');
+            $out = Artisan::output();
+        } finally {
+            chmod($deployed, 0755);   // or tearDown cannot delete the tree
+        }
+
+        $this->assertSame(0, $code);   // NOT a fail — we could not conclude
+        $this->assertStringContainsString('is not visible to this user', $out);
+        $this->assertStringContainsString('could NOT be validated', $out);
+        $this->assertStringNotContainsString('does not point at a channel-server deployment', $out);
+        $this->assertStringNotContainsString('cp -R', $out);
+        $this->assertStringNotContainsString('dependencies are not installed', $out);
+        // ONE warn, naming the DIRECTORY that needs +x. Guarding per-stat instead
+        // emitted this twice and named a FILE (…/package.json, then …/-channel.mjs)
+        // as the "channel server path" — sending the operator to chmod a file.
+        $this->assertStringContainsString("channel server path {$deployed} is not visible", $out);
+        $this->assertSame(1, substr_count($out, 'is not visible to this user'));
+        $this->assertStringNotContainsString('package.json is not visible', $out);
+        $this->assertStringNotContainsString(ChannelSnapshotProbe::ENTRY_FILE.' is not visible', $out);
+    }
+
+    public function test_check_fails_when_channel_server_path_is_not_a_deployment(): void
+    {
+        // A resolvable directory with no entry file in it — `server_path` points at
+        // the wrong place, and there is nothing for the MCP client to launch.
+        // Without this single existence test an EMPTY directory certifies clean.
+        // Distinct from the dangling message: a different operator action.
+        File::ensureDirectoryExists($this->dir.'/empty');
+        $this->writeAgentWithChannelServerPath($this->dir.'/empty');
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('does not point at a channel-server deployment', $out);
+        $this->assertStringNotContainsString('repoint the symlink', $out);
+        $this->assertStringNotContainsString('has its entry file and node_modules', $out);
+    }
+
+    // ---- the VERSION-GATED completeness leg (DL-230) ------------------------
+    // DL-229 shipped a check that passed GREEN on the incident that motivated the
+    // whole feature: a cherry-picked entry + package.json carry the CURRENT version
+    // stamp with them, so the version leg reads "current" and every other leg is
+    // satisfied while `node` on that same directory gives ERR_MODULE_NOT_FOUND.
+    // These two run through the REAL command against the REAL checkout reference
+    // (the unit suite covers the matrix hermetically).
+
+    /**
+     * A whole-directory copy of this checkout's `examples/channel-servers`, minus
+     * $omit, plus the `node_modules` a prior `npm ci` left behind. Deliberately walks
+     * the reference itself rather than asking the probe what it holds — a fixture
+     * built from the SUT's own enumeration would agree with any answer it gave.
+     *
+     * @param  list<string>  $omit
+     */
+    private function copyOfTheReference(string $dir, array $omit = []): string
+    {
+        $reference = base_path('examples/channel-servers');
+        $walk = function (string $from, string $prefix) use (&$walk, $dir, $omit): void {
+            foreach (array_diff((array) scandir($from), ['.', '..', 'node_modules']) as $entry) {
+                $path = $from.'/'.$entry;
+                $relative = $prefix.$entry;
+                if (is_dir($path)) {
+                    $walk($path, $relative.'/');
+
+                    continue;
+                }
+                if (! in_array($relative, $omit, true)) {
+                    File::ensureDirectoryExists(dirname($dir.'/'.$relative));
+                    File::copy($path, $dir.'/'.$relative);
+                }
+            }
+        };
+        File::ensureDirectoryExists($dir);
+        $walk($reference, '');
+        File::ensureDirectoryExists($dir.'/node_modules');
+
+        return $dir;
+    }
+
+    public function test_check_fails_on_a_version_matched_snapshot_missing_a_reference_file(): void
+    {
+        // THE MOTIVATING INCIDENT. The deployed version is read from the checkout so
+        // the fixture stays version-EQUAL across every channel-server bump — the
+        // whole gate turns on that equality.
+        $deployed = $this->copyOfTheReference($this->dir.'/deployed', omit: ['channel-lib.mjs']);
+
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('is MISSING 1 of ', $out);
+        $this->assertStringContainsString('delivers: channel-lib.mjs.', $out);
+        // The verdict claims only what was STAT'ed. It does NOT say the deployment
+        // was assembled by hand: the DL-038 bump guard governs the TRACKED set while
+        // the reference set is the working tree, so an untracked stray in the
+        // checkout (a `.orig` from `git apply --3way`) puts a FAITHFUL whole-directory
+        // copy in this same population — DL-230 (f). Unit-covered hermetically.
+        $this->assertStringNotContainsString('assembled file-by-file', $out);
+        // The legs that certified this deployment green before DL-230 still do; the
+        // incident was that they were the only ones asked.
+        $this->assertStringContainsString('is current (deployed ', $out);
+        $this->assertStringContainsString('has its entry file and node_modules', $out);
+        // Distinct from every other FAIL — a different operator action.
+        $this->assertStringNotContainsString('repoint the symlink', $out);
+        $this->assertStringNotContainsString('dependencies are not installed', $out);
+    }
+
+    public function test_check_still_exits_1_when_a_blocked_subdirectory_sits_beside_a_missing_file(): void
+    {
+        // Exit-code proof for DL-230 (e): an unseeable `tests/` must not swallow a
+        // module PROVEN absent through a traversable parent. Returning the visibility
+        // WARN on the first block did exactly that — one WARN, exit 0, a dark seat at
+        // the next session start, which is this card's own defect class.
+        if (function_exists('posix_getuid') && posix_getuid() === 0) {
+            $this->markTestSkipped('root bypasses directory permission checks');
+        }
+        $deployed = $this->copyOfTheReference($this->dir.'/deployed', omit: ['channel-lib.mjs']);
+        chmod($deployed.'/tests', 0000);
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        try {
+            $code = Artisan::call('bridge:check');
+            $out = Artisan::output();
+        } finally {
+            chmod($deployed.'/tests', 0755);   // or tearDown cannot delete the tree
+        }
+
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('delivers: channel-lib.mjs.', $out);
+        $this->assertStringContainsString('could not be checked at all', $out);
+        // …and the operator still gets the traversal fix, alongside the FAIL.
+        $this->assertStringContainsString('is not visible to this user', $out);
+    }
+
+    public function test_check_accepts_a_version_matched_whole_directory_copy(): void
+    {
+        // The positive control for the test above: with nothing omitted the same
+        // fixture certifies clean, so the FAIL is caused by the omission and not by
+        // the fixture being generally unlike the reference.
+        $deployed = $this->copyOfTheReference($this->dir.'/deployed');
+        File::put($deployed.'/my-local-module.mjs', "export const x = 1;\n");   // extra files are not a finding
+
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('holds every file this checkout', $out);
+        $this->assertStringNotContainsString('is MISSING', $out);
     }
 
     // ─── DL-217 board_tools probes ───────────────────────────────────────────

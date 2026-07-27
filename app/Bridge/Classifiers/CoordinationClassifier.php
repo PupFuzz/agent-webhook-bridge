@@ -44,7 +44,11 @@ use App\Bridge\Writeback\WritebackMapping;
  *     surgical: hand-emits a channel_push ONLY for wake-worthy events, else
  *     gate-dropped. Config: `impl_repos` gates to a repo subset (empty ⇒ all
  *     subscribed); `impl_non_wake_disposition: inbox_stage` keeps a broad CI/push
- *     inbox (no channel_push) instead of gate-dropping non-wake events.
+ *     inbox (no channel_push) instead of gate-dropping non-wake events;
+ *     `impl_wake_deny_actors` (logins and/or numeric ids) makes an automation account's
+ *     CI/push a NON-WAKE — it flows through `impl_non_wake_disposition` rather than being
+ *     dropped before the gate, so `inbox_stage` still records it. Keys on WHO, never on
+ *     the conclusion: a bot run is non-actionable for an impl seat green or red.
  *
  * WAKE-EMIT INVARIANT (DL-191): every family hand-emits its `channel_push` through
  * {@see wakePush()}, which suppresses the push on a `route_intents:true` channel —
@@ -53,13 +57,19 @@ use App\Bridge\Writeback\WritebackMapping;
  * routed push (byte-identical payload) is the single wake.
  *
  *   - `coord_extra_actions` (coord-message) extends the fail-safe action allow-list
- *     per prefix; `wake_membership` (default `[to_me, to_all, comment_to]`) selects
- *     which label classes grant coord-message live-wake. `comment_to` (a body-`TO:<self>`
+ *     per prefix; `wake_membership` (default
+ *     `[to_me, to_all, comment_to, bare_reply_to_own_thread]`) selects which label
+ *     classes grant coord-message live-wake. `comment_to` (a body-`TO:<self>`
  *     grant for cross-thread pull-ins, DL-192) is default-ON since DL-213 — the
  *     post-a-reply-and-wait flow is otherwise dark out of the box; it is additive-only
  *     and echo-safe (keys on the comment's directed `TO:` line, not authorship).
  *     `from_me` (wake on ALL activity on threads you opened) stays opt-in — it is the
- *     over-wake/self-wake knob. `coord_non_addressed_disposition: inbox_stage` (DL-215,
+ *     over-wake/self-wake knob. `bare_reply_to_own_thread` (DL-235) is default-ON and is
+ *     the NARROW form `from_me` is not: it grants only on a BARE reply (no `TO:` line) to
+ *     a thread the agent opened, and only when the body's `FROM:` line is someone else —
+ *     that third clause is the echo guard that makes an authorship-keyed grant safe under
+ *     a shared account, which is exactly what DL-213 rejected `from_me` for.
+ *     `coord_non_addressed_disposition: inbox_stage` (DL-215,
  *     the coord-message sibling of `impl_non_wake_disposition`) softens the recipient
  *     gate: a NON-addressed coordination event, which DEFAULT-DROPS (`drop`), instead
  *     stages a normal coord Intent with NO channel_push — a durable inbox backstop for
@@ -297,7 +307,8 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
 
         // Recipient gate (DL-022): membership is label-authoritative. Which label
         // classes grant live-wake membership is config-driven via `wake_membership`
-        // — DEFAULT `[to_me, to_all, comment_to]`. `from_me` stays OUT of the default
+        // — DEFAULT `[to_me, to_all, comment_to, bare_reply_to_own_thread]` (DL-235 added
+        // the fourth). `from_me` stays OUT of the default
         // (it is the over-wake knob: a coordinator opening many threads would wake on
         // every reply to them; it is the opt-in for waking on all activity on your own
         // threads).
@@ -310,7 +321,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         // opened nor was labelled on). The narrow is unconditional; the grant keys on
         // the directed TO: line (not authorship), so it is echo-safe under a shared
         // account: a comment the agent itself authored TO someone else does not wake it.
-        $membership = $cfg->strings('wake_membership', ['to_me', 'to_all', 'comment_to']);
+        $membership = $cfg->strings('wake_membership', ['to_me', 'to_all', 'comment_to', 'bare_reply_to_own_thread']);
         $forMe = (in_array('to_me', $membership, true) && in_array("to:{$me}", $labels, true))
             || (in_array('to_all', $membership, true) && in_array('to:all', $labels, true))
             || (in_array('from_me', $membership, true) && in_array("from:{$me}", $labels, true));
@@ -320,6 +331,34 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 $forMe = true;   // directed TO:<self> grants membership (opt-in)
             } elseif ($addressed === false) {
                 $forMe = false;  // addressed to someone else — narrow, unconditional
+            } elseif ($addressed === null
+                && in_array('bare_reply_to_own_thread', $membership, true)
+                && in_array("from:{$me}", $labels, true)
+                && RecipientAddressing::author($subject['body']) !== $me) {
+                // DL-235 / roundtable #160 — the `reply-dir B` grant, and NOTHING wider.
+                // A BARE reply (no TO: line at all, $addressed === null) on a thread this
+                // agent OPENED is addressed to it by construction — that is what a thread
+                // is — so dropping it is a silent miss. Measured across three installs:
+                // 6+ seats non-conformant, none with a digest configured, 112 dropped
+                // coordination comments per impl agent on one of them.
+                //
+                // WHY NOT `from_me`, which already exists and looks like the answer:
+                // `from_me` grants on ALL activity on an authored thread, which is
+                // strictly wider than the conformance target, and DL-213 ruled it the
+                // wrong knob on ECHO-SAFETY — it keys on thread membership, and under a
+                // shared account (every seat posting as one identity) actor id cannot
+                // tell this agent's own comment from a counterparty's. Flipping it into
+                // the default would also revert DL-190's deliberate wide→narrow flip.
+                //
+                // THE THIRD CLAUSE IS THAT ECHO GUARD, and it is why this grant is safe
+                // where `from_me` is not: it keys on the body's FROM: line — the same
+                // discriminator shared-account attribution already relies on everywhere
+                // else — so the agent's own bare follow-up on its own thread does NOT
+                // wake it. Without it, an authorship-keyed grant is the cure carrying the
+                // disease. A bare comment with NO FROM: line yields null !== $me, so an
+                // unattributable author still grants; the narrow above already denied
+                // anything addressed elsewhere.
+                $forMe = true;
             }
         }
         // Recipient gate → wake disposition. An ADDRESSED event ($forMe) live-wakes.
@@ -385,6 +424,68 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     // GATE-DROPPED by the dispatcher (no intent — the InboxOnly base is empty for a
     // GitHub event), never a live wake and never an inbox row.
 
+    /**
+     * True iff this impl-ci-wake event's actor is on the `impl_wake_deny_actors` list.
+     *
+     * WHICH ACTOR FIELD, stated rather than left to whichever the test payload carried
+     * (roundtable #163): for a `workflow_run` the identity is `triggering_actor` — who
+     * caused THIS run — falling back to `actor` then `sender`. The two diverge only on a
+     * RE-RUN, and the divergence is the point: a human re-running a bot's workflow is a
+     * human asking for that result and must still wake, which keying on `actor` (who
+     * triggered the ORIGINAL run) would wrongly suppress. A `push` has no such split, so
+     * it keys on `sender`.
+     *
+     * Each list entry matches EITHER the login (case-insensitive — `dependabot[bot]`) OR
+     * the numeric account id (exact — `49699333`). Ids are immutable where logins rename,
+     * so an operator can pin the durable one; logins are what they actually know. It is a
+     * general deny-list, not a Dependabot special case — renovate/mergify//own automation
+     * cost the same to express and need no second knob.
+     *
+     * NOTE the divergence case is NOT observable on this install: 200 recent
+     * `workflow_run` payloads carried 0 `actor` !== `triggering_actor` and only 2 re-runs,
+     * both re-run by the same account. That is a sample that never contained the
+     * condition, NOT evidence the fields agree — so the behavior is pinned by SYNTHETIC
+     * payloads in the tests, and the GitHub semantics above remain the documented premise.
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function implWakeActorDenied(string $eventType, array $payload, ClassifierConfig $cfg): bool
+    {
+        $deny = $cfg->strings('impl_wake_deny_actors');
+        if ($deny === []) {
+            return false;
+        }
+
+        $who = [];
+        if (str_starts_with($eventType, 'workflow_run.')) {
+            $run = is_array($payload['workflow_run'] ?? null) ? $payload['workflow_run'] : [];
+            foreach (['triggering_actor', 'actor'] as $field) {
+                $who = is_array($run[$field] ?? null) ? $run[$field] : [];
+                if ($who !== []) {
+                    break;
+                }
+            }
+        }
+        if ($who === []) {
+            $who = is_array($payload['sender'] ?? null) ? $payload['sender'] : [];
+        }
+
+        $login = is_scalar($who['login'] ?? null) ? strtolower(trim((string) $who['login'])) : '';
+        $id = is_scalar($who['id'] ?? null) ? trim((string) $who['id']) : '';
+
+        foreach ($deny as $entry) {
+            $e = trim((string) $entry);
+            if ($e === '') {
+                continue;
+            }
+            if (($login !== '' && strtolower($e) === $login) || ($id !== '' && $e === $id)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function implCiWakeFamily(ClassifyContext $ctx, ClassifierConfig $cfg): ?ClassifyResult
     {
         if ($ctx->provider !== 'github') {
@@ -403,11 +504,25 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         $eventType = $ctx->eventType;
         $payload = $ctx->payload;
 
+        // Actor deny-list (optional). An automation account's CI/push is non-actionable
+        // for an impl seat whether the run is GREEN or RED — the PM owns those PRs
+        // including the failing ones — so this keys on WHO, never on the conclusion.
+        // Empty/absent ⇒ byte-identical prior behavior.
+        //
+        // Deliberately a NON-WAKE, not a drop: a denied event skips only the wake-signal
+        // computation and falls through to `impl_non_wake_disposition` below, so an
+        // `inbox_stage` install still keeps the record (digest, not drop) and an install
+        // that genuinely wants them gone stays on the default `drop`. Returning null here
+        // instead would make the knob lossy by default and un-opt-out-able.
+        $denied = $this->implWakeActorDenied($eventType, $payload, $cfg);
+
         $signal = null;   // [kind, ref, tail, url, extra]
-        if ($eventType === 'push') {
-            $signal = $this->pushSignal($payload, $cfg);
-        } elseif (str_starts_with($eventType, 'workflow_run.')) {
-            $signal = $this->workflowRunSignal($payload, $cfg);
+        if (! $denied) {
+            if ($eventType === 'push') {
+                $signal = $this->pushSignal($payload, $cfg);
+            } elseif (str_starts_with($eventType, 'workflow_run.')) {
+                $signal = $this->workflowRunSignal($payload, $cfg);
+            }
         }
 
         if ($signal !== null) {

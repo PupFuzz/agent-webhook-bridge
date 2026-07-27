@@ -11,6 +11,7 @@ use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
+use App\Bridge\Support\ChannelSnapshotProbe;
 use App\Bridge\Support\ChannelToken;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\ExternalReferenceNormalizer;
@@ -55,6 +56,14 @@ class CheckCommand extends BridgeCommand
     protected $description = 'Validate the bridge install config (dirs, DB connectivity, agent YAMLs)';
 
     /**
+     * How many findings this run reported as `unvalidated` — checks that did NOT
+     * run, so a zero exit says nothing about them (card 5170). Reset per run in
+     * {@see self::handle()}: the container can hand back the same instance to a
+     * second `Artisan::call`, and a leaked count would over-report.
+     */
+    private int $unvalidatedCount = 0;
+
+    /**
      * Whether the RECEIVER's PHP can end a request before running terminating
      * callbacks. `bridge:check` is CLI, where fastcgi_finish_request is never
      * defined, so asking about THIS process would warn on every healthy FPM install.
@@ -79,6 +88,7 @@ class CheckCommand extends BridgeCommand
     public function handle(): int
     {
         $ok = true;
+        $this->unvalidatedCount = 0;
 
         $configDir = config('bridge.config_dir');
         if (! is_string($configDir) || $configDir === '') {
@@ -500,6 +510,22 @@ class CheckCommand extends BridgeCommand
                         }
                     }
                 }
+
+                // The DEPLOYED channel-server snapshot (DL-229). Everything above
+                // certifies the RUNNING process; a stale or unloadable deployment
+                // reports `channel socket live` and exits 0, and only fails at the
+                // NEXT session start — as live-wake silently never coming back. Run
+                // it for any agent with a channel endpoint (the population that
+                // respawns a server) and for any agent that declared server_path
+                // without one, so a declared key is never silently dead.
+                if ($cfg->channel->socket !== null || $cfg->channel->url !== null || $cfg->channel->serverPath !== null) {
+                    $bundled = base_path('examples/channel-servers');
+                    foreach (ChannelSnapshotProbe::probe($cfg->channel->serverPath, $bundled) as $finding) {
+                        if (! $this->emitFinding("agent {$name}: ", $finding)) {
+                            $ok = false;
+                        }
+                    }
+                }
             }
         }
 
@@ -913,6 +939,24 @@ class CheckCommand extends BridgeCommand
             $ok = false;
         }
 
+        // card 5170: a green exit means nothing FAILED — it says nothing about the
+        // checks that never ran. Silent at zero: an install where everything was
+        // measured has nothing to disclaim, and an install that deliberately leaves
+        // `channel.server_path` unset is correct (docs/multi-host.md instructs it),
+        // so this discloses, it does not scold.
+        //
+        // The wording is bounded to what the counter can support, and the bound is
+        // NOT "reports a severity" — that is true but inoperative, and its converse
+        // reads as a guarantee this number cannot give. The did-not-run population
+        // that ISN'T here is large and mostly DOES carry a severity: a dozen-odd
+        // couldn't-probe sites in this command report `warn` (many bypassing
+        // emitFinding entirely), and ChannelSnapshotProbe's four could-not-measure
+        // findings come through emitFinding as `warn` and are still not tallied. So
+        // the operative bound is the severity itself, and the tally is a floor.
+        if ($this->unvalidatedCount > 0) {
+            $this->line("{$this->unvalidatedCount} check(s) reported `unvalidated` — not a failure, and not a pass either: those checks did not run, so this run says nothing about what they would have found (see the lines above). This is a floor, not an inventory: only checks reporting `unvalidated` are counted, and a check that could not run usually reports `warn` instead — so no tally line does NOT mean every leg ran.");
+        }
+
         return $ok ? self::SUCCESS : self::FAILURE;
     }
 
@@ -1043,7 +1087,7 @@ class CheckCommand extends BridgeCommand
         foreach ($sshAgents as $cfg) {
             $probe = new SshTransportProbe($env, $cfg->boardTools?->sshAccount);
             foreach ($probe->probePinnedLine($cfg->agentName) as $finding) {
-                if ($finding['severity'] !== 'ok') {
+                if (self::severityMeansSetupIncomplete($finding['severity'])) {
                     $agentIncomplete[$cfg->agentName] = true;
                 }
                 if (! $this->emitSshFinding($finding)) {
@@ -1074,14 +1118,33 @@ class CheckCommand extends BridgeCommand
     }
 
     /**
-     * Render one probe finding through the existing info/warn/error convention.
-     * Returns false (→ flip the caller's $ok) ONLY on a `fail`.
+     * Whether a pinned-line finding's severity means the agent's ssh setup is
+     * INCOMPLETE (feeds the DL-225 advisory only). POSITIVE membership,
+     * deliberately: the `!== 'ok'` proxy it replaces silently absorbs any severity
+     * added to the vocabulary later — card 5170's `unvalidated` would have flagged
+     * an agent's setup incomplete on the strength of a check nobody ran.
+     */
+    private static function severityMeansSetupIncomplete(string $severity): bool
+    {
+        return in_array($severity, ['warn', 'fail'], true);
+    }
+
+    /**
+     * Render one `{severity, message}` probe finding through the existing
+     * info/warn/error convention, under the caller's line prefix. Returns false
+     * (→ flip the caller's $ok) ONLY on a `fail` — the exit contract is that one
+     * arm, so a new severity can never change what `bridge:check` exits.
+     *
+     * `unvalidated` (card 5170) renders PLAIN: green would read as certified by a
+     * check that never ran, and yellow would nag a documented-correct population
+     * (a multi-host install is TOLD to leave `channel.server_path` unset) with no
+     * action available to silence it.
      *
      * @param  array{severity: string, message: string}  $finding
      */
-    private function emitSshFinding(array $finding): bool
+    private function emitFinding(string $prefix, array $finding): bool
     {
-        $message = 'board_tools ssh: '.$finding['message'];
+        $message = $prefix.$finding['message'];
         if ($finding['severity'] === 'fail') {
             $this->error($message);
 
@@ -1089,11 +1152,25 @@ class CheckCommand extends BridgeCommand
         }
         if ($finding['severity'] === 'warn') {
             $this->warn($message);
+        } elseif ($finding['severity'] === 'unvalidated') {
+            // Counted HERE — the single chokepoint every probe finding flows
+            // through, so any future probe emitting the severity is tallied
+            // without touching its call site.
+            $this->unvalidatedCount++;
+            $this->line($message);
         } else {
             $this->info($message);
         }
 
         return true;
+    }
+
+    /**
+     * @param  array{severity: string, message: string}  $finding
+     */
+    private function emitSshFinding(array $finding): bool
+    {
+        return $this->emitFinding('board_tools ssh: ', $finding);
     }
 
     /**
@@ -1270,8 +1347,11 @@ class CheckCommand extends BridgeCommand
      * read CLEAN and invert the check's false-clean-impossible invariant.
      *
      * Fail-soft: wrapped so a DB hiccup can never throw out of `bridge:check`;
-     * emits only `warn`/`info`, never `error`. An empty `webhook_events` for a
-     * scope ⇒ no warns (nothing has been dropped yet — correct).
+     * emits only `warn`/`info`/`unvalidated`, never `error`. An empty
+     * `webhook_events` for a scope ⇒ no warns (nothing has been dropped yet —
+     * correct). A SKIPPED run (the catch) is `unvalidated`, not green: the
+     * advisory did not run, and card 5170 is the ruling that a check which did
+     * not run is never reported as one that passed.
      *
      * @param  array<string, list<array{agent:string, class:string, consumed:list<string>, declared:bool}>>  $githubScopeConsumers
      */
@@ -1403,8 +1483,15 @@ class CheckCommand extends BridgeCommand
                 }
             }
         } catch (Throwable $e) {
-            // Fail-soft: this advisory must never break the install check.
-            $this->info('event-consumer: check skipped — '.$e->getMessage());
+            // Fail-soft: this advisory must never break the install check. But a
+            // skipped advisory is a check that did NOT run, so it goes through the
+            // `unvalidated` vocabulary (card 5170) rather than rendering green via
+            // info() and vanishing from the tally. The bool is discarded on purpose:
+            // `unvalidated` never returns false, so the RETURN VALUE cannot flip $ok.
+            // That is the whole of the by-construction claim — rendering is not part
+            // of it: line() throws on a message carrying an invalid formatter tag,
+            // exactly as the info() here before it did, and that escape is unchanged.
+            $this->emitFinding('', ['severity' => 'unvalidated', 'message' => 'event-consumer: check skipped — '.$e->getMessage()]);
         }
     }
 

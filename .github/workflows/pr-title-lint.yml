@@ -38,6 +38,48 @@ jobs:
     # No checkout — the job reads only the event payload.
     runs-on: ubuntu-latest
     steps:
+      - name: Warn on a card token that names no card (DL-234)
+        # UNCONDITIONAL — deliberately outside the <type>/<card-id>-slug branch gate
+        # that the step below uses. That gate is precisely why this residue exists:
+        # it skips `card-<id>-...`, `fix/...` and every other shape, so a token that
+        # correlates to NOTHING sails through with no signal anywhere. The bridge's
+        # FR-7 near-miss probe does warn, but into the bridge log, post-merge, on a
+        # surface the PR author never reads.
+        shell: bash
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          # WARNING, never a failure. The shapes caught here (`card_3`, `card.3`,
+          # `card #82`) are legal-but-lossy TODAY — they already merge and already
+          # fail to correlate — so turning them into a hard block is a separate
+          # decision from closing the silent case. Unicode-digit tokens are the
+          # genuinely-silent half this exists for (DL-231 made them correlate to
+          # nothing; nothing warned, because the near-miss probe's own \d is ASCII
+          # too, so `card_٣` is invisible even though `_` IS in its separator set).
+          #
+          # The predicate asserts the ACCEPTED GRAMMAR DID NOT MATCH rather than
+          # enumerating what a bad token looks like. That inversion is why it needs
+          # no Unicode awareness at all, and why it stays correct as the grammar
+          # changes — it re-derives "bad" from "not good" instead of hard-coding a
+          # list someone must remember to extend.
+          subject=$(printf '%s\n%s' "$TITLE" "$BRANCH" | tr '[:upper:]' '[:lower:]')
+
+          # looks-like-a-card-token: `card` at a token boundary followed by a
+          # separator, a digit (the glued form, DL-233), or a space-then-hash.
+          # A bare space is deliberately NOT a separator — DL-201 ruled that prose
+          # ("supports card 2") stays silent, and that ruling still holds.
+          looks='(^|[^0-9a-z_])card([-#_.:]|[0-9]| #)'
+          # the ratified grammar, post-DL-233: separated takes 1+ digits, glued 2+.
+          # Keep in lockstep with CARD_TOKEN_PATTERN in GitHubPrCardMoveClassifier.
+          good='(^|[^0-9a-z_])card([-#][0-9]|[0-9]{2})'
+
+          if grep -qE "$looks" <<<"$subject" && ! grep -qE "$good" <<<"$subject"; then
+            echo "::warning::This PR's title or branch looks like it names a card, but the token does not match the correlation grammar, so NO card will move. Accepted: card-<id>, card#<id>, or glued card<id> (2+ digits). Common misses: card_123 / card.123 / card:123 / card #123 (underscore, dot, colon, space are not separators), a single-digit glued card4, and non-ASCII digits (the grammar is ASCII 0-9 only, DL-231)."
+          fi
+
       - name: Require card#/DL token for card-id branches
         # Explicit bash: the script uses pipefail + [[ =~ ]], and a self-hosted
         # runner without bash on PATH would otherwise silently fall back to sh.
@@ -74,7 +116,10 @@ jobs:
           card_id="${branch_lc#*/}"
           card_id="${card_id%%-*}"
 
-          # Accept a genuine "card-<exact-id>"/"card#<exact-id>" or "DL-<1-4
+          # Accept a genuine "card-<exact-id>"/"card#<exact-id>"/glued
+          # "card<exact-id>" (the separator is optional since DL-233 — the lint must
+          # accept everything the classifier correlates, or it reds a title that
+          # would have moved the card) or "DL-<1-4
           # digits>" token, bounded on BOTH sides so a coincidental substring does
           # not satisfy the check: the leading (^|[^0-9a-z_]) mirrors the
           # classifier's \b (underscore is a word char there — a title the lint
@@ -82,7 +127,7 @@ jobs:
           # "discard#3770"/"foo_card-3770"; the trailing ([^0-9]|$) rejects a
           # longer id like "card#37700". Inputs are pre-folded, so the lowercase
           # class is the whole alphabet.
-          if [[ "$title_lc" =~ (^|[^0-9a-z_])card[-#]${card_id}([^0-9]|$) ]] || [[ "$title_lc" =~ (^|[^0-9a-z_])dl-[0-9]{1,4}([^0-9]|$) ]]; then
+          if [[ "$title_lc" =~ (^|[^0-9a-z_])card[-#]?${card_id}([^0-9]|$) ]] || [[ "$title_lc" =~ (^|[^0-9a-z_])dl-[0-9]{1,4}([^0-9]|$) ]]; then
             echo "OK: title carries a correlation token for card $card_id."
             exit 0
           fi

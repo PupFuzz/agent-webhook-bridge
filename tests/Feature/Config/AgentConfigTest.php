@@ -175,6 +175,47 @@ class AgentConfigTest extends TestCase
         AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => '${XDG_RUNTIME}/x.sock']]));
     }
 
+    public function test_channel_server_path_defaults_null(): void
+    {
+        // Absent ⇒ null; bridge:check does not run the snapshot legs and reports
+        // them at severity `unvalidated` (DL-236) rather than inferring a path it
+        // cannot read (DL-229).
+        $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => ['socket' => '/run/x.sock']]));
+        $this->assertNull($cfg->channel->serverPath);
+    }
+
+    public function test_channel_server_path_directory_kept_as_is(): void
+    {
+        $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => ['server_path' => '/opt/deploy/channel-servers']]));
+        $this->assertSame('/opt/deploy/channel-servers', $cfg->channel->serverPath);
+    }
+
+    public function test_channel_server_path_entry_mjs_normalizes_to_its_directory(): void
+    {
+        $cfg = AgentConfig::fromArray('a', $this->raw([
+            'channel' => ['server_path' => '/opt/deploy/channel-servers/agent-webhook-bridge-channel.mjs'],
+        ]));
+        $this->assertSame('/opt/deploy/channel-servers', $cfg->channel->serverPath);
+    }
+
+    public function test_channel_server_path_relative_throws(): void
+    {
+        $this->expectException(ConfigException::class);
+        AgentConfig::fromArray('a', $this->raw(['channel' => ['server_path' => 'relative/channel-servers']]));
+    }
+
+    public function test_channel_server_path_with_dotdot_segment_throws(): void
+    {
+        $this->expectException(ConfigException::class);
+        AgentConfig::fromArray('a', $this->raw(['channel' => ['server_path' => '/opt/deploy/../channel-servers']]));
+    }
+
+    public function test_channel_server_path_with_null_byte_throws(): void
+    {
+        $this->expectException(ConfigException::class);
+        AgentConfig::fromArray('a', $this->raw(['channel' => ['server_path' => "/opt/deploy\x00/channel-servers"]]));
+    }
+
     public function test_channel_url_parsed(): void
     {
         $cfg = AgentConfig::fromArray('a', $this->raw(['channel' => ['url' => 'http://127.0.0.1:8788/']]));
