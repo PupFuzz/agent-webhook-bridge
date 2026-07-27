@@ -46,8 +46,11 @@ final class CardTokenGrammar
      * copy of the accept-set that could disagree with it.
      *
      * `card4` (single-digit glued) is here because DL-233 CREATED that near-miss
-     * and no prose site named it for two releases. The Unicode-digit spelling is
-     * here because DL-231 made it correlate to nothing, silently.
+     * and no prose site named it for two releases. It sits beside `card-3`
+     * deliberately: accepted-at-one-digit-separated next to
+     * rejected-at-one-digit-glued SHOWS the ≥2-digit floor, where prose would
+     * have to assert it. The Unicode-digit spelling is here because DL-231 made
+     * it correlate to nothing, silently.
      *
      * The set may GROW; `CardTokenGrammarTest` pins the ratified rows so it
      * cannot shrink below them.
@@ -56,6 +59,7 @@ final class CardTokenGrammar
         'card-123',
         'card#123',
         'card123',
+        'card-3',
         'card4',
         'card_123',
         'card.123',

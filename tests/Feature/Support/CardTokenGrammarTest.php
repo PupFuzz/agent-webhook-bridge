@@ -31,7 +31,8 @@ class CardTokenGrammarTest extends TestCase
             'card-123' => 123,   // separated, dash — the ratified spelling
             'card#123' => 123,   // separated, hash
             'card123' => 123,    // glued, >=2 digits (DL-233)
-            'card4' => null,     // glued, 1 digit — below the toolkit's 2-digit floor
+            'card-3' => 3,       // separated still takes ONE digit...
+            'card4' => null,     // ...while glued at one digit is below the toolkit's 2-digit floor
         ];
 
         foreach ($rows as $vector => $expected) {
