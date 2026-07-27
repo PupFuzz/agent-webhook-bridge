@@ -2393,6 +2393,20 @@ class BridgeCommandsTest extends TestCase
     // bridge:check certified the running socket but never the DEPLOYED files the
     // next session respawns from.
 
+    /**
+     * An agent with NO `channel:` block — the only configuration that reaches zero
+     * `unvalidated` findings since DL-237. `ChannelSnapshotProbe` is invoked only for
+     * an agent with a channel socket, url or server_path, so this one never enters it:
+     * an undeclared server_path reports `unvalidated` (DL-229/DL-236) and a declared
+     * one now reports the launch disclosure (DL-237).
+     */
+    private function writeAgentWithoutChannel(): void
+    {
+        File::put($this->dir.'/prod-agent.yml',
+            "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+    }
+
     private function writeAgentWithChannelServerPath(?string $serverPath): void
     {
         $block = "channel:\n  socket: {$this->dir}/snap.sock\n";
@@ -2460,18 +2474,28 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('no tally line does NOT mean every leg ran', $out);
     }
 
-    public function test_check_prints_no_unvalidated_tally_when_every_leg_ran(): void
+    public function test_check_prints_no_unvalidated_tally_when_nothing_reported_unvalidated(): void
     {
         // card 5170: SILENT at zero, not "0 unvalidated". The tally is a
         // disclosure about checks that did not run; an install with none has
         // nothing to disclose, and a permanent zero line is noise operators learn
         // to skip past — which is how the next non-zero one gets missed.
-        $deployed = $this->deploySnapshot($this->dir.'/deployed', '99.0.0');
-        $this->writeAgentWithChannelServerPath($deployed);
+        //
+        // RENAMED from `…_when_every_leg_ran`, and the fixture changed with it
+        // (DL-237). It used to declare a healthy far-future `server_path`; every such
+        // agent now reports the launch disclosure, so that fixture can no longer
+        // produce zero. An agent with no `channel:` block at all never enters the
+        // snapshot probe, which is the honest zero — and the old name was about to
+        // become false either way, since no leg anywhere measures the launch.
+        $this->writeAgentWithoutChannel();
 
         $code = Artisan::call('bridge:check');
         $out = Artisan::output();
         $this->assertSame(0, $code);
+        // POSITIVE CONTROL: asserting the ABSENCE of a tally proves nothing unless the
+        // command actually ran and produced output for this agent — otherwise a config
+        // that fails to load reads as "silent at zero".
+        $this->assertStringContainsString('agent config ok: prod-agent', $out);
         $this->assertStringNotContainsString('unvalidated', $out);
         $this->assertStringNotContainsString('check(s) reported', $out);
     }
@@ -2590,6 +2614,11 @@ class BridgeCommandsTest extends TestCase
         // this instance and leaves the next one to happen.
         $this->assertStringContainsString('deploy as a SYMLINK to '.base_path('examples/channel-servers'), $out);
         $this->assertStringContainsString('has its entry file and node_modules', $out);
+        // The launch disclosure rides on the STALE branch too (DL-237): re-copying
+        // fixes drift and still tells this operator nothing about whether the result
+        // launches. Not the DL-229 (h) shape — (h) rejects two findings pointing at
+        // one action, and these point at two (re-copy; then assert on the seat).
+        $this->assertSame(1, substr_count($out, 'was NOT launch-tested'));
     }
 
     public function test_check_accepts_a_current_snapshot_and_takes_the_entry_mjs_form(): void
@@ -2707,6 +2736,13 @@ class BridgeCommandsTest extends TestCase
         // case for it — asserted rather than reasoned about, since the repo-direct
         // symlink is the topology the reference README recommends.
         $this->assertStringContainsString('has its entry file and node_modules', $out);
+        // …and so does the launch disclosure (DL-237). THIS is the case that decided
+        // the placement: emitting it on the version-EQUAL branch alone left the
+        // RECOMMENDED topology with a fully green run and no disclosure at all —
+        // "green check, dark seat" reintroduced by the fix for it.
+        $this->assertStringContainsString('was NOT launch-tested', $out);
+        $this->assertSame(1, substr_count($out, 'was NOT launch-tested'));
+        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $out);
     }
 
     public function test_check_warns_rather_than_fails_when_the_path_is_invisible_to_this_user(): void
@@ -2794,19 +2830,19 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringNotContainsString('has its entry file and node_modules', $out);
     }
 
-    // ---- the VERSION-GATED completeness leg (DL-230) ------------------------
-    // DL-229 shipped a check that passed GREEN on the incident that motivated the
-    // whole feature: a cherry-picked entry + package.json carry the CURRENT version
-    // stamp with them, so the version leg reads "current" and every other leg is
-    // satisfied while `node` on that same directory gives ERR_MODULE_NOT_FOUND.
-    // These two run through the REAL command against the REAL checkout reference
-    // (the unit suite covers the matrix hermetically).
+    // ---- the retired completeness leg (DL-237) ------------------------------
+    // DL-230 caught its motivating incident by ENUMERATING the reference file set.
+    // A launch catches the same incident and is more precise in both directions —
+    // but a launch run from the BRIDGE's OS user proves the entry loads for the
+    // bridge's user, not the agent's, so `bridge:check` must NOT execute node. What
+    // it does instead is DISCLOSE that the question went unmeasured. These run
+    // through the REAL command against the REAL checkout reference.
 
     /**
      * A whole-directory copy of this checkout's `examples/channel-servers`, minus
-     * $omit, plus the `node_modules` a prior `npm ci` left behind. Deliberately walks
-     * the reference itself rather than asking the probe what it holds — a fixture
-     * built from the SUT's own enumeration would agree with any answer it gave.
+     * $omit, plus the `node_modules` a prior `npm ci` left behind — so the fixture
+     * stays version-EQUAL with the checkout across every channel-server bump, which
+     * is the branch under test.
      *
      * @param  list<string>  $omit
      */
@@ -2835,67 +2871,39 @@ class BridgeCommandsTest extends TestCase
         return $dir;
     }
 
-    public function test_check_fails_on_a_version_matched_snapshot_missing_a_reference_file(): void
+    public function test_check_does_not_fail_a_version_matched_snapshot_missing_a_reference_file(): void
     {
-        // THE MOTIVATING INCIDENT. The deployed version is read from the checkout so
-        // the fixture stays version-EQUAL across every channel-server bump — the
-        // whole gate turns on that equality.
+        // THE POPULATION THAT RETIRES THE LEG, through the real command. This copy is
+        // missing `channel-lib.mjs` — the DL-230 incident — and `bridge:check` now
+        // exits 0 on it. That is deliberate and it is NOT a regression to a silent
+        // green: the run says outright that the launch was not measured, and names
+        // the seat-side check that measures it. Enumerating files here bought a FAIL
+        // on this deployment at the cost of a FAIL on a pruned-but-working one, and
+        // still never actually launched anything.
         $deployed = $this->copyOfTheReference($this->dir.'/deployed', omit: ['channel-lib.mjs']);
-
         $this->writeAgentWithChannelServerPath($deployed);
 
         $code = Artisan::call('bridge:check');
         $out = Artisan::output();
-        $this->assertSame(1, $code);
-        $this->assertStringContainsString('is MISSING 1 of ', $out);
-        $this->assertStringContainsString('delivers: channel-lib.mjs.', $out);
-        // The verdict claims only what was STAT'ed. It does NOT say the deployment
-        // was assembled by hand: the DL-038 bump guard governs the TRACKED set while
-        // the reference set is the working tree, so an untracked stray in the
-        // checkout (a `.orig` from `git apply --3way`) puts a FAITHFUL whole-directory
-        // copy in this same population — DL-230 (f). Unit-covered hermetically.
-        $this->assertStringNotContainsString('assembled file-by-file', $out);
-        // The legs that certified this deployment green before DL-230 still do; the
-        // incident was that they were the only ones asked.
-        $this->assertStringContainsString('is current (deployed ', $out);
-        $this->assertStringContainsString('has its entry file and node_modules', $out);
-        // Distinct from every other FAIL — a different operator action.
-        $this->assertStringNotContainsString('repoint the symlink', $out);
-        $this->assertStringNotContainsString('dependencies are not installed', $out);
+        $this->assertSame(0, $code);
+        $this->assertStringNotContainsString('is MISSING', $out);
+        $this->assertStringContainsString('was NOT launch-tested', $out);
+        $this->assertStringContainsString('bin/check-channel-snapshot.py', $out);
+        $this->assertStringContainsString('ON THAT SEAT', $out);
+        // EXACTLY one per agent, never one per leg — it is a statement about the run.
+        $this->assertSame(1, substr_count($out, 'was NOT launch-tested'));
+        // …and the disclosure reaches the closing tally, so a zero exit is not read
+        // as "the snapshot was certified" (DL-236).
+        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $out);
     }
 
-    public function test_check_still_exits_1_when_a_blocked_subdirectory_sits_beside_a_missing_file(): void
+    public function test_check_still_exits_0_when_the_launch_disclosure_is_the_only_unvalidated_finding(): void
     {
-        // Exit-code proof for DL-230 (e): an unseeable `tests/` must not swallow a
-        // module PROVEN absent through a traversable parent. Returning the visibility
-        // WARN on the first block did exactly that — one WARN, exit 0, a dark seat at
-        // the next session start, which is this card's own defect class.
-        if (function_exists('posix_getuid') && posix_getuid() === 0) {
-            $this->markTestSkipped('root bypasses directory permission checks');
-        }
-        $deployed = $this->copyOfTheReference($this->dir.'/deployed', omit: ['channel-lib.mjs']);
-        chmod($deployed.'/tests', 0000);
-        $this->writeAgentWithChannelServerPath($deployed);
-
-        try {
-            $code = Artisan::call('bridge:check');
-            $out = Artisan::output();
-        } finally {
-            chmod($deployed.'/tests', 0755);   // or tearDown cannot delete the tree
-        }
-
-        $this->assertSame(1, $code);
-        $this->assertStringContainsString('delivers: channel-lib.mjs.', $out);
-        $this->assertStringContainsString('could not be checked at all', $out);
-        // …and the operator still gets the traversal fix, alongside the FAIL.
-        $this->assertStringContainsString('is not visible to this user', $out);
-    }
-
-    public function test_check_accepts_a_version_matched_whole_directory_copy(): void
-    {
-        // The positive control for the test above: with nothing omitted the same
-        // fixture certifies clean, so the FAIL is caused by the omission and not by
-        // the fixture being generally unlike the reference.
+        // The exit contract, asserted end to end rather than inferred from
+        // `emitFinding()`'s return type: `unvalidated` renders, counts, and NEVER
+        // flips the exit. A version-matched deployment is the population that would
+        // have been broken by getting this wrong, since every install with a
+        // co-located current snapshot now emits one.
         $deployed = $this->copyOfTheReference($this->dir.'/deployed');
         File::put($deployed.'/my-local-module.mjs', "export const x = 1;\n");   // extra files are not a finding
 
@@ -2904,8 +2912,33 @@ class BridgeCommandsTest extends TestCase
         $code = Artisan::call('bridge:check');
         $out = Artisan::output();
         $this->assertSame(0, $code);
-        $this->assertStringContainsString('holds every file this checkout', $out);
+        $this->assertStringContainsString('is current (deployed ', $out);
+        $this->assertStringContainsString('has its entry file and node_modules', $out);
+        $this->assertSame(1, substr_count($out, 'was NOT launch-tested'));
+        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $out);
+    }
+
+    public function test_check_no_longer_enumerates_the_reference_file_set(): void
+    {
+        // The retirement, asserted where an operator would see it: none of the
+        // completeness leg's vocabulary survives in the output, on the very fixture
+        // that used to produce all of it.
+        $deployed = $this->copyOfTheReference($this->dir.'/deployed', omit: ['README.md']);
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        // POSITIVE CONTROL: five absence assertions are worth nothing if the snapshot
+        // legs never ran at all on this fixture (a mis-declared path, an early return).
+        // Prove the run reached them before reading anything into their silence.
+        $this->assertStringContainsString('is current (deployed ', $out);
+        $this->assertStringContainsString('has its entry file and node_modules', $out);
         $this->assertStringNotContainsString('is MISSING', $out);
+        $this->assertStringNotContainsString('whole-directory copy of', $out);
+        $this->assertStringNotContainsString('holds every file', $out);
+        $this->assertStringNotContainsString('could not be checked at all', $out);
+        $this->assertStringNotContainsString('reference set', $out);
     }
 
     // ─── DL-217 board_tools probes ───────────────────────────────────────────

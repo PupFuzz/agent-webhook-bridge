@@ -950,9 +950,11 @@ class CheckCommand extends BridgeCommand
         // reads as a guarantee this number cannot give. The did-not-run population
         // that ISN'T here is large and mostly DOES carry a severity: a dozen-odd
         // couldn't-probe sites in this command report `warn` (many bypassing
-        // emitFinding entirely), and ChannelSnapshotProbe's four could-not-measure
-        // findings come through emitFinding as `warn` and are still not tallied. So
-        // the operative bound is the severity itself, and the tally is a floor.
+        // emitFinding entirely), and ChannelSnapshotProbe's three could-not-measure
+        // findings come through emitFinding as `warn` and are still not tallied (it
+        // was four until DL-237 deleted the completeness leg's unenumerable-reference
+        // warn along with the leg). So the operative bound is the severity itself, and
+        // the tally is a floor.
         if ($this->unvalidatedCount > 0) {
             $this->line("{$this->unvalidatedCount} check(s) reported `unvalidated` — not a failure, and not a pass either: those checks did not run, so this run says nothing about what they would have found (see the lines above). This is a floor, not an inventory: only checks reporting `unvalidated` are counted, and a check that could not run usually reports `warn` instead — so no tally line does NOT mean every leg ran.");
         }

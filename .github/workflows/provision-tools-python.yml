@@ -1,12 +1,17 @@
-name: provision-tools python unit tests
+name: bin/ python unit tests
 
-# The bin/provision-board-tools.py provisioning program (FR #5010) and its same-box
-# one-shot wrapper bin/provision-board-tools-samebox.py (card 5090) are standalone
-# stdlib Python tools. Their pure functions (full-line key validator, .mcp.json merge;
-# and the wrapper's preflight decisions + argv assembly + pubkey-path parse) carry
-# red-when-reverted unit tests; this job runs them in CI so the "CI-tested" guarantee
-# the design rests on is real, not decorative. Path-filtered: only fires when a tool or
-# its tests change.
+# The standalone stdlib-Python operator tools under bin/ — the provisioning program
+# bin/provision-board-tools.py (FR #5010), its same-box one-shot wrapper
+# bin/provision-board-tools-samebox.py (card 5090), and the seat-side channel-server
+# launch-assert bin/check-channel-snapshot.py (card 5143, DL-237) — carry
+# red-when-reverted unit tests. This job runs them in CI so the "CI-tested" guarantee
+# the designs rest on is real, not decorative. Path-filtered: only fires when a tool
+# or its tests change.
+#
+# Node is set up because check-channel-snapshot.py's suite LAUNCHES a real channel
+# server: the tool's whole claim is that launching is more precise than enumerating
+# files, and a mocked launch would assert the mock. Its cases skip LOUDLY (a banner on
+# stderr) rather than silently if node is ever missing.
 
 on:
   pull_request:
@@ -15,6 +20,9 @@ on:
       - 'bin/test_provision_board_tools.py'
       - 'bin/provision-board-tools-samebox.py'
       - 'bin/test_provision_board_tools_samebox.py'
+      - 'bin/check-channel-snapshot.py'
+      - 'bin/test_check_channel_snapshot.py'
+      - 'examples/channel-servers/**'
       - '.github/workflows/provision-tools-python.yml'
   push:
     branches: [dev, main]
@@ -23,6 +31,9 @@ on:
       - 'bin/test_provision_board_tools.py'
       - 'bin/provision-board-tools-samebox.py'
       - 'bin/test_provision_board_tools_samebox.py'
+      - 'bin/check-channel-snapshot.py'
+      - 'bin/test_check_channel_snapshot.py'
+      - 'examples/channel-servers/**'
 
 permissions:
   contents: read
@@ -32,5 +43,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-      - name: Run provision-board-tools unit tests
-        run: python3 -m unittest bin.test_provision_board_tools bin.test_provision_board_tools_samebox -v
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '20'
+      # WITHOUT THIS THE ONLY CASE THAT EXERCISES THE SHIPPED ENTRY ALWAYS SKIPS.
+      # `examples/channel-servers/node_modules` is gitignored, so
+      # `ShippedReference.test_this_checkout_s_own_channel_server_launches` hits its
+      # (loud) skip on every CI run — and the `examples/channel-servers/**` path filter
+      # above exists precisely for that case. A check that always skips is worse than
+      # one that cannot fail: the skip reads as coverage. `--ignore-scripts` mirrors
+      # channel-server-supply-chain.yml (no lifecycle scripts from the dependency tree).
+      - name: Install channel-server dependencies (so the shipped-entry case is real)
+        run: npm ci --ignore-scripts
+        working-directory: examples/channel-servers
+      - name: Run bin/ unit tests
+        run: python3 -m unittest bin.test_provision_board_tools bin.test_provision_board_tools_samebox bin.test_check_channel_snapshot -v
