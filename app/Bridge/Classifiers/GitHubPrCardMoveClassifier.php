@@ -10,6 +10,7 @@ use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClassifierConfig;
+use App\Bridge\Support\DlTokenGrammar;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -23,7 +24,8 @@ use Illuminate\Support\Facades\Log;
  * GitHub-CONTROLLED fields (the action + `pull_request.merged` + `base.ref`),
  * never the PR title; (b) correlating the card by the `DL-NNN` token in the PR
  * title or head branch against the mapped board's `dl_number`, OR the native-id
- * card token (FR-7) in whatever spellings {@see CardTokenGrammar} accepts. Which
+ * card token (FR-7). Which spellings either token accepts is
+ * {@see DlTokenGrammar}'s and {@see CardTokenGrammar}'s to say. Which
  * board+stage the move targets is decided by the durable handler from operator
  * config — this classifier only supplies which card + outcome.
  *
@@ -45,13 +47,6 @@ use Illuminate\Support\Facades\Log;
  */
 class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, EmitsWritebackReactions
 {
-    /**
-     * The `DL-NNN` token, case-insensitive — leading `\b` only, same boundary
-     * shape as {@see CardTokenGrammar} (the card token was made to match THIS
-     * shape, DL-201). One home for the three DL parse sites.
-     */
-    private const DL_TOKEN_PATTERN = '/\bDL-(\d+)/i';
-
     /**
      * The top-level GitHub event types this classifier consumes (card#4183 /
      * DL-196): a `pull_request.<action>` (the move lifecycle) and a `push` (the
@@ -273,7 +268,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                     // this gate, add-if-missing would be the only poison guard. The
                     // explicit-card# path below stamps regardless (its card# token
                     // asserts "this PR tracks this card"); no such assertion exists here.
-                    $stampRefs = preg_match_all(self::DL_TOKEN_PATTERN, $this->titleAndHead($payload)) === 1
+                    $stampRefs = DlTokenGrammar::sole($this->titleAndHead($payload)) !== null
                         ? $this->stampRefs($this->titleAndHead($payload), $this->prNumber($payload), $this->prUrl($payload), $dl)
                         : [];
 
@@ -438,8 +433,9 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     /**
      * Branch-create push → `started` move target(s) (DL-160). Fires ONCE on the
      * creation of a branch (`payload.created === true`) whose ref carries a
-     * `DL-NNN` or a card token ({@see CardTokenGrammar} owns which spellings that
-     * is — this path runs the very same parse), so it codifies "work has begun"
+     * `DL-NNN` or a card token ({@see DlTokenGrammar} / {@see CardTokenGrammar}
+     * own which spellings those are — this path runs the very same parses),
+     * so it codifies "work has begun"
      * from the artifact (the branch), not from any agent. Uses `created === true`
      * so a subsequent push to the same branch is a no-op (the move would otherwise
      * re-fire on every push). The handler's promote-from guard
@@ -474,9 +470,9 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             return new ClassifyResult;   // repo not configured for writeback
         }
 
-        $hasDl = preg_match(self::DL_TOKEN_PATTERN, $branch, $m) === 1;
+        $dl = DlTokenGrammar::parse($branch);
         $cardToken = CardTokenGrammar::parse($branch);
-        if (! $hasDl && $cardToken === null) {
+        if ($dl === null && $cardToken === null) {
             $this->warnCardTokenNearMiss($branch, 'branch ref');
 
             return new ClassifyResult;   // no card-first token in the branch ref → un-linked, no-op
@@ -488,8 +484,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
 
         // FR-7 try-in-order-with-fallback (framework #112): same resolution order as
         // the pull_request path — resolve on the OUTCOME of the DL, not its presence.
-        if ($hasDl) {
-            $dl = 'DL-'.$m[1];
+        if ($dl !== null) {
             // Repo-qualified (DL-167) only where ambiguity exists (DL-174) — same
             // shared-board conditional as the pull_request path above.
             $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
@@ -608,17 +603,14 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
 
     /**
      * The `DL-NNN` token from the PR title or head branch (the same convention
-     * the board automation already uses), or null.
+     * the board automation already uses), or null. The accepted spellings are
+     * {@see DlTokenGrammar}'s, never re-listed here.
      *
      * @param  array<mixed>  $payload
      */
     private function dlToken(array $payload): ?string
     {
-        if (preg_match(self::DL_TOKEN_PATTERN, $this->titleAndHead($payload), $m) === 1) {
-            return 'DL-'.$m[1];
-        }
-
-        return null;
+        return DlTokenGrammar::parse($this->titleAndHead($payload));
     }
 
     /**
@@ -641,11 +633,9 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     private function stampRefs(string $text, ?int $prNumber, ?string $prUrl = null, ?string $excludeDl = null): array
     {
         $refs = [];
-        if (preg_match_all(self::DL_TOKEN_PATTERN, $text, $m) === 1) {
-            $sole = 'DL-'.$m[1][0];
-            if ($sole !== $excludeDl) {
-                $refs['stamp_dl'] = $sole;
-            }
+        $sole = DlTokenGrammar::sole($text);
+        if ($sole !== null && $sole !== $excludeDl) {
+            $refs['stamp_dl'] = $sole;
         }
         if ($prNumber !== null) {
             $refs['stamp_pr'] = $prNumber;

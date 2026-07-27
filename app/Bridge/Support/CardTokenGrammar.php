@@ -20,7 +20,7 @@ namespace App\Bridge\Support;
  *
  * The token: `card-<id>`, `card#<id>`, or the GLUED `card<id>`, case-insensitive.
  * DL-shaped boundary — leading `\b` only, deliberately NO trailing `\b`,
- * mirroring the DL regex (DL-201 / roundtable #48): a trailing `\b` made
+ * mirroring {@see DlTokenGrammar} (DL-201 / roundtable #48): a trailing `\b` made
  * `card#3054_fix` a SILENT no-op (`_` is a word char, so `\b` never matches
  * digit→`_`) while `DL-200_fix` was immune to the identical input.
  * Greedy-and-loud beats strict-and-silent: a wrong-but-parsed id fails at the
