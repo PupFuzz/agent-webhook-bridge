@@ -1,0 +1,32 @@
+<?php
+
+namespace App\Bridge\Check;
+
+use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\Finding;
+
+/**
+ * A `bridge:check` check that runs once PER AGENT, inside the config iteration
+ * (DL-242, plan constraint (b)).
+ *
+ * The registry needs a per-agent scope and not just a global one because output is
+ * emitted inside the per-agent loop (`agent config ok: {$name}`, `agent {$name}: …`,
+ * from CheckCommand L240) and is interleaved per agent. A check hoisted to run after
+ * derivation would REORDER output and break the byte-identical contract stages 0-7
+ * hold. So these execute within the iteration, at the same ordinal position their
+ * inline code held.
+ */
+interface PerAgentCheck
+{
+    /**
+     * Stable machine id — same rules as {@see Check::id()}, and unique across BOTH
+     * registries: the inventory is one namespace.
+     */
+    public function id(): string;
+
+    /**
+     * @return iterable<Finding> Same contract as {@see Check::run()} — at least one
+     *                           finding, `unvalidated` when it could not run.
+     */
+    public function runFor(AgentConfig $config, CheckContext $ctx): iterable;
+}

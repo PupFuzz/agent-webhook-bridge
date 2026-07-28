@@ -1,0 +1,11 @@
+exit: 1
+--- output ---
+config dir: <INSTALL>
+config dir <INSTALL> is group/world-accessible (mode 0755) — chmod 700 (it holds secrets)
+secret dir: <INSTALL>
+database: connected
+install-suffix DSN check: ok
+inbox surfacing config: ok (layout=shared)
+retention: on (delete >30d, every 86400s, 500 rows/pass)
+retention: this PHP install has no fastcgi_finish_request() — retention runs AFTER the response is flushed but BEFORE the request ends, so a keep-alive client may wait for it. Serve the receiver under PHP-FPM (see CLAUDE_DEPLOYMENT.md), or set BRIDGE_RETENTION_ENABLED=false and run bridge:prune on a schedule.
+agent config prod-agent: config file <INSTALL>/prod-agent.yml is not valid YAML: Malformed inline YAML string at line 4.

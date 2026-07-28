@@ -1,0 +1,18 @@
+exit: 0
+--- output ---
+config dir: <INSTALL>
+config dir <INSTALL> is group/world-accessible (mode 0755) — chmod 700 (it holds secrets)
+secret dir: <INSTALL>
+database: connected
+install-suffix DSN check: ok
+inbox surfacing config: ok (layout=shared)
+retention: on (delete >30d, every 86400s, 500 rows/pass)
+retention: this PHP install has no fastcgi_finish_request() — retention runs AFTER the response is flushed but BEFORE the request ends, so a keep-alive client may wait for it. Serve the receiver under PHP-FPM (see CLAUDE_DEPLOYMENT.md), or set BRIDGE_RETENTION_ENABLED=false and run bridge:prune on a schedule.
+agent config ok: prod-agent
+agent prod-agent: kanban:5 has no secret at <INSTALL>/kanban/webhook-secret-scope-5 — run bridge:provision
+agent prod-agent: github:owner/repo has no secret at <INSTALL>/github/webhook-secret-scope-owner%2Frepo — run bridge:provision
+agent prod-agent: kanban API token not readable at <INSTALL>/kanban/token — bridge:provision will SKIP kanban scopes
+writeback.json: 1 repo mapping(s)
+writeback: token can see board 8 (owner/repo) (exact card count unavailable — kanban predates pagination meta)
+writeback: all mapped stage ids exist on board 8 (owner/repo)
+writeback: move_coord_cards (owner/repo, board 8): CANNOT VERIFY the terminal against the coordination config — $COORD_CONFIG is not set. Until this is verified the two movers may disagree about which column is terminal and fight every cycle. Point bridge.writeback.coord_config_path (or $COORD_CONFIG) at coordination.config.json.
