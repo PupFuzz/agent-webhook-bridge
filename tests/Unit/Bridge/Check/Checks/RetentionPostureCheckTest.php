@@ -76,7 +76,14 @@ class RetentionPostureCheckTest extends TestCase
     {
         Cache::swap(new Repository(new ArrayStore));
 
-        foreach ($this->messagesFrom(new RetentionPostureCheck) as $finding) {
+        $messages = $this->messagesFrom(new RetentionPostureCheck);
+
+        // The absence assertion below is only evidence if the check reached the marker
+        // read at all: a check that yielded NOTHING would satisfy it just as well. This
+        // witnesses the same healthy route the throwing-store test takes.
+        $this->assertStringContainsString('retention: on (delete >30d', $messages[0]['message']);
+
+        foreach ($messages as $finding) {
             $this->assertStringNotContainsString('could not read the last-failure marker', $finding['message']);
         }
     }

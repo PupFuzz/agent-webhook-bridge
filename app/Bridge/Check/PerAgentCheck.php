@@ -10,8 +10,8 @@ use App\Bridge\Support\Finding;
  * (DL-242, plan constraint (b)).
  *
  * The registry needs a per-agent scope and not just a global one because output is
- * emitted inside the per-agent loop (`agent config ok: {$name}`, `agent {$name}: …`,
- * from CheckCommand L240) and is interleaved per agent. A check hoisted to run after
+ * emitted inside `CheckCommand`'s per-agent config loop (`agent config ok: {$name}`,
+ * `agent {$name}: …`) and is interleaved per agent. A check hoisted to run after
  * derivation would REORDER output and break the byte-identical contract stages 0-7
  * hold. So these execute within the iteration, at the same ordinal position their
  * inline code held.

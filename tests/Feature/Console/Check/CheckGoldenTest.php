@@ -73,7 +73,8 @@ class CheckGoldenTest extends TestCase
 
             case 'minimal-fpm-present':
                 // Identical fixture, opposite host. The ONLY difference from `minimal`
-                // is whether a php-fpm binary is on PATH (CheckCommand L160), which is
+                // is whether a php-fpm binary is on PATH (read by
+                // `RetentionPostureCheck::receiverSapiFinishesEarly()`), which is
                 // reached on the default retention-on path — so it moves nearly every
                 // install's output. This pair is the potency proof for that pin.
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());

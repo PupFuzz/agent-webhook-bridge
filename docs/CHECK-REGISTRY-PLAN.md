@@ -71,7 +71,7 @@ outward.
    indistinguishable from its pass state.
 5. That mints the next card.
 
-The command already says this about itself. `CheckCommand.php:961` prints a 5-line apology:
+The command already says this about itself — the closing `unvalidated` tally prints a 5-line apology:
 
 > *"This is a floor, not an inventory: only checks reporting `unvalidated` are counted, and a
 > check that could not run usually reports `warn` instead — so no tally line does NOT mean every
@@ -363,20 +363,36 @@ control (reachable backend, no marker ⇒ the line is absent); both directions a
 **Generalize this before stage 3:** every remaining cluster carries fail-soft `catch` arms with the
 same double blind spot.
 
-**Coverage-table effect.** The predicate total drops **100 → 97** as four retention predicates leave
-`handle()`, and the gap ids renumber. That renumbering is the restaling `card#5475` exists to fix —
-it is a property of the instrument, not a defect of this stage.
+**Coverage-table effect.** The predicate total goes **100 → 97**, and the arithmetic is *not* a plain
+subtraction: the four retention predicates (`enabled`, `isUsable()`, `receiverSapiFinishesEarly()`,
+`is_array($lastError)`) leave `handle()`, and the one-line `if (! $this->emitReport(...))` guard that
+replaces them **adds one back** — 100 − 4 + 1 = 97. Every migrated cluster will net −(n−1), not −n,
+for the same reason. The gap ids also renumber; that restaling is what `card#5475` exists to fix —
+a property of the instrument, not a defect of this stage.
 <!-- STAGE2-REGEN-PENDING: fill the observed / observed-via-abort / UNOBSERVED split from the
      regenerated docs/check-golden-coverage.md before opening the stage-2 PR. -->
 
 **A finding worth more than the stage: line numbers into `CheckCommand.php` are a doc defect, not a
 convenience.** Docblocks and this plan cited `handle()` offsets in ~20 places. Stage 2 moved ~66
 lines and invalidated **every one of them** — verified individually; not one still landed on its
-construct — and **no gate can catch it**: not phpstan, not pint, not the golden suite. Stages 3–7
-would each re-mint the same breakage. All such citations are now replaced by construct names, which
-are stable and greppable. **The rule for stages 3–7: never cite a `CheckCommand` line number.** Name
-the method, the loop, or the message. A line number into a *stable* file is still fine — the pin on
-`GitHubTokenResolver` L204 was re-verified and left alone.
+construct. Stages 3–7 would each re-mint the same breakage. All such citations are now replaced by
+construct names, which are stable and greppable. **The rule for stages 3–7: never cite a
+`CheckCommand` line number.** Name the method, the loop, or the message. A line number into a
+*stable* file is still fine — the pin on `GitHubTokenResolver` L204 was re-verified and left alone.
+
+**The rule is now a gate, because stating it in prose was measurably not enough.** The first pass at
+this stage wrote the rule here and fixed the citations it could find — and still missed **five**
+sites, because it grepped for `CheckCommand` and the worst citations never name their file:
+`GoldenInstall` cited two bare offsets with no filename anywhere on the line, and this plan itself
+cited a `CheckCommand` offset that had already drifted by 45 lines. A stale comment is valid PHP
+that passes phpstan, pint, and the golden suite alike. `bin/check-doc-refs.php` — already the doc-sync
+gate under DL-013, already a CI step — therefore grew a second check: a citation naming
+`CheckCommand` is an error anywhere, and a *bare* `L<n>` is an error anywhere in the check-registry
+surface, where an unqualified offset can only mean `CheckCommand`. It is deliberately **not** a
+repo-wide ban on offsets: the receiver core is static by DL-001 and `CLAUDE_GOTCHAS.md`'s cites into
+it were verified still accurate, so banning them would trade a real defect for churn. Both rules were
+proven able to fail (injected citation ⇒ red) and both exemptions proven not to (bare offset outside
+the surface, and a `GitHubTokenResolver` line, stay green).
 
 ## Verification
 
