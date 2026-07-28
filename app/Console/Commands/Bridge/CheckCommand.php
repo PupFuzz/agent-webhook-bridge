@@ -13,20 +13,21 @@ use App\Bridge\Check\Checks\RetentionPostureCheck;
 use App\Bridge\Check\Checks\SshLiveProbeCheck;
 use App\Bridge\Check\Checks\SshPinnedLineCheck;
 use App\Bridge\Check\Checks\WritebackAlertChannelCheck;
+use App\Bridge\Check\Checks\WritebackBoardStateCheck;
+use App\Bridge\Check\Checks\WritebackByRefCheck;
 use App\Bridge\Check\Checks\WritebackConfigCheck;
 use App\Bridge\Check\Checks\WritebackIdentityCheck;
 use App\Bridge\Check\Checks\WritebackMappingConfigCheck;
+use App\Bridge\Check\Checks\WritebackSourceCoverageCheck;
 use App\Bridge\Check\Checks\WritebackTokenCheck;
 use App\Bridge\Check\CheckSlot;
 use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
-use App\Bridge\Handlers\KanbanDependabotCardHandler;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelToken;
 use App\Bridge\Support\ClassifierResolver;
-use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\InstallGuard;
 use App\Bridge\Support\SecretFile;
@@ -36,11 +37,8 @@ use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\UrlValidator;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Tools\SshProbeEnvironment;
-use App\Bridge\Writeback\CoordConfigTerminals;
-use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
-use App\Bridge\Writeback\WritebackMapping;
 use App\Models\WebhookEvent;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
@@ -89,6 +87,12 @@ class CheckCommand extends BridgeCommand
                 new WritebackTokenCheck,
                 new ReconcileRepoTokensCheck,
                 new WritebackMappingConfigCheck,
+            )
+            ->register(
+                CheckSlot::WritebackProbe,
+                new WritebackByRefCheck,
+                new WritebackBoardStateCheck,
+                new WritebackSourceCoverageCheck,
             )
             ->registerPerAgent(CheckSlot::BoardToolsSsh, new SshPinnedLineCheck($sshEnv))
             ->register(CheckSlot::ProbeToolsSsh, new SshLiveProbeCheck($sshEnv, $this->strOption('probe-tools-ssh')));
@@ -528,7 +532,7 @@ class CheckCommand extends BridgeCommand
                 // DERIVATION, NOT ASSERTION (plan constraint (c)): the load is what
                 // populates the context; every assertion on the result is a registered
                 // check.
-                $writeback = $ctx->writeback = WritebackConfig::load($configDir);
+                $ctx->writeback = WritebackConfig::load($configDir);
                 if (! $this->emitReport($runner->run(CheckSlot::Writeback, $ctx))) {
                     $ok = false;
                 }
@@ -538,167 +542,22 @@ class CheckCommand extends BridgeCommand
                 // board_id) gets a 200 with 0 cards — NOT an HTTP error — so the
                 // writeback silently no-ops every move (or duplicates a dependabot
                 // card). Catch that degraded-but-not-erroring state HERE, at config
-                // time. All warn-level: a temporarily-unreachable kanban or a
-                // genuinely-empty new board must not FAIL the install check (DL-026).
-                if ($writeback !== null && $writeback->mappings !== []) {
+                // time. The assertions are registered checks (CheckSlot::WritebackProbe);
+                // what stays here is the client construction — DERIVATION, not assertion
+                // (plan constraint (c)) — and its fail-soft envelope.
+                if ($ctx->writeback !== null && $ctx->writeback->mappings !== []) {
                     try {
-                        $client = WritebackClientFactory::make();
-
-                        // DL-031: `ref` is the default correlation mode — but a kanban
-                        // that predates by-ref (< v0.17.2) would 404 EVERY correlation
-                        // silently. Probe reachability once (instance-wide) against the
-                        // first mapped board and warn loudly to set scan / upgrade kanban.
-                        // Same defaulted read as WritebackClientFactory so the gate
-                        // and the client's actual mode can never diverge (DL-031).
-                        if (config('bridge.writeback.correlation', 'ref') === 'ref') {
-                            $firstBoard = (int) array_values($writeback->mappings)[0]->boardId;
-                            try {
-                                if (! $client->byRefAvailable($firstBoard)) {
-                                    $this->warn("writeback: correlation=ref but by-ref returned 404 on board {$firstBoard} — either this kanban predates by-ref (< v0.17.2) or board {$firstBoard} isn't accessible to the token; EVERY correlation will 404 and no card will move. Upgrade kanban / fix board_id+membership, or set BRIDGE_WRITEBACK_CORRELATION=scan");
-                                } else {
-                                    $this->info('writeback: by-ref reachable (correlation=ref)');
-                                }
-                            } catch (Throwable $e) {
-                                $this->warn('writeback: could not probe by-ref reachability — '.$e->getMessage());
-                            }
-                        }
-
-                        foreach ($writeback->mappings as $repo => $mapping) {
-                            try {
-                                // Cheap visibility probe (DL-029): one limit=1 read,
-                                // preferring meta.total — independent of correlation mode.
-                                $vis = $client->visibility($mapping->boardId);
-                                if ($vis['total'] === 0) {
-                                    // 0 cards is AMBIGUOUS on a 200 read: an empty board (no
-                                    // cards created yet — fine) vs a non-member token (every
-                                    // move silently no-ops). Don't assert membership on this
-                                    // evidence alone — true inaccessibility surfaces separately
-                                    // (the by-ref reachability probe above 404s for a
-                                    // non-member board in `ref` mode). So present both.
-                                    $this->warn("writeback: token sees 0 cards on board {$mapping->boardId} ({$repo}) — EITHER the board is empty (no cards yet → fine, the writeback works once cards exist) OR the token's user isn't a member / `board_id` is wrong (then every move silently no-ops). If you expect cards on that board, verify membership + `board_id`; a genuinely-empty board is not a problem.");
-                                } elseif (! $vis['exact']) {
-                                    // Pre-DL-146 kanban: confirmed non-blind, exact size unknown.
-                                    $this->info("writeback: token can see board {$mapping->boardId} ({$repo}) (exact card count unavailable — kanban predates pagination meta)");
-                                } else {
-                                    $this->info("writeback: token sees {$vis['total']} card(s) on board {$mapping->boardId} ({$repo})");
-                                    if (config('bridge.writeback.correlation', 'ref') !== 'ref' && $vis['total'] > KanbanClient::SEARCH_LIMIT * KanbanClient::MAX_PAGES) {
-                                        $this->warn("writeback: board {$mapping->boardId} ({$repo}) has {$vis['total']} cards, beyond the scan ceiling — correlations beyond it will be missed; switch BRIDGE_WRITEBACK_CORRELATION=ref");
-                                    }
-                                }
-                                // DL-027: a mapping's swimlane_id (created-card lane) must exist on
-                                // its board, else card creation 422s and the handler SILENTLY no-ops
-                                // (permanent-4xx). A static typo never self-resolves, so name it here.
-                                if ($mapping->swimlaneId !== null) {
-                                    if (! in_array($mapping->swimlaneId, $client->boardSwimlaneIds($mapping->boardId), true)) {
-                                        $this->warn("writeback: swimlane_id {$mapping->swimlaneId} not found on board {$mapping->boardId} ({$repo}) — created cards will 422 and SILENTLY no-op until fixed (a deleted lane, or a lane on a different board)");
-                                    } else {
-                                        $this->info("writeback: swimlane_id {$mapping->swimlaneId} ok on board {$mapping->boardId} ({$repo})");
-                                    }
-                                }
-                                // #2949: a create_dependabot_cards mapping's board MUST define every
-                                // custom field the create payload sets (pr_number, pr_url, origin),
-                                // else POST /tasks.json 422s on the unregistered key and the handler
-                                // SILENTLY no-ops (permanent-4xx, DL-020) — the create path's twin of
-                                // the DL-027 swimlane gap above. A static config/board mismatch never
-                                // self-resolves, so surface it here (DL-026 "degraded must be loud").
-                                if ($mapping->createDependabotCards) {
-                                    $required = KanbanDependabotCardHandler::CREATE_PAYLOAD_KEYS;
-                                    $present = $client->boardCustomFieldKeys($mapping->boardId);
-                                    $missing = array_values(array_diff($required, $present));
-                                    if ($missing !== []) {
-                                        $this->warn("writeback: create_dependabot_cards is on for {$repo} but board {$mapping->boardId} is MISSING the custom field(s) ".implode(', ', $missing).' the create payload sets ('.implode(', ', $required).') — every dependabot-card create will 422 and SILENTLY no-op until they are registered (add them on the board, or set create_dependabot_cards=false)');
-                                    } else {
-                                        $this->info("writeback: create_dependabot_cards custom fields ok on board {$mapping->boardId} ({$repo})");
-                                    }
-                                }
-                                // #4553: population=all correlates + creates by github_issue by-ref, which
-                                // derives from the `issue_number` payload custom field. If the board does
-                                // NOT register issue_number, kanban 422s every non-prefixed create as a
-                                // PERMANENT no-op (silent), AND an empty by-ref pre-check is indistinguishable
-                                // from a real no-match — so the bridge (the sole real-time mover for this
-                                // population) would silently DOUBLE-CARD. FAIL-CLOSED (exit non-zero), not a
-                                // warn: refuse to certify an install that would silently lose/duplicate cards.
-                                // Gated on create OR move: the move leg (create off) also correlates
-                                // non-prefixed cards by-ref, so it too 422s / silently no-ops without
-                                // issue_number registered.
-                                if (($mapping->createCoordCards || $mapping->moveCoordCards) && $mapping->issuePopulation === WritebackMapping::POPULATION_ALL) {
-                                    // Read in its OWN try so a read failure fails CLOSED. This is the one
-                                    // fail-closed check in this block (its siblings warn), so it must NOT be
-                                    // swallowed by the per-mapping warn-catch below: a fail-closed invariant
-                                    // we could not verify is a FAILURE, not a warn (DL-026 / canon #9 — an
-                                    // unrun measurement is not a pass). A blind token / wrong board / transient
-                                    // 5xx here therefore exits non-zero rather than certifying blind.
-                                    try {
-                                        $present = $client->boardCustomFieldKeys($mapping->boardId);
-                                        if (! in_array('issue_number', $present, true)) {
-                                            $this->error("writeback: issue_population=all for {$repo} but board {$mapping->boardId} does not register the 'issue_number' custom field — every non-prefixed coord-card create 422s as a permanent no-op AND by-ref correlation cannot tell 'not indexed' from 'no match', so the bridge would silently double-card. Register issue_number (+ issue_url for source) on the board, or set issue_population=prefixed.");
-                                            $ok = false;
-                                        } else {
-                                            $this->info("writeback: issue_number custom field registered on board {$mapping->boardId} ({$repo}) — github_issue by-ref ready (issue_population=all)");
-                                        }
-                                    } catch (Throwable $e) {
-                                        $this->error("writeback: issue_population=all for {$repo} but could NOT read board {$mapping->boardId}'s custom fields to verify issue_number registration — ".$e->getMessage().'. This fail-closed check must not be skipped (an unverifiable board could silently double-card); fix board access / board_id and re-run.');
-                                        $ok = false;
-                                    }
-                                }
-                                // #2652: every workflow stage id the mapping targets — each
-                                // `stages.*` value plus the `started_from_stages` ids — must be a
-                                // real stage on the board. A typo'd id makes the move 422 (the
-                                // forward outcomes) or the `started`/no-regression guard silently
-                                // never match. Same silent-misconfig class as the swimlane (DL-027)
-                                // and dependabot-CF (DL-162) checks; cheap via boardStageOrder (DL-163).
-                                $boardStageIds = array_keys($client->boardStageOrder($mapping->boardId));
-                                if ($boardStageIds !== []) {   // empty ⇒ no stages read; don't false-warn
-                                    $targets = array_values($mapping->stages);
-                                    foreach ($mapping->startedFromStages ?? [] as $fromId) {
-                                        $targets[] = $fromId;
-                                    }
-                                    // DL-194: the unpark_from_stages ids are read on the
-                                    // `started` path too — a typo'd id makes the auto-unpark
-                                    // guard silently never match (same class as above).
-                                    foreach ($mapping->unparkFromStages ?? [] as $fromId) {
-                                        $targets[] = $fromId;
-                                    }
-                                    // DL-198: the coord-card create stage — a typo'd id makes
-                                    // every coord-card create 422 and silently no-op (same class).
-                                    if ($mapping->coordCardStageId !== null) {
-                                        $targets[] = $mapping->coordCardStageId;
-                                    }
-                                    // DL-200: the coord-card terminal — same class again (a typo'd
-                                    // id 422s every close→terminal move and silently no-ops).
-                                    if ($mapping->coordCardTerminalStageId !== null) {
-                                        $targets[] = $mapping->coordCardTerminalStageId;
-                                    }
-                                    $unknownStages = array_values(array_unique(array_diff($targets, $boardStageIds)));
-                                    if ($unknownStages !== []) {
-                                        $this->warn("writeback: mapping for {$repo} references workflow stage id(s) ".implode(', ', $unknownStages)." not on board {$mapping->boardId} — those moves will 422 (or the started/no-regression guard will silently never match) until fixed");
-                                    } else {
-                                        $this->info("writeback: all mapped stage ids exist on board {$mapping->boardId} ({$repo})");
-                                    }
-                                }
-                                // DL-200: the cross-config compare — the MANDATORY preflight that
-                                // makes the move leg's bridge-owned terminal config legitimate. Gated
-                                // on the coord-card-move family (gate 1): after the DL-204 default flip,
-                                // move_coord_cards can resolve true from terminal-presence alone, so
-                                // without this gate the compare would verify a terminal for a leg that
-                                // cannot fire (family off) and read as though the leg were live.
-                                if (isset($ctx->coordCardMoveScopes[$repo])) {
-                                    $this->checkCoordTerminalAgreement($repo, $mapping, $client);
-                                }
-                            } catch (Throwable $e) {
-                                $this->warn("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".$e->getMessage());
-                            }
-                        }
-                        // #3399: in ref mode the correlation on a SHARED board is repo-qualified
-                        // (passes the event's `source`), so there a dl_number card whose derived
-                        // source is null (no pr_url) or matches no repo mapped to its board is
-                        // EXCLUDED by the by-ref lookup and silently never self-moves — the one
-                        // writeback failure that stays invisible. On a 1:1 board the qualifier is
-                        // omitted (DL-174), so null-source cards correlate fine there.
-                        if (config('bridge.writeback.correlation', 'ref') === 'ref') {
-                            $this->checkWritebackSourceCoverage($writeback, $client);
+                        $ctx->client = WritebackClientFactory::make();
+                        if (! $this->emitReport($runner->run(CheckSlot::WritebackProbe, $ctx))) {
+                            $ok = false;
                         }
                     } catch (Throwable $e) {
+                        // THE SECOND FAIL-SOFT ENVELOPE, INLINE for the same reason the
+                        // outer one is (DL-242 stage 3a): CheckRunner deliberately does not
+                        // catch, so wrapping emitReport() keeps "a probe failure degrades to
+                        // one warn" a property of this method rather than an assumption
+                        // about three checks' callees. Its realistic thrower is
+                        // WritebackClientFactory::make() above — derivation, inline anyway.
                         $this->warn('writeback: skipped board-visibility probe — '.$e->getMessage());
                     }
                 }
@@ -709,9 +568,10 @@ class CheckCommand extends BridgeCommand
                 // bridge:check where today this arm turns the throw into one error line
                 // plus a non-zero exit. Keeping it here preserves that by construction.
                 // The realistic thrower is WritebackConfig::load above — every leg the
-                // registered checks own is total (see ReconcileRepoTokensCheck) — but the
-                // envelope is what makes that a property of this method rather than an
-                // assumption about six checks' callees.
+                // registered checks own is total (see ReconcileRepoTokensCheck) or carries
+                // its own catch (see WritebackBoardStateCheck) — but the envelope is what
+                // makes that a property of this method rather than an assumption about
+                // nine checks' callees.
                 $this->error('writeback.json: '.$e->getMessage());
                 $ok = false;
             }
@@ -1311,158 +1171,6 @@ class CheckCommand extends BridgeCommand
             // exactly as the info() here before it did, and that escape is unchanged.
             $this->emitFinding(Finding::unvalidated('event-consumer: check skipped — '.$e->getMessage()));
         }
-    }
-
-    /**
-     * #3399: on a ref-mode writeback the by-ref lookup on a SHARED board filters by the
-     * event's repo `source`, which the kanban derives from a card's `pr_url`. There a dl_number
-     * card with no pr_url (source=null), or a pr_url whose owner/repo matches no repo mapped to
-     * that board, is EXCLUDED by the lookup and silently never self-moves — indistinguishable
-     * from a legitimate no-match in the dispatch ledger. Warn (never fail) so it is named +
-     * actionable (root cause closed by `kbcard --pr-url` + the on-ramp docs). On a NON-shared
-     * board the qualifier is omitted (DL-174) so source=null is fine and not warned; a derived
-     * source naming a repo NOT mapped to the board still warns everywhere (operator error).
-     * Per board (deduped across mappings).
-     */
-    private function checkWritebackSourceCoverage(WritebackConfig $writeback, KanbanClient $client): void
-    {
-        // repos mapped to each board, canonicalized to match the kanban's derived source.
-        $refs = new ExternalReferenceNormalizer;
-        $reposByBoard = [];
-        foreach ($writeback->mappings as $repo => $mapping) {
-            $reposByBoard[$mapping->boardId][] = $refs->canonicalizeSource((string) $repo);
-        }
-        foreach ($reposByBoard as $boardId => $repos) {
-            try {
-                $read = $client->readBoardCards($boardId);
-            } catch (Throwable $e) {
-                $this->warn("writeback: could not read board {$boardId} to check dl source coverage — ".$e->getMessage());
-
-                continue;
-            }
-            $flagged = 0;
-            foreach ($read['cards'] as $card) {
-                $payload = is_array($card['payload'] ?? null) ? $card['payload'] : [];
-                $dl = $payload['dl_number'] ?? null;
-                if (! is_scalar($dl) || (string) $dl === '') {
-                    continue;   // not a DL card
-                }
-                $id = is_scalar($card['id'] ?? null) ? (string) $card['id'] : '?';
-                $externalLink = is_string($card['external_link'] ?? null) ? $card['external_link'] : null;
-                $source = (new ExternalReferenceNormalizer)->sourceFor($payload, $externalLink);
-                if ($source === null) {
-                    if ($writeback->boardIsShared((int) $boardId)) {
-                        $this->warn("writeback: card {$id} (DL {$dl}) on SHARED board {$boardId} has dl_number but source=null (no repo / pr_url / issue_url / html_url / external_link to derive it from) — the repo-qualified by-ref lookup EXCLUDES it, so it will NEVER self-move. Stamp a repo-qualified pr_url (kbcard patch --pr-url …/<owner>/<repo>/pull/0).");
-                        $flagged++;
-                    }
-                    // non-shared board: the qualifier is omitted (DL-174) — null source correlates fine.
-                } elseif (! in_array($source, $repos, true)) {
-                    $this->warn("writeback: card {$id} (DL {$dl}) on board {$boardId} has source={$source}, which matches no repo mapped to that board (".implode(', ', $repos).') — no mapped event will move it.');
-                    $flagged++;
-                }
-            }
-            if ($read['truncated']) {
-                $this->warn("writeback: dl source-coverage check on board {$boardId} is INCOMPLETE — the board read hit the page ceiling; cards beyond it were not checked.");
-            } elseif ($flagged === 0) {
-                $this->info("writeback: dl_number cards on board {$boardId} all have a mapped source (self-move-eligible)");
-            }
-        }
-    }
-
-    /**
-     * DL-200 — the MANDATORY cross-config preflight for the coord-card move leg
-     * (roundtable #18, ruled 3-way): compare THIS bridge's `coord_card_terminal_stage_id`
-     * against what the coordination config considers terminal for the same board.
-     *
-     * WHY IT IS MANDATORY, not a nicety. Q1's real failure is NOT "a stage id that isn't
-     * on the board" — the stage-existence check above already catches that. It is the two
-     * movers DISAGREEING about which column concludes a card: the bridge moves a closed
-     * card to stage X while the reconcile treats stage Y as terminal, so they fight every
-     * cycle, forever, with each side individually "working". Only comparing the two
-     * CONFIGS can see that. This read is what makes it legitimate for the bridge to own a
-     * terminal stage id in its own config at all.
-     *
-     * TWO BINDING CONDITIONS (non-negotiable, both peer-affirmed):
-     *  (a) FAIL SOFT, and report CANNOT-VERIFY **distinctly from agreement**. An absent /
-     *      unreadable / malformed / silent-on-this-board coord config means the comparison
-     *      COULD NOT RUN. Never print agreement on a read failure — a missing input is not
-     *      evidence of agreement, it is evidence we could not ask.
-     *  (b) NEVER FAIL THE BRIDGE. Diagnostics only, warn-never-fail (the DL-196 posture) —
-     *      `bridge:check` must not go non-zero because a coord file moved.
-     */
-    private function checkCoordTerminalAgreement(string $repo, WritebackMapping $mapping, KanbanClient $client): void
-    {
-        if (! $mapping->moveCoordCards || $mapping->coordCardTerminalStageId === null) {
-            return;   // leg off ⇒ nothing to verify (and no CANNOT-VERIFY noise on installs that never enable it)
-        }
-        $mine = $mapping->coordCardTerminalStageId;
-        $prefix = "writeback: move_coord_cards ({$repo}, board {$mapping->boardId})";
-        $tail = 'Until this is verified the two movers may disagree about which column is terminal and fight every cycle.';
-
-        // The per-install override (BRIDGE_COORD_CONFIG_PATH via .env) first, then the
-        // ambient $COORD_CONFIG read LIVE through getenv(). getenv() rather than env()
-        // is load-bearing, not a style choice: `php artisan optimize` caches config/ and
-        // freezes every env() at deploy time (and the frozen value wins over the live
-        // one), so an ambient path resolved in config/bridge.php would be whatever the
-        // DEPLOYING shell had — usually nothing — forever. That would make this
-        // "mandatory" compare permanently report CANNOT-VERIFY: present, running, and
-        // never once doing its job. getenv() is cache-immune, and reading it here is
-        // legitimate ONLY because this command is CLI-only (the receiver's FPM env has
-        // no $COORD_CONFIG — which is the whole reason the compare lives here).
-        $path = config('bridge.writeback.coord_config_path');
-        if (! is_string($path) || $path === '') {
-            $ambient = getenv('COORD_CONFIG');
-            $path = is_string($ambient) && $ambient !== '' ? $ambient : null;
-        }
-        $config = CoordConfigTerminals::load($path);
-        if ($config === null) {
-            $where = $path === null ? '$COORD_CONFIG is not set' : "the coordination config at {$path} is absent, unreadable, or malformed";
-            $this->warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
-
-            return;
-        }
-
-        // Resolved through the framework's OWN rule (explicit terminal_columns, else the
-        // user_lanes → "Done" lane-model fallback), joined by board_id and unioned across
-        // every entry sharing it — see CoordConfigTerminals. A bare terminal_columns read
-        // would resolve NOTHING on the canonical lane-model `issues` board.
-        $names = CoordConfigTerminals::terminalNamesForBoardId($config, $mapping->boardId);
-        if ($names === []) {
-            $this->warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — it declares no terminal for board {$mapping->boardId} (no kanban.boards[] entry carries that board_id, or the entry has neither terminal_columns nor user_lanes). {$tail}");
-
-            return;
-        }
-        if (count($names) > 1) {
-            // >1 is legal framework-wide (e.g. ["Released to main", "Won't Do"]), but the
-            // bridge concludes into exactly ONE stage, so which of them it ought to match
-            // is genuinely unknowable. Ambiguous ⇒ cannot verify; never pick one and call
-            // that agreement.
-            $this->warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — it resolves ".count($names)." terminals for board {$mapping->boardId} (".implode(', ', $names).'), but the bridge concludes cards into exactly one stage, so which it should match is ambiguous. '.$tail);
-
-            return;
-        }
-        $name = $names[0];
-
-        try {
-            $byName = $client->boardStageIdsByName($mapping->boardId);
-        } catch (Throwable $e) {
-            $this->warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — could not read board {$mapping->boardId} to resolve its terminal column \"{$name}\" to a stage id: ".$e->getMessage().' '.$tail);
-
-            return;
-        }
-        if (! array_key_exists($name, $byName)) {
-            $this->warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — its terminal column \"{$name}\" for board {$mapping->boardId} is not a stage on that board, so it cannot be compared against stage {$mine}. {$tail}");
-
-            return;
-        }
-
-        $theirs = $byName[$name];
-        if ($theirs === $mine) {
-            $this->info("{$prefix}: coord config agrees — its terminal \"{$name}\" is stage {$theirs}, matching coord_card_terminal_stage_id");
-
-            return;
-        }
-        $this->warn("{$prefix}: the two movers DISAGREE on the terminal — this bridge concludes coord cards into stage {$mine}, but the coordination config's terminal for board {$mapping->boardId} is \"{$name}\" (stage {$theirs}). They will fight every cycle: the bridge moves a closed card to {$mine} and the reconcile drags it back to {$theirs}. Set coord_card_terminal_stage_id={$theirs}, or change that board's terminal_columns.");
     }
 
     /**
