@@ -27,6 +27,9 @@ namespace App\Bridge\Check;
  */
 enum CheckSlot: string
 {
+    /** The install-wide retention posture, after the inbox-surfacing leg. */
+    case Retention = 'retention';
+
     /** Inside the per-agent config iteration, after that agent's channel legs. */
     case AgentConfig = 'agent-config';
 
