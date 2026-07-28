@@ -1835,3 +1835,21 @@ uncovered predicate disclosed as a named gap.
 accept/reject change, no token-scope change.** `docs/CHECK-REGISTRY-PLAN.md` (new) + the
 `CLAUDE.md` subfile index. Stages 8–10 are hard-gate and unstarted; **no new `bridge:check` leg
 should be added until Stage 8 lands**, since each one added first is another site to migrate.
+
+**[AMENDED 2026-07-28 — the open question DL-242 recorded is now RESOLVED.]** DL-242 left one fork
+for Stage 8: do the opt-in probes (`--probe-tools` / `--probe-tools-ssh`) report `unvalidated` when
+their flag is absent? **Ruled: neither `unvalidated` nor `ok` — the choice is not a severity.** The
+discriminator is whose fact the not-running is: a fact about the **install** the operator cannot
+know (undeclared `channel.server_path`, an untraversable dir, no `node` on PATH) is `unvalidated`
+— card#5170's case, and what the severity is for; a fact about the **invocation**, which the
+operator necessarily knows because they chose not to type the flag, is not. `ok` is worse than
+either, asserting a pass for something never executed. **"Not requested" is therefore a third
+DISPOSITION living in the inventory/renderer split, not a new `Severity` case:** the runner records
+every registered check's disposition (so constraint (a) holds and nothing is invisible), the text
+renderer stays silent on not-requested (today's output preserved byte-identical, no noise on the
+common path), and the JSON renderer emits it (card#5229's consumers get the full inventory
+including what was never asked for). `unvalidated` keeps exactly one meaning — *I should have
+measured this and the install stopped me*. The exhaustive-`match` property and the exit contract
+(only `fail` flips) are untouched by construction. **Scope: the opt-in axis ONLY** — card#5291's
+re-assignment sweep over the ~dozen couldn't-probe `warn` sites stays open and stays hard-gate.
+Full reasoning also recorded on card#5291, the SoT for that sweep.

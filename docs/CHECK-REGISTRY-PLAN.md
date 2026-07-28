@@ -180,20 +180,47 @@ Each stage moves **one check unit** out of `handle()` into a `Check`/`PerAgentCh
 at the same ordinal position**. Output order is preserved, so the golden-output test (Stage 0)
 stays green throughout. Every stage is independently reviewable and revertible.
 
-## Open design question — decide before Stage 8
+## Resolved design decision — the opt-in probes (settled; do not re-open)
 
-**Do the opt-in probes report `unvalidated` when their flag is absent?**
+**Question as originally posed:** do the opt-in probes report `unvalidated` when their flag is
+absent? Today `--probe-tools` / `--probe-tools-ssh` print **nothing** when not passed (guarded at
+L932, L940), but under constraint (a) they must return *something*.
 
-Today `--probe-tools` / `--probe-tools-ssh` print **nothing** when not passed (guarded at L932,
-L940). Under constraint (a) they must return *something*. Two defensible answers:
+**Ruled: neither `unvalidated` nor `ok`.** Both answers accepted a false premise — that the
+choice is a severity. It is not.
 
-- **`unvalidated`** — honest ("this was not measured"), but adds ≥2 lines to *every default run*,
-  which is noise on the common path.
-- **`ok`/silent** — "the operator declined to run a live probe" is a legitimate non-finding, not
-  an unknown.
+**The discriminator is the failure mode `Severity::Unvalidated` exists to prevent** (per its own
+docblock): an operator reads a green run and believes something was verified when it wasn't. So
+the test is *not* "did it run," it is **whose fact the not-running is**:
 
-This is the same warn ↔ unvalidated boundary that **card#5291** exists to settle, and it is
-operator-facing output either way. **Resolve it on card#5291 before Stage 8**, not during it.
+- Not-run is a fact about the **install**, which the operator cannot know — `channel.server_path`
+  undeclared, a directory the bridge user cannot traverse, no `node` on PATH. **→ `unvalidated`.**
+  This is card#5170's case and is precisely what the severity is for.
+- Not-run is a fact about the **invocation**, which the operator necessarily knows because they
+  chose not to type the flag. **→ not `unvalidated`.** There is no false belief to correct, and
+  using it here dilutes the one signal with a precise job.
+
+`ok` is worse than either: it asserts a pass for something never executed — the exact bug this
+whole program exists to kill.
+
+**The ruling: "not requested" is a third *disposition*, and it lives in the inventory/renderer
+split rather than in the `Severity` enum.**
+
+- The runner records **every registered check and its disposition**, so the inventory stays
+  complete and **constraint (a) holds** — nothing is invisible to the registry.
+- The **text renderer stays silent** on not-requested: today's default output is preserved
+  byte-identical and the common path gains no noise.
+- The **JSON renderer** (Stage 9 / card#5229) **emits it**, so machine consumers get the full
+  inventory *including what was never asked for* — strictly more than they can get today.
+
+Net effect: `unvalidated` keeps exactly one meaning — *"I should have measured this and the
+install stopped me."* **No new `Severity` case**, so the exhaustive-`match` property and the exit
+contract (only `fail` flips the exit) are both untouched by construction.
+
+**Scope bound:** this settles the **opt-in-probe axis only**. The re-assignment sweep card#5291
+owns — the ~dozen couldn't-probe sites that currently report `warn` — remains open and remains a
+**hard gate**. The reasoning above is also recorded on card#5291 itself, which stays the SoT for
+that sweep.
 
 ## Staged execution
 
@@ -205,7 +232,7 @@ next stage starts.
 | **0** | Golden-output harness + `Check`/`PerAgentCheck`/`CheckContext`/`CheckRunner` scaffolding. Registry empty; nothing migrated. | **None** | no |
 | **1** | Migrate the two already-`Finding`-shaped probes — the 4 existing `emitFinding` call sites. | **None** | no |
 | **2–7** | Migrate remaining units, ~1 PR per cluster: `retention`, `writeback` (+`writeback.json`, `alert_channel`), `database`/`install-suffix`, per-agent config/identity, `inbox surfacing config`, `board_tools`. | **None** (golden test enforces) | no |
-| **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the L961 "floor, not an inventory" disclaimer with an **exact** inventory. Requires the open question above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
+| **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the L961 "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
 | **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** |
 | **10** | Re-assign the sites that disagree on warn ↔ unvalidated. Closes **card#5291**, **card#5292**. | **Yes** — severities change | **GATE** |
 
