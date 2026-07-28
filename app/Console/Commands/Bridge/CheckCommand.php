@@ -1109,9 +1109,16 @@ class CheckCommand extends BridgeCommand
             // stays inline and reads the severities back off its report, because it
             // emits after the whole loop and folding it in would reorder output.
             $report = $runner->runForAgent(CheckSlot::BoardToolsSsh, $cfg, $ctx);
-            foreach ($report->findings() as $finding) {
-                if (self::severityMeansSetupIncomplete($finding->severity)) {
-                    $agentIncomplete[$cfg->agentName] = true;
+            // Selected BY ID, not by walking the whole report: a second check migrated
+            // into this slot later must not silently start feeding this advisory.
+            foreach ($report->results as $result) {
+                if ($result->id !== SshPinnedLineCheck::ID) {
+                    continue;
+                }
+                foreach ($result->findings as $finding) {
+                    if (self::severityMeansSetupIncomplete($finding->severity)) {
+                        $agentIncomplete[$cfg->agentName] = true;
+                    }
                 }
             }
             if (! $this->emitReport($report)) {

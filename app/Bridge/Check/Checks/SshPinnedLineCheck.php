@@ -31,11 +31,20 @@ use App\Bridge\Tools\SshTransportProbe;
  */
 final class SshPinnedLineCheck implements PerAgentCheck
 {
+    /**
+     * Public because the DL-225 advisory selects THIS check's findings out of the
+     * slot's report by id. A bare string at that call site would silently widen the
+     * advisory's predicate the moment stage 2-7 registers a second check in the same
+     * slot — it would start treating an unrelated check's `warn` as "ssh setup
+     * incomplete".
+     */
+    public const ID = 'board_tools.ssh_pinned_line';
+
     public function __construct(private readonly SshProbeEnvironment $env) {}
 
     public function id(): string
     {
-        return 'board_tools.ssh_pinned_line';
+        return self::ID;
     }
 
     /**
