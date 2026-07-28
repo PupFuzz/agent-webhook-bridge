@@ -58,6 +58,40 @@ final class CheckContext
      */
     public array $githubScopeConsumers = [];
 
+    /**
+     * github scopes (repo full_names) covered by SOME agent running a
+     * writeback-emitting classifier (#2162). A writeback.json mapping for a scope
+     * absent here is inert — no classifier drives it.
+     *
+     * POPULATED AFTER THE PER-AGENT LOOP FINISHES, exactly as {@see self::$configs} is,
+     * and with the same trap: a check reading it from {@see CheckSlot::AgentConfig}
+     * sees it EMPTY and would report every mapping orphaned.
+     *
+     * @var array<string, true>
+     */
+    public array $writebackEmittingScopes = [];
+
+    /**
+     * github scopes where an agent enables the coord-card-move family — gate 1 of the
+     * DL-204 move leg (gate 2 is the mapping's `move_coord_cards`). Scopes the
+     * fleet-default nudges to where the leg can actually fire.
+     *
+     * POPULATED AFTER THE PER-AGENT LOOP FINISHES (see above).
+     *
+     * @var array<string, true>
+     */
+    public array $coordCardMoveScopes = [];
+
+    /**
+     * The validated secret dir, or null when it is unset / not absolute — the state in
+     * which the token-path legs cannot form a path to check at all.
+     *
+     * ONE NULLABLE FIELD, NOT A BOOL + STRING PAIR: `handle()` carries both a
+     * `$secretDir` and a `$hasSecretDir` derived from it, and two fields that can
+     * disagree is a state no check should have to reason about.
+     */
+    public ?string $secretDir = null;
+
     /** Parsed writeback.json, or null when the file is absent (⇒ writeback off). */
     public ?WritebackConfig $writeback = null;
 
