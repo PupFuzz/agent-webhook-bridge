@@ -190,6 +190,29 @@ docker rm -f bridge-test-mariadb
 | A new config field | `tests/Feature/Config/AgentConfigTest.php` |
 | A bug fix | a regression test that fails before the fix, passes after. Cite the bug in the test docstring. |
 | A security-sensitive change | additional regression tests for the attack surface (e.g. `WebhookReceiveTest` covers path-traversal scope, empty secret, relative secret_dir) |
+| A change to `bridge:check`'s output, or a refactor of it | see § The `bridge:check` golden harness below — a behavior-preserving refactor is checked by the golden files, an intended change regenerates them |
+
+## The `bridge:check` golden harness (DL-242)
+
+`tests/Feature/Console/Check/CheckGoldenTest.php` captures `bridge:check`'s exact stdout + exit
+code for ~30 install shapes into `tests/Fixtures/check-golden/*.txt`. It exists because the DL-242
+Check-registry migration holds stages 0–7 to a byte-identical output contract; it is what turns
+that from an intention into a measurement.
+
+- **A refactor that reds a golden file changed behavior.** Fix the code — do not regenerate.
+- **A change that is MEANT to alter output** regenerates with `UPDATE_GOLDEN=1 vendor/bin/phpunit
+  --filter test_golden_output tests/Feature/Console/Check/CheckGoldenTest.php`, and the regenerated
+  files are then **read in the PR diff**: they are the operator-visible change, and reviewing them
+  is the point.
+- **A fixture must pin every host input it touches.** `bridge:check` reads the ambient host
+  directly, and one of those reads is verdict-bearing (`$COORD_CONFIG` produces two *different
+  diagnoses*, so it is pinned, never normalized). `Tests\Support\CheckGolden\PinnedHost` owns the
+  env pins and `GoldenInstall` owns the `bridge.*` config — including keys that look declared but
+  resolve from the deployed `.env` on an operator box (`default_agent`, `receiver_base_url`).
+  Anything unpinned makes the golden file a property of the machine that wrote it.
+- **A green golden suite is not full protection.** `docs/check-golden-coverage.md` names, by
+  mutation, the predicates in `handle()` that flipping changes no golden file. Read it before
+  concluding a `bridge:check` refactor is covered.
 
 ## Anti-patterns to avoid
 

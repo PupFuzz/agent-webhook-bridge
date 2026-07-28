@@ -1,9 +1,10 @@
 # `bridge:check` — the Check-registry plan
 
-> **Status: PLAN. No build has started, and stages 8–10 are hard-gate.** This document owns the
-> *reasoning* for the `bridge:check` consolidation program — the measurements behind it, the
-> target shape, the constraints that would break the refactor mid-flight, and what is
-> deliberately **not** in scope. Read it before prescribing any `bridge:check` hoist or dedupe.
+> **Status: stage 0 is BUILT (card#5464). Stages 1–7 are unstarted; stages 8–10 are hard-gate.**
+> This document owns the *reasoning* for the `bridge:check` consolidation program — the
+> measurements behind it, the target shape, the constraints that would break the refactor
+> mid-flight, and what is deliberately **not** in scope. Read it before prescribing any
+> `bridge:check` hoist or dedupe.
 >
 > It also records what earlier revisions of this analysis got **wrong**, so those errors are not
 > re-made (§ Disproved claims). Decision record: **DL-242**.
@@ -229,7 +230,7 @@ next stage starts.
 
 | Stage | Work | Operator-visible change | Gate |
 |---|---|---|---|
-| **0** | Golden-output harness + `Check`/`PerAgentCheck`/`CheckContext`/`CheckRunner` scaffolding. Registry empty; nothing migrated. | **None** | no |
+| **0 ✅** | Golden-output harness + `Check`/`PerAgentCheck`/`CheckContext`/`CheckRunner` scaffolding. Registry empty; nothing migrated. | **None** | no |
 | **1** | Migrate the two already-`Finding`-shaped probes — the 4 existing `emitFinding` call sites. | **None** | no |
 | **2–7** | Migrate remaining units, ~1 PR per cluster: `retention`, `writeback` (+`writeback.json`, `alert_channel`), `database`/`install-suffix`, per-agent config/identity, `inbox surfacing config`, `board_tools`. | **None** (golden test enforces) | no |
 | **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the L961 "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
@@ -242,6 +243,50 @@ proving that contract is achievable.**
 **Off-ramps.** Stop after Stage 7: refactor cost paid, zero operator risk. Stop after Stage 8:
 the inventory is exact — **the minimum viable slice that stops the recurrence.** The off-ramps
 are real, not rhetorical.
+
+### Stage 0 result — the falsifier answered YES, with a precondition
+
+Stage 0 was this plan's own falsifier: stages 0–7 are contingent on byte-identical capture being
+achievable at all. **It is — but not for a naive capture. The harness must PIN the ambient host,
+because `bridge:check` reads it directly and at least one of those reads is verdict-bearing.**
+
+The proof is empirical, not asserted. With `$COORD_CONFIG` unset the terminal-agreement leg prints
+*"… `$COORD_CONFIG` is not set …"*; with it set to a path that does not parse it prints *"… the
+coordination config at `<path>` is absent, unreadable, or malformed …"*. Same severity class,
+**different diagnosis and different operator instruction** — so the "never normalize a verdict"
+rule forbids normalizing it away. It is pinned instead, and both texts are fixtures.
+
+Four ambient inputs are pinned (`PATH`, which decides the `php-fpm` probe at L160 and therefore
+moves nearly every install's output; `XDG_RUNTIME_DIR`; `COORD_CONFIG`; `GH_TOKEN`), two host
+values are normalized (absolute paths, the numeric uid — neither carries a verdict), and the
+retention last-failure marker is cleared from the cache so a fixture that wants it sets it.
+
+**Two things the stage-0 build found that the source-level enumeration had not:**
+
+- `GH_TOKEN` is a host input reached *transitively*, through `GitHubTokenResolver` — an
+  enumeration bounded by `CheckCommand.php` is bounded by that file.
+- **`config/bridge.php` is itself a host input.** Its keys resolve through `env()`, and this repo's
+  checkout carries a deployed `.env`, so `bridge.default_agent` and `bridge.receiver_base_url` are
+  that install's values on an operator box and null on CI — and both reach output. Fixtures
+  therefore declare the full `bridge.*` set rather than inheriting it. This is the class most
+  easily mistaken for a fixture property: it looks declared because it is config.
+
+**The named gap the stage carried is closed:** whether CI's runner has `php-fpm` is no longer a
+question, because PATH is pinned to a fixture bin dir holding (or not holding) a stub.
+
+**What the harness does NOT protect is enumerated, not implied.** The fixture set is derived from
+the 102 `if`/`elseif`/`foreach` predicates in `handle()` (re-measured at the source by
+`bin/check-golden-predicates.php`; the figure agrees with the independent count on card#5464).
+Which of them the fixtures can actually *see* is decided by experiment —
+`bin/check-golden-mutate.php` flips each predicate and records whether a golden file changes — and
+the survivors are named individually in **[`check-golden-coverage.md`](check-golden-coverage.md)**.
+Mutation is used rather than a coverage driver on purpose: coverage answers *"did this line run"*,
+and the property stages 1–7 depend on is *"would a change here be caught"*. A predicate whose two
+branches print identical bytes is fully covered and entirely unprotected.
+
+The scaffolding ships with an **empty registry and no wiring into `handle()`** — its call site
+arrives in stage 1 with the first migrated check, which is what makes the wiring observable rather
+than dead. Until then `tests/Unit/Bridge/Check/CheckRunnerTest.php` is what keeps it honest.
 
 ## Verification
 
