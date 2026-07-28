@@ -33,6 +33,14 @@ enum CheckSlot: string
     /** Inside the per-agent config iteration, after that agent's channel legs. */
     case AgentConfig = 'agent-config';
 
+    /**
+     * The writeback CONFIG plane, inside the `writeback.json` load envelope and before
+     * the writeback client is constructed. Everything here asserts on config alone, so
+     * it fires on a half-configured install — which is where a writeback misconfig is
+     * most likely and least visible.
+     */
+    case Writeback = 'writeback';
+
     /** Inside `checkBoardTools()`'s ssh-agent iteration, before the DL-225 advisory. */
     case BoardToolsSsh = 'board-tools-ssh';
 

@@ -28,8 +28,13 @@ use InvalidArgumentException;
  * A SLOT THAT IS NEVER RUN IS THE SAME HOLE ONE LEVEL DOWN, and this class does not
  * close it: nothing here asserts every registered slot was invoked. That assertion
  * belongs to stage 8 ("every registered check emits >= 1 finding"), which is where the
- * runner gains a disposition record. Until then `CheckRunnerTest` pins the registered
- * set and the golden fixtures pin what each slot prints.
+ * runner gains a disposition record. Until then `CheckRunnerTest` pins THIS CLASS's
+ * properties (using synthetic checks) and the golden fixtures pin what each slot prints.
+ * NOTHING PINS WHICH CHECKS THE COMMAND REGISTERS: a check dropped from `CheckCommand`'s
+ * registration list is caught only if its absence changes golden output, so a check that
+ * is silent on the fixture set could be unregistered silently. That is the same
+ * green-because-never-looked shape one level up, and it is stage 8's to close — recorded
+ * here rather than left to be rediscovered.
  *
  * IT DELIBERATELY DOES NOT CATCH. A check that throws aborts `bridge:check`, exactly
  * as an unwrapped inline leg does today; the fail-soft legs (the retention marker

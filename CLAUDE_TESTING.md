@@ -28,6 +28,7 @@ vendor/bin/pint                                      # fix in place
 | `tests/Unit/Classifiers/` | `InboxOnlyClassifier`, `EventDrivenClassifier` — classify output + intent shapes | Unit; pure PHP |
 | `tests/Unit/Dispatch/` | Plain value objects — `Intent`, `ReactionTarget`, `Actor`, `ClassifyResult` | Unit; pure PHP |
 | `tests/Unit/Validation/` | Format validators (`ProviderName`, `ScopeId`, `SocketPath`) | Unit; pure PHP |
+| `tests/Unit/Bridge/Check/` | The DL-242 check registry: `CheckRunner`'s own contract, plus **per-check tests under `Checks/`** | **Extends `Tests\TestCase`, not `PHPUnit\Framework\TestCase`** — a `Check` reads Laravel `config()`/env and some fake `Http`/`Cache`. Named Unit because the subject is one class in isolation, driven by a hand-built `CheckContext` |
 | `tests/Feature/Webhook/` | End-to-end HTTP status contract through the real middleware + adapter stack | Feature; `RefreshDatabase`; uses `$this->call()` |
 | `tests/Feature/Dispatch/` | `DispatchService` + `AgentRegistry` + echo/signal logic | Feature; `RefreshDatabase`; tmp config dir |
 | `tests/Feature/Config/` | `SubscriptionRegistry`, `AgentConfig`, `InstallGuard`, `ClassifierResolver` | Feature; tmp filesystem or env override |
@@ -191,6 +192,7 @@ docker rm -f bridge-test-mariadb
 | A bug fix | a regression test that fails before the fix, passes after. Cite the bug in the test docstring. |
 | A security-sensitive change | additional regression tests for the attack surface (e.g. `WebhookReceiveTest` covers path-traversal scope, empty secret, relative secret_dir) |
 | A change to `bridge:check`'s output, or a refactor of it | see § The `bridge:check` golden harness below — a behavior-preserving refactor is checked by the golden files, an intended change regenerates them |
+| A `Check` migrated into the DL-242 registry | `tests/Unit/Bridge/Check/Checks/<Name>CheckTest.php`, scoped to **the legs the golden suite cannot reach** — `catch` arms, `switch` arms, and any leg needing an unreachable backend or a controlled HTTP outcome. Do NOT re-cover golden-measured legs: the golden files pin the operator-visible line, which is the stronger measurement. Every absence assertion needs a witness that the check ran |
 
 ## The `bridge:check` golden harness (DL-242)
 

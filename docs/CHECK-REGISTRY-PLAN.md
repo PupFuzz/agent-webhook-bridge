@@ -236,7 +236,9 @@ next stage starts.
 | **0 ✅** | Golden-output harness + `Check`/`PerAgentCheck`/`CheckContext`/`CheckRunner` scaffolding. Registry empty; nothing migrated. | **None** | no |
 | **1 ✅** | Migrate the two already-`Finding`-shaped probes — **3** of the 4 existing `emitFinding` call sites (the 4th is not a probe; see below). First wiring of `CheckRunner` into `handle()`. | **None** | no |
 | **2 ✅** | Migrate the `retention` cluster into `RetentionPostureCheck` at a new `CheckSlot::Retention`. `receiverSapiFinishesEarly()` moves with it (single caller). | **None** | no |
-| **3–7** | Migrate remaining units, ~1 PR per cluster: `writeback` (+`writeback.json`, `alert_channel`), `database`/`install-suffix`, per-agent config/identity, `inbox surfacing config`, `board_tools`. | **None** (golden test enforces) | no |
+| **3a ✅** | Migrate the writeback **config plane** — the six units needing no board read — into `CheckSlot::Writeback`. The cluster splits because its probe half needs a constructed `KanbanClient`; see the stage 3a result. | **None** | no |
+| **3b** | Migrate the writeback **probe plane** (the legs that read the board). Inherits the throw constraint recorded in the stage 3a result. | **None** (golden test enforces) | no |
+| **4–7** | Migrate remaining units, ~1 PR per cluster: `database`/`install-suffix`, per-agent config/identity, `inbox surfacing config`, `board_tools`. | **None** (golden test enforces) | no |
 | **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
 | **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** |
 | **10** | Re-assign the sites that disagree on warn ↔ unvalidated. Closes **card#5291**, **card#5292**. | **Yes** — severities change | **GATE** |
@@ -429,6 +431,106 @@ form, which the gate always caught) and a negative one (the legitimate bare-offs
 stayed green throughout). **The first pass at this gate proved each rule could fire and stopped
 there; two of these three holes sat in the exemptions, which that proof never exercised.**
 
+### Stage 3a result — the cluster that had to be split, and the instrument's second blind half
+
+**Stage 3 is two PRs, and the split is a property of the cluster.** The writeback cluster divides on
+a hard line: the units that need only *config* (they must fire on a half-configured install, which is
+exactly where a silently-inert writeback leg is most likely) and the units that need a constructed
+`KanbanClient` to *read the board*. Migrating both at once would have put a throwing callee and a
+non-throwing one behind the same envelope decision, with no way to state a single rule about either.
+**3a is the config plane; 3b is the probe plane.**
+
+⚠ **One card, two PRs: merging 3a auto-moves `card#5500` to shipped_to_dev while 3b is still owed.**
+Move it back to in_progress; that column does not mean stage 3 is done.
+
+**What migrated:** six checks under a new `CheckSlot::Writeback`, at the ordinal position the inline
+code held — `writeback.config`, `.identity`, `.alert_channel`, `.token`, `reconcile.repo_tokens`,
+`writeback.mapping_config`. `CheckContext` gains `writebackEmittingScopes`, `coordCardMoveScopes`, and
+a validated `secretDir` (**one nullable field, not the `bool` + `string` pair `handle()` carried** —
+two fields that can disagree is a state no check should have to reason about).
+
+**`writeback.mapping_config` is one check, not one per leg, because output ORDER is the contract.**
+The inline code iterates mappings on the outside and legs on the inside; a per-leg decomposition
+would emit every repo's orphan warning before any repo's DL-160 warning. On a single-mapping install
+the two orders coincide — on a multi-mapping one, the install this check exists for, they do not.
+Stage 8's inventory keys on the check id, so the grouping costs granularity there. Accepted
+deliberately, over reordering operator-visible output.
+
+**The fail-soft envelope stays inline — and the justification originally recorded for that ruling is
+false.** It was kept inline because `GitHubRepoProbe::probe` was "the realistic thrower". It is not:
+that class is documented and verified *total* (the resolver never throws; the probe's own exceptions
+are mapped to result kinds). **The ruling stands on a different mechanism, and this is the one to
+carry forward:** the real thrower is `WritebackConfig::load()`, which is derivation and inline
+anyway — and wrapping `emitReport()` makes semantic preservation a property of `handle()` rather than
+an assumption about six checks' callees. A correct decision resting on a false premise is one
+refactor away from being reversed for the right-sounding reason.
+
+**A live constraint 3b must design around, discovered here and unreachable here.** `CheckRunner`
+*materializes* a check's findings before the caller renders any of them, whereas the inline code had
+already **printed** the earlier lines. So a check that throws part way **loses the findings it
+already yielded**. Every leg in 3a is total — verified per leg, which is why the difference is
+unreachable in this stage — but **3b's legs call the board client and DO throw**, so 3b must not put
+multi-mapping yields behind one throwing call.
+
+**The instrument has a second blind half, and it generalizes stage 2's `catch` finding.**
+`bin/check-golden-mutate.php` walks `if`/`elseif`/`foreach` — it **does not enumerate `switch` arms**
+any more than it enumerates `catch` blocks. The `reconcile.repo_tokens` probe switch has four arms
+that are therefore not merely *unobserved* in `check-golden-coverage.md`; they are **absent from the
+disclosed-gap list entirely**. Stage 2 established that absence from that list is not protection for
+code outside `handle()`; stage 3a sharpens it: **absence is not protection for a `switch` inside it
+either.** Do not let a regenerated count imply those arms were measured.
+
+**What the golden fixtures do and do not reach, enumerated rather than assumed.** The seven writeback
+fixtures reach the mapping-count line, the no-identity and missing-token warns, the `Unresolvable`
+reconcile arm, orphan, the DL-160 pair, the DL-195 revive, the DL-198 echo, DL-204 in both directions,
+and the outer load `catch`. **Four legs no fixture reaches at all:** the whole `alert_channel` check,
+`issuePopulationAgreement()`, the #4553 `population=all` warn itself, and the reconcile probe's `Http`
+arm. Three more are disclosed as UNOBSERVED by condition text (the `correlation !== 'ref'` leg, the
+promote same-stage no-op, and the promote file-token requirement). **All seven are covered by three
+new unit tests** — `WritebackMappingConfigCheckTest`, `WritebackAlertChannelCheckTest`,
+`ReconcileRepoTokensCheckTest` — deliberately scoped to the residue: golden-covered legs are *absent*
+from them, because duplicating the stronger measurement does not strengthen it.
+
+**Those tests are mutation-proven, not merely green.** Fifteen mutations — one per guarded leg plus
+the guards and source-labels they depend on — each red the expected tests, and the tree was verified
+green again after each revert. Two of the fifteen are worth naming: a mutation that made the
+agreement compare's "no board entry" guard unreachable red only via a PHP *error*, so it was re-run
+as a valid-code mutant to prove the assertion itself discriminates; and the network-blip arm cannot
+be witnessed by `Http::assertSentCount` at all (a **throwing** fake is never recorded, so the count
+reads 0 whether the probe ran or not) — the fake's own side effect is the witness. **Every absence
+assertion in these tests carries a witness that the check ran**, because a check that yielded nothing
+would satisfy a bare absence just as well.
+
+**Coverage-table effect — and the part the generated file cannot carry.** The predicate total goes
+**97 → 77**: `58 observed · 2 observed-via-abort · 17 UNOBSERVED`. The arithmetic is the stage-2 rule
+again, but it only closes once the comparison stops trusting its own first answer. Compared by
+condition text, **22 predicates depart and 2 arrive**. One of those pairs is not a migration at all:
+the surviving coord-card leg `isset($coordCardMoveScopes[$repo])` is re-expressed as
+`isset($ctx->coordCardMoveScopes[$repo])` when the scopes move onto `CheckContext`, so a by-text
+compare reads one unchanged leg as a departure plus an arrival. **Net of that rename, 21 predicates
+leave `handle()` and exactly one arrives — the `emitReport(CheckSlot::Writeback)` guard** —
+so 97 − 21 + 1 = 77, which is −(n−1) as stage 2 predicted.
+
+**No surviving predicate changed status.** Same result stage 2 recorded, and the one that would have
+mattered most had it gone the other way.
+
+**No gap closed, and none opened.** The disclosed-gap count falls **20 → 17**, and a reader who stops
+at that number will conclude the golden suite got stronger. It did not. **All three gaps left the
+instrument's scope rather than becoming observed:** the `correlation !== 'ref'` leg, the promote
+same-stage no-op, and the promote file-token requirement each departed `handle()` *while still
+UNOBSERVED*, into the three unit tests above. Gaps closed in place: **zero**. Gaps newly opened:
+**zero**. The count fell because the measured region shrank, not because the measurement improved —
+and that distinction is invisible in `check-golden-coverage.md`, which is why it is recorded here.
+
+⚠ **Two method notes for stages 3b–7, because the first run of this comparison was wrong.**
+(1) `(kind, source)` is **not a unique key**: the 97-entry table holds only **86 distinct** pairs
+(`foreach $cfg->subscriptions` appears 4×, `if $sub->provider === 'github'` and
+`foreach $writeback->mappings` 3× each). A set-keyed diff silently collapses the repeats and
+under-reported the 22 departures as 18. **Compare as a multiset.** (2) What caught it was asserting
+`old − departed + added == new` and watching it yield **81 ≠ 77**. Keep that assertion: it is the
+positive control for the comparison itself, and without it a collapsed count reads exactly like a
+correct one.
+
 ## Verification
 
 The existing net goes through the command boundary, so an internal refactor keeps it honest:
@@ -459,7 +561,8 @@ The existing net goes through the command boundary, so an internal refactor keep
 
 ## Disproved claims — do not restate
 
-Five claims from earlier revisions of this analysis were falsified while it was being built:
+Seven claims from earlier revisions of this analysis — and from the code it describes — were
+falsified while it was being built:
 
 1. **"The registry closes card#5310 and card#5312."** False — they live in
    `GitHubPrCardMoveClassifier` and `WritebackAlertNotifier`. Same shape, different address.
@@ -477,10 +580,22 @@ Five claims from earlier revisions of this analysis were falsified while it was 
    with a stage 2–7 unit. Found by *building* stage 1, not by re-reading — the grep that produced
    the "4" was correct about the count and wrong about what the four were, which no re-count would
    have surfaced.
+6. **"The fail-soft envelope must stay inline because `GitHubRepoProbe::probe` is the realistic
+   thrower."** False — that class is documented and verified *total*. The ruling is right for a
+   different reason (`WritebackConfig::load()`, plus making semantic preservation a property of
+   `handle()`); see the stage 3a result. Recorded because a decision resting on a false premise
+   invites a later reversal that sounds correct.
+7. **"`CheckRunnerTest` pins the registered set."** False — asserted by `CheckRunner`'s own docblock,
+   and corrected there in stage 3a. It pins the runner's *properties* using synthetic checks.
+   **Nothing pins which checks `CheckCommand` registers**, so a check that is silent on the fixture
+   set could be unregistered silently. Named as stage 8's to close.
 
 The general lesson, and the reason this section exists: every count in this document was
-re-measured at the source rather than carried forward between revisions, and four of the five
-errors above survived one or more review passes before being caught. Claim 5 adds the sharper
+re-measured at the source rather than carried forward between revisions, and four of the first five
+errors above survived one or more review passes before being caught. Claims 6 and 7 extend the
+pattern past this document's own prose: both were **claims made by the code's docblocks**, believed
+across every prior stage, and each was falsified by reading the cited authority rather than the
+citation. A justification is not evidence merely because it is adjacent to correct code. Claim 5 adds the sharper
 version — a count can be right while the *category* it is attached to is wrong, and only executing
 the work distinguishes those.
 
