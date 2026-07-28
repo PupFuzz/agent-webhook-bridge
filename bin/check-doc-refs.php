@@ -218,7 +218,7 @@ function scannedSources(string $root): array
             }
         }
     }
-    foreach (glob($root.'/CLAUDE*.md') ?: [] as $md) {
+    foreach (glob($root.'/*.md') ?: [] as $md) {
         $out[] = substr($md, strlen($root) + 1);
     }
 
@@ -232,14 +232,25 @@ foreach (scannedSources($root) as $rel) {
     }
     $inBareSurface = preg_match($bareCiteSurface, $rel) === 1;
     foreach (file($root.'/'.$rel, FILE_IGNORE_NEW_LINES) ?: [] as $i => $line) {
-        $namesVolatile = preg_match('/'.$volatileFile.'(\.php)?[\s:]*(L|:)\d{2,4}\b/', $line) === 1;
+        // The glue between the name and the offset is a bounded any-char window, not an
+        // enumerated set: the repo's own house style backtick-quotes class names, so the
+        // literal `CheckCommand` L240 — the single most likely way to write this citation —
+        // slipped a `[\s:]*` connector entirely, as did `CheckCommand::handle()` L240.
+        // Enumerating quoting forms is the losing half of that trade; bounding the distance
+        // is the winning one.
+        $namesVolatile = preg_match('/'.$volatileFile.'[^\n]{0,24}?\b(L|:)\d{2,4}\b/', $line) === 1;
         $bareOffset = preg_match('/\bL\d{2,4}\b/', $line) === 1;
         if (! $namesVolatile && ! ($inBareSurface && $bareOffset)) {
             continue;
         }
-        foreach ($stableAnchors as $anchor) {
-            if (str_contains($line, $anchor)) {
-                continue 2;
+        // The exemption covers BARE offsets only. A line that names the migrating file
+        // is citing it no matter what else it mentions — without this bound, one anchor
+        // word anywhere on the line whitelists the exact citation the rule exists to catch.
+        if (! $namesVolatile) {
+            foreach ($stableAnchors as $anchor) {
+                if (str_contains($line, $anchor)) {
+                    continue 2;
+                }
             }
         }
         $citeErrors[] = sprintf('%s:%d  %s', $rel, $i + 1, trim($line));

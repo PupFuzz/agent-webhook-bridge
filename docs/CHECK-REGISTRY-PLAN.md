@@ -394,6 +394,30 @@ it were verified still accurate, so banning them would trade a real defect for c
 proven able to fail (injected citation ⇒ red) and both exemptions proven not to (bare offset outside
 the surface, and a `GitHubTokenResolver` line, stay green).
 
+**Three holes in that gate were then measured and closed, and the third is the instructive one.**
+A gate is a claim about what cannot pass, so the claim was tested rather than read.
+
+1. **The stable-anchor exemption swallowed its own rule.** As first written it skipped any line
+   mentioning an anchor, so a line that mentioned `GitHubTokenResolver` *and also* carried a
+   line-number citation of the migrating file passed — one anchor word anywhere on the line
+   whitelisting the exact citation the rule exists to catch. The exemption now applies only when
+   the line does not name the migrating file. An exemption wide enough to swallow its rule is worse
+   than none, because the gate reads green.
+2. **The scan reached only `CLAUDE*.md` at the repo root**, so a citation in `README.md` or
+   `VERSIONING.md` was never examined at all. The root glob is now `*.md`.
+3. **The rule missed this repo's own house style.** The connector between the file name and the
+   offset was `[\s:]*`, which matches an unquoted `CheckCommand L<n>` but *not* the quoted form — and
+   backtick-quoting class names is exactly how this codebase writes them (the `GitHubTokenResolver`
+   pin two paragraphs above is written that way). The single most likely spelling of the defect was
+   the one spelling the gate could not see; `::handle()` between the two was invisible for the same
+   reason. The connector is now a bounded any-character window. **Enumerating the ways a citation
+   can be punctuated is the losing half of that trade — bounding the distance is the winning one.**
+
+Every hole was measured green-then-red across the fix, against a positive control (the unquoted
+form, which the gate always caught) and a negative one (the legitimate bare-offset exemption, which
+stayed green throughout). **The first pass at this gate proved each rule could fire and stopped
+there; two of these three holes sat in the exemptions, which that proof never exercised.**
+
 ## Verification
 
 The existing net goes through the command boundary, so an internal refactor keeps it honest:
