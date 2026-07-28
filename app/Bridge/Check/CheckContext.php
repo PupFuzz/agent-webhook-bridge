@@ -31,8 +31,14 @@ use App\Bridge\Writeback\WritebackConfig;
 final class CheckContext
 {
     /**
-     * Every agent YAML that parsed. Accumulated at CheckCommand L251; a config that
-     * threw on load is reported and skipped, so absence here is not silence.
+     * Every agent YAML that parsed. A config that threw on load is reported and
+     * skipped, so absence here is not silence.
+     *
+     * POPULATED AFTER THE PER-AGENT LOOP FINISHES, because that loop is what
+     * accumulates it. A check running INSIDE that loop (slot
+     * {@see CheckSlot::AgentConfig}) therefore sees this EMPTY, not partial — read it
+     * only from a slot that runs later. This is constraint (c)'s interleaving in its
+     * sharpest form: the trap is not a missing value, it is a plausible wrong one.
      *
      * @var list<AgentConfig>
      */

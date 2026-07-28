@@ -161,8 +161,12 @@ class CheckCommandSeverityContractTest extends TestCase
     {
         $emit = new ReflectionMethod($this->command, 'emitFinding');
 
+        // One argument since DL-242 stage 1: the line prefix used to be the caller's
+        // and is now folded into the message by the Check that yields it. The property
+        // under test is unchanged — which severities flip the exit — so the prefix is
+        // kept here, in the message, rather than dropped.
         /** @var bool $result */
-        $result = $emit->invoke($this->command, 'agent x: ', new Finding($severity, $message));
+        $result = $emit->invoke($this->command, new Finding($severity, 'agent x: '.$message));
 
         return $result;
     }

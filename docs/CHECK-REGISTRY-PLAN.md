@@ -1,6 +1,7 @@
 # `bridge:check` — the Check-registry plan
 
-> **Status: stage 0 is BUILT (card#5464). Stages 1–7 are unstarted; stages 8–10 are hard-gate.**
+> **Status: stages 0–1 are BUILT (card#5464, card#5468). Stages 2–7 are unstarted; stages 8–10
+> are hard-gate.**
 > This document owns the *reasoning* for the `bridge:check` consolidation program — the
 > measurements behind it, the target shape, the constraints that would break the refactor
 > mid-flight, and what is deliberately **not** in scope. Read it before prescribing any
@@ -55,9 +56,11 @@ build-out — the cost of a *new subsystem*, not rot.
 
 The correct primitive **already exists**: `app/Bridge/Support/Finding.php` +
 `Severity{Fail,Warn,Unvalidated,Ok}`. `Severity::Unvalidated` exists precisely to express *"this
-did not run."* It is reached from **4** call sites out of 129, and those 4 exist only to render
-findings the two probes (`ChannelSnapshotProbe`, `SshTransportProbe`) already produce. **The
-other ~125 emit raw.** The primitive was built for the probes and never migrated outward.
+did not run."* It is reached from **4** call sites out of 129. **Three** of those render findings
+the two probes (`ChannelSnapshotProbe`, `SshTransportProbe`) already produce; the fourth is the
+`event-consumer` fail-soft `catch`, which constructs a `Finding::unvalidated` inline and belongs to
+no probe. **The other ~125 emit raw.** The primitive was built for the probes and never migrated
+outward.
 
 ### The generator, stated mechanically
 
@@ -231,7 +234,7 @@ next stage starts.
 | Stage | Work | Operator-visible change | Gate |
 |---|---|---|---|
 | **0 ✅** | Golden-output harness + `Check`/`PerAgentCheck`/`CheckContext`/`CheckRunner` scaffolding. Registry empty; nothing migrated. | **None** | no |
-| **1** | Migrate the two already-`Finding`-shaped probes — the 4 existing `emitFinding` call sites. | **None** | no |
+| **1 ✅** | Migrate the two already-`Finding`-shaped probes — **3** of the 4 existing `emitFinding` call sites (the 4th is not a probe; see below). First wiring of `CheckRunner` into `handle()`. | **None** | no |
 | **2–7** | Migrate remaining units, ~1 PR per cluster: `retention`, `writeback` (+`writeback.json`, `alert_channel`), `database`/`install-suffix`, per-agent config/identity, `inbox surfacing config`, `board_tools`. | **None** (golden test enforces) | no |
 | **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the L961 "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
 | **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** |
@@ -284,9 +287,55 @@ Mutation is used rather than a coverage driver on purpose: coverage answers *"di
 and the property stages 1–7 depend on is *"would a change here be caught"*. A predicate whose two
 branches print identical bytes is fully covered and entirely unprotected.
 
-The scaffolding ships with an **empty registry and no wiring into `handle()`** — its call site
-arrives in stage 1 with the first migrated check, which is what makes the wiring observable rather
-than dead. Until then `tests/Unit/Bridge/Check/CheckRunnerTest.php` is what keeps it honest.
+The scaffolding shipped with an **empty registry and no wiring into `handle()`** — its call sites
+arrived in stage 1 with the first migrated checks, which is what made the wiring observable rather
+than dead. `tests/Unit/Bridge/Check/CheckRunnerTest.php` still pins the runner's own properties,
+which output cannot distinguish (two checks in one slot and one check yielding twice print the
+same bytes).
+
+### Stage 1 result — the scaffolding needed one amendment, and the harness had a blind half
+
+**What migrated:** `ChannelSnapshotCheck` (per-agent), `SshPinnedLineCheck` (per-agent), and
+`SshLiveProbeCheck` (global, opt-in). `emitFinding()` lost its `$prefix` parameter and
+`emitSshFinding()` is gone; a check now yields **display-ready messages**, because a Finding has no
+scope field and `SshLiveProbeCheck`'s two message shapes (`board_tools ssh: …` and
+`board_tools ssh probe: …`) cannot share one render-time prefix. The structured identity a stage-9
+renderer keys on is `id()` + `CheckResult::$agent`, not that string.
+
+**The amendment — `CheckSlot`.** Stage 0 gave each scope ONE call site, assuming each is invoked
+from one place. Stage 1 falsified that on both: `CheckCommand` runs **two distinct per-agent
+iterations** (the main config loop, and the ssh-agent loop inside `checkBoardTools()`), and its
+global units sit at positions **separated by unmigrated inline code** (the `--probe-tools` leg
+renders between the two board-tools legs). A slot names *where* a group runs. It changes nothing
+about constraint (a) — registration is still unconditional, and the opt-in flag is a constructor
+argument rather than an `if` around `register()` — and it collapses to one ordered registry when
+the last unit migrates.
+
+**The harness was green on two of the three sites for free.** No fixture reached
+`checkSshTransport()` or `--probe-tools-ssh` at all, so the golden suite could not have caught a
+botched migration of either — a pass where failure was not possible. Stage 1 adds four ssh fixtures
+(`board-tools-ssh-pinned-line`, `board-tools-ssh-default-transport-advisory`,
+`board-tools-ssh-live-probe`, `probe-tools-ssh-with-no-ssh-agent`) behind a pinned
+`GoldenSshEnvironment`, and the byte-identical claim is **measured, not asserted**: those four
+golden files were captured from **pre-refactor** code and the post-refactor command reproduces them
+byte-for-byte. Three deliberate mutations (opt-in probe never runs; per-agent check yields nothing;
+the ssh prefix loses a space) each red the expected fixtures.
+
+**Those four fixtures closed ZERO entries in the coverage table, and that is the expected result, not
+a disappointment.** The regenerated measurement is `78 observed · 2 observed-via-abort · 20
+UNOBSERVED / 100` — the same 20 conditions as before, renumbered, with **no predicate changing
+status**. The mutation instrument enumerates `handle()` **only**, and both ssh legs live in helper
+methods (`checkSshTransport()`, the former `probeBoardToolsSsh()`), so it never measured them in
+either direction. The ssh fixtures add protection this instrument cannot see. Read the counts
+accordingly: **absence from `check-golden-coverage.md` is not evidence of protection** — it is
+evidence of not being in `handle()`. (The 102 → 100 drop is just the two predicates stage 1 moved
+out of `handle()`; both were `observed`.)
+
+**What stage 1 did NOT migrate, and why.** The 4th `emitFinding` site is the `Finding::unvalidated`
+inside `checkEventFollowsConsumer()`'s fail-soft `catch`. It cannot move alone: the `catch` wraps
+that method's whole body, so migrating it necessarily migrates the ~10 raw emissions above it and
+the `$githubScopeConsumers` read at its heart. That is a **stage 2–7 cluster**, and merging it into
+stage 1 would have merged two stages. It stays inline, now calling the one-argument `emitFinding()`.
 
 ## Verification
 
@@ -318,7 +367,7 @@ The existing net goes through the command boundary, so an internal refactor keep
 
 ## Disproved claims — do not restate
 
-Four claims from earlier revisions of this analysis were falsified while it was being built:
+Five claims from earlier revisions of this analysis were falsified while it was being built:
 
 1. **"The registry closes card#5310 and card#5312."** False — they live in
    `GitHubPrCardMoveClassifier` and `WritebackAlertNotifier`. Same shape, different address.
@@ -330,10 +379,18 @@ Four claims from earlier revisions of this analysis were falsified while it was 
 4. **"9 of ~131 emission sites use the `Finding` primitive (~7%)."** Mismeasured — that grep
    counted the method *definitions* and an internal delegation as call sites. The real figure is
    **4 of 129 (~3%)**, which makes the case stronger, not weaker.
+5. **"The 4 `emitFinding` call sites ARE the two `Finding`-shaped probes"** — the equation this
+   document's own stage-1 row asserted. False: only **3** render probe findings. The 4th builds a
+   `Finding::unvalidated` inline inside the `event-consumer` fail-soft `catch`, and is entangled
+   with a stage 2–7 unit. Found by *building* stage 1, not by re-reading — the grep that produced
+   the "4" was correct about the count and wrong about what the four were, which no re-count would
+   have surfaced.
 
 The general lesson, and the reason this section exists: every count in this document was
-re-measured at the source rather than carried forward between revisions, and three of the four
-errors above survived one or more review passes before being caught.
+re-measured at the source rather than carried forward between revisions, and four of the five
+errors above survived one or more review passes before being caught. Claim 5 adds the sharper
+version — a count can be right while the *category* it is attached to is wrong, and only executing
+the work distinguishes those.
 
 ## Explicitly out of scope
 

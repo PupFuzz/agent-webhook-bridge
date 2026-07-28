@@ -10,15 +10,26 @@ use InvalidArgumentException;
  * Runs the registered checks and returns what they reported (DL-242).
  *
  * TWO SCOPES, because output position is part of the contract (plan constraint (b)):
- * {@see run()} is called once, and {@see runForAgent()} is called from INSIDE
- * `CheckCommand`'s per-agent config iteration so per-agent findings stay interleaved
- * where they are today.
+ * {@see run()} runs a slot's globally-scoped checks, and {@see runForAgent()} is called
+ * from INSIDE a per-agent config iteration so per-agent findings stay interleaved where
+ * they are today.
+ *
+ * BOTH SCOPES ARE SLOTTED (stage 1). Stage 0 gave each scope a single call site; stage 1
+ * found two distinct per-agent iterations and two non-adjacent global positions, so a
+ * {@see CheckSlot} names WHERE a group runs. That is an ordering mechanism only — see
+ * the enum for why it is temporary.
  *
  * REGISTRATION IS UNCONDITIONAL (plan constraint (a)). "Not applicable" is a Finding
  * a check returns, never an absent registration: a check that never registered is
  * invisible to the inventory, which re-mints *"green because never looked"* one level
  * up, at the registry. This class therefore offers no conditional-registration
  * affordance, and callers must not build one out of an `if` around `register()`.
+ *
+ * A SLOT THAT IS NEVER RUN IS THE SAME HOLE ONE LEVEL DOWN, and this class does not
+ * close it: nothing here asserts every registered slot was invoked. That assertion
+ * belongs to stage 8 ("every registered check emits >= 1 finding"), which is where the
+ * runner gains a disposition record. Until then `CheckRunnerTest` pins the registered
+ * set and the golden fixtures pin what each slot prints.
  *
  * IT DELIBERATELY DOES NOT CATCH. A check that throws aborts `bridge:check`, exactly
  * as an unwrapped inline leg does today; the fail-soft legs (the retention marker
@@ -28,45 +39,46 @@ use InvalidArgumentException;
  */
 final class CheckRunner
 {
-    /** @var list<Check> */
+    /** @var array<string, list<Check>> */
     private array $checks = [];
 
-    /** @var list<PerAgentCheck> */
+    /** @var array<string, list<PerAgentCheck>> */
     private array $perAgentChecks = [];
 
     /**
-     * Ids already taken, across BOTH registries — the inventory is one namespace, so
-     * a duplicate id would silently merge two checks into one inventory row.
+     * Ids already taken, across BOTH registries AND every slot — the inventory is one
+     * namespace, so a duplicate id would silently merge two checks into one inventory
+     * row no matter where they run.
      *
      * @var array<string, true>
      */
     private array $ids = [];
 
-    public function register(Check ...$checks): self
+    public function register(CheckSlot $slot, Check ...$checks): self
     {
         foreach ($checks as $check) {
             $this->claimId($check->id());
-            $this->checks[] = $check;
+            $this->checks[$slot->value][] = $check;
         }
 
         return $this;
     }
 
-    public function registerPerAgent(PerAgentCheck ...$checks): self
+    public function registerPerAgent(CheckSlot $slot, PerAgentCheck ...$checks): self
     {
         foreach ($checks as $check) {
             $this->claimId($check->id());
-            $this->perAgentChecks[] = $check;
+            $this->perAgentChecks[$slot->value][] = $check;
         }
 
         return $this;
     }
 
-    /** Run every globally-scoped check, in registration order. */
-    public function run(CheckContext $ctx): CheckReport
+    /** Run one slot's globally-scoped checks, in registration order. */
+    public function run(CheckSlot $slot, CheckContext $ctx): CheckReport
     {
         $results = [];
-        foreach ($this->checks as $check) {
+        foreach ($this->checks[$slot->value] ?? [] as $check) {
             $results[] = new CheckResult($check->id(), $this->materialize($check->run($ctx)));
         }
 
@@ -74,14 +86,14 @@ final class CheckRunner
     }
 
     /**
-     * Run every per-agent check for ONE agent, in registration order. Called from
-     * inside the config iteration so the findings land at the position the inline
-     * code emits them today.
+     * Run one slot's per-agent checks for ONE agent, in registration order. Called from
+     * inside a config iteration so the findings land at the position the inline code
+     * emits them today.
      */
-    public function runForAgent(AgentConfig $config, CheckContext $ctx): CheckReport
+    public function runForAgent(CheckSlot $slot, AgentConfig $config, CheckContext $ctx): CheckReport
     {
         $results = [];
-        foreach ($this->perAgentChecks as $check) {
+        foreach ($this->perAgentChecks[$slot->value] ?? [] as $check) {
             $results[] = new CheckResult(
                 $check->id(),
                 $this->materialize($check->runFor($config, $ctx)),
