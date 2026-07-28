@@ -1791,3 +1791,47 @@ grant iff  labels contain from:{me}
 **Follow-on filed, not fixed (canon #7 sibling audit).** The sibling audit over "an operator-facing signal that collapses distinguishable causes" found no second instance in the `reason` vocabulary — the other five values each name exactly one cause. It DID surface an adjacent, different defect: the `moveCard` 4xx refusal and the `stampCorrelationRefs` 4xx refusal are `Log::warning` permanent branches that emit **no alert at all**, so a token with read-but-not-write scope 403s on the PATCH and is live-silent — the same rotated/degraded-token scenario DL-171 was built to surface. DL-171 enumerated "the 5 `Log::warning` branches" and those two were not among them; whether that was deliberate is not recoverable from the record. Filed as **card#5312** rather than folded in: it changes *which* failures signal, which is a separate hard-gate question from *what a signal is called*.
 
 **Consequences:** `app/Bridge/Handlers/KanbanMoveCardHandler.php` (the `getCard` catch branch only — every other path byte-identical); `tests/Feature/Handlers/KanbanMoveCardHandlerTest.php` (+4 tests); `docs/writeback.md` (the signal table splits into three rows + a "why the split" subsection naming what to check on each). No migration, no new `.env`, no token-scope change, no change to what the receiver accepts or rejects.
+
+## DL-242 — `bridge:check`'s growth is a MISSING ABSTRACTION, not a busy command: the diagnosis, the Check-registry target, and the ruling that the receiver core is NOT the problem
+
+**Decision:** adopt `docs/CHECK-REGISTRY-PLAN.md` as the reasoning owner for the `bridge:check`
+consolidation program, and rule that the **receiver / dispatch / adapter core is explicitly out of
+scope** — the card pressure this repo has been absorbing does not originate there.
+
+**Why.** The prompting hypothesis was that bug cards were outpacing fixes because the core design
+was accumulating symptom-fixes. Measured over 448 commits since 2026-06-01, the core is small and
+static: `WebhookController` 77 L / 2 commits, `VerifyHmacSignature` 130 L / 2, `KanbanAdapter`
+42 L / 1, `GitHubAdapter` 89 L / 2. DL-001 is holding. The churn is `CheckCommand.php` — **74 →
+1767 lines in two months**, 50 commits (2× the next-highest file), `handle()` at **891 lines**
+nesting 11 deep, **129 check-site emissions of which only 4 (~3%) route through the
+`Finding`/`Severity` primitive** built for that purpose by DL-238.
+
+The mechanism is what makes this a design decision rather than a cleanup: a silent-failure card is
+closed by adding a leg to `bridge:check`; the leg is a raw `warn()` because there is nothing else
+for it to be; **raw `warn()` cannot represent "did not run"**, so the new leg's not-run state is
+indistinguishable from its pass state — which mints the next card. `CheckCommand.php:961` already
+prints a five-line apology for exactly this (*"a floor, not an inventory"*). A registry makes the
+inventory exact and deletes the apology.
+
+**Alternatives considered:** (a) patch the three open cards individually — cheaper, and explicitly
+recorded as a legitimate call in the plan, but leaves the ~125 unmigrated sites to re-mint the
+shape; (b) rewrite `bridge:check` — rejected, an operator-facing command with 103 test invocations
+against it is not a rewrite candidate; a **strangler migration under a byte-identical golden-output
+contract** keeps every stage revertible; (c) restructure the classifiers too — rejected on the
+data: `CoordinationClassifier` and `GitHubPrCardMoveClassifier` are properly decomposed and their
+churn is feature accretion, with all three cards against them already closed.
+
+**Bounds, stated rather than implied.** The plan closes **3 open cards** (card#5229, card#5291,
+card#5292) — it does **not** close card#5170 (released) or card#5178 (shipped), which are the
+*precedent* whose fixes created `Severity::Unvalidated` and `Finding`, nor card#5310 / card#5312,
+which are the same silent-degrade shape at a different address (`GitHubPrCardMoveClassifier`,
+`WritebackAlertNotifier`). The justification is recurrence prevention and must be argued on that
+basis. Stage 0 is the plan's own falsifier: if byte-identical capture proves impossible, the
+approach is re-planned rather than half-executed, and the golden test's guarantee is bounded by
+fixture coverage, so the fixture set is derived from `handle()`'s branch predicates with any
+uncovered predicate disclosed as a named gap.
+
+**Consequences:** documentation only — **no code change, no migration, no new `.env`, no receiver
+accept/reject change, no token-scope change.** `docs/CHECK-REGISTRY-PLAN.md` (new) + the
+`CLAUDE.md` subfile index. Stages 8–10 are hard-gate and unstarted; **no new `bridge:check` leg
+should be added until Stage 8 lands**, since each one added first is another site to migrate.
