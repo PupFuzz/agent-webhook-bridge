@@ -501,10 +501,35 @@ reads 0 whether the probe ran or not) — the fake's own side effect is the witn
 assertion in these tests carries a witness that the check ran**, because a check that yielded nothing
 would satisfy a bare absence just as well.
 
-**Coverage-table effect.** Regenerated at stage end; the counts live in
-[`check-golden-coverage.md`](check-golden-coverage.md) and are not restated here. The arithmetic is
-the stage-2 rule again — net −(n−1) per migrated cluster, not −n, because each `emitReport()` guard
-adds one predicate back.
+**Coverage-table effect — and the part the generated file cannot carry.** The predicate total goes
+**97 → 77**: `58 observed · 2 observed-via-abort · 17 UNOBSERVED`. The arithmetic is the stage-2 rule
+again, but it only closes once the comparison stops trusting its own first answer. Compared by
+condition text, **22 predicates depart and 2 arrive**. One of those pairs is not a migration at all:
+the surviving coord-card leg `isset($coordCardMoveScopes[$repo])` is re-expressed as
+`isset($ctx->coordCardMoveScopes[$repo])` when the scopes move onto `CheckContext`, so a by-text
+compare reads one unchanged leg as a departure plus an arrival. **Net of that rename, 21 predicates
+leave `handle()` and exactly one arrives — the `emitReport(CheckSlot::Writeback)` guard** —
+so 97 − 21 + 1 = 77, which is −(n−1) as stage 2 predicted.
+
+**No surviving predicate changed status.** Same result stage 2 recorded, and the one that would have
+mattered most had it gone the other way.
+
+**No gap closed, and none opened.** The disclosed-gap count falls **20 → 17**, and a reader who stops
+at that number will conclude the golden suite got stronger. It did not. **All three gaps left the
+instrument's scope rather than becoming observed:** the `correlation !== 'ref'` leg, the promote
+same-stage no-op, and the promote file-token requirement each departed `handle()` *while still
+UNOBSERVED*, into the three unit tests above. Gaps closed in place: **zero**. Gaps newly opened:
+**zero**. The count fell because the measured region shrank, not because the measurement improved —
+and that distinction is invisible in `check-golden-coverage.md`, which is why it is recorded here.
+
+⚠ **Two method notes for stages 3b–7, because the first run of this comparison was wrong.**
+(1) `(kind, source)` is **not a unique key**: the 97-entry table holds only **86 distinct** pairs
+(`foreach $cfg->subscriptions` appears 4×, `if $sub->provider === 'github'` and
+`foreach $writeback->mappings` 3× each). A set-keyed diff silently collapses the repeats and
+under-reported the 22 departures as 18. **Compare as a multiset.** (2) What caught it was asserting
+`old − departed + added == new` and watching it yield **81 ≠ 77**. Keep that assertion: it is the
+positive control for the comparison itself, and without it a collapsed count reads exactly like a
+correct one.
 
 ## Verification
 
