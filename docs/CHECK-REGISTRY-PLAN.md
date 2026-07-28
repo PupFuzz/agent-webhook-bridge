@@ -321,6 +321,16 @@ golden files were captured from **pre-refactor** code and the post-refactor comm
 byte-for-byte. Three deliberate mutations (opt-in probe never runs; per-agent check yields nothing;
 the ssh prefix loses a space) each red the expected fixtures.
 
+**Those four fixtures closed ZERO entries in the coverage table, and that is the expected result, not
+a disappointment.** The regenerated measurement is `78 observed · 2 observed-via-abort · 20
+UNOBSERVED / 100` — the same 20 conditions as before, renumbered, with **no predicate changing
+status**. The mutation instrument enumerates `handle()` **only**, and both ssh legs live in helper
+methods (`checkSshTransport()`, the former `probeBoardToolsSsh()`), so it never measured them in
+either direction. The ssh fixtures add protection this instrument cannot see. Read the counts
+accordingly: **absence from `check-golden-coverage.md` is not evidence of protection** — it is
+evidence of not being in `handle()`. (The 102 → 100 drop is just the two predicates stage 1 moved
+out of `handle()`; both were `observed`.)
+
 **What stage 1 did NOT migrate, and why.** The 4th `emitFinding` site is the `Finding::unvalidated`
 inside `checkEventFollowsConsumer()`'s fail-soft `catch`. It cannot move alone: the `catch` wraps
 that method's whole body, so migrating it necessarily migrates the ~10 raw emissions above it and
