@@ -3,6 +3,14 @@
 namespace App\Console\Commands\Bridge;
 
 use App\Bridge\Adapters\WebhookAdapterFactory;
+use App\Bridge\Check\Check;
+use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\CheckReport;
+use App\Bridge\Check\CheckRunner;
+use App\Bridge\Check\Checks\ChannelSnapshotCheck;
+use App\Bridge\Check\Checks\SshLiveProbeCheck;
+use App\Bridge\Check\Checks\SshPinnedLineCheck;
+use App\Bridge\Check\CheckSlot;
 use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Handlers\KanbanDependabotCardHandler;
@@ -11,7 +19,6 @@ use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
-use App\Bridge\Support\ChannelSnapshotProbe;
 use App\Bridge\Support\ChannelToken;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\ExternalReferenceNormalizer;
@@ -25,7 +32,6 @@ use App\Bridge\Support\TokenPath;
 use App\Bridge\Support\UrlValidator;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Tools\SshProbeEnvironment;
-use App\Bridge\Tools\SshTransportProbe;
 use App\Bridge\Validation\EndpointValidationException;
 use App\Bridge\Validation\LocalhostUrl;
 use App\Bridge\Writeback\AlertChannel;
@@ -91,6 +97,20 @@ class CheckCommand extends BridgeCommand
     {
         $ok = true;
         $this->unvalidatedCount = 0;
+
+        // DL-242 stage 1: the check registry's first wiring. Registration is
+        // UNCONDITIONAL (plan constraint (a)) — the opt-in probe's flag is a
+        // constructor argument, never an `if` around register(). Built per run: the
+        // container can hand this command back for a second Artisan::call, and a
+        // retained runner would re-register into the same id namespace.
+        $sshEnv = $this->laravel->make(SshProbeEnvironment::class);
+        $runner = (new CheckRunner)
+            ->registerPerAgent(CheckSlot::AgentConfig, new ChannelSnapshotCheck(base_path('examples/channel-servers')))
+            ->registerPerAgent(CheckSlot::BoardToolsSsh, new SshPinnedLineCheck($sshEnv))
+            ->register(CheckSlot::ProbeToolsSsh, new SshLiveProbeCheck($sshEnv, $this->strOption('probe-tools-ssh')));
+        // Plan constraint (c): the surviving inline derivation in this method populates
+        // the context; migrated checks read it, unmigrated code keeps its locals.
+        $ctx = new CheckContext;
 
         $configDir = config('bridge.config_dir');
         if (! is_string($configDir) || $configDir === '') {
@@ -513,23 +533,19 @@ class CheckCommand extends BridgeCommand
                     }
                 }
 
-                // The DEPLOYED channel-server snapshot (DL-229). Everything above
-                // certifies the RUNNING process; a stale or unloadable deployment
-                // reports `channel socket live` and exits 0, and only fails at the
-                // NEXT session start — as live-wake silently never coming back. Run
-                // it for any agent with a channel endpoint (the population that
-                // respawns a server) and for any agent that declared server_path
-                // without one, so a declared key is never silently dead.
-                if ($cfg->channel->socket !== null || $cfg->channel->url !== null || $cfg->channel->serverPath !== null) {
-                    $bundled = base_path('examples/channel-servers');
-                    foreach (ChannelSnapshotProbe::probe($cfg->channel->serverPath, $bundled) as $finding) {
-                        if (! $this->emitFinding("agent {$name}: ", $finding)) {
-                            $ok = false;
-                        }
-                    }
+                // The DEPLOYED channel-server snapshot (DL-229) — migrated to
+                // ChannelSnapshotCheck, run HERE so its lines stay interleaved at this
+                // agent's position (plan constraint (b)).
+                if (! $this->emitReport($runner->runForAgent(CheckSlot::AgentConfig, $cfg, $ctx))) {
+                    $ok = false;
                 }
             }
         }
+
+        // Constraint (c): the accumulation above is this method's; publishing it to the
+        // context is what lets a check migrated in a LATER stage read it without also
+        // migrating its producer.
+        $ctx->configs = $configs;
 
         // Build the registry from the scanned configs (surfaces id-collision
         // warnings at preflight) and validate each agent's treat_as_signal — an
@@ -919,7 +935,7 @@ class CheckCommand extends BridgeCommand
         // (a broken enablement, not opt-in); the board-STATE checks (swimlane/stage on
         // board, service-user membership) stay WARN (DL-220 split — a transient/empty
         // kanban read must not FAIL the install check).
-        if (! $this->checkBoardTools($configs)) {
+        if (! $this->checkBoardTools($configs, $runner, $ctx)) {
             $ok = false;
         }
 
@@ -936,8 +952,9 @@ class CheckCommand extends BridgeCommand
         // card 4952: opt-in live ssh round-trip. Certifies the SSH-forced-command
         // transport end to end (reachable, JSON-clean stdout, ok:true, scope header
         // matches a configured ssh agent's lane). A failure is a HARD failure.
-        $probeSshTarget = $this->strOption('probe-tools-ssh');
-        if ($probeSshTarget !== null && ! $this->probeBoardToolsSsh($configs, $probeSshTarget)) {
+        // Migrated to SshLiveProbeCheck; run unconditionally — the check holds the flag
+        // and is silent when it was not passed (plan constraint (a)).
+        if (! $this->emitReport($runner->run(CheckSlot::ProbeToolsSsh, $ctx))) {
             $ok = false;
         }
 
@@ -978,7 +995,7 @@ class CheckCommand extends BridgeCommand
      *
      * @param  list<AgentConfig>  $configs
      */
-    private function checkBoardTools(array $configs): bool
+    private function checkBoardTools(array $configs, CheckRunner $runner, CheckContext $ctx): bool
     {
         $ok = true;
 
@@ -1058,7 +1075,7 @@ class CheckCommand extends BridgeCommand
         // key FAILs; an UNVERIFIABLE (non-root / relocated keyfile) leg WARNs and
         // names the `sudo bridge:check` cert step — never a false OK, never a hard red.
         $sshAgents = array_values(array_filter($enabled, fn (AgentConfig $c) => $c->boardTools?->transport === 'ssh'));
-        if ($sshAgents !== [] && ! $this->checkSshTransport($sshAgents)) {
+        if ($sshAgents !== [] && ! $this->checkSshTransport($sshAgents, $runner, $ctx)) {
             $ok = false;
         }
 
@@ -1074,10 +1091,9 @@ class CheckCommand extends BridgeCommand
      *
      * @param  list<AgentConfig>  $sshAgents
      */
-    private function checkSshTransport(array $sshAgents): bool
+    private function checkSshTransport(array $sshAgents, CheckRunner $runner, CheckContext $ctx): bool
     {
         $ok = true;
-        $env = $this->laravel->make(SshProbeEnvironment::class);
         // The forced-command account (board_tools.ssh_account, default the invoking
         // run-user) is per-agent, so the pinned-line + keys resolution is per-agent.
         // The board-tools security boundary is the forced-command authorized_keys entry
@@ -1089,14 +1105,17 @@ class CheckCommand extends BridgeCommand
         // the account's password/idle posture.
         $agentIncomplete = [];    // agentName => any non-ok pinned-line finding
         foreach ($sshAgents as $cfg) {
-            $probe = new SshTransportProbe($env, $cfg->boardTools?->sshAccount);
-            foreach ($probe->probePinnedLine($cfg->agentName) as $finding) {
+            // The pinned-line probe is SshPinnedLineCheck; the DL-225 advisory below
+            // stays inline and reads the severities back off its report, because it
+            // emits after the whole loop and folding it in would reorder output.
+            $report = $runner->runForAgent(CheckSlot::BoardToolsSsh, $cfg, $ctx);
+            foreach ($report->findings() as $finding) {
                 if (self::severityMeansSetupIncomplete($finding->severity)) {
                     $agentIncomplete[$cfg->agentName] = true;
                 }
-                if (! $this->emitSshFinding($finding)) {
-                    $ok = false;
-                }
+            }
+            if (! $this->emitReport($report)) {
+                $ok = false;
             }
         }
 
@@ -1139,10 +1158,36 @@ class CheckCommand extends BridgeCommand
     }
 
     /**
+     * Render one check's {@see CheckReport} and report whether it was fail-free.
+     *
+     * This is the text renderer stage 9 replaces with a {@see Check}-
+     * aware pair (text + json). It walks findings rather than results because today's
+     * output has no per-check framing to render — the id is carried for the inventory,
+     * not for the operator.
+     */
+    private function emitReport(CheckReport $report): bool
+    {
+        $ok = true;
+        foreach ($report->findings() as $finding) {
+            if (! $this->emitFinding($finding)) {
+                $ok = false;
+            }
+        }
+
+        return $ok;
+    }
+
+    /**
      * Render one probe {@see Finding} through the existing info/warn/error
-     * convention, under the caller's line prefix. Returns false (→ flip the caller's
-     * $ok) ONLY on a `fail` — the exit contract is that one arm, so a new severity
-     * can never change what `bridge:check` exits.
+     * convention. Returns false (→ flip the caller's $ok) ONLY on a `fail` — the exit
+     * contract is that one arm, so a new severity can never change what `bridge:check`
+     * exits.
+     *
+     * IT TAKES NO PREFIX. Stage 1 migrated every prefixing call site into a
+     * {@see Check}, and a check yields display-ready messages: a
+     * Finding has no scope field, and one check's two message shapes
+     * (`board_tools ssh: …` and `board_tools ssh probe: …`) cannot share a render-time
+     * prefix anyway.
      *
      * `unvalidated` (card 5170) renders PLAIN: green would read as certified by a
      * check that never ran, and yellow would nag a documented-correct population
@@ -1154,9 +1199,9 @@ class CheckCommand extends BridgeCommand
      * fall-through, which is the shape that let an unknown severity print green in
      * the first place — one level over. A fifth case reds phpstan at both.
      */
-    private function emitFinding(string $prefix, Finding $finding): bool
+    private function emitFinding(Finding $finding): bool
     {
-        $message = $prefix.$finding->message;
+        $message = $finding->message;
 
         match ($finding->severity) {
             Severity::Fail => $this->error($message),
@@ -1180,11 +1225,6 @@ class CheckCommand extends BridgeCommand
     {
         $this->unvalidatedCount++;
         $this->line($message);
-    }
-
-    private function emitSshFinding(Finding $finding): bool
-    {
-        return $this->emitFinding('board_tools ssh: ', $finding);
     }
 
     /**
@@ -1293,41 +1333,6 @@ class CheckCommand extends BridgeCommand
             }
             $stageGroups = is_array($result['cards_by_stage'] ?? null) ? count($result['cards_by_stage']) : 0;
             $this->info("board_tools probe: agent {$name}: {$endpoint} → 200; window scoped to board {$bt->boardId} / swimlane {$bt->swimlaneId} ({$stageGroups} stage group(s)). board_my_cards does not expose a per-row swimlane, so the returned scope header matching config is the observable that the bridge-side isolation filter ran.");
-        }
-
-        return $ok;
-    }
-
-    /**
-     * card 4952 live ssh probe (opt-in, --probe-tools-ssh=<user@host>). Round-trip a
-     * real board_my_cards over the ssh-forced-command transport and certify the scope
-     * header matches a configured ssh agent's lane. A failure is HARD (→ non-zero exit),
-     * like --probe-tools: it certifies the enablement.
-     *
-     * @param  list<AgentConfig>  $configs
-     */
-    private function probeBoardToolsSsh(array $configs, string $target): bool
-    {
-        $sshAgents = array_values(array_filter(
-            $configs,
-            fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled && $c->boardTools->transport === 'ssh',
-        ));
-        if ($sshAgents === []) {
-            $this->warn('board_tools ssh probe: --probe-tools-ssh was given but no agent has an enabled ssh-transport board_tools block — nothing to certify.');
-
-            return true;
-        }
-
-        $expected = array_map(
-            fn (AgentConfig $c) => ['agent' => $c->agentName, 'board_id' => $c->boardTools?->boardId, 'swimlane_id' => $c->boardTools?->swimlaneId],
-            $sshAgents,
-        );
-        $probe = new SshTransportProbe($this->laravel->make(SshProbeEnvironment::class));
-        $ok = true;
-        foreach ($probe->probeLive($target, $expected) as $finding) {
-            if (! $this->emitSshFinding($finding)) {
-                $ok = false;
-            }
         }
 
         return $ok;
@@ -1505,7 +1510,7 @@ class CheckCommand extends BridgeCommand
             // That is the whole of the by-construction claim — rendering is not part
             // of it: line() throws on a message carrying an invalid formatter tag,
             // exactly as the info() here before it did, and that escape is unchanged.
-            $this->emitFinding('', Finding::unvalidated('event-consumer: check skipped — '.$e->getMessage()));
+            $this->emitFinding(Finding::unvalidated('event-consumer: check skipped — '.$e->getMessage()));
         }
     }
 

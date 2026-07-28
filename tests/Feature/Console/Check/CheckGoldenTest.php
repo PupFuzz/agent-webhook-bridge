@@ -3,6 +3,7 @@
 namespace Tests\Feature\Console\Check;
 
 use App\Bridge\Retention\RetentionGate;
+use App\Bridge\Tools\SshProbeEnvironment;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -10,6 +11,7 @@ use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CheckGolden\GoldenCapture;
 use Tests\Support\CheckGolden\GoldenInstall;
+use Tests\Support\CheckGolden\GoldenSshEnvironment;
 use Tests\Support\CheckGolden\PinnedHost;
 use Tests\TestCase;
 
@@ -274,6 +276,51 @@ class CheckGoldenTest extends TestCase
 
                 return $default;
 
+                // ---- board_tools over ssh (DL-242 stage 1) ----
+                // Before stage 1 no fixture reached the ssh legs at all, so the golden
+                // suite was green on two of the three call sites that stage migrates.
+                // These four make that green mean something.
+            case 'board-tools-ssh-pinned-line':
+                // The certified shape: explicit `transport: ssh`, a good forced-command
+                // line, non-root. Exercises the per-agent pinned-line check's ok path.
+                $this->sshInstall($i, transport: "  transport: ssh\n");
+                $this->app->instance(SshProbeEnvironment::class, new GoldenSshEnvironment(
+                    authorizedKeys: self::GOOD_PINNED_LINE,
+                ));
+
+                return $default;
+
+            case 'board-tools-ssh-default-transport-advisory':
+                // The DL-225 pre-upgrade advisory: no explicit `transport:` key (so the
+                // v0.68.0 flipped default lands the agent on ssh) AND an unverifiable
+                // setup. The advisory reads the pinned-line SEVERITIES back off the
+                // check's report, so this fixture is what proves that wiring survived.
+                $this->sshInstall($i, transport: '');
+                $this->app->instance(SshProbeEnvironment::class, new GoldenSshEnvironment);
+
+                return $default;
+
+            case 'board-tools-ssh-live-probe':
+                // The opt-in live round trip, certified: a clean envelope whose scope
+                // header matches the configured lane. No fixture reached this leg before.
+                $this->sshInstall($i, transport: "  transport: ssh\n");
+                $this->app->instance(SshProbeEnvironment::class, new GoldenSshEnvironment(
+                    authorizedKeys: self::GOOD_PINNED_LINE,
+                    roundTrip: ['exit' => 0, 'stdout' => '{"ok":true,"result":{"board_id":10,"swimlane_id":4}}', 'stderr' => ''],
+                ));
+
+                return ['args' => ['--probe-tools-ssh' => 'bridge@host-a'], 'fpm' => false, 'coordConfig' => null];
+
+            case 'probe-tools-ssh-with-no-ssh-agent':
+                // The opt-in probe's not-applicable path, the ssh twin of
+                // `probe-tools-with-no-enabled-agent`. Today it prints one warn; from
+                // stage 8 the same state is a `not requested`/`not applicable`
+                // disposition, and this fixture is what will show that change.
+                $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
+                $this->app->instance(SshProbeEnvironment::class, new GoldenSshEnvironment);
+
+                return ['args' => ['--probe-tools-ssh' => 'bridge@host-a'], 'fpm' => false, 'coordConfig' => null];
+
             case 'probe-tools-with-no-enabled-agent':
                 // The opt-in probe's not-applicable path. Today it prints a warn; from
                 // stage 8 the same state is a `not requested`/`not applicable`
@@ -344,6 +391,10 @@ class CheckGoldenTest extends TestCase
             'writeback-move-leg-coord-config-agrees',
             'writeback-board-unreadable',
             'board-tools-http-enabled',
+            'board-tools-ssh-pinned-line',
+            'board-tools-ssh-default-transport-advisory',
+            'board-tools-ssh-live-probe',
+            'probe-tools-ssh-with-no-ssh-agent',
             'probe-tools-with-no-enabled-agent',
             'no-opt-in-probes-requested',
             'event-consumer-unconsumed-type',
@@ -462,6 +513,34 @@ class CheckGoldenTest extends TestCase
     private function kanbanAgentYaml(): string
     {
         return "identity:\n  kanban_user_id: 137\nsubscriptions:\n  - provider: kanban\n    scopes: [5]\n";
+    }
+
+    /** A forced-command line that denies pty+forwarding — the shape the probe certifies. */
+    private const GOOD_PINNED_LINE = 'command="php artisan bridge:tools-call --agent=prod-agent",restrict ssh-ed25519 AAAA prod-agent';
+
+    /**
+     * An install whose one agent has an ENABLED board_tools block on the ssh transport.
+     *
+     * @param  string  $transport  the `transport:` line, or '' to omit it and land on the
+     *                             v0.68.0 flipped default (which is what DL-225 advises on)
+     */
+    private function sshInstall(GoldenInstall $i, string $transport): void
+    {
+        $i->boot()
+            ->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
+                ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+                // No `channel:` block: `channel.auth.token_path` is only valid with an
+                // HTTP channel, and an ssh agent has none — copying the http fixture's
+                // bearer line here aborts the agent's config leg before board_tools is
+                // ever reached, which is what the FIRST cut of this fixture did.
+                ."board_tools:\n{$transport}  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n")
+            ->secret('kanban/writeback-token', 'wb-token');
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [], 'meta' => ['total' => 0]]),
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
+                ['id' => 55, 'name' => 'Backlog', 'position' => 1024.0],
+            ]]], 'swimlanes' => [['id' => 4, 'name' => 'Default']]]]),
+        ]);
     }
 
     /** The fixture shape that provably REACHES the deep writeback/coord legs. */

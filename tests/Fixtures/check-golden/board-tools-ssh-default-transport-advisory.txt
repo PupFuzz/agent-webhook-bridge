@@ -1,0 +1,16 @@
+exit: 0
+--- output ---
+config dir: <INSTALL>
+config dir <INSTALL> is group/world-accessible (mode 0755) — chmod 700 (it holds secrets)
+secret dir: <INSTALL>
+database: connected
+install-suffix DSN check: ok
+inbox surfacing config: ok (layout=shared)
+retention: on (delete >30d, every 86400s, 500 rows/pass)
+retention: this PHP install has no fastcgi_finish_request() — retention runs AFTER the response is flushed but BEFORE the request ends, so a keep-alive client may wait for it. Serve the receiver under PHP-FPM (see CLAUDE_DEPLOYMENT.md), or set BRIDGE_RETENTION_ENABLED=false and run bridge:prune on a schedule.
+agent config ok: prod-agent
+agent prod-agent: kanban:5 has no secret at <INSTALL>/kanban/webhook-secret-scope-5 — run bridge:provision
+agent prod-agent: kanban API token not readable at <INSTALL>/kanban/token — bridge:provision will SKIP kanban scopes
+board_tools: agent prod-agent: the writeback token sees 0 cards on board 10 — EITHER the board is empty (fine) OR the service user is not a member / board_id is wrong (then board_my_cards returns an empty window and board_create_card's correlation reads blind). Verify membership + board_id if you expect cards.
+board_tools ssh: could not read /home/bridge/.ssh/authorized_keys (assumed default; the AuthorizedKeysFile may be relocated — re-run as root to resolve it) — the pinned line for agent prod-agent is UNVERIFIED
+board_tools ssh: agent prod-agent is on ssh by the v0.68.0 default (no explicit transport:); its ssh setup is incomplete or could not be verified from here — pin `transport: http` to keep the loopback path, or complete ssh setup and run `sudo bridge:check` to certify.
