@@ -49,7 +49,7 @@ build-out — the cost of a *new subsystem*, not rot.
   property: this shows the file grew fast and is edited constantly. It does **not** by itself
   show bad design — a command that checks 30 things is legitimately longer than one checking 3.
   The bullets below carry the argument; this one only says where to look.)*
-- `handle()` is **891 lines** (L90–L981), nesting to 11 levels.
+- `handle()` was **891 lines** at stage 0, nesting to 11 levels.
 - **133** `$this->warn/error/info/line(...)` calls; 4 of those are the renderer's own `match`
   arms, so **129 are check-site emissions**. `$ok = false` is assigned at 20+ sites.
 - Only **~22 of 129** messages carry a structured prefix — there is no stable check identity.
@@ -88,9 +88,9 @@ re-mint the bug.
 
 `handle()` conflates two different jobs:
 
-- **Deriving a model of the install** — `$configs` accumulates at L251, `$githubScopeConsumers`
-  at L376 (inside the config loop), `$writeback` at L572, `$client` at L746.
-- **Asserting on that model** — consumed as late as L915 (`checkEventFollowsConsumer`).
+- **Deriving a model of the install** — `$configs` accumulates in the per-agent config loop,
+  `$githubScopeConsumers` in that loop's subscription walk, `$writeback` and `$client` later.
+- **Asserting on that model** — consumed as late as `checkEventFollowsConsumer()`, near the end.
 
 This is why the method resists ordinary extract-method refactoring: the checks are not
 independent, because the model they assert on is being built *between* them.
@@ -113,7 +113,7 @@ reached twice and applied locally both times, and the migration was never finish
 **NOT closed — same shape, different address.** **card#5312**'s unalerted permanent
 `Log::warning` branches are in `app/Bridge/Writeback/WritebackAlertNotifier.php:131,168,190` and
 `KanbanPromoteReleasedHandler`. **card#5310**'s near-miss probe is
-`GitHubPrCardMoveClassifier::warnCardTokenNearMiss()` (L597, called at L210/L476). Both are the
+`GitHubPrCardMoveClassifier::warnCardTokenNearMiss()`. Both are the
 silent-degrade shape and both deserve a shared "this degraded silently" reporting primitive, but
 that is a **separate consolidation** over a different call-site set. This program gives the shape
 a vocabulary to be reported in; it does not detect it.
@@ -166,7 +166,7 @@ re-mints *"green because never looked"* one level up, at the registry. Every che
 always; applicability is a verdict it returns.
 
 **(b) The registry needs a per-agent scope, not just a global one.** Output is emitted *inside*
-the per-agent config loop (`agent config ok: {$name}`, `agent {$name}: …`, from L240),
+the per-agent config loop (`agent config ok: {$name}`, `agent {$name}: …`),
 interleaved per agent. A check hoisted to run after derivation would **reorder** output and break
 the byte-identical contract. Hence `PerAgentCheck`, executed within the iteration at the same
 position.
@@ -174,8 +174,8 @@ position.
 **(c) During stages 1–7 the surviving inline derivation code in `handle()` populates
 `CheckContext`.** Migrated checks read it; unmigrated code keeps its local variables.
 `CheckContext` becomes a standalone builder only in the final stage. Without this rule the stage
-boundaries are ill-defined — `$githubScopeConsumers` is *built* inside the per-agent loop (L376)
-and *consumed* by a check at L915, so producer and consumer are necessarily migrated in different
+boundaries are ill-defined — `$githubScopeConsumers` is *built* inside the per-agent loop
+and *consumed* by `checkEventFollowsConsumer()`, so producer and consumer are migrated in different
 stages and must communicate through the context in the interim.
 
 ### Why a strangler migration, not a rewrite
@@ -188,7 +188,7 @@ stays green throughout. Every stage is independently reviewable and revertible.
 
 **Question as originally posed:** do the opt-in probes report `unvalidated` when their flag is
 absent? Today `--probe-tools` / `--probe-tools-ssh` print **nothing** when not passed (guarded at
-L932, L940), but under constraint (a) they must return *something*.
+the two probe-summary legs), but under constraint (a) they must return *something*.
 
 **Ruled: neither `unvalidated` nor `ok`.** Both answers accepted a false premise — that the
 choice is a severity. It is not.
@@ -235,8 +235,9 @@ next stage starts.
 |---|---|---|---|
 | **0 ✅** | Golden-output harness + `Check`/`PerAgentCheck`/`CheckContext`/`CheckRunner` scaffolding. Registry empty; nothing migrated. | **None** | no |
 | **1 ✅** | Migrate the two already-`Finding`-shaped probes — **3** of the 4 existing `emitFinding` call sites (the 4th is not a probe; see below). First wiring of `CheckRunner` into `handle()`. | **None** | no |
-| **2–7** | Migrate remaining units, ~1 PR per cluster: `retention`, `writeback` (+`writeback.json`, `alert_channel`), `database`/`install-suffix`, per-agent config/identity, `inbox surfacing config`, `board_tools`. | **None** (golden test enforces) | no |
-| **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the L961 "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
+| **2 ✅** | Migrate the `retention` cluster into `RetentionPostureCheck` at a new `CheckSlot::Retention`. `receiverSapiFinishesEarly()` moves with it (single caller). | **None** | no |
+| **3–7** | Migrate remaining units, ~1 PR per cluster: `writeback` (+`writeback.json`, `alert_channel`), `database`/`install-suffix`, per-agent config/identity, `inbox surfacing config`, `board_tools`. | **None** (golden test enforces) | no |
+| **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
 | **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** |
 | **10** | Re-assign the sites that disagree on warn ↔ unvalidated. Closes **card#5291**, **card#5292**. | **Yes** — severities change | **GATE** |
 
@@ -259,7 +260,7 @@ coordination config at `<path>` is absent, unreadable, or malformed …"*. Same 
 **different diagnosis and different operator instruction** — so the "never normalize a verdict"
 rule forbids normalizing it away. It is pinned instead, and both texts are fixtures.
 
-Four ambient inputs are pinned (`PATH`, which decides the `php-fpm` probe at L160 and therefore
+Four ambient inputs are pinned (`PATH`, which decides the `php-fpm` probe and therefore
 moves nearly every install's output; `XDG_RUNTIME_DIR`; `COORD_CONFIG`; `GH_TOKEN`), two host
 values are normalized (absolute paths, the numeric uid — neither carries a verdict), and the
 retention last-failure marker is cleared from the cache so a fixture that wants it sets it.
@@ -336,6 +337,46 @@ inside `checkEventFollowsConsumer()`'s fail-soft `catch`. It cannot move alone: 
 that method's whole body, so migrating it necessarily migrates the ~10 raw emissions above it and
 the `$githubScopeConsumers` read at its heart. That is a **stage 2–7 cluster**, and merging it into
 stage 1 would have merged two stages. It stays inline, now calling the one-argument `emitFinding()`.
+
+### Stage 2 result — the first cluster where a plain green run WAS the proof
+
+**What migrated:** the retention posture leg (DL-199) into `RetentionPostureCheck` at a new
+`CheckSlot::Retention`, at the ordinal position the inline code held. `receiverSapiFinishesEarly()`
+moved with it — that private method had exactly one caller. `CheckCommand::handle()` lost ~66 lines.
+
+**No stash-and-recapture was needed, and that is a property of this cluster, not a shortcut.** Stage
+1 had to capture fixtures from pre-refactor code because none existed. Here the four retention
+fixtures and the `minimal`/`minimal-fpm-present` potency pair were **already captured before this
+refactor existed**, so a plain green run *is* the byte-identity measurement: **37/37, 79 assertions,
+green with `UPDATE_GOLDEN` unset.** The assertion count is the load-bearing half — a regenerating run
+drops to 46, so **79 means asserted; 46 would mean nothing was checked.** Six deliberate mutations
+each red the suite: registration removed, `enabled` inverted, `isUsable()` inverted,
+`receiverSapiFinishesEarly()` inverted, `is_array($lastError)` inverted, and one space dropped from
+the `retention: on (` message.
+
+**One leg is covered by neither instrument, and it needed a unit test.** The fail-soft `catch` around
+the last-failure marker read is unreachable from a golden fixture (it needs an unreachable cache
+backend) *and* invisible to `bin/check-golden-mutate.php`, which walks `if`/`elseif`/`foreach` in
+`handle()` and **does not enumerate `catch` blocks at all**. Left alone it would have been justified
+by reading. `RetentionPostureCheckTest` covers it with a throwing cache store plus a discriminating
+control (reachable backend, no marker ⇒ the line is absent); both directions are mutation-proven.
+**Generalize this before stage 3:** every remaining cluster carries fail-soft `catch` arms with the
+same double blind spot.
+
+**Coverage-table effect.** The predicate total drops **100 → 97** as four retention predicates leave
+`handle()`, and the gap ids renumber. That renumbering is the restaling `card#5475` exists to fix —
+it is a property of the instrument, not a defect of this stage.
+<!-- STAGE2-REGEN-PENDING: fill the observed / observed-via-abort / UNOBSERVED split from the
+     regenerated docs/check-golden-coverage.md before opening the stage-2 PR. -->
+
+**A finding worth more than the stage: line numbers into `CheckCommand.php` are a doc defect, not a
+convenience.** Docblocks and this plan cited `handle()` offsets in ~20 places. Stage 2 moved ~66
+lines and invalidated **every one of them** — verified individually; not one still landed on its
+construct — and **no gate can catch it**: not phpstan, not pint, not the golden suite. Stages 3–7
+would each re-mint the same breakage. All such citations are now replaced by construct names, which
+are stable and greppable. **The rule for stages 3–7: never cite a `CheckCommand` line number.** Name
+the method, the loop, or the message. A line number into a *stable* file is still fine — the pin on
+`GitHubTokenResolver` L204 was re-verified and left alone.
 
 ## Verification
 
