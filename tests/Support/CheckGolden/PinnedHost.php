@@ -21,7 +21,7 @@ use Illuminate\Support\Facades\File;
  *
  * WHAT IS PINNED, and why each one is here rather than guessed at:
  *
- *   1. `PATH` — `receiverSapiFinishesEarly()` (CheckCommand L75, used L160) asks
+ *   1. `PATH` — `RetentionPostureCheck::receiverSapiFinishesEarly()` asks
  *      Symfony's ExecutableFinder for a `php-fpm<major>.<minor>` or `php-fpm` binary.
  *      ExecutableFinder resolves ONLY from `getenv('PATH')` plus an `exec('command -v')`
  *      fallback that inherits the same PATH, so pointing PATH at a fixture bin dir
@@ -29,9 +29,9 @@ use Illuminate\Support\Facades\File;
  *      default), so it affects nearly every fixture — a host without php-fpm emits an
  *      extra retention warn line. Whether CI's runner has php-fpm was the stage-0 NAMED
  *      GAP; pinning closes it rather than assuming hosts agree.
- *   2. `XDG_RUNTIME_DIR` — interpolated into the HTTP channel bind-failure marker path
- *      (L494).
- *   3. `COORD_CONFIG` — the proven-divergent one above (L1610 / L1686).
+ *   2. `XDG_RUNTIME_DIR` — interpolated into the HTTP channel bind-failure marker path.
+ *   3. `COORD_CONFIG` — the proven-divergent one above, read by
+ *      `CheckCommand::checkCoordTerminalAgreement()`.
  *   4. `GH_TOKEN` — `GitHubTokenResolver` falls back to it (resolver L204), so an
  *      operator shell that exports it silently satisfies a token probe that must fail
  *      on a fixture with no token.
@@ -42,10 +42,16 @@ use Illuminate\Support\Facades\File;
  * performs. An enumeration bounded by one file is bounded by that file.
  *
  * The remaining host inputs from that enumeration are handled elsewhere because they
- * are not env: `posix_getuid()` (L433) and absolute paths are NORMALIZED by
- * {@see GoldenCapture} (neither encodes a verdict — the verdict is "not writable" /
- * "absent", which survives), and the retention last-failure marker (L170) is ambient
- * CACHE state, cleared here so a fixture that wants it sets it explicitly.
+ * are not env: `posix_getuid()` (the channel-socket uid hint) and absolute paths are
+ * NORMALIZED by {@see GoldenCapture} (neither encodes a verdict — the verdict is "not
+ * writable" / "absent", which survives), and the retention last-failure marker read by
+ * `RetentionPostureCheck` is ambient CACHE state, cleared here so a fixture that wants
+ * it sets it explicitly.
+ *
+ * PINS NAME THE CONSTRUCT, NEVER A `CheckCommand` LINE NUMBER — a pin asserts a HOST FACT,
+ * which does not move when the code reading it does (pin 1's reader has already migrated
+ * out of `CheckCommand` and the pin is unchanged). Rule and evidence:
+ * `docs/CHECK-REGISTRY-PLAN.md` § Stage 2 result.
  */
 final class PinnedHost
 {
@@ -97,7 +103,7 @@ final class PinnedHost
         $coordConfig === null ? putenv('COORD_CONFIG') : putenv('COORD_CONFIG='.$coordConfig);
         putenv('GH_TOKEN');
 
-        // Ambient cache state (CheckCommand L170). The array store starts empty, but a
+        // Ambient cache state (read by RetentionPostureCheck). The array store starts empty, but a
         // prior test in the same process could have written it; a fixture that wants the
         // marker sets it itself.
         Cache::forget(RetentionGate::ERROR_KEY);

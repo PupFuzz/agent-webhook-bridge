@@ -159,14 +159,122 @@ foreach ($docs as $doc) {
     }
 }
 
-if ($errors !== []) {
-    fwrite(STDERR, "Dangling doc references (a CLAUDE_*.md names a PHP file that does not exist):\n");
-    foreach ($errors as $e) {
-        fwrite(STDERR, "  - {$e}\n");
+/**
+ * SECOND CHECK — line-number citations (DL-242 stage 2).
+ *
+ * A reference like "CheckCommand L240" or a bare "(L554 warns …)" asserts a fact about
+ * an OFFSET, and an offset is invalidated by any edit above it. `CheckCommand::handle()`
+ * is being migrated out one cluster per stage, so every stage moves lines and silently
+ * restales every citation into it — stage 2 moved ~66 lines and invalidated ~23 of them
+ * at once. NO OTHER GATE CATCHES THIS: not phpstan, not pint, and not the golden suite,
+ * because a stale comment is still valid PHP that still passes every assertion.
+ *
+ * TWO RULES, because the citations that rot worst are the ones that never name their file.
+ * `GoldenInstall`'s "(L554 warns about a default agent…)" was missed by a manual pass
+ * precisely because grepping for `CheckCommand` could not find it — nothing on that line
+ * says which file L554 belongs to:
+ *
+ *   1. A citation naming the migrating file — `CheckCommand L240`, `CheckCommand.php:961`
+ *      — is an error ANYWHERE.
+ *   2. A BARE `L<n>` is an error anywhere in the check-registry surface, where an
+ *      unqualified offset means `CheckCommand` by context.
+ *
+ * Deliberately NOT a repo-wide ban on offsets: the receiver core is documented as static
+ * (DL-001), and `CLAUDE_GOTCHAS.md`'s cites into it have held for months. Banning those
+ * too would trade a real defect for churn in docs that are not rotting.
+ *
+ * Name the construct instead — a method, a loop, or a message string. Construct names are
+ * greppable and move with the code.
+ */
+$stableAnchors = [
+    // Not under migration; its offsets have been re-verified and are allowed to be cited.
+    'GitHubTokenResolver',
+];
+
+/** The file under active migration: any citation of ITS offsets is an error anywhere. */
+$volatileFile = 'CheckCommand';
+
+/** Where a bare, unqualified `L<n>` can only mean the migrating file. */
+$bareCiteSurface = '#^(app/Bridge/Check/|tests/Support/CheckGolden/|tests/Feature/Console/Check/|docs/CHECK-REGISTRY-PLAN\.md)#';
+
+// Append-only history (records what was true at that version — rewriting it would be a
+// lie about the past), generated files (whose predicate ids are literally `if-L116`), and
+// the two files that must be able to quote the citation forms this rule rejects: this
+// script, and the test that drives it over them.
+$citeExcluded = '#^(CLAUDE_DECISIONS\.md|docs/CHANGELOG\.md|docs/reviews/|docs/check-golden-coverage\.|bin/check-doc-refs\.php$|tests/Feature/Workflows/DocRefCitationLintTest\.php$)#';
+
+/** @return list<string> repo-relative *.php and *.md paths under the scanned roots */
+function scannedSources(string $root): array
+{
+    $out = [];
+    foreach (['app', 'tests', 'docs', 'bin'] as $dir) {
+        $base = $root.'/'.$dir;
+        if (! is_dir($base)) {
+            continue;
+        }
+        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($base, FilesystemIterator::SKIP_DOTS));
+        foreach ($it as $file) {
+            if ($file->isFile() && in_array($file->getExtension(), ['php', 'md'], true)) {
+                $out[] = substr($file->getPathname(), strlen($root) + 1);
+            }
+        }
     }
-    fwrite(STDERR, "\nFix the reference, or — if the class was deliberately removed — note it on the\nsame line with a marker like \"(removed in vX)\". See DL-013.\n");
+    foreach (glob($root.'/*.md') ?: [] as $md) {
+        $out[] = substr($md, strlen($root) + 1);
+    }
+
+    return $out;
+}
+
+$citeErrors = [];
+foreach (scannedSources($root) as $rel) {
+    if (preg_match($citeExcluded, $rel) === 1) {
+        continue;
+    }
+    $inBareSurface = preg_match($bareCiteSurface, $rel) === 1;
+    foreach (file($root.'/'.$rel, FILE_IGNORE_NEW_LINES) ?: [] as $i => $line) {
+        // The glue between the name and the offset is a bounded any-char window, not an
+        // enumerated set: the repo's own house style backtick-quotes class names, so the
+        // literal `CheckCommand` L240 — the single most likely way to write this citation —
+        // slipped a `[\s:]*` connector entirely, as did `CheckCommand::handle()` L240.
+        // Enumerating quoting forms is the losing half of that trade; bounding the distance
+        // is the winning one.
+        $namesVolatile = preg_match('/'.$volatileFile.'[^\n]{0,24}?\b(L|:)\d{2,4}\b/', $line) === 1;
+        $bareOffset = preg_match('/\bL\d{2,4}\b/', $line) === 1;
+        if (! $namesVolatile && ! ($inBareSurface && $bareOffset)) {
+            continue;
+        }
+        // The exemption covers BARE offsets only. A line that names the migrating file
+        // is citing it no matter what else it mentions — without this bound, one anchor
+        // word anywhere on the line whitelists the exact citation the rule exists to catch.
+        if (! $namesVolatile) {
+            foreach ($stableAnchors as $anchor) {
+                if (str_contains($line, $anchor)) {
+                    continue 2;
+                }
+            }
+        }
+        $citeErrors[] = sprintf('%s:%d  %s', $rel, $i + 1, trim($line));
+    }
+}
+
+if ($errors !== [] || $citeErrors !== []) {
+    if ($errors !== []) {
+        fwrite(STDERR, "Dangling doc references (a CLAUDE_*.md names a PHP file that does not exist):\n");
+        foreach ($errors as $e) {
+            fwrite(STDERR, "  - {$e}\n");
+        }
+        fwrite(STDERR, "\nFix the reference, or — if the class was deliberately removed — note it on the\nsame line with a marker like \"(removed in vX)\". See DL-013.\n");
+    }
+    if ($citeErrors !== []) {
+        fwrite(STDERR, "Line-number citations (an offset goes stale the next time anything above it moves):\n");
+        foreach ($citeErrors as $e) {
+            fwrite(STDERR, "  - {$e}\n");
+        }
+        fwrite(STDERR, "\nName the construct instead — the method, the loop, or the message text. If the\ntarget file really is stable, add it to \$stableAnchors in this script with a reason.\nSee docs/CHECK-REGISTRY-PLAN.md § Stage 2 result.\n");
+    }
     exit(1);
 }
 
-fwrite(STDOUT, "doc-refs: all PHP references in CLAUDE_*.md resolve.\n");
+fwrite(STDOUT, "doc-refs: all PHP references in CLAUDE_*.md resolve; no line-number citations.\n");
 exit(0);

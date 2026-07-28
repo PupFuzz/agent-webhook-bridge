@@ -11,8 +11,9 @@ use Illuminate\Support\Facades\File;
  * The explicit config is not ceremony. `config/bridge.php` resolves those keys through
  * `env()`, and this repo's checkout carries a real deployed `.env` — so on an operator
  * box `config('bridge.default_agent')` and `config('bridge.receiver_base_url')` are that
- * install's values, and both reach `bridge:check`'s output (L554 warns about a default
- * agent with no config; L187 validates the receiver URL). CI, with no `.env`, reads
+ * install's values, and both reach `bridge:check`'s output (the `BRIDGE_DEFAULT_AGENT`
+ * leg warns about a default agent with no matching config; the per-install endpoint-URL
+ * loop validates the receiver URL through `UrlValidator`). CI, with no `.env`, reads
  * null for both. That is a third class of host input beyond the falsifier's env-var
  * enumeration and the one most likely to be mistaken for a fixture property: it is
  * config, so it looks declared, but its value came from the host.

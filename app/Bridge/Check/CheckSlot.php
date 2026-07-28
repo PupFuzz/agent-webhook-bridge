@@ -8,8 +8,8 @@ namespace App\Bridge\Check;
  *
  * WHY THIS EXISTS — stage 0's runner had one global scope and one per-agent scope, on
  * the assumption that each is invoked from a single place. Stage 1 falsified that on
- * BOTH: `CheckCommand` runs two distinct per-agent iterations (the main config loop at
- * L240, and the ssh-agent loop inside `checkBoardTools()`), and its global check units
+ * BOTH: `CheckCommand` runs two distinct per-agent iterations (the main config loop, and
+ * the ssh-agent loop inside `checkBoardTools()`), and its global check units
  * sit at positions separated by unmigrated inline code (`--probe-tools` renders between
  * the two board-tools legs). A single `run()` call site can only serve checks whose
  * output is contiguous, which is true only once the migration is finished.
@@ -27,6 +27,9 @@ namespace App\Bridge\Check;
  */
 enum CheckSlot: string
 {
+    /** The install-wide retention posture, after the inbox-surfacing leg. */
+    case Retention = 'retention';
+
     /** Inside the per-agent config iteration, after that agent's channel legs. */
     case AgentConfig = 'agent-config';
 

@@ -10,11 +10,15 @@ use App\Bridge\Writeback\WritebackConfig;
  * The derived model of the install every {@see Check} asserts against (DL-242).
  *
  * `CheckCommand::handle()` conflates two jobs: DERIVING this model and ASSERTING
- * on it. The derivation is interleaved with the assertions — `$configs` is
- * accumulated at L251, `$githubScopeConsumers` inside the per-agent loop at L376,
- * `$writeback` at L572, `$client` at L746 — and the last consumer reads at L915.
- * That interleaving is why the method resists ordinary extract-method refactoring,
- * and it is why this type exists.
+ * on it. The derivation is interleaved with the assertions — `$configs` accumulates
+ * inside the per-agent config loop, `$githubScopeConsumers` inside that same loop's
+ * subscription walk, `$writeback` and `$client` later still — and the last consumer
+ * reads them near the end of the method. That interleaving is why the method resists
+ * ordinary extract-method refactoring, and it is why this type exists.
+ *
+ * The derivation sites are NAMED, never cited by `handle()` line number — the migration
+ * this type exists to serve invalidates offsets every stage. See
+ * `docs/CHECK-REGISTRY-PLAN.md` § Stage 2 result.
  *
  * PROPERTIES ARE PUBLIC AND MUTABLE ON PURPOSE, for the duration of the migration
  * only. Plan constraint (c): during stages 1-7 the surviving inline derivation code
