@@ -199,8 +199,9 @@ $bareCiteSurface = '#^(app/Bridge/Check/|tests/Support/CheckGolden/|tests/Featur
 
 // Append-only history (records what was true at that version — rewriting it would be a
 // lie about the past), generated files (whose predicate ids are literally `if-L116`), and
-// this script, which must be able to quote the citation forms it rejects.
-$citeExcluded = '#^(CLAUDE_DECISIONS\.md|docs/CHANGELOG\.md|docs/reviews/|docs/check-golden-coverage\.|bin/check-doc-refs\.php$)#';
+// the two files that must be able to quote the citation forms this rule rejects: this
+// script, and the test that drives it over them.
+$citeExcluded = '#^(CLAUDE_DECISIONS\.md|docs/CHANGELOG\.md|docs/reviews/|docs/check-golden-coverage\.|bin/check-doc-refs\.php$|tests/Feature/Workflows/DocRefCitationLintTest\.php$)#';
 
 /** @return list<string> repo-relative *.php and *.md paths under the scanned roots */
 function scannedSources(string $root): array
