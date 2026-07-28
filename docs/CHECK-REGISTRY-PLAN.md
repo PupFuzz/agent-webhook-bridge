@@ -369,8 +369,19 @@ subtraction: the four retention predicates (`enabled`, `isUsable()`, `receiverSa
 replaces them **adds one back** — 100 − 4 + 1 = 97. Every migrated cluster will net −(n−1), not −n,
 for the same reason. The gap ids also renumber; that restaling is what `card#5475` exists to fix —
 a property of the instrument, not a defect of this stage.
-<!-- STAGE2-REGEN-PENDING: fill the observed / observed-via-abort / UNOBSERVED split from the
-     regenerated docs/check-golden-coverage.md before opening the stage-2 PR. -->
+**The regeneration measures that arithmetic rather than assuming it: `75 observed · 2
+observed-via-abort · 20 UNOBSERVED / 97`.** All four departing retention predicates were `observed`,
+and the guard replacing them is `observed` too, so the observed count moves exactly as the total does
+— 78 − 4 + 1 = 75. **No surviving predicate changed status**, and the disclosed gaps are the same 20
+conditions as stage 1, compared by condition text rather than by id precisely because the ids
+renumber. Stage 2 closed no gap and opened none.
+
+**The four predicates did not lose protection by leaving the table — they left `handle()`, which is
+the only thing this instrument enumerates.** That is the same reading stage 1's ssh fixtures
+required, and it cuts the other way here: their protection now lives in the four retention fixtures
+(byte-identical output) and, for the fail-soft `catch` arm no fixture can reach, in
+`RetentionPostureCheckTest`. As the migration proceeds this table measures a steadily smaller
+fraction of `bridge:check`, so a shrinking gap count is **not** evidence of improving coverage.
 
 **A finding worth more than the stage: line numbers into `CheckCommand.php` are a doc defect, not a
 convenience.** Docblocks and this plan cited `handle()` offsets in ~20 places. Stage 2 moved ~66
