@@ -13,12 +13,12 @@ use Tests\TestCase;
  * The config-dir leg (DL-242 stage 6): the two states in which the directory is unusable,
  * and the permissions warn that is only defined once it resolved.
  *
- * THE UNSET MESSAGE IS RENDERED BY NOTHING ELSE IN THE SUITE — measured at that scope,
- * not at the fixtures'. No golden fixture leaves `bridge.config_dir` unset (every one
- * points it somewhere, including the fixture that points it at a missing path), and no
- * command-level test drives `bridge:check` with the key absent. So the `observed` verdict
- * that predicate carries in `docs/check-golden-coverage.md` comes entirely from the
- * negated mutant changing every fixture, never from the message being rendered anywhere.
+ * THE UNSET MESSAGE IS NOT RENDERED BY THE GOLDEN CORPUS — no fixture leaves
+ * `bridge.config_dir` unset (every one points it somewhere, including the fixture that
+ * points it at a missing path). That is a FIXTURE-SCOPE measurement and licenses nothing
+ * about the rest of the suite: this arm was not among the ones measured by mutation, so no
+ * whole-suite claim is made for it here. What is certain is that this file asserts the
+ * message directly.
  *
  * THE PERMS WARN IS NOT IN THAT POSITION, and is covered here for the opposite reason:
  * every fixture that resolves a config dir renders it, and `BridgeCommandsTest` drives it

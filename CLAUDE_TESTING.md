@@ -197,9 +197,10 @@ docker rm -f bridge-test-mariadb
 ## The `bridge:check` golden harness (DL-242)
 
 `tests/Feature/Console/Check/CheckGoldenTest.php` captures `bridge:check`'s exact stdout + exit
-code for ~30 install shapes into `tests/Fixtures/check-golden/*.txt`. It exists because the DL-242
-Check-registry migration holds stages 0–7 to a byte-identical output contract; it is what turns
-that from an intention into a measurement.
+code into `tests/Fixtures/check-golden/*.txt`, one file per install shape (the harness owns how
+many; a count restated here is a second copy that drifts on the next fixture). It exists because
+the DL-242 Check-registry migration holds stages 0–7 to a byte-identical output contract; it is
+what turns that from an intention into a measurement.
 
 - **A refactor that reds a golden file changed behavior.** Fix the code — do not regenerate.
 - **A change that is MEANT to alter output** regenerates with `UPDATE_GOLDEN=1 vendor/bin/phpunit
@@ -215,6 +216,29 @@ that from an intention into a measurement.
 - **A green golden suite is not full protection.** `docs/check-golden-coverage.md` names, by
   mutation, the predicates in `handle()` that flipping changes no golden file. Read it before
   concluding a `bridge:check` refactor is covered.
+- **A coverage claim names the scope it was MEASURED at, and the two scopes have two different
+  instruments.** *Fixture scope* — "no golden fixture renders X" — comes from a grep of
+  `tests/Fixtures/check-golden/`, because that corpus is text; it licenses nothing about the rest
+  of the suite. *Whole-suite scope* — "nothing else asserts X" — comes only from a MUTATION:
+  change the arm, run the whole suite, and the set that goes red **is** the measurement set. A
+  grep cannot answer it in either direction, because a command-level test reaches the same arm
+  through a config key that names no symbol — so a symbol-keyed selector reads clean while the
+  behavior is covered. Claims measured at fixture scope and stated at whole-suite strength are
+  the defect this rule exists to stop (card#5551); the rule is mechanical on purpose, because
+  awareness of it was measured to be insufficient.
+- **A BATCH mutation measures ATTRIBUTABLY, not exclusively — say which you ran.** Mutating many
+  arms in one suite run is the affordable form (one run instead of N), each to its own
+  severity-preserving sentinel so exit codes cannot move and mask a result. Attribute each arm's
+  red set by the failing test's EXPECTED STRING, never by grepping the sentinel — that token both
+  over-counts (a token inside a dumped-output diff is not an assertion) and under-counts
+  (truncated diffs). What a batch run cannot distinguish is a test observing TWO mutated arms: it
+  reds once and is attributed to one of them. So "nothing else observes this arm" out of a batch
+  run means *no other test asserts that arm's message* — confirm no cross-arm message overlap in
+  the same pass, or re-run the arm alone before stating it any more strongly.
+- **`docs/check-golden-coverage.md` enumerates `handle()`'s predicates and nothing else.** A
+  migrated check's predicates are not in it and cannot become so, so a comment claiming
+  membership in its disclosed-gap list is false by construction rather than merely stale — state
+  the fixture-scope fact instead. Absence from that file was never protection either way.
 
 ## Anti-patterns to avoid
 

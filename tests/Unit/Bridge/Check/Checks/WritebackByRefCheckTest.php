@@ -18,8 +18,9 @@ use Tests\TestCase;
  * Every golden fixture that constructs a writeback client runs in `scan` correlation
  * (`CheckGoldenTest`'s move-leg install pins it — named, not `{@see}`-linked, because
  * pint's docblock fixer turns a fully-qualified `{@see}` into a real import), and this
- * check is a no-op outside `ref`. `docs/check-golden-coverage.md` discloses the
- * `! $client->byRefAvailable(...)` predicate as UNOBSERVED for exactly that reason. So the
+ * check is a no-op outside `ref`. (`docs/check-golden-coverage.md` does not speak
+ * for the `! $client->byRefAvailable(...)` predicate in either direction — that file
+ * enumerates `CheckCommand::handle()`'s predicates, and this one migrated out of it.) So the
  * measurement of this leg is here, not there.
  *
  * THE NOT-APPLICABLE TEST CARRIES A POSITIVE CONTROL rather than a bare absence: a check

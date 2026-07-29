@@ -29,8 +29,11 @@ use Throwable;
  * `wake_membership` is lazy, so a malformed value first throws HERE. Hardening the
  * `families` read would add a branch no input can take.
  *
- * NO GOLDEN FIXTURE REACHES THAT `catch` — `WakeMembershipCheckTest` is its whole
- * measurement. (Named, never `{@see}`-linked: pint would turn the FQCN into a real `use`.)
+ * NO GOLDEN FIXTURE REACHES THAT `catch`, but the command-level suite does: mutating it
+ * reds `BridgeCommandsTest::test_check_fails_on_malformed_wake_membership`, which writes a
+ * non-list value and asserts the substring plus the exit flip. `WakeMembershipCheckTest` is
+ * what pins the composed per-agent message. (Named, never `{@see}`-linked: pint would turn
+ * the FQCN into a real `use`.)
  */
 final class WakeMembershipCheck implements PerAgentCheck
 {

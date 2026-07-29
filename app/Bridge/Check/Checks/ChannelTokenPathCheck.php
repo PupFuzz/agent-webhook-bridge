@@ -23,9 +23,10 @@ use Throwable;
  * API-token legs this one is independent of the secret dir being set at all.
  *
  * THE `catch` IS THE WHOLE POINT AND NO GOLDEN FIXTURE REACHES IT — every fixture that
- * declares a `token_path` writes a readable 0600 file, so the throw arm is measured only
- * by `ChannelTokenPathCheckTest`. (Named, never `{@see}`-linked: pint would turn the FQCN
- * into a real `use`.)
+ * declares a `token_path` writes a readable 0600 file. Mutating the throw arm reds
+ * `ChannelTokenPathCheckTest` and nothing else in the suite — measured by mutation, not
+ * inferred from a grep (CLAUDE_TESTING.md). (Named, never `{@see}`-linked: pint would turn
+ * the FQCN into a real `use`.)
  */
 final class ChannelTokenPathCheck implements PerAgentCheck
 {

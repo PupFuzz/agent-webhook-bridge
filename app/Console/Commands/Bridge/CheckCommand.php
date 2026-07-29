@@ -358,7 +358,7 @@ class CheckCommand extends BridgeCommand
                         // outer one is (DL-242 stage 3a): CheckRunner deliberately does not
                         // catch, so wrapping emitReport() keeps "a probe failure degrades to
                         // one warn" a property of this method rather than an assumption
-                        // about three checks' callees. Its realistic thrower is
+                        // about this slot's checks' callees. Its realistic thrower is
                         // WritebackClientFactory::make() above — derivation, inline anyway.
                         $this->warn('writeback: skipped board-visibility probe — '.$e->getMessage());
                     }
@@ -373,7 +373,7 @@ class CheckCommand extends BridgeCommand
                 // registered checks own is total (see ReconcileRepoTokensCheck) or carries
                 // its own catch (see WritebackBoardStateCheck) — but the envelope is what
                 // makes that a property of this method rather than an assumption about
-                // nine checks' callees.
+                // every registered writeback check's callees.
                 $this->error('writeback.json: '.$e->getMessage());
                 $ok = false;
             }

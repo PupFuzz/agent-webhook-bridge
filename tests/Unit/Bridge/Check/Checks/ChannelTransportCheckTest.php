@@ -14,10 +14,13 @@ use Tests\TestCase;
 /**
  * The channel transport legs (DL-039, FR #2444), migrated in DL-242 stage 5b.
  *
- * THREE OF THE PROGRAM'S EIGHT DISCLOSED GAPS ARE IN THIS ONE CHECK — the unwritable
- * parent dir, the HTTP bind-failure marker, and BOTH liveness probes. A green golden run
- * is evidence for none of them (`docs/check-golden-coverage.md` lists them individually),
- * so this file is their measurement.
+ * FOUR LEGS OF THIS CHECK ARE INVISIBLE TO THE GOLDEN CORPUS — the unwritable parent dir,
+ * the HTTP bind-failure marker, and BOTH liveness probes. A green golden run is evidence
+ * for none of them. THE COMMAND-LEVEL SUITE REACHES THE TWO PROBES: mutating either reds
+ * `BridgeCommandsTest::test_check_reports_channel_socket_live_when_a_session_listens` or
+ * `::test_check_reports_channel_http_endpoint_live_when_listener_present`. The other two
+ * legs were not in that mutation run, so this file claims no whole-suite scope for them —
+ * it asserts all four directly.
  *
  * THE PROBE IS FAKED; EVERY OTHER HOST FACT IS REAL. The filesystem legs run against a
  * real temp dir and a real unix socket, and `XDG_RUNTIME_DIR` is a real env read — those
@@ -84,7 +87,8 @@ class ChannelTransportCheckTest extends TestCase
     }
 
     /**
-     * A disclosed gap, and the one leg whose measurability depends on WHO runs the suite:
+     * Invisible to the golden corpus, and the one leg whose measurability depends on WHO
+     * runs the suite:
      * root bypasses the write bit, so PHP's `is_writable()` answers true for a 0500
      * directory and the branch is unreachable. Skipped with that reason rather than
      * asserted vacuously — an assertion that cannot fail is not coverage.
@@ -137,7 +141,7 @@ class ChannelTransportCheckTest extends TestCase
         $this->assertStringContainsString("marker at {$socket}.FAILED — a Claude Code session", $findings[0]->message);
     }
 
-    /** A disclosed gap: no fixture creates a real socket file, so neither arm is golden-measured. */
+    /** No fixture creates a real socket file, so neither arm is golden-measured. */
     public function test_a_live_socket_reports_ok_and_probes_the_unix_dsn(): void
     {
         $socket = $this->listeningSocket();
@@ -216,7 +220,7 @@ class ChannelTransportCheckTest extends TestCase
         $this->assertSame([], $probe->dsns);
     }
 
-    /** A disclosed gap: the one `channel.url` fixture has no port, so this leg is never reached. */
+    /** The one `channel.url` fixture has no port, so the golden corpus never reaches this leg. */
     public function test_a_live_http_endpoint_reports_ok_and_probes_the_tcp_dsn(): void
     {
         $probe = $this->probe(connected: true);
@@ -256,7 +260,7 @@ class ChannelTransportCheckTest extends TestCase
     }
 
     /**
-     * A disclosed gap. The marker path is composed from `XDG_RUNTIME_DIR`, the AGENT name
+     * No fixture writes a marker. The path is composed from `XDG_RUNTIME_DIR`, the AGENT name
      * and the PORT — all three asserted, because the check keys on the agent name only as
      * a proxy for the channel server's own name, and a miss is silent by design.
      */

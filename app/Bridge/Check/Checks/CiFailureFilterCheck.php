@@ -27,8 +27,11 @@ use Throwable;
  * instead of aborting the whole run and skipping every remaining agent — `CheckRunner`
  * deliberately does not catch.
  *
- * NO GOLDEN FIXTURE REACHES THAT `catch` — `CiFailureFilterCheckTest` is its whole
- * measurement. (Named, never `{@see}`-linked: pint would turn the FQCN into a real `use`.)
+ * NO GOLDEN FIXTURE REACHES THAT `catch`, but the command-level suite does: mutating it
+ * reds `BridgeCommandsTest::test_check_fails_on_malformed_ci_failure_workflow_patterns`,
+ * which writes a non-list value and asserts the substring plus the exit flip.
+ * `CiFailureFilterCheckTest` is what pins the composed per-agent message. (Named, never
+ * `{@see}`-linked: pint would turn the FQCN into a real `use`.)
  */
 final class CiFailureFilterCheck implements PerAgentCheck
 {

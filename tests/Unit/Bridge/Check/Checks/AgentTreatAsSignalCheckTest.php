@@ -13,9 +13,10 @@ use Tests\TestCase;
 /**
  * The per-agent `treat_as_signal` roster validation (DL-242 stage 5c).
  *
- * EVERY GOLDEN FIXTURE'S `treat_as_signal` RESOLVES, so before this stage the walk was
- * one of the disclosed gaps `docs/check-golden-coverage.md` lists. This file is its whole
- * measurement.
+ * EVERY GOLDEN FIXTURE'S `treat_as_signal` RESOLVES, so the golden corpus cannot see the
+ * throw. THE COMMAND-LEVEL SUITE CAN, THOUGH: mutating it also reds
+ * `BridgeCommandsTest::test_check_fails_on_unknown_treat_as_signal_name`. What this file
+ * adds over that is the severity and the composed message, below.
  *
  * WHAT MAKES THIS LEG WORTH A `fail` RATHER THAN A WARN: an unresolvable name is
  * fail-closed at dispatch, so the operator who does not catch it here catches it as a

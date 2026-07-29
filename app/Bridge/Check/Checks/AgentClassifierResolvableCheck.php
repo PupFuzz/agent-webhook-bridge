@@ -23,7 +23,8 @@ use Throwable;
  * class in this process to test it would kill `bridge:check` itself. The child process
  * absorbs that; only once it passes is {@see ClassifierResolver::for()} safe to call
  * here. The `for()` arm is therefore belt-and-braces by construction — no golden fixture
- * reaches it, and `AgentClassifierResolvableCheckTest` is its whole measurement. (Test
+ * reaches it, and mutating it reds `AgentClassifierResolvableCheckTest` and nothing
+ * else in the suite — measured by mutation, not inferred from a grep (CLAUDE_TESTING.md). (Test
  * classes are NAMED, never `{@see}`-linked: pint's docblock fixer turns a fully-qualified
  * `{@see}` into a real `use`, which would make app code import a test class.)
  *

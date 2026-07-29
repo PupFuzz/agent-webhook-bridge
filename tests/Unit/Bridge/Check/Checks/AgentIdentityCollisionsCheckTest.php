@@ -14,10 +14,11 @@ use Tests\TestCase;
 /**
  * The agent-roster id-collision walk (DL-242 stage 5c).
  *
- * NO GOLDEN FIXTURE HAS TWO AGENTS SHARING AN IDENTITY, so before this stage the walk
- * was one of the disclosed gaps `docs/check-golden-coverage.md` lists: flipping it
- * changed no golden file. This file is its whole measurement, which is the rule stage 5b
- * established and 5c inherits — a green golden run is not evidence here.
+ * NO GOLDEN FIXTURE HAS TWO AGENTS SHARING AN IDENTITY, so flipping the walk changes no
+ * golden file and a green golden run is not evidence here. THE COMMAND-LEVEL SUITE DOES
+ * REACH IT: mutating the walk also reds
+ * `BridgeCommandsTest::test_check_surfaces_an_id_collision_on_the_console`. What this file
+ * adds over that is one finding PER colliding axis, below.
  *
  * THE COLLISION IS BUILT FROM REAL CONFIGS THROUGH THE REAL REGISTRY, never from a
  * hand-written message. The text belongs to `AgentRegistry`, and a test that asserted a

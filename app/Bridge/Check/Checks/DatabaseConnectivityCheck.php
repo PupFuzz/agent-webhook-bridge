@@ -31,8 +31,9 @@ use Throwable;
  *
  * NEITHER BRANCH IS REACHED BY A GOLDEN FIXTURE'S FAILING SIDE: every fixture install
  * connects, and this leg contributes no predicate to `bin/check-golden-mutate.php` at
- * all (it walks `if`/`elseif`/`foreach`, never `catch`). `DatabaseConnectivityCheckTest`
- * is the whole measurement of the failure arm.
+ * all (it walks `if`/`elseif`/`foreach`, never `catch`). Mutating the failure arm
+ * reds `DatabaseConnectivityCheckTest` and nothing else in the suite — measured by
+ * mutation, not inferred from a grep (CLAUDE_TESTING.md).
  */
 final class DatabaseConnectivityCheck implements Check
 {
