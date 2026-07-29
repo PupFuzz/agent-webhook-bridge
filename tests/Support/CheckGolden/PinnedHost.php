@@ -108,10 +108,23 @@ final class PinnedHost
 
         $coordConfig === null ? putenv('COORD_CONFIG') : putenv('COORD_CONFIG='.$coordConfig);
         putenv('GH_TOKEN');
+    }
 
-        // Ambient cache state (read by RetentionPostureCheck). The array store starts empty, but a
-        // prior test in the same process could have written it; a fixture that wants the
-        // marker sets it itself.
+    /**
+     * Clear the ambient CACHE state `bridge:check` reads (the retention last-failure
+     * marker), so a fixture answers for itself and not for a prior test in the process.
+     *
+     * SEPARATE FROM {@see apply()}, AND CALLED BEFORE THE FIXTURE IS BUILT — that ordering
+     * is the whole point. The clear used to live at the end of `apply()`, which runs AFTER
+     * the builder (the builder is what tells `apply()` which pins to set), so it erased the
+     * marker `retention-last-pass-failed` had just written: the fixture captured the
+     * healthy output and sat byte-identical to `minimal` from the day it was committed
+     * (card#5552). The cure is to reset ambient state ahead of the builder, never to make
+     * the fixture re-set it afterwards — that would hide the ordering for the next fixture
+     * that needs ambient state.
+     */
+    public function resetAmbientState(): void
+    {
         Cache::forget(RetentionGate::ERROR_KEY);
     }
 

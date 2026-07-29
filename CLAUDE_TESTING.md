@@ -213,6 +213,22 @@ what turns that from an intention into a measurement.
   env pins and `GoldenInstall` owns the `bridge.*` config — including keys that look declared but
   resolve from the deployed `.env` on an operator box (`default_agent`, `receiver_base_url`).
   Anything unpinned makes the golden file a property of the machine that wrote it.
+- **A fixture must PROVE it reaches its subject, and that is mechanical, not a review habit.** A
+  golden file is captured once and thereafter only ever compared against ITSELF, so a fixture that
+  never reached the install shape it is named for is indistinguishable from one that works — it
+  just pins some other, healthier output forever. Three were in exactly that state with three
+  unrelated causes (card#5552). Every fixture therefore declares at least one substring its render
+  must CONTAIN, in `CheckGoldenTest::subjects()`, asserted against the capture in the same
+  data-provider run and deliberately AFTER the golden compare — so a `UPDATE_GOLDEN=1` regen cannot
+  mint a fixture that measures nothing. A fixture whose subject is an ABSENCE declares that in
+  `absentSubjects()` as well, never instead: a notContains alone is satisfied by an empty capture,
+  so every fixture carries a positive subject too. `test_every_fixture_declares_a_subject` is what
+  makes the declaration mandatory rather than opt-in — the next fixture added cannot skip it.
+- **Two golden files with the same bytes are one measurement, not two.** Byte-identical fixtures
+  red unless the pairing is declared in `CheckGoldenTest::CONTROL_PAIRS`, and a declared pair must
+  STILL be identical — a pairing that has quietly stopped holding is a defect in the other
+  direction, so the allow-list is asserted both ways rather than being an escape hatch. The one
+  legitimate pair exists because its value is the DIFF against a third fixture, not its own bytes.
 - **A green golden suite is not full protection.** `docs/check-golden-coverage.md` names, by
   mutation, the predicates in `handle()` that flipping changes no golden file. Read it before
   concluding a `bridge:check` refactor is covered.

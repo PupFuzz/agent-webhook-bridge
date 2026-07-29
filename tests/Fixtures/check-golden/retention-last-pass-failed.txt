@@ -8,6 +8,7 @@ install-suffix DSN check: ok
 inbox surfacing config: ok (layout=shared)
 retention: on (delete >30d, every 86400s, 500 rows/pass)
 retention: this PHP install has no fastcgi_finish_request() — retention runs AFTER the response is flushed but BEFORE the request ends, so a keep-alive client may wait for it. Serve the receiver under PHP-FPM (see CLAUDE_DEPLOYMENT.md), or set BRIDGE_RETENTION_ENABLED=false and run bridge:prune on a schedule.
+retention: the LAST PASS FAILED and nothing has pruned since (RuntimeException: disk full at 2026-01-01T00:00:00+00:00). Check DB/file permissions and disk space; if traffic has since resumed, watch the log for a clean `retention pass` (the marker clears itself on the next success).
 agent config ok: prod-agent
 agent prod-agent: kanban:5 has no secret at <INSTALL>/kanban/webhook-secret-scope-5 — run bridge:provision
 agent prod-agent: kanban API token not readable at <INSTALL>/kanban/token — bridge:provision will SKIP kanban scopes

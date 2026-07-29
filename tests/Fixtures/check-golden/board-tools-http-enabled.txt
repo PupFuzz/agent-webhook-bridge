@@ -1,4 +1,4 @@
-exit: 1
+exit: 0
 --- output ---
 config dir: <INSTALL>
 config dir <INSTALL> is group/world-accessible (mode 0755) — chmod 700 (it holds secrets)
@@ -8,4 +8,7 @@ install-suffix DSN check: ok
 inbox surfacing config: ok (layout=shared)
 retention: on (delete >30d, every 86400s, 500 rows/pass)
 retention: this PHP install has no fastcgi_finish_request() — retention runs AFTER the response is flushed but BEFORE the request ends, so a keep-alive client may wait for it. Serve the receiver under PHP-FPM (see CLAUDE_DEPLOYMENT.md), or set BRIDGE_RETENTION_ENABLED=false and run bridge:prune on a schedule.
-agent config prod-agent: channel.auth.token_path requires the HTTP transport (channel.url) — a UDS channel uses filesystem permissions, not a Bearer token
+agent config ok: prod-agent
+agent prod-agent: kanban:5 has no secret at <INSTALL>/kanban/webhook-secret-scope-5 — run bridge:provision
+agent prod-agent: kanban API token not readable at <INSTALL>/kanban/token — bridge:provision will SKIP kanban scopes
+board_tools: agent prod-agent: the writeback token sees 0 cards on board 10 — EITHER the board is empty (fine) OR the service user is not a member / board_id is wrong (then board_my_cards returns an empty window and board_create_card's correlation reads blind). Verify membership + board_id if you expect cards.
