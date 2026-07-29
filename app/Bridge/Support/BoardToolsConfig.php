@@ -78,9 +78,22 @@ use App\Bridge\Exceptions\ConfigException;
  *                    (default: the invoking run-user). Parse-and-store; the probe
  *                    decides how to use it. Null ⇒ the invoking account (byte-identical
  *                    to pre-4977).
+ *  - descriptionMaxBytes  the PER-CARD byte cap board_my_cards cuts a description to
+ *                    when a caller passes `include_description: true` (DL-245). Never
+ *                    consulted on the default path — an absent argument omits the field
+ *                    entirely. The right value is a property of the install's cards
+ *                    (a scope statement runs to several KB), which is why it is
+ *                    operator-settable rather than a constant.
  */
 final class BoardToolsConfig
 {
+    /**
+     * Per-card description byte cap when none is configured (DL-245). Sized to
+     * carry a real scope statement WHOLE — the motivating case was a 7,805-byte
+     * one — while still bounding a pathological description.
+     */
+    public const DEFAULT_DESCRIPTION_MAX_BYTES = 16384;
+
     /**
      * @param  list<string>  $addressTags
      */
@@ -102,6 +115,7 @@ final class BoardToolsConfig
         // (DL-225) keys on this to flag agents that landed on ssh by the flipped
         // default rather than by an explicit operator choice.
         public readonly bool $transportExplicit = false,
+        public readonly int $descriptionMaxBytes = self::DEFAULT_DESCRIPTION_MAX_BYTES,
     ) {}
 
     /**
@@ -205,6 +219,7 @@ final class BoardToolsConfig
         $coordBoardId = self::optionalInt($block, 'coord_board_id');
         $addressTags = self::parseAddressTags($block, $coordBoardId);
         $sshAccount = self::optionalString($block, 'ssh_account');
+        $descriptionMaxBytes = self::optionalPositiveInt($block, 'description_max_bytes') ?? self::DEFAULT_DESCRIPTION_MAX_BYTES;
 
         return new self(
             enabled: true,
@@ -219,6 +234,7 @@ final class BoardToolsConfig
             transport: $transport,
             sshAccount: $sshAccount,
             transportExplicit: $transportExplicit,
+            descriptionMaxBytes: $descriptionMaxBytes,
         );
     }
 
@@ -328,6 +344,25 @@ final class BoardToolsConfig
         $value = $block[$key];
         if (! is_int($value)) {
             throw new ConfigException("board_tools.{$key} must be an integer when set");
+        }
+
+        return $value;
+    }
+
+    /**
+     * An optional int that must be >= 1 when set. A zero/negative cap would
+     * silently return every description as an empty string flagged truncated —
+     * a configuration that cannot mean what it says, so it fails like any other
+     * malformation (explicit ⇒ throws, default ⇒ suppresses) rather than
+     * falling back to the default and reading as honored.
+     *
+     * @param  array<mixed>  $block
+     */
+    private static function optionalPositiveInt(array $block, string $key): ?int
+    {
+        $value = self::optionalInt($block, $key);
+        if ($value !== null && $value < 1) {
+            throw new ConfigException("board_tools.{$key} must be a positive integer when set");
         }
 
         return $value;

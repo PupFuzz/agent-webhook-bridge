@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Tools;
 
+use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Writeback\KanbanClient;
 use Illuminate\Support\Facades\Log;
@@ -20,6 +21,13 @@ use Illuminate\Support\Facades\Log;
  * kanban, NOT the boundary. Every returned row is re-checked against the
  * configured swimlane and a non-matching one is DROPPED + logged (a misbehaving
  * upstream must never leak a foreign lane's card into a caller's window).
+ *
+ * `include_description` (DL-245) is the tool's only argument: OPT-IN, because a
+ * card body is ~2 KB and the projection has no bound on how many cards a lane
+ * holds. Absent ⇒ the response is byte-identical to the DL-217 shape (the two
+ * description keys are ABSENT, not null-valued). The field costs no extra API
+ * call — `KanbanClient::swimlaneCards()` already fetches `description` and the
+ * projection discarded it.
  */
 final class BoardMyCardsTool implements Tool
 {
@@ -30,6 +38,7 @@ final class BoardMyCardsTool implements Tool
 
     public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
     {
+        $descriptionCap = $this->descriptionCap($args, $cfg);
         $boardId = (int) $cfg->boardId;
         $swimlaneId = (int) $cfg->swimlaneId;
         $stageNames = $client->boardStageNames($boardId);
@@ -38,22 +47,44 @@ final class BoardMyCardsTool implements Tool
         $result = [
             'board_id' => $boardId,
             'swimlane_id' => $swimlaneId,
-            'cards_by_stage' => $this->groupByStage($ownRows, $stageNames),
+            'cards_by_stage' => $this->groupByStage($ownRows, $stageNames, $descriptionCap),
         ];
 
         if ($cfg->sharedSwimlaneId !== null) {
             $sharedRows = $this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared');
             $result['shared_swimlane'] = [
                 'swimlane_id' => $cfg->sharedSwimlaneId,
-                'cards_by_stage' => $this->groupByStage($sharedRows, $stageNames),
+                'cards_by_stage' => $this->groupByStage($sharedRows, $stageNames, $descriptionCap),
             ];
         }
 
         if ($cfg->coordBoardId !== null && $cfg->addressTags !== []) {
-            $result['coord_cards'] = $this->coordCards($client, $cfg);
+            $result['coord_cards'] = $this->coordCards($client, $cfg, $descriptionCap);
         }
 
         return $result;
+    }
+
+    /**
+     * The per-card description byte cap for THIS call, or null when the caller did
+     * not opt in. Null is what keeps the default response byte-identical: it makes
+     * the projection omit both description keys rather than emit them null-valued.
+     * A non-bool is REFUSED rather than coerced — a truthy string would silently
+     * turn on the expensive projection the opt-in exists to gate.
+     *
+     * @param  array<string, mixed>  $args
+     */
+    private function descriptionCap(array $args, BoardToolsConfig $cfg): ?int
+    {
+        if (! array_key_exists('include_description', $args) || $args['include_description'] === null) {
+            return null;
+        }
+        $include = $args['include_description'];
+        if (! is_bool($include)) {
+            throw new ToolRefusalException('board_my_cards: `include_description` must be a boolean when provided');
+        }
+
+        return $include ? $cfg->descriptionMaxBytes : null;
     }
 
     /**
@@ -94,7 +125,7 @@ final class BoardMyCardsTool implements Tool
      *
      * @return list<array<string, mixed>>
      */
-    private function coordCards(KanbanClient $client, BoardToolsConfig $cfg): array
+    private function coordCards(KanbanClient $client, BoardToolsConfig $cfg, ?int $descriptionCap): array
     {
         $coordBoardId = (int) $cfg->coordBoardId;
         $byId = [];
@@ -109,7 +140,7 @@ final class BoardMyCardsTool implements Tool
         ksort($byId);
         $coordStageNames = $client->boardStageNames($coordBoardId);
 
-        return array_map(fn (array $row): array => $this->projectCard($row, $coordStageNames), array_values($byId));
+        return array_map(fn (array $row): array => $this->projectCard($row, $coordStageNames, $descriptionCap), array_values($byId));
     }
 
     /**
@@ -117,13 +148,13 @@ final class BoardMyCardsTool implements Tool
      * @param  array<int, string>  $stageNames
      * @return array<string, list<array<string, mixed>>>
      */
-    private function groupByStage(array $rows, array $stageNames): array
+    private function groupByStage(array $rows, array $stageNames, ?int $descriptionCap): array
     {
         $grouped = [];
         foreach ($rows as $row) {
             $stageId = is_numeric($row['workflow_stage_id'] ?? null) ? (int) $row['workflow_stage_id'] : null;
             $stageName = $stageId !== null && isset($stageNames[$stageId]) ? $stageNames[$stageId] : ('stage:'.($stageId ?? '?'));
-            $grouped[$stageName][] = $this->projectCard($row, $stageNames);
+            $grouped[$stageName][] = $this->projectCard($row, $stageNames, $descriptionCap);
         }
 
         return $grouped;
@@ -131,14 +162,16 @@ final class BoardMyCardsTool implements Tool
 
     /**
      * Project a raw kanban card row to the tool's card shape (DL-217): id, name,
-     * stage, tags, dl_number, pr_number, updated_at — nothing else leaves the
-     * bridge.
+     * stage, tags, dl_number, pr_number, updated_at — plus, ONLY when the caller
+     * opted in (DL-245), description + description_truncated. Nothing else leaves
+     * the bridge.
      *
      * @param  array<string, mixed>  $row
      * @param  array<int, string>  $stageNames
+     * @param  ?int  $descriptionCap  null ⇒ omit both description keys entirely
      * @return array<string, mixed>
      */
-    private function projectCard(array $row, array $stageNames): array
+    private function projectCard(array $row, array $stageNames, ?int $descriptionCap): array
     {
         $stageId = is_numeric($row['workflow_stage_id'] ?? null) ? (int) $row['workflow_stage_id'] : null;
         $payload = is_array($row['payload'] ?? null) ? $row['payload'] : [];
@@ -149,7 +182,7 @@ final class BoardMyCardsTool implements Tool
             }
         }
 
-        return [
+        $card = [
             'id' => is_numeric($row['id'] ?? null) ? (int) $row['id'] : null,
             'name' => is_scalar($row['name'] ?? null) ? (string) $row['name'] : null,
             'stage' => $stageId !== null && isset($stageNames[$stageId]) ? $stageNames[$stageId] : null,
@@ -158,5 +191,34 @@ final class BoardMyCardsTool implements Tool
             'pr_number' => is_scalar($payload['pr_number'] ?? null) ? $payload['pr_number'] : null,
             'updated_at' => is_scalar($row['updated_at'] ?? null) ? (string) $row['updated_at'] : null,
         ];
+
+        if ($descriptionCap !== null) {
+            [$card['description'], $card['description_truncated']] = $this->capDescription($row['description'] ?? null, $descriptionCap);
+        }
+
+        return $card;
+    }
+
+    /**
+     * Cut a description to the byte cap, reporting whether anything was cut. The
+     * flag is load-bearing: a seat must never be able to mistake a truncated
+     * scope for the whole scope.
+     *
+     * `mb_strcut`, not `substr` — the cap is a BYTE budget (response size is what
+     * the opt-in bounds), and a raw byte cut can split a multi-byte character. The
+     * invalid UTF-8 that produces would fail `json_encode` for the WHOLE response,
+     * so one emoji at the cut point would blank the caller's entire board window.
+     *
+     * @return array{0: ?string, 1: bool}
+     */
+    private function capDescription(mixed $raw, int $cap): array
+    {
+        if (! is_scalar($raw)) {
+            return [null, false];
+        }
+        $description = (string) $raw;
+        $cut = mb_strcut($description, 0, $cap, 'UTF-8');
+
+        return [$cut, $cut !== $description];
     }
 }
