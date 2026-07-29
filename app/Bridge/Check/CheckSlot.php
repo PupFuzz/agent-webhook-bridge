@@ -41,6 +41,14 @@ enum CheckSlot: string
      */
     case Writeback = 'writeback';
 
+    /**
+     * The writeback PROBE plane, inside the writeback-client envelope: everything that
+     * needs a constructed `KanbanClient` and a live board read. Separate from
+     * {@see self::Writeback} because its guard is different (the client must exist) and
+     * because its legs THROW, which the config plane's do not.
+     */
+    case WritebackProbe = 'writeback-probe';
+
     /** Inside `checkBoardTools()`'s ssh-agent iteration, before the DL-225 advisory. */
     case BoardToolsSsh = 'board-tools-ssh';
 
