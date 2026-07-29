@@ -640,7 +640,17 @@ class CheckGoldenTest extends TestCase
 
     private function assertFixtureReachesItsSubject(string $name, string $capture): void
     {
-        foreach (self::subjects()[$name] ?? [] as $needle) {
+        // Strict rather than `?? []`: a missing entry must fail HERE and not rely on
+        // test_every_fixture_declares_a_subject still existing. A guard that silently
+        // asserts nothing when its declaration is absent is the shape this whole change
+        // exists to remove.
+        $this->assertArrayHasKey(
+            $name,
+            self::subjects(),
+            "golden fixture '{$name}' declares no subject — add one to subjects()",
+        );
+
+        foreach (self::subjects()[$name] as $needle) {
             $this->assertStringContainsString(
                 $needle,
                 $capture,

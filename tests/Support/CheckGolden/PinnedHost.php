@@ -45,8 +45,9 @@ use Illuminate\Support\Facades\File;
  * are not env: `posix_getuid()` (the channel-socket uid hint) and absolute paths are
  * NORMALIZED by {@see GoldenCapture} (neither encodes a verdict — the verdict is "not
  * writable" / "absent", which survives), and the retention last-failure marker read by
- * `RetentionPostureCheck` is ambient CACHE state, cleared here so a fixture that wants
- * it sets it explicitly.
+ * `RetentionPostureCheck` is ambient CACHE state, cleared by {@see resetAmbientState()} —
+ * NOT by {@see apply()}, and the difference is load-bearing rather than cosmetic. See that
+ * method for why; clearing it from `apply()` silently voided the one fixture that sets it.
  *
  * ONE MORE IS PINNED BEHIND A SEAM RATHER THAN HERE: whether anything is LISTENING at a
  * channel endpoint. It is a live connect, not an env read, so it is pinned by binding
