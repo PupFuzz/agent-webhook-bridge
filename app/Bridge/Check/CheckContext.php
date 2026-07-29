@@ -58,12 +58,13 @@ final class CheckContext
      * (the bridge dispatches to all of them), so this is a list per scope and the
      * consumed set is their union (card#4183 / DL-196).
      *
-     * ACCUMULATED *DURING* THE PER-AGENT LOOP, NOT AFTER IT — the one field here whose
-     * trap is PARTIAL rather than EMPTY. {@see self::$configs} and its neighbours are
-     * assigned once the loop has finished, so a check reading them too early sees
-     * nothing; this one grows an entry per agent, so a check reading it from
-     * {@see CheckSlot::AgentConfig} would see every agent up to the current one and
-     * report confidently on a roster that is still being read. It is safe only from a
+     * ACCUMULATED *DURING* THE PER-AGENT LOOP, NOT AFTER IT — one of the THREE fields
+     * here whose trap is PARTIAL rather than EMPTY ({@see self::$writebackEmittingScopes}
+     * and {@see self::$coordCardMoveScopes} are the others; the two groups are separated
+     * below). {@see self::$configs} is assigned once the loop has finished, so a check
+     * reading it too early sees nothing at all; this one grows an entry per agent, so a
+     * check reading it from a slot INSIDE the loop would see the agents processed so far
+     * and report confidently on a roster that is still being read. It is safe only from a
      * slot that runs after the loop — {@see CheckSlot::EventConsumer} does.
      *
      * @var array<string, list<array{agent: string, class: string, consumed: list<string>, declared: bool}>>
@@ -75,9 +76,12 @@ final class CheckContext
      * writeback-emitting classifier (#2162). A writeback.json mapping for a scope
      * absent here is inert — no classifier drives it.
      *
-     * POPULATED AFTER THE PER-AGENT LOOP FINISHES, exactly as {@see self::$configs} is,
-     * and with the same trap: a check reading it from {@see CheckSlot::AgentConfig}
-     * sees it EMPTY and would report every mapping orphaned.
+     * ACCUMULATED *DURING* THE PER-AGENT LOOP, like {@see self::$githubScopeConsumers} —
+     * a check reading it from a slot inside the loop sees a PARTIAL map, not an empty
+     * one, and would report a mapping orphaned on the strength of a roster still being
+     * read. (This paragraph said "populated after the loop finishes" until DL-242 stage
+     * 7a: false since the field was added, and invisible because no check has ever read
+     * it from inside the loop.)
      *
      * @var array<string, true>
      */
@@ -88,7 +92,8 @@ final class CheckContext
      * DL-204 move leg (gate 2 is the mapping's `move_coord_cards`). Scopes the
      * fleet-default nudges to where the leg can actually fire.
      *
-     * POPULATED AFTER THE PER-AGENT LOOP FINISHES (see above).
+     * ACCUMULATED *DURING* THE PER-AGENT LOOP (see above) — same partial-not-empty trap,
+     * and the same correction.
      *
      * @var array<string, true>
      */

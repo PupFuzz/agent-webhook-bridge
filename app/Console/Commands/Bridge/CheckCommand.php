@@ -165,11 +165,13 @@ class CheckCommand extends BridgeCommand
 
         $configDir = config('bridge.config_dir');
         $secretDir = config('bridge.secret_dir');
+        // These two stay local and are published once the loop has finished; the three
+        // SCOPE maps it accumulates are written straight to the context instead, because
+        // their consumers migrated in stages 3a and 7a and a local kept alongside would
+        // be a second copy to keep in step. See CheckContext for what each means — and
+        // for why the two groups have different traps when read too early.
         $agentNames = [];
         $configs = [];
-        // The scope maps this loop accumulates all live on the context — their
-        // consumers migrated in stages 3a and 7a, and a local kept alongside would be a
-        // second copy to keep in step. See CheckContext for what each means.
         $ctx->secretDir = is_string($secretDir) && str_starts_with($secretDir, '/') ? $secretDir : null;
         // Only whether a path under it can be FORMED — the legs reading it ask nothing
         // else. A dir that does not exist, or is insecure, is still a string here and is

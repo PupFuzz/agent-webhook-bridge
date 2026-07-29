@@ -21,9 +21,12 @@ use Tests\TestCase;
  * `event-consumer:` line — `event-consumer-unconsumed-type`, which renders the
  * unconsumed-type warn for one type, one agent, with a pinned last-seen. The action
  * inventory, the undeclared-classifier warn, and the `unvalidated` skip line have NO
- * golden coverage at all. (`event-consumer-nothing-arrived` prints no line by design:
- * it is an ABSENCE assertion, the corpus's only witness that a scope with consumers
- * but no arrived events stays silent — invisible to a grep for the prefix.)
+ * golden coverage at all. (`event-consumer-nothing-arrived` prints no line by design: it
+ * is an ABSENCE assertion — a scope with consumers but no arrived events stays silent —
+ * and it is invisible to a grep for the prefix. It is the fixture NAMED for that path,
+ * not the only one taking it: measured from the BUILDERS, because a rendered file cannot
+ * witness a silent path, 8 fixtures boot a github-subscribed agent and 7 of them have no
+ * arrived events.)
  *
  * Nor does `docs/check-golden-coverage.md` speak for any of it in either direction:
  * that instrument walks `handle()` only, so neither this check's predicates nor the
@@ -35,7 +38,9 @@ use Tests\TestCase;
  * inventory's and the warn's) require `last_seen` to arrive non-scalar or empty, and
  * `received_at` is `timestamp(3)` NOT NULL with a DB-side default, so `MAX(received_at)`
  * over a non-empty group is always a scalar timestamp string. They are inherited
- * unchanged by this migration (output-neutral); carded rather than tested or deleted.
+ * unchanged by this migration (output-neutral); filed as card#5555 rather than tested or
+ * deleted here, because deleting them changes no output only BECAUSE they never fire —
+ * which is exactly the kind of edit a byte-identical migration stage must not smuggle in.
  */
 class EventFollowsConsumerCheckTest extends TestCase
 {
