@@ -240,7 +240,7 @@ next stage starts.
 | **3b ✅** | Migrate the writeback **probe plane** (the legs that read the board) into `CheckSlot::WritebackProbe`. Inherited the throw constraint recorded in the stage 3a result; see the stage 3b result. | **None** | no |
 | **4 ✅** | Migrate the `database`/`install-suffix` cluster into `CheckSlot::Database`. Two checks, and the first cluster that is pure assertion — no `CheckContext` field added or read; see the stage 4 result. | **None** | no |
 | **5a ✅** | Migrate the per-agent **classifier plane** — the units asserting on the parsed config alone: the classifier-resolution gate (into `CheckSlot::AgentClassifier`, the one **abort** slot) plus the two lazy-`classifier.config` advisories (into `CheckSlot::AgentPolicy`). Stage 5 splits; see the stage 5a result for the measured reason. | **None** | no |
-| **5b** | Migrate the per-agent **secret/token + channel-transport** legs: secret + API-token presence, `channel.auth.token_path`, and the socket/HTTP marker + liveness legs. **Five of the eight disclosed gaps are here**, so unit tests carry the proof — a green golden run says nothing about these. | **None** (golden test enforces) | no |
+| **5b ✅** | Migrate the per-agent **secret/token + channel-transport** legs: secret + API-token presence, `channel.auth.token_path`, and the socket/HTTP marker + liveness legs. **Five of the eight disclosed gaps were here**, so unit tests carried the proof — a green golden run says nothing about these. First stage to add **no** slot, and the one seam (`ChannelProbeEnvironment`) is the connect alone; see the stage 5b result. | **None** | no |
 | **5c** | Migrate the **post-loop registry/identity** legs: `AgentRegistry` collisions, `treat_as_signal`, `BRIDGE_DEFAULT_AGENT`, `shared-identities.json`. **The remaining three disclosed gaps are here.** | **None** (golden test enforces) | no |
 | **6–7** | Migrate remaining units, ~1 PR per cluster: `inbox surfacing config`, `board_tools`. | **None** (golden test enforces) | no |
 | **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
@@ -746,6 +746,91 @@ moved one gap out of the measured region while introducing another would also re
 are what make this stage's claim exact, and they are the measured confirmation of the split recorded
 above: the classifier plane carried **no** disclosed gap into 5a, which is precisely why a green
 golden run is sufficient evidence here and will not be for 5b or 5c.
+
+### Stage 5b result — the first stage that added no slot, and a pin that had to be given a way to fail
+
+**What migrated:** four checks — `agent.webhook_secrets` (per-subscription secret presence + perms),
+`agent.api_tokens` (per-provider API-token presence + perms), `channel.token_path` (the DL-008
+`ChannelToken::read`) and `channel.transport` (the socket parent-dir / `.FAILED` marker / liveness
+legs and their HTTP counterparts).
+
+**Why four and not two.** The secret and token legs share a secret-dir gate but iterate different
+things — every subscription vs each distinct provider — and fail with different consequences (the
+receiver 401s vs `bridge:provision` skips a provider). Folding them would hand stage 8 one inventory
+row that means two things. The transport legs go the other way and stay **one** check, because the
+inline code selected socket-vs-url with an `elseif`: two checks would each have to re-derive that
+exclusivity, which is the duplication canon #5 names.
+
+**NO SLOT WAS ADDED — the first stage of the migration where that is true. The enum did not shrink.**
+Both halves matter and only one of them was obvious in advance. The migrated legs were contiguous
+with `ChannelSnapshotCheck`, so all four register into the existing `CheckSlot::AgentConfig` and that
+slot's single call site simply moves up to where the legs started; **arrivals: zero.** But the enum
+still holds the same nine cases it held at 5a — a slot BOUNDARY inside `handle()` disappeared, not a
+slot. The enum collapses when the *last* unit migrates, which is what its own docblock says and what
+this stage does not do. (An earlier draft of this stage's commit message claimed "the enum shrinks
+toward the target design"; it was measured false — nine cases before, nine after — and the claim is
+recorded here rather than left in circulation. It is the same shape stage 2 recorded three times: a
+claim stated at a strength its evidence does not support.)
+
+**One seam, and only the connect is behind it.** `ChannelProbeEnvironment::probe(dsn)` answers
+whether anything is listening; `SystemChannelProbeEnvironment` is the real-host implementation, bound
+in `BridgeServiceProvider` — the `SshProbeEnvironment` shape. **Everything else those legs read is
+constructible in a test and is therefore NOT seamed:** filesystem state from a temp dir, and
+`XDG_RUNTIME_DIR` from `putenv` — both already how the golden harness works. A live-vs-dead endpoint
+is not constructible in-process, and the transport's error text reaches the operator's message while
+being platform-dependent, which is the class of host input the golden harness's pinning exists to
+eliminate. Widening the interface to wrap `is_dir()` would have bought no measurement.
+
+**`$errno` was written and never read at both probe sites and does not survive the migration.** Only
+`$errstr` reaches a message, and only on the HTTP arm.
+
+**The golden harness now pins the probe for every fixture — and the pin needed a way to fail.** No
+fixture reaches either connect (the unix arm needs a real socket file none creates; the one
+`channel.url` fixture has no port), so binding `GoldenChannelEnvironment` changed **no golden file**
+— verified empirically rather than asserted. That is also precisely what makes the binding
+untestable on the golden set alone: an unchanged corpus is equally consistent with a binding that
+never took effect. So the stage adds `channel-probe-pin-potency`, an install shape whose
+`channel.url` HAS a port, deliberately **absent from `fixtures()`** — a golden fixture would move the
+measured baseline mid-migration, and a later reader could not separate *"the measurement improved"*
+from *"the measured region moved."* Its test reds when the binding is removed (proven), and without
+it the pin would have been a decoration. The landmine it closes is real: the next fixture author to
+write an explicit port would otherwise have captured whether the operator's box happened to have
+something listening on it.
+
+**The unit tests are the deliverable, and one of them cannot run everywhere.** Five of the eight
+disclosed gaps were in this cluster, plus the `ChannelToken` `catch` arm — which is **invisible** to
+the coverage instrument rather than merely unobserved by it, since the instrument walks
+`if`/`elseif`/`foreach` only. `! is_writable($dir)` **cannot be measured as root**: PHP returns true
+for any directory, so that test SKIPS with that reason stated rather than asserting vacuously. It
+runs here and on the CI runner, neither of which is root; a root runner reports a skip, never a false
+pass.
+
+**Mutation testing exposed an over-determined clause, recorded rather than fixed (card#5538).** The
+socket-liveness conjunction carries both `! is_link($socket)` and `filetype($socket) === 'socket'`.
+PHP's `filetype()` is lstat-based — a symlink reads as `link` — so the type test already excludes
+every path the link test would, and **neither clause can be mutation-tested alone: each masks the
+other.** Deleting either leaves the symlink test green; only deleting both reds it, which is why that
+test asserts the outcome rather than a clause. The pattern is load-bearing in
+`SocketEndpoint::assertValid`, where the two clauses throw **different** messages — the migration
+inherited the shape from a context where it discriminated into one where it cannot. Left untouched
+here: stages 0–7 hold a byte-identical migration contract, and an output-neutral simplification can
+land on its own afterward. Sibling audit done and bounded: three `is_link` sites in `app/`, and the
+third (`ChannelSnapshotProbe::resolveNonStrict`) is unrelated path resolution.
+
+**Operator-visible change: none.** Golden output byte-identical with `UPDATE_GOLDEN` unset — the
+assertion count is the load-bearing half of that claim, since a run with the variable set regenerates
+rather than asserts and still reports green. The golden suite goes **37 tests / 79 assertions → 38 /
+80**, the single added test being the pin-potency one; the corpus itself is unchanged. Full suite
+**1593 + 31 = 1624** (**3791 + 85 = 3876** assertions), phpstan L7 zero, pint clean, `check-doc-refs`
+clean.
+
+**Mutation-proven — fourteen mutants**, each reverting one guard, every one red on its named test and
+green again after restore, with every source restored byte-identical afterward. Two rows had to be
+rewritten before they proved anything, and both failures are worth keeping: replacing the
+`catch` arm's `yield` with `return` stopped `runFor()` being a generator at all, so the suite died
+with a fatal — red, but for the wrong reason and therefore not evidence; and the symlink clause
+mutation came back GREEN, which is what surfaced the over-determination above. **A driver that
+classified any non-zero exit as "proven" would have recorded both as passes.**
 
 ## Verification
 

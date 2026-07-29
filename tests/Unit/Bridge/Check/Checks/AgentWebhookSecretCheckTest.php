@@ -111,7 +111,7 @@ class AgentWebhookSecretCheckTest extends TestCase
      */
     public function test_an_unset_secret_dir_yields_nothing_even_where_a_secret_is_missing(): void
     {
-        $this->assertSame([], $this->findingsFor([['provider' => 'kanban', 'scopes' => [5]]], secretDir: null));
+        $this->assertSame([], $this->findingsFor([['provider' => 'kanban', 'scopes' => [5]]], withSecretDir: false));
     }
 
     private function secret(string $provider, string $scope, int $mode): void
@@ -125,7 +125,7 @@ class AgentWebhookSecretCheckTest extends TestCase
      * @param  list<array{provider: string, scopes: list<int|string>}>  $subscriptions
      * @return list<Finding>
      */
-    private function findingsFor(array $subscriptions, ?string $secretDir = 'DIR'): array
+    private function findingsFor(array $subscriptions, bool $withSecretDir = true): array
     {
         $config = AgentConfig::fromArray('prod-agent', [
             'identity' => ['kanban_user_id' => 1],
@@ -133,7 +133,7 @@ class AgentWebhookSecretCheckTest extends TestCase
         ]);
 
         $ctx = new CheckContext;
-        $ctx->secretDir = $secretDir === null ? null : $this->dir;
+        $ctx->secretDir = $withSecretDir ? $this->dir : null;
 
         return iterator_to_array((new AgentWebhookSecretCheck)->runFor($config, $ctx), false);
     }
