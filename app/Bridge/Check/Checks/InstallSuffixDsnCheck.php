@@ -27,10 +27,11 @@ use App\Bridge\Support\InstallGuard;
  * message from the configured suffix and database name, and duplicating that here would
  * be a second copy to keep in step with the guard that decides.
  *
- * NO GOLDEN FIXTURE REACHES THE MISMATCH BRANCH — every fixture prints the `ok` line, so
- * the coverage table's `observed` verdict for this predicate comes from the negated
- * mutant printing a different (empty) line, never from the real message being rendered.
- * `InstallSuffixDsnCheckTest` is what asserts the failing side.
+ * NO GOLDEN FIXTURE REACHES THE MISMATCH BRANCH — every fixture prints the `ok` line, so a
+ * green golden run is not evidence for the failing side. Mutating that branch reds
+ * `InstallSuffixDsnCheckTest` and nothing else in the suite — measured by mutation, not
+ * inferred from a grep (CLAUDE_TESTING.md) — so it is what stands behind the real
+ * diagnosis, and a typo in the message would otherwise land silently.
  */
 final class InstallSuffixDsnCheck implements Check
 {

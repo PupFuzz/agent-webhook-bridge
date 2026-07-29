@@ -25,10 +25,11 @@ use App\Bridge\Support\SecretPath;
  * different consequences, so folding them into one check would give stage 8 a single
  * inventory row that means two things.
  *
- * NEITHER ARM IS DISTINGUISHABLE TO THE GOLDEN HARNESS in the insecure case — the
- * perms predicate is one of the disclosed gaps, and `AgentWebhookSecretCheckTest` is
- * its whole measurement. (Named, never `{@see}`-linked: pint would turn the FQCN into
- * a real `use`.)
+ * NO GOLDEN FIXTURE WRITES A GROUP/WORLD-READABLE SECRET, so the harness cannot tell the
+ * insecure arm's two branches apart. Mutating that arm reds `AgentWebhookSecretCheckTest`
+ * and nothing else in the suite — measured by mutation, which is the only instrument that
+ * answers a whole-suite question (see CLAUDE_TESTING.md's golden-harness rules). (Named,
+ * never `{@see}`-linked: pint would turn the FQCN into a real `use`.)
  */
 final class AgentWebhookSecretCheck implements PerAgentCheck
 {

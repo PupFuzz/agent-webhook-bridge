@@ -43,9 +43,15 @@ use App\Bridge\Support\Finding;
  *
  * THE PROBE IS THE ONLY HOST FACT BEHIND A SEAM — see {@see ChannelProbeEnvironment} for
  * why the filesystem legs are not. NO GOLDEN FIXTURE REACHES EITHER PROBE OR THE HTTP
- * MARKER (three of the program's disclosed gaps); `ChannelTransportCheckTest` is their
- * whole measurement. (Named, never `{@see}`-linked: pint would turn the FQCN into a real
- * `use`.)
+ * MARKER: the unix probe needs a socket file no fixture creates, the one `channel.url`
+ * fixture has no port, and no fixture writes a marker. THE COMMAND-LEVEL SUITE DOES REACH
+ * BOTH PROBES, though — mutating them reds
+ * `BridgeCommandsTest::test_check_reports_channel_socket_live_when_a_session_listens`
+ * (which stands up a real listener, and skips where `pcntl` is absent) and
+ * `::test_check_reports_channel_http_endpoint_live_when_listener_present`. The MARKER leg
+ * was not in that mutation run, so nothing here claims a whole-suite scope for it.
+ * `ChannelTransportCheckTest` is what asserts all three directly. (Named, never
+ * `{@see}`-linked: pint would turn the FQCN into a real `use`.)
  */
 final class ChannelTransportCheck implements PerAgentCheck
 {

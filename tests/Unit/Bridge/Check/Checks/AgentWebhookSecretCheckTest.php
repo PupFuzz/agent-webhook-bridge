@@ -14,13 +14,13 @@ use Tests\TestCase;
 /**
  * The per-subscription webhook-secret legs (DL-242 stage 5b).
  *
- * THE INSECURE-PERMS ARM IS ONE OF THE PROGRAM'S DISCLOSED GAPS. Fixtures reach the
- * MISSING arm (`agent-missing-secret-and-token`), but no fixture writes a
- * group/world-readable secret, so flipping the perms predicate changes no golden file —
- * `docs/check-golden-coverage.md` lists it, and this file is its whole measurement. The
- * gap is not an oversight in the fixture set: a fixture COULD close it, but adding one
- * mid-migration moves the measured baseline, which is the thing the stage-5 split exists
- * to avoid.
+ * THE GOLDEN CORPUS CANNOT SEE THE INSECURE-PERMS ARM. Fixtures reach the MISSING arm
+ * (`agent-missing-secret-and-token`), but no fixture writes a group/world-readable secret,
+ * so flipping the perms predicate changes no golden file. Mutating that arm reds this file
+ * and nothing else in the suite — measured by mutation, which is the only instrument that
+ * answers a whole-suite question (CLAUDE_TESTING.md). The blind spot is not an oversight in
+ * the fixture set: a fixture COULD close it, but adding one mid-migration moves the
+ * measured baseline, which is the thing the stage-5 split exists to avoid.
  *
  * THE SILENT PATHS ARE ASSERTED AGAINST A STATE THAT WOULD OTHERWISE SPEAK, never by
  * emptiness alone — a check that returned at its first line satisfies a bare
@@ -58,7 +58,7 @@ class AgentWebhookSecretCheckTest extends TestCase
     }
 
     /**
-     * The disclosed gap. The mode is asserted verbatim rather than as "is insecure": the
+     * The arm no fixture reaches. The mode is asserted verbatim rather than as "is insecure": the
      * operator's next action is `chmod 600`, and a message that lost the mode would still
      * pass a laxer assertion while telling them less than the golden harness would have.
      */

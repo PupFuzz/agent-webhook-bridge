@@ -122,6 +122,22 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 | `app/Console/Commands/Bridge/ToolsCallCommand.php` (`bridge:tools-call`) + `app/Bridge/Tools/ToolsCallStdio.php` | **SSH front door** (card 4952): identity from the pinned `--agent`, `{tool,args}` from STDIN, one JSON envelope to raw STDOUT; same dispatcher |
 | `app/Bridge/Tools/{AuthorizedKeysLine,SshTransportProbe,SshProbeEnvironment,SystemSshProbeEnvironment}.php` | `bridge:check`'s offline pinned-line + sshd-posture probe (outcome-based capability model, FIPS key-algo gate) |
 
+### The check registry (`bridge:check`)
+
+`bridge:check`'s legs are registered checks rather than inline code in the command. `CheckCommand`
+still owns derivation and rendering; what each leg reports is a `Finding` it yields. Which legs have
+migrated, and what each stage measured, is owned by
+[`docs/CHECK-REGISTRY-PLAN.md`](docs/CHECK-REGISTRY-PLAN.md) — not restated here.
+
+| File | Role |
+|---|---|
+| `app/Bridge/Check/{Check,PerAgentCheck}.php` | The two check contracts. A `Check` runs once per run; a `PerAgentCheck` runs inside the per-agent config iteration, where output is interleaved per agent. Both yield `Finding`s — including `unvalidated` for "could not run", the state a raw `warn()` cannot express and the reason a leg that never ran used to be indistinguishable from one that passed |
+| `app/Bridge/Check/CheckContext.php` | The derivations a check reads instead of re-deriving (the resolved install dirs, the agent registry, the writeback scope maps). `CheckCommand::handle()` builds it: a check that built its own registry would re-log every collision the command already logged |
+| `app/Bridge/Check/{CheckRunner,CheckSlot}.php` | `CheckSlot` names an ordered position in the output; `CheckRunner` runs a slot's global checks, or runs the per-agent ones inside an agent iteration. Registration is unconditional — "not applicable" is a Finding, never an absent registration — ids are unique across both scopes, and the runner deliberately does NOT catch: a check owning a throwing call carries its own narrow `catch` |
+| `app/Bridge/Check/{CheckReport,CheckResult}.php` | What one run produced, in order, with each check's findings ATTRIBUTED to its id — the property that lets a run be inventoried rather than only printed |
+| `app/Bridge/Check/Checks/*` | The individual checks, one class per leg: the install dirs, database reachability and the crosstalk guard, inbox surfacing, the per-agent classifier/secret/channel legs, the writeback cluster, board tools, and the event-consumer leg |
+| `app/Bridge/Check/DirectoryPermissions.php` | The shared group/world-accessible verdict (DL-014) for the dirs holding secrets, returning a Finding or null so each caller places the warn in its own output |
+
 ### Config, identity, secrets
 
 | File | Role |
@@ -141,7 +157,7 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 | Command | Role |
 |---|---|
 | `bridge:provision` (`ProvisionCommand` + `app/Bridge/Provision/*`) | Idempotent `(provider, scope)` subscription create on kanban-board + per-scope HMAC secret write; `--reconcile` fixes inactive/filter drift (delete + recreate reusing the secret); URL-drift orphan cleanup is manual (no local registry — the live API is truth) |
-| `bridge:check` (`CheckCommand`) | Validate the install: config dir, DB connectivity, agent YAMLs parse, install-guard |
+| `bridge:check` (`CheckCommand`) | Validate the install: config dir, DB connectivity, agent YAMLs parse, install-guard. Its legs are registered checks — see § The check registry |
 | `bridge:inbox` (`InboxCommand`) | Read staged `inbox.jsonl`, cursor-dedup, format, write to stdout (Claude Code hook-aware envelope); silent-when-empty |
 | `bridge:inspect` (`InspectCommand`) | Pretty-print one `webhook_events` row + its `agent_dispatches` ledger |
 | `bridge:replay` (`ReplayCommand`) | Re-run dispatch for a stored event (recovery for errored/missed dispatches) |

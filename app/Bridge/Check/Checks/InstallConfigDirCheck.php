@@ -32,13 +32,12 @@ use App\Bridge\Support\Finding;
  * data source but no guard, and are separate for that reason.)
  *
  * NO FIXTURE RENDERS THE UNSET MESSAGE, AND THE REASON IS SET-NESS, NOT RESOLUTION.
- * Measured over the 33 golden fixtures: every one SETS `bridge.config_dir` to a non-empty
- * string, which is what makes the first branch unreachable across the corpus. One of them
+ * Measured over the golden fixture corpus: every fixture SETS `bridge.config_dir` to a
+ * non-empty string, which is what makes the first branch unreachable there. One of them
  * does NOT resolve — `config-dir-missing` points the key at a path that does not exist, so
- * it renders the SECOND branch's message, and it is the only fixture that does. The
- * coverage table's verdict for the unset predicate therefore comes from the negated mutant
- * changing every fixture, never from that message being rendered anywhere.
- * `InstallConfigDirCheckTest` is what asserts it.
+ * it renders the SECOND branch's message, and it is the only fixture that does. That is a
+ * FIXTURE-SCOPE measurement and licenses nothing about the rest of the suite;
+ * `InstallConfigDirCheckTest` is what asserts the unset message directly.
  *
  * @see CheckSlot::Install
  */

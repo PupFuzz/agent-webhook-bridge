@@ -18,11 +18,14 @@ use Tests\TestCase;
  *
  * THE FOURTH, the failing case, IS re-proved here even though `provider-without-adapter`
  * pins the same line — not because this assertion is stronger than the fixture's (both are
- * frozen literals of the same string; that string appears nowhere else under `tests/`) but
- * because it is THE POSITIVE CONTROL FOR THE OTHER THREE. They assert emptiness, and three
- * `assertSame([], …)` would pass just as well against a check that yields nothing under any
- * input at all. The failing case in the same file, against the same harness, is what
- * establishes that silence here is a verdict rather than the absence of one.
+ * frozen literals of the same string) but because it is THE POSITIVE CONTROL FOR THE OTHER
+ * THREE. They assert emptiness, and three `assertSame([], …)` would pass just as well
+ * against a check that yields nothing under any input at all. The failing case in the same
+ * file, against the same harness, is what establishes that silence here is a verdict rather
+ * than the absence of one. (The ARM is not this file's alone: mutating it also reds
+ * `BridgeCommandsTest::test_check_fails_on_configured_provider_without_adapter`, which
+ * asserts a `no adapter` substring plus the exit flip through the command. What is unique
+ * here is the whole composed line, and the positive-control role.)
  *
  * THE NUMERIC KEY IS NOT A HYPOTHETICAL. `bridge.providers` is a map in the shipped
  * config, but an operator writing it as a YAML/env list produces integer keys, and PHP

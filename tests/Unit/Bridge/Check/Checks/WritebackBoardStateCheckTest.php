@@ -24,14 +24,14 @@ use Tests\TestCase;
  * unreadable / agrees). Those are absent here on purpose — duplicating a stronger
  * measurement does not strengthen it.
  *
- * Everything else is residue no fixture reaches, and `docs/check-golden-coverage.md`
- * discloses most of it by name (the scan-ceiling warn, the swimlane mismatch, the
- * dependabot missing-CF branch, the issue_number branch, the `started_from_stages` /
- * `unpark_from_stages` loops, the `coord_card_stage_id` / `coord_card_terminal_stage_id`
- * appends). The rest is invisible to that instrument by construction:
+ * Everything else is residue no fixture reaches: the scan-ceiling warn, the swimlane
+ * mismatch, the dependabot missing-CF branch, the issue_number branch, the
+ * `started_from_stages` / `unpark_from_stages` loops, the `coord_card_stage_id` /
+ * `coord_card_terminal_stage_id` appends, and the two `catch` arms below.
+ * `docs/check-golden-coverage.md` speaks for none of it in either direction — that file
+ * enumerates `CheckCommand::handle()`'s predicates and this check migrated out of it, and
  * `bin/check-golden-mutate.php` walks `if`/`elseif`/`foreach` and enumerates neither
- * `catch` arms nor `switch` arms, so absence from the disclosed-gap list is not protection
- * for the two `catch` arms below.
+ * `catch` nor `switch` arms regardless. Absence from that file is not protection.
  *
  * TWO PROPERTIES ARE PINNED HERE THAT NO SINGLE LEG OWNS:
  *  - **the exit contract** — the #4553 legs are the only `fail` this check can yield, and

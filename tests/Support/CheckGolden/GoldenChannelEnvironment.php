@@ -10,7 +10,7 @@ use App\Bridge\Support\ChannelProbeEnvironment;
  *
  * BOUND FOR EVERY FIXTURE, THOUGH NONE REACHES IT TODAY — and that is the point. The
  * unix probe needs a real socket FILE no fixture creates, and the one `channel.url`
- * fixture has no port, so both connect sites are disclosed gaps. A fixture author who
+ * fixture has no port, so the golden corpus reaches neither connect site. A fixture author who
  * later writes an explicit port would, without this, capture whether the operator's box
  * (or CI's runner) happens to have something listening on it — a host input of exactly
  * the class {@see PinnedHost} exists to eliminate, arriving silently as a green run.

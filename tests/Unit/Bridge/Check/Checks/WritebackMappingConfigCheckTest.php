@@ -21,7 +21,7 @@ use Tests\TestCase;
  * the residue no fixture reaches:
  *
  *  - the #4553 `issue_population=all` warn itself, and the `correlation !== 'ref'` warn
- *    nested under it (both disclosed as UNOBSERVED in `docs/check-golden-coverage.md`);
+ *    nested under it (no golden fixture renders either);
  *  - every branch of `issuePopulationAgreement()`, which no fixture enters at all —
  *    reaching it needs both an `all` mapping AND an ambient coordination config, and a
  *    golden fixture pins the ambient host precisely so it does NOT depend on one;

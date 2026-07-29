@@ -929,8 +929,12 @@ nothing to consolidate.
 contract is blind to that swap.** `AgentDefaultAgentCheckTest` is what is not: it pins the
 malformed-config case directly, and is the highest-value mutation proof in this stage's set. The
 same shape recurs across the stage — no fixture reaches a collision, and none reaches the
-`treat_as_signal` throw — so for three of these four checks a green golden run is not evidence, and
-the unit tests are the whole measurement.
+`treat_as_signal` throw — so for three of these four checks a green golden run is not evidence.
+What the unit tests are is the direct assertion of those arms, **not** the whole suite's
+measurement of them: the later mutation run recorded on card#5551 showed `BridgeCommandsTest`
+reaches both the collision walk and the `treat_as_signal` throw through the command. Corrected in
+place rather than left standing — it is the fixture-scope-stated-at-whole-suite-strength shape this
+program has now hit repeatedly.
 
 **Coverage-table effect — the predicate total goes 38 → 35**: `32 observed · 2 observed-via-abort ·
 1 UNOBSERVED`, measured in 25 minutes on a detached copy. Compared as a multiset, **five predicates

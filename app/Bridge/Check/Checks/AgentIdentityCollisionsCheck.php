@@ -28,9 +28,11 @@ use App\Bridge\Support\Finding;
  *
  * NO GOLDEN FIXTURE REACHES A COLLISION — no install in the fixture set has two agents
  * sharing an identity, so the golden harness cannot tell this walk's two branches apart
- * and a green run is not evidence for it. `AgentIdentityCollisionsCheckTest` is its whole
- * measurement. (Named, never `{@see}`-linked: pint would turn the FQCN into a real
- * `use`.)
+ * and a green run is not evidence for it. THE COMMAND-LEVEL SUITE DOES REACH IT: mutating
+ * the walk reds `BridgeCommandsTest::test_check_surfaces_an_id_collision_on_the_console`,
+ * which writes two agents sharing a `kanban_user_id` and asserts the console text at exit
+ * 0. `AgentIdentityCollisionsCheckTest` is what pins one finding per colliding axis.
+ * (Named, never `{@see}`-linked: pint would turn the FQCN into a real `use`.)
  */
 final class AgentIdentityCollisionsCheck implements Check
 {

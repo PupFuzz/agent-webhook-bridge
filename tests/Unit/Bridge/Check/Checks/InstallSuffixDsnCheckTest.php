@@ -16,10 +16,10 @@ use Tests\TestCase;
  * already drives `bridge:check` to a non-zero exit on a crosstalking install — so the
  * decision and the exit contract are both covered and are deliberately not repeated here.
  * What no test reaches is the mismatch MESSAGE: every golden fixture prints the
- * `install-suffix DSN check: ok` line, and the `observed` verdict this predicate carries
- * in `docs/check-golden-coverage.md` comes from the negated mutant printing a different
- * (empty) line, never from the real diagnosis being rendered. A typo in it would land
- * silently.
+ * `install-suffix DSN check: ok` line, so the golden corpus never renders the real
+ * diagnosis. Mutating the mismatch branch reds this file and nothing else in the suite —
+ * measured by mutation, not inferred from a grep (CLAUDE_TESTING.md). A typo in the message
+ * would otherwise land silently.
  *
  * THE OK-BRANCH TEST TAKES THE OPTED-IN ROUTE, not the fixtures'. Every golden install
  * leaves `BRIDGE_INSTALL_SUFFIX` unset, so it exits at the guard's not-opted-in early

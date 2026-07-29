@@ -36,8 +36,11 @@ use Throwable;
  *
  * NO GOLDEN FIXTURE REACHES THE THROW — every fixture's `treat_as_signal` resolves, so
  * the golden harness cannot tell this walk's two branches apart and a green run is not
- * evidence for it. `AgentTreatAsSignalCheckTest` is its whole measurement. (Named, never
- * `{@see}`-linked: pint would turn the FQCN into a real `use`.)
+ * evidence for it. THE SUITE AT LARGE IS NOT SILENT ON IT: mutating the throw also reds
+ * `BridgeCommandsTest::test_check_fails_on_unknown_treat_as_signal_name`, which drives an
+ * unresolvable name through the command and asserts the substring plus the exit flip. What
+ * `AgentTreatAsSignalCheckTest` adds is the severity and the composed message. (Named,
+ * never `{@see}`-linked: pint would turn the FQCN into a real `use`.)
  */
 final class AgentTreatAsSignalCheck implements Check
 {
