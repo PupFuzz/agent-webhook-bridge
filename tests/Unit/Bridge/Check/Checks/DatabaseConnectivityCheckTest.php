@@ -67,9 +67,11 @@ class DatabaseConnectivityCheckTest extends TestCase
     }
 
     /**
-     * The discriminating control. Without it both assertions above are satisfied by a
-     * check that reports `fail` unconditionally — the message prefix is this class's own
-     * literal, so it proves nothing about which branch ran.
+     * The discriminating control, covering the one branch the two failure tests cannot
+     * reach: a check whose healthy path was removed, or wired to the wrong severity,
+     * satisfies both of them. It is NOT what rules out an unconditional `fail` — the
+     * driver name and the database path those tests assert on are only obtainable by
+     * actually failing at the corresponding call.
      */
     public function test_a_reachable_database_reports_connected(): void
     {
