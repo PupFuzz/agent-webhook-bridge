@@ -12,6 +12,11 @@ use App\Bridge\Check\Checks\AgentDefaultAgentCheck;
 use App\Bridge\Check\Checks\AgentIdentityCollisionsCheck;
 use App\Bridge\Check\Checks\AgentTreatAsSignalCheck;
 use App\Bridge\Check\Checks\AgentWebhookSecretCheck;
+use App\Bridge\Check\Checks\BoardToolsBearerCheck;
+use App\Bridge\Check\Checks\BoardToolsBoardStateCheck;
+use App\Bridge\Check\Checks\BoardToolsHttpProbeCheck;
+use App\Bridge\Check\Checks\BoardToolsSshDefaultAdvisoryCheck;
+use App\Bridge\Check\Checks\BoardToolsSuppressedCheck;
 use App\Bridge\Check\Checks\ChannelSnapshotCheck;
 use App\Bridge\Check\Checks\ChannelTokenPathCheck;
 use App\Bridge\Check\Checks\ChannelTransportCheck;
@@ -46,15 +51,11 @@ use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\Finding;
-use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\Severity;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
-use Illuminate\Http\Client\ConnectionException;
-use Illuminate\Http\Client\Response;
-use Illuminate\Support\Facades\Http;
 use Throwable;
 
 /**
@@ -126,7 +127,12 @@ class CheckCommand extends BridgeCommand
                 new WritebackSourceCoverageCheck,
             )
             ->register(CheckSlot::EventConsumer, new EventFollowsConsumerCheck)
+            ->register(CheckSlot::BoardToolsSuppression, new BoardToolsSuppressedCheck)
+            ->register(CheckSlot::BoardToolsBearer, new BoardToolsBearerCheck)
+            ->registerPerAgent(CheckSlot::BoardToolsState, new BoardToolsBoardStateCheck)
             ->registerPerAgent(CheckSlot::BoardToolsSsh, new SshPinnedLineCheck($sshEnv))
+            ->registerPerAgent(CheckSlot::BoardToolsSshAdvisory, new BoardToolsSshDefaultAdvisoryCheck)
+            ->register(CheckSlot::ProbeTools, new BoardToolsHttpProbeCheck($this->strOption('probe-tools')))
             ->register(CheckSlot::ProbeToolsSsh, new SshLiveProbeCheck($sshEnv, $this->strOption('probe-tools-ssh')));
         // Plan constraint (c): the surviving inline derivation in this method populates
         // the context; migrated checks read it, unmigrated code keeps its locals.
@@ -386,22 +392,110 @@ class CheckCommand extends BridgeCommand
             $ok = false;
         }
 
-        // DL-217 (default-ON per v7): board-tools health. A default-on block that
-        // could not be satisfied (suppressedReason) and a dead/ambiguous bearer FAIL
-        // (a broken enablement, not opt-in); the board-STATE checks (swimlane/stage on
-        // board, service-user membership) stay WARN (DL-220 split — a transient/empty
-        // kanban read must not FAIL the install check).
-        if (! $this->checkBoardTools($configs, $runner, $ctx)) {
+        // DL-217 (default-ON per v7): board-tools health, migrated to the registry in
+        // DL-242 stage 7b. A default-on block that could not be satisfied
+        // (suppressedReason) and a dead/ambiguous bearer FAIL (a broken enablement, not
+        // opt-in); the board-STATE legs (swimlane/stage on board, service-user
+        // membership) stay WARN (DL-220 split — a transient/empty kanban read must not
+        // FAIL the install check). What stays here is derivation: which agents have the
+        // block enabled, the bearer index, the SECOND kanban client, and the ssh subset.
+        $ctx->boardToolsEnabled = array_values(array_filter(
+            $configs,
+            fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled,
+        ));
+
+        // FIRST, and OUTSIDE the enabled-subset guard below: a suppressed block is
+        // enabled=false, so a fleet whose only board_tools agent is suppressed has an
+        // EMPTY subset and this is the only place its failure surfaces.
+        if (! $this->emitReport($runner->run(CheckSlot::BoardToolsSuppression, $ctx))) {
             $ok = false;
+        }
+
+        if ($ctx->boardToolsEnabled !== []) {
+            // DERIVATION, NOT ASSERTION (plan constraint (c)), for the same reason the
+            // AgentRegistry build above is: the resolver READS each enabled HTTP agent's
+            // token file and LOGS every collision at CONSTRUCTION, and problems() only
+            // returns what the build already found. A check building its own would re-read
+            // those secrets and re-log every collision — invisible to this migration's
+            // output contract, which is exactly why it cannot move.
+            $ctx->boardToolsResolver = new BoardToolAgentResolver($configs);
+            if (! $this->emitReport($runner->run(CheckSlot::BoardToolsBearer, $ctx))) {
+                $ok = false;
+            }
+
+            // THE THIRD FAIL-SOFT ENVELOPE, INLINE, AND NARROW ON PURPOSE. Its realistic
+            // thrower is the factory call it wraps; widening it around the loops below
+            // would make any inner throw print the client-unavailable diagnosis — a
+            // CHANGED DIAGNOSIS, not a refactor. A failure here skips the board-state legs
+            // AND the ssh legs, which is what the inline code's `return` did.
+            try {
+                $ctx->boardToolsClient = WritebackClientFactory::make();
+            } catch (Throwable $e) {
+                $this->warn('board_tools: enabled for '.count($ctx->boardToolsEnabled).' agent(s) but the kanban writeback client is unavailable ('.$e->getMessage().') — the tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.');
+            }
+
+            if ($ctx->boardToolsClient !== null) {
+                foreach ($ctx->boardToolsEnabled as $cfg) {
+                    if (! $this->emitReport($runner->runForAgent(CheckSlot::BoardToolsState, $cfg, $ctx))) {
+                        $ok = false;
+                    }
+                }
+
+                // The SSH-transport pinned-line probe (card 4952) — offline, runs in the
+                // default bridge:check. A present-but-bad forced-command line (grants
+                // pty/forwarding), an ambiguous/absent-authoritative line, or a
+                // FIPS-rejected key FAILs; an UNVERIFIABLE (non-root / relocated keyfile)
+                // leg WARNs and names the `sudo bridge:check` cert step — never a false
+                // OK, never a hard red. The board-tools security boundary is this pinned
+                // line plus the live round-trip, never the account's sshd posture: card
+                // 5091 retired the account-level hardening because the ssh-account
+                // routinely doubles as the operator's interactive login.
+                $sshAgents = array_values(array_filter(
+                    $ctx->boardToolsEnabled,
+                    fn (AgentConfig $c) => $c->boardTools?->transport === 'ssh',
+                ));
+                foreach ($sshAgents as $cfg) {
+                    $report = $runner->runForAgent(CheckSlot::BoardToolsSsh, $cfg, $ctx);
+                    // DERIVATION FROM A CHECK'S RESULTS — the one place this command
+                    // derives context from the registry rather than from the install (see
+                    // CheckContext::$sshSetupIncomplete). Selected BY ID, not by walking
+                    // the whole report: a second check migrated into this slot later must
+                    // not silently start feeding the DL-225 advisory.
+                    foreach ($report->results as $result) {
+                        if ($result->id !== SshPinnedLineCheck::ID) {
+                            continue;
+                        }
+                        foreach ($result->findings as $finding) {
+                            if (self::severityMeansSetupIncomplete($finding->severity)) {
+                                $ctx->sshSetupIncomplete[$cfg->agentName] = true;
+                            }
+                        }
+                    }
+                    if (! $this->emitReport($report)) {
+                        $ok = false;
+                    }
+                }
+
+                // The DL-225 advisory emits AFTER the whole loop above, so it is a SECOND
+                // pass over the same agents rather than a check in that slot — folding it
+                // in would print each agent's advisory before the next agent's
+                // pinned-line result.
+                foreach ($sshAgents as $cfg) {
+                    if (! $this->emitReport($runner->runForAgent(CheckSlot::BoardToolsSshAdvisory, $cfg, $ctx))) {
+                        $ok = false;
+                    }
+                }
+            }
         }
 
         // DL-217: opt-in live board-tools probe. Offline by default (like the rest of
         // this command's local checks); when --probe-tools names the endpoint the
         // channel server will use, exercise the real loopback path end to end. A
         // non-2xx or an isolation mismatch is a HARD failure (it certifies a broken
-        // enablement), unlike the offline warns above.
-        $probeEndpoint = $this->strOption('probe-tools');
-        if ($probeEndpoint !== null && ! $this->probeBoardToolsEndpoint($configs, $probeEndpoint)) {
+        // enablement), unlike the offline warns above. Migrated to
+        // BoardToolsHttpProbeCheck; run unconditionally — the check holds the flag and is
+        // silent when it was not passed (plan constraint (a)).
+        if (! $this->emitReport($runner->run(CheckSlot::ProbeTools, $ctx))) {
             $ok = false;
         }
 
@@ -435,172 +529,6 @@ class CheckCommand extends BridgeCommand
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;
-    }
-
-    /**
-     * DL-217 board-tools preflight (default-ON per v7). Returns false (→ non-zero
-     * exit) on a HARD failure; WARN-level findings never flip it. Three severities:
-     *  - A DEFAULT-on block that could not satisfy itself (suppressedReason) → FAIL.
-     *    Scanned across ALL configs FIRST, independent of the enabled-subset below —
-     *    a fleet whose only board_tools agent is suppressed must FAIL, not silently
-     *    return at the `enabled === []` guard.
-     *  - A dead (unreadable) or ambiguous (colliding) bearer → FAIL (broken enablement).
-     *  - Board STATE (create stage + swimlane(s) on the board; the service user's
-     *    MEMBERSHIP of board_id) → WARN (DL-026/DL-220): a temporarily-unreachable
-     *    kanban or a genuinely-empty board must not FAIL the check.
-     *
-     * @param  list<AgentConfig>  $configs
-     */
-    private function checkBoardTools(array $configs, CheckRunner $runner, CheckContext $ctx): bool
-    {
-        $ok = true;
-
-        // FIRST — all-configs suppressedReason scan (before the enabled-subset early
-        // return AND before the writeback-client try/catch). A default-on block that
-        // could not be satisfied is enabled=false, so the checks below skip it silently;
-        // this is the only place its failure surfaces (P2-closed-by-construction).
-        foreach ($configs as $cfg) {
-            $bt = $cfg->boardTools;
-            if ($bt !== null && $bt->suppressedReason !== null) {
-                $this->error("board_tools: agent {$cfg->agentName}: {$bt->suppressedReason} — board tools are OFF for this agent (a default-on block could not be satisfied). Fix the config, or set enabled: false to stage it silently.");
-                $ok = false;
-            }
-        }
-
-        $enabled = array_values(array_filter($configs, fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled));
-        if ($enabled === []) {
-            return $ok;
-        }
-
-        // Token readability + collision scan — typed problems, both FAIL under
-        // default-ON (a dead/ambiguous bearer is a broken enablement).
-        $resolver = new BoardToolAgentResolver($configs);
-        foreach ($resolver->problems() as $problem) {
-            $this->error($problem['message']);
-            $ok = false;
-        }
-
-        try {
-            $client = WritebackClientFactory::make();
-        } catch (Throwable $e) {
-            $this->warn('board_tools: enabled for '.count($enabled).' agent(s) but the kanban writeback client is unavailable ('.$e->getMessage().') — the tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.');
-
-            return $ok;
-        }
-
-        foreach ($enabled as $cfg) {
-            $bt = $cfg->boardTools;
-            if ($bt === null || $bt->boardId === null) {
-                continue;   // defensive: enabled ⇒ boardId non-null by construction
-            }
-            $name = $cfg->agentName;
-            try {
-                $vis = $client->visibility($bt->boardId);
-                if ($vis['total'] === 0) {
-                    $this->warn("board_tools: agent {$name}: the writeback token sees 0 cards on board {$bt->boardId} — EITHER the board is empty (fine) OR the service user is not a member / board_id is wrong (then board_my_cards returns an empty window and board_create_card's correlation reads blind). Verify membership + board_id if you expect cards.");
-                } else {
-                    $this->info("board_tools: agent {$name}: writeback token can see board {$bt->boardId}");
-                }
-
-                $swimlaneIds = $client->boardSwimlaneIds($bt->boardId);
-                foreach (array_filter([$bt->swimlaneId, $bt->sharedSwimlaneId], fn ($id) => $id !== null) as $swimlaneId) {
-                    if (! in_array($swimlaneId, $swimlaneIds, true)) {
-                        $this->warn("board_tools: agent {$name}: swimlane_id {$swimlaneId} is not on board {$bt->boardId} — board_create_card will 422 (create) or board_my_cards will read empty until fixed.");
-                    }
-                }
-
-                $stageIds = array_keys($client->boardStageOrder($bt->boardId));
-                if ($bt->createStageId !== null && $stageIds !== [] && ! in_array($bt->createStageId, $stageIds, true)) {
-                    $this->warn("board_tools: agent {$name}: create_stage_id {$bt->createStageId} is not a stage on board {$bt->boardId} — every board_create_card will 422 until fixed.");
-                }
-
-                if ($bt->coordBoardId !== null) {
-                    $coordVis = $client->visibility($bt->coordBoardId);
-                    if ($coordVis['total'] === 0) {
-                        $this->warn("board_tools: agent {$name}: coord_board_id {$bt->coordBoardId} reads 0 cards — the coordination leg returns empty if the service user is not a member or the id is wrong.");
-                    }
-                }
-            } catch (Throwable $e) {
-                $this->warn("board_tools: agent {$name}: could not read board {$bt->boardId} with the writeback token — ".$e->getMessage());
-            }
-        }
-
-        // SSH-transport pinned-line + sshd-posture probe (card 4952) — offline, runs
-        // in the default bridge:check. A present-but-bad forced-command line (grants
-        // pty/forwarding), an ambiguous/absent-authoritative line, or a FIPS-rejected
-        // key FAILs; an UNVERIFIABLE (non-root / relocated keyfile) leg WARNs and
-        // names the `sudo bridge:check` cert step — never a false OK, never a hard red.
-        $sshAgents = array_values(array_filter($enabled, fn (AgentConfig $c) => $c->boardTools?->transport === 'ssh'));
-        if ($sshAgents !== [] && ! $this->checkSshTransport($sshAgents, $runner, $ctx)) {
-            $ok = false;
-        }
-
-        return $ok;
-    }
-
-    /**
-     * The offline SSH-transport probe (card 4952): per enabled ssh agent, verify the
-     * pinned authorized_keys line forces bridge:tools-call --agent=X and denies
-     * pty+forwarding (OUTCOME-based, never a `restrict` keyword match) + a FIPS key
-     * algo on a FIPS seat; once, verify the sshd password-auth posture (root-gated).
-     * Only a `fail` finding flips the exit.
-     *
-     * @param  list<AgentConfig>  $sshAgents
-     */
-    private function checkSshTransport(array $sshAgents, CheckRunner $runner, CheckContext $ctx): bool
-    {
-        $ok = true;
-        // The forced-command account (board_tools.ssh_account, default the invoking
-        // run-user) is per-agent, so the pinned-line + keys resolution is per-agent.
-        // The board-tools security boundary is the forced-command authorized_keys entry
-        // (checked per-agent via probePinnedLine), not the account's sshd posture: card 5091
-        // retired the account-level `Match User` hardening (PasswordAuthentication no +
-        // ClientAlive/MaxSessions) because the ssh-account routinely doubles as the operator's
-        // interactive login, so hardening it locked the operator out. bridge:check certifies
-        // the transport by the pinned key + the live round-trip (--probe-tools-ssh), never by
-        // the account's password/idle posture.
-        $agentIncomplete = [];    // agentName => any non-ok pinned-line finding
-        foreach ($sshAgents as $cfg) {
-            // The pinned-line probe is SshPinnedLineCheck; the DL-225 advisory below
-            // stays inline and reads the severities back off its report, because it
-            // emits after the whole loop and folding it in would reorder output.
-            $report = $runner->runForAgent(CheckSlot::BoardToolsSsh, $cfg, $ctx);
-            // Selected BY ID, not by walking the whole report: a second check migrated
-            // into this slot later must not silently start feeding this advisory.
-            foreach ($report->results as $result) {
-                if ($result->id !== SshPinnedLineCheck::ID) {
-                    continue;
-                }
-                foreach ($result->findings as $finding) {
-                    if (self::severityMeansSetupIncomplete($finding->severity)) {
-                        $agentIncomplete[$cfg->agentName] = true;
-                    }
-                }
-            }
-            if (! $this->emitReport($report)) {
-                $ok = false;
-            }
-        }
-
-        // v0.68.0 pre-upgrade advisory (DL-225): an agent that landed on the ssh
-        // transport via the flipped default (no explicit `transport:` key) whose ssh
-        // setup is not yet complete will lose its loopback HTTP path on upgrade — the
-        // implicit-http block now reads as ssh, so the bearer stops resolving and the
-        // call fails closed (401). Advisory only (never flips $ok): the runtime break
-        // is already loud, this is the pre-deploy heads-up. An EXPLICIT `transport:`
-        // choice is intentional and never advised.
-        foreach ($sshAgents as $cfg) {
-            $bt = $cfg->boardTools;
-            if ($bt === null || $bt->transportExplicit) {
-                continue;
-            }
-            $incomplete = $agentIncomplete[$cfg->agentName] ?? false;
-            if ($incomplete) {
-                $this->warn("board_tools ssh: agent {$cfg->agentName} is on ssh by the v0.68.0 default (no explicit transport:); its ssh setup is incomplete or could not be verified from here — pin `transport: http` to keep the loopback path, or complete ssh setup and run `sudo bridge:check` to certify.");
-            }
-        }
-
-        return $ok;
     }
 
     /**
@@ -700,123 +628,5 @@ class CheckCommand extends BridgeCommand
     {
         $this->unvalidatedCount++;
         $this->line($message);
-    }
-
-    /**
-     * DL-217 live board-tools probe (opt-in, --probe-tools=<endpoint>). For each
-     * agent with an enabled board_tools block and a readable bearer, POST a
-     * board_my_cards over the REAL network path (TLS verify on) to the endpoint the
-     * channel server will use, and certify the round trip:
-     *  - the loopback gate admits the call (a 403 names the on-box public-IP peer trap);
-     *  - the bearer authenticates (a 401 names the token path / collision);
-     *  - the returned window is scoped to THIS agent's configured lane. board_my_cards
-     *    does NOT expose a per-row swimlane_id (projectCard drops it), so the observable
-     *    that the fail-closed row filter ran is the result HEADER: result.board_id /
-     *    result.swimlane_id must equal the configured scope. A mismatch is an isolation
-     *    violation.
-     * A connection failure, non-2xx, or isolation mismatch returns false (→ non-zero
-     * exit) — this probe certifies the enablement, so unlike the offline warns it FAILS.
-     *
-     * @param  list<AgentConfig>  $configs
-     */
-    private function probeBoardToolsEndpoint(array $configs, string $endpoint): bool
-    {
-        $enabled = array_values(array_filter($configs, fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled));
-        if ($enabled === []) {
-            $this->warn('board_tools probe: --probe-tools was given but no agent has an enabled board_tools block — nothing to probe.');
-
-            return true;   // nothing to certify is not a failure
-        }
-
-        $ok = true;
-        foreach ($enabled as $cfg) {
-            $bt = $cfg->boardTools;
-            $name = $cfg->agentName;
-            // F6 (card 4952): --probe-tools is the HTTP loopback probe. An ssh-transport
-            // agent has no bearer/endpoint to exercise here — silently skipping it would
-            // certify NOTHING (canon #9). Name the right probe instead of a false OK.
-            if ($bt !== null && $bt->transport === 'ssh') {
-                $this->warn("board_tools probe: agent {$name}: uses the ssh transport — --probe-tools (HTTP) cannot certify it; run --probe-tools-ssh=<user@host> instead.");
-
-                continue;
-            }
-            if ($bt === null || $bt->tokenPath === null) {
-                continue;   // defensive: an enabled HTTP agent ⇒ tokenPath non-null by construction (ssh agents handled above)
-            }
-            // An enabled agent whose bearer can't be presented IS a broken enablement —
-            // the probe certifies before the operator flips traffic on, so these fail
-            // (unlike the offline checks, which only warn).
-            try {
-                $token = SecretFile::read($bt->tokenPath);
-            } catch (Throwable $e) {
-                $this->error("board_tools probe: agent {$name}: bearer not readable — {$e->getMessage()} (chmod 600); cannot certify this agent.");
-                $ok = false;
-
-                continue;
-            }
-            if ($token === null) {
-                $this->error("board_tools probe: agent {$name}: no bearer at {$bt->tokenPath} — run bridge:provision-tools; cannot certify this agent.");
-                $ok = false;
-
-                continue;
-            }
-
-            try {
-                $resp = Http::withToken($token)->acceptJson()->timeout(10)
-                    ->post($endpoint, ['tool' => 'board_my_cards', 'args' => (object) []]);
-            } catch (ConnectionException $e) {
-                $this->error("board_tools probe: agent {$name}: could NOT connect to {$endpoint} ({$e->getMessage()}) — the bridge vhost/endpoint is wrong or not answering. Verify the channel server's BRIDGE_TOOLS_ENDPOINT and that the bridge vhost serves /agent-tools/call.");
-                $ok = false;
-
-                continue;
-            }
-
-            $status = $resp->status();
-            if ($status === 403) {
-                $this->error("board_tools probe: agent {$name}: {$endpoint} → 403 (loopback gate refused). The request's TCP peer is not loopback — an https://<public-host>/… endpoint makes the kernel pick the box's PUBLIC IP as the source. Use the /etc/hosts recipe (127.0.0.1 <bridge-hostname> + BRIDGE_TOOLS_ENDPOINT=https://<bridge-hostname>/agent-tools/call) — see docs/board-tools.md § Same-box enablement.");
-                $ok = false;
-
-                continue;
-            }
-            if ($status === 401) {
-                $this->error("board_tools probe: agent {$name}: {$endpoint} → 401 (bearer rejected). The presented token resolves to no agent — verify the bearer at {$bt->tokenPath} matches what the channel server presents (BRIDGE_TOOLS_TOKEN / _FILE), and that it does not collide with another agent's.");
-                $ok = false;
-
-                continue;
-            }
-            if (! $resp->successful()) {
-                $this->error("board_tools probe: agent {$name}: {$endpoint} → HTTP {$status} — the tool call did not succeed ({$this->probeErrorDetail($resp)}).");
-                $ok = false;
-
-                continue;
-            }
-
-            $result = $resp->json('result');
-            if (! is_array($result)) {
-                $this->error("board_tools probe: agent {$name}: 200 but the response carries no `result` object — cannot confirm board_my_cards ran ({$this->probeErrorDetail($resp)}).");
-                $ok = false;
-
-                continue;
-            }
-            $gotBoard = is_numeric($result['board_id'] ?? null) ? (int) $result['board_id'] : null;
-            $gotSwimlane = is_numeric($result['swimlane_id'] ?? null) ? (int) $result['swimlane_id'] : null;
-            if ($gotBoard !== $bt->boardId || $gotSwimlane !== $bt->swimlaneId) {
-                $this->error("board_tools probe: agent {$name}: ISOLATION MISMATCH — board_my_cards returned board_id=".($gotBoard ?? 'null').' swimlane_id='.($gotSwimlane ?? 'null').", but this agent is configured for board {$bt->boardId} / swimlane {$bt->swimlaneId}. The window is not scoped to the configured lane.");
-                $ok = false;
-
-                continue;
-            }
-            $stageGroups = is_array($result['cards_by_stage'] ?? null) ? count($result['cards_by_stage']) : 0;
-            $this->info("board_tools probe: agent {$name}: {$endpoint} → 200; window scoped to board {$bt->boardId} / swimlane {$bt->swimlaneId} ({$stageGroups} stage group(s)). board_my_cards does not expose a per-row swimlane, so the returned scope header matching config is the observable that the bridge-side isolation filter ran.");
-        }
-
-        return $ok;
-    }
-
-    private function probeErrorDetail(Response $resp): string
-    {
-        $error = $resp->json('error');
-
-        return is_string($error) && $error !== '' ? "error: {$error}" : 'body: '.substr($resp->body(), 0, 200);
     }
 }

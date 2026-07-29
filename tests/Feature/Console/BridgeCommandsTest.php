@@ -179,6 +179,26 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(1);
     }
 
+    public function test_check_skips_the_ssh_legs_when_the_board_tools_client_is_unavailable(): void
+    {
+        // The board-tools client envelope SKIPS the per-agent board-STATE legs AND the ssh
+        // legs on a construction failure — the inline code did it with a `return`, the
+        // registry does it with the envelope's guard, and the two are only distinguishable
+        // on an install that has an ssh agent AND no writeback client. No golden fixture is
+        // one (all three ssh installs construct a client), so reverting that guard left the
+        // whole suite GREEN when it was mutation-tested. This is the witness.
+        Http::fake();
+        $this->writeSshAgent();
+        File::delete($this->dir.'/kanban/writeback-token');   // → the factory throws
+        $this->bindSshEnv('command="php artisan bridge:tools-call --agent=me",restrict ssh-ed25519 AAAA me');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('the kanban writeback client is unavailable')
+            ->doesntExpectOutputToContain('board_tools ssh:')
+            ->assertExitCode(0);   // the client-unavailable arm warns, never fails
+        Http::assertNothingSent();
+    }
+
     public function test_check_passes_with_good_ssh_line_unprivileged(): void
     {
         // A good pinned line + a non-root run stays exit 0. The account sshd posture is no
