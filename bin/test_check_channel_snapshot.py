@@ -60,6 +60,7 @@ false negative. Every entry above was produced by omission, under the module san
 import importlib.util
 import io
 import os
+import pathlib
 import re
 import shutil
 import stat
@@ -70,6 +71,38 @@ import unittest
 from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+
+# The static-call prefixes `ChannelSnapshotProbe` may use DIRECTLY. `self::` is its
+# own helpers; `Finding::` is the same-namespace value object it returns (which is why
+# it needs no `use` import — the probe's no-import assertion still holds). Compared by
+# EXACT equality in both directions, so an entry nothing uses fails too: a permission
+# outlives its reason otherwise, and this list is a trust boundary.
+_ALLOWED_PROBE_STATICS = {"self::", "Finding::"}
+
+# Every class REACHABLE from the probe through the allow-list, scanned for exec
+# primitives on the same terms as the probe itself. Wider than the set above by
+# design: `Severity` is never named in the probe, only in `Finding`'s constructors,
+# and a hop the scan skips is a hop nothing guards.
+_PROBE_COLLABORATORS = (
+    "app/Bridge/Support/Finding.php",
+    "app/Bridge/Support/Severity.php",
+)
+
+# What may be passed INTO the probe: a variable, a property read chain, a quoted
+# string, or a class constant — nothing that evaluates. Deliberately a grammar and
+# not a pinned argument list: the previous revision pinned the literal argument TEXT
+# of one call site, which is why a refactor that moved the call left it asserting
+# about a file with no call in it. Anything containing `(` fails by construction, so
+# a smuggled call cannot match however it is spelled.
+_SAFE_ARGUMENT = re.compile(
+    r"""^(
+          \$[A-Za-z_][A-Za-z0-9_]*(->[A-Za-z_][A-Za-z0-9_]*)*   # $var, $a->b, $this->c->d
+        | '[^']*'                                                # 'single-quoted'
+        | "[^"$]*"                                               # "double-quoted", no interpolation
+        | [A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*         # ClassName::CONST
+        )$""",
+    re.VERBOSE,
+)
 _spec = importlib.util.spec_from_file_location(
     "check_channel_snapshot", os.path.join(_HERE, "check-channel-snapshot.py")
 )
@@ -1273,19 +1306,62 @@ class ToolShape(unittest.TestCase):
         # made the assertion pass on an EMPTY set — indistinguishable from the regex
         # having misfired. Prove it matched something before trusting what it did not.
         self.assertIn("self::", statics, "the static-call regex matched nothing — it misfired")
-        self.assertEqual({"self::"}, statics, "the snapshot probe makes a static call outside itself")
+        self.assertEqual(
+            _ALLOWED_PROBE_STATICS,
+            statics,
+            "the snapshot probe makes a static call outside its allow-list — if the new "
+            "collaborator genuinely cannot execute, add it to _ALLOWED_PROBE_STATICS *and* "
+            "to _PROBE_COLLABORATORS so the no-exec scan below covers it too",
+        )
+
+        # ONE HOP, and only one — stated because the assertion above alone would have
+        # widened the trust boundary to a file this test does not read. Every
+        # allow-listed collaborator gets the SAME exec-primitive scan as the probe, so
+        # "no reachable way to execute" stays true THROUGH them. It is not a call-graph
+        # proof: a collaborator's own collaborators are covered only if they are
+        # themselves on the list (today `Finding` reaches `Severity`, and both are).
+        for relative in _PROBE_COLLABORATORS:
+            with open(os.path.join(os.path.dirname(_HERE), relative), encoding="utf-8") as fh:
+                collaborator = _php_code_only(fh.read())
+            self.assertEqual(
+                [],
+                _exec_primitives_in(collaborator),
+                f"{relative} is reachable from the snapshot probe and gained a process-launch primitive",
+            )
 
     def test_the_probe_call_site_hands_the_probe_only_strings(self):
-        # The other half: `CheckCommand` may exec (see above), but the SNAPSHOT leg's
-        # call into the probe must stay a pure string-in/findings-out call, so nothing
+        # The other half: a CALLER may exec (see above), but the SNAPSHOT leg's call
+        # into the probe must stay a pure string-in/findings-out call, so nothing
         # executable is smuggled in through it.
-        command = os.path.join(os.path.dirname(_HERE), "app/Console/Commands/Bridge/CheckCommand.php")
-        with open(command, encoding="utf-8") as fh:
-            code = _php_code_only(fh.read())
+        #
+        # ⚠ THIS SCANS ALL OF `app/`, AND THAT IS THE WHOLE POINT. It used to name
+        # `CheckCommand.php` alone. The DL-242 stage-7 migration moved the call into
+        # `app/Bridge/Check/Checks/ChannelSnapshotCheck.php` and the guard was left
+        # scanning a file that no longer held its subject — red only by luck of an
+        # exact-equality assertion, and GREEN-while-guarding-nothing under any softer
+        # one. A tripwire pinned to WHERE code lives dies at the next refactor; this one
+        # is pinned to the CALL, wherever it lives.
+        call_sites = []
+        for php in sorted(pathlib.Path(os.path.dirname(_HERE), "app").rglob("*.php")):
+            code = _php_code_only(php.read_text(encoding="utf-8"))
+            for method, args in re.findall(r"ChannelSnapshotProbe::(\w+)\(([^)]*)\)", code):
+                call_sites.append((php.name, method, args))
 
-        call_sites = re.findall(r"ChannelSnapshotProbe::(\w+)\(([^)]*)\)", code)
+        # An empty result is a measurement that never happened — the exact failure this
+        # test was rewritten for. Assert the subject EXISTS before judging it.
+        self.assertNotEqual(
+            [], call_sites, "no ChannelSnapshotProbe call site found anywhere in app/ — this guard has lost its subject"
+        )
 
-        self.assertEqual([("probe", "$cfg->channel->serverPath, $bundled")], call_sites)
+        for where, method, args in call_sites:
+            self.assertEqual("probe", method, f"{where}: the probe gained an entry point other than probe()")
+            for arg in [a.strip() for a in args.split(",")]:
+                self.assertRegex(
+                    arg,
+                    _SAFE_ARGUMENT,
+                    f"{where}: `{arg}` is not a plain variable / property read / string / class constant — "
+                    "the snapshot call must not evaluate anything on the way in",
+                )
 
     def test_the_php_scanner_stays_in_sync_on_the_shapes_that_broke_it(self):
         # POSITIVE CONTROLS for `_php_code_only`. Every line here is a shape that
