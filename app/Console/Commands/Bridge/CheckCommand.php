@@ -8,6 +8,8 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckReport;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\Checks\ChannelSnapshotCheck;
+use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
+use App\Bridge\Check\Checks\InstallSuffixDsnCheck;
 use App\Bridge\Check\Checks\ReconcileRepoTokensCheck;
 use App\Bridge\Check\Checks\RetentionPostureCheck;
 use App\Bridge\Check\Checks\SshLiveProbeCheck;
@@ -29,7 +31,6 @@ use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelToken;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\Finding;
-use App\Bridge\Support\InstallGuard;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\Severity;
@@ -42,7 +43,6 @@ use App\Bridge\Writeback\WritebackConfig;
 use App\Models\WebhookEvent;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Throwable;
 
@@ -77,6 +77,7 @@ class CheckCommand extends BridgeCommand
         // retained runner would re-register into the same id namespace.
         $sshEnv = $this->laravel->make(SshProbeEnvironment::class);
         $runner = (new CheckRunner)
+            ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck)
             ->register(CheckSlot::Retention, new RetentionPostureCheck)
             ->registerPerAgent(CheckSlot::AgentConfig, new ChannelSnapshotCheck(base_path('examples/channel-servers')))
             ->register(
@@ -125,19 +126,8 @@ class CheckCommand extends BridgeCommand
             }
         }
 
-        try {
-            DB::connection()->getPdo();
-            $this->info('database: connected');
-        } catch (Throwable $e) {
-            $this->error('database: '.$e->getMessage());
+        if (! $this->emitReport($runner->run(CheckSlot::Database, $ctx))) {
             $ok = false;
-        }
-
-        if (($crosstalk = InstallGuard::dsnCrosstalk()) !== null) {
-            $this->error($crosstalk);
-            $ok = false;
-        } else {
-            $this->info('install-suffix DSN check: ok');
         }
 
         try {

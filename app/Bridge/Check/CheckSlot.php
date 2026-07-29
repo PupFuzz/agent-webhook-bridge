@@ -27,6 +27,12 @@ namespace App\Bridge\Check;
  */
 enum CheckSlot: string
 {
+    /**
+     * The database binding, between the secret-dir leg and the inbox-surfacing one:
+     * whether the install can reach a database, and whether it is the RIGHT one.
+     */
+    case Database = 'database';
+
     /** The install-wide retention posture, after the inbox-surfacing leg. */
     case Retention = 'retention';
 
