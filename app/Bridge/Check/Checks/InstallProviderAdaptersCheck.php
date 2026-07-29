@@ -18,10 +18,14 @@ use App\Bridge\Support\Finding;
  * with no adapter is dead config the receiver answers with a 400 (`unknown_provider`) at
  * delivery time — a fault that is invisible until an upstream is already retrying.
  *
- * SILENT WHEN EVERY CONFIGURED PROVIDER IS SUPPORTED, and silent when the config is not a
- * list at all: a `providers` key of the wrong shape is a config-schema fault that reaches
- * the operator through the legs that read the individual provider values, and inventing a
- * second verdict for it here would report one fault twice.
+ * SILENT WHEN EVERY CONFIGURED PROVIDER IS SUPPORTED. The `is_array()` guard below is a
+ * NARROWING guard, not a verdict — `config()` returns `mixed` and the walk needs an array
+ * — and it is not reachable from the shipped `config/bridge.php`, where `providers` is a
+ * static array literal whose leaf values alone come from `env()`. Were it reached, this
+ * check would go silent rather than defer to another leg: no other leg reports the shape
+ * either, since a wrong-shaped `providers` makes the endpoint-URL leg read null and skip
+ * it. The guard is migrated verbatim under the byte-identical contract, and stage 8's
+ * >=1-finding invariant is what would make such a silent run visible.
  *
  * @see CheckSlot::Providers
  */
