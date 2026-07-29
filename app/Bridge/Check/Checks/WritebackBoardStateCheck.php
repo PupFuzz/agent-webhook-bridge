@@ -209,8 +209,13 @@ final class WritebackBoardStateCheck implements Check
      */
     private function coordTerminalAgreement(string $repo, WritebackMapping $mapping, KanbanClient $client): iterable
     {
+        // Leg off ⇒ nothing to verify (and no CANNOT-VERIFY noise on installs that never
+        // enable it). Only the first clause is a reachable decision: `WritebackConfig` throws
+        // when move_coord_cards is on with no terminal, so the null arm cannot fire on its
+        // own for any loadable config — it is inherited from the migrated inline leg, and no
+        // test can kill it without constructing a config-impossible mapping.
         if (! $mapping->moveCoordCards || $mapping->coordCardTerminalStageId === null) {
-            return;   // leg off ⇒ nothing to verify (and no CANNOT-VERIFY noise on installs that never enable it)
+            return;
         }
         $mine = $mapping->coordCardTerminalStageId;
         $prefix = "writeback: move_coord_cards ({$repo}, board {$mapping->boardId})";

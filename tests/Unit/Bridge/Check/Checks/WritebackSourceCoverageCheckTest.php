@@ -116,7 +116,11 @@ class WritebackSourceCoverageCheckTest extends TestCase
      * THE STAGE-3b THROW CONSTRAINT, on this check's own loop. `CheckRunner` materializes
      * findings before rendering, so a board read that threw past the per-board catch would
      * discard every finding already yielded for earlier boards — where the inline code had
-     * already printed them. Board 8 is read first and must survive board 9's failure.
+     * already printed them.
+     *
+     * The failure sits BETWEEN two readable boards deliberately: a trailing failure cannot
+     * tell the catch's `continue` apart from a `return`, so only a board read AFTER it
+     * witnesses that the loop resumes rather than concluding early.
      */
     public function test_one_unreadable_board_does_not_erase_the_findings_of_the_boards_around_it(): void
     {
@@ -129,12 +133,14 @@ class WritebackSourceCoverageCheckTest extends TestCase
         $findings = $this->findings([
             'owner/repo' => new WritebackMapping(boardId: self::BOARD, stages: []),
             'owner/other' => new WritebackMapping(boardId: 9, stages: []),
+            'owner/third' => new WritebackMapping(boardId: 10, stages: []),
         ]);
 
-        $this->assertCount(2, $findings);
+        $this->assertCount(3, $findings);
         $this->assertStringContainsString('dl_number cards on board 8 all have a mapped source', $findings[0]['message']);
         $this->assertSame(Severity::Warn, $findings[1]['severity']);
         $this->assertStringContainsString('could not read board 9 to check dl source coverage', $findings[1]['message']);
+        $this->assertStringContainsString('dl_number cards on board 10 all have a mapped source', $findings[2]['message']);
     }
 
     /**

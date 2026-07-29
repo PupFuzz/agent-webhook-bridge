@@ -299,6 +299,49 @@ class WritebackBoardStateCheckTest extends TestCase
         $this->assertStringContainsString('token sees', $findings[0]['message']);
     }
 
+    /**
+     * Gate 2's OTHER half, which the terminal-absent arm above cannot witness: an explicit
+     * `move_coord_cards: false` is honored even with a terminal configured (`WritebackConfig`
+     * reads the key when present and falls back to terminal-presence only when it is absent),
+     * so an install that deliberately opted out must get no compare. Paired with its positive
+     * control — the same mapping with the flag on does compare — so the flag is the only
+     * difference between the two readings.
+     */
+    public function test_the_compare_is_silent_when_the_move_leg_is_explicitly_opted_out(): void
+    {
+        $this->fakeBoard(stages: [['id' => 53, 'name' => 'Done', 'position' => 1.0]]);
+        config(['bridge.writeback.coord_config_path' => $this->coordConfig([
+            ['board_id' => self::BOARD, 'terminal_columns' => ['Done']],
+        ])]);
+        $optedOut = new WritebackMapping(
+            boardId: self::BOARD,
+            stages: [],
+            moveCoordCards: false,
+            coordCardTerminalStageId: 53,
+        );
+
+        $this->assertStringNotContainsString('move_coord_cards', $this->joined($this->findings($optedOut, moveScope: true)));
+        $this->assertStringContainsString('coord config agrees', $this->joined($this->findings($this->movingMapping(), moveScope: true)));
+    }
+
+    /**
+     * Gate 1 — the classifier's coord-card-move family, scoped per repo on `CheckContext`. A
+     * fully-configured move leg still gets no compare where the family is off, because the
+     * leg cannot fire there and verifying a terminal for a dead leg reads as though it were
+     * live. Nothing else asserts this gate (no golden fixture enables the family), so it is
+     * the one that would flip silently.
+     */
+    public function test_the_compare_is_silent_where_the_coord_card_move_family_is_off(): void
+    {
+        $this->fakeBoard(stages: [['id' => 53, 'name' => 'Done', 'position' => 1.0]]);
+        config(['bridge.writeback.coord_config_path' => $this->coordConfig([
+            ['board_id' => self::BOARD, 'terminal_columns' => ['Done']],
+        ])]);
+
+        $this->assertStringNotContainsString('move_coord_cards', $this->joined($this->findings($this->movingMapping(), moveScope: false)));
+        $this->assertStringContainsString('coord config agrees', $this->joined($this->findings($this->movingMapping(), moveScope: true)));
+    }
+
     public function test_a_coord_config_declaring_no_terminal_for_this_board_is_cannot_verify(): void
     {
         $this->fakeBoard();
