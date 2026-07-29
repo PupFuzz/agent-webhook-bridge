@@ -4,6 +4,7 @@ namespace App\Bridge\Check;
 
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
+use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackConfig;
 
@@ -158,4 +159,62 @@ final class CheckContext
      * where the config-only checks matter most — they must not be gated on it.
      */
     public ?KanbanClient $client = null;
+
+    /**
+     * The agents whose `board_tools` block is ENABLED — the subset the whole board-tools
+     * plane below the suppression scan is bounded by.
+     *
+     * NOT THE SUBSET THE SUPPRESSION SCAN READS: a block that could not satisfy itself is
+     * `enabled === false`, so it is absent here and its own check reads
+     * {@see self::$configs} instead. Empty is a meaningful value, not a missing one —
+     * `--probe-tools` reports "nothing to probe" from it.
+     *
+     * @var list<AgentConfig>
+     */
+    public array $boardToolsEnabled = [];
+
+    /**
+     * The board-tools bearer index, or null when no agent has the block enabled (the
+     * state in which `CheckCommand` does not build one).
+     *
+     * BUILT ONCE, IN `CheckCommand`, AND SHARED, for the same reason
+     * {@see self::$registry} is: {@see BoardToolAgentResolver} READS every enabled HTTP
+     * agent's token file and LOGS each collision at CONSTRUCTION, and its `problems()`
+     * accessor only returns what the build accumulated. A check constructing its own
+     * would re-read those secrets and re-log every collision — invisible to this
+     * migration's output contract, which is exactly why it is recorded here.
+     */
+    public ?BoardToolAgentResolver $boardToolsResolver = null;
+
+    /**
+     * The kanban client the board-STATE legs read boards with, or null when it could not
+     * be constructed.
+     *
+     * A SECOND CONSTRUCTION, DELIBERATELY NOT {@see self::$client}. The two are built from
+     * the same factory but under DIFFERENT guards — that one inside the `writeback.json`
+     * envelope (mappings present), this one inside the board-tools envelope (some agent
+     * enabled) — and each guard's failure prints its own diagnosis and skips its own legs.
+     * Collapsing them onto one field would make an install with writeback off and board
+     * tools on (or the reverse) construct a client where it constructs none today, and
+     * would make one failure message stand for two causes.
+     */
+    public ?KanbanClient $boardToolsClient = null;
+
+    /**
+     * Agent name => its ssh setup is INCOMPLETE or could not be verified, read back off
+     * the {@see CheckSlot::BoardToolsSsh} findings' severities. Absent ⇒ verified, or
+     * that slot never ran for the agent.
+     *
+     * THE FIRST FIELD HERE THAT IS NOT A FACT ABOUT THE INSTALL — it is a fact about what
+     * another check REPORTED, so it exists only after that slot has run and it changes
+     * meaning if that slot's severities are re-assigned (stage 10 does exactly that for
+     * this command). Every other field is derived from config, the filesystem or a board
+     * read, and is therefore true independently of the registry. The cost is a real
+     * coupling: the DL-225 advisory that reads this is downstream of another check's
+     * SEVERITY vocabulary, not of the install, and `CheckCommand` narrows that coupling
+     * to one check id rather than the whole slot (see its readback).
+     *
+     * @var array<string, true>
+     */
+    public array $sshSetupIncomplete = [];
 }

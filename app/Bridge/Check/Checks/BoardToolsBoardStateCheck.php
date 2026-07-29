@@ -1,0 +1,90 @@
+<?php
+
+namespace App\Bridge\Check\Checks;
+
+use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\CheckRunner;
+use App\Bridge\Check\PerAgentCheck;
+use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\Finding;
+use Throwable;
+
+/**
+ * Every per-agent board-tools assertion that needs a live BOARD READ (DL-217/DL-220),
+ * migrated out of `CheckCommand::checkBoardTools()` (DL-242 stage 7b).
+ *
+ * WARN, NEVER FAIL — the DL-220 split, and the structural twin of the writeback
+ * board-state check: a temporarily-unreachable kanban or a genuinely-empty board must not
+ * FAIL the install check (DL-026), while the enablement-breaking conditions above it (a
+ * suppressed default block, a dead or ambiguous bearer) do.
+ *
+ * PER-AGENT, WHERE ITS WRITEBACK TWIN IS PER-MAPPING, and the difference is the whole
+ * reason both exist: board tools are scoped by the AGENT's own `board_tools` block
+ * (`swimlane_id` there IS the write scope), so two agents on one board are two windows to
+ * certify, not one.
+ *
+ * THE CATCH IS INSIDE THIS GENERATOR, AND THAT IS THE STAGE-3b CONSTRAINT, NOT A STYLE
+ * CHOICE. {@see CheckRunner} materializes a check's findings before the caller renders any
+ * of them, whereas the inline code had already PRINTED the lines above the throw. A catch
+ * left in the caller would therefore discard the findings this check had already yielded —
+ * the visibility line before a swimlane read failed. The inline code already carried this
+ * catch per agent; keeping it here is what preserves both the degradation AND the lines
+ * that preceded it.
+ */
+final class BoardToolsBoardStateCheck implements PerAgentCheck
+{
+    public function id(): string
+    {
+        return 'board_tools.board_state';
+    }
+
+    /**
+     * @return iterable<Finding>
+     */
+    public function runFor(AgentConfig $config, CheckContext $ctx): iterable
+    {
+        $client = $ctx->boardToolsClient;
+        $bt = $config->boardTools;
+        // The client is the slot's own guard, so `CheckCommand` never runs this without
+        // one; the `boardId` arm is the inline code's defensive `continue` (an enabled
+        // block ⇒ boardId non-null by construction), preserved rather than dropped so the
+        // migration changes nothing in either direction.
+        if ($client === null || $bt === null || $bt->boardId === null) {
+            return;   // stage 8 turns this into a returned disposition
+        }
+
+        $name = $config->agentName;
+        try {
+            $vis = $client->visibility($bt->boardId);
+            if ($vis['total'] === 0) {
+                // 0 cards on a 200 is AMBIGUOUS — an empty board, or a token whose user
+                // is not a member of it (then the read window is empty and the create
+                // leg's correlation reads blind). Present both; assert neither.
+                yield Finding::warn("board_tools: agent {$name}: the writeback token sees 0 cards on board {$bt->boardId} — EITHER the board is empty (fine) OR the service user is not a member / board_id is wrong (then board_my_cards returns an empty window and board_create_card's correlation reads blind). Verify membership + board_id if you expect cards.");
+            } else {
+                yield Finding::ok("board_tools: agent {$name}: writeback token can see board {$bt->boardId}");
+            }
+
+            $swimlaneIds = $client->boardSwimlaneIds($bt->boardId);
+            foreach (array_filter([$bt->swimlaneId, $bt->sharedSwimlaneId], fn ($id) => $id !== null) as $swimlaneId) {
+                if (! in_array($swimlaneId, $swimlaneIds, true)) {
+                    yield Finding::warn("board_tools: agent {$name}: swimlane_id {$swimlaneId} is not on board {$bt->boardId} — board_create_card will 422 (create) or board_my_cards will read empty until fixed.");
+                }
+            }
+
+            $stageIds = array_keys($client->boardStageOrder($bt->boardId));
+            if ($bt->createStageId !== null && $stageIds !== [] && ! in_array($bt->createStageId, $stageIds, true)) {
+                yield Finding::warn("board_tools: agent {$name}: create_stage_id {$bt->createStageId} is not a stage on board {$bt->boardId} — every board_create_card will 422 until fixed.");
+            }
+
+            if ($bt->coordBoardId !== null) {
+                $coordVis = $client->visibility($bt->coordBoardId);
+                if ($coordVis['total'] === 0) {
+                    yield Finding::warn("board_tools: agent {$name}: coord_board_id {$bt->coordBoardId} reads 0 cards — the coordination leg returns empty if the service user is not a member or the id is wrong.");
+                }
+            }
+        } catch (Throwable $e) {
+            yield Finding::warn("board_tools: agent {$name}: could not read board {$bt->boardId} with the writeback token — ".$e->getMessage());
+        }
+    }
+}
