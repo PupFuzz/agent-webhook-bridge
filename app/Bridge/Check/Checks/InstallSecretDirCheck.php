@@ -22,12 +22,15 @@ use App\Bridge\Support\Finding;
  * is true, which is the behaviour a split-layout warn wants (an unusable config_dir does
  * not suppress the secret dir's own verdict).
  *
- * NO GOLDEN FIXTURE HAS EVER RENDERED THIS WARN. All of them run with `secret_dir` equal
- * to `config_dir`, so the split-layout branch is false in every one; the coverage table's
- * verdict for that predicate comes from the negated mutant printing the warn twice. This
- * is the third place in this migration where an `observed` predicate says nothing about
- * whether its message is asserted anywhere — `InstallSecretDirCheckTest` is what asserts
- * it.
+ * ITS ONLY GOLDEN COVERAGE IS INCIDENTAL, AND THE DISTINCTION MATTERS. `GoldenInstall`
+ * builds every fixture with `secret_dir` equal to `config_dir`, so the split-layout guard
+ * is false in all of them but one: `config-dir-missing` repoints `config_dir` at a path
+ * that does not exist and leaves `secret_dir` at the install root, which makes the two
+ * differ and renders this warn as a side effect of a fixture built to exercise the OTHER
+ * directory's failure. Nothing in the corpus exercises a DELIBERATE split layout, and
+ * nothing distinguishes the warn firing on one from firing on that accident.
+ * `InstallSecretDirCheckTest` is what asserts the guard itself: the warn present when the
+ * two dirs differ, and ABSENT when they are the same path and that path is insecure.
  *
  * @see CheckSlot::Install
  */

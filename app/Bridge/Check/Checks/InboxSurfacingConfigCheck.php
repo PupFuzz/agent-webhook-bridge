@@ -28,7 +28,11 @@ use Throwable;
  * NO GOLDEN FIXTURE REACHES THE FAILING PATH: all of them print the ok line. The failure
  * is also a `catch` arm, which the coverage instrument does not walk at all, so it is
  * ABSENT from the disclosed-gap list rather than listed as unobserved — absence there is
- * not protection. `InboxSurfacingConfigCheckTest` is the whole measurement.
+ * not protection. THE COMMAND-LEVEL SUITE DOES REACH IT: `BridgeCommandsTest` drives
+ * `bridge:check` into both of `validateInboxConfig()`'s refusals and asserts a substring
+ * of each plus the exit flip. What that leaves unasserted — and what
+ * `InboxSurfacingConfigCheckTest` owns — is the composed line: the prefix this check adds
+ * to the thrown message, and the ok line's layout interpolation.
  *
  * @see CheckSlot::Inbox
  */
