@@ -4,6 +4,7 @@ namespace Tests\Feature\Config;
 
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\BoardToolsConfig;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -366,6 +367,67 @@ class BoardToolsConfigTest extends TestCase
         $this->assertNotNull($bt);
         $this->assertFalse($bt->enabled);
         $this->assertStringContainsString('transport', (string) $bt->suppressedReason);
+    }
+
+    // ─── description_max_bytes (DL-245) ──────────────────────────────────────
+
+    public function test_description_max_bytes_defaults_when_absent(): void
+    {
+        $bt = $this->config(['board_tools' => [
+            'transport' => 'ssh', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ]])->boardTools;
+
+        $this->assertNotNull($bt);
+        $this->assertSame(16384, $bt->descriptionMaxBytes);
+        $this->assertSame(BoardToolsConfig::DEFAULT_DESCRIPTION_MAX_BYTES, $bt->descriptionMaxBytes);
+    }
+
+    public function test_description_max_bytes_is_read_from_the_block(): void
+    {
+        $bt = $this->config(['board_tools' => [
+            'transport' => 'ssh', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+            'description_max_bytes' => 512,
+        ]])->boardTools;
+
+        $this->assertNotNull($bt);
+        $this->assertSame(512, $bt->descriptionMaxBytes);
+    }
+
+    /**
+     * A cap that cannot mean what it says must FAIL, not fall back to the default
+     * (a silent fallback would read as honored). 0 and negatives would return every
+     * description as an empty string flagged truncated; a non-int is the ordinary
+     * malformation.
+     *
+     * @return array<string, array{0: mixed}>
+     */
+    public static function badDescriptionCaps(): array
+    {
+        return ['zero' => [0], 'negative' => [-1], 'string' => ['16384'], 'float' => [16384.0]];
+    }
+
+    #[DataProvider('badDescriptionCaps')]
+    public function test_bad_description_max_bytes_throws_on_explicit_path(mixed $cap): void
+    {
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('description_max_bytes');
+        $this->config(['board_tools' => [
+            'enabled' => true, 'transport' => 'ssh', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+            'description_max_bytes' => $cap,
+        ]]);
+    }
+
+    #[DataProvider('badDescriptionCaps')]
+    public function test_bad_description_max_bytes_suppresses_on_default_path(mixed $cap): void
+    {
+        $bt = $this->config(['board_tools' => [
+            'transport' => 'ssh', 'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+            'description_max_bytes' => $cap,
+        ]])->boardTools;
+
+        $this->assertNotNull($bt);
+        $this->assertFalse($bt->enabled);
+        $this->assertStringContainsString('description_max_bytes', (string) $bt->suppressedReason);
     }
 
     // ─── DR2-1 contradiction predicate: ssh + ANY auth key fails-closed ───────

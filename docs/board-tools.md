@@ -40,7 +40,11 @@ never silently no-ops.
 
 ## `board_my_cards`
 
-**Arguments:** none.
+**Arguments:**
+
+| Arg | Required | Notes |
+| --- | --- | --- |
+| `include_description` | no | Boolean (default `false`). Adds `description` + `description_truncated` to **every** projected card — your own lane, the shared lane, and the coord cards alike. A non-boolean is **refused** (422) rather than coerced. See § Reading a card's scope below. |
 
 **Returns:**
 
@@ -50,13 +54,36 @@ never silently no-ops.
   "swimlane_id": 4,
   "cards_by_stage": {
     "Backlog":  [ { "id": 1, "name": "...", "stage": "Backlog", "tags": ["..."],
-                    "dl_number": "DL-1", "pr_number": null, "updated_at": "..." } ],
+                    "dl_number": "DL-1", "pr_number": null, "updated_at": "...",
+                    // the next two keys ONLY when include_description was passed:
+                    "description": "...", "description_truncated": false } ],
     "In Review": [ /* ... */ ]
   },
   "shared_swimlane": { "swimlane_id": 9, "cards_by_stage": { /* ... */ } }, // when configured
   "coord_cards": [ /* cards on the coord board carrying one of your address_tags */ ] // when configured
 }
 ```
+
+### Reading a card's scope (`include_description`)
+
+A card is a **delivery** surface, not just a tracking one — the scope written on it
+is what a cold session needs to implement from. That body is off by default and
+opt-in per call:
+
+- **Default (no argument): the two keys are ABSENT**, not null — the response is
+  byte-identical to what it was before the argument existed.
+- **Opt in when you are STARTING a card, not when polling.** A body runs ~2 KB and
+  *every* card in your lane is returned, so a large lane multiplies the response
+  many times over. The bridge pays nothing extra to fetch it (the kanban search row
+  already carries `description`; the projection used to discard it) — the whole cost
+  is response size, and it is yours to spend deliberately.
+- **A cut body is flagged, never silently short.** Each body is cut at the
+  per-agent `board_tools.description_max_bytes` (default 16384) and a card that was
+  cut carries `"description_truncated": true`. **Never treat a truncated body as
+  the whole scope** — re-read the card on the board instead.
+- **The cap is per CARD, not per response.** It bounds one pathological body; it
+  does not bound the total, which is `cards in your lane × their bodies`. Lower the
+  key on a large board, raise it if your scope statements are longer than 16 KB.
 
 Read isolation is **100% bridge-enforced**. All agents on an install share one
 kanban read/write user, and kanban scopes reads by that user's *board*
@@ -103,7 +130,7 @@ term is efficiency + defense-in-depth, not the boundary.
 | --- | --- |
 | 403 | The request did not come from loopback (network gate). |
 | 401 | Missing or unrecognized bearer token. |
-| 422 | A caller-fixable bad request (missing `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, unknown tool). |
+| 422 | A caller-fixable bad request (missing `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool). |
 | 502 | Upstream kanban error (may be retryable). |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
 
