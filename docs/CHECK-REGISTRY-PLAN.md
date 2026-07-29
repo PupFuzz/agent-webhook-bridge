@@ -237,7 +237,7 @@ next stage starts.
 | **1 ✅** | Migrate the two already-`Finding`-shaped probes — **3** of the 4 existing `emitFinding` call sites (the 4th is not a probe; see below). First wiring of `CheckRunner` into `handle()`. | **None** | no |
 | **2 ✅** | Migrate the `retention` cluster into `RetentionPostureCheck` at a new `CheckSlot::Retention`. `receiverSapiFinishesEarly()` moves with it (single caller). | **None** | no |
 | **3a ✅** | Migrate the writeback **config plane** — the six units needing no board read — into `CheckSlot::Writeback`. The cluster splits because its probe half needs a constructed `KanbanClient`; see the stage 3a result. | **None** | no |
-| **3b** | Migrate the writeback **probe plane** (the legs that read the board). Inherits the throw constraint recorded in the stage 3a result. | **None** (golden test enforces) | no |
+| **3b ✅** | Migrate the writeback **probe plane** (the legs that read the board) into `CheckSlot::WritebackProbe`. Inherited the throw constraint recorded in the stage 3a result; see the stage 3b result. | **None** | no |
 | **4–7** | Migrate remaining units, ~1 PR per cluster: `database`/`install-suffix`, per-agent config/identity, `inbox surfacing config`, `board_tools`. | **None** (golden test enforces) | no |
 | **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
 | **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** |
@@ -530,6 +530,64 @@ under-reported the 22 departures as 18. **Compare as a multiset.** (2) What caug
 `old − departed + added == new` and watching it yield **81 ≠ 77**. Keep that assertion: it is the
 positive control for the comparison itself, and without it a collapsed count reads exactly like a
 correct one.
+
+### Stage 3b result — the probe plane, and the last writeback gap leaves the instrument
+
+**What migrated:** three checks under a new `CheckSlot::WritebackProbe`, registered in the output
+order the inline code held — `writeback.by_ref`, `writeback.board_state`, `writeback.source_coverage`.
+The `$writeback`/`$client` locals and the two private helpers (`checkWritebackSourceCoverage`,
+`checkCoordTerminalAgreement`) are gone. `handle()` keeps the client construction — derivation, not
+assertion, per constraint (c) — inside a **second** fail-soft envelope wrapping the new
+`emitReport()`, for the same reason the outer one is inline: `CheckRunner` deliberately does not
+catch, so *"a probe failure degrades to one warn"* stays a property of `handle()` rather than an
+assumption about three checks' callees.
+
+**The three constraints 3a handed forward are discharged, and each is asserted rather than assumed.**
+(1) The throw constraint — every throwing call sits inside a per-iteration `catch`, and two direct
+tests prove a mapping-N failure erases neither the mappings before it nor the ones after it, and that
+a throw part way through one mapping keeps what that mapping had already yielded. (2) The `catch`
+arms carry their own tests, per stage 2's finding. (3) The exit contract — the #4553 legs are the
+only `fail`, the tests assert `Severity::Fail` rather than a message, and
+`CheckCommandSeverityContractTest` pins fail → non-zero exit.
+
+**Mutation-proven, and the proof paid for itself.** Forty mutants — one reverted guard each — every
+named test verified red, then restored. It found **three real gaps**: tests claiming more than they
+witnessed, closed by strengthening the assertions rather than by adding cases (36 tests / 115
+assertions → **38 / 120**). **One survivor is justified and deliberately left untested:** the
+terminal-agreement gate's `coordCardTerminalStageId === null` arm cannot fire alone for any config
+that loads, because `WritebackConfig` throws on a move-on-with-no-terminal mapping. A test for it
+would have to fabricate a system-impossible state; the guard documents why instead.
+
+**Coverage-table effect — the predicate total goes 77 → 58**: `48 observed · 2 observed-via-abort ·
+8 UNOBSERVED`. Compared as a multiset, **21 predicates depart and 2 arrive**, and the conservation
+assertion `77 − 21 + 2 = 58` passed on the first run. The method notes above earned their keep
+immediately: the departed set contains `config('bridge.writeback.correlation', 'ref') === 'ref'`
+**twice**, which a set-keyed diff would have collapsed exactly as it did in 3a. One arrival is a
+rename rather than a migration — the `$writeback !== null && $writeback->mappings !== []` guard is
+re-expressed as `$ctx->writeback !== null && …` once the config lives on `CheckContext` — the same
+shape 3a recorded, and 3a's own rename-arrival (`isset($ctx->coordCardMoveScopes[$repo])`) departs
+here for real. **Net of the rename, 20 predicates leave `handle()` and exactly one arrives — the
+`emitReport(CheckSlot::WritebackProbe)` guard** — so 77 − 20 + 1 = 58, which is −(n−1) again.
+
+**No surviving predicate changed status.** Zero, as in stages 2 and 3a.
+
+**No gap closed, and none opened — and this stage is where that distinction matters most.** The
+disclosed-gap count falls **17 → 8**, its largest drop yet, and a reader who stops at that number
+will conclude the golden suite got substantially stronger. It did not. **All nine reductions are
+departures:** each left `handle()` *while still UNOBSERVED* — the `startedFromStages` and
+`unparkFromStages` loops, the `byRefAvailable` reachability probe, the swimlane-membership guard, the
+`issue_number` registration leg, both coord-card stage guards, the missing-custom-field guard, and
+the correlation-mode ceiling leg. **Gaps closed in place: zero. Gaps newly opened: zero.** The count
+fell because the measured region shrank, not because the measurement improved. What changed is where
+those nine are measured: all nine land in the three new unit tests, which are mutation-proven — a
+strictly stronger instrument than the golden files for legs the fixtures could never distinguish.
+
+**Every disclosed gap now sits outside the writeback cluster**, and six of the eight sit in the
+per-agent region stages 4–7 still have to migrate: the two channel-transport liveness probes (unix
+socket and TCP), the channel bind-failure marker, and the three agent-registry/per-agent-config legs.
+The remaining two are secret-file permissions and directory writability. **So the next stages inherit
+a gap-dense region rather than a well-measured one** — like 3b, they must carry unit tests for those
+legs from the start, because a green golden run says nothing about any of them.
 
 ## Verification
 
