@@ -2,7 +2,6 @@
 
 namespace App\Console\Commands\Bridge;
 
-use App\Bridge\Adapters\WebhookAdapterFactory;
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckReport;
@@ -18,6 +17,11 @@ use App\Bridge\Check\Checks\ChannelTokenPathCheck;
 use App\Bridge\Check\Checks\ChannelTransportCheck;
 use App\Bridge\Check\Checks\CiFailureFilterCheck;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
+use App\Bridge\Check\Checks\InboxSurfacingConfigCheck;
+use App\Bridge\Check\Checks\InstallConfigDirCheck;
+use App\Bridge\Check\Checks\InstallEndpointUrlsCheck;
+use App\Bridge\Check\Checks\InstallProviderAdaptersCheck;
+use App\Bridge\Check\Checks\InstallSecretDirCheck;
 use App\Bridge\Check\Checks\InstallSuffixDsnCheck;
 use App\Bridge\Check\Checks\ReconcileRepoTokensCheck;
 use App\Bridge\Check\Checks\RetentionPostureCheck;
@@ -38,13 +42,11 @@ use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
-use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\Severity;
-use App\Bridge\Support\UrlValidator;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -86,8 +88,11 @@ class CheckCommand extends BridgeCommand
         // retained runner would re-register into the same id namespace.
         $sshEnv = $this->laravel->make(SshProbeEnvironment::class);
         $runner = (new CheckRunner)
+            ->register(CheckSlot::Install, new InstallConfigDirCheck, new InstallSecretDirCheck)
             ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck)
+            ->register(CheckSlot::Inbox, new InboxSurfacingConfigCheck)
             ->register(CheckSlot::Retention, new RetentionPostureCheck)
+            ->register(CheckSlot::Providers, new InstallEndpointUrlsCheck, new InstallProviderAdaptersCheck)
             ->registerPerAgent(CheckSlot::AgentClassifier, new AgentClassifierResolvableCheck)
             ->registerPerAgent(CheckSlot::AgentPolicy, new CiFailureFilterCheck, new WakeMembershipCheck)
             ->registerPerAgent(
@@ -126,40 +131,24 @@ class CheckCommand extends BridgeCommand
         // the context; migrated checks read it, unmigrated code keeps its locals.
         $ctx = new CheckContext;
 
-        $configDir = config('bridge.config_dir');
-        if (! is_string($configDir) || $configDir === '') {
-            $this->error('bridge.config_dir (BRIDGE_CONFIG_DIR) is not set');
+        // The two install directories — migrated to InstallConfigDirCheck and
+        // InstallSecretDirCheck (DL-242 stage 6). Both checks read their config keys
+        // RAW, and so does the derivation below: what they report on is the SETTING, and
+        // the narrowed value published on the context cannot express an empty string or a
+        // value env() coerced away from a string. Reading a config key a second time is
+        // free of side effects, which is why this differs from the shared-identities read
+        // stage 5c preserved rather than collapsed (card#5546) — that one logs.
+        if (! $this->emitReport($runner->run(CheckSlot::Install, $ctx))) {
             $ok = false;
-        } elseif (! is_dir($configDir)) {
-            $this->error("config dir does not exist: {$configDir}");
-            $ok = false;
-        } else {
-            $this->info("config dir: {$configDir}");
-            $this->warnIfDirInsecure('config dir', $configDir);
-        }
-
-        $secretDir = config('bridge.secret_dir');
-        if (! is_string($secretDir) || ! str_starts_with($secretDir, '/')) {
-            $this->error('bridge.secret_dir (BRIDGE_SECRET_DIR) is not set or not absolute');
-            $ok = false;
-        } else {
-            $this->info("secret dir: {$secretDir}");
-            // Cover a split layout: when secret_dir is a different path, IT is the
-            // dir holding the secrets — warn on its perms too (DL-014).
-            if ($secretDir !== $configDir) {
-                $this->warnIfDirInsecure('secret dir', $secretDir);
-            }
         }
 
         if (! $this->emitReport($runner->run(CheckSlot::Database, $ctx))) {
             $ok = false;
         }
 
-        try {
-            BridgePaths::validateInboxConfig();
-            $this->info('inbox surfacing config: ok (layout='.BridgePaths::inboxLayout().')');
-        } catch (Throwable $e) {
-            $this->error('inbox surfacing config: '.$e->getMessage());
+        // The inbox surfacing layout/mode config — migrated to InboxSurfacingConfigCheck
+        // (DL-242 stage 6).
+        if (! $this->emitReport($runner->run(CheckSlot::Inbox, $ctx))) {
             $ok = false;
         }
 
@@ -167,40 +156,14 @@ class CheckCommand extends BridgeCommand
             $ok = false;
         }
 
-        // Per-install endpoint URLs (when set — unset is fine until provisioning).
-        foreach ([
-            'receiver_base_url' => ['url' => (string) config('bridge.receiver_base_url'), 'secure' => false],
-            // secret-bearing (token + provision-time HMAC secret) — https floor (#3574)
-            'providers.kanban.api_base_url' => ['url' => (string) config('bridge.providers.kanban.api_base_url'), 'secure' => true],
-        ] as $field => $spec) {
-            if ($spec['url'] === '') {
-                continue;
-            }
-            try {
-                $spec['secure']
-                    ? UrlValidator::secureHttpUrl($spec['url'], "bridge.{$field}")
-                    : UrlValidator::httpUrl($spec['url'], "bridge.{$field}");
-            } catch (Throwable $e) {
-                $this->error($e->getMessage());
-                $ok = false;
-            }
+        // The per-install endpoint URLs and the provider/adapter coverage leg — migrated
+        // to InstallEndpointUrlsCheck and InstallProviderAdaptersCheck (DL-242 stage 6).
+        if (! $this->emitReport($runner->run(CheckSlot::Providers, $ctx))) {
+            $ok = false;
         }
 
-        // Every configured provider must have a registered adapter (B-15): the
-        // two provider lists (config('bridge.providers') and
-        // WebhookAdapterFactory::SUPPORTED) are otherwise independent and drift —
-        // an api_base_url for a provider with no adapter is a dead config the
-        // receiver would 400 (unknown_provider) on.
-        $providers = config('bridge.providers');
-        if (is_array($providers)) {
-            foreach (array_keys($providers) as $provider) {
-                if (is_string($provider) && ! WebhookAdapterFactory::supports($provider)) {
-                    $this->error("bridge.providers.{$provider} is configured but has no adapter (WebhookAdapterFactory::SUPPORTED = ".implode(', ', WebhookAdapterFactory::SUPPORTED).')');
-                    $ok = false;
-                }
-            }
-        }
-
+        $configDir = config('bridge.config_dir');
+        $secretDir = config('bridge.secret_dir');
         $agentNames = [];
         $configs = [];
         // The two writeback scope maps this loop accumulates now live on the context —
@@ -1007,22 +970,6 @@ class CheckCommand extends BridgeCommand
             // of it: line() throws on a message carrying an invalid formatter tag,
             // exactly as the info() here before it did, and that escape is unchanged.
             $this->emitFinding(Finding::unvalidated('event-consumer: check skipped — '.$e->getMessage()));
-        }
-    }
-
-    /**
-     * Warn (not fail) when a secret-holding dir is group/world-accessible (DL-014).
-     * On a multi-tenant host these dirs must be owner-only (0700); a co-tenant who
-     * can traverse one can read the HMAC secrets / tokens in it. Warn, not fail —
-     * perms are operator-owned and the per-secret 0600 gate (DL-010) is the hard
-     * backstop enforced fail-closed at point-of-use regardless of dir perms.
-     */
-    private function warnIfDirInsecure(string $label, string $dir): void
-    {
-        clearstatcache(true, $dir);
-        $perms = fileperms($dir);
-        if ($perms !== false && ($perms & 0o077) !== 0) {
-            $this->warn(sprintf('%s %s is group/world-accessible (mode %04o) — chmod 700 (it holds secrets)', $label, $dir, $perms & 0o777));
         }
     }
 }

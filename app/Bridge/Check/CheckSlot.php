@@ -28,13 +28,35 @@ namespace App\Bridge\Check;
 enum CheckSlot: string
 {
     /**
+     * The HEAD of the run: the two directories the install is built on — the config dir
+     * it scans for agent YAMLs, and the secret dir holding the webhook secrets and API
+     * tokens — each reported as resolvable-or-not and then for its permissions.
+     */
+    case Install = 'install';
+
+    /**
      * The database binding, between the secret-dir leg and the inbox-surfacing one:
      * whether the install can reach a database, and whether it is the RIGHT one.
      */
     case Database = 'database';
 
+    /** The inbox surfacing layout/mode config, between the database and retention legs. */
+    case Inbox = 'inbox';
+
     /** The install-wide retention posture, after the inbox-surfacing leg. */
     case Retention = 'retention';
+
+    /**
+     * The per-install PROVIDER plane, after the retention leg and before the per-agent
+     * config iteration: the endpoint URLs this install was configured with, and whether
+     * every configured provider has an adapter to receive for it.
+     *
+     * THE LAST GLOBAL SLOT BEFORE THE SCAN, and the reason {@see self::Install} could not
+     * simply absorb it: three units of pre-loop output are separated by the database and
+     * retention legs, which migrated first. The three slots collapse into one the moment
+     * the enum does (see this enum's own docblock) — they are not three ideas.
+     */
+    case Providers = 'providers';
 
     /**
      * The HEAD of the per-agent config iteration, immediately after that agent's YAML
