@@ -128,6 +128,18 @@ enum CheckSlot: string
      */
     case WritebackProbe = 'writeback-probe';
 
+    /**
+     * The event-follows-consumer plane, after the whole `writeback.json` envelope and
+     * before the board-tools one: does an enabled classifier consume what has actually
+     * ARRIVED for each subscribed github scope?
+     *
+     * INDEPENDENT OF WRITEBACK, WHICH IS WHY IT IS ITS OWN SLOT rather than the tail of
+     * {@see self::WritebackProbe}: a coord agent has no writeback at all, and this plane
+     * still runs for it. Its position is after the envelope only because that is where
+     * the inline code printed it.
+     */
+    case EventConsumer = 'event-consumer';
+
     /** Inside `checkBoardTools()`'s ssh-agent iteration, before the DL-225 advisory. */
     case BoardToolsSsh = 'board-tools-ssh';
 

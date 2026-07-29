@@ -90,7 +90,7 @@ re-mint the bug.
 
 - **Deriving a model of the install** — `$configs` accumulates in the per-agent config loop,
   `$githubScopeConsumers` in that loop's subscription walk, `$writeback` and `$client` later.
-- **Asserting on that model** — consumed as late as `checkEventFollowsConsumer()`, near the end.
+- **Asserting on that model** — consumed as late as the event-follows-consumer advisory, near the end.
 
 This is why the method resists ordinary extract-method refactoring: the checks are not
 independent, because the model they assert on is being built *between* them.
@@ -175,8 +175,9 @@ position.
 `CheckContext`.** Migrated checks read it; unmigrated code keeps its local variables.
 `CheckContext` becomes a standalone builder only in the final stage. Without this rule the stage
 boundaries are ill-defined — `$githubScopeConsumers` is *built* inside the per-agent loop
-and *consumed* by `checkEventFollowsConsumer()`, so producer and consumer are migrated in different
-stages and must communicate through the context in the interim.
+and *consumed* by the event-follows-consumer advisory, so producer and consumer are migrated in
+different stages and must communicate through the context in the interim. Stage 7a is where that
+became concrete: the loop now writes `$ctx->githubScopeConsumers` directly and the local is gone.
 
 ### Why a strangler migration, not a rewrite
 
@@ -243,7 +244,8 @@ next stage starts.
 | **5b ✅** | Migrate the per-agent **secret/token + channel-transport** legs: secret + API-token presence, `channel.auth.token_path`, and the socket/HTTP marker + liveness legs. **Five of the eight disclosed gaps were here**, so unit tests carried the proof — a green golden run says nothing about these. First stage to add **no** slot, and the one seam (`ChannelProbeEnvironment`) is the connect alone; see the stage 5b result. | **None** | no |
 | **5c ✅** | Migrate the **post-loop registry/identity** legs: `AgentRegistry` collisions, `treat_as_signal`, `BRIDGE_DEFAULT_AGENT`, `shared-identities.json`, into a new `CheckSlot::AgentRoster`. The registry BUILD stays inline as derivation — it logs collisions at construction, so a second builder would re-log them behind the output contract's back; see the stage 5c result. | **None** | no |
 | **6 ✅** | Migrate the **pre-loop install plane** — both install directories, the inbox-surfacing config, the endpoint URLs, and the provider/adapter coverage leg — into **three** new slots (`CheckSlot::Install`, `::Inbox`, `::Providers`). Three because the region is not contiguous: the already-migrated `Database` and `Retention` slots run inside it and slot ordinal fixes output order. `warnIfDirInsecure()` moves with it (both callers migrate here). **This row replaces an earlier one that under-enumerated the remaining work; see the stage 6 result.** | **None** | no |
-| **7** | Migrate the **post-loop plane** — event-follows-consumer, `board_tools`, `--probe-tools` — after which `handle()` holds derivation and the runner calls alone. | **None** (golden test enforces) | no |
+| **7a ✅** | Migrate the **event-follows-consumer plane** — the whole DL-196 advisory — into a new `CheckSlot::EventConsumer`. One check, one slot. **Row 7 splits on SIZE, not on a measured seam**, and the stage 7a result says so rather than manufacturing a discriminator; it is also the first stage whose predicate total goes UP, because it migrates a HELPER method rather than code inside `handle()`. | **None** (golden test enforces) | no |
+| **7b** | Migrate the **board-tools plane** — the `suppressedReason` scan, the resolver's `problems()`, the per-agent board-STATE legs, the DL-225 flipped-default advisory (which reads its input back off another slot's REPORT — a first for this program) and the `--probe-tools` live probe — after which `handle()` holds derivation and the runner calls alone. | **None** (golden test enforces) | no |
 | **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
 | **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** |
 | **10** | Re-assign the sites that disagree on warn ↔ unvalidated. Closes **card#5291**, **card#5292**. | **Yes** — severities change | **GATE** |
@@ -1135,6 +1137,143 @@ post-loop one.
 the package this program has been building for six stages) and **card#5551** above. They join
 card#5546, card#5547 and card#5548 from stage 5c; 5547, 5549 and 5551 are one doc-work batch to be
 done together, 5551's rule first, after stage 7.
+
+### Stage 7a result — the split that is not a seam, and the first predicate total that goes UP
+
+**What migrated:** one check — `event.follows_consumer`, the DL-196 advisory in its entirety
+(the card#4354 action inventory, sola's #22 undeclared-classifier warn, the card#4183 unconsumed-type
+warn with its #4321 count + last-seen, and the fail-soft `catch`'s card-5170 `unvalidated` line) —
+into one new slot, `CheckSlot::EventConsumer`, between the writeback envelope and the board-tools
+plane. It is the 4th `emitFinding` call site — the one stage 1 recorded as unable to move alone,
+because the `catch` wrapped that method's whole body. **With it gone, `emitReport()` is the ONLY
+caller of `emitFinding()` left in the command**: every `Finding` this command renders now arrives
+through the registry. (Raw `warn()`/`error()`/`info()` emissions remain in the unmigrated board-tools
+plane — that is 7b's, and this claim is about the `Finding` path alone.)
+
+**Row 7 splits on SIZE, and saying so is the point.** Stages 3a/3b and 5a/5b/5c each split on a
+MEASURED discriminator — where the disclosed gaps sat, which legs needed a constructed client. This
+one does not. Measured at `dev` 8ddea57: this stage's advisory was **169 lines**, and 7b's two
+surviving methods (`checkBoardTools`, `probeBoardToolsEndpoint`) are **86 + 93 = 179** before their
+call sites and helpers — so the undivided row is ~350 lines of migrated code carrying **6 checks
+across 5 new slots** (7b's share is the plan on card#5554, not yet built), against stage 6's 5 checks
+and 3 slots, the largest so far. The halves share no seam: 7a reads `$ctx->githubScopeConsumers`
+and `webhook_events`; 7b reads configs, a kanban client and the ssh probe environment. Nothing
+orders them but output position. The honest reason for splitting is that one PR would be twice the
+review surface of the largest stage yet, and **the defect this program keeps meeting is a claim made
+at a strength its evidence did not support (card#5551) — which is what more surface at the same
+attention produces.** A manufactured discriminator would have read better and been false.
+
+**The fail-soft `catch` moved INSIDE the check's generator, and that is the stage-3b constraint, not
+a style choice.** `CheckRunner` MATERIALIZES a check's findings before the caller renders any of
+them, whereas the inline code had already PRINTED every line above the throw. A `catch` left in the
+caller — an envelope, as stage 3a ruled for `writeback.json` — would therefore DISCARD the findings
+this check had already yielded: the scopes it got through before the DB hiccup. **No fixture reaches
+that catch, so the corpus cannot tell the two placements apart**, and neither can a test that only
+asserts the `unvalidated` line — it passes under the wrong placement too. The discriminating test is
+the one asserting the pre-throw warn AND the `unvalidated` line TOGETHER, and it exists.
+
+**The predicate total goes UP for the first time in the program, and it is not a regression.** Every
+stage so far migrated code living IN `handle()`, so the table fell by (n−1) each time. This stage
+migrates a HELPER METHOD: nothing leaves the measured region because none of it was ever in it —
+`$this->checkEventFollowsConsumer(...)` was a bare statement, not a predicate, and the method's own
+branches lived where the instrument has never walked. What arrives is one genuine new predicate, the
+`if (! $this->emitReport($runner->run(CheckSlot::EventConsumer, $ctx)))` call site. **A reader
+tracking the total downward will read the rise as a regression unless this says otherwise. 7b will
+do it twice more** (it deletes two `if (! $this->checkX(...))` predicates and adds one call site per
+new slot), so the rule is stated once, here.
+
+**No `CheckContext` field was added — this stage WIRED one that had waited seven stages for a user.**
+`githubScopeConsumers` was declared at stage 0 (c4344fa) with its full docblock and, measured at
+`origin/dev`, had **no reader and no writer** ever since: every occurrence was the declaration, its
+docblock, or `handle()`'s identically-named LOCAL. Of the four fields stage 0 declared, the other
+three gained users at stages 1, 3a and 3b. So `CheckContext`'s own rule — fields arrive as the checks
+reading them migrate, never as a guess at what checks will want — has exactly one exception in the
+program's history, and this stage closes it: the loop now writes `$ctx->githubScopeConsumers[...]`
+and the local is gone.
+
+**Writing one field's docblock falsified two of its neighbours', and that is the more useful
+finding.** The new paragraph on `githubScopeConsumers` says its trap is PARTIAL rather than EMPTY —
+it is accumulated DURING the per-agent loop, so a check reading it from inside that loop sees the
+agents processed so far. Checking whether that made it unique found it does not:
+`writebackEmittingScopes` and `coordCardMoveScopes` are written inside the same loop and both
+docblocks claimed *"POPULATED AFTER THE PER-AGENT LOOP FINISHES"*. **Both claims were false from the
+day the fields were added** (stage 3a), and invisible because every consumer runs in the `Writeback`
+/ `WritebackProbe` slots — after the loop — so no reader was ever misled. They are corrected here
+rather than carded: a docblock correction beside a paragraph this stage wrote is not a behavior
+change, and leaving a false claim next to a new true one is how the next reader learns the wrong
+rule. A grep for the same wording across `app/`, `docs/` and `CLAUDE_*.md` found no other instance.
+
+**phpstan's purity inference is DIRECT-CALL-SCOPED, and removing one inline call is what exposed
+it.** With the advisory gone, `if ($this->unvalidatedCount > 0)` — the card-5170 disclaimer — became
+`greater.alwaysFalse` at level 7. It is not dead: **2 of the 33 rendered fixtures print that line.**
+Bisected in a detached copy, one run per arm: the base file is clean; base plus an extra `emitReport`
+call site is clean; **base minus the advisory method and its call, nothing else, reds it**; and a
+DIRECT `emitFinding(Finding::unvalidated(…))` inserted above the tally does NOT clear it, so the
+analyser never propagates the write at all. Annotating the actual mutator (`emitUnvalidated`) or the
+renderer (`emitFinding`) leaves the error standing; annotating **`emitReport`** — the method
+`handle()` actually calls — clears it. So the gap is latent since stage 1: `emitReport` was always
+inferred pure, and the advisory was simply the one call between it and the tally that phpstan did
+infer impure. `emitReport` now carries `@phpstan-impure`, which states a true fact rather than
+suppressing a finding. **7b removes `checkBoardTools()` and `probeBoardToolsEndpoint()` — two more
+direct calls in the same region — so expect the same shape to surface again there; it is the
+analyser's model, not a defect the stage introduced.**
+
+**What the golden corpus protects here, measured from the RENDERED files.** Exactly **one** of the 33
+fixtures prints an `event-consumer:` line — `event-consumer-unconsumed-type`, rendering ONE of the
+four message shapes (the unconsumed-type warn, one type, one agent, pinned last-seen). The action
+inventory, the undeclared-classifier warn and the `unvalidated` skip line have **zero** golden
+coverage, so for those the unit tests are the whole proof. `event-consumer-nothing-arrived` prints no
+line BY DESIGN: it is an ABSENCE assertion — a scope with consumers but no arrived events stays
+silent — and it is invisible to a grep for the prefix. **It is the fixture NAMED for that path, not
+the only one taking it**, and the distinction is worth the sentence because the first draft of this
+section claimed otherwise: measured from the BUILDERS (a rendered file cannot witness a silent path,
+which is the whole difficulty), 8 fixtures boot a github-subscribed agent and 7 of them have no
+arrived events. What the named fixture adds is a deliberate, labelled witness — not unique coverage.
+Neither this
+check's predicates nor the method's before it appear in `docs/check-golden-coverage.md` in either
+direction: that instrument walks `handle()` only. **One thing the corpus does pin, unusually:
+registration.** `CheckRunner`'s docblock records that nothing pins WHICH checks the command registers
+— true in general, and not true for this one: dropping it from the registration list deletes a line a
+fixture asserts.
+
+**Unit tests + mutation proofs.** 18 tests / 41 assertions in `EventFollowsConsumerCheckTest`, and
+**16 mutation proofs**, each RED when the guard is reverted, green after restore, source byte-identical
+afterward: the empty-map early return, the empty-`event_type` skip, the 19-char seconds trim, the
+per-type count accumulation, the actionless-type guard, the top-level projection, the bare-vs-qualified
+split, both clauses of the inventory's skip condition proved separately, the unlisted-empty guard, the
+descending `uasort`, the undeclared caveat, the undeclared collection, the unconsumed-empty guard, and
+two on the catch (rethrowing ERRORS the paired test; yielding nothing FAILS it). Beyond the golden run,
+the migrated body was compared to the original **mechanically** — every code line normalized through
+the documented `$this->info/warn` → `yield Finding::ok/warn` transformations, diffed, and the
+comparator positive-controlled on a known-different pair: identical.
+
+**Coverage-table effect — the predicate total goes 29 → 30**: `29 observed · 0 observed-via-abort ·
+1 UNOBSERVED`, measured in 21 minutes on a detached copy. Compared as a multiset, **zero predicates
+depart and one arrives** — the `if (! $this->emitReport($runner->run(CheckSlot::EventConsumer,
+$ctx)))` call site, `observed` — and the conservation assertion `29 − 0 + 1 = 30` passed on the first
+run. **The prediction held on the split as well as the total for the second stage running**, and for
+the same narrow reason stage 6's did: this stage rewrote no surviving predicate's condition TEXT, and
+the diff keys on that text (stage 5c's third method note). Zero surviving predicates changed status.
+The disclosed-gap count holds at **1** — no gap departed, arrived, or closed in place — and it is
+still the derivation guard `$configs !== [] && $ctx->configDir !== null`, whose text this stage does
+not touch. It stays measured by design until the final stage makes `CheckContext` a builder.
+
+**Two format arms are unreachable rather than untested, and they are carded, not deleted.** Both
+`'unknown'` last-seen renderings need `MAX(received_at)` to arrive non-scalar or empty;
+`received_at` is `timestamp(3)` NOT NULL with a DB-side default, so over a non-empty group it is
+always a scalar timestamp string. Deleting them changes no output only BECAUSE they never fire —
+exactly the edit a byte-identical stage must not smuggle in. Filed as **card#5555**, with the sibling
+audit that found the other `'unknown'` renderings in `app/Bridge` guard genuinely-absent sources and
+are a different shape.
+
+**Real-surface verification, stated at the strength the evidence supports.** `bridge:check` at this
+commit and at `origin/dev`, run in the SAME copied directory with the commit switched between runs:
+stdout and stderr **byte-identical**, exit 0 both sides, the diff positive-controlled on an injected
+line. The live install prints no `event-consumer` line — **but not because the plane was skipped**:
+two agent YAMLs carry github subscriptions and `webhook_events` holds 495 github rows, so the loop,
+the grouped query, the projection, the consumed-union and every skip guard ran on real data and
+correctly emitted nothing. The four MESSAGE shapes were not exercised live, and no run of this
+command on this install would exercise them.
 
 ## Verification
 
