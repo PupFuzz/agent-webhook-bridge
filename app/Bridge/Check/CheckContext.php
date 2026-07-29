@@ -3,6 +3,7 @@
 namespace App\Bridge\Check;
 
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackConfig;
 
@@ -29,8 +30,11 @@ use App\Bridge\Writeback\WritebackConfig;
  * become readonly and set once — the target design's "built ONCE, before any check
  * runs."
  *
- * FIELDS ARE ADDED PER STAGE, as the checks that read them migrate. The four below
- * are the plan's measured derivation set, not a guess at what checks will want.
+ * FIELDS ARE ADDED PER STAGE, as the checks that read them migrate. Each one is a
+ * derivation some migrating check was MEASURED to need, never a guess at what checks
+ * will want — which is why this paragraph states the rule and carries no count of the
+ * fields below: a count here is a second copy of the field list, and it drifts on the
+ * first stage that adds one.
  */
 final class CheckContext
 {
@@ -81,6 +85,46 @@ final class CheckContext
      * @var array<string, true>
      */
     public array $coordCardMoveScopes = [];
+
+    /**
+     * Every `<name>.yml` the config-dir scan SAW, whether or not it parsed.
+     *
+     * DELIBERATELY NOT THE NAMES OF {@see self::$configs}: a malformed YAML is here and
+     * absent there, because the scan records the name before the load is attempted. The
+     * difference is the whole point — a leg asking "does this name have a config file"
+     * must say yes for an agent whose file exists and is broken, since a different leg
+     * already reported the parse failure and the fix is not "create the file".
+     *
+     * POPULATED AFTER THE PER-AGENT LOOP FINISHES, with the same trap as
+     * {@see self::$configs}: a check reading it from inside that loop sees it EMPTY.
+     *
+     * @var list<string>
+     */
+    public array $agentNames = [];
+
+    /**
+     * The configured config dir, or null when it is unset / not a string — the state in
+     * which no path under it can be formed at all.
+     *
+     * NULL IS NOT "the dir is missing or unusable": a non-existent or insecure directory
+     * is reported by its own leg and still arrives here as a string. This field answers
+     * only whether a path can be BUILT, which is the question the legs reading it ask.
+     */
+    public ?string $configDir = null;
+
+    /**
+     * The agent roster built from every config that parsed, or null when there was
+     * nothing to build one from.
+     *
+     * BUILT ONCE, IN `CheckCommand`, AND SHARED. {@see AgentRegistry} finds and
+     * LOGS identity collisions at CONSTRUCTION — its `collisions()` accessor
+     * only returns what the build already accumulated — so every check that needs a
+     * roster must read this one instance. Two checks each constructing their own would
+     * re-log every collision on a colliding install: a behavior change invisible to the
+     * command's output, and therefore invisible to the golden contract that guards this
+     * migration.
+     */
+    public ?AgentRegistry $registry = null;
 
     /**
      * The validated secret dir, or null when it is unset / not absolute — the state in

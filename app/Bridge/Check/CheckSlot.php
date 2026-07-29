@@ -73,6 +73,24 @@ enum CheckSlot: string
     case AgentConfig = 'agent-config';
 
     /**
+     * The agent ROSTER/IDENTITY plane, after the per-agent config iteration has finished
+     * and before the `writeback.json` load envelope.
+     *
+     * IT IS POST-LOOP BY NECESSITY, NOT BY LAYOUT. Everything registered here asserts
+     * against the roster as a whole — collisions ACROSS agents, `treat_as_signal`
+     * resolved against every known name, a default agent naming one of them — and that
+     * roster does not exist until the last YAML has been read. This is the first slot
+     * whose position is forced by what its checks READ rather than by where unmigrated
+     * inline code happens to print.
+     *
+     * NAMED FOR THE ROSTER, NOT THE REGISTRY, on purpose: this program calls
+     * {@see CheckRunner} "the check registry", and its checks read an
+     * `App\Bridge\Support\AgentRegistry`. A case called `AgentRegistry` would collide
+     * with both.
+     */
+    case AgentRoster = 'agent-roster';
+
+    /**
      * The writeback CONFIG plane, inside the `writeback.json` load envelope and before
      * the writeback client is constructed. Everything here asserts on config alone, so
      * it fires on a half-configured install — which is where a writeback misconfig is
