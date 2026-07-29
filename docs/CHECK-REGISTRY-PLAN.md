@@ -867,6 +867,124 @@ is_string($configDir)` guard, the `AgentRegistry` collisions walk, and the `$con
 one stage's worth of work, and 5c inherits the same rule 5b just executed: unit tests are the proof
 there, because a green golden run cannot be.
 
+### Stage 5c result — the first slot whose position is forced by what its checks read, and the context field that is deliberately not the obvious one
+
+**What migrated:** four checks — `agent.identity_collisions` (the roster id collisions),
+`agent.treat_as_signal` (every agent's echo-suppression allowlist resolved against the roster),
+`agent.default_agent` (`BRIDGE_DEFAULT_AGENT` names a scanned config) and `agent.shared_identities`
+(the optional `shared-identities.json` report) — into **one new slot, `CheckSlot::AgentRoster`.**
+
+**A slot was added, and its position is forced rather than chosen.** Every unit here asserts against
+the roster *as a whole* — collisions ACROSS agents, `treat_as_signal` resolved against every known
+name, a default agent naming one of them — and that roster does not exist until the last YAML has
+been read. This is the first slot in the migration whose ordinal is fixed by what its checks READ
+rather than by where unmigrated inline code happens to print. **The slot costs exactly one
+arrival** — its single `emitReport` call site. (The multiset diff reports two arrivals; the second is
+a survivor whose condition text changed, and the paragraph on the split below is why that
+distinction matters.) Stage 5b's arrivals were zero, which is a property of that stage's contiguity,
+not a trend the migration is on — recorded here so the zero is not read as one.
+
+**Why four checks and not two.** The collision and `treat_as_signal` legs share a registry, a guard
+and a post-loop position, which is most of an argument for folding them. They stay separate because
+they differ where it counts: a collision is a `warn` an operator may knowingly accept, an
+unresolvable signal name is a `fail` that flips `bridge:check`'s exit code, and the repairs differ
+(rename an identity vs. correct a name). Folded, they would hand stage 8's inventory one row that
+means two things — the same reason stage 5b kept its secret and token legs apart.
+
+**The registry build stays inline as DERIVATION, not assertion (constraint (c)) — and this one is
+not a judgement call.** `AgentRegistry` finds and LOGS identity collisions AT CONSTRUCTION;
+`collisions()` only returns what the build already accumulated. Two checks each constructing their
+own registry would therefore re-log every collision on a colliding install. That is a behavior
+change **the byte-identical output contract cannot see**, because it lands in the log rather than on
+stdout — the migration's own guard rail is blind to it. So the build stays in `handle()` and both
+readers share `$ctx->registry`.
+
+**`CheckContext` gains three fields, and one of them is deliberately not the obvious one.**
+`configDir` answers only whether a path can be FORMED (a non-existent or insecure dir is still a
+string here and is reported by its own leg); `registry` is the shared roster; and `agentNames` is
+**every `<name>.yml` the scan SAW, which is NOT the names of `configs`.** The scan records a name
+before the load is attempted, so an agent whose YAML is malformed is in `agentNames` and absent from
+`configs`. Resolving `BRIDGE_DEFAULT_AGENT` against `configs` — the field that already existed, and
+the reuse a reviewer would wave through — makes the check tell the operator to create a file that is
+sitting right there, while a separate line has already reported the real fault.
+
+**One bounded output divergence, found by the second review pass and accepted rather than fixed.**
+The default-agent warning renders `$ctx->configDir`, a `?string`, where the inline code rendered
+`handle()`'s raw `config('bridge.config_dir')`. Those differ on exactly one value: `BRIDGE_CONFIG_DIR`
+set to the literal `true`, which Laravel's `env()` coerces to boolean `true` — verified against the
+running app rather than reasoned about. The old line then read `… no matching config 1/<name>.yml`
+and the new one reads `… /<name>.yml`, on an install that has already printed `bridge.config_dir
+(BRIDGE_CONFIG_DIR) is not set` and will exit non-zero. It is not repaired here, because reproducing
+it means carrying the un-narrowed value beside the narrowed one — the bool-plus-string pair
+`CheckContext` exists to refuse. A sibling audit across all 26 check classes found **one** of 91
+`Finding` sites rendering a nullable context path into a message, so there is no second copy and
+nothing to consolidate.
+
+**No golden fixture pairs a malformed YAML with a default agent naming it, so the byte-identical
+contract is blind to that swap.** `AgentDefaultAgentCheckTest` is what is not: it pins the
+malformed-config case directly, and is the highest-value mutation proof in this stage's set. The
+same shape recurs across the stage — no fixture reaches a collision, and none reaches the
+`treat_as_signal` throw — so for three of these four checks a green golden run is not evidence, and
+the unit tests are the whole measurement.
+
+**Coverage-table effect — the predicate total goes 38 → 35**: `32 observed · 2 observed-via-abort ·
+1 UNOBSERVED`, measured in 25 minutes on a detached copy. Compared as a multiset, **five predicates
+depart and two arrive**, and the conservation assertion `38 − 5 + 2 = 35` passed on the first run.
+The per-agent `catch` appears on neither side of that sum — the instrument walks
+`if`/`elseif`/`foreach` only.
+
+**The prediction was right on the total and wrong on the split, and the way it was wrong is a method
+note.** `38 − 4 + 1 = 35` was checked against the diff *before* the run — four departures (the
+collisions `foreach`, the `treat_as_signal` `foreach`, the `BRIDGE_DEFAULT_AGENT` `if`, the
+shared-identities `if`) and one arrival. The run returned `38 − 5 + 2 = 35`. The extra departure and
+the extra arrival are the SAME predicate: the derivation guard, whose condition changed from
+`$configs !== [] && is_string($configDir)` to `$configs !== [] && $ctx->configDir !== null` when
+`CheckContext` gained the field (the two are equivalent — the field is assigned
+`is_string($configDir) ? $configDir : null`). **The total was right by cancellation, which is exactly
+what the conservation assertion cannot catch: it checks the sum, not the split.**
+
+**Third method note for the multiset diff: the key is the condition's TEXT.** Stage 3a recorded the
+first two — compare as a multiset, and assert `old − departed + added == new`. This stage adds the
+third. `(kind, source)` keys on the source *text*, so a predicate that SURVIVES a stage with its
+condition rewritten is indistinguishable from one that left plus a different one that arrived. The
+consequence is specific: **"gaps closed in place" is structurally blind to any predicate whose text
+the stage rewrote.** It can only ever report closure for predicates the refactor left textually
+untouched, so a zero there means *no closure among the textually-stable predicates*, never *no
+closure*. A migration whose whole method is publishing `handle()`'s locals onto `CheckContext`
+rewrites condition text as a matter of course, so this will recur in every remaining stage — and it
+is the reason the split, not just the total, has to be read off the tool rather than predicted.
+
+**The disclosed-gap count falls 3 → 1, and once again nothing was closed.** Three UNOBSERVED entries
+left the table, one arrived, and **zero were closed in place** — with the caveat the note above
+attaches to that zero. Two of the three departures are real: the collisions walk and the `$configs`
+walk behind `treat_as_signal` moved into checks whose unit tests measure them, which is the
+migration working, not the golden harness learning to see anything it could not see before. The
+third departure and the sole UNOBSERVED arrival are one predicate changing text. What stands behind
+the migrated branches now is `AgentIdentityCollisionsCheckTest` and `AgentTreatAsSignalCheckTest`,
+not the golden suite. This is stage 3b's warning firing a third time; the remaining region stays
+gap-dense.
+
+**The surviving gap is the derivation guard** (`$configs !== [] && $ctx->configDir !== null`), and it
+stays measured BY DESIGN: the registry build is derivation and stays inline, so its guard stays in
+`handle()`. It leaves only when the final stage makes `CheckContext` a builder — not before, and a
+stage that "closes" it earlier has moved the build somewhere it re-logs.
+
+**An `observed` verdict said nothing about the message again (the trap fires a second time).** The
+`shared-identities-present` fixture is `observed`, yet it pins only `0 shared account(s)`: its JSON
+omits the `shared_identities` wrapper key, so the file parses to an empty list and **nothing in the
+entire fixture set has ever rendered a non-zero count.** `SharedIdentitiesCheckTest` covers both the
+zero and the non-zero rendering. `observed` is a statement about DISTINGUISHABILITY, never about
+whether a branch's message is asserted anywhere.
+
+**Filed, not fixed here** — three root-cause items deliberately left out of a migration PR, all
+output-neutral: **card#5546** (`shared-identities.json` is read twice per run, so a malformed file
+logs the same warning twice — preserved here byte-for-byte because collapsing the reads changes
+logging, and stages 0–7 hold the byte-identical contract), **card#5547** (Check-package source
+comments restate program state that drifts; two were already false and were corrected in this
+stage), and **card#5548** (the coverage instrument ignores the return of every `file_put_contents`,
+so a failed mutation-apply is laundered into an `observed-via-abort` verdict and a destroyed run
+reports as a complete measurement — found while reading this stage's regen).
+
 ## Verification
 
 The existing net goes through the command boundary, so an internal refactor keeps it honest:

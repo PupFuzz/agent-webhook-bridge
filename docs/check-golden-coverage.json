@@ -1,10 +1,10 @@
 [
     {
-        "id": "if-L120",
+        "id": "if-L130",
         "kind": "if",
-        "line": 120,
-        "start": 5820,
-        "end": 5863,
+        "line": 130,
+        "start": 6254,
+        "end": 6297,
         "source": "! is_string($configDir) || $configDir === ''",
         "status": "observed",
         "failing": [
@@ -44,11 +44,11 @@
         ]
     },
     {
-        "id": "elseif-L123",
+        "id": "elseif-L133",
         "kind": "elseif",
-        "line": 123,
-        "start": 5989,
-        "end": 6008,
+        "line": 133,
+        "start": 6423,
+        "end": 6442,
         "source": "! is_dir($configDir)",
         "status": "observed-via-abort",
         "failing": [
@@ -87,11 +87,11 @@
         ]
     },
     {
-        "id": "if-L132",
+        "id": "if-L142",
         "kind": "if",
-        "line": 132,
-        "start": 6314,
-        "end": 6374,
+        "line": 142,
+        "start": 6748,
+        "end": 6808,
         "source": "! is_string($secretDir) || ! str_starts_with($secretDir, '/')",
         "status": "observed-via-abort",
         "failing": [
@@ -130,11 +130,11 @@
         ]
     },
     {
-        "id": "if-L139",
+        "id": "if-L149",
         "kind": "if",
-        "line": 139,
-        "start": 6743,
-        "end": 6767,
+        "line": 149,
+        "start": 7177,
+        "end": 7201,
         "source": "$secretDir !== $configDir",
         "status": "observed",
         "failing": [
@@ -173,11 +173,11 @@
         ]
     },
     {
-        "id": "if-L144",
+        "id": "if-L154",
         "kind": "if",
-        "line": 144,
-        "start": 6877,
-        "end": 6936,
+        "line": 154,
+        "start": 7311,
+        "end": 7370,
         "source": "! $this->emitReport($runner->run(CheckSlot::Database, $ctx))",
         "status": "observed",
         "failing": [
@@ -209,11 +209,11 @@
         ]
     },
     {
-        "id": "if-L156",
+        "id": "if-L166",
         "kind": "if",
-        "line": 156,
-        "start": 7286,
-        "end": 7346,
+        "line": 166,
+        "start": 7720,
+        "end": 7780,
         "source": "! $this->emitReport($runner->run(CheckSlot::Retention, $ctx))",
         "status": "observed",
         "failing": [
@@ -245,11 +245,11 @@
         ]
     },
     {
-        "id": "foreach-L161",
+        "id": "foreach-L171",
         "kind": "foreach",
-        "line": 161,
-        "start": 7490,
-        "end": 7834,
+        "line": 171,
+        "start": 7924,
+        "end": 8268,
         "source": "[ 'receiver_base_url' => ['url' => (string) config('bridge.receiver_base_url'), 'secure' => false], // secret-bearing (token + provision-time HMAC secret) \u2014 https floor (#3574) 'providers.kanban.api_base_url' => ['url' => (string) config('bridge.providers.kanban.api_base_url'), 'secure' => true], ]",
         "status": "observed",
         "failing": [
@@ -257,11 +257,11 @@
         ]
     },
     {
-        "id": "if-L166",
+        "id": "if-L176",
         "kind": "if",
-        "line": 166,
-        "start": 7874,
-        "end": 7892,
+        "line": 176,
+        "start": 8308,
+        "end": 8326,
         "source": "$spec['url'] === ''",
         "status": "observed",
         "failing": [
@@ -269,11 +269,11 @@
         ]
     },
     {
-        "id": "if-L185",
+        "id": "if-L195",
         "kind": "if",
-        "line": 185,
-        "start": 8707,
-        "end": 8726,
+        "line": 195,
+        "start": 9141,
+        "end": 9160,
         "source": "is_array($providers)",
         "status": "observed",
         "failing": [
@@ -281,11 +281,11 @@
         ]
     },
     {
-        "id": "foreach-L186",
+        "id": "foreach-L196",
         "kind": "foreach",
-        "line": 186,
-        "start": 8752,
-        "end": 8773,
+        "line": 196,
+        "start": 9186,
+        "end": 9207,
         "source": "array_keys($providers)",
         "status": "observed",
         "failing": [
@@ -293,11 +293,11 @@
         ]
     },
     {
-        "id": "if-L187",
+        "id": "if-L197",
         "kind": "if",
-        "line": 187,
-        "start": 8811,
-        "end": 8878,
+        "line": 197,
+        "start": 9245,
+        "end": 9312,
         "source": "is_string($provider) && ! WebhookAdapterFactory::supports($provider)",
         "status": "observed",
         "failing": [
@@ -337,11 +337,11 @@
         ]
     },
     {
-        "id": "if-L207",
+        "id": "if-L221",
         "kind": "if",
-        "line": 207,
-        "start": 10120,
-        "end": 10162,
+        "line": 221,
+        "start": 10845,
+        "end": 10887,
         "source": "is_string($configDir) && is_dir($configDir)",
         "status": "observed",
         "failing": [
@@ -380,11 +380,11 @@
         ]
     },
     {
-        "id": "foreach-L208",
+        "id": "foreach-L222",
         "kind": "foreach",
-        "line": 208,
-        "start": 10188,
-        "end": 10230,
+        "line": 222,
+        "start": 10913,
+        "end": 10955,
         "source": "glob(rtrim($configDir, '/').'/*.yml') ?: []",
         "status": "observed",
         "failing": [
@@ -423,11 +423,11 @@
         ]
     },
     {
-        "id": "if-L227",
+        "id": "if-L241",
         "kind": "if",
-        "line": 227,
-        "start": 11184,
-        "end": 11264,
+        "line": 241,
+        "start": 11909,
+        "end": 11989,
         "source": "! $this->emitReport($runner->runForAgent(CheckSlot::AgentClassifier, $cfg, $ctx))",
         "status": "observed",
         "failing": [
@@ -463,11 +463,11 @@
         ]
     },
     {
-        "id": "if-L239",
+        "id": "if-L253",
         "kind": "if",
-        "line": 239,
-        "start": 11834,
-        "end": 11923,
+        "line": 253,
+        "start": 12559,
+        "end": 12648,
         "source": "ClassifierResolver::probeImplements($cfg->classifierClass, EmitsWritebackReactions::class)",
         "status": "observed",
         "failing": [
@@ -478,11 +478,11 @@
         ]
     },
     {
-        "id": "foreach-L240",
+        "id": "foreach-L254",
         "kind": "foreach",
-        "line": 240,
-        "start": 11957,
-        "end": 11975,
+        "line": 254,
+        "start": 12682,
+        "end": 12700,
         "source": "$cfg->subscriptions",
         "status": "observed",
         "failing": [
@@ -493,11 +493,11 @@
         ]
     },
     {
-        "id": "if-L241",
+        "id": "if-L255",
         "kind": "if",
-        "line": 241,
-        "start": 12016,
-        "end": 12042,
+        "line": 255,
+        "start": 12741,
+        "end": 12767,
         "source": "$sub->provider === 'github'",
         "status": "observed",
         "failing": [
@@ -508,11 +508,11 @@
         ]
     },
     {
-        "id": "if-L251",
+        "id": "if-L265",
         "kind": "if",
-        "line": 251,
-        "start": 12551,
-        "end": 12628,
+        "line": 265,
+        "start": 13276,
+        "end": 13353,
         "source": "in_array('coord-card-move', $cfg->classifierConfig->strings('families'), true)",
         "status": "observed",
         "failing": [
@@ -523,11 +523,11 @@
         ]
     },
     {
-        "id": "foreach-L252",
+        "id": "foreach-L266",
         "kind": "foreach",
-        "line": 252,
-        "start": 12662,
-        "end": 12680,
+        "line": 266,
+        "start": 13387,
+        "end": 13405,
         "source": "$cfg->subscriptions",
         "status": "observed",
         "failing": [
@@ -538,11 +538,11 @@
         ]
     },
     {
-        "id": "if-L253",
+        "id": "if-L267",
         "kind": "if",
-        "line": 253,
-        "start": 12721,
-        "end": 12747,
+        "line": 267,
+        "start": 13446,
+        "end": 13472,
         "source": "$sub->provider === 'github'",
         "status": "observed",
         "failing": [
@@ -553,11 +553,11 @@
         ]
     },
     {
-        "id": "if-L273",
+        "id": "if-L287",
         "kind": "if",
-        "line": 273,
-        "start": 14058,
-        "end": 14066,
+        "line": 287,
+        "start": 14783,
+        "end": 14791,
         "source": "$declares",
         "status": "observed",
         "failing": [
@@ -565,11 +565,11 @@
         ]
     },
     {
-        "id": "if-L291",
+        "id": "if-L305",
         "kind": "if",
-        "line": 291,
-        "start": 15092,
-        "end": 15168,
+        "line": 305,
+        "start": 15817,
+        "end": 15893,
         "source": "! $this->emitReport($runner->runForAgent(CheckSlot::AgentPolicy, $cfg, $ctx))",
         "status": "observed",
         "failing": [
@@ -601,11 +601,11 @@
         ]
     },
     {
-        "id": "foreach-L295",
+        "id": "foreach-L309",
         "kind": "foreach",
-        "line": 295,
-        "start": 15250,
-        "end": 15268,
+        "line": 309,
+        "start": 15975,
+        "end": 15993,
         "source": "$cfg->subscriptions",
         "status": "observed",
         "failing": [
@@ -613,11 +613,11 @@
         ]
     },
     {
-        "id": "if-L296",
+        "id": "if-L310",
         "kind": "if",
-        "line": 296,
-        "start": 15305,
-        "end": 15331,
+        "line": 310,
+        "start": 16030,
+        "end": 16056,
         "source": "$sub->provider === 'github'",
         "status": "observed",
         "failing": [
@@ -625,11 +625,11 @@
         ]
     },
     {
-        "id": "if-L315",
+        "id": "if-L328",
         "kind": "if",
-        "line": 315,
-        "start": 16458,
-        "end": 16534,
+        "line": 328,
+        "start": 17108,
+        "end": 17184,
         "source": "! $this->emitReport($runner->runForAgent(CheckSlot::AgentConfig, $cfg, $ctx))",
         "status": "observed",
         "failing": [
@@ -661,56 +661,30 @@
         ]
     },
     {
-        "id": "if-L329",
+        "id": "if-L346",
         "kind": "if",
-        "line": 329,
-        "start": 17110,
-        "end": 17149,
-        "source": "$configs !== [] && is_string($configDir)",
+        "line": 346,
+        "start": 18081,
+        "end": 18123,
+        "source": "$configs !== [] && $ctx->configDir !== null",
         "status": "UNOBSERVED",
         "failing": []
     },
     {
-        "id": "foreach-L331",
-        "kind": "foreach",
-        "line": 331,
-        "start": 17291,
-        "end": 17313,
-        "source": "$registry->collisions()",
-        "status": "UNOBSERVED",
-        "failing": []
-    },
-    {
-        "id": "foreach-L334",
-        "kind": "foreach",
-        "line": 334,
-        "start": 17404,
-        "end": 17411,
-        "source": "$configs",
-        "status": "UNOBSERVED",
-        "failing": []
-    },
-    {
-        "id": "if-L347",
+        "id": "if-L359",
         "kind": "if",
-        "line": 347,
-        "start": 17926,
-        "end": 18021,
-        "source": "is_string($defaultAgent) && $defaultAgent !== '' && ! in_array($defaultAgent, $agentNames, true)",
+        "line": 359,
+        "start": 18802,
+        "end": 18864,
+        "source": "! $this->emitReport($runner->run(CheckSlot::AgentRoster, $ctx))",
         "status": "observed",
         "failing": [
             "minimal",
             "minimal-fpm-present",
-            "config-dir-missing",
-            "secret-dir-unset",
-            "provider-without-adapter",
-            "bad-receiver-url",
             "default-agent-has-no-config",
             "retention-disabled",
             "retention-misconfigured",
             "retention-last-pass-failed",
-            "agent-yaml-malformed",
-            "agent-classifier-missing",
             "agent-missing-secret-and-token",
             "agent-channel-socket-parent-missing",
             "agent-channel-http-no-port",
@@ -718,12 +692,10 @@
             "shared-identities-present",
             "writeback-orphaned-mapping",
             "writeback-half-configured-triggers",
-            "writeback-malformed",
             "writeback-move-leg-coord-config-unset",
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
-            "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
             "board-tools-ssh-live-probe",
@@ -735,55 +707,11 @@
         ]
     },
     {
-        "id": "if-L353",
+        "id": "if-L367",
         "kind": "if",
-        "line": 353,
-        "start": 18326,
-        "end": 18407,
-        "source": "is_string($configDir) && is_file(rtrim($configDir, '/').'/shared-identities.json')",
-        "status": "observed",
-        "failing": [
-            "minimal",
-            "minimal-fpm-present",
-            "config-dir-missing",
-            "secret-dir-unset",
-            "provider-without-adapter",
-            "bad-receiver-url",
-            "default-agent-has-no-config",
-            "retention-disabled",
-            "retention-misconfigured",
-            "retention-last-pass-failed",
-            "agent-yaml-malformed",
-            "agent-classifier-missing",
-            "agent-missing-secret-and-token",
-            "agent-channel-socket-parent-missing",
-            "agent-channel-http-no-port",
-            "agent-ci-failure-patterns-and-wake-membership",
-            "shared-identities-present",
-            "writeback-orphaned-mapping",
-            "writeback-half-configured-triggers",
-            "writeback-malformed",
-            "writeback-move-leg-coord-config-unset",
-            "writeback-move-leg-coord-config-unreadable",
-            "writeback-move-leg-coord-config-agrees",
-            "writeback-board-unreadable",
-            "board-tools-http-enabled",
-            "board-tools-ssh-pinned-line",
-            "board-tools-ssh-default-transport-advisory",
-            "board-tools-ssh-live-probe",
-            "probe-tools-ssh-with-no-ssh-agent",
-            "probe-tools-with-no-enabled-agent",
-            "no-opt-in-probes-requested",
-            "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
-        ]
-    },
-    {
-        "id": "if-L362",
-        "kind": "if",
-        "line": 362,
-        "start": 18923,
-        "end": 18996,
+        "line": 367,
+        "start": 19245,
+        "end": 19318,
         "source": "is_string($configDir) && is_file(rtrim($configDir, '/').'/writeback.json')",
         "status": "observed",
         "failing": [
@@ -823,11 +751,11 @@
         ]
     },
     {
-        "id": "if-L368",
+        "id": "if-L373",
         "kind": "if",
-        "line": 368,
-        "start": 19307,
-        "end": 19367,
+        "line": 373,
+        "start": 19629,
+        "end": 19689,
         "source": "! $this->emitReport($runner->run(CheckSlot::Writeback, $ctx))",
         "status": "observed",
         "failing": [
@@ -840,11 +768,11 @@
         ]
     },
     {
-        "id": "if-L380",
+        "id": "if-L385",
         "kind": "if",
-        "line": 380,
-        "start": 20115,
-        "end": 20174,
+        "line": 385,
+        "start": 20437,
+        "end": 20496,
         "source": "$ctx->writeback !== null && $ctx->writeback->mappings !== []",
         "status": "observed",
         "failing": [
@@ -857,11 +785,11 @@
         ]
     },
     {
-        "id": "if-L383",
+        "id": "if-L388",
         "kind": "if",
-        "line": 383,
-        "start": 20304,
-        "end": 20369,
+        "line": 388,
+        "start": 20626,
+        "end": 20691,
         "source": "! $this->emitReport($runner->run(CheckSlot::WritebackProbe, $ctx))",
         "status": "observed",
         "failing": [
@@ -872,11 +800,11 @@
         ]
     },
     {
-        "id": "if-L422",
+        "id": "if-L427",
         "kind": "if",
-        "line": 422,
-        "start": 22886,
-        "end": 22934,
+        "line": 427,
+        "start": 23208,
+        "end": 23256,
         "source": "! $this->checkBoardTools($configs, $runner, $ctx)",
         "status": "observed",
         "failing": [
@@ -908,11 +836,11 @@
         ]
     },
     {
-        "id": "if-L432",
+        "id": "if-L437",
         "kind": "if",
-        "line": 432,
-        "start": 23438,
-        "end": 23522,
+        "line": 437,
+        "start": 23760,
+        "end": 23844,
         "source": "$probeEndpoint !== null && ! $this->probeBoardToolsEndpoint($configs, $probeEndpoint)",
         "status": "observed",
         "failing": [
@@ -944,11 +872,11 @@
         ]
     },
     {
-        "id": "if-L441",
+        "id": "if-L446",
         "kind": "if",
-        "line": 441,
-        "start": 23985,
-        "end": 24049,
+        "line": 446,
+        "start": 24307,
+        "end": 24371,
         "source": "! $this->emitReport($runner->run(CheckSlot::ProbeToolsSsh, $ctx))",
         "status": "observed",
         "failing": [
@@ -980,11 +908,11 @@
         ]
     },
     {
-        "id": "if-L461",
+        "id": "if-L466",
         "kind": "if",
-        "line": 461,
-        "start": 25293,
-        "end": 25319,
+        "line": 466,
+        "start": 25615,
+        "end": 25641,
         "source": "$this->unvalidatedCount > 0",
         "status": "observed",
         "failing": [
