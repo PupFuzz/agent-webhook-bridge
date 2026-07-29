@@ -7,8 +7,12 @@ use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckReport;
 use App\Bridge\Check\CheckRunner;
+use App\Bridge\Check\Checks\AgentApiTokenCheck;
 use App\Bridge\Check\Checks\AgentClassifierResolvableCheck;
+use App\Bridge\Check\Checks\AgentWebhookSecretCheck;
 use App\Bridge\Check\Checks\ChannelSnapshotCheck;
+use App\Bridge\Check\Checks\ChannelTokenPathCheck;
+use App\Bridge\Check\Checks\ChannelTransportCheck;
 use App\Bridge\Check\Checks\CiFailureFilterCheck;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
 use App\Bridge\Check\Checks\InstallSuffixDsnCheck;
@@ -31,11 +35,10 @@ use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\BridgePaths;
-use App\Bridge\Support\ChannelToken;
+use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\SecretFile;
-use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\Severity;
 use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\UrlValidator;
@@ -84,7 +87,14 @@ class CheckCommand extends BridgeCommand
             ->register(CheckSlot::Retention, new RetentionPostureCheck)
             ->registerPerAgent(CheckSlot::AgentClassifier, new AgentClassifierResolvableCheck)
             ->registerPerAgent(CheckSlot::AgentPolicy, new CiFailureFilterCheck, new WakeMembershipCheck)
-            ->registerPerAgent(CheckSlot::AgentConfig, new ChannelSnapshotCheck(base_path('examples/channel-servers')))
+            ->registerPerAgent(
+                CheckSlot::AgentConfig,
+                new AgentWebhookSecretCheck,
+                new AgentApiTokenCheck,
+                new ChannelTokenPathCheck,
+                new ChannelTransportCheck($this->laravel->make(ChannelProbeEnvironment::class)),
+                new ChannelSnapshotCheck(base_path('examples/channel-servers')),
+            )
             ->register(
                 CheckSlot::Writeback,
                 new WritebackConfigCheck,
@@ -193,8 +203,7 @@ class CheckCommand extends BridgeCommand
         // union over all of them — hence a list per scope, not one entry.
         // Shape: scope => list<array{agent:string, class:string, consumed:list<string>, declared:bool}>.
         $githubScopeConsumers = [];
-        $hasSecretDir = is_string($secretDir) && str_starts_with($secretDir, '/');
-        $ctx->secretDir = $hasSecretDir ? (string) $secretDir : null;
+        $ctx->secretDir = is_string($secretDir) && str_starts_with($secretDir, '/') ? $secretDir : null;
         if (is_string($configDir) && is_dir($configDir)) {
             foreach (glob(rtrim($configDir, '/').'/*.yml') ?: [] as $file) {
                 $name = basename($file, '.yml');
@@ -294,140 +303,15 @@ class CheckCommand extends BridgeCommand
                     }
                 }
 
-                // Secret presence per subscription — a missing secret means the
-                // receiver 401s the delivery (unknown_scope), invisible until
-                // activity goes missing. Warn (provisioning may be pending).
-                if ($hasSecretDir) {
-                    foreach ($cfg->subscriptions as $sub) {
-                        $secretPath = SecretPath::for((string) $secretDir, $sub->provider, $sub->scopeId);
-                        if (! is_file($secretPath)) {
-                            $this->warn("agent {$name}: {$sub->provider}:{$sub->scopeId} has no secret at {$secretPath} — run bridge:provision");
-                        } elseif (SecretFile::isInsecure($secretPath)) {
-                            $this->warn("agent {$name}: ".SecretFile::permsMessage($secretPath).' — the receiver will 500 (secret_perms_insecure) until fixed');
-                        }
-                    }
-                    // API token presence per provider (the token bridge:provision
-                    // uses). Convention <secret_dir>/<provider>/token, or the
-                    // per-agent override. Warn — a provider may not be provisioned yet.
-                    foreach (array_unique(array_map(fn ($s) => $s->provider, $cfg->subscriptions)) as $provider) {
-                        $tokenPath = $cfg->tokenPath((string) $secretDir, $provider);
-                        if (! is_file($tokenPath) || ! is_readable($tokenPath)) {
-                            $this->warn("agent {$name}: {$provider} API token not readable at {$tokenPath} — bridge:provision will SKIP {$provider} scopes");
-                        } elseif (SecretFile::isInsecure($tokenPath)) {
-                            $this->warn("agent {$name}: ".SecretFile::permsMessage($tokenPath).' — bridge:provision will FAIL until fixed');
-                        }
-                    }
-                }
-
-                // channel.auth.token_path readability + perms (DL-008). Path is
-                // explicit (not under secret_dir), so checked independent of it.
-                // Warn at preflight; the handler is fail-closed at push time.
-                if ($cfg->channel->tokenPath !== null) {
-                    try {
-                        ChannelToken::read($cfg->channel->tokenPath);
-                    } catch (Throwable $e) {
-                        $this->warn("agent {$name}: ".$e->getMessage().' — channel_push will FAIL until fixed');
-                    }
-                }
-
-                // channel.socket parent-dir reachability (DL-039). The socket
-                // itself may be absent at preflight (channel server not started
-                // yet — fine), but a MISSING or non-writable PARENT dir is a real
-                // misconfig that makes live-wake silently no-op — classically a
-                // uid mismatch after a host restore (the path pins /run/user/<uid>).
-                // Surface it loudly; warn, don't fail (the socket is the channel
-                // server's to create).
-                if ($cfg->channel->socket !== null) {
-                    $dir = dirname($cfg->channel->socket);
-                    if (! is_dir($dir)) {
-                        $this->warn("agent {$name}: channel.socket parent dir {$dir} does not exist — live-wake will silently no-op. On systemd Linux this is /run/user/<uid>; a uid change (host restore) breaks it. Repoint channel.socket, or write it uid-agnostically as \${XDG_RUNTIME_DIR}/…");
-                    } elseif (! is_writable($dir)) {
-                        $uid = function_exists('posix_getuid') ? (string) posix_getuid() : '?';
-                        $this->warn("agent {$name}: channel.socket parent dir {$dir} is not writable by this user (uid {$uid}) — live-wake will fail. Likely a uid mismatch after a host restore.");
-                    }
-
-                    // Visible bind-FAILURE marker (FR #2444). A session whose
-                    // connector loses the socket-bind race exits with a stderr
-                    // message Claude Code swallows, leaving that session deaf to
-                    // live-wake invisibly. The connector now drops a marker file;
-                    // surface it here so the silent failure is loud on demand.
-                    $marker = $cfg->channel->socket.'.FAILED';
-                    clearstatcache(true, $marker);
-                    if (is_file($marker)) {
-                        $detail = trim((string) @file_get_contents($marker));
-                        $this->warn("agent {$name}: channel bind-FAILURE marker at {$marker}".($detail !== '' ? " ({$detail})" : '').' — a Claude Code session came up DEAF: its connector could not bind, so another session holds the channel and this one receives nothing. Close the duplicate session, restart the intended one, then rm the marker.');
-                    }
-
-                    // Liveness ping (FR #2444). A present socket file does NOT mean
-                    // a live session is consuming it — a crash can leave a stale
-                    // socket, and the bridge would still deliver HTTP 202 to a
-                    // dead/duplicate endpoint and log `delivered`. Probe whether
-                    // anything is actually listening: distinguishes "a session is
-                    // attached" from "stale socket / no live session". Warn, never
-                    // fail — at preflight the server legitimately may not be up yet.
-                    clearstatcache(true, $cfg->channel->socket);
-                    if (is_dir($dir) && file_exists($cfg->channel->socket)
-                        && ! is_link($cfg->channel->socket)
-                        && filetype($cfg->channel->socket) === 'socket'
-                    ) {
-                        $conn = @stream_socket_client('unix://'.$cfg->channel->socket, $errno, $errstr, 0.5);
-                        if ($conn !== false) {
-                            fclose($conn);
-                            $this->info("agent {$name}: channel socket live — a session is listening on {$cfg->channel->socket}");
-                        } else {
-                            $this->warn("agent {$name}: channel socket {$cfg->channel->socket} exists but nothing is listening (stale socket / no live session) — live-wake no-ops until a session starts. If a session IS running, its connector may have come up deaf (look for a .FAILED marker).");
-                        }
-                    }
-                } elseif ($cfg->channel->url !== null) {
-                    // HTTP transport (channel.url set, no socket — the multi-host /
-                    // SSH-tunnel topology). The deaf-session failure mode here is a
-                    // TCP-port bind race, not a socket-file collision, so DL-154/155's
-                    // surfacing must be rendered for HTTP too (it was UDS-only before).
-                    //
-                    // Topology caveat: bridge:check runs on the RECEIVER host. For a
-                    // remote/tunneled agent the connector AND its `…http-<port>.FAILED`
-                    // marker live on the AGENT host — unreachable from here — so the
-                    // launcher surfaces that marker on the agent host (FR-1). What IS
-                    // meaningful cross-host is the liveness probe: a TCP connect to the
-                    // loopback endpoint (the local end of the reverse tunnel) reaches the
-                    // remote listener. We also surface the marker best-effort for the
-                    // co-located same-host-HTTP case.
-                    $parts = parse_url($cfg->channel->url);
-                    $host = is_array($parts) && isset($parts['host']) ? $parts['host'] : '127.0.0.1';
-                    $port = is_array($parts) && isset($parts['port']) ? (int) $parts['port'] : null;
-
-                    if ($port === null) {
-                        $this->warn("agent {$name}: channel.url {$cfg->channel->url} has no explicit port — cannot liveness-probe the HTTP channel.");
-                    } else {
-                        // Best-effort local marker (same-host HTTP only). The server's
-                        // HTTP markerPath() keys on BRIDGE_CHANNEL_NAME + port; the agent
-                        // name is the best proxy we have here. A miss is harmless — the
-                        // launcher surfaces it authoritatively on the agent host.
-                        $xdg = getenv('XDG_RUNTIME_DIR');
-                        $xdgDir = is_string($xdg) && $xdg !== '' ? $xdg : '/tmp';
-                        $httpMarker = $xdgDir.'/agent-webhook-bridge-channel-'.$name.'.http-'.$port.'.FAILED';
-                        clearstatcache(true, $httpMarker);
-                        if (is_file($httpMarker)) {
-                            $detail = trim((string) @file_get_contents($httpMarker));
-                            $this->warn("agent {$name}: channel bind-FAILURE marker at {$httpMarker}".($detail !== '' ? " ({$detail})" : '').' — a Claude Code session came up DEAF on the HTTP transport (a TCP-port bind race). Close the duplicate session, restart the intended one, then rm the marker.');
-                        }
-
-                        // Liveness ping: distinguishes a live, listening connector (or a
-                        // healthy reverse tunnel) from a dead/absent one. Warn, never
-                        // fail — at preflight the session legitimately may not be up.
-                        $conn = @stream_socket_client("tcp://{$host}:{$port}", $errno, $errstr, 0.5);
-                        if ($conn !== false) {
-                            fclose($conn);
-                            $this->info("agent {$name}: channel HTTP endpoint live — something is listening on {$host}:{$port} (the connector, or the reverse-tunnel local end).");
-                        } else {
-                            $this->warn("agent {$name}: channel HTTP endpoint {$host}:{$port} not answering".($errstr !== '' ? " ({$errstr})" : '').' — no live session, or the reverse tunnel is down. live-wake no-ops until it is up.');
-                        }
-                    }
-                }
-
-                // The DEPLOYED channel-server snapshot (DL-229) — migrated to
-                // ChannelSnapshotCheck, run HERE so its lines stay interleaved at this
-                // agent's position (plan constraint (b)).
+                // The per-agent SECRET/TOKEN and CHANNEL legs, plus the DEPLOYED
+                // channel-server snapshot (DL-229) — migrated to AgentWebhookSecretCheck,
+                // AgentApiTokenCheck, ChannelTokenPathCheck, ChannelTransportCheck and
+                // ChannelSnapshotCheck (DL-242 stages 1 and 5b), run HERE so their lines
+                // stay interleaved at this agent's position (plan constraint (b)).
+                // Stage 5b migrated everything that used to print between the silent
+                // derivation above and the snapshot leg, so this slot's five checks are
+                // now contiguous — the first stage where the enum shrinks toward the
+                // target design instead of growing.
                 if (! $this->emitReport($runner->runForAgent(CheckSlot::AgentConfig, $cfg, $ctx))) {
                     $ok = false;
                 }

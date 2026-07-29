@@ -59,7 +59,17 @@ enum CheckSlot: string
      */
     case AgentPolicy = 'agent-policy';
 
-    /** Inside the per-agent config iteration, after that agent's channel legs. */
+    /**
+     * Inside the per-agent config iteration, after the silent github-scope
+     * accumulation: this agent's secret/token files, its channel transport, and the
+     * deployed channel-server snapshot.
+     *
+     * THE FIRST SLOT TO ABSORB ITS NEIGHBOURS RATHER THAN SPLIT. Before stage 5b it ran
+     * *after* inline channel legs; those legs are now checks in it, so the slot moved up
+     * to where they started and nothing unmigrated prints inside it. That is the
+     * collapse this enum's docblock predicts — a slot boundary disappearing because the
+     * inline code that forced it is gone.
+     */
     case AgentConfig = 'agent-config';
 
     /**

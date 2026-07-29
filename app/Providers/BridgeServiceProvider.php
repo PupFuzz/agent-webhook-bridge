@@ -5,8 +5,10 @@ namespace App\Providers;
 use App\Bridge\Dispatch\DispatchService;
 use App\Bridge\Dispatch\IntentLog;
 use App\Bridge\Support\AgentRegistry;
+use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\SubscriptionRegistry;
+use App\Bridge\Support\SystemChannelProbeEnvironment;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Bridge\Tools\SshProbeEnvironment;
@@ -60,6 +62,11 @@ class BridgeServiceProvider extends ServiceProvider
         // the default reads the real host; a test binds an in-memory fake to drive the
         // root-gated / FIPS / sshd legs.
         $this->app->bind(SshProbeEnvironment::class, SystemSshProbeEnvironment::class);
+
+        // The endpoint-liveness seam for the bridge:check channel-transport legs
+        // (DL-242 stage 5b) — the default connects for real; a test binds a fake so a
+        // live-vs-dead endpoint (and the platform's own error text) is deterministic.
+        $this->app->bind(ChannelProbeEnvironment::class, SystemChannelProbeEnvironment::class);
 
         $this->app->bind(DispatchService::class, function (): DispatchService {
             $configDir = (string) config('bridge.config_dir');
