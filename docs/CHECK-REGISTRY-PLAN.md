@@ -238,7 +238,8 @@ next stage starts.
 | **2 ✅** | Migrate the `retention` cluster into `RetentionPostureCheck` at a new `CheckSlot::Retention`. `receiverSapiFinishesEarly()` moves with it (single caller). | **None** | no |
 | **3a ✅** | Migrate the writeback **config plane** — the six units needing no board read — into `CheckSlot::Writeback`. The cluster splits because its probe half needs a constructed `KanbanClient`; see the stage 3a result. | **None** | no |
 | **3b ✅** | Migrate the writeback **probe plane** (the legs that read the board) into `CheckSlot::WritebackProbe`. Inherited the throw constraint recorded in the stage 3a result; see the stage 3b result. | **None** | no |
-| **4–7** | Migrate remaining units, ~1 PR per cluster: `database`/`install-suffix`, per-agent config/identity, `inbox surfacing config`, `board_tools`. | **None** (golden test enforces) | no |
+| **4 ✅** | Migrate the `database`/`install-suffix` cluster into `CheckSlot::Database`. Two checks, and the first cluster that is pure assertion — no `CheckContext` field added or read; see the stage 4 result. | **None** | no |
+| **5–7** | Migrate remaining units, ~1 PR per cluster: per-agent config/identity, `inbox surfacing config`, `board_tools`. | **None** (golden test enforces) | no |
 | **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
 | **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** |
 | **10** | Re-assign the sites that disagree on warn ↔ unvalidated. Closes **card#5291**, **card#5292**. | **Yes** — severities change | **GATE** |
@@ -583,11 +584,71 @@ those nine are measured: all nine land in the three new unit tests, which are mu
 strictly stronger instrument than the golden files for legs the fixtures could never distinguish.
 
 **Every disclosed gap now sits outside the writeback cluster**, and six of the eight sit in the
-per-agent region stages 4–7 still have to migrate: the two channel-transport liveness probes (unix
+per-agent region the remaining stages still have to migrate: the two channel-transport liveness probes (unix
 socket and TCP), the channel bind-failure marker, and the three agent-registry/per-agent-config legs.
 The remaining two are secret-file permissions and directory writability. **So the next stages inherit
 a gap-dense region rather than a well-measured one** — like 3b, they must carry unit tests for those
 legs from the start, because a green golden run says nothing about any of them.
+
+### Stage 4 result — pure assertion, and an `observed` verdict that does not mean what it looks like
+
+**What migrated:** two checks under a new `CheckSlot::Database`, registered in the output order
+the inline code held — `database.connectivity` then `database.install_suffix`. The slot sits
+between the secret-dir leg and the inbox-surfacing one.
+
+**No `CheckContext` field was added, and neither check reads one — the first cluster that is pure
+assertion.** Neither unit consumes derived state, and nothing downstream consumes the PDO the
+connectivity leg opens (the inline code discarded the return value). So plan constraint (c), which
+shaped stages 2, 3a and 3b, is simply not engaged here. Worth stating rather than leaving as an
+absence: a migration PR that adds no context field otherwise reads as an omission.
+
+**Two checks rather than one, under 3a's rule: group only when output ORDER forces it.** Each of
+these emits exactly one line and they are sequential, so the granularity that
+`writeback.mapping_config` had to give up costs nothing here — and two ids give stage 8's inventory
+a finer split for free.
+
+**The `try`/`catch` moved INTO `database.connectivity`, and no inline envelope was added.** That is
+the narrow form of the rule stage 2 set and 3a sharpened: a catch that wraps ONE probing call and
+no derivation travels with the check, exactly as `RetentionPostureCheck`'s marker read does. The
+whole-cluster fail-soft envelopes stayed inline for the opposite reason — they wrap derivation too.
+**It spans both calls deliberately:** resolving the connection can throw on its own (an unsupported
+driver, an unparseable DSN) before `getPdo()` is reached, so a `try` around the connect alone would
+abort `bridge:check` on a misconfiguration it exists to report. Both routes are covered separately,
+because a single-route test passes against the narrower `try` — and one mutant proves it does.
+
+**The fixture set reaches only the healthy branch of both units, and the coverage table does not
+say so.** Every golden fixture prints `database: connected` and `install-suffix DSN check: ok`. The
+crosstalk predicate nevertheless reads **`observed`**, and the reason is worth recording because it
+generalizes: the negated mutant enters the failure branch with a null diagnosis and prints an
+**empty** error line — `Illuminate\Console\Command::error()` takes an untyped parameter, so null
+renders as a blank rather than throwing. That is a different golden file, hence `observed`. So
+`observed` means *"a change to this branch would be caught"*; it does **not** mean *"the failing
+message is asserted anywhere"*. Nothing in the suite rendered that diagnosis before this stage.
+Generalized: **a predicate's status is about DISTINGUISHABILITY, never about coverage of what the
+branch actually says** — the same trap as stage 3b's disclosed-gap drop, one column over.
+
+**The DB leg contributes no predicate at all**, being a bare `try`/`catch` that
+`bin/check-golden-mutate.php` never walks (stage 3a's second-blind-half finding). Its failure arm is
+therefore measured *only* by `DatabaseConnectivityCheckTest`.
+
+**Mutation-proven — seven mutants, each reverting one guard, every one red on the named test and
+the sources restored byte-identical after each.** Two are worth naming. Narrowing the connectivity
+`try` to `getPdo()` alone reds the unresolvable-connection test and *leaves the unopenable-file test
+green*, which is the evidence that the two routes are distinct and the span is load-bearing rather
+than incidental. And inverting the crosstalk guard reds its test via a **TypeError** — the migrated
+leg passes the diagnosis to `Finding::fail(string)`, where the inline code passed it to the untyped
+`error()`. The blank-line state is unreachable in correct code (the guard returns a string or null,
+and null takes the ok branch), so this is not an operator-visible change; it is a silent-blank
+failure mode that a future edit can no longer reintroduce.
+
+**No new golden fixture, and the reason is method rather than cost.** A `-prod` suffix with a
+non-matching database name IS fixture-reachable, so this leg could have been closed by a fixture
+instead of a unit test. Rejected: adding a fixture mid-migration moves the measured baseline, and a
+later reader cannot then separate *"the measurement improved"* from *"the measured region moved"* —
+the exact distinction stages 3a and 3b spent their result sections protecting. What a fixture would
+add beyond the unit test is the renderer half, and that is already pinned by `emitFinding()`'s
+exhaustive `match` plus `CheckCommandSeverityContractTest`'s fail → non-zero-exit property, with
+`InstallGuardTest` already driving `bridge:check` to exit 1 on a crosstalking install.
 
 ## Verification
 
