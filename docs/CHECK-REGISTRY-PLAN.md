@@ -1309,10 +1309,13 @@ costs is a real coupling, and it is worth naming rather than hiding:** the advis
 downstream of another check's SEVERITY VOCABULARY, so stage 10's warn ↔ unvalidated
 re-assignment (cards#5291/#5292) can change what this advisory says with nothing in its own
 file to show for it. The narrowing that keeps it honest is the by-id selection — a second check
-registered into that slot cannot silently start feeding the advisory — and that guard is
-**unprovable by mutation today** (the slot holds exactly one check, so deleting the id filter
-changes no output). It is recorded here rather than papered over with a test that would prove
-something else.
+registered into that slot cannot silently start feeding the advisory — and **the property that
+selection exists for is unprovable by mutation today, which is not the same as the predicate being
+unmeasured.** This stage's coverage run lists the selection as `observed`: NEGATING it stops the
+readback entirely and the golden suite reds. What no mutation reaches is the direction the guard is
+actually for — DELETING the filter, which is what a second check in the slot would amount to,
+changes no output at all while the slot holds exactly one check. It is recorded here rather than
+papered over with a test that would prove the observable direction and be read as proving the other.
 
 **The client construction stays inline, under a NARROW envelope, and widening it would have
 changed a diagnosis.** The board-tools kanban client is a SECOND construction — the writeback
@@ -1352,6 +1355,52 @@ the population the loop walks, the guard INVERSIONS a generator wants, and the e
 that moves to the renderer's `fail` arm), diffed, and the comparator positive-controlled on a
 known-different pair: **all five units identical**. That covers the messages no fixture renders,
 which for this plane is most of them.
+
+**Coverage-table effect — the predicate total goes 30 → 43, and the table grew because the measured
+REGION did, not because the command did.** `42 observed · 0 observed-via-abort · 1 UNOBSERVED`,
+measured in 31 minutes on a detached copy. Compared as a multiset, **two predicates depart and
+fifteen arrive**, and the conservation assertion `30 − 2 + 15 = 43` passed on the first run. The two
+departures are the pair stage 7a's result named in advance — the `checkBoardTools()` call site and
+the `--probe-tools` endpoint guard. The fifteen arrivals are six `emitReport` call sites (one per new
+slot, plus the ssh pinned-line pass's own) and **nine loop-and-guard predicates that were already
+executing at `origin/dev` and were never measured**, because they lived inside `checkBoardTools()`
+and `checkSshTransport()`: the enabled-subset gate and the loop over that subset, the client guard,
+the two passes over the ssh subset, and the four-predicate pinned-line readback, which moved into
+`handle()` verbatim with `$agentIncomplete` becoming `$ctx->sshSetupIncomplete`. **7a's forecast of
+this stage — "one call site per new slot" — counted only that first group**, which is five of
+fifteen; it was a forecast of what the migration ADDS, and it read as a forecast of the arrival
+count. The enumeration run before this stage's mutation pass is what caught the difference. **The
+inverse of this file's standing warning about a shrinking gap count applies here:** the table growing
+by 13 is not new branching and is not worse protection, it is previously-invisible code entering the
+measured region — which is what "`handle()` now holds derivation and runner calls only" means when
+the instrument only walks `handle()`.
+
+**Every arrival is `observed`, and for the call sites the mechanism is the exit code, not a printed
+line.** Each `if (! $this->emitReport(...))` body sets `$ok = false` and nothing else, and the golden
+harness captures stdout AND the exit code — so negating one of those is caught even on a fixture
+where the check prints nothing. Zero surviving predicates changed status, and the disclosed gap is
+still the single derivation guard `$configs !== [] && $ctx->configDir !== null`, whose text this
+stage does not touch: no gap departed, arrived, or closed in place, so **the disclosed-gap count
+holds at 1 while the table grows by 13**.
+
+**`observed` for the client guard is NOT the proof the paragraph above said the corpus could not
+supply, and the table has to be read with that in hand.** The instrument NEGATES the condition, and
+negating this one skips the board-state legs for installs that have a client — the three ssh
+fixtures lose their lines, so it reds. What left the suite green was a different edit entirely: the
+guard rewritten back to the inline `return`, which changes behavior only for an install with an ssh
+agent and NO client. Two mutations of the same predicate, one visible and one not, and only the
+invisible one was the open question. The instrument also runs `--filter test_golden_output` alone, so
+the feature test written to close that question **is not in the suite this table was measured
+against** — the `observed` verdict here is the golden fixtures' alone.
+
+**The split prediction held; the STATUS prediction did not, and the miss is the half worth
+recording.** Departures and arrivals were enumerated from the source and written down before the run
+— that held exactly, for the third stage running. Written down beside them was a predicted NEW gap
+cluster of one to three predicates in the `sshSetupIncomplete` readback, reasoned from this section's
+own claim that the by-id selection is unprovable. All three came back `observed`, and none via
+abort. **The reasoning error was treating one direction of a guard as the whole guard** — the
+paragraph above has been corrected in place rather than left standing next to a table that says
+otherwise, which is the card#5551 shape caught on its own author.
 
 **phpstan predicted a red and did not produce one — because stage 7a had already fixed it.**
 This stage deletes two more direct calls from the region above the card-5170 tally, the exact
