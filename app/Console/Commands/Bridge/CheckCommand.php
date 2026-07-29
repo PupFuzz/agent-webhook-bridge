@@ -7,13 +7,16 @@ use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckReport;
 use App\Bridge\Check\CheckRunner;
+use App\Bridge\Check\Checks\AgentClassifierResolvableCheck;
 use App\Bridge\Check\Checks\ChannelSnapshotCheck;
+use App\Bridge\Check\Checks\CiFailureFilterCheck;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
 use App\Bridge\Check\Checks\InstallSuffixDsnCheck;
 use App\Bridge\Check\Checks\ReconcileRepoTokensCheck;
 use App\Bridge\Check\Checks\RetentionPostureCheck;
 use App\Bridge\Check\Checks\SshLiveProbeCheck;
 use App\Bridge\Check\Checks\SshPinnedLineCheck;
+use App\Bridge\Check\Checks\WakeMembershipCheck;
 use App\Bridge\Check\Checks\WritebackAlertChannelCheck;
 use App\Bridge\Check\Checks\WritebackBoardStateCheck;
 use App\Bridge\Check\Checks\WritebackByRefCheck;
@@ -79,6 +82,8 @@ class CheckCommand extends BridgeCommand
         $runner = (new CheckRunner)
             ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck)
             ->register(CheckSlot::Retention, new RetentionPostureCheck)
+            ->registerPerAgent(CheckSlot::AgentClassifier, new AgentClassifierResolvableCheck)
+            ->registerPerAgent(CheckSlot::AgentPolicy, new CiFailureFilterCheck, new WakeMembershipCheck)
             ->registerPerAgent(CheckSlot::AgentConfig, new ChannelSnapshotCheck(base_path('examples/channel-servers')))
             ->register(
                 CheckSlot::Writeback,
@@ -204,35 +209,24 @@ class CheckCommand extends BridgeCommand
                 }
                 $configs[] = $cfg;
 
-                // The classifier FQCN is only resolved at dispatch time, where a
-                // bad value is an uncaught 5xx (→ upstream retry storm). Validate
-                // it here so a typo / stale signature surfaces as a preflight
-                // failure instead. Probe OUT OF PROCESS first — an out-of-date
-                // classify() signature is an uncatchable E_COMPILE_ERROR that would
-                // otherwise kill bridge:check ITSELF (#2053); the subprocess
-                // isolates the load. Only once it passes is for() safe to call here.
-                if (($err = ClassifierResolver::probeLoadable($cfg->classifierClass)) !== null) {
-                    $this->error("agent {$name}: {$err}");
+                // The classifier-resolution gate — migrated to
+                // AgentClassifierResolvableCheck (DL-242 stage 5a), run HERE so its line
+                // stays at this agent's position (plan constraint (b)). THE `continue`
+                // IS THE MIGRATION'S ONE COUPLING: an unresolvable classifier means every
+                // remaining leg for this agent is skipped, exactly as the inline code did,
+                // and CheckSlot::AgentClassifier is the abort slot that says so.
+                if (! $this->emitReport($runner->runForAgent(CheckSlot::AgentClassifier, $cfg, $ctx))) {
                     $ok = false;
 
                     continue;
                 }
-                try {
-                    ClassifierResolver::for($cfg);
-                } catch (Throwable $e) {
-                    $this->error("agent {$name}: ".$e->getMessage());
-                    $ok = false;
-
-                    continue;
-                }
-
-                $this->info("agent config ok: {$name}");
 
                 // Record which github scopes this agent DRIVES the writeback for:
                 // its classifier must emit writeback reactions (#2162). Detected
-                // out-of-process (DL-025) — probeLoadable already passed above, so
-                // this child loads cleanly. Used after the loop to flag orphaned
-                // writeback.json mappings (a mapping no classifier drives).
+                // out-of-process (DL-025) — AgentClassifierResolvableCheck's
+                // probeLoadable already passed above, so this child loads cleanly. Used
+                // after the loop to flag orphaned writeback.json mappings (a mapping no
+                // classifier drives).
                 if (ClassifierResolver::probeImplements($cfg->classifierClass, EmitsWritebackReactions::class)) {
                     foreach ($cfg->subscriptions as $sub) {
                         if ($sub->provider === 'github') {
@@ -258,7 +252,8 @@ class CheckCommand extends BridgeCommand
                 // event-follows-consumer check after the loop. DL-025-safe, mirroring
                 // the orphan check above: probeImplements is OUT OF PROCESS; the
                 // consumedEventTypes() call is on the instance for() already resolved
-                // in-process (line ~172, after probeLoadable passed), wrapped in
+                // in-process (in AgentClassifierResolvableCheck, after its probeLoadable
+                // passed — a cache hit here, never a fresh load), wrapped in
                 // catch(Throwable) → an undeclared/failing classifier contributes
                 // nothing to `consumed` (conservative — at worst a false WARN, never a
                 // false clean). A classifier NOT implementing the interface is recorded
@@ -279,50 +274,13 @@ class CheckCommand extends BridgeCommand
                     }
                 }
 
-                // DL-197: the impl-ci-wake CI-FAILURE name filter INVERTS the family's
-                // fail-loud posture — a set-but-non-matching filter (a typo, or a
-                // workflow later renamed) silently blackholes EVERY CI-failure wake for
-                // the scope, with no inbox trace under the default `drop`. Config
-                // validation can't catch a well-formed-but-stale pattern, so surface the
-                // configured patterns at preflight for eyeball verification against real
-                // workflow names. Warn-never-fail (the filter is a deliberate opt-in).
-                // `ci_failure_workflow_patterns` is a LAZY config key (not eagerly
-                // parsed in AgentConfig::load, unlike families/scope_author_map), so a
-                // malformed value (non-list / blank entry) first throws HERE. The
-                // classify path would 5xx on it at runtime — catch it per-agent (like
-                // the DL-196 block above) so one bad value surfaces cleanly instead of
-                // aborting the whole check + skipping every remaining agent.
-                try {
-                    $failureFilter = $cfg->classifierConfig->strings('ci_failure_workflow_patterns');
-                    if ($failureFilter !== [] && in_array('impl-ci-wake', $cfg->classifierConfig->strings('families'), true)) {
-                        $this->warn("agent {$name}: classifier.config.ci_failure_workflow_patterns = [".implode(', ', $failureFilter).'] — the impl-ci-wake CI-FAILURE wake fires ONLY for workflow_run names containing one of these (case-insensitive substring); a failure of any OTHER workflow on a subscribed scope will NOT wake. Verify these match your intended workflow names — a typo or a renamed workflow silences every failure wake.');
-                    }
-                } catch (Throwable $e) {
-                    $this->error("agent {$name}: classifier.config.ci_failure_workflow_patterns — ".$e->getMessage());
+                // The lazy-classifier-config advisories (DL-197's CI-failure name filter,
+                // DL-213's wake_membership/comment_to population) — migrated to
+                // CiFailureFilterCheck + WakeMembershipCheck (DL-242 stage 5a), run HERE
+                // so their lines stay at this agent's position (plan constraint (b)) and
+                // AFTER the derivation above, which prints nothing.
+                if (! $this->emitReport($runner->runForAgent(CheckSlot::AgentPolicy, $cfg, $ctx))) {
                     $ok = false;
-                }
-
-                // DL-213 (#4632): comment_to is now in the wake_membership fleet DEFAULT.
-                // The flip only reaches installs with NO explicit wake_membership — an
-                // install that set it explicitly before the flip OVERRIDES the default, so
-                // its directed-reply wakes stay dark, and the flip must not silently rewrite
-                // a deliberate operator config. Surface exactly that population (coord-message
-                // on + explicit wake_membership + comment_to omitted); an absent-key install
-                // needs no warn (the default now covers it). wake_membership is lazily parsed
-                // (like ci_failure_workflow_patterns above), so a malformed value first throws
-                // here — catch it per-agent rather than aborting the whole check.
-                $families = $cfg->classifierConfig->strings('families');
-                $coordMessageOn = $families === [] || in_array('coord-message', $families, true);
-                if ($coordMessageOn && $cfg->classifierConfig->has('wake_membership')) {
-                    try {
-                        $membership = $cfg->classifierConfig->strings('wake_membership');
-                        if (! in_array('comment_to', $membership, true)) {
-                            $this->warn("agent {$name}: classifier.config.wake_membership = [".implode(', ', $membership)."] is set explicitly and omits comment_to — a counterparty's comment addressed TO you on a thread you neither opened nor were labelled on will NOT live-wake you (the common post-a-reply-and-wait flow). comment_to is now in the fleet default; add it to your explicit list to catch directed replies, or leave it off to keep them dark deliberately.");
-                        }
-                    } catch (Throwable $e) {
-                        $this->error("agent {$name}: classifier.config.wake_membership — ".$e->getMessage());
-                        $ok = false;
-                    }
                 }
 
                 foreach ($cfg->subscriptions as $sub) {
