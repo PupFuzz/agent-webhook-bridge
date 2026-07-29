@@ -363,7 +363,9 @@ green with `UPDATE_GOLDEN` unset.** The assertion count is the load-bearing half
 drops to 46, so **79 means asserted; 46 would mean nothing was checked.** Six deliberate mutations
 each red the suite: registration removed, `enabled` inverted, `isUsable()` inverted,
 `receiverSapiFinishesEarly()` inverted, `is_array($lastError)` inverted, and one space dropped from
-the `retention: on (` message.
+the `retention: on (` message. **⚠ The `is_array($lastError)` arm evidences less than it reads as —
+no fixture reached the marker-present branch until DL-247. See § Disproved claims, claim 8; do not
+restate this list without it.**
 
 **One leg is covered by neither instrument, and it needed a unit test.** The fail-soft `catch` around
 the last-failure marker read is unreachable from a golden fixture (it needs an unreachable cache
@@ -1429,6 +1431,17 @@ the plane). For all of those the unit tests are the whole proof. **The corpus wa
 cards#5552/#5553 change the fixture set, and a repaired fixture moves the measured baseline
 mid-migration — which stages 4/5a/5b/5c/6/7a all refused for the same reason.
 
+**[Post-stage update — DL-247 (cards#5552/#5553) landed that repair, after stage 7 and before
+stage 8.** Re-measured from the RENDERED corpus, not from the fixture names: **six** fixtures now
+print a `board_tools`-prefixed line, and **five** of those lines belong to code this stage
+migrated — `board-tools-http-enabled` reaches the board-state check's 0-cards arm now that its
+agent config loads. **The ZERO-coverage list above is unchanged and still accurate:** the repaired
+fixture carries a working bearer and a satisfied block, so the suppression scan, both bearer
+problems, the board-state check's other five legs and its catch, and every `--probe-tools` CERTIFY
+arm remain golden-uncovered, and for those the unit tests are still the whole proof. What the
+repair bought is that the HTTP transport reaches the plane **at all** — not coverage of any leg
+past it.]**
+
 **Real-surface verification, stated at the strength the evidence supports.** `bridge:check` at
 this commit and at `origin/dev`, run in the SAME copied directory with the commit switched
 between runs: stdout and stderr **byte-identical**, 22 lines, exit 0 both sides, the diff
@@ -1469,7 +1482,7 @@ The existing net goes through the command boundary, so an internal refactor keep
 
 ## Disproved claims — do not restate
 
-Seven claims from earlier revisions of this analysis — and from the code it describes — were
+Eight claims from earlier revisions of this analysis — and from the code it describes — were
 falsified while it was being built:
 
 1. **"The registry closes card#5310 and card#5312."** False — they live in
@@ -1497,6 +1510,19 @@ falsified while it was being built:
    and corrected there in stage 3a. It pins the runner's *properties* using synthetic checks.
    **Nothing pins which checks `CheckCommand` registers**, so a check that is silent on the fixture
    set could be unregistered silently. Named as stage 8's to close.
+8. **"Stage 2's `is_array($lastError)` mutation is evidence that the retention marker-PRESENT
+   branch is covered."** False — the six stage-2 mutations each did red the suite, and that stands;
+   what the `is_array` arm evidences is narrower than a reader would take it for. **No golden
+   fixture reached the marker-present branch at all.** `retention-last-pass-failed` set the cache
+   marker in its builder and the harness cleared it one step later, so that fixture captured
+   `minimal`'s bytes and was byte-identical to it **from the single commit that created it** —
+   verified across the whole history of both files, not inferred. The inverted guard therefore red
+   on the marker-ABSENT rendering. **The coverage table's `observed` verdict is NOT affected:**
+   `observed` is a distinguishability claim under the instrument's own negation and was never a
+   claim that a branch was reached (the same distinction the stage-4 result draws). Repaired, and
+   the branch genuinely reached, in DL-247 (card#5552) — which is also why this one was invisible
+   to every earlier pass: a fixture is only ever compared against itself, so a fixture that
+   measures nothing looks exactly like one that works.
 
 The general lesson, and the reason this section exists: every count in this document was
 re-measured at the source rather than carried forward between revisions, and four of the first five
