@@ -5,8 +5,19 @@ name: bin/ python unit tests
 # bin/provision-board-tools-samebox.py (card 5090), and the seat-side channel-server
 # launch-assert bin/check-channel-snapshot.py (card 5143, DL-237) — carry
 # red-when-reverted unit tests. This job runs them in CI so the "CI-tested" guarantee
-# the designs rest on is real, not decorative. Path-filtered: only fires when a tool
-# or its tests change.
+# the designs rest on is real, not decorative.
+#
+# ⚠ `app/**` IS IN THE FILTER, AND IT IS LOAD-BEARING — do not "tidy" it out as
+# unrelated to bin/. `bin/test_check_channel_snapshot.py` asserts about `app/` PHP
+# SOURCE SHAPE: the snapshot probe's no-exec tripwire and the string-only call-site
+# tripwire both read `app/` files. While the filter listed only bin/ + the channel
+# server, no `app/`-only PR could run this job — so the DL-242 stage-7 migration moved
+# the probe's call site out from under its own guard, reddened these tests, and merged
+# anyway because the job that would have caught it was structurally unable to fire.
+# `dev` then stayed red and unseen (the push: filter had the same gap) until an
+# unrelated PR happened to touch examples/channel-servers/**. A check that cannot run
+# on the change that invalidates it is a decoration. The cost is this job running on
+# app/ PRs — seconds — and that is the correct price for the guarantee.
 #
 # Node is set up because check-channel-snapshot.py's suite LAUNCHES a real channel
 # server: the tool's whole claim is that launching is more precise than enumerating
@@ -22,6 +33,7 @@ on:
       - 'bin/test_provision_board_tools_samebox.py'
       - 'bin/check-channel-snapshot.py'
       - 'bin/test_check_channel_snapshot.py'
+      - 'app/**'
       - 'examples/channel-servers/**'
       - '.github/workflows/provision-tools-python.yml'
   push:
@@ -33,7 +45,9 @@ on:
       - 'bin/test_provision_board_tools_samebox.py'
       - 'bin/check-channel-snapshot.py'
       - 'bin/test_check_channel_snapshot.py'
+      - 'app/**'
       - 'examples/channel-servers/**'
+      - '.github/workflows/provision-tools-python.yml'
 
 permissions:
   contents: read
