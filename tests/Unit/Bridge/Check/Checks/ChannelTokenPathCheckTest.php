@@ -17,9 +17,9 @@ use Tests\TestCase;
  * `bin/check-golden-mutate.php` enumerates `if`/`elseif`/`foreach`, so this check's only
  * reporting arm is absent from `docs/check-golden-coverage.md`'s disclosed-gap list
  * ENTIRELY rather than listed as UNOBSERVED — and every golden fixture that declares a
- * `token_path` writes a readable 0600 file, so no fixture reaches the throw. Mutating
- * that arm reds this file and nothing else in the suite — measured by mutation, not inferred
- * from a grep (CLAUDE_TESTING.md).
+ * `token_path` writes a readable 0600 file, so no fixture reaches the throw. Absence from
+ * that list is therefore not protection. Mutating that arm reds this file and nothing else
+ * in the suite — measured by mutation, not inferred from a grep (CLAUDE_TESTING.md).
  *
  * THE THREE FAILURES ARE ASSERTED SEPARATELY BECAUSE THE CHECK DOES NOT OWN THEM.
  * `ChannelToken::read` owns the token contract and this check reports whatever it threw;

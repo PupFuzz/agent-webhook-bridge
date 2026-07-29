@@ -36,7 +36,9 @@ use Tests\TestCase;
  * whose branches print identical bytes. `docs/check-golden-coverage.md` names those
  * gaps individually — and derives them by MUTATION rather than by assertion, because
  * "this fixture covers that branch" is a claim and "flipping that branch reds a golden
- * file" is evidence.
+ * file" is evidence. That file is itself bounded to `CheckCommand::handle()`, so it
+ * enumerates nothing belonging to a check that has already migrated into the registry;
+ * absence from it is not protection.
  */
 class CheckGoldenTest extends TestCase
 {

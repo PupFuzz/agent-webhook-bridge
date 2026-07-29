@@ -2,9 +2,7 @@
 
 namespace Tests\Feature\Workflows;
 
-use FilesystemIterator;
-use RecursiveDirectoryIterator;
-use RecursiveIteratorIterator;
+use Tests\Support\DocRefGateHarness;
 use Tests\TestCase;
 
 /**
@@ -37,6 +35,8 @@ use Tests\TestCase;
  */
 class DocRefCitationLintTest extends TestCase
 {
+    use DocRefGateHarness;
+
     /**
      * The four roots where an unqualified `L<n>` can only mean the migrating file, per
      * the script's `$bareCiteSurface`. Driven individually: a surface alternative that
@@ -81,68 +81,11 @@ class DocRefCitationLintTest extends TestCase
         'docs/check-golden-coverage.md',
     ];
 
-    /** @var list<string> fixture trees to remove after the test */
-    private array $trees = [];
-
     protected function tearDown(): void
     {
-        foreach ($this->trees as $tree) {
-            $this->removeTree($tree);
-        }
-        $this->trees = [];
+        $this->removeGateTrees();
 
         parent::tearDown();
-    }
-
-    /**
-     * A fresh repo root holding nothing but the real script, so one vector's verdict is
-     * never read through another's.
-     */
-    private function makeTree(): string
-    {
-        $root = sys_get_temp_dir().'/doc-refs-'.bin2hex(random_bytes(8));
-        mkdir($root.'/bin', 0755, true);
-        copy(base_path('bin/check-doc-refs.php'), $root.'/bin/check-doc-refs.php');
-        $this->trees[] = $root;
-
-        return $root;
-    }
-
-    private function removeTree(string $root): void
-    {
-        if (! is_dir($root)) {
-            return;
-        }
-        $it = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
-            RecursiveIteratorIterator::CHILD_FIRST
-        );
-        foreach ($it as $entry) {
-            $entry->isDir() ? rmdir($entry->getPathname()) : unlink($entry->getPathname());
-        }
-        rmdir($root);
-    }
-
-    /**
-     * @param  array<string, string>  $files  repo-relative path => single line of content
-     * @return array{0: int, 1: string} exit code, combined output
-     */
-    private function runGate(array $files): array
-    {
-        $root = $this->makeTree();
-        foreach ($files as $rel => $line) {
-            $path = $root.'/'.$rel;
-            if (! is_dir(dirname($path))) {
-                mkdir(dirname($path), 0755, true);
-            }
-            file_put_contents($path, $line."\n");
-        }
-
-        $out = [];
-        $rc = 0;
-        exec(escapeshellarg(PHP_BINARY).' '.escapeshellarg($root.'/bin/check-doc-refs.php').' 2>&1', $out, $rc);
-
-        return [$rc, implode("\n", $out)];
     }
 
     /**
@@ -151,7 +94,7 @@ class DocRefCitationLintTest extends TestCase
      */
     private function assertGateRejects(string $path, string $line, string $why): void
     {
-        [$rc, $out] = $this->runGate([$path => $line]);
+        [$rc, $out] = $this->runGate([$path => $line."\n"]);
 
         $this->assertSame(1, $rc, "{$why}\nexpected `{$line}` in {$path} to be rejected; the gate said:\n{$out}");
         $this->assertStringContainsString('Line-number citations', $out,
@@ -162,7 +105,7 @@ class DocRefCitationLintTest extends TestCase
 
     private function assertGateAccepts(string $path, string $line, string $why): void
     {
-        [$rc, $out] = $this->runGate([$path => $line]);
+        [$rc, $out] = $this->runGate([$path => $line."\n"]);
 
         $this->assertSame(0, $rc, "{$why}\nexpected `{$line}` in {$path} to be accepted; the gate said:\n{$out}");
     }

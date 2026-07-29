@@ -239,6 +239,16 @@ what turns that from an intention into a measurement.
   migrated check's predicates are not in it and cannot become so, so a comment claiming
   membership in its disclosed-gap list is false by construction rather than merely stale — state
   the fixture-scope fact instead. Absence from that file was never protection either way.
+  **CI enforces this** (`bin/check-doc-refs.php`, third rule): under `app/Bridge/Check/`,
+  `tests/Unit/Bridge/Check/`, `tests/Support/CheckGolden/` and `tests/Feature/Console/Check/`, a
+  comment block naming that file — or the bare phrase "disclosed gap" — must also say what naming
+  it does not buy. Satisfy it by stating the bound in the SAME SENTENCE as the mention (that the
+  file is generated from `CheckCommand::handle()`), or by drawing the consequence anywhere in the
+  block: that absence from it is not protection, that it does not speak in either direction, or
+  that the leg was never a disclosed gap. The rule is a whitelist on purpose — an unrecognised
+  wrong sentence would pass silently, where an unrecognised right one merely fails loudly. It
+  gates the copy-a-neighbour path that minted fifteen of these at once, **not** the truth of any
+  individual claim: a false claim carrying a sanctioned sentence still passes.
 
 ## Anti-patterns to avoid
 
