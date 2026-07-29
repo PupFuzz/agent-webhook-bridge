@@ -245,7 +245,7 @@ next stage starts.
 | **5c ✅** | Migrate the **post-loop registry/identity** legs: `AgentRegistry` collisions, `treat_as_signal`, `BRIDGE_DEFAULT_AGENT`, `shared-identities.json`, into a new `CheckSlot::AgentRoster`. The registry BUILD stays inline as derivation — it logs collisions at construction, so a second builder would re-log them behind the output contract's back; see the stage 5c result. | **None** | no |
 | **6 ✅** | Migrate the **pre-loop install plane** — both install directories, the inbox-surfacing config, the endpoint URLs, and the provider/adapter coverage leg — into **three** new slots (`CheckSlot::Install`, `::Inbox`, `::Providers`). Three because the region is not contiguous: the already-migrated `Database` and `Retention` slots run inside it and slot ordinal fixes output order. `warnIfDirInsecure()` moves with it (both callers migrate here). **This row replaces an earlier one that under-enumerated the remaining work; see the stage 6 result.** | **None** | no |
 | **7a ✅** | Migrate the **event-follows-consumer plane** — the whole DL-196 advisory — into a new `CheckSlot::EventConsumer`. One check, one slot. **Row 7 splits on SIZE, not on a measured seam**, and the stage 7a result says so rather than manufacturing a discriminator; it is also the first stage whose predicate total goes UP, because it migrates a HELPER method rather than code inside `handle()`. | **None** (golden test enforces) | no |
-| **7b** | Migrate the **board-tools plane** — the `suppressedReason` scan, the resolver's `problems()`, the per-agent board-STATE legs, the DL-225 flipped-default advisory (which reads its input back off another slot's REPORT — a first for this program) and the `--probe-tools` live probe — after which `handle()` holds derivation and the runner calls alone. | **None** (golden test enforces) | no |
+| **7b ✅** | Migrate the **board-tools plane** — the `suppressedReason` scan, the resolver's `problems()`, the per-agent board-STATE legs, the DL-225 flipped-default advisory (which reads its input back off another slot's REPORT — a first for this program) and the `--probe-tools` live probe — into **five** new slots. `handle()` now holds derivation and the runner calls alone; see the stage 7b result. | **None** (golden test enforces) | no |
 | **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
 | **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** |
 | **10** | Re-assign the sites that disagree on warn ↔ unvalidated. Closes **card#5291**, **card#5292**. | **Yes** — severities change | **GATE** |
@@ -314,7 +314,9 @@ renderer keys on is `id()` + `CheckResult::$agent`, not that string.
 
 **The amendment — `CheckSlot`.** Stage 0 gave each scope ONE call site, assuming each is invoked
 from one place. Stage 1 falsified that on both: `CheckCommand` runs **two distinct per-agent
-iterations** (the main config loop, and the ssh-agent loop inside `checkBoardTools()`), and its
+iterations** (the main config loop, and the ssh-agent loop inside the then-inline
+`checkBoardTools()` — a method stage 7b retired, along with the unmigrated code the rest of this
+paragraph describes; the finding stands, the addresses moved), and its
 global units sit at positions **separated by unmigrated inline code** (the `--probe-tools` leg
 renders between the two board-tools legs). A slot names *where* a group runs. It changes nothing
 about constraint (a) — registration is still unconditional, and the opt-in flag is a constructor
@@ -1274,6 +1276,115 @@ two agent YAMLs carry github subscriptions and `webhook_events` holds 495 github
 the grouped query, the projection, the consumed-union and every skip guard ran on real data and
 correctly emitted nothing. The four MESSAGE shapes were not exercised live, and no run of this
 command on this install would exercise them.
+
+### Stage 7b result — the first context field that is not a fact about the install
+
+**What migrated:** five units into five new slots — the all-configs `suppressedReason` scan
+(`BoardToolsSuppressedCheck`), the bearer index's typed `problems()`
+(`BoardToolsBearerCheck`), the per-agent board-STATE legs (`BoardToolsBoardStateCheck`,
+per-agent), the DL-225 flipped-default advisory (`BoardToolsSshDefaultAdvisoryCheck`,
+per-agent) and the `--probe-tools` HTTP live probe (`BoardToolsHttpProbeCheck`).
+`checkBoardTools()`, `checkSshTransport()`, `probeBoardToolsEndpoint()` and
+`probeErrorDetail()` are gone. **`handle()` now holds derivation and runner calls only** —
+the last unmigrated assertion in the command is retired, which is what the stage table's
+row 7b promised and the off-ramp after stage 7 rests on.
+
+**One slot per unit, and the count is forced, not chosen.** Each boundary is a place where
+something OTHER than a check decides what happens next: the suppression scan runs before the
+enabled-subset gate (a suppressed block is `enabled === false`, so on a fleet whose only
+board-tools agent is suppressed every later slot sees an empty subset — that scan is the only
+place its failure surfaces); the bearer problems run after the resolver is BUILT; the board-state
+legs run inside the client envelope; the advisory runs in a SECOND pass over the ssh agents,
+after the pinned-line slot has reported for every one of them; and `--probe-tools` runs
+outside the enabled gate entirely, because "no agent has an enabled block" is a thing it must
+SAY rather than skip.
+
+**The first `CheckContext` field that is not a fact about the install.** `sshSetupIncomplete`
+is derived from another check's FINDINGS: `CheckCommand` reads
+`CheckSlot::BoardToolsSsh`'s report, selects `SshPinnedLineCheck`'s results BY ID, and records
+the agents whose severities mean "setup incomplete" — `severityMeansSetupIncomplete()` stays
+beside that readback as derivation. Every other field on the context is derived from config,
+the filesystem or a board read, and is therefore true independently of the registry. **What it
+costs is a real coupling, and it is worth naming rather than hiding:** the advisory is now
+downstream of another check's SEVERITY VOCABULARY, so stage 10's warn ↔ unvalidated
+re-assignment (cards#5291/#5292) can change what this advisory says with nothing in its own
+file to show for it. The narrowing that keeps it honest is the by-id selection — a second check
+registered into that slot cannot silently start feeding the advisory — and that guard is
+**unprovable by mutation today** (the slot holds exactly one check, so deleting the id filter
+changes no output). It is recorded here rather than papered over with a test that would prove
+something else.
+
+**The client construction stays inline, under a NARROW envelope, and widening it would have
+changed a diagnosis.** The board-tools kanban client is a SECOND construction — the writeback
+envelope already built `$ctx->client` under a different guard — and the two are deliberately
+not collapsed onto one field: each guard's failure prints its own diagnosis and skips its own
+legs, and an install with writeback off and board tools on would otherwise construct a client
+where it constructs none today. The `try` wraps the factory call ALONE. Wrapping the loops
+below it would make any inner throw print *"the kanban writeback client is unavailable"* —
+a changed diagnosis, not a refactor.
+
+**The one predicate the corpus could not prove, and what closing it took.** That envelope's
+failure arm skips the board-state legs AND the ssh legs (the inline code did it with a
+`return`). Reverting the guard **left the whole suite green**: the only install that
+distinguishes "skip the state legs" from "skip the state AND ssh legs" is one with an ssh agent
+and NO writeback client, and no golden fixture is one — all three ssh installs construct a
+client fine. A feature test now supplies that install, and the mutation reds it. **The general
+shape is the one this program keeps meeting:** a restructure that is output-equivalent on every
+shape the corpus contains is not thereby a no-op; it is unmeasured.
+
+**Unit tests + mutation proofs.** 48 tests / 125 assertions across the five new check tests
+(6/20 suppression, 6/24 bearer, 14/23 board state, 6/18 advisory, 16/40 HTTP probe) plus the
+one feature test above, and **27 mutation proofs**, each RED when the guard is reverted, green
+after restore, source byte-identical afterward: the suppression guard; the bearer's no-resolver
+guard and its `fail`-not-`warn` severity (the exit contract); the board-state client guard, the
+0-cards ambiguity predicate, the swimlane membership test, the shared-swimlane operand, the
+unread-stages guard, the coord-board predicate, and BOTH catch arms (rethrowing errors the
+paired test, yielding nothing fails it); the advisory's explicit-transport guard, its
+incomplete-setup guard and its agent-keying; the probe's not-requested guard, nothing-to-probe
+guard, the ssh skip's `continue`, the 403/401/non-2xx/missing-result arms, BOTH halves of the
+isolation compare, and `probeErrorDetail`'s error-field preference; and three command-side
+proofs (the readback severity predicate, the enabled-subset gate, the client guard).
+
+**Beyond the golden run, the migrated bodies were compared to the originals MECHANICALLY** —
+every line normalized through the documented `$this->info/warn/error` → `yield
+Finding::ok/warn/fail` map plus each unit's declared transformations (the loop-variable renames,
+the population the loop walks, the guard INVERSIONS a generator wants, and the exit bookkeeping
+that moves to the renderer's `fail` arm), diffed, and the comparator positive-controlled on a
+known-different pair: **all five units identical**. That covers the messages no fixture renders,
+which for this plane is most of them.
+
+**phpstan predicted a red and did not produce one — because stage 7a had already fixed it.**
+This stage deletes two more direct calls from the region above the card-5170 tally, the exact
+edit that made the analyser call that guard dead in 7a. It stayed clean at level 7, and the
+reason is not luck: `emitReport()` now carries `@phpstan-impure`, so the tally's liveness no
+longer depends on which OTHER direct calls happen to sit between it and the mutation. The 7a
+annotation was the general fix, not a local one, and this stage is the evidence.
+
+**What the golden corpus protects here, measured from the RENDERED files.** **Five** of the 33
+fixtures print a `board_tools`-prefixed line, and only **four** of those lines belong to code
+this stage migrated: three ssh installs reach the board-state check's 0-cards arm and the
+pinned-line slot (one of them the advisory as well), and `probe-tools-with-no-enabled-agent`
+reaches the HTTP probe's *nothing to probe* warn. The fifth,
+`probe-tools-ssh-with-no-ssh-agent`, is `SshLiveProbeCheck`'s — stage 1's, not this stage's.
+(The first draft of this paragraph said "three fixtures, all ssh"; it was written from the
+three fixture NAMES rather than from a grep of the corpus, and undercounted by two.)
+**Everything past those four lines has ZERO golden coverage** — the suppression scan, both
+bearer problems, the board-state check's other five legs and its catch, and every
+`--probe-tools` CERTIFY arm — which is card#5552's measurement (the corpus's one HTTP
+board-tools install, `board-tools-http-enabled`, dies at agent-config load and never reaches
+the plane). For all of those the unit tests are the whole proof. **The corpus was NOT repaired here on purpose:**
+cards#5552/#5553 change the fixture set, and a repaired fixture moves the measured baseline
+mid-migration — which stages 4/5a/5b/5c/6/7a all refused for the same reason.
+
+**Real-surface verification, stated at the strength the evidence supports.** `bridge:check` at
+this commit and at `origin/dev`, run in the SAME copied directory with the commit switched
+between runs: stdout and stderr **byte-identical**, 22 lines, exit 0 both sides, the diff
+positive-controlled on an injected line. **What that run actually exercised is small, and saying
+so is the point:** the live install's four agent configs carry NO `board_tools` block at all, so
+the run covered the enabled-subset derivation, the suppression scan over four blockless configs,
+the empty-subset gate's false branch, and the probe check's not-requested return. The client
+envelope, the board-state legs, the ssh legs, the advisory and every probe arm were NOT
+exercised live, and no run of this command on this install would exercise them.
 
 ## Verification
 
