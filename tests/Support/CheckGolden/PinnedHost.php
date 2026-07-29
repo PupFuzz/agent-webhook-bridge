@@ -48,6 +48,12 @@ use Illuminate\Support\Facades\File;
  * `RetentionPostureCheck` is ambient CACHE state, cleared here so a fixture that wants
  * it sets it explicitly.
  *
+ * ONE MORE IS PINNED BEHIND A SEAM RATHER THAN HERE: whether anything is LISTENING at a
+ * channel endpoint. It is a live connect, not an env read, so it is pinned by binding
+ * {@see GoldenChannelEnvironment} for every fixture (DL-242 stage 5b) — verdict-bearing
+ * in the same way `$COORD_CONFIG` is, and unreachable by any fixture today, which is
+ * precisely why it needed pinning before one reaches it.
+ *
  * PINS NAME THE CONSTRUCT, NEVER A `CheckCommand` LINE NUMBER — a pin asserts a HOST FACT,
  * which does not move when the code reading it does (pin 1's reader has already migrated
  * out of `CheckCommand` and the pin is unchanged). Rule and evidence:

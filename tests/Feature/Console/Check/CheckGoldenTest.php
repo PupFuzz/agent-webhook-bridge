@@ -3,6 +3,7 @@
 namespace Tests\Feature\Console\Check;
 
 use App\Bridge\Retention\RetentionGate;
+use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -10,6 +11,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CheckGolden\GoldenCapture;
+use Tests\Support\CheckGolden\GoldenChannelEnvironment;
 use Tests\Support\CheckGolden\GoldenInstall;
 use Tests\Support\CheckGolden\GoldenSshEnvironment;
 use Tests\Support\CheckGolden\PinnedHost;
@@ -170,6 +172,19 @@ class CheckGoldenTest extends TestCase
                 $i->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
                     ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
                     ."channel:\n  url: http://127.0.0.1/push\n");
+
+                return $default;
+
+            case 'channel-probe-pin-potency':
+                // NOT a golden fixture — deliberately absent from `fixtures()`. It is the
+                // only install shape that reaches a channel liveness probe, and adding it
+                // to the golden set mid-migration would move the measured baseline, so a
+                // later reader could not tell "the measurement improved" from "the
+                // measured region moved" (DL-242 stage 5b). It exists solely so the probe
+                // pin has a way to fail.
+                $i->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
+                    ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+                    ."channel:\n  url: http://127.0.0.1:9/push\n");
 
                 return $default;
 
@@ -439,6 +454,18 @@ class CheckGoldenTest extends TestCase
         $this->assertNotSame($unset, $agrees);
     }
 
+    public function test_the_channel_probe_pin_is_what_the_command_resolves(): void
+    {
+        // Potency for the seam pin (DL-242 stage 5b). Binding it changed no golden file
+        // — necessarily, since no golden fixture reaches a probe — so on the golden set
+        // alone the binding is indistinguishable from a binding that never took effect.
+        // This is the shape that can fail: an install whose channel.url HAS a port, where
+        // an unbound seam would connect to the real 127.0.0.1:9 and print its own verdict.
+        $capture = $this->captureFixture('channel-probe-pin-potency');
+
+        $this->assertStringContainsString('pinned by the golden harness: no fixture endpoint', $capture);
+    }
+
     public function test_the_php_fpm_pin_changes_the_retention_posture_line(): void
     {
         // Potency for pin #1. This is the input the stage-0 NAMED GAP was about —
@@ -472,6 +499,9 @@ class CheckGoldenTest extends TestCase
         $host = new PinnedHost($install->path());
         $this->install = $install;
         $this->host = $host;
+        // Pinned for EVERY fixture, ahead of buildFixture() so a fixture that ever wants
+        // a live endpoint overrides it deliberately rather than inheriting the box.
+        $this->app->instance(ChannelProbeEnvironment::class, new GoldenChannelEnvironment);
         if ($perturb) {
             $host->perturbAmbient();
         }
