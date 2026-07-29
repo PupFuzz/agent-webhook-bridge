@@ -239,7 +239,10 @@ next stage starts.
 | **3a ✅** | Migrate the writeback **config plane** — the six units needing no board read — into `CheckSlot::Writeback`. The cluster splits because its probe half needs a constructed `KanbanClient`; see the stage 3a result. | **None** | no |
 | **3b ✅** | Migrate the writeback **probe plane** (the legs that read the board) into `CheckSlot::WritebackProbe`. Inherited the throw constraint recorded in the stage 3a result; see the stage 3b result. | **None** | no |
 | **4 ✅** | Migrate the `database`/`install-suffix` cluster into `CheckSlot::Database`. Two checks, and the first cluster that is pure assertion — no `CheckContext` field added or read; see the stage 4 result. | **None** | no |
-| **5–7** | Migrate remaining units, ~1 PR per cluster: per-agent config/identity, `inbox surfacing config`, `board_tools`. | **None** (golden test enforces) | no |
+| **5a ✅** | Migrate the per-agent **classifier plane** — the units asserting on the parsed config alone: the classifier-resolution gate (into `CheckSlot::AgentClassifier`, the one **abort** slot) plus the two lazy-`classifier.config` advisories (into `CheckSlot::AgentPolicy`). Stage 5 splits; see the stage 5a result for the measured reason. | **None** | no |
+| **5b** | Migrate the per-agent **secret/token + channel-transport** legs: secret + API-token presence, `channel.auth.token_path`, and the socket/HTTP marker + liveness legs. **Five of the eight disclosed gaps are here**, so unit tests carry the proof — a green golden run says nothing about these. | **None** (golden test enforces) | no |
+| **5c** | Migrate the **post-loop registry/identity** legs: `AgentRegistry` collisions, `treat_as_signal`, `BRIDGE_DEFAULT_AGENT`, `shared-identities.json`. **The remaining three disclosed gaps are here.** | **None** (golden test enforces) | no |
+| **6–7** | Migrate remaining units, ~1 PR per cluster: `inbox surfacing config`, `board_tools`. | **None** (golden test enforces) | no |
 | **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
 | **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** |
 | **10** | Re-assign the sites that disagree on warn ↔ unvalidated. Closes **card#5291**, **card#5292**. | **Yes** — severities change | **GATE** |
@@ -649,6 +652,100 @@ the exact distinction stages 3a and 3b spent their result sections protecting. W
 add beyond the unit test is the renderer half, and that is already pinned by `emitFinding()`'s
 exhaustive `match` plus `CheckCommandSeverityContractTest`'s fail → non-zero-exit property, with
 `InstallGuardTest` already driving `bridge:check` to exit 1 on a crosstalking install.
+
+### Stage 5a result — the stage that split on a measured line, and the registry's only abort slot
+
+**Why stage 5 split, and where the line falls.** The split is **measured, not structural**: seven of
+the cluster's units carry zero disclosed gaps, while all eight of the program's remaining gaps sit
+in the other four. Those halves have different *proofs* — a green golden run is the evidence for the
+first, only unit tests can be for the second — so a single PR would have been exactly as legible as
+its weakest half. **5a** takes the units asserting on the parsed config alone; **5b** the per-agent
+secret/token and channel-transport legs (five of the eight gaps; the two liveness probes need a
+probe-environment injection, the `SshProbeEnvironment` shape); **5c** the post-loop registry and
+identity legs (the other three).
+
+**What migrated:** three checks — `agent.classifier_resolvable` (the out-of-process `probeLoadable`
+gate, the in-process `for()` resolution, and the `agent config ok` line), `agent.ci_failure_filter`
+(the DL-197 CI-failure-name advisory) and `agent.wake_membership` (the DL-213 `comment_to` advisory).
+
+**Two slots, and the reason is the `continue`, not output order.** `CheckSlot::AgentClassifier` is
+the registry's **only abort slot**: `CheckCommand` reads its report and `continue`s the agent
+iteration on a `fail`, so every remaining leg for that agent is skipped — the semantics the inline
+code held, where an unresolvable classifier meant there was no point asserting anything else about
+the agent. That makes registration there different in kind from every other slot, and the constraint
+is stated on the enum case rather than left to be rediscovered: **a check whose `fail` should not
+skip the agent's remaining legs must not be registered in `AgentClassifier`.** Today the slot holds
+one check whose only `fail` *is* the resolution failure, so the coupling is exact; a second one would
+widen the abort silently. `CheckSlot::AgentPolicy` exists precisely so the two advisories — which
+must **not** abort — have somewhere else to go, and it runs after the silent classifier-derivation
+block, which prints nothing.
+
+**No `CheckContext` field was added; all three read only the `AgentConfig` handed to `runFor()`.**
+That is the second consecutive stage with no context field, and for the same reason worth stating
+rather than leaving as an absence: plan constraint (c) simply is not engaged by a unit that consumes
+no derived state.
+
+**Each lazy-config-key `catch` travels with its check — the narrow form, one read and no
+derivation.** `ci_failure_workflow_patterns` and `wake_membership` are lazily parsed (unlike
+`families` / `scope_author_map`, which `AgentConfig::load` parses eagerly), so a malformed value
+first throws at the read site. `CheckRunner` **deliberately does not catch**; keeping each `catch`
+with its own check is therefore what makes *"one bad value fails one agent"* a property of the
+design rather than an assumption about the runner. Had the runner caught centrally, the same
+observable behaviour would have been an accident of where the boundary happened to sit.
+
+**The `agent config ok` line's MESSAGE and its SEVERITY are pinned by different things, and only one
+of them existed before this stage.** The golden suite pins the message — it is byte-compared in
+every passing fixture — but nothing in the golden corpus can distinguish an `ok` from an `info`,
+because both render the same text. The severity is pinned *only* by the new
+`AgentClassifierResolvableCheckTest`. This is the same distinction stage 4 recorded one column over:
+a green golden run witnesses **what is printed**, never **at what severity it was classified**.
+
+**The abort itself is fixture-pinned.** Golden fixture `agent-classifier-missing` reds when the
+`continue` is dropped, so the one coupling this migration carries is not resting on the enum
+docblock alone — the behaviour has a test that fails when it changes. That mattered more here than
+in earlier stages, because the abort is the only semantic in the cluster that a reader could
+plausibly "clean up" without noticing what it does.
+
+**A stale source comment was corrected in passing, and the class of error is the point.** The
+post-loop `consumedEventTypes()` block cited `line ~172` for where `for()` had already resolved the
+instance; that reference had been wrong for several stages. It is now described by condition — *"in
+`AgentClassifierResolvableCheck`, after its `probeLoadable` passed — a cache hit here, never a fresh
+load"* — because `bin/check-doc-refs.php` gates line-number citations in `CLAUDE_*.md` and the same
+reasoning applies to source comments, which nothing gates. A line number is a claim about state; it
+goes stale silently.
+
+**Operator-visible change: none.** Golden output byte-identical at 37 tests / 79 assertions with
+`UPDATE_GOLDEN` unset — the assertion count is the load-bearing half of that claim, since a run with
+the variable set regenerates rather than asserts and still reports green. Full suite 1593/1593
+(3791 assertions), phpstan L7 zero, pint clean, `check-doc-refs` clean.
+
+**Mutation-proven — twelve mutants, each reverting one guard, every one red on its named test, and
+all twelve sources restored byte-identical afterwards.** The driver carries its own **positive
+control**: an inert edit that must come back GREEN, so a run in which every proof "passes" because
+the driver silently stopped testing anything is distinguishable from a real one.
+
+**Coverage-table effect — the predicate total goes 58 → 56**: `46 observed · 2 observed-via-abort ·
+8 UNOBSERVED`. Compared as a multiset, **four predicates depart and two arrive**, and the
+conservation assertion `58 − 4 + 2 = 56` passed on the first run. Neither number is one-per-check.
+Three checks migrated, but `agent.wake_membership` alone contributed **two** inline predicates — the
+`$coordMessageOn && …has('wake_membership')` guard and the `! in_array('comment_to', …)` test —
+alongside the `probeLoadable` gate and the CI-failure-name guard. The arrivals, meanwhile, are one
+per **slot** rather than one per check: `emitReport(CheckSlot::AgentClassifier)` and
+`emitReport(CheckSlot::AgentPolicy)`. So the familiar −(n−1) reads **−(n−2)** here, and the extra
+arrival is the visible price of the two-slot split the abort semantics forced — folding all three
+checks into one slot would have read −3 and quietly widened the abort.
+
+**No surviving predicate changed status.** Zero — as stages 2, 3a and 3b each recorded. (Stage 4
+did not record this measurement either way, so this is not a claim about an unbroken run.)
+
+**The disclosed-gap count holds at eight — and this time the SET is identical, not merely the
+count.** Zero gaps departed, zero arrived, zero closed in place. Stage 3b had to warn that a falling
+count meant a shrinking measured region rather than a better measurement; the inverse warning applies
+just as much to a *stable* one, and only the multiset comparison distinguishes them — a stage that
+moved one gap out of the measured region while introducing another would also report `8`. The zeroes
+are what make this stage's claim exact, and they are the measured confirmation of the split recorded
+above: the classifier plane carried **no** disclosed gap into 5a, which is precisely why a green
+golden run is sufficient evidence here and will not be for 5b or 5c.
 
 ## Verification
 

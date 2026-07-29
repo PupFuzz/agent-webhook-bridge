@@ -6,9 +6,12 @@
 # deliberately NOT analysed here — they get pruned/replaced as the rewrite
 # lands its own code in PRs #145-#147.
 #
-# The receiver's plain-PHPStan config (phpstan.neon, level 5, paths: receiver)
-# is separate and still drives the Python-era CI (test.yml). This file is
-# loaded explicitly via `-c phpstan-laravel.neon` in laravel-tests.yml.
+# This is the repo's ONLY PHPStan config, and it is loaded explicitly via
+# `-c phpstan-laravel.neon` in laravel-tests.yml. There is no default
+# `phpstan.neon`, so a bare `vendor/bin/phpstan analyse` exits 1 having
+# printed nothing at all — which reads exactly like a clean run. Always pass
+# `-c`. (The Python-era receiver carried its own level-5 config; it and the
+# workflow that ran it are both gone.)
 
 includes:
     - vendor/larastan/larastan/extension.neon

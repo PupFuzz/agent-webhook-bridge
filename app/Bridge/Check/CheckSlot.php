@@ -36,6 +36,29 @@ enum CheckSlot: string
     /** The install-wide retention posture, after the inbox-surfacing leg. */
     case Retention = 'retention';
 
+    /**
+     * The HEAD of the per-agent config iteration, immediately after that agent's YAML
+     * parsed: can its classifier be resolved at all?
+     *
+     * THE ONLY ABORT SLOT. `CheckCommand` reads this slot's report and `continue`s the
+     * iteration on a `fail`, so every remaining leg for that agent is skipped — the
+     * semantics the inline code held, where an unresolvable classifier meant there was
+     * no point asserting anything else about the agent. That makes registration here
+     * different in kind from every other slot: A CHECK WHOSE `fail` SHOULD NOT SKIP THE
+     * AGENT'S REMAINING LEGS MUST NOT BE REGISTERED HERE. Today the slot holds one
+     * check whose only `fail` is the resolution failure, so the coupling is exact; a
+     * second one would widen the abort silently.
+     */
+    case AgentClassifier = 'agent-classifier';
+
+    /**
+     * Inside the per-agent config iteration, after the silent classifier-derivation
+     * block: the advisories that read a LAZY `classifier.config` key. Separate from
+     * {@see self::AgentClassifier} because these must NOT abort the agent — and reachable
+     * only when that slot passed.
+     */
+    case AgentPolicy = 'agent-policy';
+
     /** Inside the per-agent config iteration, after that agent's channel legs. */
     case AgentConfig = 'agent-config';
 
