@@ -226,6 +226,15 @@ what turns that from an intention into a measurement.
   behavior is covered. Claims measured at fixture scope and stated at whole-suite strength are
   the defect this rule exists to stop (card#5551); the rule is mechanical on purpose, because
   awareness of it was measured to be insufficient.
+- **A BATCH mutation measures ATTRIBUTABLY, not exclusively — say which you ran.** Mutating many
+  arms in one suite run is the affordable form (one run instead of N), each to its own
+  severity-preserving sentinel so exit codes cannot move and mask a result. Attribute each arm's
+  red set by the failing test's EXPECTED STRING, never by grepping the sentinel — that token both
+  over-counts (a token inside a dumped-output diff is not an assertion) and under-counts
+  (truncated diffs). What a batch run cannot distinguish is a test observing TWO mutated arms: it
+  reds once and is attributed to one of them. So "nothing else observes this arm" out of a batch
+  run means *no other test asserts that arm's message* — confirm no cross-arm message overlap in
+  the same pass, or re-run the arm alone before stating it any more strongly.
 - **`docs/check-golden-coverage.md` enumerates `handle()`'s predicates and nothing else.** A
   migrated check's predicates are not in it and cannot become so, so a comment claiming
   membership in its disclosed-gap list is false by construction rather than merely stale — state
