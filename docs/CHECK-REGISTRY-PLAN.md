@@ -832,6 +832,41 @@ with a fatal — red, but for the wrong reason and therefore not evidence; and t
 mutation came back GREEN, which is what surfaced the over-determination above. **A driver that
 classified any non-zero exit as "proven" would have recorded both as passes.**
 
+**Coverage-table effect — the predicate total goes 56 → 38**: `33 observed · 2 observed-via-abort ·
+3 UNOBSERVED`, measured in 27 minutes. Compared as a multiset, **eighteen predicates depart and
+ZERO arrive**, and the conservation assertion `56 − 18 + 0 = 38` passed on the first run.
+
+**The zero is the measurement that confirms "no slot was added."** Every previous stage bought its
+migration with at least one arrival — an `emitReport(CheckSlot::…)` call site, one per *slot* rather
+than per check, which is why stage 5a read `−(n−2)` instead of the familiar `−(n−1)`. Here the
+`AgentConfig` call site already existed and only moved, so the arrival column is empty for the first
+time. The stage was *predicted* to depart ~19 and land at ~37; it departed **18** and landed at
+**38**, so the prediction was off by one on departures — recorded because a prediction that is only
+checked when it is wrong is not a check.
+
+**No surviving predicate changed status, and the one line that looks like an exception is not one.**
+The multiset diff lists `foreach $cfg->subscriptions` as changed, but the change is its REPEAT COUNT
+— four occurrences in the old table, three in the new, all `observed` in both — because one copy
+departed with the migrated secret loop. The tool keys on the sorted status *list*, so a count change
+surfaces in the same column a status change would. That is the multiset semantics working as
+intended (a `(kind, source)` pair is not unique), not a status regression, and it is worth stating
+because the two are indistinguishable at a glance.
+
+**The disclosed-gap count falls 8 → 3, and that closes NOTHING.** Five gaps LEFT the table entirely,
+zero arrived, and — the number that matters — **zero were closed in place.** The instrument is
+bounded to `handle()`, so a predicate that migrates into a check simply stops being measured by it;
+nothing about those five branches got safer, and what stands behind them now is
+`AgentWebhookSecretCheckTest` and `ChannelTransportCheckTest`, not the golden suite. This is stage
+3b's warning firing a second time, and it is the reason the count is never quoted here without the
+multiset accounting beside it: a stage that closed five gaps and a stage that moved five out of
+scope both report `3`.
+
+**The three survivors are exactly stage 5c's cluster** — the post-loop `$configs !== [] &&
+is_string($configDir)` guard, the `AgentRegistry` collisions walk, and the `$configs` walk behind
+`treat_as_signal` / `BRIDGE_DEFAULT_AGENT`. The gap-dense region 3b predicted has now been reduced to
+one stage's worth of work, and 5c inherits the same rule 5b just executed: unit tests are the proof
+there, because a green golden run cannot be.
+
 ## Verification
 
 The existing net goes through the command boundary, so an internal refactor keeps it honest:
