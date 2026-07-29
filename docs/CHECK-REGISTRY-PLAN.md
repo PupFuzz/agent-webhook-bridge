@@ -242,7 +242,8 @@ next stage starts.
 | **5a ✅** | Migrate the per-agent **classifier plane** — the units asserting on the parsed config alone: the classifier-resolution gate (into `CheckSlot::AgentClassifier`, the one **abort** slot) plus the two lazy-`classifier.config` advisories (into `CheckSlot::AgentPolicy`). Stage 5 splits; see the stage 5a result for the measured reason. | **None** | no |
 | **5b ✅** | Migrate the per-agent **secret/token + channel-transport** legs: secret + API-token presence, `channel.auth.token_path`, and the socket/HTTP marker + liveness legs. **Five of the eight disclosed gaps were here**, so unit tests carried the proof — a green golden run says nothing about these. First stage to add **no** slot, and the one seam (`ChannelProbeEnvironment`) is the connect alone; see the stage 5b result. | **None** | no |
 | **5c ✅** | Migrate the **post-loop registry/identity** legs: `AgentRegistry` collisions, `treat_as_signal`, `BRIDGE_DEFAULT_AGENT`, `shared-identities.json`, into a new `CheckSlot::AgentRoster`. The registry BUILD stays inline as derivation — it logs collisions at construction, so a second builder would re-log them behind the output contract's back; see the stage 5c result. | **None** | no |
-| **6–7** | Migrate remaining units, ~1 PR per cluster: `inbox surfacing config`, `board_tools`. | **None** (golden test enforces) | no |
+| **6 ✅** | Migrate the **pre-loop install plane** — both install directories, the inbox-surfacing config, the endpoint URLs, and the provider/adapter coverage leg — into **three** new slots (`CheckSlot::Install`, `::Inbox`, `::Providers`). Three because the region is not contiguous: the already-migrated `Database` and `Retention` slots run inside it and slot ordinal fixes output order. `warnIfDirInsecure()` moves with it (both callers migrate here). **This row replaces an earlier one that under-enumerated the remaining work; see the stage 6 result.** | **None** | no |
+| **7** | Migrate the **post-loop plane** — event-follows-consumer, `board_tools`, `--probe-tools` — after which `handle()` holds derivation and the runner calls alone. | **None** (golden test enforces) | no |
 | **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
 | **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** |
 | **10** | Re-assign the sites that disagree on warn ↔ unvalidated. Closes **card#5291**, **card#5292**. | **Yes** — severities change | **GATE** |
@@ -984,6 +985,156 @@ comments restate program state that drifts; two were already false and were corr
 stage), and **card#5548** (the coverage instrument ignores the return of every `file_put_contents`,
 so a failed mutation-apply is laundered into an `observed-via-abort` verdict and a destroyed run
 reports as a complete measurement — found while reading this stage's regen).
+
+### Stage 6 result — the stage whose slot count is dictated by what migrated FIRST, and the measurement that was stated at the wrong strength
+
+**What migrated:** five checks — `install.config_dir` and `install.secret_dir` (the two directories
+the install is built on, each resolvable-then-secure), `install.inbox_config` (the surfacing
+layout/mode config), `install.endpoint_urls` (the receiver base URL and the kanban API base URL,
+under their two different floors) and `install.provider_adapters` (the B-15 provider ↔ adapter
+coverage leg) — into **three** new slots: `CheckSlot::Install`, `CheckSlot::Inbox` and
+`CheckSlot::Providers`.
+
+**Three slots for one contiguous-looking region, and the count is forced, not chosen.** The
+pre-loop plane reads as one block in the source and is not one: `CheckSlot::Database` (stage 4)
+already runs between the secret-dir leg and the inbox one, and `CheckSlot::Retention` (stage 2)
+between the inbox leg and the endpoint URLs. Constraint (b) fixes output order by slot ordinal, so
+a single slot cannot span a slot that already sits inside it — **the two earliest migrations decided
+this stage's shape.** The cost is **three arrivals**, one `emitReport` call site per slot and the
+largest arrival count of the migration so far. A reader who has now seen stage 5b add zero slots,
+5c add one and 6 add three must not read a trend into it: each number is a property of its region's
+interleave, and the three collapse into one the moment the enum's own docblock rule allows.
+
+**Two checks for the two directories, not four — and 5c's splitting rule is what says so.** Stage 5c
+split four legs sharing a registry because their operator actions and consequences differed. Each
+directory here also has two verdicts of different severity (a `fail` when it will not resolve, a
+`warn` when its mode is too open), which looks like the same argument for splitting each into a
+resolution check and a permissions check. It is not, and the discriminator is a **guard dependency**:
+the permissions warn is not independently reachable — it is defined only once the directory
+resolved, so a separate perms check would have to re-derive the resolution verdict its sibling
+already owns, and two checks that can disagree about whether the directory exists is a state one
+check cannot reach. 5c's legs shared a *data source*; these share a *guard*. A check yielding an
+info line and then a conditional warn is what `iterable<Finding>` is for.
+
+**Both dir checks read `config()` RAW rather than `CheckContext`, and that is deliberate.** The
+context field is narrowed for its consumers (`is_string($v) ? $v : null`) and is wrong for a leg
+that reports on the SETTING in two ways: the empty string is a string, so the field cannot
+distinguish the unset case the first branch reports; and a `BRIDGE_CONFIG_DIR` of the literal `true`
+reaches `env()` as a bool and arrives as null. That second divergence is the one stage 5c FOUND,
+verified against the running app and accepted — accepted on the default-agent *warning*, where the
+install has already failed. Reading the field here would move that accepted edge onto the line that
+reports the setting itself, which is a changed verdict rather than a changed adjective.
+
+**The resulting double `config()` read is safe, and the reason it is safe is exactly why stage 5c
+ruled the opposite way on a read that looked identical.** `handle()` keeps its own
+`config('bridge.config_dir')` read as derivation (constraint (c)) — the scan loop needs it — so the
+key is read twice per run. Stage 5c met the same shape in `AgentRegistry::loadSharedIdentities()`
+and preserved it under protest, filing card#5546, because that read is fail-soft and **logs** on a
+malformed file: two reads mean two log lines, a behavior change stdout cannot see. `config()` is a
+side-effect-free lookup on an already-built repository — no I/O, no logging, no second anything.
+Both rulings are recorded side by side here on purpose, so a later reader does not "fix" one by
+citing the other.
+
+**`warnIfDirInsecure()` was extracted, not copied, because this is the stage its second caller
+arrives in.** It was a private method on `CheckCommand` with exactly two call sites — units 2 and 4
+of this very stage — so migrating them meant either one shared primitive or two copies of a
+permission verdict. It became `DirectoryPermissions::warnIfInsecure()`, returning `?Finding` rather
+than yielding, because each caller decides where the warn sits in ITS output: the config-dir check
+emits it straight after its own ok line; the secret-dir check emits it only on a split layout. This
+is the single-caller-set move stage 2 made with `receiverSapiFinishesEarly()`, one stage later than
+that rule's threshold and exactly at it.
+
+**No `CheckContext` field was added — the second pure-assertion stage after stage 4.** Every value
+these five checks read is `config()`, and migrated checks already read `config()` directly where the
+value IS config rather than a `handle()` local. A speculative field would violate `CheckContext`'s
+own docblock rule that fields arrive as the checks reading them migrate.
+
+**Two of this stage's own design measurements were false, and the shape they share is now a filed
+root cause.** The card's fixture accounting was written from `GoldenInstall`'s setup rather than
+from the rendered corpus. It claimed the **secret**-dir permissions warn is rendered by zero
+fixtures (`config-dir-missing` renders it: that fixture repoints `config_dir` at a path that does
+not exist and leaves `secret_dir` at the install root, so the split-layout guard is true there) and
+that the **config**-dir warn is rendered by all 33 (it is 32, for the same reason). Neither error
+touched the design — the three-slot split, the five checks, the raw-`config()` rule and the
+departure/arrival prediction all stand — but both changed what the unit tests must prove, which is
+the only reason they were caught. The accurate and still load-bearing statement is narrower and more
+useful than the false one: **no fixture exercises a DELIBERATE split layout**, and the one that
+renders the warn does so incidentally, so the corpus cannot distinguish a check that consults the
+DL-014 guard from one that ignores it. `InstallSecretDirCheckTest` is what can.
+
+**That miss is a claim stated at a strength its evidence did not support — the shape this program has
+now met in prose, in an instrument, and in merged code.** A measurement taken at fixture scope was
+restated at whole-suite scope. A sibling audit found two further instances, one of them in a MERGED
+stage's docblock, and the fix is a rule about how coverage claims are worded rather than another
+careful pass — filed as **card#5551**, which also corrects the fix wording card#5547 prescribes,
+because that wording propagates the same defect.
+
+**What the golden corpus does not protect here, stated at fixture scope.** Of the 33 fixtures: none
+renders the `config_dir … is not set` message; one reaches `config dir does not exist`; one reaches
+the secret-dir `not set or not absolute` branch; one reaches the receiver-URL leg's refusal — with a
+value that is not a URL at all — and **none** reaches the https-floor refusal that guards the
+token-bearing kanban URL; one reaches `has no adapter`; and all 33 print the inbox ok line, so **no
+fixture reaches the inbox failure path** — which is a `catch` arm, absent from the disclosed-gap list rather than listed there,
+because the instrument walks `if`/`elseif`/`foreach` only. Four branches therefore have no golden
+coverage at all, and for those the unit tests are the whole proof: 24 tests / 66 assertions across
+five test classes, each load-bearing predicate mutation-proved (14 proofs, RED on revert and green
+after restore, source byte-identical afterward). Four of the fourteen prove by making the guarded
+call unreachable-safe — the mutant raises a `TypeError` or a stat error rather than failing an
+assertion — which is the demonstration, not a weaker version of it.
+
+**Coverage-table effect — the predicate total goes 35 → 29**: `28 observed · 0 observed-via-abort ·
+1 UNOBSERVED`, measured in 20 minutes on a detached copy. Compared as a multiset, **nine predicates
+depart and three arrive**, and the conservation assertion `35 − 9 + 3 = 29` passed on the first run.
+
+**This is the first stage whose prediction held on the SPLIT as well as the total, and that is a
+property of the stage, not an improvement in method.** The card predicted the nine departures
+individually and three arrivals — one `emitReport` call site per new slot — and the run returned
+exactly that set. Stage 5c's third method note explains why, read in the other direction: the split
+diverges from a prediction wherever a stage rewrites a surviving predicate's condition TEXT, because
+the diff keys on that text and cannot tell a rewrite from a departure plus an arrival. **Stage 6
+rewrote none.** It lifted nine whole predicates out of `handle()` and added three new call sites,
+leaving every survivor textually untouched — which the tool confirms independently: zero surviving
+predicates changed status. A later stage that publishes locals onto `CheckContext` will rewrite text
+again and the split will diverge again; nothing here makes the prediction more trustworthy next time.
+
+**`observed-via-abort` reaches zero for the first time in the program, by departure rather than by
+promotion.** That column has read `2` in every measurement since stage 0, and both of its entries —
+the `! is_dir($configDir)` elseif and the secret-dir `not set or not absolute` guard — are departures
+of this stage. The golden harness did not learn to tell their branches apart; they left the region it
+measures. What stands behind them now is `InstallConfigDirCheckTest` and `InstallSecretDirCheckTest`
+with a mutation proof per load-bearing predicate, which is a strictly stronger statement than
+*reached, but not shown to be distinguishable* — the column emptying is the migration working, and a
+reader who takes it as the corpus improving has it backwards.
+
+**Five checks migrated but only four contributed predicates, and the missing one is the point.**
+`install.inbox_config` is a `try`/`catch` in its entirety, and the instrument walks
+`if`/`elseif`/`foreach` only — so it appears on neither side of the sum. The nine departures divide
+two, two, zero, two, three across the five checks. A reader reconciling check count against predicate
+count will come up exactly one check short, and the shortfall is the check whose failure path the
+coverage table has never been able to see at all.
+
+**The disclosed-gap count holds at 1, and for once the zero carries no caveat.** Zero UNOBSERVED
+entries departed, zero arrived, zero closed in place — and unlike stage 5c's, this stage's
+`closed in place` zero is not blind, because the surviving gap's condition text
+(`$configs !== [] && $ctx->configDir !== null`) is unchanged across the stage. It remains the
+derivation guard, which stays measured by design until the final stage makes `CheckContext` a
+builder.
+
+**The stage table's own `6–7` row was corrected in this PR, and the correction is load-bearing.**
+The row read *"Migrate remaining units, ~1 PR per cluster: `inbox surfacing config`, `board_tools`"* —
+written at stage 0, before the region was measured. Taken literally it migrates two units and leaves
+**five** inline forever: both directory legs, both URL legs and the provider/adapter leg. That is
+not a tidiness problem. **Stage 8's whole premise is an EXACT inventory**, and a unit that never
+registered is invisible to the registry — so an under-enumerated row would hand stage 8 a green
+inventory that had simply never looked at five legs, which is the precise defect this program exists
+to remove, re-minted one level up. The row is now split by position: 6 is the pre-loop plane, 7 the
+post-loop one.
+
+**Filed, not fixed here** — output-neutral root-cause items deliberately kept out of a migration PR:
+**card#5549** (`CLAUDE_ARCHITECTURE.md`'s `app/Bridge` package map omits the entire `Check` package —
+the package this program has been building for six stages) and **card#5551** above. They join
+card#5546, card#5547 and card#5548 from stage 5c; 5547, 5549 and 5551 are one doc-work batch to be
+done together, 5551's rule first, after stage 7.
 
 ## Verification
 
