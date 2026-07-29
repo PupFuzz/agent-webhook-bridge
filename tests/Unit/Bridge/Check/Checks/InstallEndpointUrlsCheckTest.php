@@ -75,7 +75,10 @@ class InstallEndpointUrlsCheckTest extends TestCase
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Fail, $findings[0]->severity);
         $this->assertStringStartsWith("bridge.providers.kanban.api_base_url 'http://example.com' must use https", $findings[0]->message);
-        // The receiver field is absent from the report, not merely outnumbered in it.
+        // That the receiver leg stayed silent is carried by the count plus the prefix
+        // above, not by this line. What this adds is narrower: the refusal names only the
+        // field it is about, so a validator call given the wrong label would not slip
+        // through on a prefix that happens to match.
         $this->assertStringNotContainsString('receiver_base_url', $findings[0]->message);
     }
 

@@ -1082,6 +1082,44 @@ after restore, source byte-identical afterward). Four of the fourteen prove by m
 call unreachable-safe — the mutant raises a `TypeError` or a stat error rather than failing an
 assertion — which is the demonstration, not a weaker version of it.
 
+**Coverage-table effect — the predicate total goes 35 → 29**: `28 observed · 0 observed-via-abort ·
+1 UNOBSERVED`, measured in 20 minutes on a detached copy. Compared as a multiset, **nine predicates
+depart and three arrive**, and the conservation assertion `35 − 9 + 3 = 29` passed on the first run.
+
+**This is the first stage whose prediction held on the SPLIT as well as the total, and that is a
+property of the stage, not an improvement in method.** The card predicted the nine departures
+individually and three arrivals — one `emitReport` call site per new slot — and the run returned
+exactly that set. Stage 5c's third method note explains why, read in the other direction: the split
+diverges from a prediction wherever a stage rewrites a surviving predicate's condition TEXT, because
+the diff keys on that text and cannot tell a rewrite from a departure plus an arrival. **Stage 6
+rewrote none.** It lifted nine whole predicates out of `handle()` and added three new call sites,
+leaving every survivor textually untouched — which the tool confirms independently: zero surviving
+predicates changed status. A later stage that publishes locals onto `CheckContext` will rewrite text
+again and the split will diverge again; nothing here makes the prediction more trustworthy next time.
+
+**`observed-via-abort` reaches zero for the first time in the program, by departure rather than by
+promotion.** That column has read `2` in every measurement since stage 0, and both of its entries —
+the `! is_dir($configDir)` elseif and the secret-dir `not set or not absolute` guard — are departures
+of this stage. The golden harness did not learn to tell their branches apart; they left the region it
+measures. What stands behind them now is `InstallConfigDirCheckTest` and `InstallSecretDirCheckTest`
+with a mutation proof per load-bearing predicate, which is a strictly stronger statement than
+*reached, but not shown to be distinguishable* — the column emptying is the migration working, and a
+reader who takes it as the corpus improving has it backwards.
+
+**Five checks migrated but only four contributed predicates, and the missing one is the point.**
+`install.inbox_config` is a `try`/`catch` in its entirety, and the instrument walks
+`if`/`elseif`/`foreach` only — so it appears on neither side of the sum. The nine departures divide
+two, two, zero, two, three across the five checks. A reader reconciling check count against predicate
+count will come up exactly one check short, and the shortfall is the check whose failure path the
+coverage table has never been able to see at all.
+
+**The disclosed-gap count holds at 1, and for once the zero carries no caveat.** Zero UNOBSERVED
+entries departed, zero arrived, zero closed in place — and unlike stage 5c's, this stage's
+`closed in place` zero is not blind, because the surviving gap's condition text
+(`$configs !== [] && $ctx->configDir !== null`) is unchanged across the stage. It remains the
+derivation guard, which stays measured by design until the final stage makes `CheckContext` a
+builder.
+
 **The stage table's own `6–7` row was corrected in this PR, and the correction is load-bearing.**
 The row read *"Migrate remaining units, ~1 PR per cluster: `inbox surfacing config`, `board_tools`"* —
 written at stage 0, before the region was measured. Taken literally it migrates two units and leaves

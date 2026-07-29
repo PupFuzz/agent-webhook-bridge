@@ -11,11 +11,18 @@ use Tests\TestCase;
 /**
  * The provider/adapter coverage leg (B-15, DL-242 stage 6).
  *
- * THE FAILING CASE IS ALREADY COVERED at the command level and by one golden fixture, so
- * this file deliberately does not re-prove it — it covers the three states those cannot
- * see, each of which is a predicate that would otherwise be justified by reading alone:
- * the all-supported case (the silence that makes the failure meaningful), a `providers`
- * key of the wrong SHAPE, and a numerically-keyed entry.
+ * FOUR STATES, THREE OF WHICH NOTHING ELSE CAN SEE: the all-supported case (the silence
+ * that makes a failure meaningful), a `providers` value of the wrong SHAPE, and a
+ * numerically-keyed entry — each a predicate that would otherwise be justified by reading
+ * alone.
+ *
+ * THE FOURTH, the failing case, IS re-proved here even though `provider-without-adapter`
+ * pins the same line — not because this assertion is stronger than the fixture's (both are
+ * frozen literals of the same string; that string appears nowhere else under `tests/`) but
+ * because it is THE POSITIVE CONTROL FOR THE OTHER THREE. They assert emptiness, and three
+ * `assertSame([], …)` would pass just as well against a check that yields nothing under any
+ * input at all. The failing case in the same file, against the same harness, is what
+ * establishes that silence here is a verdict rather than the absence of one.
  *
  * THE NUMERIC KEY IS NOT A HYPOTHETICAL. `bridge.providers` is a map in the shipped
  * config, but an operator writing it as a YAML/env list produces integer keys, and PHP

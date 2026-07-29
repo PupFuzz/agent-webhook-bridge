@@ -13,12 +13,17 @@ use App\Bridge\Support\Finding;
  * migrated out of `CheckCommand::handle()` (DL-242 stage 6).
  *
  * IT READS `config('bridge.config_dir')` RAW, NOT `CheckContext::$configDir`, and that is
- * the one thing about this check a reviewer should not "simplify". The context field is
- * narrowed for its consumers (`is_string($v) ? $v : null`) and is wrong here twice over:
- * the empty string is a string, so the field cannot distinguish the unset case this
- * check's first branch reports, and a `BRIDGE_CONFIG_DIR` of the literal `true` reaches
- * `env()` as a bool and arrives here as null. Both branches report on the SETTING, so
- * they must see what was set.
+ * the one thing about this check a reviewer should not "simplify". The field is not merely
+ * a worse source here — it is EMPTY: `handle()` assigns it while building the per-agent
+ * scan, after the `Install` slot has already run, so at this check's runtime it still holds
+ * its `null` default and the "simplification" would report every install as unset.
+ *
+ * It would be the wrong source even if it were populated, which is why the raw read is not
+ * merely a happens-to-work ordering accident. The field is narrowed for its consumers
+ * (`is_string($v) ? $v : null`): the empty string is a string, so it cannot distinguish the
+ * unset case this check's first branch reports, and a `BRIDGE_CONFIG_DIR` of the literal
+ * `true` reaches `env()` as a bool and arrives as null. Both branches report on the
+ * SETTING, so they must see what was set.
  *
  * THE PERMISSIONS WARN IS PART OF THIS CHECK, not a sibling of it. It is defined only
  * once the directory resolved, so a separate check would have to re-derive this one's
