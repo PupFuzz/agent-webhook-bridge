@@ -9,6 +9,9 @@ use App\Bridge\Check\CheckReport;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\Checks\AgentApiTokenCheck;
 use App\Bridge\Check\Checks\AgentClassifierResolvableCheck;
+use App\Bridge\Check\Checks\AgentDefaultAgentCheck;
+use App\Bridge\Check\Checks\AgentIdentityCollisionsCheck;
+use App\Bridge\Check\Checks\AgentTreatAsSignalCheck;
 use App\Bridge\Check\Checks\AgentWebhookSecretCheck;
 use App\Bridge\Check\Checks\ChannelSnapshotCheck;
 use App\Bridge\Check\Checks\ChannelTokenPathCheck;
@@ -18,6 +21,7 @@ use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
 use App\Bridge\Check\Checks\InstallSuffixDsnCheck;
 use App\Bridge\Check\Checks\ReconcileRepoTokensCheck;
 use App\Bridge\Check\Checks\RetentionPostureCheck;
+use App\Bridge\Check\Checks\SharedIdentitiesCheck;
 use App\Bridge\Check\Checks\SshLiveProbeCheck;
 use App\Bridge\Check\Checks\SshPinnedLineCheck;
 use App\Bridge\Check\Checks\WakeMembershipCheck;
@@ -40,7 +44,6 @@ use App\Bridge\Support\ClassifierResolver;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\Severity;
-use App\Bridge\Support\SignalAllowlist;
 use App\Bridge\Support\UrlValidator;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Tools\SshProbeEnvironment;
@@ -94,6 +97,13 @@ class CheckCommand extends BridgeCommand
                 new ChannelTokenPathCheck,
                 new ChannelTransportCheck($this->laravel->make(ChannelProbeEnvironment::class)),
                 new ChannelSnapshotCheck(base_path('examples/channel-servers')),
+            )
+            ->register(
+                CheckSlot::AgentRoster,
+                new AgentIdentityCollisionsCheck,
+                new AgentTreatAsSignalCheck,
+                new AgentDefaultAgentCheck,
+                new SharedIdentitiesCheck,
             )
             ->register(
                 CheckSlot::Writeback,
@@ -204,6 +214,10 @@ class CheckCommand extends BridgeCommand
         // Shape: scope => list<array{agent:string, class:string, consumed:list<string>, declared:bool}>.
         $githubScopeConsumers = [];
         $ctx->secretDir = is_string($secretDir) && str_starts_with($secretDir, '/') ? $secretDir : null;
+        // Only whether a path under it can be FORMED — the legs reading it ask nothing
+        // else. A dir that does not exist, or is insecure, is still a string here and is
+        // reported by its own leg above.
+        $ctx->configDir = is_string($configDir) ? $configDir : null;
         if (is_string($configDir) && is_dir($configDir)) {
             foreach (glob(rtrim($configDir, '/').'/*.yml') ?: [] as $file) {
                 $name = basename($file, '.yml');
@@ -308,10 +322,9 @@ class CheckCommand extends BridgeCommand
                 // AgentApiTokenCheck, ChannelTokenPathCheck, ChannelTransportCheck and
                 // ChannelSnapshotCheck (DL-242 stages 1 and 5b), run HERE so their lines
                 // stay interleaved at this agent's position (plan constraint (b)).
-                // Stage 5b migrated everything that used to print between the silent
-                // derivation above and the snapshot leg, so this slot's five checks are
-                // now contiguous — the first stage where the enum shrinks toward the
-                // target design instead of growing.
+                // Nothing unmigrated prints inside this slot any more, which is why one
+                // call site serves it. The migration's stage-by-stage accounting is the
+                // plan doc's, deliberately not restated here.
                 if (! $this->emitReport($runner->runForAgent(CheckSlot::AgentConfig, $cfg, $ctx))) {
                     $ok = false;
                 }
@@ -322,37 +335,29 @@ class CheckCommand extends BridgeCommand
         // context is what lets a check migrated in a LATER stage read it without also
         // migrating its producer.
         $ctx->configs = $configs;
+        $ctx->agentNames = $agentNames;
 
-        // Build the registry from the scanned configs (surfaces id-collision
-        // warnings at preflight) and validate each agent's treat_as_signal — an
-        // unknown name is fail-closed at dispatch (5xx), so catch it here.
-        if ($configs !== [] && is_string($configDir)) {
-            $registry = AgentRegistry::fromAgentConfigs($configs, AgentRegistry::loadSharedIdentities($configDir));
-            foreach ($registry->collisions() as $warning) {
-                $this->warn($warning);
-            }
-            foreach ($configs as $cfg) {
-                try {
-                    SignalAllowlist::default($cfg->echoSuppression->treatAsSignal, $registry);
-                } catch (Throwable $e) {
-                    $this->error("agent {$cfg->agentName}: ".$e->getMessage());
-                    $ok = false;
-                }
-            }
+        // DERIVATION, NOT ASSERTION (plan constraint (c)): building the registry is what
+        // FINDS the id collisions — AgentRegistry accumulates and logs them at
+        // construction, and collisions() only returns what the build already found. So
+        // the build cannot move into either check that reads it: two checks each
+        // constructing their own would re-log every collision on a colliding install, a
+        // behavior change this migration's byte-identical output contract cannot see.
+        if ($configs !== [] && $ctx->configDir !== null) {
+            $ctx->registry = AgentRegistry::fromAgentConfigs(
+                $configs,
+                AgentRegistry::loadSharedIdentities($ctx->configDir),
+            );
         }
 
-        // BRIDGE_DEFAULT_AGENT must name a real config, else a bare bridge:inbox
-        // silently surfaces nothing.
-        $defaultAgent = config('bridge.default_agent');
-        if (is_string($defaultAgent) && $defaultAgent !== '' && ! in_array($defaultAgent, $agentNames, true)) {
-            $this->warn("BRIDGE_DEFAULT_AGENT '{$defaultAgent}' has no matching config {$configDir}/{$defaultAgent}.yml");
-        }
-
-        // shared-identities.json is optional; report it when present so a v0.13
-        // schema-v1 migration / a malformed file surfaces at preflight.
-        if (is_string($configDir) && is_file(rtrim($configDir, '/').'/shared-identities.json')) {
-            $shared = AgentRegistry::loadSharedIdentities($configDir);
-            $this->info('shared-identities.json: '.count($shared).' shared account(s)');
+        // The post-loop ROSTER/IDENTITY legs — migrated to AgentIdentityCollisionsCheck,
+        // AgentTreatAsSignalCheck, AgentDefaultAgentCheck and SharedIdentitiesCheck
+        // (DL-242 stage 5c), run HERE so their lines stay between the per-agent loop and
+        // the writeback envelope (plan constraint (b)). They run after the loop rather
+        // than inside it because the roster they assert against does not exist until
+        // every YAML has been read.
+        if (! $this->emitReport($runner->run(CheckSlot::AgentRoster, $ctx))) {
+            $ok = false;
         }
 
         // writeback.json is optional (absent ⇒ writeback off). A malformed file
