@@ -58,6 +58,14 @@ final class CheckContext
      * (the bridge dispatches to all of them), so this is a list per scope and the
      * consumed set is their union (card#4183 / DL-196).
      *
+     * ACCUMULATED *DURING* THE PER-AGENT LOOP, NOT AFTER IT — the one field here whose
+     * trap is PARTIAL rather than EMPTY. {@see self::$configs} and its neighbours are
+     * assigned once the loop has finished, so a check reading them too early sees
+     * nothing; this one grows an entry per agent, so a check reading it from
+     * {@see CheckSlot::AgentConfig} would see every agent up to the current one and
+     * report confidently on a roster that is still being read. It is safe only from a
+     * slot that runs after the loop — {@see CheckSlot::EventConsumer} does.
+     *
      * @var array<string, list<array{agent: string, class: string, consumed: list<string>, declared: bool}>>
      */
     public array $githubScopeConsumers = [];

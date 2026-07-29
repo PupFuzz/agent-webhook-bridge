@@ -2,6 +2,10 @@
 
 namespace Tests\Unit\Console;
 
+use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\CheckRunner;
+use App\Bridge\Check\Checks\EventFollowsConsumerCheck;
+use App\Bridge\Check\CheckSlot;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Console\Commands\Bridge\CheckCommand;
@@ -119,16 +123,30 @@ class CheckCommandSeverityContractTest extends TestCase
         // with info() — green, exit 0, invisible to the tally: this card's own
         // defect shape, a second time, in the same command.
         //
+        // Driven through the REGISTERED check and the report renderer since DL-242
+        // stage 7a, rather than by reflecting on the advisory method it replaced. That
+        // keeps the property end-to-end: the check yields the finding, `emitReport`
+        // renders it, and `emitUnvalidated` tallies it — a chain the check's own unit
+        // test (which asserts the yielded Finding) cannot close on its own.
+        //
         // The throw is SYNTHETIC (no app is booted here, so the WebhookEvent query
         // dies on a null connection resolver) and deliberately so — what is under
         // test is the catch arm's rendering and counting, and the catch is
         // `Throwable`, so the DB hiccup it exists for reaches the identical arm.
         // Forcing a real DB failure would mean DDL inside RefreshDatabase, which
         // passes on SQLite and reds the MariaDB matrix.
-        $advisory = new ReflectionMethod($this->command, 'checkEventFollowsConsumer');
-        $advisory->invoke($this->command, ['5' => [
+        $ctx = new CheckContext;
+        $ctx->githubScopeConsumers = ['5' => [
             ['agent' => 'prod-agent', 'class' => 'X', 'consumed' => ['push'], 'declared' => true],
-        ]]);
+        ]];
+        $report = (new CheckRunner)
+            ->register(CheckSlot::EventConsumer, new EventFollowsConsumerCheck)
+            ->run(CheckSlot::EventConsumer, $ctx);
+        $emit = new ReflectionMethod($this->command, 'emitReport');
+
+        // `unvalidated` never flips the exit — asserted here, at the command, because
+        // that is where the exit contract lives.
+        $this->assertTrue($emit->invoke($this->command, $report));
 
         $out = $this->buffer->fetch();
         $this->assertStringContainsString('event-consumer: check skipped', $out);

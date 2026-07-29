@@ -90,7 +90,7 @@ re-mint the bug.
 
 - **Deriving a model of the install** — `$configs` accumulates in the per-agent config loop,
   `$githubScopeConsumers` in that loop's subscription walk, `$writeback` and `$client` later.
-- **Asserting on that model** — consumed as late as `checkEventFollowsConsumer()`, near the end.
+- **Asserting on that model** — consumed as late as the event-follows-consumer advisory, near the end.
 
 This is why the method resists ordinary extract-method refactoring: the checks are not
 independent, because the model they assert on is being built *between* them.
@@ -175,8 +175,9 @@ position.
 `CheckContext`.** Migrated checks read it; unmigrated code keeps its local variables.
 `CheckContext` becomes a standalone builder only in the final stage. Without this rule the stage
 boundaries are ill-defined — `$githubScopeConsumers` is *built* inside the per-agent loop
-and *consumed* by `checkEventFollowsConsumer()`, so producer and consumer are migrated in different
-stages and must communicate through the context in the interim.
+and *consumed* by the event-follows-consumer advisory, so producer and consumer are migrated in
+different stages and must communicate through the context in the interim. Stage 7a is where that
+became concrete: the loop now writes `$ctx->githubScopeConsumers` directly and the local is gone.
 
 ### Why a strangler migration, not a rewrite
 
@@ -243,7 +244,8 @@ next stage starts.
 | **5b ✅** | Migrate the per-agent **secret/token + channel-transport** legs: secret + API-token presence, `channel.auth.token_path`, and the socket/HTTP marker + liveness legs. **Five of the eight disclosed gaps were here**, so unit tests carried the proof — a green golden run says nothing about these. First stage to add **no** slot, and the one seam (`ChannelProbeEnvironment`) is the connect alone; see the stage 5b result. | **None** | no |
 | **5c ✅** | Migrate the **post-loop registry/identity** legs: `AgentRegistry` collisions, `treat_as_signal`, `BRIDGE_DEFAULT_AGENT`, `shared-identities.json`, into a new `CheckSlot::AgentRoster`. The registry BUILD stays inline as derivation — it logs collisions at construction, so a second builder would re-log them behind the output contract's back; see the stage 5c result. | **None** | no |
 | **6 ✅** | Migrate the **pre-loop install plane** — both install directories, the inbox-surfacing config, the endpoint URLs, and the provider/adapter coverage leg — into **three** new slots (`CheckSlot::Install`, `::Inbox`, `::Providers`). Three because the region is not contiguous: the already-migrated `Database` and `Retention` slots run inside it and slot ordinal fixes output order. `warnIfDirInsecure()` moves with it (both callers migrate here). **This row replaces an earlier one that under-enumerated the remaining work; see the stage 6 result.** | **None** | no |
-| **7** | Migrate the **post-loop plane** — event-follows-consumer, `board_tools`, `--probe-tools` — after which `handle()` holds derivation and the runner calls alone. | **None** (golden test enforces) | no |
+| **7a ✅** | Migrate the **event-follows-consumer plane** — the whole DL-196 advisory — into a new `CheckSlot::EventConsumer`. One check, one slot. **Row 7 splits on SIZE, not on a measured seam**, and the stage 7a result says so rather than manufacturing a discriminator; it is also the first stage whose predicate total goes UP, because it migrates a HELPER method rather than code inside `handle()`. | **None** (golden test enforces) | no |
+| **7b** | Migrate the **board-tools plane** — the `suppressedReason` scan, the resolver's `problems()`, the per-agent board-STATE legs, the DL-225 flipped-default advisory (which reads its input back off another slot's REPORT — a first for this program) and the `--probe-tools` live probe — after which `handle()` holds derivation and the runner calls alone. | **None** (golden test enforces) | no |
 | **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
 | **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** |
 | **10** | Re-assign the sites that disagree on warn ↔ unvalidated. Closes **card#5291**, **card#5292**. | **Yes** — severities change | **GATE** |
