@@ -59,7 +59,7 @@ final class EventFollowsConsumerCheck implements Check
     public function run(CheckContext $ctx): iterable
     {
         if ($ctx->githubScopeConsumers === []) {
-            return;   // stage 8 turns this into a returned disposition
+            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
         }
 
         try {

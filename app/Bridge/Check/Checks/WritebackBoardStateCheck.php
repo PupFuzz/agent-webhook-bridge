@@ -55,7 +55,7 @@ final class WritebackBoardStateCheck implements Check
         $writeback = $ctx->writeback;
         $client = $ctx->client;
         if ($writeback === null || $client === null || $writeback->mappings === []) {
-            return;   // stage 8 turns this into a returned disposition
+            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
         }
 
         foreach ($writeback->mappings as $repo => $mapping) {

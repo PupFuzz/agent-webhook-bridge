@@ -9,8 +9,13 @@ use App\Bridge\Support\Finding;
  *
  * The registry's value over the raw `warn()` sites it replaces is that a check's
  * findings arrive ATTRIBUTED — the id is carried alongside them, so the run can be
- * inventoried rather than only printed. Stage 9's JSON renderer reads these; stage 8
- * asserts every registered check produced one.
+ * inventoried rather than only printed. Stage 9's JSON renderer reads these.
+ *
+ * A RESULT IS NOT THE INVENTORY, and the difference is what stage 8 turned on. A result
+ * exists only for a check that RAN, so the set of results cannot speak for a check whose
+ * slot was never invoked — 13 of 37 on the baseline install. {@see CheckRunner::inventory()}
+ * is the account that covers those, and it is derived from the registration list rather
+ * than from these.
  */
 final class CheckResult
 {

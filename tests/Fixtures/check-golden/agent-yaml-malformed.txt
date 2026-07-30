@@ -9,3 +9,4 @@ inbox surfacing config: ok (layout=shared)
 retention: on (delete >30d, every 86400s, 500 rows/pass)
 retention: this PHP install has no fastcgi_finish_request() — retention runs AFTER the response is flushed but BEFORE the request ends, so a keep-alive client may wait for it. Serve the receiver under PHP-FPM (see CLAUDE_DEPLOYMENT.md), or set BRIDGE_RETENTION_ENABLED=false and run bridge:prune on a schedule.
 agent config prod-agent: config file <INSTALL>/prod-agent.yml is not valid YAML: Malformed inline YAML string at line 4.
+checks: 37 registered · 14 ran (6 reported above, 8 with nothing to report) · 2 opt-in probes not requested · 21 not applicable here (no agent config parsed (see the errors above); this install has no readable writeback.json, so the PR-to-card writeback is off; no agent has an enabled board_tools block). All 37 are accounted for — nothing was skipped uncounted.

@@ -16,3 +16,4 @@ writeback.json: 1 repo mapping(s)
 writeback: could not read board 8 (owner/repo) with the writeback token — HTTP request returned status code 500:
 {"message":"nope"}
 
+checks: 37 registered · 31 ran (11 reported above, 20 with nothing to report) · 2 opt-in probes not requested · 4 not applicable here (no agent has an enabled board_tools block). All 37 are accounted for — nothing was skipped uncounted.

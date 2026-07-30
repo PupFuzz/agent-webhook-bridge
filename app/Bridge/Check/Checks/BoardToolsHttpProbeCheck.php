@@ -2,8 +2,9 @@
 
 namespace App\Bridge\Check\Checks;
 
-use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\CheckDisposition;
+use App\Bridge\Check\OptInCheck;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\SecretFile;
 use Illuminate\Http\Client\ConnectionException;
@@ -32,16 +33,20 @@ use Throwable;
  *
  * REGISTERED UNCONDITIONALLY, RUN UNCONDITIONALLY, SILENT WHEN NOT REQUESTED (plan
  * constraint (a)) — the endpoint is a CONSTRUCTOR ARGUMENT and a null one yields nothing,
- * exactly as its ssh sibling holds `--probe-tools-ssh`. The command no longer guards the
- * call site on the flag, so "not requested" becomes a disposition stage 8/9 can render
- * without touching the command.
+ * exactly as its ssh sibling holds `--probe-tools-ssh`. Stage 8 made that silence
+ * DECLARED via {@see OptInCheck::wasRequested()}, so the inventory records
+ * {@see CheckDisposition::NotRequested} — no statement about the
+ * install — rather than collapsing it onto "ran and found nothing".
+ *
+ * THE FLAG-GIVEN-BUT-NOTHING-TO-PROBE STATE IS NOT THAT CASE and still yields a `warn`:
+ * the operator asked, so an answer is owed. Only the flag's ABSENCE is a disposition.
  *
  * AN SSH-TRANSPORT AGENT IS NAMED, NEVER SKIPPED (F6, card 4952). `--probe-tools` is the
  * HTTP door; an ssh agent has no bearer or endpoint to exercise here, and passing over it
  * silently would certify NOTHING while looking like a clean run (canon #9). It gets a warn
  * naming the probe that CAN certify it.
  */
-final class BoardToolsHttpProbeCheck implements Check
+final class BoardToolsHttpProbeCheck implements OptInCheck
 {
     /** @param string|null $endpoint the `--probe-tools` value; null when the flag was not passed */
     public function __construct(private readonly ?string $endpoint) {}
@@ -51,6 +56,11 @@ final class BoardToolsHttpProbeCheck implements Check
         return 'board_tools.http_live_probe';
     }
 
+    public function wasRequested(): bool
+    {
+        return $this->endpoint !== null;
+    }
+
     /**
      * @return iterable<Finding>
      */
@@ -58,7 +68,7 @@ final class BoardToolsHttpProbeCheck implements Check
     {
         $endpoint = $this->endpoint;
         if ($endpoint === null) {
-            return;   // stage 8/9 turns this into the `not requested` disposition
+            return;   // CheckDisposition::NotRequested — declared via wasRequested() (DL-242 stage 8)
         }
         if ($ctx->boardToolsEnabled === []) {
             yield Finding::warn('board_tools probe: --probe-tools was given but no agent has an enabled board_tools block — nothing to probe.');

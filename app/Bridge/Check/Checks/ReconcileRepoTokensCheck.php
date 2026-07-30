@@ -48,7 +48,7 @@ final class ReconcileRepoTokensCheck implements Check
     public function run(CheckContext $ctx): iterable
     {
         if ($ctx->secretDir === null || $ctx->writeback === null || $ctx->writeback->mappings === []) {
-            return;   // stage 8 turns this into a returned disposition
+            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
         }
 
         $probe = new GitHubRepoProbe;

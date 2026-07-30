@@ -39,7 +39,7 @@ final class BoardToolsBearerCheck implements Check
     {
         $resolver = $ctx->boardToolsResolver;
         if ($resolver === null) {
-            return;   // no agent enabled ⇒ no index was built; stage 8 turns this into a returned disposition
+            return;   // no agent enabled ⇒ no index was built; recorded in the run inventory (DL-242 stage 8)
         }
 
         foreach ($resolver->problems() as $problem) {

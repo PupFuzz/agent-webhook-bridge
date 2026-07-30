@@ -12,3 +12,4 @@ agent config ok: prod-agent
 agent prod-agent: kanban:5 has no secret at <INSTALL>/kanban/webhook-secret-scope-5 — run bridge:provision
 agent prod-agent: kanban API token not readable at <INSTALL>/kanban/token — bridge:provision will SKIP kanban scopes
 board_tools: agent prod-agent: the writeback token sees 0 cards on board 10 — EITHER the board is empty (fine) OR the service user is not a member / board_id is wrong (then board_my_cards returns an empty window and board_create_card's correlation reads blind). Verify membership + board_id if you expect cards.
+checks: 37 registered · 24 ran (10 reported above, 14 with nothing to report) · 2 opt-in probes not requested · 11 not applicable here (this install has no readable writeback.json, so the PR-to-card writeback is off; no enabled board_tools agent uses the ssh transport). All 37 are accounted for — nothing was skipped uncounted.

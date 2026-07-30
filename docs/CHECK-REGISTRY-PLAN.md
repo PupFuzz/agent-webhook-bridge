@@ -246,7 +246,7 @@ next stage starts.
 | **6 ✅** | Migrate the **pre-loop install plane** — both install directories, the inbox-surfacing config, the endpoint URLs, and the provider/adapter coverage leg — into **three** new slots (`CheckSlot::Install`, `::Inbox`, `::Providers`). Three because the region is not contiguous: the already-migrated `Database` and `Retention` slots run inside it and slot ordinal fixes output order. `warnIfDirInsecure()` moves with it (both callers migrate here). **This row replaces an earlier one that under-enumerated the remaining work; see the stage 6 result.** | **None** | no |
 | **7a ✅** | Migrate the **event-follows-consumer plane** — the whole DL-196 advisory — into a new `CheckSlot::EventConsumer`. One check, one slot. **Row 7 splits on SIZE, not on a measured seam**, and the stage 7a result says so rather than manufacturing a discriminator; it is also the first stage whose predicate total goes UP, because it migrates a HELPER method rather than code inside `handle()`. | **None** (golden test enforces) | no |
 | **7b ✅** | Migrate the **board-tools plane** — the `suppressedReason` scan, the resolver's `problems()`, the per-agent board-STATE legs, the DL-225 flipped-default advisory (which reads its input back off another slot's REPORT — a first for this program) and the `--probe-tools` live probe — into **five** new slots. `handle()` now holds derivation and the runner calls alone; see the stage 7b result. | **None** (golden test enforces) | no |
-| **8** | Turn on the invariant: every registered check emits ≥1 finding; replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. | **Yes** — disclaimer text changes; opt-in probes may gain lines | **GATE** |
+| **8 ✅** | Turn on the accounting invariant: every registered check is **accounted for** on every run, and replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. **This row originally read "every registered check emits ≥1 finding" — measurement falsified that before any code was written, and the row is corrected rather than quietly built around; see the stage 8 result.** | **Yes** — every run gains one inventory line; the disclaimer is narrowed | **GATE** (granted) |
 | **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** |
 | **10** | Re-assign the sites that disagree on warn ↔ unvalidated. Closes **card#5291**, **card#5292**. | **Yes** — severities change | **GATE** |
 
@@ -1452,6 +1452,116 @@ the empty-subset gate's false branch, and the probe check's not-requested return
 envelope, the board-state legs, the ssh legs, the advisory and every probe arm were NOT
 exercised live, and no run of this command on this install would exercise them.
 
+### Stage 8 result — the row's own invariant was false, and the hole was one level up from where it was looked for
+
+**What shipped:** `CheckDisposition`, `OptInCheck`, `CheckInventory`, `CheckRunner::inventory()` /
+`registeredIds()` / `noteNotRun()`, an always-printed inventory line, a narrowed `unvalidated`
+tally, `CheckCommand::registry()` extracted so the registered set is reachable, and two test
+classes — `CheckInventoryTest` (the accounting contract + both positive controls) and
+`CheckCommandRegistrationTest` (the pinned id set). All 33 golden files gain one line.
+
+**THE ROW'S INVARIANT WAS FALSE, AND MEASURING IT FIRST IS THE ONLY REASON THAT WAS KNOWN.** The row
+read *"every registered check emits ≥1 finding"*. Instrumenting the runner and re-running the whole
+suite plus all 33 fixtures, before writing any stage-8 code, gave this for `minimal` — the healthy
+baseline install that exits 0 in 11 output lines:
+
+| | count | what it is |
+|---|---|---|
+| registered | 37 | the whole registry |
+| **never invoked** | **13** | the writeback plane (9) + the board-tools plane (4) — their slots sit behind conditional envelopes and were never reached |
+| invoked but silent | 15 | ran, yielded nothing — "no identity collisions" is correctly reported by saying nothing |
+| spoke | 9 | |
+
+Across the corpus, **26 of 37 checks yield nothing on at least one run**, and **no fixture invokes
+all 37** (max 33, min 16, median 24). Enforcing the row literally would have required dissolving the
+conditional envelopes stages 3a and 7b preserved as *behavior* — running board-tools checks against
+an install with no `board_tools` block — and would have taken `minimal` from 11 output lines to ≥37,
+which contradicts the row's own operator-visible column (*"disclaimer text changes; opt-in probes
+may gain lines"*). **A diagnostic that prints 37 lines of mostly-`ok` prints nothing.**
+
+**This is the same defect the `6–7` row had, with the same cause: a row written at stage 0, before
+the region was measured.** Stage 6 corrected its row and recorded the correction as load-bearing;
+this row gets the same treatment. The general rule this program keeps re-learning is that **a stage
+row is a hypothesis until the stage measures it**, and the measurement belongs before the code.
+
+**THE HOLE WAS NOT WHERE THE ROW LOOKED FOR IT.** The row was aimed at checks that say nothing. The
+larger population is checks that were *never asked* — and `CheckRunner`'s own docblock had named it
+before anyone measured it: *"A SLOT THAT IS NEVER RUN IS THE SAME HOLE ONE LEVEL DOWN, and this
+class does not close it."* It is 13 of 37 on the baseline install. So the un-invoked slots are not a
+hole to plug; **they are an undocumented conditional structure in `handle()`, and stage 8's job is
+to make that structure declare itself.** The enforceable invariant that follows is:
+
+> **Every registered check is accounted for on every run — it either ran (findings recorded,
+> possibly none) or was deliberately skipped with a recorded reason.**
+
+**THE DIRECTION OF DERIVATION IS THE LOAD-BEARING DESIGN CHOICE, and it is deliberate.** `NotRun` is
+derived from the *registration list*: anything the run recorded no disposition for did not run.
+`noteNotRun()` attaches only the human-readable REASON. The rejected alternative — the caller
+declaring each skip — would have made the mechanism's correctness depend on remembering to call it,
+**which is the same shape as the bug it closes.** A forgotten reason therefore degrades a message
+(and is disclosed at runtime, and listed by `CheckInventory::unexplainedNotRun()`); it cannot open a
+hole. This is also what lets `CheckCommand` note the three per-agent slots' reasons *after* the loop,
+unconditionally: a reason for a check that DID run is inert, and that inertness is asserted.
+
+**`not requested` is DECLARED, never inferred from an empty yield** — `OptInCheck::wasRequested()`.
+The runner cannot infer it, and inferring it is exactly the collapse the resolved opt-in-probe
+decision refuses: a check that looked and found nothing and a check nobody asked to look are
+different facts, and only one of them says anything about the install. No new `Severity` case, so
+the exhaustive-`match` property and the exit contract are untouched by construction, as that
+decision required.
+
+**THE OPT-IN AXIS IS NARROWER THAN TWO FIXTURE COMMENTS CLAIMED, and they were corrected here.**
+`probe-tools-with-no-enabled-agent` and `probe-tools-ssh-with-no-ssh-agent` carried comments saying
+stage 8 would turn their state into a `not requested`/`not applicable` disposition. That **conflated
+two axes**: those fixtures pass the flag, and the resolved decision bounds itself to the flag's
+ABSENCE. A requested probe with nothing to certify still owes an answer, so both keep their `warn`;
+re-assigning it is card#5291's separately-gated sweep. The control pair got *sharper* instead —
+passing `--probe-tools` makes that probe run, so the fixture reports **one** opt-in probe not
+requested where its control reports **two**, which is now asserted.
+
+**WHAT THE INVENTORY LINE DOES NOT CLAIM.** Stated explicitly because a coverage claim pitched above
+its evidence is this program's own recurring defect:
+
+- It accounts for the **registered set**. It cannot see a leg nobody ever wrote as a check — the
+  same bound `check-golden-coverage.md` carries, one level up.
+- It does **not** make the severity vocabulary precise. A leg that could not measure may still
+  report `warn` rather than `unvalidated`. That is card#5291's, still open and still gated — which is
+  why the `unvalidated` tally SURVIVES, narrowed to that one question, instead of being deleted as
+  redundant. Two different claims; conflating them is what the old wording did.
+- `not applicable` is the **envelope's** claim about itself. If an envelope's condition is wrong, the
+  reason is confidently wrong with it.
+- A `Silent` disposition is **not yet distinguishable from a check falling off the end of its
+  generator by accident.** Making a check *declare* its silence is a strictly-additive strengthening,
+  deliberately deferred — and deferring it is legitimate only because stage 8 makes the silence
+  visible and counted rather than absent. Tracked as **card#5596**, which also records that
+  reasoning so the deferral does not later read as arbitrary.
+
+**THE ARITHMETIC IS THE LINE'S OWN CONTROL.** The dispositions sum to the registered total, so a
+reader can see nothing fell out of the inventory without trusting the renderer — asserted across all
+33 committed golden files, not spot-checked, because a disposition that leaks on one install shape
+only would survive a per-fixture check. The corpus-wide assertion was itself positive-controlled by
+corrupting one golden file's arithmetic and observing the named failure.
+
+**MEASUREMENT NOTES worth carrying forward.**
+
+- **`UPDATE_GOLDEN=1` and an asserting run report DIFFERENT assertion counts, and the gap is the
+  proof the regen skipped the compare.** Regen: **107** (the regen path asserts a sentinel
+  `assertTrue(true)`, 1/fixture). Asserting: **140** (`assertFileExists` + `assertSame`, 2/fixture).
+  `33×1 + 33 + 38 + 3 = 107` and `33×2 + 33 + 38 + 3 = 140`, both derived from the source rather
+  than observed and then rationalised. A regen run that reported 140 would mean the compare had run;
+  one that reported 74 would mean the sentinel was gone.
+- **`phpstan`'s green was positive-controlled on the new files specifically** (a deliberate
+  `strlen(array)` in `CheckInventory`, observed red and restored byte-identical) rather than assumed
+  from `app/Bridge` being in `paths` — the DL-246 trap.
+- The golden diff is **35 insertions, 2 deletions across 33 files**, and it fully accounts: 33 new
+  inventory lines plus the 2 fixtures whose `unvalidated` disclaimer was reworded.
+
+**Filed, not fixed here** — output-neutral follow-ons deliberately kept out of a gated stage's PR:
+the declare-your-silence strengthening above, and the fuller `CheckContext`-as-builder /
+slot-collapse restructure the target design describes, which belongs to the final stage making it
+deliberately rather than to stage 8 as a side effect. `registry()` is a private method on the
+command for exactly that reason.
+
 ## Verification
 
 The existing net goes through the command boundary, so an internal refactor keeps it honest:
@@ -1478,7 +1588,12 @@ The existing net goes through the command boundary, so an internal refactor keep
 4. **Real surface:** run `php artisan bridge:check` against a live install after each stage and
    diff against the pre-stage capture.
 5. **Stage 8 needs a positive control:** register a deliberately non-emitting check and observe
-   the runner flag it, *before* trusting the exact-inventory invariant.
+   the runner flag it, *before* trusting the exact-inventory invariant. **Done, and it turned out
+   to need TWO** — measurement showed the un-invoked SLOT is the larger population (13 of 37 on
+   the baseline install) and a non-emitting check the smaller (15 more), so both shapes carry a
+   control in `CheckInventoryTest`. Five single-arm mutations (one mutation, one named test, a
+   restore and a `cmp` between each) confirmed each proof reds; the arms are individually
+   attributable, not merely attributable as a batch.
 
 ## Disproved claims — do not restate
 
@@ -1509,7 +1624,11 @@ falsified while it was being built:
 7. **"`CheckRunnerTest` pins the registered set."** False — asserted by `CheckRunner`'s own docblock,
    and corrected there in stage 3a. It pins the runner's *properties* using synthetic checks.
    **Nothing pins which checks `CheckCommand` registers**, so a check that is silent on the fixture
-   set could be unregistered silently. Named as stage 8's to close.
+   set could be unregistered silently. Named as stage 8's to close — **and CLOSED there**, by
+   `CheckCommandRegistrationTest`, which asserts the exact id set in registration order against the
+   command's own builder rather than against a list it rebuilds. Stage 8 also measured how bad the
+   exposure was: 26 of the 37 registered checks yield nothing on at least one install shape, so for
+   most of them "caught only if its absence changes golden output" meant not caught.
 8. **"Stage 2's `is_array($lastError)` mutation is evidence that the retention marker-PRESENT
    branch is covered."** False — the six stage-2 mutations each did red the suite, and that stands;
    what the `is_array` arm evidences is narrower than a reader would take it for. **No golden
@@ -1554,4 +1673,7 @@ the work distinguishes those.
   adding both — extending the existing answer-set guard is the correct fix under that constraint,
   not a restructure. Tracked as **card#5300** (hard gate).
 - **Adding any new `bridge:check` leg** until Stage 8 lands — each one added first is another
-  site to migrate and another chance to re-mint the same card.
+  site to migrate and another chance to re-mint the same card. **LIFTED: Stage 8 has landed.** A
+  new leg is now added as a registered `Check`, and `CheckCommandRegistrationTest`'s pinned id list
+  must be updated in the same commit — which is the point, because that list is what makes the new
+  leg's presence a measured fact rather than an assumption.

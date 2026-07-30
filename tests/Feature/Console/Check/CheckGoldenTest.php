@@ -345,20 +345,25 @@ class CheckGoldenTest extends TestCase
                 return ['args' => ['--probe-tools-ssh' => 'bridge@host-a'], 'fpm' => false, 'coordConfig' => null];
 
             case 'probe-tools-ssh-with-no-ssh-agent':
-                // The opt-in probe's not-applicable path, the ssh twin of
-                // `probe-tools-with-no-enabled-agent`. Today it prints one warn; from
-                // stage 8 the same state is a `not requested`/`not applicable`
-                // disposition, and this fixture is what will show that change.
+                // The opt-in probe's REQUESTED-but-nothing-to-certify path, the ssh twin of
+                // `probe-tools-with-no-enabled-agent`. It prints one warn and STILL DOES
+                // after stage 8 — an earlier version of this comment predicted the state
+                // would become a `not requested`/`not applicable` disposition, which
+                // CONFLATED TWO AXES. The resolved opt-in decision bounds itself to the
+                // flag's ABSENCE; here the flag was GIVEN, so an answer is owed, and
+                // re-assigning that warn is card#5291's separately-gated sweep.
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
                 $this->app->instance(SshProbeEnvironment::class, new GoldenSshEnvironment);
 
                 return ['args' => ['--probe-tools-ssh' => 'bridge@host-a'], 'fpm' => false, 'coordConfig' => null];
 
             case 'probe-tools-with-no-enabled-agent':
-                // The opt-in probe's not-applicable path. Today it prints a warn; from
-                // stage 8 the same state is a `not requested`/`not applicable`
-                // disposition in the inventory. This fixture is what will show that
-                // change when it lands.
+                // The http twin of the above: --probe-tools GIVEN, no enabled agent. It
+                // prints a warn and still does. What stage 8 changed here is the INVENTORY
+                // line, not this warn: because the flag was passed, that probe RAN, so this
+                // fixture reports one opt-in probe not requested where its control
+                // `no-opt-in-probes-requested` reports two — asserted in
+                // test_the_opt_in_control_pair_now_differs_in_the_inventory_too().
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
 
                 return ['args' => ['--probe-tools' => 'https://bridge.example.com/agent-tools/call'], 'fpm' => false, 'coordConfig' => null];
@@ -668,6 +673,82 @@ class CheckGoldenTest extends TestCase
                 "golden fixture '{$name}' exists to pin the ABSENCE of '{$needle}', and it is present.",
             );
         }
+    }
+
+    public function test_every_golden_file_carries_a_self_conserving_inventory_line(): void
+    {
+        // DL-242 STAGE 8. The inventory's counts SUM to the registered total, and that
+        // arithmetic is the line's own control: a reader can see nothing fell out of it
+        // without trusting the renderer. Asserted over the COMMITTED corpus — every
+        // install shape at once — because a per-fixture spot check would not notice a
+        // disposition that leaks on one shape only.
+        //
+        // It also pins 37 as the registered total, which the registration test pins BY ID.
+        // Two independent statements of the same fact on purpose: the id list catches a
+        // check being swapped, this catches the operator-facing line disagreeing with it.
+        foreach (self::fixtures() as [$name]) {
+            $golden = $this->goldenFor($name);
+
+            $this->assertMatchesRegularExpression(
+                '/^checks: \d+ registered · /m',
+                $golden,
+                "golden fixture '{$name}' has no inventory line — every run must state what it covered",
+            );
+            preg_match(
+                '/^checks: (\d+) registered · (\d+) ran \((\d+) reported above, (\d+) with nothing to report\)(.*?)\. All (\d+) are accounted for/m',
+                $golden,
+                $m,
+            );
+            [, $registered, $ran, $reported, $silent, $rest, $trailing] = array_map('strval', $m);
+
+            $notRequested = preg_match('/(\d+) opt-in probes? not requested/', $rest, $nr) ? (int) $nr[1] : 0;
+            $notApplicable = preg_match('/(\d+) not applicable here/', $rest, $na) ? (int) $na[1] : 0;
+            $notApplicable += preg_match('/(\d+) did not run/', $rest, $dnr) ? (int) $dnr[1] : 0;
+
+            $this->assertSame(37, (int) $registered, "fixture '{$name}': registered total moved");
+            $this->assertSame((int) $trailing, (int) $registered, "fixture '{$name}': the trailing total disagrees with the registered count");
+            $this->assertSame(
+                (int) $ran,
+                (int) $reported + (int) $silent,
+                "fixture '{$name}': reported + silent does not equal ran",
+            );
+            $this->assertSame(
+                (int) $registered,
+                (int) $ran + $notRequested + $notApplicable,
+                "fixture '{$name}': the dispositions do not sum to the registered total — a check fell out of the inventory",
+            );
+        }
+    }
+
+    public function test_the_opt_in_control_pair_now_differs_in_the_inventory_too(): void
+    {
+        // The CONTROL_PAIRS rationale, sharpened by stage 8. `no-opt-in-probes-requested`
+        // exists for its DIFFERENCE against `probe-tools-with-no-enabled-agent`, which
+        // before stage 8 was exactly one warn line. Now it is also a disposition: passing
+        // --probe-tools makes that probe RUN (it reports the nothing-to-probe warn), so
+        // one fewer probe is "not requested". That is the resolved opt-in decision visible
+        // in output — a requested probe with nothing to certify still owes an answer.
+        $neither = $this->goldenFor('no-opt-in-probes-requested');
+        $httpAsked = $this->goldenFor('probe-tools-with-no-enabled-agent');
+
+        $this->assertStringContainsString('2 opt-in probes not requested', $neither);
+        $this->assertStringContainsString('1 opt-in probe not requested', $httpAsked);
+        $this->assertStringNotContainsString('2 opt-in probes not requested', $httpAsked);
+    }
+
+    public function test_the_baseline_install_names_why_each_plane_did_not_run(): void
+    {
+        // "13 did not run" without a cause is alarming and un-actionable; with one it is
+        // information. These two reasons are the whole writeback plane (9 checks) and the
+        // board-tools plane (4) — measured as 13 of 37 on this shape before the stage was
+        // built, which is what made an exact inventory worth having.
+        $minimal = $this->goldenFor('minimal');
+
+        $this->assertStringContainsString('13 not applicable here', $minimal);
+        $this->assertStringContainsString('no readable writeback.json', $minimal);
+        $this->assertStringContainsString('no agent has an enabled board_tools block', $minimal);
+        // And never the internal-defect line: every not-run check here has a reason.
+        $this->assertStringNotContainsString('bridge:check internal:', $minimal);
     }
 
     public function test_a_capture_is_immune_to_the_ambient_host(): void

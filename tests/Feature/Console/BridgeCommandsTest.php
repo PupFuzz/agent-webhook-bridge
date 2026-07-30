@@ -2488,10 +2488,19 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('this run says nothing about what they would have found', $out);
         // And it does not over-claim: the counted population is the `unvalidated`
         // severity, NOT "checks that report a severity" — a check that could not
-        // run usually reports `warn` and is not in this number, so the tally's
-        // absence is never a certificate that every leg ran.
-        $this->assertStringContainsString('only checks reporting `unvalidated` are counted', $out);
-        $this->assertStringContainsString('no tally line does NOT mean every leg ran', $out);
+        // run usually reports `warn` and is not in this number.
+        $this->assertStringContainsString('This count is a floor', $out);
+        $this->assertStringContainsString('not the full population of what went unmeasured', $out);
+        // DL-242 STAGE 8 MOVED THE SECOND HALF OF THIS GUARANTEE TO A STRONGER
+        // MECHANISM, and this asserts the mechanism rather than dropping the
+        // guarantee. The old wording had to add "no tally line does NOT mean every
+        // leg ran", because a missing tally was the operator's ONLY signal and it
+        // could not speak for a check that never ran. The inventory line now always
+        // prints and accounts for all 37 registered checks, so that caveat is
+        // answered by data instead of prose — and the tally is left saying only the
+        // one thing it still says (severity assignment is imprecise; card#5291).
+        $this->assertStringContainsString('37 registered', $out);
+        $this->assertStringContainsString('All 37 are accounted for', $out);
     }
 
     public function test_check_prints_no_unvalidated_tally_when_nothing_reported_unvalidated(): void

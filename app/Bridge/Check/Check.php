@@ -30,12 +30,21 @@ interface Check
     public function id(): string;
 
     /**
-     * @return iterable<Finding> MUST yield at least one finding — `unvalidated` when
-     *                           the check could not run. Yielding nothing is how a leg
-     *                           becomes invisible to the inventory, which is the failure
-     *                           this registry exists to make impossible. The invariant is
-     *                           only ENFORCED from stage 8; until then it is a contract
-     *                           this docblock states and reviewers hold.
+     * @return iterable<Finding> Yield `unvalidated` when the check could not run, so a
+     *                           did-not-measure is never rendered as a pass.
+     *
+     * YIELDING NOTHING IS LEGAL AND IS RECORDED, NOT LOST. An earlier revision of this
+     * docblock required at least one finding and said stage 8 would enforce it. Stage 8
+     * MEASURED that first: 26 of the 37 registered checks yield nothing on at least one
+     * install shape and most are silent on the baseline, because "no identity collisions"
+     * is correctly reported by saying nothing. Enforcing the old wording would have meant
+     * ~37 lines of mostly-`ok` on every run. What is enforced instead is that the run
+     * ACCOUNTS for every registered check — see {@see CheckDisposition} — so silence is
+     * now counted rather than absent.
+     *
+     * ⚠ A silence is not yet DISTINGUISHABLE from falling off the end of the generator by
+     * accident; both record {@see CheckDisposition::Silent}. Making a check declare its
+     * silence is **card#5596**.
      */
     public function run(CheckContext $ctx): iterable;
 }

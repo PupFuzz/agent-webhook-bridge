@@ -12,3 +12,4 @@ agent config ok: prod-agent
 agent prod-agent: kanban:5 has no secret at <INSTALL>/kanban/webhook-secret-scope-5 — run bridge:provision
 agent prod-agent: kanban API token not readable at <INSTALL>/kanban/token — bridge:provision will SKIP kanban scopes
 writeback.json: writeback.json at <INSTALL>/writeback.json is not a valid JSON object
+checks: 37 registered · 22 ran (9 reported above, 13 with nothing to report) · 2 opt-in probes not requested · 13 not applicable here (writeback.json is present but could not be loaded (see the error above); no agent has an enabled board_tools block). All 37 are accounted for — nothing was skipped uncounted.

@@ -47,7 +47,7 @@ final class BoardToolsSshDefaultAdvisoryCheck implements PerAgentCheck
     {
         $bt = $config->boardTools;
         if ($bt === null || $bt->transportExplicit) {
-            return;   // stage 8 turns this into a returned disposition
+            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
         }
         if (($ctx->sshSetupIncomplete[$config->agentName] ?? false) !== true) {
             return;

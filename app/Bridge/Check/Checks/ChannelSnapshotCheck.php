@@ -20,8 +20,8 @@ use App\Bridge\Support\Finding;
  * AND FOR ANY AGENT THAT DECLARED `server_path` WITHOUT ONE, so a declared key is never
  * silently dead. That applicability test moved INTO this check rather than staying an
  * `if` around its invocation: plan constraint (a) wants the verdict owned by the check,
- * and stage 8 then has one place to turn "no channel configured" from silence into a
- * disposition.
+ * which gave stage 8 one place to account for "no channel configured" rather than an
+ * absent invocation it could not see.
  */
 final class ChannelSnapshotCheck implements PerAgentCheck
 {
@@ -40,7 +40,7 @@ final class ChannelSnapshotCheck implements PerAgentCheck
     {
         $channel = $config->channel;
         if ($channel->socket === null && $channel->url === null && $channel->serverPath === null) {
-            return;   // stage 8 turns this into a returned disposition
+            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
         }
 
         // The `agent <name>: ` prefix was the caller's argument to emitFinding() and is

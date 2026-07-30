@@ -50,7 +50,7 @@ final class BoardToolsBoardStateCheck implements PerAgentCheck
         // block ⇒ boardId non-null by construction), preserved rather than dropped so the
         // migration changes nothing in either direction.
         if ($client === null || $bt === null || $bt->boardId === null) {
-            return;   // stage 8 turns this into a returned disposition
+            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
         }
 
         $name = $config->agentName;

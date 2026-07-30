@@ -16,3 +16,4 @@ writeback.json: 1 repo mapping(s)
 writeback: token can see board 8 (owner/repo) (exact card count unavailable — kanban predates pagination meta)
 writeback: all mapped stage ids exist on board 8 (owner/repo)
 writeback: move_coord_cards (owner/repo, board 8): coord config agrees — its terminal "Done" is stage 53, matching coord_card_terminal_stage_id
+checks: 37 registered · 31 ran (11 reported above, 20 with nothing to report) · 2 opt-in probes not requested · 4 not applicable here (no agent has an enabled board_tools block). All 37 are accounted for — nothing was skipped uncounted.

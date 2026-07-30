@@ -1,0 +1,72 @@
+<?php
+
+namespace App\Bridge\Check;
+
+/**
+ * What became of one registered check in one run (DL-242 stage 8).
+ *
+ * The registry's stage-8 invariant is that every registered check is ACCOUNTED FOR on
+ * every run — not that every check emits a finding. Measurement at the start of the
+ * stage showed the latter is false on every install shape the corpus covers: on the
+ * baseline install 13 of 37 checks are never invoked at all (whole slots sit behind
+ * conditional envelopes in `CheckCommand::handle()`) and 15 more run and report
+ * nothing. Turning THAT into "everything emits" would have meant dissolving envelopes
+ * stages 3a and 7b preserved as behavior. See the stage 8 result in
+ * `docs/CHECK-REGISTRY-PLAN.md`.
+ *
+ * THE FOUR CASES ARE NOT A SEVERITY, AND DELIBERATELY SO. `Severity` answers "how bad
+ * is what this check found"; a disposition answers "did this check get to look at all".
+ * Collapsing them would put `not requested` in the severity vocabulary, which the
+ * resolved opt-in-probe decision refused: `unvalidated` keeps exactly one meaning —
+ * *"I should have measured this and the install stopped me"* — and no new `Severity`
+ * case means the exhaustive-`match` property and the exit contract are untouched by
+ * construction.
+ */
+enum CheckDisposition: string
+{
+    /** Ran, and yielded at least one finding — the findings are the report. */
+    case Reported = 'reported';
+
+    /**
+     * Ran and yielded nothing. A POSITIVE statement about the install: the check
+     * looked and had nothing to say (no identity collisions, no unconsumed event
+     * types). It is NOT the same as {@see self::NotRequested} or {@see self::NotRun},
+     * and the whole point of this enum is that the three are no longer indistinguishable
+     * from one another in a green run.
+     *
+     * ⚠ IT IS ALSO NOT DISTINGUISHABLE FROM A BUG, and that bound is disclosed rather
+     * than implied: a check that falls off the end of its generator through a path its
+     * author did not intend records `Silent` too. Making a check DECLARE its silence
+     * is a strictly-additive strengthening, deliberately not built here and tracked as
+     * **card#5596** — what stage 8 buys is that the silence is now VISIBLE and counted
+     * rather than absent from the run entirely, which is the only reason deferring it is
+     * legitimate.
+     */
+    case Silent = 'silent';
+
+    /**
+     * An opt-in check whose flag the operator did not pass ({@see OptInCheck}).
+     *
+     * Distinct from {@see self::Silent} because it carries NO statement about the
+     * install: the check was never asked to look. Per the resolved opt-in-probe
+     * decision, the not-running here is a fact about the INVOCATION, which the operator
+     * necessarily knows because they chose not to type the flag — so there is no false
+     * belief to correct and `unvalidated` would dilute the one signal with a precise job.
+     */
+    case NotRequested = 'not-requested';
+
+    /**
+     * Registered, but its slot was never invoked this run — the conditional envelope
+     * around it in `CheckCommand::handle()` did not open (no `writeback.json`, no
+     * enabled `board_tools` block, no agent configs, or a fail-soft catch fired).
+     *
+     * THIS IS THE CASE THE STAGE EXISTS FOR. `CheckRunner`'s own docblock named it
+     * before it was measured — *"A SLOT THAT IS NEVER RUN IS THE SAME HOLE ONE LEVEL
+     * DOWN"* — and it is 13 of 37 checks on the baseline install. It is DERIVED from
+     * the registration list rather than reported by the caller, so a slot whose
+     * invocation is forgotten cannot go unaccounted; {@see CheckRunner::noteNotRun()}
+     * only attaches the human-readable REASON, and a missing reason degrades the
+     * message without opening a hole.
+     */
+    case NotRun = 'not-run';
+}
