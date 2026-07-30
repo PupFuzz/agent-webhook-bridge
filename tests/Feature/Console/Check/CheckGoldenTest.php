@@ -702,8 +702,12 @@ class CheckGoldenTest extends TestCase
             [, $registered, $ran, $reported, $silent, $rest, $trailing] = array_map('strval', $m);
 
             $notRequested = preg_match('/(\d+) opt-in probes? not requested/', $rest, $nr) ? (int) $nr[1] : 0;
-            $notApplicable = preg_match('/(\d+) not applicable here/', $rest, $na) ? (int) $na[1] : 0;
-            $notApplicable += preg_match('/(\d+) did not run/', $rest, $dnr) ? (int) $dnr[1] : 0;
+            // ONE pattern, because the renderer now has one label. It used to say `not
+            // applicable here` whenever it had reasons to print, and that read as a claim
+            // about the install for reasons that are could-not-look ("no agent config
+            // parsed"); the weaker label covers the union, so matching the old one here
+            // would be matching a string nothing can emit.
+            $notRun = preg_match('/(\d+) did not run/', $rest, $dnr) ? (int) $dnr[1] : 0;
 
             $this->assertSame(37, (int) $registered, "fixture '{$name}': registered total moved");
             $this->assertSame((int) $trailing, (int) $registered, "fixture '{$name}': the trailing total disagrees with the registered count");
@@ -714,7 +718,7 @@ class CheckGoldenTest extends TestCase
             );
             $this->assertSame(
                 (int) $registered,
-                (int) $ran + $notRequested + $notApplicable,
+                (int) $ran + $notRequested + $notRun,
                 "fixture '{$name}': the dispositions do not sum to the registered total — a check fell out of the inventory",
             );
         }
@@ -744,7 +748,7 @@ class CheckGoldenTest extends TestCase
         // built, which is what made an exact inventory worth having.
         $minimal = $this->goldenFor('minimal');
 
-        $this->assertStringContainsString('13 not applicable here', $minimal);
+        $this->assertStringContainsString('13 did not run', $minimal);
         $this->assertStringContainsString('no readable writeback.json', $minimal);
         $this->assertStringContainsString('no agent has an enabled board_tools block', $minimal);
         // And never the internal-defect line: every not-run check here has a reason.

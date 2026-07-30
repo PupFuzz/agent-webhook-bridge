@@ -16,4 +16,4 @@ writeback.json: 1 repo mapping(s)
 writeback: token can see board 8 (owner/repo) (exact card count unavailable — kanban predates pagination meta)
 writeback: all mapped stage ids exist on board 8 (owner/repo)
 writeback: move_coord_cards (owner/repo, board 8): CANNOT VERIFY the terminal against the coordination config — $COORD_CONFIG is not set. Until this is verified the two movers may disagree about which column is terminal and fight every cycle. Point bridge.writeback.coord_config_path (or $COORD_CONFIG) at coordination.config.json.
-checks: 37 registered · 31 ran (11 reported above, 20 with nothing to report) · 2 opt-in probes not requested · 4 not applicable here (no agent has an enabled board_tools block). All 37 are accounted for — nothing was skipped uncounted.
+checks: 37 registered · 31 ran (11 reported above, 20 with nothing to report) · 2 opt-in probes not requested · 4 did not run (no agent has an enabled board_tools block). All 37 are accounted for — nothing was skipped uncounted.

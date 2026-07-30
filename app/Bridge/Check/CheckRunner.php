@@ -33,22 +33,23 @@ use InvalidArgumentException;
  *
  * A SLOT THAT IS NEVER RUN IS THE SAME HOLE ONE LEVEL DOWN — CLOSED IN STAGE 8, and not
  * in the shape the stage row predicted. {@see inventory()} accounts for every registered
- * check on every run, and the accounting is DERIVED FROM THE REGISTRATION LIST rather
- * than reported by the caller: a check whose slot is never invoked records
- * {@see CheckDisposition::NotRun} because nothing recorded anything else for it, so a
- * forgotten call site cannot produce a missing row. {@see noteNotRun()} attaches only the
- * human-readable REASON, and a forgotten reason degrades a message instead of opening a
- * hole. The alternative — requiring the caller to declare each skip — would have made the
- * mechanism's correctness depend on remembering to call it, which is the same shape as
- * the bug it closes.
+ * check on every run THAT COMPLETES (this class does not catch — see below — so a throwing
+ * check aborts before anything renders the account), and the accounting is DERIVED FROM
+ * THE REGISTRATION LIST rather than reported by the caller: a check whose slot is never
+ * invoked records {@see CheckDisposition::NotRun} because nothing recorded anything else
+ * for it, so a forgotten call site cannot produce a missing row. {@see noteNotRun()}
+ * attaches only the human-readable REASON, and a forgotten reason degrades a message
+ * instead of opening a hole. The alternative — requiring the caller to declare each skip
+ * — would have made the mechanism's correctness depend on remembering to call it, which
+ * is the same shape as the bug it closes.
  *
  * WHAT THE STAGE ROW SAID, AND WHY IT IS NOT WHAT SHIPPED. The row read *"every
  * registered check emits >= 1 finding"*. Measured before any code was written, that is
  * false on every install shape the corpus covers: 13 of 37 checks are never invoked on
  * the baseline install and 15 more run and report nothing. Enforcing it literally would
  * have meant dissolving the conditional envelopes stages 3a and 7b preserved as BEHAVIOR.
- * The enforceable invariant is that every registered check is ACCOUNTED FOR. See the
- * stage 8 result in `docs/CHECK-REGISTRY-PLAN.md`.
+ * The enforceable invariant is that every registered check is ACCOUNTED FOR on every run
+ * that completes. See the stage 8 result in `docs/CHECK-REGISTRY-PLAN.md`.
  *
  * WHICH CHECKS THE COMMAND REGISTERS IS NOW PINNED, by a test asserting the exact id set
  * against {@see registeredIds()}. Before stage 8 a check dropped from `CheckCommand`'s

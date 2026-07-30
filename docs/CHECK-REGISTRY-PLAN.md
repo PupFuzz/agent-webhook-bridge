@@ -225,10 +225,21 @@ split rather than in the `Severity` enum.**
 
 - The runner records **every registered check and its disposition**, so the inventory stays
   complete and **constraint (a) holds** — nothing is invisible to the registry.
-- The **text renderer stays silent** on not-requested: today's default output is preserved
-  byte-identical and the common path gains no noise.
-- The **JSON renderer** (Stage 9 / card#5229) **emits it**, so machine consumers get the full
-  inventory *including what was never asked for* — strictly more than they can get today.
+- The **text renderer emits it too**, as one segment of the stage-8 inventory line
+  (`2 opt-in probes not requested`), which 30 of the 33 golden fixtures now carry (the other 3
+  pass a flag and carry `1`). **AMENDED BY STAGE 8 — this bullet originally read "the text
+  renderer stays silent on not-requested: today's default output is preserved byte-identical and
+  the common path gains no noise", and stage 8 is the row that shipped a deliberate
+  output change, so the byte-identical premise no longer applies to it.** Silence would also have
+  contradicted the always-print decision the stage reached for the line as a whole: a coverage
+  statement the operator gets only sometimes is one they cannot rely on, and a disposition
+  omitted from the line breaks the arithmetic that is the line's own control. The row-8 gate
+  covers this; nothing about the ruling itself changed.
+- The **JSON renderer** (Stage 9 / card#5229) **emits it** in machine-readable form, per check
+  rather than as a count — which is what "the full inventory" buys a machine consumer once the
+  text line already carries the total. **AMENDED BY STAGE 8:** this bullet originally justified
+  itself as *"strictly more than they can get today"*, which was true only while the text
+  renderer stayed silent.
 
 Net effect: `unvalidated` keeps exactly one meaning — *"I should have measured this and the
 install stopped me."* **No new `Severity` case**, so the exhaustive-`match` property and the exit
@@ -258,7 +269,7 @@ next stage starts.
 | **6 ✅** | Migrate the **pre-loop install plane** — both install directories, the inbox-surfacing config, the endpoint URLs, and the provider/adapter coverage leg — into **three** new slots (`CheckSlot::Install`, `::Inbox`, `::Providers`). Three because the region is not contiguous: the already-migrated `Database` and `Retention` slots run inside it and slot ordinal fixes output order. `warnIfDirInsecure()` moves with it (both callers migrate here). **This row replaces an earlier one that under-enumerated the remaining work; see the stage 6 result.** | **None** | no |
 | **7a ✅** | Migrate the **event-follows-consumer plane** — the whole DL-196 advisory — into a new `CheckSlot::EventConsumer`. One check, one slot. **Row 7 splits on SIZE, not on a measured seam**, and the stage 7a result says so rather than manufacturing a discriminator; it is also the first stage whose predicate total goes UP, because it migrates a HELPER method rather than code inside `handle()`. | **None** (golden test enforces) | no |
 | **7b ✅** | Migrate the **board-tools plane** — the `suppressedReason` scan, the resolver's `problems()`, the per-agent board-STATE legs, the DL-225 flipped-default advisory (which reads its input back off another slot's REPORT — a first for this program) and the `--probe-tools` live probe — into **five** new slots. `handle()` now holds derivation and the runner calls alone; see the stage 7b result. | **None** (golden test enforces) | no |
-| **8 ✅** | Turn on the accounting invariant: every registered check is **accounted for** on every run, and replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above. **This row originally read "every registered check emits ≥1 finding" — measurement falsified that before any code was written, and the row is corrected rather than quietly built around; see the stage 8 result.** | **Yes** — every run gains one inventory line; the disclaimer is narrowed | **GATE** (granted) |
+| **8 ✅** | Turn on the accounting invariant: every registered check is **accounted for** on every run that completes (the runner does not catch, so a throwing check aborts before anything renders the account), and replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above — **and amends two of its bullets in place: the text renderer does NOT stay silent on `not requested`, because this is the gated output-change stage.** **This row originally read "every registered check emits ≥1 finding" — measurement falsified that before any code was written, and the row is corrected rather than quietly built around; see the stage 8 result.** | **Yes** — every run that completes gains one inventory line; the disclaimer is narrowed | **GATE** (granted) |
 | **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** |
 | **10** | Re-assign the sites that disagree on warn ↔ unvalidated. Closes **card#5291**, **card#5292**. | **Yes** — severities change | **GATE** |
 
@@ -1503,8 +1514,13 @@ class does not close it."* It is 13 of 37 on the baseline install. So the un-inv
 hole to plug; **they are an undocumented conditional structure in `handle()`, and stage 8's job is
 to make that structure declare itself.** The enforceable invariant that follows is:
 
-> **Every registered check is accounted for on every run — it either ran (findings recorded,
-> possibly none) or was deliberately skipped with a recorded reason.**
+> **Every registered check is accounted for on every run that COMPLETES — it either ran (findings
+> recorded, possibly none) or was deliberately skipped with a recorded reason.**
+
+The qualifier is load-bearing, not hedging: `CheckRunner` deliberately does not catch (that is
+stage 3a's preserved behavior), so a check that throws aborts `bridge:check` before the inventory
+renders and the operator gets **no** accounting rather than a partial one. Dropping it would state
+the property at a strength the code does not implement.
 
 **THE DIRECTION OF DERIVATION IS THE LOAD-BEARING DESIGN CHOICE, and it is deliberate.** `NotRun` is
 derived from the *registration list*: anything the run recorded no disposition for did not run.
@@ -1531,6 +1547,19 @@ re-assigning it is card#5291's separately-gated sweep. The control pair got *sha
 passing `--probe-tools` makes that probe run, so the fixture reports **one** opt-in probe not
 requested where its control reports **two**, which is now asserted.
 
+**AND THE TEXT RENDERER DOES NOT STAY SILENT ON `not requested`, WHICH THE RESOLVED DECISION SAID IT
+WOULD — the § Resolved design decision bullets are corrected in place rather than left to contradict
+what shipped.** That ruling reserved not-requested for the JSON renderer *"strictly more than they
+can get today"*, on the premise that the text output stays byte-identical. Stage 8 is the row where
+that premise expires: it is the gated output-change stage, and `2 opt-in probes not requested` now
+prints in **30 of the 33** golden fixtures (`1` in the other 3, which pass a flag). The divergence is
+CORRECT and the code is not reverted — omitting the disposition would break the arithmetic that is
+the line's own control, and a coverage line the operator gets only part of is the defect the stage
+exists to remove — but row 8 says *"applies the resolved opt-in-probe decision above"*, so a reader
+consulting that section for exactly this question was being handed a false statement. **The ruling
+itself is untouched:** `not requested` is still a disposition and not a `Severity`, which is the part
+that was actually resolved.
+
 **WHAT THE INVENTORY LINE DOES NOT CLAIM.** Stated explicitly because a coverage claim pitched above
 its evidence is this program's own recurring defect:
 
@@ -1540,8 +1569,21 @@ its evidence is this program's own recurring defect:
   report `warn` rather than `unvalidated`. That is card#5291's, still open and still gated — which is
   why the `unvalidated` tally SURVIVES, narrowed to that one question, instead of being deleted as
   redundant. Two different claims; conflating them is what the old wording did.
-- `not applicable` is the **envelope's** claim about itself. If an envelope's condition is wrong, the
-  reason is confidently wrong with it.
+- A not-run **reason** is the **envelope's** claim about itself. If an envelope's condition is wrong,
+  the reason is confidently wrong with it.
+- The not-run population is labelled **`N did not run`** and deliberately not `N not applicable
+  here`. **CORRECTED IN PLACE — the line shipped saying `not applicable here` whenever it had
+  reasons to print, and five of the recorded reasons are COULD-NOT-LOOK rather than
+  does-not-apply:** the committed `agent-yaml-malformed` fixture said *"21 not applicable here (no
+  agent config parsed …)"* on an exit-1 install where the agent plane is entirely applicable and the
+  YAML is merely broken, and `writeback-malformed` said the same of a present-but-unloadable
+  `writeback.json`. One label has to cover the union of *does not apply here* and *could not be
+  reached*, and only the weaker one is true of both; the parenthetical already carries the cause, so
+  nothing is lost by weakening it.
+- The counts are keyed by **check id**, so a per-agent check that ran for two of three agents (the
+  third aborted at the classifier gate) counts once, as `ran`, and **nothing on the line scopes it
+  to the agents it reached**. This is the granularity cost the plan accepted for the id-keyed
+  inventory; it was stated only on `PerAgentCheck::runFor()` and belongs in this list too.
 - A `Silent` disposition is **not yet distinguishable from a check falling off the end of its
   generator by accident.** Making a check *declare* its silence is a strictly-additive strengthening,
   deliberately deferred — and deferring it is legitimate only because stage 8 makes the silence
@@ -1557,11 +1599,22 @@ corrupting one golden file's arithmetic and observing the named failure.
 **MEASUREMENT NOTES worth carrying forward.**
 
 - **`UPDATE_GOLDEN=1` and an asserting run report DIFFERENT assertion counts, and the gap is the
-  proof the regen skipped the compare.** Regen: **107** (the regen path asserts a sentinel
-  `assertTrue(true)`, 1/fixture). Asserting: **140** (`assertFileExists` + `assertSame`, 2/fixture).
-  `33×1 + 33 + 38 + 3 = 107` and `33×2 + 33 + 38 + 3 = 140`, both derived from the source rather
-  than observed and then rationalised. A regen run that reported 140 would mean the compare had run;
-  one that reported 74 would mean the sentinel was gone.
+  proof the regen skipped the compare.** Both figures are **OBSERVED**, on
+  `vendor/bin/phpunit tests/Feature/Console/Check/CheckGoldenTest.php`, 43 tests either way:
+  **asserting 466** (run on the branch with `UPDATE_GOLDEN` unset) and **regen 433** (run with
+  `UPDATE_GOLDEN=1` on a throwaway copy of the repo outside the branch, because a regen rewrites
+  tracked fixtures; the branch's fixtures were confirmed untouched by `git status` afterwards). The
+  gap is **33** — exactly one fixture's `assertFileExists` + `assertSame` pair collapsing to the
+  regen path's single `assertTrue(true)` sentinel, over 33 fixtures. A regen reporting 466 would
+  mean the compare had run; one reporting 400 would mean the sentinel was gone.
+  **CORRECTED IN PLACE — this note first claimed regen 107 / asserting 140, "derived from the source
+  rather than observed", and both numbers were FALSE.** The derivation
+  (`33×1 + 33 + 38 + 3` / `33×2 + …`) omitted `assertFixtureReachesItsSubject()`, which DL-247 added
+  and which runs under `UPDATE_GOLDEN=1` too, and this stage's own
+  `test_every_golden_file_carries_a_self_conserving_inventory_line`. The DEVICE is sound and is kept;
+  a source-derived assertion count is not, which is the same lesson as the disproved-claims section
+  one level down: **every count in this document is re-measured at the source, and an arithmetic
+  derivation is not a measurement.**
 - **`CheckInventory::ran()` was proven at the GOLDEN corpus, not at the unit that STATES the
   contract, and that locus gap is worth naming.** Mutating it to absorb `NotRequested` reds 34 of
   the 43 golden tests — the operator line moves `22 ran` → `24 ran` — so the predicate was never

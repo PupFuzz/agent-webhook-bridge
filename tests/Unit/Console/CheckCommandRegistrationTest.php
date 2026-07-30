@@ -112,8 +112,13 @@ class CheckCommandRegistrationTest extends TestCase
 
     public function test_the_pinned_set_has_no_duplicates(): void
     {
-        // The literal above is hand-maintained, and a duplicated line would make the
-        // assertion above pass against a registry that is one check short.
+        // The literal above is hand-maintained by copy-paste, which is how a duplicated
+        // line gets in. It cannot HIDE anything — `assertSame` compares element-wise
+        // including count and order, and `CheckRunner::claimId()` throws on a duplicate id
+        // so `registeredIds()` can never contain one — so what this buys is a named cause:
+        // without it a duplicated line reds the assertion above with a whole-array diff
+        // that reads as "the registered set changed", pointing at the command rather than
+        // at the list.
         $this->assertSame(
             self::REGISTERED,
             array_values(array_unique(self::REGISTERED)),

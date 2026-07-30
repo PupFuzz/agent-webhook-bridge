@@ -256,7 +256,14 @@ class CheckCommand extends BridgeCommand
         // that did run is inert. That is also why this cannot go stale against the loop
         // above — it describes causes, not control flow it has to stay in step with.
         $perAgentSkip = match (true) {
-            ! is_string($configDir) || ! is_dir($configDir) => 'the config dir is unset or unreadable, so no agent config was loaded',
+            // NOT "unreadable" any more: the arm below owns that case, so naming it here
+            // would name a cause this arm no longer covers.
+            ! is_string($configDir) || ! is_dir($configDir) => 'the config dir is unset or is not a directory, so no agent config was loaded',
+            // A dir that EXISTS but the bridge user cannot read passes the arm above,
+            // and its glob() comes back empty — so without this arm the next one would
+            // tell the operator the install has no agent config files, which is a
+            // confidently false claim about an install that may hold a dozen.
+            ! is_readable($configDir) => 'the config dir could not be read, so no agent config was loaded',
             $agentNames === [] => 'this install has no agent config files (no *.yml in the config dir)',
             $configs === [] => 'no agent config parsed (see the errors above)',
             default => 'every parsed agent aborted before this leg (see the errors above)',
@@ -330,7 +337,13 @@ class CheckCommand extends BridgeCommand
                         // one warn" a property of this method rather than an assumption
                         // about this slot's checks' callees. Its realistic thrower is
                         // WritebackClientFactory::make() above — derivation, inline anyway.
-                        $runner->noteNotRun(CheckSlot::WritebackProbe, 'the kanban writeback client could not be constructed');
+                        //
+                        // THE REASON IS PITCHED AT THE ENVELOPE, NOT AT THAT ONE THROWER.
+                        // Naming the client construction would be a confident diagnosis the
+                        // arm cannot support: a check throwing after the client built lands
+                        // here too, and the warn below would then print a different cause on
+                        // the same screen.
+                        $runner->noteNotRun(CheckSlot::WritebackProbe, 'the writeback board-visibility probe could not be set up (see the warning above)');
                         $this->warn('writeback: skipped board-visibility probe — '.$e->getMessage());
                     }
                 } else {
@@ -347,9 +360,15 @@ class CheckCommand extends BridgeCommand
                 // its own catch (see WritebackBoardStateCheck) — but the envelope is what
                 // makes that a property of this method rather than an assumption about
                 // every registered writeback check's callees.
+                //
+                // WHICH IS EXACTLY WHY THE REASON DOES NOT NAME THE LOAD. The envelope is
+                // wider than its likeliest thrower, so a reason saying "writeback.json
+                // could not be loaded" would be a confident diagnosis for any check that
+                // threw after it parsed — contradicting the error line printed below it.
+                $wbAborted = 'the writeback checks could not be completed (see the error above)';
                 $runner
-                    ->noteNotRun(CheckSlot::Writeback, 'writeback.json is present but could not be loaded (see the error above)')
-                    ->noteNotRun(CheckSlot::WritebackProbe, 'writeback.json is present but could not be loaded (see the error above)');
+                    ->noteNotRun(CheckSlot::Writeback, $wbAborted)
+                    ->noteNotRun(CheckSlot::WritebackProbe, $wbAborted);
                 $this->error('writeback.json: '.$e->getMessage());
                 $ok = false;
             }
@@ -720,14 +739,35 @@ class CheckCommand extends BridgeCommand
      * renderer into a text/json pair and the inventory is what BOTH read — a sentence on
      * the value object would put this renderer's voice inside the json one.
      *
-     * WHAT THE LINE CLAIMS IS BOUNDED ON PURPOSE. It accounts for the REGISTERED set: it
-     * cannot see a leg nobody wrote as a check, and `not applicable` is the reporting
-     * envelope's claim about itself. Both bounds are the plan's, recorded on
-     * {@see CheckInventory}; the sentence here is written to not exceed them, because a
-     * coverage claim stated stronger than its evidence is this program's own recurring
-     * defect.
+     * IT COMPOSES NOTHING ITSELF. Both strings come from the two pure methods below, so
+     * every arm of the wording is reachable from a test without an install shape that
+     * renders it: the golden corpus renders neither zero-arm and never the internal-defect
+     * disclosure, so composition proven only through this method's output would have been
+     * a claim, not a measurement. Stage 9 splits this renderer out along the same seam.
      */
     private function emitInventory(CheckInventory $inventory): void
+    {
+        $this->line($this->inventoryLine($inventory));
+
+        $internal = $this->inventoryInternalDefectLine($inventory);
+        if ($internal !== null) {
+            $this->warn($internal);
+        }
+    }
+
+    /**
+     * Compose the operator-facing inventory line.
+     *
+     * WHAT THE LINE CLAIMS IS BOUNDED ON PURPOSE, because a coverage claim stated stronger
+     * than its evidence is this program's own recurring defect. It accounts for the
+     * REGISTERED set, so it cannot see a leg nobody wrote as a check; a not-run REASON is
+     * the reporting envelope's claim about itself; and `ran` is keyed by check id, so a
+     * per-agent check that ran for two of three agents (the third aborted at the classifier
+     * gate) counts once, as `ran`, with nothing here scoping it to the agents it reached.
+     * All three bounds are the plan's, recorded on {@see CheckInventory}; the sentence
+     * composed here is written to not exceed them.
+     */
+    private function inventoryLine(CheckInventory $inventory): string
     {
         $reported = $inventory->count(CheckDisposition::Reported);
         $silent = $inventory->count(CheckDisposition::Silent);
@@ -742,28 +782,43 @@ class CheckCommand extends BridgeCommand
         }
         $notRun = $inventory->count(CheckDisposition::NotRun);
         if ($notRun > 0) {
+            // `did not run`, NOT `not applicable here`. Several of the reasons the
+            // envelopes record are COULD-NOT-LOOK rather than does-not-apply — a
+            // malformed agent YAML and an unloadable writeback.json both leave the plane
+            // fully applicable and merely unmeasured — so the label that covers the union
+            // is the weaker one. Nothing is lost: the parenthetical already carries the
+            // cause.
             $reasons = $inventory->notRunReasons();
             $parts[] = $reasons === []
                 ? "{$notRun} did not run"
-                : "{$notRun} not applicable here (".implode('; ', $reasons).')';
+                : "{$notRun} did not run (".implode('; ', $reasons).')';
         }
 
         // The counts SUM to the registered total by construction, which is deliberate:
         // the arithmetic is the line's own control, so a reader can see nothing fell out
         // of it without trusting this method.
-        $this->line(implode(' · ', $parts)
-            .". All {$inventory->registered()} are accounted for — nothing was skipped uncounted.");
+        return implode(' · ', $parts)
+            .". All {$inventory->registered()} are accounted for — nothing was skipped uncounted.";
+    }
 
-        // A check the run accounted for but could not explain. NOT a silent hole — the
-        // check is still counted above — but the operator is owed the reason, and an
-        // envelope that gained a skip path without saying why is a real defect. Disclosed
-        // at runtime rather than only in CI because the shape a test never reaches is
-        // exactly the one that would otherwise stay quiet; the exit code is deliberately
-        // NOT flipped (that is an accept/reject change, and out of this stage's scope).
+    /**
+     * The internal-defect disclosure, or null when every not-run check has a reason.
+     *
+     * A check the run accounted for but could not explain. NOT a silent hole — the check
+     * is still counted on the line above — but the operator is owed the reason, and an
+     * envelope that gained a skip path without saying why is a real defect. Disclosed at
+     * runtime rather than only in CI because the shape a test never reaches is exactly the
+     * one that would otherwise stay quiet; the exit code is deliberately NOT flipped (that
+     * is an accept/reject change, and out of this stage's scope).
+     */
+    private function inventoryInternalDefectLine(CheckInventory $inventory): ?string
+    {
         $unexplained = $inventory->unexplainedNotRun();
-        if ($unexplained !== []) {
-            $this->warn('bridge:check internal: '.count($unexplained).' registered check(s) did not run and this command did not record why ('
-                .implode(', ', $unexplained).'). The run above is still complete, but that is a bug in bridge:check — please report it.');
+        if ($unexplained === []) {
+            return null;
         }
+
+        return 'bridge:check internal: '.count($unexplained).' registered check(s) did not run and this command did not record why ('
+            .implode(', ', $unexplained).'). The run above is still complete, but that is a bug in bridge:check — please report it.';
     }
 }

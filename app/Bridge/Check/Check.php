@@ -38,9 +38,10 @@ interface Check
      * MEASURED that first: 26 of the 37 registered checks yield nothing on at least one
      * install shape and most are silent on the baseline, because "no identity collisions"
      * is correctly reported by saying nothing. Enforcing the old wording would have meant
-     * ~37 lines of mostly-`ok` on every run. What is enforced instead is that the run
-     * ACCOUNTS for every registered check — see {@see CheckDisposition} — so silence is
-     * now counted rather than absent.
+     * ~37 lines of mostly-`ok` on every run. What is enforced instead is that a run which
+     * COMPLETES ACCOUNTS for every registered check — see {@see CheckDisposition} — so
+     * silence is now counted rather than absent. (A check that throws still aborts the
+     * command before anything renders the account; {@see CheckRunner} does not catch.)
      *
      * ⚠ A silence is not yet DISTINGUISHABLE from falling off the end of the generator by
      * accident; both record {@see CheckDisposition::Silent}. Making a check declare its

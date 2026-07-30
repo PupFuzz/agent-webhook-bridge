@@ -14,6 +14,11 @@ namespace App\Bridge\Check;
  * renderer, which stage 9 splits into a text/json pair; putting a sentence here would
  * put the text renderer's voice inside the thing the json renderer also reads.
  *
+ * IT ACCOUNTS FOR EVERY REGISTERED CHECK ON EVERY RUN THAT COMPLETES, and the qualifier is
+ * load-bearing rather than pedantic: {@see CheckRunner} deliberately does not catch, so a
+ * check that throws aborts `bridge:check` before any of this is rendered and the operator
+ * gets no accounting at all — not a partial one.
+ *
  * WHAT IT DOES NOT ESTABLISH, stated because an unstated bound reads as a guarantee:
  *  - It cannot see a check NOBODY WROTE. It accounts for the registered set, and a leg
  *    that never became a `Check` is outside it — the same bound `check-golden-coverage.md`
@@ -27,6 +32,12 @@ namespace App\Bridge\Check;
  *    re-assignment is card#5291's and is a separate, gated decision.
  *  - {@see CheckDisposition::NotRun} reasons are the ENVELOPE's claim about itself. If
  *    an envelope's condition is wrong, the reason is confidently wrong with it.
+ *  - EVERY COUNT HERE IS KEYED BY CHECK ID, so a per-agent check is one row however many
+ *    agents it ran for. One that ran for two of three agents — the third aborted at the
+ *    classifier gate — counts once, as having run, and nothing in this class scopes that
+ *    to the agents it actually reached. The bound is stated on
+ *    {@see PerAgentCheck::runFor()} as the accepted granularity cost; it is repeated here
+ *    because this is the class whose numbers a reader would otherwise take per-agent.
  */
 final class CheckInventory
 {
@@ -57,7 +68,11 @@ final class CheckInventory
     }
 
     /**
-     * The distinct not-run reasons, in first-recorded order, deduplicated.
+     * The distinct not-run reasons, deduplicated, in the REGISTRATION order of the first
+     * not-run check carrying each — this walks `$dispositions`, which
+     * {@see CheckRunner::inventory()} builds in registration order. NOT the order the
+     * reasons were recorded in: the two coincide today only because `CheckCommand` happens
+     * to close its envelopes in roughly registration order, and nothing holds it to that.
      *
      * Deduplicated because one envelope closing accounts for several checks and the
      * operator needs the CAUSE once, not once per check: nine writeback checks share

@@ -15,7 +15,8 @@ use Tests\TestCase;
 
 /**
  * The DL-242 stage-8 accounting invariant: every registered check is accounted for on
- * every run.
+ * every run that completes (`CheckRunner` does not catch, so a throwing check aborts
+ * `bridge:check` before anything renders the account).
  *
  * THE TWO TESTS THIS FILE EXISTS FOR ARE THE POSITIVE CONTROLS the plan's § Verification
  * item 5 demands — *"register a deliberately non-emitting check and observe the runner

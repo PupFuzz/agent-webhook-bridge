@@ -6,13 +6,15 @@ namespace App\Bridge\Check;
  * What became of one registered check in one run (DL-242 stage 8).
  *
  * The registry's stage-8 invariant is that every registered check is ACCOUNTED FOR on
- * every run — not that every check emits a finding. Measurement at the start of the
- * stage showed the latter is false on every install shape the corpus covers: on the
- * baseline install 13 of 37 checks are never invoked at all (whole slots sit behind
- * conditional envelopes in `CheckCommand::handle()`) and 15 more run and report
- * nothing. Turning THAT into "everything emits" would have meant dissolving envelopes
- * stages 3a and 7b preserved as behavior. See the stage 8 result in
- * `docs/CHECK-REGISTRY-PLAN.md`.
+ * every run THAT COMPLETES — not that every check emits a finding. (The qualifier is the
+ * one {@see CheckRunner} imposes by deliberately not catching: a check that throws aborts
+ * `bridge:check`, and the operator gets no account at all rather than a partial one.)
+ * Measurement at the start of the stage showed the emission form is false on every
+ * install shape the corpus covers: on the baseline install 13 of 37 checks are never
+ * invoked at all (whole slots sit behind conditional envelopes in
+ * `CheckCommand::handle()`) and 15 more run and report nothing. Turning THAT into
+ * "everything emits" would have meant dissolving envelopes stages 3a and 7b preserved as
+ * behavior. See the stage 8 result in `docs/CHECK-REGISTRY-PLAN.md`.
  *
  * THE FOUR CASES ARE NOT A SEVERITY, AND DELIBERATELY SO. `Severity` answers "how bad
  * is what this check found"; a disposition answers "did this check get to look at all".
