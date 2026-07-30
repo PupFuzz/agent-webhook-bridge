@@ -1666,6 +1666,15 @@ corrupting one golden file's arithmetic and observing the named failure.
   belongs to. Found by re-running the stage's mutation set rather than by reading the test file —
   a mutation that survives is the only thing that distinguishes an asserted contract from a
   restated one.
+- **The coverage doc regenerated to 44 predicates / 43 observed / 1 unobserved** (was 43 / 42 / 1),
+  measured in 34 minutes on a detached copy proven byte-identical to the branch before the run. The
+  arriving predicate is stage 7b's `$sshAgents === []`, and it arrives OBSERVED, so the disclosed-gap
+  count holds at 1 — the measured region grew, the command did not get less protected. **The stale
+  `43` was already wrong before this stage**: the enumerator reported 44 against a doc header saying
+  43, which is what a generated file drifts to when a stage touches `handle()` and skips the regen.
+  The single gap's id moved `if-L311` → `if-L288` with its condition text UNCHANGED — the third
+  method note (stage 3a, restated 5c and 6) is why that is a rename and not a departure-plus-arrival:
+  **the diff keys on the condition's TEXT, never on the `if-L<n>` label.**
 - **`phpstan`'s green was positive-controlled on the new files specifically** (a deliberate
   `strlen(array)` in `CheckInventory`, observed red and restored byte-identical) rather than assumed
   from `app/Bridge` being in `paths` — the DL-246 trap.
