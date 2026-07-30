@@ -1668,14 +1668,20 @@ corrupting one golden file's arithmetic and observing the named failure.
   a mutation that survives is the only thing that distinguishes an asserted contract from a
   restated one.
 - **The coverage doc regenerated to 44 predicates / 43 observed / 1 unobserved** (was 43 / 42 / 1),
-  measured in 34 minutes on a detached copy proven byte-identical to the branch before the run. The
-  arriving predicate is stage 7b's `$sshAgents === []`, and it arrives OBSERVED, so the disclosed-gap
-  count holds at 1 — the measured region grew, the command did not get less protected. **The stale
-  `43` was already wrong before this stage**: the enumerator reported 44 against a doc header saying
-  43, which is what a generated file drifts to when a stage touches `handle()` and skips the regen.
-  The single gap's id moved `if-L311` → `if-L288` with its condition text UNCHANGED — the third
+  measured in 34 minutes on a detached copy proven byte-identical to the branch before the run. **The
+  arriving predicate is THIS stage's own `$sshAgents === []` guard**, added when the board-tools ssh
+  slots gained their not-run reason — and it arrives OBSERVED, so the disclosed-gap count holds at 1.
+  **NOTHING HAD DRIFTED.** Running the enumerator against `origin/dev` returns 43, exactly what that
+  revision's header said; the total moved because this stage added a predicate. **An earlier revision
+  of this bullet attributed the predicate to stage 7b and blamed a prior stage for skipping a regen.
+  Both were false and neither was measured** — recorded rather than quietly corrected, because this
+  doc's own rule is that an arithmetic derivation is not a measurement, and a wrong-but-specific
+  cause is worse than an honest generic one.
+- **The single disclosed gap's generated id moved, with its condition text UNCHANGED** — the third
   method note (stage 3a, restated 5c and 6) is why that is a rename and not a departure-plus-arrival:
-  **the diff keys on the condition's TEXT, never on the `if-L<n>` label.**
+  **the diff keys on the condition's TEXT, never on the generated offset label.** The condition is
+  `$configs !== [] && $ctx->configDir !== null`; cite it that way, never by the generated id, which
+  `bin/check-doc-refs.php` bans in this file for exactly this reason.
 - **`phpstan`'s green was positive-controlled on the new files specifically** (a deliberate
   `strlen(array)` in `CheckInventory`, observed red and restored byte-identical) rather than assumed
   from `app/Bridge` being in `paths` — the DL-246 trap.
