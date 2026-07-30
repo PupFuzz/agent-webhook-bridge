@@ -1,4 +1,4 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.26.0) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.27.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **What this is.** The solo-agent orientation generated from the Agent Board Framework
@@ -69,7 +69,7 @@ between sessions; verify the board state reflects actual PR state before proceed
 **Canonical docs to orient from** (wherever `coord:init-solo` placed your config —
 `~/.config/coord/` by default — or in the plugin's own `docs/` directory):
 
-- **Engineering canon** — `~/.claude/CLAUDE.md` (seeded per machine at user level). The 17
+- **Engineering canon** — `~/.claude/CLAUDE.md` (seeded per machine at user level). The
   senior-engineer principles. Always on.
 - **`design-review-loop.md`** — the pre-implementation review-to-zero-findings discipline
   you run on your own plan before opening a non-trivial PR.
