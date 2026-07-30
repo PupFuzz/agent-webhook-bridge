@@ -9,7 +9,7 @@ use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 
 /**
- * The composition of `bridge:check`'s inventory disclosure (DL-242 stage 8).
+ * What `bridge:check`'s inventory prints, and on which channel (DL-242 stage 8).
  *
  * WHY IT IS A UNIT AND NOT MORE GOLDEN FIXTURES. The composition has five predicates and
  * ten arms; the 33-fixture corpus renders six of them and never the other four. It renders
@@ -23,25 +23,61 @@ use ReflectionMethod;
  * absence assertion needs, and reaching those arms needs an inventory no install shape in
  * the corpus produces.
  *
- * The two methods under test are private and pure, reached by reflection: what is under
- * test IS the composition, and a check-command run can only exhibit the arms some install
- * shape happens to produce — which is the gap, not the instrument.
+ * IT TESTS THE EMIT DECISION, NOT ONLY THE COMPOSITION, AND THAT DISTINCTION IS WHY THE
+ * SEAM HAS THE SHAPE IT DOES. This file first tested two pure renderers directly, which
+ * left the CALL SITE unwitnessed: replacing `emitInventory()`'s call to the internal-defect
+ * renderer with `null` deleted the disclosure from every operator's output with the full
+ * suite still green (observed, 1798/1798) — testing a pure method exhaustively proves its
+ * composition and says nothing about whether anything still calls it. The two renderers are
+ * now one `inventoryOutput()` returning `[channel, message]` pairs, so *whether* the
+ * disclosure is included, and on which channel, is a property of the value asserted here.
+ *
+ * WHAT THIS FILE STILL CANNOT WITNESS, because a bound left unstated reads as a guarantee:
+ * the DISPATCH of the `warn` channel. `emitInventory()`'s loop is exercised on the `line`
+ * channel by all 33 golden fixtures and on the `warn` channel by nothing — no install shape
+ * reaches it, since every conditional slot in `CheckCommand::handle()` records a not-run
+ * reason by design. The composition and the emit decision are proven here; that one
+ * dispatch arm is proven at the seam only.
+ *
+ * The method under test is private and pure, reached by reflection: a check-command run can
+ * only exhibit the arms some install shape happens to produce — which is the gap, not the
+ * instrument.
  */
 class CheckInventoryLineTest extends TestCase
 {
-    private function line(CheckInventory $inventory): string
+    /**
+     * Every `[channel, message]` pair the inventory would print for this run.
+     *
+     * @return list<array{0: string, 1: string}>
+     */
+    private function emissions(CheckInventory $inventory): array
     {
-        $method = new ReflectionMethod(CheckCommand::class, 'inventoryLine');
-
-        return (string) $method->invoke(new CheckCommand, $inventory);
-    }
-
-    private function internal(CheckInventory $inventory): ?string
-    {
-        $method = new ReflectionMethod(CheckCommand::class, 'inventoryInternalDefectLine');
+        $method = new ReflectionMethod(CheckCommand::class, 'inventoryOutput');
+        /** @var list<array{0: string, 1: string}> $out */
         $out = $method->invoke(new CheckCommand, $inventory);
 
-        return $out === null ? null : (string) $out;
+        return $out;
+    }
+
+    /** The always-present head line, asserted to be on the plain channel as it is read. */
+    private function line(CheckInventory $inventory): string
+    {
+        $out = $this->emissions($inventory);
+
+        $this->assertNotSame([], $out, 'the inventory must always print its head line');
+        $this->assertSame('line', $out[0][0], 'the head line is plain, not a warn');
+
+        return $out[0][1];
+    }
+
+    /** The internal-defect disclosure, or null when the inventory does not emit one. */
+    private function internal(CheckInventory $inventory): ?string
+    {
+        $warns = array_values(array_filter($this->emissions($inventory), fn (array $pair) => $pair[0] === 'warn'));
+
+        $this->assertLessThanOrEqual(1, count($warns), 'the inventory emits at most one disclosure');
+
+        return $warns === [] ? null : $warns[0][1];
     }
 
     /**
@@ -225,5 +261,41 @@ class CheckInventoryLineTest extends TestCase
     public function test_a_run_with_nothing_unexplained_and_nothing_not_run_discloses_nothing(): void
     {
         $this->assertNull($this->internal($this->inventory(reported: 3)));
+    }
+
+    // ---- the emit DECISION: whether the disclosure is printed at all, and where ----
+
+    public function test_an_unexplained_not_run_check_adds_the_disclosure_on_the_warn_channel(): void
+    {
+        // THE CALL-SITE WITNESS, and the reason the two renderers were collapsed into one.
+        // Asserting the composed STRING (the tests above) cannot tell a disclosure that
+        // reaches the operator from one that is composed and dropped — which is exactly
+        // what happened: the previous shape decided in `emitInventory()` whether to print
+        // it, and blanking that decision reds nothing when only the renderer is tested.
+        $out = $this->emissions($this->inventory(
+            reported: 1,
+            notRun: 2,
+            reasons: ['not-run-0' => 'no writeback.json'],
+        ));
+
+        $this->assertCount(2, $out, 'an unexplained not-run check must add a second emission');
+        $this->assertSame('line', $out[0][0]);
+        $this->assertSame('warn', $out[1][0], 'the disclosure is a WARN — it is the one thing here the operator must act on');
+        $this->assertStringContainsString('bridge:check internal:', $out[1][1]);
+    }
+
+    public function test_a_run_whose_not_run_checks_all_have_reasons_emits_the_head_line_alone(): void
+    {
+        // The other half of the decision. Without this, appending the disclosure
+        // unconditionally would pass every string assertion above and print a
+        // "bug in bridge:check" warn on every healthy install.
+        $out = $this->emissions($this->inventory(
+            reported: 2,
+            notRun: 1,
+            reasons: ['not-run-0' => 'no writeback.json'],
+        ));
+
+        $this->assertCount(1, $out);
+        $this->assertSame('line', $out[0][0]);
     }
 }

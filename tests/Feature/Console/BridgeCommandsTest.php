@@ -27,6 +27,13 @@ class BridgeCommandsTest extends TestCase
 
     private string|false $origGhToken;
 
+    /**
+     * A directory a test made unreadable, restored before {@see self::tearDown()} deletes
+     * the fixture tree — `File::deleteDirectory` cannot enumerate a 0000 dir, so an
+     * un-restored mode leaks the temp dir and its contents into every later run.
+     */
+    private ?string $unreadableDir = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -52,6 +59,10 @@ class BridgeCommandsTest extends TestCase
             putenv('GH_TOKEN');
         } else {
             putenv('GH_TOKEN='.$this->origGhToken);
+        }
+        if ($this->unreadableDir !== null) {
+            chmod($this->unreadableDir, 0o755);
+            $this->unreadableDir = null;
         }
         File::deleteDirectory($this->dir);
         parent::tearDown();
@@ -82,6 +93,45 @@ class BridgeCommandsTest extends TestCase
     {
         config(['bridge.secret_dir' => null]);
         $this->artisan('bridge:check')->assertExitCode(1);
+    }
+
+    public function test_check_names_an_unreadable_config_dir_as_why_the_agent_plane_did_not_run(): void
+    {
+        // DL-248: a config dir that EXISTS but the bridge user cannot read passes
+        // `is_dir()` and globs empty, so the arm BELOW this one would tell the operator
+        // the install has no agent config files — a confidently false claim about an
+        // install that holds one. The state is CONSTRUCTED rather than reasoned about,
+        // and the three facts the arm rests on are asserted before the command runs:
+        // otherwise a change to any of them would leave this test green against a
+        // different code path.
+        $configDir = $this->dir.'/unreadable-config';
+        File::ensureDirectoryExists($configDir);
+        File::put($configDir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+        config(['bridge.config_dir' => $configDir]);
+        // Recorded BEFORE the chmod: tearDown must restore the mode even if the chmod is
+        // the last thing that succeeds, or File::deleteDirectory leaves it behind and
+        // every later test in this process inherits an undeletable temp dir.
+        $this->unreadableDir = $configDir;
+        chmod($configDir, 0o000);
+        clearstatcache(true, $configDir);
+
+        // GUARD THE PRECONDITION, NEVER ASSUME IT. A root runner reads a 0000 directory,
+        // which would silently invert this test into a decoration for the arm below.
+        if (is_readable($configDir)) {
+            $this->markTestSkipped('this runner can read a 0000 directory (running as root?), so the unreadable-config-dir arm is unreachable here');
+        }
+        $this->assertTrue(is_dir($configDir), 'an unreadable dir still passes is_dir() — that is the whole trap');
+        // Asserted as the SCAN sees it, not as `glob()` spells it: an unreadable dir makes
+        // glob() return `[]` on some platforms and `false` on others, and `handle()`
+        // coalesces both to an empty iteration. Pinning one of the two spellings would be
+        // asserting something this arm does not depend on.
+        $this->assertSame([], glob($configDir.'/*.yml') ?: [], 'the YAML scan must find nothing, which is what makes the arm below reachable');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('the config dir could not be read, so no agent config was loaded')
+            ->doesntExpectOutputToContain('this install has no agent config files')
+            ->assertExitCode(0);
     }
 
     public function test_check_fails_on_configured_provider_without_adapter(): void

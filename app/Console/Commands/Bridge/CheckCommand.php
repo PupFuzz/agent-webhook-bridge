@@ -733,30 +733,48 @@ class CheckCommand extends BridgeCommand
     }
 
     /**
-     * Render the run's exact per-check account (DL-242 stage 8).
+     * Render the run's exact per-check account (DL-242 stage 8) — a DISPATCH LOOP over
+     * {@see self::inventoryOutput()} and nothing else.
      *
-     * THE WORDING LIVES HERE, NOT ON {@see CheckInventory}, because stage 9 splits this
-     * renderer into a text/json pair and the inventory is what BOTH read — a sentence on
-     * the value object would put this renderer's voice inside the json one.
+     * IT DECIDES NOTHING, WHICH IS THE POINT AND WAS THE DEFECT. This method first shipped
+     * calling two pure renderers and deciding HERE whether the internal-defect disclosure
+     * was one of them — with those renderers tested exhaustively and directly. Replacing
+     * that call with `null` therefore deleted the `bridge:check internal:` disclosure from
+     * every operator's output and left the full suite green (observed, 1798/1798): testing
+     * a pure method proves its COMPOSITION and says nothing about whether anything still
+     * CALLS it. The decision now lives inside the seam, where a test can see it.
      *
-     * IT COMPOSES NOTHING ITSELF. Both strings come from the two pure methods below, so
-     * every arm of the wording is reachable from a test without an install shape that
-     * renders it: the golden corpus renders neither zero-arm and never the internal-defect
-     * disclosure, so composition proven only through this method's output would have been
-     * a claim, not a measurement. Stage 9 splits this renderer out along the same seam.
+     * WHAT IS STILL NOT WITNESSED END TO END, stated rather than rounded up: the `line`
+     * channel's dispatch is exercised by all 33 golden fixtures; the `warn` channel's by
+     * none of them, and NO INSTALL SHAPE CAN REACH IT — every conditional slot in
+     * `handle()` records a not-run reason, by design, so `unexplainedNotRun()` is empty on
+     * every real run. The composition AND the emit decision are proven; the `warn`
+     * channel's DISPATCH is proven only at the seam, because nothing else can reach it.
      */
     private function emitInventory(CheckInventory $inventory): void
     {
-        $this->line($this->inventoryLine($inventory));
-
-        $internal = $this->inventoryInternalDefectLine($inventory);
-        if ($internal !== null) {
-            $this->warn($internal);
+        foreach ($this->inventoryOutput($inventory) as [$channel, $message]) {
+            match ($channel) {
+                'line' => $this->line($message),
+                'warn' => $this->warn($message),
+            };
         }
     }
 
     /**
-     * Compose the operator-facing inventory line.
+     * Everything the inventory prints, in emission order, as `[channel, message]` pairs.
+     *
+     * ONE METHOD RATHER THAN A RENDERER PER LINE, so that *whether* the internal-defect
+     * disclosure is emitted — and on which channel — is a property of a returned VALUE
+     * rather than control flow at a call site no test could see (the survivor
+     * {@see self::emitInventory()} describes). The golden corpus renders neither zero-arm
+     * and never the disclosure, so every arm here still needs a test that hands this method
+     * an inventory no install produces; what changed is that the arms now include the emit
+     * decision. Stage 9 splits the text/json pair along this same seam.
+     *
+     * THE WORDING LIVES HERE, NOT ON {@see CheckInventory}, because that split makes the
+     * inventory what BOTH renderers read — a sentence on the value object would put this
+     * renderer's voice inside the json one.
      *
      * WHAT THE LINE CLAIMS IS BOUNDED ON PURPOSE, because a coverage claim stated stronger
      * than its evidence is this program's own recurring defect. It accounts for the
@@ -764,10 +782,12 @@ class CheckCommand extends BridgeCommand
      * the reporting envelope's claim about itself; and `ran` is keyed by check id, so a
      * per-agent check that ran for two of three agents (the third aborted at the classifier
      * gate) counts once, as `ran`, with nothing here scoping it to the agents it reached.
-     * All three bounds are the plan's, recorded on {@see CheckInventory}; the sentence
-     * composed here is written to not exceed them.
+     * All three bounds are the plan's, recorded on {@see CheckInventory}; the sentences
+     * composed here are written to not exceed them.
+     *
+     * @return list<array{0: 'line'|'warn', 1: string}>
      */
-    private function inventoryLine(CheckInventory $inventory): string
+    private function inventoryOutput(CheckInventory $inventory): array
     {
         $reported = $inventory->count(CheckDisposition::Reported);
         $silent = $inventory->count(CheckDisposition::Silent);
@@ -797,28 +817,23 @@ class CheckCommand extends BridgeCommand
         // The counts SUM to the registered total by construction, which is deliberate:
         // the arithmetic is the line's own control, so a reader can see nothing fell out
         // of it without trusting this method.
-        return implode(' · ', $parts)
-            .". All {$inventory->registered()} are accounted for — nothing was skipped uncounted.";
-    }
+        $out = [['line', implode(' · ', $parts)
+            .". All {$inventory->registered()} are accounted for — nothing was skipped uncounted."]];
 
-    /**
-     * The internal-defect disclosure, or null when every not-run check has a reason.
-     *
-     * A check the run accounted for but could not explain. NOT a silent hole — the check
-     * is still counted on the line above — but the operator is owed the reason, and an
-     * envelope that gained a skip path without saying why is a real defect. Disclosed at
-     * runtime rather than only in CI because the shape a test never reaches is exactly the
-     * one that would otherwise stay quiet; the exit code is deliberately NOT flipped (that
-     * is an accept/reject change, and out of this stage's scope).
-     */
-    private function inventoryInternalDefectLine(CheckInventory $inventory): ?string
-    {
+        // THE INTERNAL-DEFECT DISCLOSURE: a check the run accounted for but could not
+        // explain. NOT a silent hole — the check is still counted on the line above — but
+        // the operator is owed the reason, and an envelope that gained a skip path without
+        // saying why is a real defect. Disclosed at runtime rather than only in CI because
+        // the shape a test never reaches is exactly the one that would otherwise stay
+        // quiet; the exit code is deliberately NOT flipped (that is an accept/reject
+        // change, and out of this stage's scope). WARN and not `line`: it is the one thing
+        // the inventory says that the operator is asked to act on.
         $unexplained = $inventory->unexplainedNotRun();
-        if ($unexplained === []) {
-            return null;
+        if ($unexplained !== []) {
+            $out[] = ['warn', 'bridge:check internal: '.count($unexplained).' registered check(s) did not run and this command did not record why ('
+                .implode(', ', $unexplained).'). The run above is still complete, but that is a bug in bridge:check — please report it.'];
         }
 
-        return 'bridge:check internal: '.count($unexplained).' registered check(s) did not run and this command did not record why ('
-            .implode(', ', $unexplained).'). The run above is still complete, but that is a bug in bridge:check — please report it.';
+        return $out;
     }
 }

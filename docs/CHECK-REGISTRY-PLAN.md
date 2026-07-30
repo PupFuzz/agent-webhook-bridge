@@ -1615,6 +1615,47 @@ corrupting one golden file's arithmetic and observing the named failure.
   a source-derived assertion count is not, which is the same lesson as the disproved-claims section
   one level down: **every count in this document is re-measured at the source, and an arithmetic
   derivation is not a measurement.**
+- **A SEAM TESTED ONLY AT THE CALLEE LEAVES THE CALL SITE UNPROVEN, and re-running the stage's
+  mutations against the WHOLE suite found two that survive.** Both are **observed, at 1798/1798 and
+  4688 assertions — identical to the unmutated baseline**, with the guarded code deleted:
+  - Replacing `emitInventory()`'s `$internal = $this->inventoryInternalDefectLine($inventory)` with
+    `$internal = null`. The `bridge:check internal:` disclosure stops reaching the operator and
+    nothing notices, because `CheckInventoryLineTest` tested that renderer **directly**: extracting a
+    pure method and testing it exhaustively proves the COMPOSITION and says nothing about whether
+    anything still CALLS it. **Every one of the eleven recorded proofs mutates one of the two
+    renderers; none mutates the call site** — so the set was exhaustive over the thing that was
+    already covered and silent about the one thing that was not. **A seam closes a gap only if the
+    DECISION TO EMIT lives inside the tested surface**, so the two renderers are now one
+    `inventoryOutput()` returning `[channel, message]` pairs and `emitInventory()` is a dispatch loop
+    over it; every case ported, plus two asserting the disclosure IS included on the `warn` channel
+    when a not-run check is unexplained and absent otherwise.
+  - Deleting the `! is_readable($configDir)` arm this same pass ADDED. The confidently-false *"this
+    install has no agent config files"* claim comes straight back, green: the defect was
+    **reproduced before fixing and never asserted after**, which re-mints the class one layer down —
+    **a check that cannot fail is a decoration**. Closed by a feature test that CONSTRUCTS the state
+    (`mkdir`/`touch`/`chmod 0000`) and pins the three facts the arm rests on before running the
+    command: `is_dir()` true and the YAML scan empty are ASSERTED, and `is_readable()` false is
+    GUARDED rather than assumed — a root runner reads a 0000 directory, which would silently invert
+    the test into a decoration for the arm below it, so it skips with a reason instead of asserting
+    against a state it is not in. The mode is restored in `tearDown` so a failure cannot leave an
+    undeletable fixture behind.
+
+  Each fix's own proof was then run the same way — mutation, FULL suite, named failing test, restore,
+  `cmp` — and each RED: the collapsed seam reds
+  `test_an_unexplained_not_run_check_adds_the_disclosure_on_the_warn_channel` (and the ported
+  `test_a_not_run_check_with_no_reason_is_disclosed_by_id`, which now routes through the emit
+  decision), the arm reds `test_check_names_an_unreadable_config_dir_as_why_the_agent_plane_did_not_run`.
+  **THE RESIDUAL, STATED RATHER THAN ROUNDED UP:** the golden corpus exercises the dispatch loop's
+  `line` channel on all 33 fixtures and its `warn` channel on none — and no install shape can reach
+  it, because every conditional slot in `handle()` records a not-run reason by design, so
+  `unexplainedNotRun()` is empty on every real run. The composition AND the emit decision are proven;
+  the `warn` channel's DISPATCH is proven only at the seam, because nothing else can reach it.
+  **Both survivors were found by RE-RUNNING the mutation set against the full suite rather than by
+  reading the test file** — the same device as the `ran()` locus gap below, now twice in one stage.
+  A mutation that survives is the only thing that distinguishes an asserted contract from a restated
+  one, and **the run has to be the WHOLE suite for that to mean anything**: a run scoped to the tests
+  written for the mutated code answers a question nobody asked, since those are the tests that
+  cannot be absent. Neither of these two is detectable that way.
 - **`CheckInventory::ran()` was proven at the GOLDEN corpus, not at the unit that STATES the
   contract, and that locus gap is worth naming.** Mutating it to absorb `NotRequested` reds 34 of
   the 43 golden tests — the operator line moves `22 ran` → `24 ran` — so the predicate was never
