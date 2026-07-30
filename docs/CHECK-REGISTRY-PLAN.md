@@ -1,27 +1,8 @@
 # `bridge:check` — the Check-registry plan
 
-> **Status: stages 0–8 are BUILT.** 0–7b are merged to `dev`; **8** is built on
-> `card-5585-stage8-exact-inventory` (card#5585, DL-248) and its gate was **granted**.
+> **Status: stages 0–8 are BUILT.** 0–7b are merged to `dev`; **8** lands with this change
+> (card#5585, DL-248) and its gate was **granted**.
 > **Stages 9 and 10 remain HARD GATE — stage 8's approval does NOT roll on to them.**
->
-> **⚠ STAGE 8 EVIDENCE IS INCOMPLETE — no PR until it closes.** Built ≠ proven, and the
-> distinction is recorded here because it previously lived only in a machine-local session
-> handoff, which is not project state and does not survive a context reset. The stage-8 result
-> below states the corpus is *"blind to the channel axis entirely"*; that claim's mutation set is
-> **partially measured**:
->
-> | | measured | scope |
-> |---|---|---|
-> | **M1** head `'line'`→`warn` | ✅ | `CheckGoldenTest` 43/43 green · `CheckOutputChannelTest` 2 red — **two named files only** |
-> | **M3** `Severity::Fail` `error`→`info` | ✅ | same two files only |
-> | **M2 · M4 · M5 · M6** | ❌ | not run |
-> | **FULL-suite form of all six** | ❌ | not run — nothing shows the other ~1800 tests are blind to these mutations either |
->
-> A run scoped to the tests written for the mutated code answers a question nobody asked (this
-> program's own rule, argued in the stage 5b and 7b results), so the two-file pass above is a
-> **down-payment, not a substitute**. If any mutation reds `CheckGoldenTest`, the corrected claim
-> is WRONG and the sentence must be rewritten before the PR — the measurement licenses the
-> sentence, not the other way round.
 > This document owns the *reasoning* for the `bridge:check` consolidation program — the
 > measurements behind it, the target shape, the constraints that would break the refactor
 > mid-flight, and what is deliberately **not** in scope. Read it before prescribing any
@@ -289,7 +270,7 @@ next stage starts.
 | **6 ✅** | Migrate the **pre-loop install plane** — both install directories, the inbox-surfacing config, the endpoint URLs, and the provider/adapter coverage leg — into **three** new slots (`CheckSlot::Install`, `::Inbox`, `::Providers`). Three because the region is not contiguous: the already-migrated `Database` and `Retention` slots run inside it and slot ordinal fixes output order. `warnIfDirInsecure()` moves with it (both callers migrate here). **This row replaces an earlier one that under-enumerated the remaining work; see the stage 6 result.** | **None** | no |
 | **7a ✅** | Migrate the **event-follows-consumer plane** — the whole DL-196 advisory — into a new `CheckSlot::EventConsumer`. One check, one slot. **Row 7 splits on SIZE, not on a measured seam**, and the stage 7a result says so rather than manufacturing a discriminator; it is also the first stage whose predicate total goes UP, because it migrates a HELPER method rather than code inside `handle()`. | **None** (golden test enforces) | no |
 | **7b ✅** | Migrate the **board-tools plane** — the `suppressedReason` scan, the resolver's `problems()`, the per-agent board-STATE legs, the DL-225 flipped-default advisory (which reads its input back off another slot's REPORT — a first for this program) and the `--probe-tools` live probe — into **five** new slots. `handle()` now holds derivation and the runner calls alone; see the stage 7b result. | **None** (golden test enforces) | no |
-| **8 ✅ built · ⚠ evidence open** | Turn on the accounting invariant: every registered check is **accounted for** on every run that completes (the runner does not catch, so a throwing check aborts before anything renders the account), and replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above — **and amends two of its bullets in place: the text renderer does NOT stay silent on `not requested`, because this is the gated output-change stage.** **This row originally read "every registered check emits ≥1 finding" — measurement falsified that before any code was written, and the row is corrected rather than quietly built around; see the stage 8 result.** | **Yes** — every run that completes gains one inventory line; the disclaimer is narrowed | **GATE** (granted) |
+| **8 ✅** | Turn on the accounting invariant: every registered check is **accounted for** on every run that completes (the runner does not catch, so a throwing check aborts before anything renders the account), and replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above — **and amends two of its bullets in place: the text renderer does NOT stay silent on `not requested`, because this is the gated output-change stage.** **This row originally read "every registered check emits ≥1 finding" — measurement falsified that before any code was written, and the row is corrected rather than quietly built around; see the stage 8 result.** | **Yes** — every run that completes gains one inventory line; the disclaimer is narrowed | **GATE** (granted) |
 | **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** — and the reason is NOT the operator-visible column, which is the weakest of the three gated rows. A JSON shape is a **write contract**: once a machine consumer parses it you cannot un-ship it, so per the fleet write-contract rule it must be versioned and carry its own guard. Recorded here because it was previously asserted with no rationale anywhere in this doc or the decision log, which makes a gate indistinguishable from a habit. |
 | **10** | Re-assign the sites that disagree on warn ↔ unvalidated. Closes **card#5291**, **card#5292**. | **Yes** — severities change | **GATE** |
 
@@ -1686,6 +1667,23 @@ corrupting one golden file's arithmetic and observing the named failure.
   blind to the channel axis entirely, and 33 fixtures buy nothing on it. **Observed:** mutating
   `'line' => $this->line($message)` to `$this->warn($message)` leaves all 33 golden files unchanged
   while rendering the inventory head as a yellow warning on every healthy operator run.
+  **That first reading was taken over two named files, which is a down-payment and not a proof**
+  (the whole-suite requirement is argued at the end of this bullet), so the claim was re-measured
+  as SIX mutations, each a FULL `vendor/bin/phpunit` against a **1807/1807 @ 4741-assertion**
+  baseline, restoring `CheckCommand.php` and asserting the restore between each. (The
+  re-verification pass above records 1798/4688 — a dated figure from before this pass's own
+  instrument landed, not a stale one to reconcile against this line.)
+
+  | mutation | what reds, whole suite |
+  |---|---|
+  | **M1** inventory head `line`→`warn` | `CheckOutputChannelTest` ×2 |
+  | **M2** disclosure `warn`→`line` | `CheckOutputChannelTest` ×2 |
+  | **M3 · M4 · M5** the three `Severity` render arms | `CheckOutputChannelTest` ×1 each |
+  | **M6** delete the `$agentNames === []` arm | `BridgeCommandsTest` ×1 |
+
+  `CheckGoldenTest` stays green through all six and no mutation survives unwitnessed, so the
+  blindness is a property of the corpus at whole-suite scope rather than an artifact of which two
+  files happened to be run.
   **A residual stated NARROWER than the truth is worse than one left unstated**, because it reads as
   a measured bound; the sentence had been copied to four sites before the read that falsified it.
   **AND THE GAP HAD A SIBLING ONE METHOD AWAY** (canon #7, audited on the shape rather than on the
