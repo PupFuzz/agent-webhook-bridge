@@ -73,7 +73,7 @@ final class ChannelTransportCheck implements PerAgentCheck
         } elseif ($channel->url !== null) {
             yield from $this->httpLegs($config->agentName, $channel->url);
         }
-        // else: no channel configured; stage 8 turns this into a returned disposition
+        // else: no channel configured; recorded in the run inventory (DL-242 stage 8)
     }
 
     /**

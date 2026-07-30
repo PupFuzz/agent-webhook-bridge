@@ -11,3 +11,4 @@ retention: this PHP install has no fastcgi_finish_request() — retention runs A
 agent config ok: wb
 agent wb: github:owner/repo has no secret at <INSTALL>/github/webhook-secret-scope-owner%2Frepo — run bridge:provision
 agent wb: github API token not readable at <INSTALL>/github/token — bridge:provision will SKIP github scopes
+checks: 37 registered · 22 ran (9 reported above, 13 with nothing to report) · 2 opt-in probes not requested · 13 did not run (this install has no readable writeback.json, so the PR-to-card writeback is off; no agent has an enabled board_tools block). All 37 are accounted for — nothing was skipped uncounted.

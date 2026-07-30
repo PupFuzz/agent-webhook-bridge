@@ -12,3 +12,4 @@ agent config ok: prod-agent
 agent prod-agent: kanban:5 has no secret at <INSTALL>/kanban/webhook-secret-scope-5 — run bridge:provision
 agent prod-agent: kanban API token not readable at <INSTALL>/kanban/token — bridge:provision will SKIP kanban scopes
 BRIDGE_DEFAULT_AGENT 'ghost-agent' has no matching config <INSTALL>/ghost-agent.yml
+checks: 37 registered · 22 ran (10 reported above, 12 with nothing to report) · 2 opt-in probes not requested · 13 did not run (this install has no readable writeback.json, so the PR-to-card writeback is off; no agent has an enabled board_tools block). All 37 are accounted for — nothing was skipped uncounted.

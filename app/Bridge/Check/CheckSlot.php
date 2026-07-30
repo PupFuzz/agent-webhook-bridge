@@ -15,8 +15,10 @@ namespace App\Bridge\Check;
  * is finished.
  *
  * A SLOT DECIDES WHERE OUTPUT LANDS, NEVER WHETHER A CHECK RUNS. Plan constraint (a) is
- * unchanged: every check is registered unconditionally, and "not applicable" is a
- * Finding it returns. Slots are the ordering mechanism constraint (b) already forced for
+ * unchanged: every check is registered unconditionally, and "not applicable" is never an
+ * absent registration. It is also not necessarily a returned `Finding` — a slot whose
+ * envelope never opens leaves its checks {@see CheckDisposition::NotRun}, derived by the
+ * runner without the check running at all. Slots are the ordering mechanism constraint (b) already forced for
  * the per-agent scope, generalized — per-agent checks must stay interleaved at their
  * position, and so must global ones.
  *

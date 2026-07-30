@@ -47,7 +47,7 @@ final class WritebackMappingConfigCheck implements Check
     {
         $writeback = $ctx->writeback;
         if ($writeback === null || $writeback->mappings === []) {
-            return;   // stage 8 turns this into a returned disposition
+            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
         }
 
         foreach ($writeback->mappings as $repo => $mapping) {

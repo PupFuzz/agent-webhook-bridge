@@ -22,8 +22,8 @@ use App\Bridge\Support\SecretPath;
  *
  * SEPARATE FROM THE API-TOKEN CHECK despite sharing the secret-dir gate. They iterate
  * different things (every subscription vs each distinct provider) and fail with
- * different consequences, so folding them into one check would give stage 8 a single
- * inventory row that means two things.
+ * different consequences, so folding them into one check would give the run inventory a
+ * single row that means two things (it keys on the check id).
  *
  * NO GOLDEN FIXTURE WRITES A GROUP/WORLD-READABLE SECRET, so the harness cannot tell the
  * insecure arm's two branches apart. Mutating that arm reds `AgentWebhookSecretCheckTest`
@@ -45,7 +45,7 @@ final class AgentWebhookSecretCheck implements PerAgentCheck
     {
         $secretDir = $ctx->secretDir;
         if ($secretDir === null) {
-            return;   // no absolute secret dir ⇒ no path to check; stage 8 turns this into a returned disposition
+            return;   // no absolute secret dir ⇒ no path to check; recorded in the run inventory (DL-242 stage 8)
         }
 
         $name = $config->agentName;

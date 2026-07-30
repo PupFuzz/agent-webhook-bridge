@@ -19,22 +19,45 @@ use InvalidArgumentException;
  * {@see CheckSlot} names WHERE a group runs. That is an ordering mechanism only — see
  * the enum for why it is temporary.
  *
- * REGISTRATION IS UNCONDITIONAL (plan constraint (a)). "Not applicable" is a Finding
- * a check returns, never an absent registration: a check that never registered is
- * invisible to the inventory, which re-mints *"green because never looked"* one level
- * up, at the registry. This class therefore offers no conditional-registration
- * affordance, and callers must not build one out of an `if` around `register()`.
+ * REGISTRATION IS UNCONDITIONAL (plan constraint (a)). "Not applicable" is never an
+ * absent registration: a check that never registered is invisible to the inventory,
+ * which re-mints *"green because never looked"* one level up, at the registry. This
+ * class therefore offers no conditional-registration affordance, and callers must not
+ * build one out of an `if` around `register()`.
  *
- * A SLOT THAT IS NEVER RUN IS THE SAME HOLE ONE LEVEL DOWN, and this class does not
- * close it: nothing here asserts every registered slot was invoked. That assertion
- * belongs to stage 8 ("every registered check emits >= 1 finding"), which is where the
- * runner gains a disposition record. Until then `CheckRunnerTest` pins THIS CLASS's
- * properties (using synthetic checks) and the golden fixtures pin what each slot prints.
- * NOTHING PINS WHICH CHECKS THE COMMAND REGISTERS: a check dropped from `CheckCommand`'s
- * registration list is caught only if its absence changes golden output, so a check that
- * is silent on the fixture set could be unregistered silently. That is the same
- * green-because-never-looked shape one level up, and it is stage 8's to close — recorded
- * here rather than left to be rediscovered.
+ * IT IS ALSO NOT, IN THE MAJORITY CASE, A RETURNED `Finding` — which is what constraint
+ * (a) originally said. A {@see CheckDisposition::NotRun} check never has `run()` invoked
+ * at all, so no `Finding` exists to carry the verdict; the runner derives it from the
+ * registration list and {@see noteNotRun()} attaches the ENVELOPE's reason. Only a check
+ * that actually ran answers with a `Finding` (or with an empty yield).
+ *
+ * A SLOT THAT IS NEVER RUN IS THE SAME HOLE ONE LEVEL DOWN — CLOSED IN STAGE 8, and not
+ * in the shape the stage row predicted. {@see inventory()} accounts for every registered
+ * check on every run THAT COMPLETES (this class does not catch — see below — so a throwing
+ * check aborts before anything renders the account), and the accounting is DERIVED FROM
+ * THE REGISTRATION LIST rather than reported by the caller: a check whose slot is never
+ * invoked records {@see CheckDisposition::NotRun} because nothing recorded anything else
+ * for it, so a forgotten call site cannot produce a missing row. {@see noteNotRun()}
+ * attaches only the human-readable REASON, and a forgotten reason degrades a message
+ * instead of opening a hole. The alternative — requiring the caller to declare each skip
+ * — would have made the mechanism's correctness depend on remembering to call it, which
+ * is the same shape as the bug it closes.
+ *
+ * WHAT THE STAGE ROW SAID, AND WHY IT IS NOT WHAT SHIPPED. The row read *"every
+ * registered check emits >= 1 finding"*. Measured before any code was written, that is
+ * false on every install shape the corpus covers: on the baseline install 13 of 37 checks
+ * are never invoked, 13 more run and report nothing, and 2 opt-in probes are never asked
+ * to look — 9 of 37 emit anything (the four figures are the four
+ * {@see CheckDisposition} cases, and they sum to the registered total by construction).
+ * Enforcing it literally would
+ * have meant dissolving the conditional envelopes stages 3a and 7b preserved as BEHAVIOR.
+ * The enforceable invariant is that every registered check is ACCOUNTED FOR on every run
+ * that completes. See the stage 8 result in `docs/CHECK-REGISTRY-PLAN.md`.
+ *
+ * WHICH CHECKS THE COMMAND REGISTERS IS NOW PINNED, by a test asserting the exact id set
+ * against {@see registeredIds()}. Before stage 8 a check dropped from `CheckCommand`'s
+ * registration list was caught only if its absence changed golden output, so a check
+ * silent on the fixture set could be unregistered silently.
  *
  * IT DELIBERATELY DOES NOT CATCH. A check that throws aborts `bridge:check`, exactly
  * as an unwrapped inline leg does today; the fail-soft legs (the retention marker
@@ -58,6 +81,19 @@ final class CheckRunner
      * @var array<string, true>
      */
     private array $ids = [];
+
+    /**
+     * Registration order across BOTH registries — the order {@see inventory()} reports in.
+     *
+     * @var list<string>
+     */
+    private array $order = [];
+
+    /** @var array<string, CheckDisposition> */
+    private array $dispositions = [];
+
+    /** @var array<string, string> */
+    private array $notRunReasons = [];
 
     public function register(CheckSlot $slot, Check ...$checks): self
     {
@@ -84,7 +120,9 @@ final class CheckRunner
     {
         $results = [];
         foreach ($this->checks[$slot->value] ?? [] as $check) {
-            $results[] = new CheckResult($check->id(), $this->materialize($check->run($ctx)));
+            $findings = $this->materialize($check->run($ctx));
+            $this->recordRan($check, $findings);
+            $results[] = new CheckResult($check->id(), $findings);
         }
 
         return new CheckReport($results);
@@ -99,14 +137,91 @@ final class CheckRunner
     {
         $results = [];
         foreach ($this->perAgentChecks[$slot->value] ?? [] as $check) {
+            $findings = $this->materialize($check->runFor($config, $ctx));
+            $this->recordRan($check, $findings);
             $results[] = new CheckResult(
                 $check->id(),
-                $this->materialize($check->runFor($config, $ctx)),
+                $findings,
                 $config->agentName,
             );
         }
 
         return new CheckReport($results);
+    }
+
+    /**
+     * Every registered check id, in registration order across both registries.
+     *
+     * The pinnable inventory surface: a test asserting this exact set against a literal
+     * is what makes dropping a check from `CheckCommand`'s registration list a red rather
+     * than a silence (disproved-claims item 7).
+     *
+     * @return list<string>
+     */
+    public function registeredIds(): array
+    {
+        return $this->order;
+    }
+
+    /**
+     * Record WHY a slot's checks did not run this pass. Optional and idempotent-by-first:
+     * the OUTERMOST envelope to close is the true cause, so a later, narrower reason does
+     * not overwrite it.
+     *
+     * It attaches a reason only — it never creates or clears a disposition. A check this
+     * is never called for is still accounted for, as {@see CheckDisposition::NotRun} with
+     * no reason, and surfaces in {@see CheckInventory::unexplainedNotRun()}.
+     */
+    public function noteNotRun(CheckSlot $slot, string $reason): self
+    {
+        foreach ($this->checks[$slot->value] ?? [] as $check) {
+            $this->notRunReasons[$check->id()] ??= $reason;
+        }
+        foreach ($this->perAgentChecks[$slot->value] ?? [] as $check) {
+            $this->notRunReasons[$check->id()] ??= $reason;
+        }
+
+        return $this;
+    }
+
+    /**
+     * The exact account of this run: every registered check, with what became of it.
+     *
+     * NotRun is DERIVED — anything the run never recorded a disposition for did not run.
+     * That direction is deliberate and is the reason this cannot silently lose a check.
+     */
+    public function inventory(): CheckInventory
+    {
+        $dispositions = [];
+        foreach ($this->order as $id) {
+            $dispositions[$id] = $this->dispositions[$id] ?? CheckDisposition::NotRun;
+        }
+
+        return new CheckInventory($dispositions, $this->notRunReasons);
+    }
+
+    /**
+     * @param  list<Finding>  $findings
+     */
+    private function recordRan(Check|PerAgentCheck $check, array $findings): void
+    {
+        $id = $check->id();
+        if ($findings !== []) {
+            // A per-agent check runs once per agent: reporting for ANY agent is the
+            // strongest thing true of it this run, so a later silent agent must not
+            // downgrade it.
+            $this->dispositions[$id] = CheckDisposition::Reported;
+
+            return;
+        }
+
+        if ($check instanceof OptInCheck && ! $check->wasRequested()) {
+            $this->dispositions[$id] ??= CheckDisposition::NotRequested;
+
+            return;
+        }
+
+        $this->dispositions[$id] ??= CheckDisposition::Silent;
     }
 
     private function claimId(string $id): void
@@ -118,6 +233,7 @@ final class CheckRunner
             throw new InvalidArgumentException("duplicate check id: {$id}");
         }
         $this->ids[$id] = true;
+        $this->order[] = $id;
     }
 
     /**

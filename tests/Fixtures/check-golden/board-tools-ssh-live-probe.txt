@@ -14,3 +14,4 @@ agent prod-agent: kanban API token not readable at <INSTALL>/kanban/token — br
 board_tools: agent prod-agent: the writeback token sees 0 cards on board 10 — EITHER the board is empty (fine) OR the service user is not a member / board_id is wrong (then board_my_cards returns an empty window and board_create_card's correlation reads blind). Verify membership + board_id if you expect cards.
 board_tools ssh: the pinned line for agent prod-agent forces bridge:tools-call and denies pty + all forwarding
 board_tools ssh: ssh bridge@host-a: board_my_cards ok; window scoped to board 10 / swimlane 4 (matches agent prod-agent)
+checks: 37 registered · 27 ran (12 reported above, 15 with nothing to report) · 1 opt-in probe not requested · 9 did not run (this install has no readable writeback.json, so the PR-to-card writeback is off). All 37 are accounted for — nothing was skipped uncounted.

@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\CheckDisposition;
 use App\Bridge\Check\CheckSlot;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\UrlValidator;
@@ -22,9 +23,10 @@ use Throwable;
  *
  * SILENT WHEN BOTH ARE WELL-FORMED, and silent when either is unset — an install that has
  * not been provisioned yet has no endpoints, which is not a fault. Yielding nothing is
- * how a conditionally-silent leg migrates under the byte-identical output contract; the
- * >=1-finding invariant arrives with stage 8, which is also what makes the not-run case
- * visible in the inventory.
+ * how a conditionally-silent leg migrates under the byte-identical output contract. Stage 8
+ * did NOT convert that silence into a finding — measurement showed most registered checks
+ * are silent on a healthy install — it made the silence COUNTED, as
+ * {@see CheckDisposition::Silent} in the run inventory.
  *
  * THE VERDICT TEXTS ARE `UrlValidator`'s. It composes every refusal — whitespace, not a
  * URL, wrong scheme, no host, and the https floor's own longer explanation — and this

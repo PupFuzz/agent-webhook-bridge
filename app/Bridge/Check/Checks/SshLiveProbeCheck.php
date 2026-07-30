@@ -2,8 +2,9 @@
 
 namespace App\Bridge\Check\Checks;
 
-use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\CheckDisposition;
+use App\Bridge\Check\OptInCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Tools\SshProbeEnvironment;
@@ -18,18 +19,24 @@ use App\Bridge\Tools\SshTransportProbe;
  * exit), like `--probe-tools`: it certifies the enablement.
  *
  * REGISTERED UNCONDITIONALLY, RUN UNCONDITIONALLY, SILENT WHEN NOT REQUESTED (plan
- * constraint (a)). The command no longer guards the call site on the flag; the flag is a
- * constructor argument and a null target yields nothing. That silence is the byte-identical
- * stage-1 behavior AND the exact seam the resolved opt-in-probe decision plugs into: "not
- * requested" is a third disposition owned by the inventory/renderer split, so stage 8/9
- * changes what THIS `return` produces without touching the command.
+ * constraint (a)). The command does not guard the call site on the flag; the flag is a
+ * constructor argument and a null target yields nothing. Stage 8 plugged the resolved
+ * opt-in-probe decision into that seam: {@see OptInCheck::wasRequested()} makes the
+ * silence DECLARED rather than inferred, so the inventory records
+ * {@see CheckDisposition::NotRequested} — which carries no statement
+ * about the install — instead of collapsing it onto "ran and found nothing".
+ *
+ * A REQUESTED PROBE WITH NOTHING TO CERTIFY IS NOT THIS CASE. The flag-given-but-no-ssh-
+ * agent state below yields a `warn` and keeps doing so: the operator asked, so an answer
+ * is owed. Only the flag's ABSENCE is a disposition — the resolved decision bounds itself
+ * to that axis, and re-assigning the warn belongs to card#5291.
  *
  * ITS FIRST FINDING IS UNPREFIXED. `board_tools ssh probe: ` is not
  * `board_tools ssh: ` + `probe: `, so the two message shapes this check emits could not
  * share one render-time prefix — which is why checks yield display-ready messages during
  * the migration rather than the runner carrying a prefix.
  */
-final class SshLiveProbeCheck implements Check
+final class SshLiveProbeCheck implements OptInCheck
 {
     /** @param string|null $target the `--probe-tools-ssh` value; null when the flag was not passed */
     public function __construct(
@@ -42,13 +49,18 @@ final class SshLiveProbeCheck implements Check
         return 'board_tools.ssh_live_probe';
     }
 
+    public function wasRequested(): bool
+    {
+        return $this->target !== null;
+    }
+
     /**
      * @return iterable<Finding>
      */
     public function run(CheckContext $ctx): iterable
     {
         if ($this->target === null) {
-            return;   // stage 8/9 turns this into the `not requested` disposition
+            return;   // CheckDisposition::NotRequested — declared via wasRequested() (DL-242 stage 8)
         }
 
         $sshAgents = array_values(array_filter(

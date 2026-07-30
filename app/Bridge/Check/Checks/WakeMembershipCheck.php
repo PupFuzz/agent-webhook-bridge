@@ -20,8 +20,8 @@ use Throwable;
  * absent-key install needs no warn, because the default now covers it.
  *
  * THE GATE IS PART OF THE CHECK, not an `if` around its invocation (plan constraint (a)):
- * the check owns its own applicability verdict, so stage 8 has one place to turn "not
- * applicable" from silence into a disposition.
+ * the check owns its own applicability verdict, which is why stage 8 can account for a
+ * not-applicable run here as a silent CHECK rather than as an un-invoked slot.
  *
  * `families` IS READ WITHOUT A `try` AND `wake_membership` WITH ONE — the asymmetry is
  * deliberate and load-bearing. `families` is EAGERLY parsed by {@see AgentConfig::load()},
@@ -52,7 +52,7 @@ final class WakeMembershipCheck implements PerAgentCheck
         $coordMessageOn = $families === [] || in_array('coord-message', $families, true);
 
         if (! $coordMessageOn || ! $config->classifierConfig->has('wake_membership')) {
-            return;   // stage 8 turns this into a returned disposition
+            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
         }
 
         try {

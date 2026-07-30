@@ -45,7 +45,7 @@ final class WritebackByRefCheck implements Check
         $writeback = $ctx->writeback;
         $client = $ctx->client;
         if ($writeback === null || $client === null || $writeback->mappings === []) {
-            return;   // stage 8 turns this into a returned disposition
+            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
         }
         if (config('bridge.writeback.correlation', 'ref') !== 'ref') {
             return;   // scan mode does not use by-ref at all

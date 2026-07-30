@@ -24,8 +24,10 @@ use App\Bridge\Support\Finding;
  * static array literal whose leaf values alone come from `env()`. Were it reached, this
  * check would go silent rather than defer to another leg: no other leg reports the shape
  * either, since a wrong-shaped `providers` makes the endpoint-URL leg read null and skip
- * it. The guard is migrated verbatim under the byte-identical contract, and stage 8's
- * >=1-finding invariant is what would make such a silent run visible.
+ * it. The guard is migrated verbatim under the byte-identical contract. What makes such a
+ * silent run visible is stage 8's INVENTORY, not a >=1-finding invariant — no such
+ * invariant shipped, because most registered checks are correctly silent on a healthy
+ * install; this check would appear in the run's silent count.
  *
  * @see CheckSlot::Providers
  */

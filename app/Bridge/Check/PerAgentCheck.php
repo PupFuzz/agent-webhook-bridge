@@ -25,8 +25,13 @@ interface PerAgentCheck
     public function id(): string;
 
     /**
-     * @return iterable<Finding> Same contract as {@see Check::run()} — at least one
-     *                           finding, `unvalidated` when it could not run.
+     * @return iterable<Finding> Same contract as {@see Check::run()}, including that
+     *                           yielding nothing is legal and is recorded as a
+     *                           disposition rather than lost.
+     *
+     * ITS DISPOSITION IS KEYED BY CHECK ID, NOT PER AGENT (the plan's accepted
+     * granularity cost). Reporting for ANY agent makes the check `Reported` for the run,
+     * because that is the strongest thing true of it.
      */
     public function runFor(AgentConfig $config, CheckContext $ctx): iterable;
 }

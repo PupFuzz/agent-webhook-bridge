@@ -40,7 +40,7 @@ final class WritebackAlertChannelCheck implements Check
     {
         $ac = $ctx->writeback?->alertChannel;
         if ($ac === null) {
-            return;   // not configured — stage 8 turns this into a returned disposition
+            return;   // not configured; recorded in the run inventory (DL-242 stage 8)
         }
 
         $socket = $ac->socket;

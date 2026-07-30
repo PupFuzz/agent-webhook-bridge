@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\CheckDisposition;
 use App\Bridge\Support\Finding;
 
 /**
@@ -15,8 +16,10 @@ use App\Bridge\Support\Finding;
  * global-echo gate exists to break.
  *
  * SILENT WHEN HEALTHY, matching the inline code byte for byte: a set identity prints
- * nothing today. That silence is the stage 0-7 output contract, not a verdict — stage 8
- * is where a healthy path gains a disposition instead of producing no finding at all.
+ * nothing. That silence is the stage 0-7 output contract, not a verdict. Since stage 8 it
+ * is also ACCOUNTED FOR — the run inventory records it as
+ * {@see CheckDisposition::Silent} — but it still yields no finding,
+ * and deliberately so: a healthy install must not gain a line per check.
  */
 final class WritebackIdentityCheck implements Check
 {

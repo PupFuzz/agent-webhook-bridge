@@ -4,6 +4,8 @@ namespace App\Console\Commands\Bridge;
 
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\CheckDisposition;
+use App\Bridge\Check\CheckInventory;
 use App\Bridge\Check\CheckReport;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\Checks\AgentApiTokenCheck;
@@ -82,58 +84,10 @@ class CheckCommand extends BridgeCommand
         $ok = true;
         $this->unvalidatedCount = 0;
 
-        // DL-242 stage 1: the check registry's first wiring. Registration is
-        // UNCONDITIONAL (plan constraint (a)) — the opt-in probe's flag is a
-        // constructor argument, never an `if` around register(). Built per run: the
-        // container can hand this command back for a second Artisan::call, and a
-        // retained runner would re-register into the same id namespace.
+        // The registry, and WHAT IS IN IT is {@see self::registry()}'s docblock — one
+        // copy, beside the list it describes.
         $sshEnv = $this->laravel->make(SshProbeEnvironment::class);
-        $runner = (new CheckRunner)
-            ->register(CheckSlot::Install, new InstallConfigDirCheck, new InstallSecretDirCheck)
-            ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck)
-            ->register(CheckSlot::Inbox, new InboxSurfacingConfigCheck)
-            ->register(CheckSlot::Retention, new RetentionPostureCheck)
-            ->register(CheckSlot::Providers, new InstallEndpointUrlsCheck, new InstallProviderAdaptersCheck)
-            ->registerPerAgent(CheckSlot::AgentClassifier, new AgentClassifierResolvableCheck)
-            ->registerPerAgent(CheckSlot::AgentPolicy, new CiFailureFilterCheck, new WakeMembershipCheck)
-            ->registerPerAgent(
-                CheckSlot::AgentConfig,
-                new AgentWebhookSecretCheck,
-                new AgentApiTokenCheck,
-                new ChannelTokenPathCheck,
-                new ChannelTransportCheck($this->laravel->make(ChannelProbeEnvironment::class)),
-                new ChannelSnapshotCheck(base_path('examples/channel-servers')),
-            )
-            ->register(
-                CheckSlot::AgentRoster,
-                new AgentIdentityCollisionsCheck,
-                new AgentTreatAsSignalCheck,
-                new AgentDefaultAgentCheck,
-                new SharedIdentitiesCheck,
-            )
-            ->register(
-                CheckSlot::Writeback,
-                new WritebackConfigCheck,
-                new WritebackIdentityCheck,
-                new WritebackAlertChannelCheck,
-                new WritebackTokenCheck,
-                new ReconcileRepoTokensCheck,
-                new WritebackMappingConfigCheck,
-            )
-            ->register(
-                CheckSlot::WritebackProbe,
-                new WritebackByRefCheck,
-                new WritebackBoardStateCheck,
-                new WritebackSourceCoverageCheck,
-            )
-            ->register(CheckSlot::EventConsumer, new EventFollowsConsumerCheck)
-            ->register(CheckSlot::BoardToolsSuppression, new BoardToolsSuppressedCheck)
-            ->register(CheckSlot::BoardToolsBearer, new BoardToolsBearerCheck)
-            ->registerPerAgent(CheckSlot::BoardToolsState, new BoardToolsBoardStateCheck)
-            ->registerPerAgent(CheckSlot::BoardToolsSsh, new SshPinnedLineCheck($sshEnv))
-            ->registerPerAgent(CheckSlot::BoardToolsSshAdvisory, new BoardToolsSshDefaultAdvisoryCheck)
-            ->register(CheckSlot::ProbeTools, new BoardToolsHttpProbeCheck($this->strOption('probe-tools')))
-            ->register(CheckSlot::ProbeToolsSsh, new SshLiveProbeCheck($sshEnv, $this->strOption('probe-tools-ssh')));
+        $runner = $this->registry($sshEnv, $this->strOption('probe-tools'), $this->strOption('probe-tools-ssh'));
         // Plan constraint (c): the surviving inline derivation in this method populates
         // the context; migrated checks read it, unmigrated code keeps its locals.
         $ctx = new CheckContext;
@@ -296,6 +250,29 @@ class CheckCommand extends BridgeCommand
             }
         }
 
+        // Stage 8: why the three per-agent slots may never have been reached. Recorded
+        // UNCONDITIONALLY and after the fact, which is safe by construction: a reason
+        // surfaces only for a check the run recorded no disposition for, so noting one
+        // that did run is inert. That is also why this cannot go stale against the loop
+        // above — it describes causes, not control flow it has to stay in step with.
+        $perAgentSkip = match (true) {
+            // NOT "unreadable" any more: the arm below owns that case, so naming it here
+            // would name a cause this arm no longer covers.
+            ! is_string($configDir) || ! is_dir($configDir) => 'the config dir is unset or is not a directory, so no agent config was loaded',
+            // A dir that EXISTS but the bridge user cannot read passes the arm above,
+            // and its glob() comes back empty — so without this arm the next one would
+            // tell the operator the install has no agent config files, which is a
+            // confidently false claim about an install that may hold a dozen.
+            ! is_readable($configDir) => 'the config dir could not be read, so no agent config was loaded',
+            $agentNames === [] => 'this install has no agent config files (no *.yml in the config dir)',
+            $configs === [] => 'no agent config parsed (see the errors above)',
+            default => 'every parsed agent aborted before this leg (see the errors above)',
+        };
+        $runner
+            ->noteNotRun(CheckSlot::AgentClassifier, $perAgentSkip)
+            ->noteNotRun(CheckSlot::AgentPolicy, $perAgentSkip)
+            ->noteNotRun(CheckSlot::AgentConfig, $perAgentSkip);
+
         // Constraint (c): the accumulation above is this method's; publishing it to the
         // context is what lets a check migrated in a LATER stage read it without also
         // migrating its producer.
@@ -360,8 +337,17 @@ class CheckCommand extends BridgeCommand
                         // one warn" a property of this method rather than an assumption
                         // about this slot's checks' callees. Its realistic thrower is
                         // WritebackClientFactory::make() above — derivation, inline anyway.
+                        //
+                        // THE REASON IS PITCHED AT THE ENVELOPE, NOT AT THAT ONE THROWER.
+                        // Naming the client construction would be a confident diagnosis the
+                        // arm cannot support: a check throwing after the client built lands
+                        // here too, and the warn below would then print a different cause on
+                        // the same screen.
+                        $runner->noteNotRun(CheckSlot::WritebackProbe, 'the writeback board-visibility probe could not be set up (see the warning above)');
                         $this->warn('writeback: skipped board-visibility probe — '.$e->getMessage());
                     }
+                } else {
+                    $runner->noteNotRun(CheckSlot::WritebackProbe, 'writeback.json declares no repo mappings, so there is no board to probe');
                 }
             } catch (Throwable $e) {
                 // THE FAIL-SOFT ENVELOPE STAYS INLINE, WRAPPING the emitReport() calls
@@ -374,9 +360,23 @@ class CheckCommand extends BridgeCommand
                 // its own catch (see WritebackBoardStateCheck) — but the envelope is what
                 // makes that a property of this method rather than an assumption about
                 // every registered writeback check's callees.
+                //
+                // WHICH IS EXACTLY WHY THE REASON DOES NOT NAME THE LOAD. The envelope is
+                // wider than its likeliest thrower, so a reason saying "writeback.json
+                // could not be loaded" would be a confident diagnosis for any check that
+                // threw after it parsed — contradicting the error line printed below it.
+                $wbAborted = 'the writeback checks could not be completed (see the error above)';
+                $runner
+                    ->noteNotRun(CheckSlot::Writeback, $wbAborted)
+                    ->noteNotRun(CheckSlot::WritebackProbe, $wbAborted);
                 $this->error('writeback.json: '.$e->getMessage());
                 $ok = false;
             }
+        } else {
+            $noWriteback = 'this install has no readable writeback.json, so the PR-to-card writeback is off';
+            $runner
+                ->noteNotRun(CheckSlot::Writeback, $noWriteback)
+                ->noteNotRun(CheckSlot::WritebackProbe, $noWriteback);
         }
 
         // card#4183 (DL-196): event-follows-consumer — WARN (never fail) when a github
@@ -431,6 +431,11 @@ class CheckCommand extends BridgeCommand
             try {
                 $ctx->boardToolsClient = WritebackClientFactory::make();
             } catch (Throwable $e) {
+                $noClient = 'the board-tools kanban client is unavailable (see the warning above)';
+                $runner
+                    ->noteNotRun(CheckSlot::BoardToolsState, $noClient)
+                    ->noteNotRun(CheckSlot::BoardToolsSsh, $noClient)
+                    ->noteNotRun(CheckSlot::BoardToolsSshAdvisory, $noClient);
                 $this->warn('board_tools: enabled for '.count($ctx->boardToolsEnabled).' agent(s) but the kanban writeback client is unavailable ('.$e->getMessage().') — the tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.');
             }
 
@@ -454,6 +459,13 @@ class CheckCommand extends BridgeCommand
                     $ctx->boardToolsEnabled,
                     fn (AgentConfig $c) => $c->boardTools?->transport === 'ssh',
                 ));
+                if ($sshAgents === []) {
+                    $noSsh = 'no enabled board_tools agent uses the ssh transport';
+                    $runner
+                        ->noteNotRun(CheckSlot::BoardToolsSsh, $noSsh)
+                        ->noteNotRun(CheckSlot::BoardToolsSshAdvisory, $noSsh);
+                }
+
                 foreach ($sshAgents as $cfg) {
                     $report = $runner->runForAgent(CheckSlot::BoardToolsSsh, $cfg, $ctx);
                     // DERIVATION FROM A CHECK'S RESULTS — the one place this command
@@ -486,6 +498,17 @@ class CheckCommand extends BridgeCommand
                     }
                 }
             }
+        } else {
+            // The board-tools planes are the second-largest not-run population on a
+            // healthy install (4 of the 13 on `minimal`). An ELSE rather than a
+            // complementary `if`: an inverted copy of this condition would be a second
+            // place to keep in step, and one more predicate in the coverage table.
+            $noBoardTools = 'no agent has an enabled board_tools block';
+            $runner
+                ->noteNotRun(CheckSlot::BoardToolsBearer, $noBoardTools)
+                ->noteNotRun(CheckSlot::BoardToolsState, $noBoardTools)
+                ->noteNotRun(CheckSlot::BoardToolsSsh, $noBoardTools)
+                ->noteNotRun(CheckSlot::BoardToolsSshAdvisory, $noBoardTools);
         }
 
         // DL-217: opt-in live board-tools probe. Offline by default (like the rest of
@@ -508,27 +531,113 @@ class CheckCommand extends BridgeCommand
             $ok = false;
         }
 
-        // card 5170: a green exit means nothing FAILED — it says nothing about the
-        // checks that never ran. Silent at zero: an install where everything was
-        // measured has nothing to disclaim, and an install that deliberately leaves
-        // `channel.server_path` unset is correct (docs/multi-host.md instructs it),
-        // so this discloses, it does not scold.
+        // DL-242 STAGE 8: THE EXACT INVENTORY, replacing the card-5170 tally's
+        // "floor, not an inventory" disclaimer. That disclaimer had to disclaim because
+        // the only thing this command could count was findings carrying one severity,
+        // and a tally blind to a check that was never invoked is an inventory of nothing.
+        // It is now derived from the REGISTRATION LIST, so it accounts for all of them.
         //
-        // The wording is bounded to what the counter can support, and the bound is
-        // NOT "reports a severity" — that is true but inoperative, and its converse
-        // reads as a guarantee this number cannot give. The did-not-run population
-        // that ISN'T here is large and mostly DOES carry a severity: a dozen-odd
-        // couldn't-probe sites in this command report `warn` (many bypassing
-        // emitFinding entirely), and ChannelSnapshotProbe's three could-not-measure
-        // findings come through emitFinding as `warn` and are still not tallied (it
-        // was four until DL-237 deleted the completeness leg's unenumerable-reference
-        // warn along with the leg). So the operative bound is the severity itself, and
-        // the tally is a floor.
+        // ALWAYS PRINTED, unlike the tally it replaces. A coverage statement the operator
+        // gets only sometimes is one they cannot rely on, which is the whole defect: the
+        // value here is that a clean run now says WHAT it covered.
+        $this->emitInventory($runner->inventory());
+
+        // The card-5170 tally SURVIVES, narrowed to the one thing it still says. Stage 8
+        // did NOT make the severity vocabulary precise: a leg that could not measure may
+        // still report `warn` rather than `unvalidated` (a dozen-odd sites in this
+        // command, plus ChannelSnapshotProbe's could-not-measure findings). That
+        // re-assignment is card#5291's and is separately gated, so the number remains a
+        // floor FOR THAT QUESTION even though the registry above is now exact — two
+        // different claims, and conflating them is what the old wording did.
+        //
+        // `finding(s)`, NOT `check(s)`: {@see self::emitUnvalidated()} counts FINDINGS, and
+        // a per-agent check yields one per agent — `ChannelSnapshotCheck` on a two-agent
+        // install with no `channel.server_path` declared produces two, from one check id.
+        // The old noun put "2 check(s)" directly beneath an inventory line that is keyed by
+        // id and counts that same check ONCE, so the two lines contradicted each other on
+        // exactly the population this one exists to describe.
         if ($this->unvalidatedCount > 0) {
-            $this->line("{$this->unvalidatedCount} check(s) reported `unvalidated` — not a failure, and not a pass either: those checks did not run, so this run says nothing about what they would have found (see the lines above). This is a floor, not an inventory: only checks reporting `unvalidated` are counted, and a check that could not run usually reports `warn` instead — so no tally line does NOT mean every leg ran.");
+            $this->line("{$this->unvalidatedCount} finding(s) reported `unvalidated` — not a failure, and not a pass either: those legs could not run, so this run says nothing about what they would have found (see the lines above). This count is a floor: a leg that could not measure sometimes reports `warn` instead, so it is not the full population of what went unmeasured.");
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * Build the check registry — the DEFINITIVE list of what `bridge:check` inspects.
+     *
+     * EXTRACTED IN STAGE 8 SO THE REGISTERED SET CAN BE PINNED. Before that, nothing
+     * asserted which checks this command registers (the plan's disproved-claims item 7):
+     * a check dropped from the list below was caught only if its absence changed golden
+     * output, so a check silent on the fixture set could be unregistered silently — the
+     * same green-because-never-looked shape the registry exists to remove, one level up.
+     * `CheckCommandRegistrationTest` now asserts this exact id set, and it reaches this
+     * method rather than re-deriving the list, so the test cannot agree with a copy of
+     * itself.
+     *
+     * Deliberately a private method on the command and NOT a new class: the plan's target
+     * design shrinks `handle()` to build-context/run/render/exit and collapses the slot
+     * enum, and that structural commitment belongs to the final stage making it
+     * deliberately — not to stage 8 as a side effect.
+     *
+     * REGISTRATION IS UNCONDITIONAL (plan constraint (a)) — an opt-in probe's flag is a
+     * CONSTRUCTOR ARGUMENT, never an `if` around register(). Built per run: the container
+     * can hand this command back for a second Artisan::call, and a retained runner would
+     * re-register into the same id namespace.
+     *
+     * THE TWO FLAG VALUES ARE PARAMETERS, not `strOption()` reads from inside. What is
+     * registered must not depend on console input state this method reaches for itself:
+     * that made the registered set unobservable without booting an input, which is a
+     * property of the thing being pinned, not of the test.
+     */
+    private function registry(SshProbeEnvironment $sshEnv, ?string $probeTools, ?string $probeToolsSsh): CheckRunner
+    {
+        return (new CheckRunner)
+            ->register(CheckSlot::Install, new InstallConfigDirCheck, new InstallSecretDirCheck)
+            ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck)
+            ->register(CheckSlot::Inbox, new InboxSurfacingConfigCheck)
+            ->register(CheckSlot::Retention, new RetentionPostureCheck)
+            ->register(CheckSlot::Providers, new InstallEndpointUrlsCheck, new InstallProviderAdaptersCheck)
+            ->registerPerAgent(CheckSlot::AgentClassifier, new AgentClassifierResolvableCheck)
+            ->registerPerAgent(CheckSlot::AgentPolicy, new CiFailureFilterCheck, new WakeMembershipCheck)
+            ->registerPerAgent(
+                CheckSlot::AgentConfig,
+                new AgentWebhookSecretCheck,
+                new AgentApiTokenCheck,
+                new ChannelTokenPathCheck,
+                new ChannelTransportCheck($this->laravel->make(ChannelProbeEnvironment::class)),
+                new ChannelSnapshotCheck(base_path('examples/channel-servers')),
+            )
+            ->register(
+                CheckSlot::AgentRoster,
+                new AgentIdentityCollisionsCheck,
+                new AgentTreatAsSignalCheck,
+                new AgentDefaultAgentCheck,
+                new SharedIdentitiesCheck,
+            )
+            ->register(
+                CheckSlot::Writeback,
+                new WritebackConfigCheck,
+                new WritebackIdentityCheck,
+                new WritebackAlertChannelCheck,
+                new WritebackTokenCheck,
+                new ReconcileRepoTokensCheck,
+                new WritebackMappingConfigCheck,
+            )
+            ->register(
+                CheckSlot::WritebackProbe,
+                new WritebackByRefCheck,
+                new WritebackBoardStateCheck,
+                new WritebackSourceCoverageCheck,
+            )
+            ->register(CheckSlot::EventConsumer, new EventFollowsConsumerCheck)
+            ->register(CheckSlot::BoardToolsSuppression, new BoardToolsSuppressedCheck)
+            ->register(CheckSlot::BoardToolsBearer, new BoardToolsBearerCheck)
+            ->registerPerAgent(CheckSlot::BoardToolsState, new BoardToolsBoardStateCheck)
+            ->registerPerAgent(CheckSlot::BoardToolsSsh, new SshPinnedLineCheck($sshEnv))
+            ->registerPerAgent(CheckSlot::BoardToolsSshAdvisory, new BoardToolsSshDefaultAdvisoryCheck)
+            ->register(CheckSlot::ProbeTools, new BoardToolsHttpProbeCheck($probeTools))
+            ->register(CheckSlot::ProbeToolsSsh, new SshLiveProbeCheck($sshEnv, $probeToolsSsh));
     }
 
     /**
@@ -628,5 +737,110 @@ class CheckCommand extends BridgeCommand
     {
         $this->unvalidatedCount++;
         $this->line($message);
+    }
+
+    /**
+     * Render the run's exact per-check account (DL-242 stage 8) — a DISPATCH LOOP over
+     * {@see self::inventoryOutput()} and nothing else.
+     *
+     * IT DECIDES NOTHING, WHICH IS THE POINT AND WAS THE DEFECT. This method first shipped
+     * calling two pure renderers and deciding HERE whether the internal-defect disclosure
+     * was one of them — with those renderers tested exhaustively and directly. Replacing
+     * that call with `null` therefore deleted the `bridge:check internal:` disclosure from
+     * every operator's output and left the full suite green (observed, 1798/1798): testing
+     * a pure method proves its COMPOSITION and says nothing about whether anything still
+     * CALLS it. The decision now lives inside the seam, where a test can see it.
+     *
+     * WHAT IS STILL NOT WITNESSED END TO END, stated rather than rounded up: the `line`
+     * channel's dispatch is exercised by all 33 golden fixtures; the `warn` channel's by
+     * none of them, and NO INSTALL SHAPE CAN REACH IT — every conditional slot in
+     * `handle()` records a not-run reason, by design, so `unexplainedNotRun()` is empty on
+     * every real run. The composition AND the emit decision are proven; the `warn`
+     * channel's DISPATCH is proven only at the seam, because nothing else can reach it.
+     */
+    private function emitInventory(CheckInventory $inventory): void
+    {
+        foreach ($this->inventoryOutput($inventory) as [$channel, $message]) {
+            match ($channel) {
+                'line' => $this->line($message),
+                'warn' => $this->warn($message),
+            };
+        }
+    }
+
+    /**
+     * Everything the inventory prints, in emission order, as `[channel, message]` pairs.
+     *
+     * ONE METHOD RATHER THAN A RENDERER PER LINE, so that *whether* the internal-defect
+     * disclosure is emitted — and on which channel — is a property of a returned VALUE
+     * rather than control flow at a call site no test could see (the survivor
+     * {@see self::emitInventory()} describes). The golden corpus renders neither zero-arm
+     * and never the disclosure, so every arm here still needs a test that hands this method
+     * an inventory no install produces; what changed is that the arms now include the emit
+     * decision. Stage 9 splits the text/json pair along this same seam.
+     *
+     * THE WORDING LIVES HERE, NOT ON {@see CheckInventory}, because that split makes the
+     * inventory what BOTH renderers read — a sentence on the value object would put this
+     * renderer's voice inside the json one.
+     *
+     * WHAT THE LINE CLAIMS IS BOUNDED ON PURPOSE, because a coverage claim stated stronger
+     * than its evidence is this program's own recurring defect. It accounts for the
+     * REGISTERED set, so it cannot see a leg nobody wrote as a check; a not-run REASON is
+     * the reporting envelope's claim about itself; and `ran` is keyed by check id, so a
+     * per-agent check that ran for two of three agents (the third aborted at the classifier
+     * gate) counts once, as `ran`, with nothing here scoping it to the agents it reached.
+     * All three bounds are the plan's, recorded on {@see CheckInventory}; the sentences
+     * composed here are written to not exceed them.
+     *
+     * @return list<array{0: 'line'|'warn', 1: string}>
+     */
+    private function inventoryOutput(CheckInventory $inventory): array
+    {
+        $reported = $inventory->count(CheckDisposition::Reported);
+        $silent = $inventory->count(CheckDisposition::Silent);
+        $notRequested = $inventory->count(CheckDisposition::NotRequested);
+
+        $parts = ["checks: {$inventory->registered()} registered"];
+        $parts[] = "{$inventory->ran()} ran ({$reported} reported above, {$silent} with nothing to report)";
+        if ($notRequested > 0) {
+            $parts[] = $notRequested === 1
+                ? '1 opt-in probe not requested'
+                : "{$notRequested} opt-in probes not requested";
+        }
+        $notRun = $inventory->count(CheckDisposition::NotRun);
+        if ($notRun > 0) {
+            // `did not run`, NOT `not applicable here`. Several of the reasons the
+            // envelopes record are COULD-NOT-LOOK rather than does-not-apply — a
+            // malformed agent YAML and an unloadable writeback.json both leave the plane
+            // fully applicable and merely unmeasured — so the label that covers the union
+            // is the weaker one. Nothing is lost: the parenthetical already carries the
+            // cause.
+            $reasons = $inventory->notRunReasons();
+            $parts[] = $reasons === []
+                ? "{$notRun} did not run"
+                : "{$notRun} did not run (".implode('; ', $reasons).')';
+        }
+
+        // The counts SUM to the registered total by construction, which is deliberate:
+        // the arithmetic is the line's own control, so a reader can see nothing fell out
+        // of it without trusting this method.
+        $out = [['line', implode(' · ', $parts)
+            .". All {$inventory->registered()} are accounted for — nothing was skipped uncounted."]];
+
+        // THE INTERNAL-DEFECT DISCLOSURE: a check the run accounted for but could not
+        // explain. NOT a silent hole — the check is still counted on the line above — but
+        // the operator is owed the reason, and an envelope that gained a skip path without
+        // saying why is a real defect. Disclosed at runtime rather than only in CI because
+        // the shape a test never reaches is exactly the one that would otherwise stay
+        // quiet; the exit code is deliberately NOT flipped (that is an accept/reject
+        // change, and out of this stage's scope). WARN and not `line`: it is the one thing
+        // the inventory says that the operator is asked to act on.
+        $unexplained = $inventory->unexplainedNotRun();
+        if ($unexplained !== []) {
+            $out[] = ['warn', 'bridge:check internal: '.count($unexplained).' registered check(s) did not run and this command did not record why ('
+                .implode(', ', $unexplained).'). The run above is still complete, but that is a bug in bridge:check — please report it.'];
+        }
+
+        return $out;
     }
 }

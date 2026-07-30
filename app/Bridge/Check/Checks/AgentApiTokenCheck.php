@@ -39,7 +39,7 @@ final class AgentApiTokenCheck implements PerAgentCheck
     {
         $secretDir = $ctx->secretDir;
         if ($secretDir === null) {
-            return;   // no absolute secret dir ⇒ no path to check; stage 8 turns this into a returned disposition
+            return;   // no absolute secret dir ⇒ no path to check; recorded in the run inventory (DL-242 stage 8)
         }
 
         $name = $config->agentName;
