@@ -549,8 +549,15 @@ class CheckCommand extends BridgeCommand
         // re-assignment is card#5291's and is separately gated, so the number remains a
         // floor FOR THAT QUESTION even though the registry above is now exact — two
         // different claims, and conflating them is what the old wording did.
+        //
+        // `finding(s)`, NOT `check(s)`: {@see self::emitUnvalidated()} counts FINDINGS, and
+        // a per-agent check yields one per agent — `ChannelSnapshotCheck` on a two-agent
+        // install with no `channel.server_path` declared produces two, from one check id.
+        // The old noun put "2 check(s)" directly beneath an inventory line that is keyed by
+        // id and counts that same check ONCE, so the two lines contradicted each other on
+        // exactly the population this one exists to describe.
         if ($this->unvalidatedCount > 0) {
-            $this->line("{$this->unvalidatedCount} check(s) reported `unvalidated` — not a failure, and not a pass either: those checks could not run, so this run says nothing about what they would have found (see the lines above). This count is a floor: a leg that could not measure sometimes reports `warn` instead, so it is not the full population of what went unmeasured.");
+            $this->line("{$this->unvalidatedCount} finding(s) reported `unvalidated` — not a failure, and not a pass either: those legs could not run, so this run says nothing about what they would have found (see the lines above). This count is a floor: a leg that could not measure sometimes reports `warn` instead, so it is not the full population of what went unmeasured.");
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;

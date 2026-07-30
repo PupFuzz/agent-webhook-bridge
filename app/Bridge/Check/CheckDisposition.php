@@ -12,7 +12,12 @@ namespace App\Bridge\Check;
  * Measurement at the start of the stage showed the emission form is false on every
  * install shape the corpus covers: on the baseline install 13 of 37 checks are never
  * invoked at all (whole slots sit behind conditional envelopes in
- * `CheckCommand::handle()`) and 15 more run and report nothing. Turning THAT into
+ * `CheckCommand::handle()`), 13 more run and report nothing, and 2 opt-in probes are
+ * never asked to look — 9 of 37 emit anything at all. (Stated in this enum's OWN terms
+ * because an earlier revision said "15 more run and report nothing", a PRE-taxonomy
+ * count that folded {@see self::NotRequested} into {@see self::Silent}: the two are
+ * separated one file down, and 15 reconciles with nothing the operator's line prints.)
+ * Turning THAT into
  * "everything emits" would have meant dissolving envelopes stages 3a and 7b preserved as
  * behavior. See the stage 8 result in `docs/CHECK-REGISTRY-PLAN.md`.
  *

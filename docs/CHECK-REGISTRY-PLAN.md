@@ -1489,12 +1489,24 @@ read *"every registered check emits ≥1 finding"*. Instrumenting the runner and
 suite plus all 33 fixtures, before writing any stage-8 code, gave this for `minimal` — the healthy
 baseline install that exits 0 in 11 output lines:
 
-| | count | what it is |
-|---|---|---|
-| registered | 37 | the whole registry |
-| **never invoked** | **13** | the writeback plane (9) + the board-tools plane (4) — their slots sit behind conditional envelopes and were never reached |
-| invoked but silent | 15 | ran, yielded nothing — "no identity collisions" is correctly reported by saying nothing |
-| spoke | 9 | |
+| | count | disposition | what it is |
+|---|---|---|---|
+| registered | 37 | — | the whole registry |
+| **never invoked** | **13** | `NotRun` | the writeback plane (9) + the board-tools plane (4) — their slots sit behind conditional envelopes and were never reached |
+| invoked but silent | 13 | `Silent` | ran, yielded nothing — "no identity collisions" is correctly reported by saying nothing |
+| never asked | 2 | `NotRequested` | the two opt-in probes, whose flags this invocation did not pass |
+| spoke | 9 | `Reported` | |
+
+**CORRECTED IN PLACE — this table first read `invoked but silent | 15`, and that 15 was a
+PRE-TAXONOMY count**: it was measured before the stage separated `NotRequested` from `Silent`, so it
+folded the 2 un-requested opt-in probes into the silent population and labelled both *invoked*, which
+neither is for the probes. It summed to 37 and was wrong anyway — the arithmetic was never the check.
+Nothing reconciled it with the line the stage went on to ship (`13 with nothing to report · 2 opt-in
+probes not requested`), which is exactly the reconciliation an operator would attempt. The four rows
+now ARE the four `CheckDisposition` cases, so the table cannot drift from the enum again without the
+sum breaking. (Re-stated only for the baseline split; the corpus statistic below it is phrased in
+taxonomy-neutral terms — *yield nothing* is true of all three non-`Reported` cases — and was not
+re-measured for this correction.)
 
 Across the corpus, **26 of 37 checks yield nothing on at least one run**, and **no fixture invokes
 all 37** (max 33, min 16, median 24). Enforcing the row literally would have required dissolving the
@@ -1646,11 +1658,29 @@ corrupting one golden file's arithmetic and observing the named failure.
   `test_an_unexplained_not_run_check_adds_the_disclosure_on_the_warn_channel` (and the ported
   `test_a_not_run_check_with_no_reason_is_disclosed_by_id`, which now routes through the emit
   decision), the arm reds `test_check_names_an_unreadable_config_dir_as_why_the_agent_plane_did_not_run`.
-  **THE RESIDUAL, STATED RATHER THAN ROUNDED UP:** the golden corpus exercises the dispatch loop's
-  `line` channel on all 33 fixtures and its `warn` channel on none — and no install shape can reach
-  it, because every conditional slot in `handle()` records a not-run reason by design, so
-  `unexplainedNotRun()` is empty on every real run. The composition AND the emit decision are proven;
-  the `warn` channel's DISPATCH is proven only at the seam, because nothing else can reach it.
+  **THE RESIDUAL AS FIRST STATED WAS ITSELF A CLAIM PITCHED ABOVE ITS EVIDENCE — the same defect
+  one layer down, and the third time in this stage.** It read: *"the golden corpus exercises the
+  dispatch loop's `line` channel on all 33 fixtures and its `warn` channel on none."* **The first
+  half is false.** `GoldenCapture` reads `Artisan::output()`, an **undecorated** `BufferedOutput`:
+  the formatter strips `<warning>`/`<error>`/`<info>` to bare text, so `line()`, `warn()`, `error()`
+  and `info()` are BYTE-IDENTICAL there. The corpus does not exercise the `line` channel — it is
+  blind to the channel axis entirely, and 33 fixtures buy nothing on it. **Observed:** mutating
+  `'line' => $this->line($message)` to `$this->warn($message)` leaves all 33 golden files unchanged
+  while rendering the inventory head as a yellow warning on every healthy operator run.
+  **A residual stated NARROWER than the truth is worse than one left unstated**, because it reads as
+  a measured bound; the sentence had been copied to four sites before the read that falsified it.
+  **AND THE GAP HAD A SIBLING ONE METHOD AWAY** (canon #7, audited on the shape rather than on the
+  string): `emitFinding()`'s severity→channel `match` sits behind the same undecorated capture, so
+  `fail`, `warn` and `ok` were equally invisible — its RETURN arm is witnessed by exit codes and its
+  `unvalidated` arm by the tally line two fixtures render, but the render arm was not. Closed for
+  both sites by ONE instrument rather than per-site: `tests/Unit/Console/CheckOutputChannelTest.php`
+  drives each dispatch through a **decorated** `BufferedOutput`, where every channel carries its own
+  ANSI attribute. It asserts the attribute is present/absent and that the channels are DISTINCT from
+  each other — never the colour name — so an upstream scheme change moves a colour while a channel
+  collapsing into another still reds. The genuine residual that remains is narrow and is a fact about
+  the INSTALL, not about the instrument: no install shape reaches the `warn` arm of the inventory
+  dispatch, because every conditional slot in `handle()` records a not-run reason by design, so
+  `unexplainedNotRun()` is empty on every real run.
   **Both survivors were found by RE-RUNNING the mutation set against the full suite rather than by
   reading the test file** — the same device as the `ran()` locus gap below, now twice in one stage.
   A mutation that survives is the only thing that distinguishes an asserted contract from a restated
@@ -1685,8 +1715,11 @@ corrupting one golden file's arithmetic and observing the named failure.
 - **`phpstan`'s green was positive-controlled on the new files specifically** (a deliberate
   `strlen(array)` in `CheckInventory`, observed red and restored byte-identical) rather than assumed
   from `app/Bridge` being in `paths` — the DL-246 trap.
-- The golden diff is **35 insertions, 2 deletions across 33 files**, and it fully accounts: 33 new
-  inventory lines plus the 2 fixtures whose `unvalidated` disclaimer was reworded.
+- The golden diff is **35 insertions, 2 deletions across 33 files** (re-measured against `origin/dev`
+  after the third pass, not carried forward), and it fully accounts: 33 new inventory lines plus the
+  2 fixtures whose `unvalidated` line was rewritten — its disclaimer in the first pass and its count
+  NOUN in the third (`check(s)` → `finding(s)`). The totals did not move for the second edit because
+  both passes rewrote the same single line in the same two files.
 
 **Filed, not fixed here** — output-neutral follow-ons deliberately kept out of a gated stage's PR:
 the declare-your-silence strengthening above, and the fuller `CheckContext`-as-builder /
@@ -1722,7 +1755,10 @@ The existing net goes through the command boundary, so an internal refactor keep
 5. **Stage 8 needs a positive control:** register a deliberately non-emitting check and observe
    the runner flag it, *before* trusting the exact-inventory invariant. **Done, and it turned out
    to need TWO** — measurement showed the un-invoked SLOT is the larger population (13 of 37 on
-   the baseline install) and a non-emitting check the smaller (15 more), so both shapes carry a
+   the baseline install) and a non-emitting check the smaller (**13 more**; an earlier revision of
+   this line said 15, a PRE-taxonomy count that folded in the 2 un-requested opt-in probes the
+   stage went on to break out as `NotRequested`, so nothing reconciled it with the `13 with nothing
+   to report` the shipped line prints), so both shapes carry a
    control in `CheckInventoryTest`. Five single-arm mutations (one mutation, one named test, a
    restore and a `cmp` between each) confirmed each proof reds; the arms are individually
    attributable, not merely attributable as a batch.

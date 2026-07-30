@@ -45,8 +45,11 @@ use InvalidArgumentException;
  *
  * WHAT THE STAGE ROW SAID, AND WHY IT IS NOT WHAT SHIPPED. The row read *"every
  * registered check emits >= 1 finding"*. Measured before any code was written, that is
- * false on every install shape the corpus covers: 13 of 37 checks are never invoked on
- * the baseline install and 15 more run and report nothing. Enforcing it literally would
+ * false on every install shape the corpus covers: on the baseline install 13 of 37 checks
+ * are never invoked, 13 more run and report nothing, and 2 opt-in probes are never asked
+ * to look — 9 of 37 emit anything (the four figures are the four
+ * {@see CheckDisposition} cases, and they sum to the registered total by construction).
+ * Enforcing it literally would
  * have meant dissolving the conditional envelopes stages 3a and 7b preserved as BEHAVIOR.
  * The enforceable invariant is that every registered check is ACCOUNTED FOR on every run
  * that completes. See the stage 8 result in `docs/CHECK-REGISTRY-PLAN.md`.

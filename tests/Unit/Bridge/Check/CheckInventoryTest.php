@@ -22,7 +22,9 @@ use Tests\TestCase;
  * item 5 demands — *"register a deliberately non-emitting check and observe the runner
  * flag it, before trusting the exact-inventory invariant"*. Measurement at the start of
  * the stage widened that to two failure shapes, because the corpus showed the second one
- * is 13 of 37 checks on the baseline install and the first is 15 more:
+ * is 13 of 37 checks on the baseline install and the first is 13 more (an earlier revision
+ * said 15, a PRE-taxonomy count that folded in the 2 un-requested opt-in probes — which
+ * are a THIRD shape, and the one `NotRequested` exists to keep out of this pair):
  *  - {@see test_a_registered_check_that_emits_nothing_is_recorded_not_lost()}
  *  - {@see test_a_registered_check_whose_slot_never_runs_is_recorded_as_not_run()}
  * Both were confirmed RED against a runner that only reported what it was told about,

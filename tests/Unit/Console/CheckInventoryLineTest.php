@@ -32,12 +32,19 @@ use ReflectionMethod;
  * now one `inventoryOutput()` returning `[channel, message]` pairs, so *whether* the
  * disclosure is included, and on which channel, is a property of the value asserted here.
  *
- * WHAT THIS FILE STILL CANNOT WITNESS, because a bound left unstated reads as a guarantee:
- * the DISPATCH of the `warn` channel. `emitInventory()`'s loop is exercised on the `line`
- * channel by all 33 golden fixtures and on the `warn` channel by nothing — no install shape
- * reaches it, since every conditional slot in `CheckCommand::handle()` records a not-run
- * reason by design. The composition and the emit decision are proven here; that one
- * dispatch arm is proven at the seam only.
+ * WHAT THIS FILE DOES NOT WITNESS, AND WHERE THAT NOW LIVES: the DISPATCH — whether a pair
+ * labelled `warn` actually reaches the operator as a warning. This file asserts the label in
+ * the returned value; {@see CheckOutputChannelTest} asserts what `emitInventory()` does with
+ * it, under a DECORATED output.
+ *
+ * That split exists because an earlier revision of this docblock stated the residual as
+ * *"exercised on the `line` channel by all 33 golden fixtures and on the `warn` channel by
+ * nothing"*, and the first half was FALSE in the direction that matters. `GoldenCapture`
+ * reads an UNDECORATED `BufferedOutput`, where `line()` and `warn()` write identical bytes —
+ * so the corpus witnesses NEITHER channel, and swapping the head line onto `warn` would have
+ * painted a yellow warning across every healthy operator run with all 33 goldens unchanged.
+ * A residual stated narrower than the truth is worse than one left unstated: it reads as a
+ * bound that was measured.
  *
  * The method under test is private and pure, reached by reflection: a check-command run can
  * only exhibit the arms some install shape happens to produce — which is the gap, not the

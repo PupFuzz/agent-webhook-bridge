@@ -134,6 +134,35 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_names_an_empty_config_dir_as_why_the_agent_plane_did_not_run(): void
+    {
+        // DL-248, and the SIBLING of the arm above rather than a second copy of it: the
+        // per-agent skip reason is a five-arm `match(true)` whose third and fourth arms are
+        // BOTH true on a config dir that exists, is readable, and holds no `*.yml` —
+        // `$agentNames === []` and `$configs === []` are the same empty state there. Arm 3
+        // wins by POSITION alone, so nothing but this test stops a delete or a reorder, and
+        // the shape it protects is a FRESH INSTALL before its first agent YAML is written —
+        // `bridge:check`'s primary first-run audience. Without arm 3 that operator is told
+        // "no agent config parsed (see the errors above)" on an exit-0 run with no errors
+        // above it, which is the same confidently-false-diagnosis class as the unreadable
+        // arm, one position down.
+        $configDir = $this->dir.'/empty-config';
+        File::ensureDirectoryExists($configDir);
+        config(['bridge.config_dir' => $configDir]);
+
+        // The state is CONSTRUCTED and its three facts pinned before the command runs —
+        // this arm is reachable only while all three hold, and a change to any of them
+        // would otherwise leave this test green against a different arm.
+        $this->assertTrue(is_dir($configDir));
+        $this->assertTrue(is_readable($configDir), 'a readable dir is what separates this arm from the one above it');
+        $this->assertSame([], glob($configDir.'/*.yml') ?: [], 'the YAML scan must find nothing — that is the state both arms answer for');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('this install has no agent config files (no *.yml in the config dir)')
+            ->doesntExpectOutputToContain('no agent config parsed')
+            ->assertExitCode(0);
+    }
+
     public function test_check_fails_on_configured_provider_without_adapter(): void
     {
         // B-15: a config('bridge.providers') key with no WebhookAdapterFactory
@@ -2534,7 +2563,7 @@ class BridgeCommandsTest extends TestCase
         // card 5170: and the run DISCLOSES it in aggregate. Without the tally the
         // only trace of a check that never ran is one line among dozens, and a
         // zero exit reads as "everything validated".
-        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $out);
+        $this->assertStringContainsString('1 finding(s) reported `unvalidated`', $out);
         $this->assertStringContainsString('this run says nothing about what they would have found', $out);
         // And it does not over-claim: the counted population is the `unvalidated`
         // severity, NOT "checks that report a severity" — a check that could not
@@ -2576,7 +2605,7 @@ class BridgeCommandsTest extends TestCase
         // that fails to load reads as "silent at zero".
         $this->assertStringContainsString('agent config ok: prod-agent', $out);
         $this->assertStringNotContainsString('unvalidated', $out);
-        $this->assertStringNotContainsString('check(s) reported', $out);
+        $this->assertStringNotContainsString('finding(s) reported', $out);
     }
 
     public function test_the_unvalidated_tally_does_not_accumulate_across_invocations(): void
@@ -2594,8 +2623,8 @@ class BridgeCommandsTest extends TestCase
         $second = Artisan::output();
 
         $this->assertSame(0, $code);
-        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $second);
-        $this->assertStringNotContainsString('2 check(s) reported', $second);
+        $this->assertStringContainsString('1 finding(s) reported `unvalidated`', $second);
+        $this->assertStringNotContainsString('2 finding(s) reported', $second);
     }
 
     public function test_check_fails_on_a_dangling_channel_server_path(): void
@@ -2821,7 +2850,7 @@ class BridgeCommandsTest extends TestCase
         // "green check, dark seat" reintroduced by the fix for it.
         $this->assertStringContainsString('was NOT launch-tested', $out);
         $this->assertSame(1, substr_count($out, 'was NOT launch-tested'));
-        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $out);
+        $this->assertStringContainsString('1 finding(s) reported `unvalidated`', $out);
     }
 
     public function test_check_warns_rather_than_fails_when_the_path_is_invisible_to_this_user(): void
@@ -2973,7 +3002,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(1, substr_count($out, 'was NOT launch-tested'));
         // …and the disclosure reaches the closing tally, so a zero exit is not read
         // as "the snapshot was certified" (DL-236).
-        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $out);
+        $this->assertStringContainsString('1 finding(s) reported `unvalidated`', $out);
     }
 
     public function test_check_still_exits_0_when_the_launch_disclosure_is_the_only_unvalidated_finding(): void
@@ -2994,7 +3023,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('is current (deployed ', $out);
         $this->assertStringContainsString('has its entry file and node_modules', $out);
         $this->assertSame(1, substr_count($out, 'was NOT launch-tested'));
-        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $out);
+        $this->assertStringContainsString('1 finding(s) reported `unvalidated`', $out);
     }
 
     public function test_check_no_longer_enumerates_the_reference_file_set(): void
