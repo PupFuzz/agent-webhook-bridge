@@ -140,7 +140,9 @@ final class CheckContext { /* configs, githubScopeConsumers, writeback, client, 
 
 interface Check {
     public function id(): string;                 // stable machine id: 'writeback.source_coverage'
-    /** @return iterable<Finding>  MUST yield >= 1 finding; unvalidated when it cannot run. */
+    /** @return iterable<Finding>  unvalidated when it cannot run. Yielding NOTHING is legal
+     *   and is RECORDED, not lost — this sketch originally demanded >=1 finding; stage 8
+     *   measured that false before building it. See the stage 8 result. */
     public function run(CheckContext $ctx): iterable;
 }
 
@@ -159,11 +161,21 @@ have been using — extending the existing primitive rather than siblings it.
 
 ### Three load-bearing constraints
 
-**(a) Registration is unconditional. "Not applicable" is a returned `Finding`, never an absent
-registration.** If checks registered conditionally (e.g. board-tools checks only when some config
-declares the block), a check that never registered is invisible to the inventory — which
-re-mints *"green because never looked"* one level up, at the registry. Every check registers
-always; applicability is a verdict it returns.
+**(a) Registration is unconditional. "Not applicable" is never an absent registration.** If checks
+registered conditionally (e.g. board-tools checks only when some config declares the block), a check
+that never registered is invisible to the inventory — which re-mints *"green because never looked"*
+one level up, at the registry. Every check registers always.
+
+**How inapplicability is communicated was RESTATED by stage 8**, and the original wording — *"is a
+returned `Finding`"* — is now false in the majority case. It presumed the check always runs and
+answers. Stage 8 measured that 13 of 37 checks are never invoked at all on the baseline install:
+their slot sits behind a conditional envelope, so no `Finding` object exists to inspect. The two
+mechanisms, neither of which is an absent registration:
+- the check **runs and answers** — a `Finding` (including `unvalidated` when it could not measure),
+  or an empty yield, recorded as `Reported` / `Silent` / `NotRequested`;
+- the check's **slot never opens**, and the runner DERIVES `NotRun` from the registration list, with
+  the envelope's reason attached by `CheckRunner::noteNotRun()`. The reason is the envelope's claim
+  about itself, not the check's.
 
 **(b) The registry needs a per-agent scope, not just a global one.** Output is emitted *inside*
 the per-agent config loop (`agent config ok: {$name}`, `agent {$name}: …`),

@@ -19,11 +19,17 @@ use InvalidArgumentException;
  * {@see CheckSlot} names WHERE a group runs. That is an ordering mechanism only — see
  * the enum for why it is temporary.
  *
- * REGISTRATION IS UNCONDITIONAL (plan constraint (a)). "Not applicable" is a Finding
- * a check returns, never an absent registration: a check that never registered is
- * invisible to the inventory, which re-mints *"green because never looked"* one level
- * up, at the registry. This class therefore offers no conditional-registration
- * affordance, and callers must not build one out of an `if` around `register()`.
+ * REGISTRATION IS UNCONDITIONAL (plan constraint (a)). "Not applicable" is never an
+ * absent registration: a check that never registered is invisible to the inventory,
+ * which re-mints *"green because never looked"* one level up, at the registry. This
+ * class therefore offers no conditional-registration affordance, and callers must not
+ * build one out of an `if` around `register()`.
+ *
+ * IT IS ALSO NOT, IN THE MAJORITY CASE, A RETURNED `Finding` — which is what constraint
+ * (a) originally said. A {@see CheckDisposition::NotRun} check never has `run()` invoked
+ * at all, so no `Finding` exists to carry the verdict; the runner derives it from the
+ * registration list and {@see noteNotRun()} attaches the ENVELOPE's reason. Only a check
+ * that actually ran answers with a `Finding` (or with an empty yield).
  *
  * A SLOT THAT IS NEVER RUN IS THE SAME HOLE ONE LEVEL DOWN — CLOSED IN STAGE 8, and not
  * in the shape the stage row predicted. {@see inventory()} accounts for every registered
