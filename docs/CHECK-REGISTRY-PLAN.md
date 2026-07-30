@@ -1,7 +1,8 @@
 # `bridge:check` — the Check-registry plan
 
-> **Status: stages 0–1 are BUILT (card#5464, card#5468). Stages 2–7 are unstarted; stages 8–10
-> are hard-gate.**
+> **Status: stages 0–8 are BUILT.** 0–7b are merged to `dev`; **8** is built on
+> `card-5585-stage8-exact-inventory` (card#5585, DL-248) and its gate was **granted**.
+> **Stages 9 and 10 remain HARD GATE — stage 8's approval does NOT roll on to them.**
 > This document owns the *reasoning* for the `bridge:check` consolidation program — the
 > measurements behind it, the target shape, the constraints that would break the refactor
 > mid-flight, and what is deliberately **not** in scope. Read it before prescribing any
@@ -270,7 +271,7 @@ next stage starts.
 | **7a ✅** | Migrate the **event-follows-consumer plane** — the whole DL-196 advisory — into a new `CheckSlot::EventConsumer`. One check, one slot. **Row 7 splits on SIZE, not on a measured seam**, and the stage 7a result says so rather than manufacturing a discriminator; it is also the first stage whose predicate total goes UP, because it migrates a HELPER method rather than code inside `handle()`. | **None** (golden test enforces) | no |
 | **7b ✅** | Migrate the **board-tools plane** — the `suppressedReason` scan, the resolver's `problems()`, the per-agent board-STATE legs, the DL-225 flipped-default advisory (which reads its input back off another slot's REPORT — a first for this program) and the `--probe-tools` live probe — into **five** new slots. `handle()` now holds derivation and the runner calls alone; see the stage 7b result. | **None** (golden test enforces) | no |
 | **8 ✅** | Turn on the accounting invariant: every registered check is **accounted for** on every run that completes (the runner does not catch, so a throwing check aborts before anything renders the account), and replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above — **and amends two of its bullets in place: the text renderer does NOT stay silent on `not requested`, because this is the gated output-change stage.** **This row originally read "every registered check emits ≥1 finding" — measurement falsified that before any code was written, and the row is corrected rather than quietly built around; see the stage 8 result.** | **Yes** — every run that completes gains one inventory line; the disclaimer is narrowed | **GATE** (granted) |
-| **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** |
+| **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** — and the reason is NOT the operator-visible column, which is the weakest of the three gated rows. A JSON shape is a **write contract**: once a machine consumer parses it you cannot un-ship it, so per the fleet write-contract rule it must be versioned and carry its own guard. Recorded here because it was previously asserted with no rationale anywhere in this doc or the decision log, which makes a gate indistinguishable from a habit. |
 | **10** | Re-assign the sites that disagree on warn ↔ unvalidated. Closes **card#5291**, **card#5292**. | **Yes** — severities change | **GATE** |
 
 Stages 0–7 are pure refactor under a byte-identical output contract — **contingent on Stage 0
