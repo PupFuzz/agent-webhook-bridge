@@ -1550,6 +1550,16 @@ corrupting one golden file's arithmetic and observing the named failure.
   `33×1 + 33 + 38 + 3 = 107` and `33×2 + 33 + 38 + 3 = 140`, both derived from the source rather
   than observed and then rationalised. A regen run that reported 140 would mean the compare had run;
   one that reported 74 would mean the sentinel was gone.
+- **`CheckInventory::ran()` was proven at the GOLDEN corpus, not at the unit that STATES the
+  contract, and that locus gap is worth naming.** Mutating it to absorb `NotRequested` reds 34 of
+  the 43 golden tests — the operator line moves `22 ran` → `24 ran` — so the predicate was never
+  unproven. But `CheckInventoryTest` stayed green, because the conservation property sums all four
+  dispositions and therefore **cannot see a `ran()` that absorbs one of them**: the sum is still the
+  registered total. A predicate whose only proof is a corpus that a later fixture-scope change could
+  shrink is proven at the wrong altitude, so the assertion now also lives beside the contract it
+  belongs to. Found by re-running the stage's mutation set rather than by reading the test file —
+  a mutation that survives is the only thing that distinguishes an asserted contract from a
+  restated one.
 - **`phpstan`'s green was positive-controlled on the new files specifically** (a deliberate
   `strlen(array)` in `CheckInventory`, observed red and restored byte-identical) rather than assumed
   from `app/Bridge` being in `paths` — the DL-246 trap.

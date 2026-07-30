@@ -167,6 +167,24 @@ class CheckInventoryTest extends TestCase
         $this->assertSame(4, $sum);
     }
 
+    public function test_ran_counts_only_the_checks_that_actually_executed(): void
+    {
+        // The conservation property above cannot see this one: it sums all four
+        // dispositions, so a `ran()` that absorbed `NotRequested` still totals the
+        // registered count. `ran()` is what the operator line reads as "N ran", and the
+        // two non-executing dispositions must stay out of it — neither looked at this
+        // install. Mutation-proven at the golden corpus (a wrong `ran()` moves the line
+        // in 34 fixtures); asserted here because this is where the contract is stated.
+        $runner = (new CheckRunner)
+            ->register(CheckSlot::Install, $this->check('spoke', Finding::warn('w')), $this->check('quiet'))
+            ->register(CheckSlot::ProbeTools, $this->optIn('optin', requested: false))
+            ->register(CheckSlot::Writeback, $this->check('skipped'));
+        $runner->run(CheckSlot::Install, new CheckContext);
+        $runner->run(CheckSlot::ProbeTools, new CheckContext);
+
+        $this->assertSame(2, $runner->inventory()->ran());
+    }
+
     public function test_an_unrequested_opt_in_check_is_not_confused_with_a_silent_one(): void
     {
         // The resolved opt-in-probe decision, as a property. `Silent` is a statement
