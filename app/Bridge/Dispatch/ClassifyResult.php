@@ -19,7 +19,14 @@ namespace App\Bridge\Dispatch;
  * write (a different shared-id agent's write still surfaces). Reporting the
  * author is content analysis (the classifier's job); deciding "is that me?" is
  * per-agent policy (the dispatcher's job, reusing the agent name /
- * treat_as_echo). Left null by every shipped classifier → no behaviour change.
+ * treat_as_echo).
+ *
+ * NOT null across the shipped set, as this said until DL-252: CoordinationClassifier
+ * populates it on every coord-message event whose author it recovers (and
+ * GitHubPrCardMoveClassifier passes through whatever its inner classify returned).
+ * It stays the AUTHOR there — deliberately wider than the actor that classifier now
+ * reports on the Intent — because this value DROPS dispatches; see that class's
+ * attribute() docblock and DL-252 (f).
  */
 final class ClassifyResult
 {

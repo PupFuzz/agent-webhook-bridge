@@ -41,6 +41,27 @@ One JSON document per line. Each document is an `Intent` (schema below).
 
 Both schemas are JSON Schema 2020-12 draft. Non-additive changes (renames, removals, type tightening) bump the version; additive fields do not. Pin your parser to the schema version you built against; fail-soft on bump.
 
+### Coordination intents: who acted vs. whose thread
+
+`payload` is per-`kind` (the Intent schema leaves it open), and the `coord_issue` / `coord_pr` / `coord_comment` kinds carry **two different facts about people**. Keeping them apart is load-bearing, so read this before rendering either (DL-252, added in the same release as `actor_attribution`; older lines carry neither new key):
+
+| Field | Type | What it claims |
+|---|---|---|
+| `actor_attribution` | string, **always present**, one of `resolved` / `unresolved` / `unattributable` | How much the event supports naming the agent that **performed** it — see below |
+| `from` | string or **null** | The name of the agent that performed the event. **Null exactly when `actor_attribution` is `unattributable`.** On `unresolved` it falls back to the actor's raw upstream id (or the literal `?` when the event carried no id either) — which under a shared account names the *account*, not an agent |
+| `thread_author` | string or null | The **opener** of the issue/PR the event happened on (the frozen `from:<agent>` label, else — for an issue/PR subject, whose body *is* the opening post — that body's `FROM:` line). Null when neither is present. **Never** evidence of who performed a later event |
+| `actor.name` (top level) | string or null | The same agent as `from`, or null. It is null in **both** the `unresolved` and `unattributable` cases — which is exactly why the marker exists |
+
+The three states of `actor_attribution`:
+
+- **`resolved`** — `from` names the agent that performed this event. The evidence is either the install's `scope_author_map` (a single-author repo), or a `from:`/`FROM:` line **this event's actor wrote** (they opened the issue/PR, or wrote the comment).
+- **`unresolved`** — this event *could* have carried that evidence and did not (e.g. a comment with no `FROM:` line). Somebody acted and nobody wrote down who.
+- **`unattributable`** — this event carries **no** evidence of who acted, because its action created none of the text the bridge can read. Of the actions surfaced by default that is `issues.reopened`, `pull_request.reopened` and `pull_request.ready_for_review`; every action an install adds via `coord_extra_actions` (`issues.closed`, `labeled`, …) and every future GitHub action join them, by allow-list. The raw upstream `actor.id` is still passed through untouched — what the bridge will not do is put a name on it. On a shared-identity install that id is the *same account* for every agent, so there is nothing to recover at all: unrecoverable, **not** merely unresolved-for-now.
+
+**Do not fall back to `thread_author` when `from` is null.** That substitution is the defect this contract exists to prevent: it reports the thread's opener as the agent that reopened/closed/labelled it, and it reads exactly like a correct attribution. The `summary` line makes the same distinction in prose — it renders `by an unattributable actor (thread opened by <name>)` instead of `from <name>` — because for a reading agent the summary *is* the product.
+
+**Bound on what `resolved` buys you:** it means the event carried a name and the bridge propagated it. It is not authentication — `from:` labels and `FROM:` lines are writable by anyone who can post on the repo, so `resolved` says "this event says who acted", never "this is provably who acted".
+
 ## Consumption patterns
 
 > ### Recommended model for live agents (e.g. PM agents): **MCP channel + upstream reconcile**

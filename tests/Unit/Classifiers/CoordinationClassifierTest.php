@@ -1071,4 +1071,209 @@ class CoordinationClassifierTest extends TestCase
 
         $this->assertSame('device', $r->intents[0]->payload['from']);
     }
+
+    // ---- coord-message: actor attribution vs thread authorship (DL-252, card#5721) ----
+    //
+    // roundtable #209. An action that creates no text — `issues.reopened` and every
+    // sibling an install can add — carries nothing the ACTOR wrote, so the pre-DL-252
+    // fall-through handed the thread's frozen `from:` label (its OPENER) to the
+    // Intent's Actor and to the rendered summary. A seat that had never heard of the
+    // defect read one such summary, formed a belief about who reopened the thread,
+    // and posted it as fact. Under a shared upstream identity (DL-002) the true actor
+    // is UNRECOVERABLE, not merely unimplemented — so the fix is to stop implying
+    // one, and to say so where both a machine and a reader can see it.
+
+    public function test_bodyless_issue_action_does_not_report_the_thread_author_as_the_actor(): void
+    {
+        // The reported shape: `other` OPENED #4; somebody reopened it. Both surfaces
+        // that carried `other` before — the Intent's actor and `payload.from` — must
+        // now carry nobody.
+        $r = $this->classify('issues.reopened', $this->issue(4, ['to:me', 'from:other'], 'FROM: other'), 'org/coord');
+
+        $this->assertCount(1, $r->intents);
+        $this->assertNull($r->intents[0]->actor->name);
+        $this->assertNull($r->intents[0]->payload['from']);
+    }
+
+    public function test_bodyless_issue_action_marks_the_actor_unattributable_in_the_payload(): void
+    {
+        // PRESENCE, not absence: an absent key and a null one read identically to a
+        // careless consumer, and an absence-only assertion would also pass on an
+        // implementation that emitted nothing at all. The marker is the fix.
+        $r = $this->classify('issues.reopened', $this->issue(4, ['to:me', 'from:other'], 'FROM: other'), 'org/coord');
+
+        $payload = $r->intents[0]->payload;
+        $this->assertArrayHasKey('actor_attribution', $payload);
+        $this->assertSame('unattributable', $payload['actor_attribution']);
+        $this->assertArrayHasKey('thread_author', $payload);
+        $this->assertSame('other', $payload['thread_author']);   // the datum is kept, correctly named
+    }
+
+    public function test_bodyless_issue_action_summary_names_the_author_as_the_author(): void
+    {
+        // The EXPOSED consumer is an agent reading this line in its context window —
+        // no code path consumes it. So the summary must stop asserting an actor AND
+        // actively say the actor is unknown: an absent claim renders as nothing at
+        // all, which reads as "the summary didn't mention who", which is exactly the
+        // gap a reader fills from context.
+        $r = $this->classify('issues.reopened', $this->issue(4, ['to:me', 'from:other'], 'FROM: other'), 'org/coord');
+
+        $this->assertSame(
+            'coord issue #4 by an unattributable actor (thread opened by other) to me: T',
+            $r->intents[0]->summary,
+        );
+        $this->assertStringNotContainsString('from other', $r->intents[0]->summary);
+    }
+
+    public function test_bodyless_issue_action_with_no_from_label_says_the_author_is_unknown(): void
+    {
+        // No `from:` label and no body FROM: line ⇒ nothing to name in either slot.
+        // The marker still renders — silence here would be the same ambiguity.
+        $r = $this->classify('issues.reopened', $this->issue(4, ['to:me']), 'org/coord');
+
+        $this->assertSame(
+            'coord issue #4 by an unattributable actor (thread author unknown) to me: T',
+            $r->intents[0]->summary,
+        );
+        $this->assertSame('unattributable', $r->intents[0]->payload['actor_attribution']);
+        $this->assertNull($r->intents[0]->payload['thread_author']);
+    }
+
+    public function test_opened_issue_still_attributes_the_actor_to_the_from_label(): void
+    {
+        // BACK-COMPAT + the scoping this change turns on: on `issues.opened` the
+        // thread's author IS the actor, so the label-derived name is correct and the
+        // summary is byte-identical to pre-DL-252.
+        $r = $this->classify('issues.opened', $this->issue(4, ['to:me', 'from:other'], 'FROM: other'), 'org/coord');
+
+        $this->assertSame('other', $r->intents[0]->actor->name);
+        $this->assertSame('coord issue #4 from other to me: T', $r->intents[0]->summary);
+        $this->assertSame('other', $r->intents[0]->payload['from']);
+        $this->assertSame('resolved', $r->intents[0]->payload['actor_attribution']);
+        $this->assertSame('other', $r->intents[0]->payload['thread_author']);
+    }
+
+    public function test_comment_still_attributes_its_own_body_from_line(): void
+    {
+        // A created comment IS text the actor wrote, so the body FROM: line names the
+        // actor — unchanged. `thread_author` carries the OTHER fact (who opened the
+        // thread), which the single pre-DL-252 value could not express at once.
+        $r = $this->classify('issue_comment.created', $this->comment(9, ['to:me', 'from:opener'], 'FROM: replier'), 'org/coord');
+
+        $this->assertSame('replier', $r->intents[0]->actor->name);
+        $this->assertSame('resolved', $r->intents[0]->payload['actor_attribution']);
+        $this->assertSame('opener', $r->intents[0]->payload['thread_author']);
+        $this->assertStringContainsString('from replier', $r->intents[0]->summary);
+    }
+
+    public function test_bare_comment_with_no_from_line_no_longer_reports_the_thread_author(): void
+    {
+        // SIBLING of the reported defect, found in the same primitive: a comment
+        // PREFERRED the body FROM: line but FELL BACK to the frozen label, so a bare
+        // reply by anyone on `other`'s thread reported `other` as its author. The
+        // comment's own body is the only actor evidence a comment has; absent it,
+        // nobody is named. Distinct from the bodyless case: this action COULD have
+        // carried the evidence, so it reports `unresolved`, not `unattributable`.
+        $r = $this->classify('issue_comment.created', $this->comment(9, ['to:me', 'from:other'], 'no addressing lines at all'), 'org/coord');
+
+        $this->assertNull($r->intents[0]->actor->name);
+        $this->assertSame('unresolved', $r->intents[0]->payload['actor_attribution']);
+        $this->assertSame('other', $r->intents[0]->payload['thread_author']);
+        $this->assertStringNotContainsString('from other', $r->intents[0]->summary);
+    }
+
+    public function test_unresolved_and_unattributable_are_distinguishable_states(): void
+    {
+        // The three-state marker exists so a consumer can tell "nobody wrote it down"
+        // from "no evidence can exist for this action" — collapsing them is the
+        // defect class this fix is an instance of (DL-236, DL-251).
+        $unresolved = $this->classify('issues.opened', $this->issue(4, ['to:me']), 'org/coord');
+        $unattributable = $this->classify('issues.reopened', $this->issue(4, ['to:me']), 'org/coord');
+
+        $this->assertSame('unresolved', $unresolved->intents[0]->payload['actor_attribution']);
+        $this->assertSame('unattributable', $unattributable->intents[0]->payload['actor_attribution']);
+        $this->assertNotSame(
+            $unresolved->intents[0]->payload['actor_attribution'],
+            $unattributable->intents[0]->payload['actor_attribution'],
+        );
+    }
+
+    public function test_scope_author_map_still_attributes_a_bodyless_action(): void
+    {
+        // NOT collateral damage: a single-author repo has one agent doing everything
+        // on it, so the map names the ACTOR of any action there — including the ones
+        // no label or body can attribute.
+        $r = $this->classify('issues.reopened', $this->issue(4, ['to:me', 'from:other']), 'org/solo',
+            classifierConfig: ['scope_author_map' => ['org/solo' => 'device']]);
+
+        $this->assertSame('device', $r->intents[0]->actor->name);
+        $this->assertSame('resolved', $r->intents[0]->payload['actor_attribution']);
+        $this->assertSame('device', $r->intents[0]->payload['from']);
+        $this->assertSame('other', $r->intents[0]->payload['thread_author']);   // still a distinct fact
+    }
+
+    public function test_pr_ready_for_review_is_not_an_authoring_action(): void
+    {
+        // Derived, not hand-listed: `ready_for_review` is not the action that OPENED
+        // the PR, and anyone with write access can mark one ready — so the opener is
+        // not evidence of who acted. The allow-list makes that the default answer.
+        $r = $this->classify('pull_request.ready_for_review',
+            ['pull_request' => ['number' => 7, 'title' => 'T', 'body' => 'FROM: other', 'labels' => [['name' => 'to:me'], ['name' => 'from:other']], 'html_url' => 'https://x/7']],
+            'org/coord');
+
+        $this->assertSame('unattributable', $r->intents[0]->payload['actor_attribution']);
+        $this->assertNull($r->intents[0]->payload['from']);
+        $this->assertSame('other', $r->intents[0]->payload['thread_author']);
+    }
+
+    public function test_a_coord_extra_action_is_non_authoring_by_default(): void
+    {
+        // An install can widen the surfaced action set at will (`coord_extra_actions`),
+        // and the attribution allow-list is closed against it BY CONSTRUCTION: a
+        // widening can lose a name, never invent one.
+        $r = $this->classify('issues.closed', $this->issue(4, ['to:me', 'from:other'], 'FROM: other'), 'org/coord',
+            classifierConfig: ['coord_extra_actions' => ['issues' => ['closed']]]);
+
+        $this->assertCount(1, $r->intents);   // the action IS surfaced
+        $this->assertSame('unattributable', $r->intents[0]->payload['actor_attribution']);
+    }
+
+    public function test_authoring_actions_cover_every_handled_family_and_are_handled_actions(): void
+    {
+        // The two constants must stay keyed alike: a family added to HANDLED with no
+        // AUTHORING_ACTIONS entry would fatal on the derivation, and an authoring
+        // action that is not itself surfaced would never be reached.
+        $ref = new \ReflectionClass(CoordinationClassifier::class);
+        $handled = $ref->getConstant('HANDLED');
+        $authoring = $ref->getConstant('AUTHORING_ACTIONS');
+
+        $this->assertSame(array_keys($handled), array_keys($authoring));
+        foreach ($authoring as $prefix => $action) {
+            $this->assertContains($action, $handled[$prefix]);
+        }
+    }
+
+    public function test_echo_input_still_carries_the_thread_author_on_a_bodyless_action(): void
+    {
+        // DELIBERATELY UNCHANGED, and pinned so it cannot drift silently. The
+        // dispatcher re-runs its per-agent echo check on reattributedActor and DROPS
+        // the dispatch when it matches (DL-005), so this value decides WHICH events
+        // are delivered — narrowing it to the (now null) actor would start delivering
+        // events that are dropped today. That is a hard-gated change and is not this
+        // one; DL-252 (f) records what it costs to leave.
+        $r = $this->classify('issues.reopened', $this->issue(4, ['to:me', 'from:other'], 'FROM: other'), 'org/coord');
+
+        $this->assertSame('other', $r->reattributedActor?->name);
+        $this->assertNull($r->intents[0]->actor->name);   // the Intent and the echo input now DIVERGE
+    }
+
+    public function test_echo_input_still_carries_the_thread_author_on_a_bare_comment(): void
+    {
+        // Same non-change on the sibling shape: a bare comment's echo input is still
+        // the frozen label, so the DL-235 grant's delivery behavior is untouched.
+        $r = $this->classify('issue_comment.created', $this->comment(9, ['to:me', 'from:other'], 'no addressing lines'), 'org/coord');
+
+        $this->assertSame('other', $r->reattributedActor?->name);
+        $this->assertNull($r->intents[0]->actor->name);
+    }
 }
