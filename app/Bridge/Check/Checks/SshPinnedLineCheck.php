@@ -56,7 +56,7 @@ final class SshPinnedLineCheck implements PerAgentCheck
         $probe = new SshTransportProbe($this->env, $config->boardTools?->sshAccount);
 
         foreach ($probe->probePinnedLine($config->agentName) as $finding) {
-            yield new Finding($finding->severity, 'board_tools ssh: '.$finding->message);
+            yield $finding->scoped('board_tools ssh');
         }
     }
 }

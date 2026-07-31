@@ -24,8 +24,13 @@ use App\Bridge\Support\Finding;
  * {@see CheckSlot::BoardToolsSsh}'s findings by `CheckCommand`, which selects them BY CHECK
  * ID so a second check registered into that slot cannot silently start feeding this
  * advisory. The consequence to keep in view: this check is downstream of another check's
- * SEVERITY vocabulary, so a re-assignment there (stage 10) changes what this advises,
- * with nothing in this file to show for it.
+ * SEVERITY vocabulary, so a re-assignment there changes what this advises with nothing in
+ * this file to show for it. **DL-251 was that re-assignment** — both of
+ * `SshPinnedLineCheck`'s `warn`s became `unvalidated`, and `severityMeansSetupIncomplete()`
+ * had to widen in the same commit or this advisory would have gone silent on the very
+ * install shape it exists for. The coupling is unchanged, and so is the reason to keep
+ * naming it; the root-cause fix (have the pinned-line leg report the FACT instead of this
+ * inferring it from a severity) is named in DL-251 and not built.
  *
  * ABSENT ⇒ NOT INCOMPLETE, deliberately. The map carries only agents whose pinned-line
  * findings said otherwise, so an agent whose ssh setup verified clean and an agent whose

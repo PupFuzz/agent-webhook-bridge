@@ -271,19 +271,31 @@ class WritebackBoardStateCheckTest extends TestCase
     }
 
     /**
-     * A board whose stages could not be read yields NO verdict either way — warning on an
-     * empty read would false-alarm every operator whose kanban hiccuped. The visibility
-     * line witnesses that the check ran.
+     * A board whose stages could not be read still yields no VERDICT — warning on an empty
+     * read would false-alarm every operator whose kanban hiccuped, and that half is
+     * unchanged. What changed in DL-251 §2b is that it no longer yields NOTHING: silence
+     * here was byte-identical to the all-clear the test above asserts, so an operator could
+     * not tell "every mapped id exists" from "the ids were never compared to anything".
+     *
+     * The `unvalidated` line is the PRESENCE WITNESS that makes the absence assertion below
+     * mean something. Its control is `test_every_source_of_a_targeted_stage_id_…` above:
+     * the same mapping against a board that DOES return stages produces the warn and not
+     * this line, so the two states are distinguishable in both directions.
      */
-    public function test_a_board_with_no_readable_stages_emits_no_stage_verdict(): void
+    public function test_a_board_with_no_readable_stages_reports_the_comparison_as_unmade(): void
     {
         $this->fakeBoard(stages: []);
 
         $findings = $this->findings($this->mapping());
 
-        $this->assertCount(1, $findings);
+        $this->assertCount(2, $findings);
         $this->assertStringContainsString('token sees', $findings[0]['message']);
-        $this->assertStringNotContainsString('stage id', $this->joined($findings));
+        $this->assertSame(Severity::Unvalidated, $findings[1]['severity']);
+        $this->assertStringContainsString('could NOT check the mapped stage ids for owner/repo', $findings[1]['message']);
+        $this->assertStringContainsString('board 8 returned no workflow stages', $findings[1]['message']);
+        // Still no VERDICT: neither the all-clear nor an accusation about the config.
+        $this->assertStringNotContainsString('all mapped stage ids exist', $this->joined($findings));
+        $this->assertStringNotContainsString('references workflow stage id(s)', $this->joined($findings));
     }
 
     // ---- DL-200: the coord-terminal cross-config compare (the residue arms) ----
@@ -342,6 +354,24 @@ class WritebackBoardStateCheckTest extends TestCase
         $this->assertStringContainsString('coord config agrees', $this->joined($this->findings($this->movingMapping(), moveScope: true)));
     }
 
+    /**
+     * The arm the golden install DOES reach — and the one thing the golden cannot say about
+     * it. `GoldenCapture` reads an undecorated buffer, so all four severities render as the
+     * same bytes there; the fixture pins the SENTENCE and nothing pins the SEVERITY. That is
+     * not the duplication this class's docblock forbids, it is the half the fixture is blind
+     * to, and it is the half DL-251 changes.
+     */
+    public function test_an_unresolvable_coord_config_is_unvalidated_not_a_warn(): void
+    {
+        $this->fakeBoard();   // no coord_config_path configured and $COORD_CONFIG unset in setUp
+
+        $findings = $this->findings($this->movingMapping(), moveScope: true);
+
+        $this->assertSame(Severity::Unvalidated, $findings[2]['severity']);
+        $this->assertStringContainsString('CANNOT VERIFY the terminal', $findings[2]['message']);
+        $this->assertStringContainsString('$COORD_CONFIG is not set', $findings[2]['message']);
+    }
+
     public function test_a_coord_config_declaring_no_terminal_for_this_board_is_cannot_verify(): void
     {
         $this->fakeBoard();
@@ -351,7 +381,7 @@ class WritebackBoardStateCheckTest extends TestCase
 
         $findings = $this->findings($this->movingMapping(), moveScope: true);
 
-        $this->assertSame(Severity::Warn, $findings[2]['severity']);
+        $this->assertSame(Severity::Unvalidated, $findings[2]['severity']);
         $this->assertStringContainsString('CANNOT VERIFY the terminal', $findings[2]['message']);
         $this->assertStringContainsString('it declares no terminal for board 8', $findings[2]['message']);
     }
@@ -370,6 +400,7 @@ class WritebackBoardStateCheckTest extends TestCase
 
         $findings = $this->findings($this->movingMapping(), moveScope: true);
 
+        $this->assertSame(Severity::Unvalidated, $findings[2]['severity']);
         $this->assertStringContainsString('it resolves 2 terminals for board 8', $findings[2]['message']);
         $this->assertStringContainsString("(Done, Won't Do)", $findings[2]['message']);
     }
@@ -383,6 +414,7 @@ class WritebackBoardStateCheckTest extends TestCase
 
         $findings = $this->findings($this->movingMapping(), moveScope: true);
 
+        $this->assertSame(Severity::Unvalidated, $findings[2]['severity']);
         $this->assertStringContainsString('its terminal column "Archived" for board 8 is not a stage on that board', $findings[2]['message']);
     }
 
@@ -432,7 +464,7 @@ class WritebackBoardStateCheckTest extends TestCase
 
         $findings = $this->findings($this->movingMapping(), moveScope: true);
 
-        $this->assertSame(Severity::Warn, $findings[2]['severity']);
+        $this->assertSame(Severity::Unvalidated, $findings[2]['severity']);
         $this->assertStringContainsString('could not read board 8 to resolve its terminal column "Done"', $findings[2]['message']);
         $this->assertStringNotContainsString('coord config agrees', $this->joined($findings));
     }
@@ -493,7 +525,7 @@ class WritebackBoardStateCheckTest extends TestCase
         $this->assertCount(2, $findings);
         $this->assertSame(Severity::Ok, $findings[0]['severity']);
         $this->assertStringContainsString('token sees 2 card(s)', $findings[0]['message']);
-        $this->assertSame(Severity::Warn, $findings[1]['severity']);
+        $this->assertSame(Severity::Unvalidated, $findings[1]['severity']);
         $this->assertStringContainsString('could not read board 8 (owner/repo) with the writeback token', $findings[1]['message']);
     }
 

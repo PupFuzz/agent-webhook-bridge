@@ -381,7 +381,7 @@ class CheckCommand extends BridgeCommand
                         // here too, and the warn below would then print a different cause on
                         // the same screen.
                         $runner->noteNotRun(CheckSlot::WritebackProbe, 'the writeback board-visibility probe could not be set up (see the warning above)');
-                        $this->emitUnattributed(Finding::warn('writeback: skipped board-visibility probe — '.$e->getMessage()));
+                        $this->emitUnattributed(Finding::unvalidated('writeback: skipped board-visibility probe — '.$e->getMessage()));
                     }
                 } else {
                     $runner->noteNotRun(CheckSlot::WritebackProbe, 'writeback.json declares no repo mappings, so there is no board to probe');
@@ -422,9 +422,10 @@ class CheckCommand extends BridgeCommand
         // outside the envelope above. Migrated to EventFollowsConsumerCheck (DL-242
         // stage 7a). THE RETURN IS HONOURED EVEN THOUGH THE CHECK CANNOT FAIL TODAY —
         // it yields only ok/warn/unvalidated, so this arm is unreachable now, and it is
-        // still not defensive code: stage 10 re-assigns severities across this command
-        // (cards#5291/#5292), and a call site that ignored the return because "this one
-        // only warns" would swallow the first `fail` a re-assignment gives it, silently.
+        // still not defensive code: DL-251 re-assigned severities across this command
+        // (cards#5291/#5292) and left this check's set unchanged, but a call site that
+        // ignored the return because "this one only warns" would swallow the first `fail`
+        // the next re-assignment gives it, silently.
         //
         // DERIVATION, NOT ASSERTION (plan constraint (c)) — and hoisted here in DL-249
         // stage 9 for the reason the AgentRegistry build above is: TWO renderers read it.
@@ -609,13 +610,18 @@ class CheckCommand extends BridgeCommand
         // rather than printing this line into a JSON stream.)
         $this->emitInventory($runner->inventory());
 
-        // The card-5170 tally SURVIVES, narrowed to the one thing it still says. Stage 8
-        // did NOT make the severity vocabulary precise: a leg that could not measure may
-        // still report `warn` rather than `unvalidated` (a dozen-odd sites in this
-        // command, plus ChannelSnapshotProbe's could-not-measure findings). That
-        // re-assignment is card#5291's and is separately gated, so the number remains a
-        // floor FOR THAT QUESTION even though the registry above is now exact — two
-        // different claims, and conflating them is what the old wording did.
+        // The card-5170 tally SURVIVES, NARROWED AGAIN (DL-251) rather than deleted. Stage
+        // 8 narrowed it once, to "the vocabulary is imprecise, so this is a floor"; stage
+        // 10 swept the 21 could-not-measure sites that made it one, so that sentence is now
+        // false and the disclosure has to move rather than go away.
+        //
+        // WHAT IT DISCLOSES NOW is the residual the sweep cannot reach, and it is a
+        // different claim from the one it replaced: the rule this vocabulary follows (see
+        // Severity's docblock) is keyed on what a leg CONCLUDED, so it can only make
+        // DISCLOSED blindness precise. A leg that never noticed it failed to measure
+        // something reports nothing, and no count can see it. Deleting the line outright
+        // would have read as "everything unmeasured is now counted", which is a stronger
+        // claim than this change earns.
         //
         // `finding(s)`, NOT `check(s)`: {@see self::emitFinding()} counts FINDINGS, and
         // a per-agent check yields one per agent — `ChannelSnapshotCheck` on a two-agent
@@ -624,7 +630,7 @@ class CheckCommand extends BridgeCommand
         // id and counts that same check ONCE, so the two lines contradicted each other on
         // exactly the population this one exists to describe.
         if ($this->unvalidatedCount > 0) {
-            $this->line("{$this->unvalidatedCount} finding(s) reported `unvalidated` — not a failure, and not a pass either: those legs could not run, so this run says nothing about what they would have found (see the lines above). This count is a floor: a leg that could not measure sometimes reports `warn` instead, so it is not the full population of what went unmeasured.");
+            $this->line("{$this->unvalidatedCount} finding(s) reported `unvalidated` — not a failure, and not a pass either: those legs could not answer their own question, so this run says nothing about what they would have found (see the lines above). This counts the legs that REPORTED being unable to measure; a leg that failed to notice it measured nothing still says nothing, so this is the disclosed population, not every gap.");
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;
@@ -709,18 +715,43 @@ class CheckCommand extends BridgeCommand
 
     /**
      * Whether a pinned-line finding's severity means the agent's ssh setup is
-     * INCOMPLETE (feeds the DL-225 advisory only). POSITIVE membership,
-     * deliberately: the `!== 'ok'` proxy it replaces silently absorbs any severity
-     * added to the vocabulary later — card 5170's `unvalidated` would have flagged
-     * an agent's setup incomplete on the strength of a check nobody ran. Exhaustive
-     * `match` (card 5178): a fifth {@see Severity} case is a phpstan error here, not
-     * a value that silently picks a side.
+     * INCOMPLETE (feeds the DL-225 advisory only).
+     *
+     * ⚠ AFTER DL-251 THIS IS EXTENSIONALLY `$severity !== Severity::Ok` — the very proxy
+     * DL-236 (f) replaced — AND THAT IS SAID OUT LOUD RATHER THAN LEFT TO BE DISCOVERED.
+     * Exactly one thing still separates them, and it is the thing the proxy was rejected
+     * for: this is an exhaustive `match`, so a FIFTH {@see Severity} case is a phpstan
+     * error here and has to be assigned deliberately, where `!== Ok` would sweep it in
+     * silently. The form is doing its job precisely when it looks redundant.
+     *
+     * `Unvalidated` MOVED TO `true` IN DL-251, IN THE SAME CHANGE AS THE SWEEP AND
+     * NECESSARILY SO. The two findings this method's only caller can see are
+     * `SshTransportProbe::probePinnedLine()`'s, and its two `warn`s — an unreadable
+     * `authorized_keys` and no matching line at a non-authoritative path — are exactly
+     * the sites the sweep re-assigns. Left at `false` this would have gone from
+     * flagging both to flagging neither, silently dropping the DL-225 advisory on the
+     * install shape it was written for (the `board-tools-ssh-default-transport-advisory`
+     * golden carries both lines, so omitting the widening reds it).
+     *
+     * ⚠ THIS NARROWS THE card-5170 HAZARD, IT DOES NOT DISCHARGE IT — the guard below
+     * is a TRIPWIRE, NOT A PROOF. The rejected `!== 'ok'` proxy was rejected because a
+     * later severity would be swept in without anyone deciding; post-sweep,
+     * `unvalidated` on this path means "could not read authorized_keys" (setup IS
+     * incomplete) and would equally mean the opposite for any future structurally-
+     * unmeasurable finding — the SAME enum value, which no severity assertion can
+     * separate. `CheckCommandSeverityContractTest` therefore pins the severities
+     * `SshPinnedLineCheck` actually emits and reds when that set MOVES; it cannot
+     * classify what moved into it. Recorded as DL-238(g), narrowed, not closed.
+     *
+     * ROOT CAUSE, NAMED AND OUT OF SCOPE (canon #2): the advisory infers an install
+     * FACT from a SEVERITY. Having `probePinnedLine()` report setup-incompleteness
+     * directly removes the coupling instead of re-tuning this map — DL-251.
      */
     private static function severityMeansSetupIncomplete(Severity $severity): bool
     {
         return match ($severity) {
-            Severity::Warn, Severity::Fail => true,
-            Severity::Ok, Severity::Unvalidated => false,
+            Severity::Warn, Severity::Fail, Severity::Unvalidated => true,
+            Severity::Ok => false,
         };
     }
 

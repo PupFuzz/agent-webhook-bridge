@@ -78,7 +78,7 @@ class WritebackByRefCheckTest extends TestCase
         $findings = $this->findings();
 
         $this->assertCount(1, $findings);
-        $this->assertSame(Severity::Warn, $findings[0]['severity']);
+        $this->assertSame(Severity::Unvalidated, $findings[0]['severity']);
         $this->assertStringContainsString('could not probe by-ref reachability', $findings[0]['message']);
         $this->assertStringNotContainsString('returned 404', $findings[0]['message']);
     }

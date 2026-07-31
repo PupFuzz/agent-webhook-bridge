@@ -182,18 +182,18 @@ final class WritebackMappingConfigCheck implements Check
         if ($config === null) {
             $where = $path === null ? '$COORD_CONFIG is not set' : "the coordination config at {$path} is absent, unreadable, or malformed";
 
-            yield Finding::warn("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
 
             return;
         }
         $theirs = CoordConfigTerminals::issuePopulationsForBoardId($config, $mapping->boardId);
         if ($theirs === []) {
-            yield Finding::warn("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — the coordination config has no kanban.boards[] entry for board {$mapping->boardId}. {$tail}");
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — the coordination config has no kanban.boards[] entry for board {$mapping->boardId}. {$tail}");
 
             return;
         }
         if (count($theirs) > 1) {
-            yield Finding::warn("{$prefix}: CANNOT VERIFY — the coordination config resolves multiple issue_population values for board {$mapping->boardId} (".implode(', ', $theirs)."). {$tail}");
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY — the coordination config resolves multiple issue_population values for board {$mapping->boardId} (".implode(', ', $theirs)."). {$tail}");
 
             return;
         }

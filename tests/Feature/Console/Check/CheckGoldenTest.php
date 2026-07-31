@@ -352,7 +352,8 @@ class CheckGoldenTest extends TestCase
                 // would become a `not requested`/`not applicable` disposition, which
                 // CONFLATED TWO AXES. The resolved opt-in decision bounds itself to the
                 // flag's ABSENCE; here the flag was GIVEN, so an answer is owed, and
-                // re-assigning that warn is card#5291's separately-gated sweep.
+                // re-assigning that warn was card#5291's separately-gated sweep, which
+                // adjudicated it and KEPT it (DL-251): the leg answered its own question.
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
                 $this->app->instance(SshProbeEnvironment::class, new GoldenSshEnvironment);
 

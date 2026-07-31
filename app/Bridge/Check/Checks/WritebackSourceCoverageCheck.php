@@ -66,7 +66,7 @@ final class WritebackSourceCoverageCheck implements Check
             try {
                 $read = $client->readBoardCards($boardId);
             } catch (Throwable $e) {
-                yield Finding::warn("writeback: could not read board {$boardId} to check dl source coverage — ".$e->getMessage());
+                yield Finding::unvalidated("writeback: could not read board {$boardId} to check dl source coverage — ".$e->getMessage());
 
                 continue;
             }
@@ -92,7 +92,7 @@ final class WritebackSourceCoverageCheck implements Check
                 }
             }
             if ($read['truncated']) {
-                yield Finding::warn("writeback: dl source-coverage check on board {$boardId} is INCOMPLETE — the board read hit the page ceiling; cards beyond it were not checked.");
+                yield Finding::unvalidated("writeback: dl source-coverage check on board {$boardId} is INCOMPLETE — the board read hit the page ceiling; cards beyond it were not checked.");
             } elseif ($flagged === 0) {
                 yield Finding::ok("writeback: dl_number cards on board {$boardId} all have a mapped source (self-move-eligible)");
             }

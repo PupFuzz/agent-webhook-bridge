@@ -59,7 +59,7 @@ final class WritebackByRefCheck implements Check
                 yield Finding::ok('writeback: by-ref reachable (correlation=ref)');
             }
         } catch (Throwable $e) {
-            yield Finding::warn('writeback: could not probe by-ref reachability — '.$e->getMessage());
+            yield Finding::unvalidated('writeback: could not probe by-ref reachability — '.$e->getMessage());
         }
     }
 }

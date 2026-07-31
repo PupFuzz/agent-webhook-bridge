@@ -438,8 +438,10 @@ bridge:check --probe-tools-ssh=<bridge-user>@host-A # live round-trip (from a ho
 key is ed25519; it asserts **no** sshd posture (card 5091 retired the account-level
 hardening — see § 3). Run where it cannot read the forced-command account's
 `authorized_keys` (unprivileged, distinct account) it emits an explicit
-**UNVERIFIED** warn for that leg (never a false OK). Under `sudo` with a distinct
-forced-command account, set `board_tools.ssh_account` (see step 3) so the pinned-line
+**UNVERIFIED** finding for that leg (never a false OK) — at severity `unvalidated`
+since DL-251, so it renders plain and joins the run's closing tally: an insufficient
+euid means the leg could not measure, not that the pinned line is wrong.
+Under `sudo` with a distinct forced-command account, set `board_tools.ssh_account` (see step 3) so the pinned-line
 check certifies that account, not root.
 
 > Live-fire rides the witnesses (aimla same-box + sola cross-host+FIPS). A FIPS sshd's

@@ -205,14 +205,14 @@ class ChannelTransportCheckTest extends TestCase
 
     // ---- http transport ----
 
-    public function test_a_url_with_no_port_warns_and_is_never_probed(): void
+    public function test_a_url_with_no_port_is_unvalidated_and_is_never_probed(): void
     {
         $probe = $this->probe(connected: true);
 
         $findings = $this->httpFindings('http://127.0.0.1/push', $probe);
 
         $this->assertCount(1, $findings);
-        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
         $this->assertSame(
             'agent prod-agent: channel.url http://127.0.0.1/push has no explicit port — cannot liveness-probe the HTTP channel.',
             $findings[0]->message,

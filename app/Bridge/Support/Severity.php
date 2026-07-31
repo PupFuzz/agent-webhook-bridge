@@ -23,14 +23,55 @@ namespace App\Bridge\Support;
  *   - {@see self::Unvalidated} line() (plain) + counted into the run's closing tally.
  *   - {@see self::Ok}          info() (green).
  *
- * IT DOES NOT DEFINE WHEN TO PICK ONE. The `warn` ↔ `unvalidated` boundary in
- * particular is NOT settled: the candidate discriminator ("unvalidated = the check
- * did not run and nothing is wrong; warn = something is anomalous and a named repair
- * exists") holds at the ChannelSnapshotProbe sites but not at CheckCommand's
- * event-consumer fail-soft catch, which DL-236 assigned `unvalidated` for a genuine
- * anomaly. Settling that is a behavior change to operator-facing output and is
- * tracked as card 5291 — do not encode a when-to-pick rule here that the code does
- * not obey.
+ * WHEN TO PICK `unvalidated` — THE RULE (DL-251, card 5291). It replaces a paragraph
+ * that said the boundary was not settled and named a candidate discriminator the code
+ * did not obey ("the check did not run and nothing is wrong"), which failed on
+ * `CheckCommand`'s event-consumer catch — a genuine anomaly DL-236 had already assigned
+ * `unvalidated`.
+ *
+ * It applies **PER LEG, NOT PER CHECK.** Several checks deliberately carry many legs —
+ * `WritebackBoardStateCheck` and `WritebackMappingConfigCheck` both say ONE CHECK, NOT ONE
+ * PER LEG in their own docblocks, and give the reason — so a leg's question is the narrowest
+ * question whose answer its finding reports, not the check's subject.
+ *
+ *   **`unvalidated` ⟺ THE LEG DID NOT ANSWER ITS OWN QUESTION.**
+ *
+ *   1. Answered → `ok` / `warn` / `fail`, by the answer.
+ *   2. Not answered, because of a fact about the INSTALL the operator cannot know →
+ *      `unvalidated`.
+ *   3. Not answered, because the operator did not ASK (an opt-in flag is absent) → no
+ *      finding at all; the `not-requested` disposition carries it. Using a severity here
+ *      would dilute the one signal with a precise job — the ruling in
+ *      `docs/CHECK-REGISTRY-PLAN.md` § Resolved design decision.
+ *
+ * A leg is UNANSWERED when any of:
+ *   **(a)** the measurement did not complete — a read, probe or query threw or was skipped;
+ *   **(b)** it completed but the leg cannot stand behind it, because it may have measured
+ *       the WRONG SUBJECT (an `authorized_keys` at an assumed path sshd may not consult);
+ *   **(c)** a COMPARISON leg's comparand does not resolve to exactly one COMPARABLE value
+ *       — absent, plural, or unmappable into the namespace being compared against.
+ *
+ * SO THE SEVERITY KEEPS EXACTLY ONE MEANING: *"I should have measured this and the install
+ * stopped me."*
+ *
+ * WHAT IS **NOT** `unvalidated`:
+ *   - **World-ambiguity is not measurement-ambiguity.** A finding may disclose that two
+ *     install states could produce its answer and stay `warn` — "the token sees 0 cards"
+ *     was measured; what it implies is what is ambiguous.
+ *   - **A skipped DOWNSTREAM leg rides the DISPOSITION axis, not this one.** The
+ *     discriminator is a property of the code — the ENVELOPE'S WIDTH. An envelope wrapping
+ *     one construction can name the cause, so its skipped slot gets `warn` + a not-run
+ *     reason; an envelope wrapping construction AND the run cannot name a cause, so it
+ *     reports `unvalidated`.
+ *   - **An insufficient euid is not an invocation fact.** A withheld `--probe-tools-ssh`
+ *     is a request the operator declined to make; a leg that runs unconditionally and
+ *     cannot read the file it needs is a CAPABILITY THE PROCESS LACKS, which is limb 2.
+ *
+ * ⚠ WHAT THE RULE DOES NOT BUY, because the disclosure narrows rather than dies: it is
+ * keyed on what a leg CONCLUDED, so it can only make DISCLOSED blindness precise. A leg
+ * that fails to notice it did not measure something says nothing, and nothing here can
+ * see that. The `fail` and `ok` populations were not audited against this rule when it was
+ * written (DL-251) — it settles the `warn` ↔ `unvalidated` boundary and only that.
  */
 enum Severity: string
 {
@@ -41,8 +82,9 @@ enum Severity: string
     case Warn = 'warn';
 
     /**
-     * The leg did NOT run, so a green `bridge:check` is not evidence about it
-     * (card 5170). Renders plain and is tallied; never flips the exit code.
+     * The leg did not answer its own question because the install stopped it, so a green
+     * `bridge:check` is not evidence about it (card 5170; the rule is in the class
+     * docblock). Renders plain and is tallied; never flips the exit code.
      */
     case Unvalidated = 'unvalidated';
 

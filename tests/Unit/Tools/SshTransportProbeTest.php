@@ -64,14 +64,22 @@ class SshTransportProbeTest extends TestCase
         $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
     }
 
-    public function test_absent_line_at_assumed_path_warns_not_fails(): void
+    public function test_absent_line_at_assumed_path_is_unvalidated_not_a_fail(): void
     {
-        // DR2-3b: pure ABSENCE at an assumed (non-authoritative) path is a WARN — the
-        // AuthorizedKeysFile may be relocated; never a false FAIL.
+        // DR2-3b: pure ABSENCE at an assumed (non-authoritative) path must never be a
+        // false FAIL — the AuthorizedKeysFile may be relocated, so the file just read may
+        // not be the one sshd consults. DL-251 §1(b) re-reads that as UNVALIDATED rather
+        // than warn: the read COMPLETED, but the leg cannot stand behind it, because it
+        // may have measured the wrong subject. `sudo` is not a flag the operator declined
+        // to pass — this leg runs unconditionally, so insufficient euid is a capability
+        // the process lacks, not a request that was never made.
         $env = new FakeSshProbeEnvironment(authorizedKeys: "# empty\n");
         $findings = (new SshTransportProbe($env))->probePinnedLine('me');
         $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
-        $this->assertTrue($this->hasSeverity($findings, Severity::Warn));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Unvalidated));
+        // The discriminating control: the SAME absence at an AUTHORITATIVE path is still a
+        // FAIL (see the test below), so this arm is keyed on authority, not on absence.
+        $this->assertFalse($this->hasSeverity($findings, Severity::Warn));
     }
 
     public function test_absent_line_at_authoritative_path_fails(): void
@@ -205,11 +213,13 @@ class SshTransportProbeTest extends TestCase
         $this->assertNotContains('/.ssh/authorized_keys', $env->readPaths);
     }
 
-    public function test_unset_account_with_empty_run_user_home_is_unchanged_warn_not_hard_fail(): void
+    public function test_unset_account_with_empty_run_user_home_is_unvalidated_not_hard_fail(): void
     {
         // canon #6: the UNSET fallback path (runUserHome ⇒ '') is a pre-existing edge,
-        // deliberately unchanged — it stays a non-authoritative warn, never the new
+        // deliberately unchanged in KIND — it stays non-authoritative, never the
         // configured-account hard-fail. Pins that the Defect-2 gate is sshAccount-strict.
+        // DL-251 §1(a) moves the non-authoritative arm to `unvalidated`: the read did not
+        // complete at all here, so nothing was measured.
         $env = new FakeSshProbeEnvironment(
             authorizedKeys: '',   // nothing readable at the assumed default path
             runUserHome: '',
@@ -218,7 +228,7 @@ class SshTransportProbeTest extends TestCase
 
         $findings = $probe->probePinnedLine('me');
 
-        $this->assertTrue($this->hasSeverity($findings, Severity::Warn));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Unvalidated));
         $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
     }
 

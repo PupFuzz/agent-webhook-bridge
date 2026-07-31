@@ -90,7 +90,7 @@ final class SshTransportProbe
         if ($content === null) {
             $findings[] = $authoritative
                 ? Finding::fail("no readable authorized_keys at {$path} (resolved from sshd -T) — no pinned line for agent {$agentName}")
-                : Finding::warn("could not read {$path} (assumed default; the AuthorizedKeysFile may be relocated — re-run as root to resolve it) — the pinned line for agent {$agentName} is UNVERIFIED");
+                : Finding::unvalidated("could not read {$path} (assumed default; the AuthorizedKeysFile may be relocated — re-run as root to resolve it) — the pinned line for agent {$agentName} is UNVERIFIED");
 
             return $findings;
         }
@@ -103,7 +103,7 @@ final class SshTransportProbe
         if ($matches === []) {
             $findings[] = $authoritative
                 ? Finding::fail("no authorized_keys line forces bridge:tools-call --agent={$agentName} at {$path} — the ssh transport for this agent is not wired")
-                : Finding::warn("no authorized_keys line forces bridge:tools-call --agent={$agentName} at {$path} (assumed default; may be at a relocated AuthorizedKeysFile) — UNVERIFIED, re-run as root");
+                : Finding::unvalidated("no authorized_keys line forces bridge:tools-call --agent={$agentName} at {$path} (assumed default; may be at a relocated AuthorizedKeysFile) — UNVERIFIED, re-run as root");
 
             return $findings;
         }

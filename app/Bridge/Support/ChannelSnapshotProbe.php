@@ -36,9 +36,9 @@ final class ChannelSnapshotProbe
 
     /**
      * The seat-side launch-assert this probe DELEGATES the loadability question to
-     * (DL-237). Named in the one disclosure {@see self::probe()} emits per run that
-     * reached the legs — on every branch, not just where the retired completeness leg
-     * used to answer it.
+     * (DL-237). Named in the one disclosure {@see self::probe()} emits per PROBE CALL that
+     * reached the legs — on every branch, not just where the retired completeness leg used
+     * to answer it.
      */
     private const LAUNCH_ASSERT = 'bin/check-channel-snapshot.py';
 
@@ -127,8 +127,8 @@ final class ChannelSnapshotProbe
         // has to carry an entry file and a node_modules exactly as a snapshot does.
         $findings = array_merge($findings, self::presenceLeg($deployedDir));
 
-        // ONE launch disclosure per run that actually reached the legs (DL-237), and
-        // UNIFORM on purpose. The first shape put it on the version-EQUAL branch
+        // ONE launch disclosure per probe call that actually reached the legs (DL-237),
+        // and UNIFORM on purpose. The first shape put it on the version-EQUAL branch
         // alone — a like-for-like replacement for the completeness leg that used to
         // live there — and that was wrong about what the disclosure is FOR. It does
         // not stand in for that leg; it says launchability was never measured, which
@@ -157,8 +157,13 @@ final class ChannelSnapshotProbe
     }
 
     /**
-     * The ONE "we did not launch it" disclosure, spelled once and emitted once per
-     * run that reached the legs ({@see self::probe()} on why it is uniform).
+     * The ONE "we did not launch it" disclosure, spelled once and emitted once per PROBE
+     * CALL that reached the legs ({@see self::probe()} on why it is uniform).
+     *
+     * NOT once per RUN, which three comments here used to say. `ChannelSnapshotCheck` is a
+     * PER-AGENT check, so a two-agent install that declares `channel.server_path` twice
+     * renders this line twice from one check id — which is exactly why `bridge:check`'s
+     * closing tally counts FINDINGS and not checks.
      *
      * `unvalidated` and never `warn`: there is no obstruction here and nothing the
      * operator did wrong — the measurement is one this process structurally cannot
@@ -273,7 +278,7 @@ final class ChannelSnapshotProbe
                 default => 'repair the manifest — its `version` field is what the staleness compare reads',
             };
 
-            return [Finding::warn("channel server snapshot at {$deployedDir}: package.json ".self::manifestReason($deployed['status'])." — cannot tell whether the deployed copy is stale; {$advice}")];
+            return [Finding::unvalidated("channel server snapshot at {$deployedDir}: package.json ".self::manifestReason($deployed['status'])." — cannot tell whether the deployed copy is stale; {$advice}")];
         }
 
         // The BUNDLED manifest is this checkout's own file and deliberately does NOT
@@ -291,7 +296,7 @@ final class ChannelSnapshotProbe
             // a tracked file). DL-236 (h) fixed it; the sibling has since gone with
             // its leg (DL-237), so this is the only survivor of that pair — the
             // reason it spells its action is unchanged.
-            return [Finding::warn("this checkout's {$bundledDir}/package.json ".self::manifestReason($bundled['status'])." — the deployed snapshot at {$deployedDir} (version {$deployed['version']}) cannot be version-compared; that file is tracked in this checkout, so restore or repair it, and check that this process can read it")];
+            return [Finding::unvalidated("this checkout's {$bundledDir}/package.json ".self::manifestReason($bundled['status'])." — the deployed snapshot at {$deployedDir} (version {$deployed['version']}) cannot be version-compared; that file is tracked in this checkout, so restore or repair it, and check that this process can read it")];
         }
 
         $comparison = self::compareVersions($deployed['version'], $bundled['version']);
@@ -451,7 +456,7 @@ final class ChannelSnapshotProbe
      */
     private static function unverifiedWarn(string $display): Finding
     {
-        return Finding::warn("channel server path {$display} is not visible to this user — a directory above it denies this process traversal (the bridge commonly runs as a different OS user than the agent, and the deployed directory itself is often 0700), so the snapshot could NOT be validated; re-run bridge:check as the agent's user, or grant it traversal");
+        return Finding::unvalidated("channel server path {$display} is not visible to this user — a directory above it denies this process traversal (the bridge commonly runs as a different OS user than the agent, and the deployed directory itself is often 0700), so the snapshot could NOT be validated; re-run bridge:check as the agent's user, or grant it traversal");
     }
 
     /**

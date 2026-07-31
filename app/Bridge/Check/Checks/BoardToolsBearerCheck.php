@@ -19,11 +19,11 @@ use App\Bridge\Tools\BoardToolAgentResolver;
  * {@see CheckContext::$boardToolsResolver} — the same rule that keeps the `AgentRegistry`
  * build out of the roster checks (stage 5c).
  *
- * BOTH PROBLEM TYPES FAIL, under default-ON: a dead or ambiguous bearer is a BROKEN
- * enablement, not the transient board-state condition the legs below it warn about
- * (DL-220's split). The resolver types them (`bearer_unreadable` | `collision`) so that
- * split can be made without re-parsing a message — this check does not need it yet, and
- * the type is deliberately not consulted rather than mapped through an identity.
+ * BOTH PROBLEMS FAIL, under default-ON: a dead or ambiguous bearer is a BROKEN enablement,
+ * not the transient board-state condition the legs below it warn about (DL-220's split).
+ * The resolver used to TYPE each entry (`bearer_unreadable` | `collision`) so this check
+ * could split severity on it; the split was decided the other way and the type was never
+ * read, so DL-251 removed it (card#5292) — `problems()` is a list of messages.
  */
 final class BoardToolsBearerCheck implements Check
 {
@@ -43,7 +43,7 @@ final class BoardToolsBearerCheck implements Check
         }
 
         foreach ($resolver->problems() as $problem) {
-            yield Finding::fail($problem['message']);
+            yield Finding::fail($problem);
         }
     }
 }

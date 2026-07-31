@@ -29,7 +29,9 @@ use App\Bridge\Tools\SshTransportProbe;
  * A REQUESTED PROBE WITH NOTHING TO CERTIFY IS NOT THIS CASE. The flag-given-but-no-ssh-
  * agent state below yields a `warn` and keeps doing so: the operator asked, so an answer
  * is owed. Only the flag's ABSENCE is a disposition — the resolved decision bounds itself
- * to that axis, and re-assigning the warn belongs to card#5291.
+ * to that axis. **DL-251 adjudicated this warn and KEPT it:** the leg answered its own
+ * question (there is no ssh agent to certify), so it is a finding, not a measurement the
+ * install prevented.
  *
  * ITS FIRST FINDING IS UNPREFIXED. `board_tools ssh probe: ` is not
  * `board_tools ssh: ` + `probe: `, so the two message shapes this check emits could not
@@ -82,7 +84,7 @@ final class SshLiveProbeCheck implements OptInCheck
         $probe = new SshTransportProbe($this->env);
 
         foreach ($probe->probeLive($this->target, $expected) as $finding) {
-            yield new Finding($finding->severity, 'board_tools ssh: '.$finding->message);
+            yield $finding->scoped('board_tools ssh');
         }
     }
 }

@@ -82,7 +82,7 @@ final class RetentionPostureCheck implements Check
                     .' at '.($lastError['at'] ?? '?').'). Check DB/file permissions and disk space; if traffic has since resumed, watch the log for a clean `retention pass` (the marker clears itself on the next success).');
             }
         } catch (Throwable $e) {
-            yield Finding::warn('retention: could not read the last-failure marker ('.$e->getMessage().') — the cache backend the retention gate depends on may be unreachable.');
+            yield Finding::unvalidated('retention: could not read the last-failure marker ('.$e->getMessage().') — the cache backend the retention gate depends on may be unreachable.');
         }
     }
 

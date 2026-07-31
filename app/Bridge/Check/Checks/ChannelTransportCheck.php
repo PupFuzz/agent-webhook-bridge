@@ -122,7 +122,7 @@ final class ChannelTransportCheck implements PerAgentCheck
         $port = is_array($parts) && isset($parts['port']) ? (int) $parts['port'] : null;
 
         if ($port === null) {
-            yield Finding::warn("agent {$name}: channel.url {$url} has no explicit port — cannot liveness-probe the HTTP channel.");
+            yield Finding::unvalidated("agent {$name}: channel.url {$url} has no explicit port — cannot liveness-probe the HTTP channel.");
 
             return;
         }

@@ -318,8 +318,13 @@ fails **closed at load** — never a silent no-op.
     This is reported **distinctly from agreement**: a missing input is not evidence of agreement, it is
     evidence we could not ask.
 
-  It **never fails** `bridge:check` (warn-never-fail) — the bridge must not become unrunnable because a
-  coord file moved. The read is **CLI-only by design**: `bridge:check` runs with the operator's
+  It **never fails** `bridge:check` — the bridge must not become unrunnable because a coord file
+  moved. **Since DL-251 the CANNOT-VERIFY arms report `unvalidated` rather than `warn`** (they render
+  plain and join the run's closing tally): the comparison could not be made, which is not evidence
+  that the terminal is wrong. The DISAGREE arm — where both configs were read and they differ — stays
+  a `warn`, because that one is measured.
+
+  The read is **CLI-only by design**: `bridge:check` runs with the operator's
   environment, while the receiver runs under PHP-FPM, whose environment does **not** carry
   `$COORD_CONFIG`. Nothing on the request path reads it.
   **If you run `php artisan optimize`** (config cache), the ambient `$COORD_CONFIG` is still honored —
