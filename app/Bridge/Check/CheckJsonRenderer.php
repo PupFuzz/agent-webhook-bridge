@@ -85,8 +85,13 @@ final class CheckJsonRenderer
     /**
      * The document, encoded.
      *
-     * PRETTY-PRINTED ON PURPOSE: the fixtures under `tests/Fixtures/check-json` are read
-     * in a PR diff, and a one-line document makes every change one unreadable line.
+     * PRETTY-PRINTED ON PURPOSE, and the reason is DIFFABILITY, not any committed
+     * artifact — nothing under `tests/` stores one of these; the guard builds its
+     * documents by running the command. A real install's document runs to thousands of
+     * bytes, and the thing an operator actually does with two of them is `diff` them
+     * (before/after an upgrade, or a healthy seat against a sick one). On one line that
+     * diff is the whole document. `JSON_UNESCAPED_SLASHES` serves the same end: every
+     * install path in here is otherwise rendered unreadable.
      *
      * ENCODING IS TOTAL, and the two flags are what make it so rather than a hope.
      * `JSON_INVALID_UTF8_SUBSTITUTE` removes the only reachable failure — an exception
@@ -121,6 +126,18 @@ final class CheckJsonRenderer
      * registration list makes a check that produced nothing a visible row with a
      * disposition rather than an absence.
      *
+     * `not_run_reason` IS GATED ON THE DISPOSITION, and the raw map is not the same thing.
+     * {@see CheckRunner::noteNotRun()} attaches a reason to every check in a slot without
+     * knowing whether that slot will go on to run — a per-agent check whose slot was noted
+     * for the agents that aborted, then ran for one that did not, carries a reason AND
+     * reports. Emitting the raw entry there puts *"every parsed agent aborted before this
+     * leg"* beside `"disposition": "reported"` and a finding, which is a document
+     * contradicting itself — and a consumer keying on a non-null reason to mean *did not
+     * run* would be precisely wrong on it. **The disposition is the authority; the reason
+     * only ever explains it.** {@see CheckInventory::notRunReasons()} and
+     * {@see CheckInventory::unexplainedNotRun()} already filter this way; this was the one
+     * reader that did not.
+     *
      * @param  list<CheckResult>  $results
      * @return list<array<string, mixed>>
      */
@@ -139,7 +156,9 @@ final class CheckJsonRenderer
             $out[] = [
                 'id' => $id,
                 'disposition' => $disposition->value,
-                'not_run_reason' => $inventory->notRunReasons[$id] ?? null,
+                'not_run_reason' => $disposition === CheckDisposition::NotRun
+                    ? $inventory->notRunReasons[$id] ?? null
+                    : null,
                 'findings' => $findingsById[$id] ?? [],
             ];
         }

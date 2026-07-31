@@ -2,7 +2,12 @@
 
 namespace Tests\Feature\Console\Check;
 
+use App\Bridge\Check\CheckDisposition;
+use App\Bridge\Check\CheckInventory;
 use App\Bridge\Check\CheckJsonRenderer;
+use App\Bridge\Check\CheckResult;
+use App\Bridge\Check\EventConsumers\EventConsumerReconciliation;
+use App\Bridge\Support\Finding;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -128,7 +133,57 @@ class CheckJsonContractTest extends TestCase
             $byId['writeback.config']['not_run_reason'],
         );
         // A check that RAN carries no reason — the field is not a slot for prose.
+        // NOTE this fixture cannot prove the gate: `install.config_dir` has no reason
+        // RECORDED, so it is null either way. The proof is the next test.
         $this->assertNull($byId['install.config_dir']['not_run_reason']);
+    }
+
+    public function test_a_recorded_reason_is_suppressed_for_any_check_that_did_not_end_up_not_run(): void
+    {
+        // THE REASON MAP IS NOT THE DISPOSITION, and a document that conflates them
+        // contradicts itself. `CheckRunner::noteNotRun()` attaches a reason to every check
+        // in a slot without knowing whether that slot will go on to run — a per-agent check
+        // noted for the agents that aborted, then run for one that did not, holds a reason
+        // AND reports. Observed on a live install: `channel.server_snapshot`, disposition
+        // `reported` with a finding, carrying "every parsed agent aborted before this leg".
+        // A consumer keying on a non-null reason to mean DID NOT RUN is precisely wrong
+        // there, which is the false-signal shape this whole program exists to remove.
+        //
+        // Driven through the renderer directly rather than through a fixture install: the
+        // state is a property of the two inputs disagreeing, and building an install shape
+        // that happens to produce it would pin the fixture, not the rule.
+        $inventory = new CheckInventory(
+            [
+                'ran.reported' => CheckDisposition::Reported,
+                'ran.silent' => CheckDisposition::Silent,
+                'probe.not_requested' => CheckDisposition::NotRequested,
+                'never.ran' => CheckDisposition::NotRun,
+            ],
+            // Every id carries one, including the three that ran.
+            [
+                'ran.reported' => 'the slot was noted before it ran',
+                'ran.silent' => 'the slot was noted before it ran',
+                'probe.not_requested' => 'the slot was noted before it ran',
+                'never.ran' => 'the envelope never opened',
+            ],
+        );
+
+        $checks = array_column(
+            (new CheckJsonRenderer)->document(
+                true,
+                [new CheckResult('ran.reported', [Finding::ok('it ran and spoke')], 'alpha')],
+                $inventory,
+                [],
+                new EventConsumerReconciliation,
+            )['checks'],
+            null,
+            'id',
+        );
+
+        $this->assertNull($checks['ran.reported']['not_run_reason'], 'a reported check must not carry a not-run reason');
+        $this->assertNull($checks['ran.silent']['not_run_reason'], 'a silent check must not carry a not-run reason');
+        $this->assertNull($checks['probe.not_requested']['not_run_reason'], 'an unrequested probe must not carry a not-run reason');
+        $this->assertSame('the envelope never opened', $checks['never.ran']['not_run_reason']);
     }
 
     public function test_an_envelope_failure_is_in_the_document_and_the_verdict_agrees_with_it(): void
