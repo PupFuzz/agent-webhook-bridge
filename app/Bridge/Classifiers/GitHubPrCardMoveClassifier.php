@@ -585,18 +585,20 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * unparsed token is otherwise a silent no-op — the branch publishes, the
      * card never moves, nobody is told — exactly as high-value a miss as an
      * unresolvable DL (roundtable #48). Token-less text stays silent: most
-     * branches/PRs legitimately carry no card token, and a bare `card 2`
-     * (space, no `#`) is deliberately NOT a near-miss — prose like "supports
-     * card 2" in a PR title would warn.
+     * branches/PRs legitimately carry no card token, and a bare space before
+     * the id (`card 2`, `cards 2` — no `#`) is deliberately NOT a near-miss —
+     * prose like "supports card 2" in a PR title would warn.
      *
-     * WHICH SHAPES those are is {@see CardTokenGrammar}'s to say, and the
-     * warning renders its answer rather than repeating one: a hand-written
-     * accept-set here spent two releases telling operators that glued
-     * `card123` does not correlate, months after DL-233 made it (card#5267).
+     * WHICH SHAPES those are is {@see CardTokenGrammar}'s to say — both the
+     * accept-set the warning renders and the probe that decides whether to warn
+     * at all (DL-250). A hand-written accept-set here spent two releases telling
+     * operators that glued `card123` does not correlate, months after DL-233
+     * made it (card#5267); a hand-written probe here was silent on every plural
+     * spelling.
      */
     private function warnCardTokenNearMiss(string $text, string $surface): void
     {
-        if (preg_match('/\bcard(?:[_:.]|\s#)?\d/i', $text) === 1) {
+        if (CardTokenGrammar::looksLikeCardToken($text)) {
             Log::warning("kanban_move_card: {$surface} appears to name a card but the token does not parse (".CardTokenGrammar::describe().") — no move (FR-7 near-miss): {$text}");
         }
     }

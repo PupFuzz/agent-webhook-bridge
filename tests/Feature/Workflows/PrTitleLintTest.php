@@ -248,6 +248,44 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
+     * THE SECOND TIE (DL-250). `looks` is a THIRD implementation of "does this text
+     * appear to name a card", in a second language, and nothing compared it to the
+     * RUNTIME probe — only to the vector set they both happen to cover, which says
+     * nothing about a shape absent from that set. So `looks` could be widened to
+     * catch `cards #123` and miss `cards#123` — the one-character shape of the
+     * defect that started this — and every other leg here would stay green.
+     *
+     * Answer set to answer set over the probe's own derived cross-product, which is
+     * generated from the separator data rather than typed here, plus negatives so
+     * the comparison cannot pass as `[all-true] === [all-true]`.
+     *
+     * The corpus is deliberately NOT the whole vector set: `looks` is legitimately
+     * LOOSER than the runtime probe (it needs no digit after the separator, so
+     * `card-layout-rework` warns in CI and stays out of the bridge log), and its
+     * `[0-9]` is ASCII where the grammar's Unicode row is not. Equality holds on the
+     * cross-product, where both sides carry a digit and no non-ASCII.
+     */
+    public function test_the_looks_predicate_and_the_runtime_probe_return_the_same_answer_set(): void
+    {
+        $looks = $this->stepRegex('Warn on a card token', 'looks');
+        $corpus = array_merge(CardTokenGrammar::probeVectors(), [
+            'supports card 2 in prose', 'card 123', 'cards 123', 'discards 5 items',
+            'wildcards 3 more', 'scorecard_2', 'no token at all',
+        ]);
+
+        $lintSays = $probeSays = [];
+        foreach ($corpus as $text) {
+            $lintSays[$text] = $this->grepMatches($looks, $text);
+            $probeSays[$text] = CardTokenGrammar::looksLikeCardToken($text);
+        }
+
+        $this->assertContains(true, $probeSays, 'the tie needs recognised shapes to compare');
+        $this->assertContains(false, $probeSays, 'the tie needs unrecognised shapes, or it is [all-true] === [all-true]');
+        $this->assertSame($probeSays, $lintSays,
+            "the lint's `looks` predicate and the runtime near-miss probe disagree about which shapes appear to name a card");
+    }
+
+    /**
      * The whole step, end to end, on every vector: it warns on exactly the shapes
      * the grammar rejects. Derived from the vector set rather than listed, so a
      * shape added to the grammar is covered here the moment it lands — the ASCII

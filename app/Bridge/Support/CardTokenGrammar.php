@@ -34,10 +34,37 @@ namespace App\Bridge\Support;
  * branch-reset `(?|…)` gives both arms the SAME capture group.
  *
  * The digit class stays ASCII (no `/u`) — DL-231, ratified fleet-wide.
+ *
+ * THE SECOND GRAMMAR (DL-250). {@see looksLikeCardToken()} is the near-miss
+ * probe: "does this text APPEAR to name a card?", asked only where
+ * {@see parse()} already returned null. It is deliberately NOT derivable from
+ * {@see self::PATTERN} — the near-miss set is a different set — but it lives
+ * here because a grammar over card tokens maintained inside a consumer is the
+ * restatement shape DL-239 was about. Its separators are DATA
+ * ({@see self::NEAR_MISS_SEPARATORS}), so the pattern and the vector set that
+ * covers it are two consumers of one definition rather than two lists someone
+ * must keep in step. Ask {@see looksLikeCardToken()} / {@see probeVectors()};
+ * never recompile the separators into a second pattern.
  */
 final class CardTokenGrammar
 {
     private const PATTERN = '/\bcard(?|[-#](\d+)|(\d{2,}))/i';
+
+    /**
+     * The separators the near-miss probe reads as "an author meant a card token
+     * here" — plus the empty separator, which the `?` in the assembled pattern
+     * carries. `-` and `#` are in the set even though they are the ACCEPTED
+     * separators: a singular text matching `\bcard[-#]\d` always parses, so they
+     * are inert on that arm and only bite on the plural
+     * (`cards-123`) — pinned as a property in `CardTokenGrammarTest`.
+     *
+     * A bare space is NOT here and must not be added: DL-201 ruled prose
+     * ("supports card 2") stays silent, so `card 123` / `cards 123` are not
+     * near-misses. Everything derived from this list inherits that.
+     *
+     * @var list<string>
+     */
+    public const NEAR_MISS_SEPARATORS = ['-', '#', '_', ':', '.', ' #'];
 
     /**
      * The canonical example shapes the operator-facing sentence is built from —
@@ -52,8 +79,19 @@ final class CardTokenGrammar
      * have to assert it. The Unicode-digit spelling is here because DL-231 made
      * it correlate to nothing, silently.
      *
+     * This is the SENTENCE corpus: curated, judgment-bearing, and exemplary on
+     * its rejected side — never exhaustive, because the set of strings that do
+     * not parse is infinite. Separator COVERAGE is not its job and must not be
+     * pasted in here: {@see probeVectors()} derives one row per separator from
+     * {@see self::NEAR_MISS_SEPARATORS}, so a widened separator class grows the
+     * covered set by itself. `cards #123` is the one plural row, naming the
+     * family in the operator sentence; the other six plural spellings are the
+     * derived property's, not this list's.
+     *
      * The set may GROW; `CardTokenGrammarTest` pins the ratified rows so it
-     * cannot shrink below them.
+     * cannot shrink below them. It may NOT grow a bare-space spelling
+     * (`card 123`, `cards 123`): every consumer of this list asserts
+     * warn-iff-not-parsed, and DL-201 ruled that prose stays silent.
      */
     public const VECTORS = [
         'card-123',
@@ -65,6 +103,7 @@ final class CardTokenGrammar
         'card.123',
         'card:123',
         'card #123',
+        'cards #123',
         "card#\u{0663}",
     ];
 
@@ -84,6 +123,51 @@ final class CardTokenGrammar
     public static function rejected(): array
     {
         return array_values(array_filter(self::VECTORS, fn (string $v) => self::parse($v) === null));
+    }
+
+    /**
+     * Does this text APPEAR to name a card? Asked ONLY where {@see parse()}
+     * already returned null, so a match means a near-miss: the branch publishes,
+     * the card never moves, and without this nobody is told.
+     *
+     * The plural is in the pattern because it was the whole silent family
+     * (DL-250): `\bcard` matches inside `cards`, the separator group cannot
+     * consume the `s`, and `\d` then fails against it — with no second word
+     * boundary to retry from, every `cards…` spelling was invisible.
+     */
+    public static function looksLikeCardToken(string $text): bool
+    {
+        return preg_match(self::nearMissPattern(), $text) === 1;
+    }
+
+    /**
+     * One text per cell of the probe's domain — {singular, plural} × {no
+     * separator} ∪ {@see self::NEAR_MISS_SEPARATORS} — so the shapes the probe
+     * must RECOGNISE are derived from the separator data rather than typed out
+     * beside it. Which cells then WARN is {@see parse()}'s answer, not this
+     * list's — the cells that correlate must stay silent.
+     *
+     * @return list<string>
+     */
+    public static function probeVectors(): array
+    {
+        $vectors = [];
+        foreach (array_merge([''], self::NEAR_MISS_SEPARATORS) as $separator) {
+            $vectors[] = "card{$separator}123";
+            $vectors[] = "cards{$separator}123";
+        }
+
+        return $vectors;
+    }
+
+    private static function nearMissPattern(): string
+    {
+        $separators = implode('|', array_map(
+            fn (string $s) => preg_quote($s, '/'),
+            self::NEAR_MISS_SEPARATORS,
+        ));
+
+        return '/\bcards?(?:'.$separators.')?\d/i';
     }
 
     /**

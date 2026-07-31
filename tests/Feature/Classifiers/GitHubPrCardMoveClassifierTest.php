@@ -8,6 +8,7 @@ use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClassifierConfig;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -762,22 +763,58 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         }
     }
 
-    public function test_near_miss_card_token_in_branch_warns_and_noops(): void
+    /**
+     * A text that NAMES a card in a shape the token doesn't accept must fail LOUD,
+     * not silent — the branch publishes, the card never moves, nobody is told.
+     *
+     * DRIVEN OFF THE GRAMMAR, not off a list written here (DL-250). The list this
+     * replaces held three shapes and reacted to nothing: adding a spelling to the
+     * corpus reddened three ties in `PrTitleLintTest` and left this leg — the only
+     * one that exercises the runtime surface the whole thing is about — green.
+     * The corpus is the SENTENCE rows union the probe's derived separator
+     * cross-product, so an edit to either artifact reds here too.
+     */
+    public function test_the_near_miss_warn_is_driven_by_the_grammar_not_a_hand_written_list(): void
     {
-        // A branch that NAMES a card in a shape the token doesn't accept must fail
-        // LOUD, not silent — the exact defect class (b) closes: the branch publishes,
-        // the card never moves, nobody is told.
         Http::fake();
         Log::spy();   // Facade::spy() no-ops when already mocked — one spy, count totals
-        // `card3054` (glued) LEFT this list in DL-233 — it now correlates, and is
-        // asserted as such in test_glued_card_token_correlates. The residual
-        // near-miss shapes are the separators the grammar still does not accept.
-        $refs = ['refs/heads/feat/card_3054-fix', 'refs/heads/feat/card.3054', 'refs/heads/feat/card:3054'];
-        foreach ($refs as $ref) {
-            $r = $this->classifyPush(['created' => true, 'ref' => $ref]);
-            $this->assertSame([], $r->targets, $ref);
+
+        $corpus = array_values(array_unique(array_merge(
+            CardTokenGrammar::VECTORS,
+            CardTokenGrammar::probeVectors(),
+        )));
+        $expectedWarns = $viaBranch = $viaTitle = 0;
+
+        foreach ($corpus as $vector) {
+            // Each shape goes to the surface it can actually OCCUR on: a git ref
+            // carries neither whitespace nor a colon (`git check-ref-format`), so
+            // those spellings reach the probe only through a PR title. Both call
+            // sites are the same probe, and this covers both.
+            if (preg_match('/[\s:]/', $vector) === 1) {
+                $viaTitle++;
+                $r = $this->classify('pull_request.opened', ['title' => "Fix a thing {$vector}", 'head' => ['ref' => 'f']]);
+            } else {
+                $viaBranch++;
+                $r = $this->classifyPush(['created' => true, 'ref' => "refs/heads/feat/{$vector}"]);
+            }
+
+            if (CardTokenGrammar::parse($vector) !== null) {
+                $this->assertCount(1, $r->targets, "'{$vector}' parses — it must move a card, not warn");
+
+                continue;
+            }
+            $this->assertSame([], $r->targets, "'{$vector}' must not correlate");
+            // The probe's digit class is ASCII (DL-231), so a Unicode-digit token is
+            // a KNOWN silent shape. Counted OUT rather than skipped, so every corpus
+            // row is accounted for and the total below stays exact.
+            $expectedWarns += preg_match('/^[\x20-\x7e]+$/', $vector) === 1 ? 1 : 0;
         }
-        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'near-miss'))->times(count($refs));
+
+        $this->assertGreaterThan(0, $viaBranch, 'the branch-ref call site must be exercised');
+        $this->assertGreaterThan(0, $viaTitle, 'the PR-title call site must be exercised');
+        $this->assertGreaterThan(0, $expectedWarns, 'a corpus expecting no warning at all would assert nothing');
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'near-miss'))->times($expectedWarns);
+        Log::shouldHaveReceived('warning')->times($expectedWarns);   // and nothing ELSE warned
         Http::assertNothingSent();
     }
 
