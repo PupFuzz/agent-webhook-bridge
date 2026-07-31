@@ -150,9 +150,9 @@ final class ChannelSnapshotProbe
         // still did not.
         //
         // The early returns above deliberately never reach here. An undeclared path,
-        // the dangling / names-a-file fatals and the not-visible WARN each already
-        // say the legs did not run, and a second not-measured line beside those IS
-        // the (h) shape.
+        // the dangling / names-a-file fatals and the not-visible-to-this-user finding
+        // each already say the legs did not run, and a second not-measured line beside
+        // those IS the (h) shape.
         return array_merge($findings, [self::launchNotMeasured($deployedDir)]);
     }
 
@@ -244,8 +244,11 @@ final class ChannelSnapshotProbe
     }
 
     /**
-     * WARN leg: is the deployed copy older than the one this checkout ships? Never a
-     * fail — a stale snapshot still launches, it just lacks newer fixes.
+     * THE DRIFT LEG: is the deployed copy older than the one this checkout ships? Never a
+     * fail — a stale snapshot still launches, it just lacks newer fixes. It answers with
+     * `warn` (stale) or `ok` (current), and reports `unvalidated` on the two arms where a
+     * `package.json` could not be read at all, so the compare had no operand (DL-251).
+     * Called the "WARN leg" until then, which stopped being true of half its exits.
      *
      * It is a DRIFT question and only a drift question — on EVERY branch, not just
      * the stale one. A green `is current` is not a loadability verdict: the DL-230
@@ -282,10 +285,10 @@ final class ChannelSnapshotProbe
         }
 
         // The BUNDLED manifest is this checkout's own file and deliberately does NOT
-        // go through visibleOrUnverified: an unreadable one already lands on the warn
-        // below, which names its own cause and carries no destructive remediation —
-        // whereas the guard's message would talk about the AGENT's deployed directory
-        // while naming a checkout file.
+        // go through visibleOrUnverified: an unreadable one already lands on the
+        // `unvalidated` finding below, which names its own cause and carries no
+        // destructive remediation — whereas the guard's message would talk about the
+        // AGENT's deployed directory while naming a checkout file.
         $bundled = self::readManifest($bundledDir.'/package.json');
         if ($bundled['status'] !== 'ok') {
             // The action is SPELLED OUT. It was found silent while its sibling — the
@@ -314,7 +317,9 @@ final class ChannelSnapshotProbe
     }
 
     /**
-     * The one re-sync instruction both WARN sites hand out, spelled once.
+     * The one re-sync instruction both sites that need it hand out, spelled once — the
+     * STALE `warn` and the absent-deployed-manifest `unvalidated`. ("Both WARN sites"
+     * until DL-251; only one of the two is a `warn` now.)
      */
     private static function resyncCommand(string $deployedDir, string $bundledDir): string
     {
@@ -405,7 +410,8 @@ final class ChannelSnapshotProbe
     /**
      * THE guard in front of every verdict in this class that would either ASSERT
      * ABSENCE or hand out DESTRUCTIVE remediation off a stat. Returns the "could not
-     * be validated" WARN when this process cannot stat $path at all, and null when it
+     * be validated" finding — `unvalidated` since DL-251, a WARN before it — when this
+     * process cannot stat $path at all, and null when it
      * can. TWO call sites, one per population whose traversability is an INDEPENDENT
      * question: the configured path (before the existence verdict), and the deployed
      * directory (once, covering every stat the version + presence legs make — all of
@@ -415,7 +421,7 @@ final class ChannelSnapshotProbe
      * nothing here stats below a direct child any more. The one deliberately
      * unguarded stat is this CHECKOUT's own bundled `package.json`
      * ({@see self::versionLeg()}), which lands on its own accurate, non-destructive
-     * WARN.
+     * finding naming that file rather than the agent's directory.
      *
      * A path we cannot SEE is not a path that is gone: `is_dir()`/`is_file()` return
      * false for EACCES exactly as they do for ENOENT, so on an untraversable path
@@ -443,7 +449,7 @@ final class ChannelSnapshotProbe
             return null;
         }
 
-        return self::unverifiedWarn($display);
+        return self::unverifiedFinding($display);
     }
 
     /**
@@ -454,7 +460,7 @@ final class ChannelSnapshotProbe
      * which directory had denied traversal and called this directly rather than
      * re-deriving the answer through a second stat.
      */
-    private static function unverifiedWarn(string $display): Finding
+    private static function unverifiedFinding(string $display): Finding
     {
         return Finding::unvalidated("channel server path {$display} is not visible to this user — a directory above it denies this process traversal (the bridge commonly runs as a different OS user than the agent, and the deployed directory itself is often 0700), so the snapshot could NOT be validated; re-run bridge:check as the agent's user, or grant it traversal");
     }

@@ -371,15 +371,17 @@ class CheckCommand extends BridgeCommand
                         // THE SECOND FAIL-SOFT ENVELOPE, INLINE for the same reason the
                         // outer one is (DL-242 stage 3a): CheckRunner deliberately does not
                         // catch, so wrapping emitReport() keeps "a probe failure degrades to
-                        // one warn" a property of this method rather than an assumption
+                        // ONE FINDING" a property of this method rather than an assumption
                         // about this slot's checks' callees. Its realistic thrower is
                         // WritebackClientFactory::make() above — derivation, inline anyway.
                         //
                         // THE REASON IS PITCHED AT THE ENVELOPE, NOT AT THAT ONE THROWER.
                         // Naming the client construction would be a confident diagnosis the
                         // arm cannot support: a check throwing after the client built lands
-                        // here too, and the warn below would then print a different cause on
-                        // the same screen.
+                        // here too, and the line below would then print a different cause on
+                        // the same screen. That width is also WHY the finding is
+                        // `unvalidated` and not `warn` (DL-251): an envelope that cannot
+                        // name its cause did not answer anything.
                         $runner->noteNotRun(CheckSlot::WritebackProbe, 'the writeback board-visibility probe could not be set up (see the warning above)');
                         $this->emitUnattributed(Finding::unvalidated('writeback: skipped board-visibility probe — '.$e->getMessage()));
                     }
@@ -442,9 +444,11 @@ class CheckCommand extends BridgeCommand
         // DL-242 stage 7b. A default-on block that could not be satisfied
         // (suppressedReason) and a dead/ambiguous bearer FAIL (a broken enablement, not
         // opt-in); the board-STATE legs (swimlane/stage on board, service-user
-        // membership) stay WARN (DL-220 split — a transient/empty kanban read must not
-        // FAIL the install check). What stays here is derivation: which agents have the
-        // block enabled, the bearer index, the SECOND kanban client, and the ssh subset.
+        // membership) NEVER FAIL (DL-220 split — a transient/empty kanban read must not
+        // FAIL the install check). They said "stay WARN" until DL-251 split them: `warn`
+        // where the leg answered badly, `unvalidated` where the read never resolved.
+        // What stays here is derivation: which agents have the block enabled, the bearer
+        // index, the SECOND kanban client, and the ssh subset.
         $ctx->boardToolsEnabled = array_values(array_filter(
             $configs,
             fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled,
@@ -496,8 +500,10 @@ class CheckCommand extends BridgeCommand
                 // default bridge:check. A present-but-bad forced-command line (grants
                 // pty/forwarding), an ambiguous/absent-authoritative line, or a
                 // FIPS-rejected key FAILs; an UNVERIFIABLE (non-root / relocated keyfile)
-                // leg WARNs and names the `sudo bridge:check` cert step — never a false
-                // OK, never a hard red. The board-tools security boundary is this pinned
+                // leg reports `unvalidated` (it WARNed until DL-251 — it may have read the
+                // wrong file, so it answered nothing) and names the `sudo bridge:check`
+                // cert step — never a false OK, never a hard red. The board-tools
+                // security boundary is this pinned
                 // line plus the live round-trip, never the account's sshd posture: card
                 // 5091 retired the account-level hardening because the ssh-account
                 // routinely doubles as the operator's interactive login.
@@ -561,7 +567,7 @@ class CheckCommand extends BridgeCommand
         // this command's local checks); when --probe-tools names the endpoint the
         // channel server will use, exercise the real loopback path end to end. A
         // non-2xx or an isolation mismatch is a HARD failure (it certifies a broken
-        // enablement), unlike the offline warns above. Migrated to
+        // enablement), unlike the offline legs above, which never fail. Migrated to
         // BoardToolsHttpProbeCheck; run unconditionally — the check holds the flag and is
         // silent when it was not passed (plan constraint (a)).
         if (! $this->emitReport($runner->run(CheckSlot::ProbeTools, $ctx))) {
@@ -616,12 +622,22 @@ class CheckCommand extends BridgeCommand
         // false and the disclosure has to move rather than go away.
         //
         // WHAT IT DISCLOSES NOW is the residual the sweep cannot reach, and it is a
-        // different claim from the one it replaced: the rule this vocabulary follows (see
-        // Severity's docblock) is keyed on what a leg CONCLUDED, so it can only make
-        // DISCLOSED blindness precise. A leg that never noticed it failed to measure
-        // something reports nothing, and no count can see it. Deleting the line outright
-        // would have read as "everything unmeasured is now counted", which is a stronger
-        // claim than this change earns.
+        // different claim from the one it replaced: the rule this vocabulary follows is
+        // keyed on what a leg CONCLUDED, so it can only make DISCLOSED blindness precise.
+        // `App\Bridge\Support\Severity`'s docblock owns what that does and does not buy —
+        // read it there rather than trusting a restatement here. Deleting the line
+        // outright would have read as "everything unmeasured is now counted", which is a
+        // stronger claim than this change earns.
+        //
+        // THE TAIL SAYS "NOT COUNTED HERE", NOT "SILENT", AND THE DIFFERENCE IS THE WHOLE
+        // POINT. A leg that failed to notice it measured nothing can also report the
+        // conclusion it would have drawn — a confidently WRONG `warn`, not an absence
+        // (`EventFollowsConsumerCheck`'s advisory on the swallowed-throw path; card#5698).
+        // Telling an operator the residual is silence implies everything they DO see is
+        // precise, which is the same overclaim one narrowing up. It also stops saying
+        // "the disclosed population": `emitInventory()` prints one line above this and
+        // discloses the NOT-RUN checks, which are not in this count — two adjacent lines
+        // cannot both own that phrase.
         //
         // `finding(s)`, NOT `check(s)`: {@see self::emitFinding()} counts FINDINGS, and
         // a per-agent check yields one per agent — `ChannelSnapshotCheck` on a two-agent
@@ -630,7 +646,7 @@ class CheckCommand extends BridgeCommand
         // id and counts that same check ONCE, so the two lines contradicted each other on
         // exactly the population this one exists to describe.
         if ($this->unvalidatedCount > 0) {
-            $this->line("{$this->unvalidatedCount} finding(s) reported `unvalidated` — not a failure, and not a pass either: those legs could not answer their own question, so this run says nothing about what they would have found (see the lines above). This counts the legs that REPORTED being unable to measure; a leg that failed to notice it measured nothing still says nothing, so this is the disclosed population, not every gap.");
+            $this->line("{$this->unvalidatedCount} finding(s) reported `unvalidated` — not a failure, and not a pass either: those legs could not answer their own question, so this run says nothing about what they would have found (see the lines above). This counts the legs that REPORTED being unable to measure; a leg that failed to notice it measured nothing is not counted here — it may say nothing, or say what it would have concluded.");
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;

@@ -178,8 +178,9 @@ class ChannelSnapshotProbeTest extends TestCase
     // missing 6 of 10 reference files launches while completeness FAILs it; the
     // DL-230 shape dies on ERR_MODULE_NOT_FOUND). The launch belongs to the SEAT,
     // because the bridge's OS user is not the agent's — so what is left here is the
-    // DISCLOSURE that the question went unmeasured, emitted ONCE per run that reached
-    // the legs, on EVERY branch that did.
+    // DISCLOSURE that the question went unmeasured, emitted ONCE per AGENT whose probe
+    // reached the legs, on EVERY branch that did — not once per run: `ChannelSnapshotCheck`
+    // is a `PerAgentCheck`, so a two-agent install yields two.
 
     /**
      * Every branch that reaches the legs, and the exactly-one-disclosure property

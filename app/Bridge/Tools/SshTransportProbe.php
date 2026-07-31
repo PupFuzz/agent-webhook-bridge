@@ -14,21 +14,25 @@ use App\Bridge\Support\Severity;
  *    {@see AuthorizedKeysLine} last-writer-wins capability model, never a `restrict`
  *    keyword match). On a FIPS seat its key algorithm must be FIPS-approved (an
  *    ed25519 key would never authenticate ⇒ FAIL).
- *  - The sshd password-auth OUTCOME (`PasswordAuthentication no` for the bridge user,
- *    from the Match-resolved `sshd -T`) is a REQUIRED, root-verified leg — a parallel
- *    auth path that bypasses the forced command. `sshd -T` needs root; run
- *    unprivileged it emits an explicit UNVERIFIED warn + the `sudo bridge:check` cert
- *    step (F1 + DR2-3), NEVER a false OK and NEVER a hard fail (new-surface installs
- *    stay exit-0 with a loud warn, not a CI red).
+ *  - The `authorized_keys` PATH is resolved from the Match-resolved `sshd -T` when this
+ *    process can run it. `sshd -T` needs root (it loads host private keys); run
+ *    unprivileged, the path falls back to the account's assumed default, so any verdict
+ *    drawn there may be about the WRONG FILE — it reports UNVERIFIED + the
+ *    `sudo bridge:check` cert step (F1 + DR2-3), NEVER a false OK and NEVER a hard fail
+ *    (new-surface installs stay exit-0 with a loud line, not a CI red).
+ *    (THERE IS NO sshd-POSTURE LEG. An earlier revision of this docblock described a
+ *    required `PasswordAuthentication no` check; card#5091 RETIRED that leg — the
+ *    account-level drop-in it certified locked out an operator sharing the ssh account —
+ *    and left this text behind. The forced-command key is the sole boundary.)
  *
  * Emits {@see Finding}s over the shared {@see Severity} vocabulary;
- * only `fail` flips `bridge:check`'s exit. It constructs Ok/Warn/Fail today — that is a
- * statement about these legs, not a constraint on the vocabulary: the UNVERIFIED legs
- * above are genuine did-not-run cases, and where they belong on the warn ↔ unvalidated
- * boundary is the open question {@see Severity} names. ABSENT pinned
- * line at an ASSUMED (non-authoritative) path ⇒ warn (the AuthorizedKeysFile may be
- * relocated); a PRESENT-BUT-BAD line, or an absent line at an AUTHORITATIVE
- * (root-resolved) path, ⇒ fail (DR2-3b).
+ * only `fail` flips `bridge:check`'s exit. It constructs **Ok/Fail/Unvalidated** today and
+ * NO `warn` at all — a statement about these legs, not a constraint on the vocabulary. The
+ * UNVERIFIED legs above were the open question {@see Severity} used to name; DL-251 settled
+ * it and swept them, because a leg that could not read the file, or read the wrong one,
+ * did not answer its own question. ABSENT pinned line at an ASSUMED (non-authoritative)
+ * path ⇒ `unvalidated` (the AuthorizedKeysFile may be relocated); a PRESENT-BUT-BAD line,
+ * or an absent line at an AUTHORITATIVE (root-resolved) path, ⇒ `fail` (DR2-3b).
  */
 final class SshTransportProbe
 {
@@ -61,7 +65,9 @@ final class SshTransportProbe
      * cannot be certified — every account-dependent leg would otherwise build a phantom
      * path from an empty home (e.g. `/.ssh/authorized_keys`) and mis-certify against it.
      * Gated strictly on a non-null sshAccount: the unset fallback (runUserHome, which can
-     * also be '') keeps its pre-4977 non-authoritative warn behavior, untouched.
+     * also be '') keeps its pre-4977 non-authoritative behavior, untouched — that arm now
+     * reports `unvalidated` rather than `warn` (DL-251), which is a severity change and
+     * not a behavior one.
      *
      * @return string|null the fail message, or null when there is nothing to report
      */

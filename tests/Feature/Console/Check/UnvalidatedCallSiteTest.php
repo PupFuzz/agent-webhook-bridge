@@ -29,6 +29,14 @@ use Tests\TestCase;
  *    hand, and exactly why the sweep needed a human.
  *  - **It says nothing about whether a site is REACHED.** Several of the files below sit
  *    behind envelopes a baseline install never opens, and this pin cannot tell you which.
+ *  - **Two evasions get past it, and both are LEXICAL rather than exotic.** (1) A DYNAMIC
+ *    construction — `Finding::{$severity}(…)`, `call_user_func([Finding::class, $m], …)`,
+ *    or anything else that names the factory at runtime — never contains the literal
+ *    `Finding::unvalidated(` and is counted nowhere. No such call exists in `app/` today
+ *    (checked at write time), which is what makes the pin exhaustive NOW rather than by
+ *    construction. (2) A MOVE **WITHIN** ONE FILE is invisible: the pin is a per-file
+ *    COUNT, so relocating a site from one leg to another inside the same class leaves the
+ *    number unchanged. Only cross-file moves and net additions/removals red.
  *
  * IT IS BIDIRECTIONAL AND WORDING-INDEPENDENT. An earlier shape of this guard banned a
  * phrase in the message text; that shape was red on landing (the messages do not share a
@@ -54,8 +62,20 @@ class UnvalidatedCallSiteTest extends TestCase
      * @var array<string, int>
      */
     private const SITES = [
-        // The one disclosure that a stat-derived snapshot check never launched anything
-        // (DL-237) — the site that created the severity's second use.
+        // FIVE distinct legs, not five copies of one — spelled out because this comment is
+        // what a maintainer reads when the count reds, and a count with a one-leg gloss
+        // cannot tell them which leg they added or lost:
+        //   1. `channel.server_path` is not declared, so there is no snapshot to validate
+        //      (DL-236 — the finding that created the severity);
+        //   2. the launch disclosure, appended once per probe call that reached the legs
+        //      (DL-237) — `bridge:check` never executes node;
+        //   3. the DEPLOYED `package.json` is absent/unreadable/malformed, so the staleness
+        //      compare has no left-hand side;
+        //   4. this CHECKOUT's bundled `package.json` is unreadable, so it has no
+        //      right-hand side;
+        //   5. the configured path or the deployed directory is not visible to this user
+        //      (a directory above it denies traversal) — the guard in front of every
+        //      stat-derived verdict in that class.
         'app/Bridge/Support/ChannelSnapshotProbe.php' => 5,
         // The pinned-line legs that read a possibly-relocated authorized_keys (DL-251 (a)/(b)).
         'app/Bridge/Tools/SshTransportProbe.php' => 2,
@@ -72,6 +92,9 @@ class UnvalidatedCallSiteTest extends TestCase
         'app/Bridge/Check/Checks/RetentionPostureCheck.php' => 1,
         'app/Bridge/Check/Checks/BoardToolsBoardStateCheck.php' => 2,
         'app/Bridge/Check/Checks/ChannelTransportCheck.php' => 1,
+        // The repo probe could not reach GitHub, so the token was never validated — the
+        // THIRD silent leg, and the one no warn-keyed sweep could have surfaced.
+        'app/Bridge/Check/Checks/ReconcileRepoTokensCheck.php' => 1,
     ];
 
     public function test_the_unvalidated_construction_sites_are_exactly_these(): void

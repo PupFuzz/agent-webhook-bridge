@@ -13,10 +13,13 @@ use Throwable;
  * Every per-agent board-tools assertion that needs a live BOARD READ (DL-217/DL-220),
  * migrated out of `CheckCommand::checkBoardTools()` (DL-242 stage 7b).
  *
- * WARN, NEVER FAIL — the DL-220 split, and the structural twin of the writeback
+ * NEVER FAIL — the DL-220 split, and the structural twin of the writeback
  * board-state check: a temporarily-unreachable kanban or a genuinely-empty board must not
  * FAIL the install check (DL-026), while the enablement-breaking conditions above it (a
- * suppressed default block, a dead or ambiguous bearer) do.
+ * suppressed default block, a dead or ambiguous bearer) do. It reports `warn` where a leg
+ * ANSWERED badly and `unvalidated` where it could not answer — the board read threw, or
+ * the stage list came back empty so `create_stage_id` had nothing to compare against
+ * (DL-251). "WARN, NEVER FAIL" was the whole story here until then.
  *
  * PER-AGENT, WHERE ITS WRITEBACK TWIN IS PER-MAPPING, and the difference is the whole
  * reason both exist: board tools are scoped by the AGENT's own `board_tools` block

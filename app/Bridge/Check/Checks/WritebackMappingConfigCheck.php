@@ -155,7 +155,9 @@ final class WritebackMappingConfigCheck implements Check
      * `issue_population` (writeback.json) to the reconcile's (`$COORD_CONFIG`, its source
      * of truth) so `bridge-on-all + reconcile-on-prefixed` — the exact non-prefixed
      * no-backstop gap — is a CHECKABLE DISAGREE, not silence. Three-state (agree /
-     * DISAGREE / CANNOT-VERIFY), warn-never-fail. CANNOT-VERIFY is kept DISTINCT from
+     * DISAGREE / CANNOT-VERIFY), never-fail — and since DL-251 the three states carry
+     * three severities: `ok`, `warn`, and `unvalidated` for CANNOT-VERIFY, which had been
+     * a second `warn`. CANNOT-VERIFY is kept DISTINCT from
      * agreement: an unset/unreadable `$COORD_CONFIG` is "could not ask," not "they agree."
      * Called only when the bridge side is already `all` (the direction that can strand
      * cards); the mirror (reconcile=all, bridge=prefixed) is a lesser not-real-time gap

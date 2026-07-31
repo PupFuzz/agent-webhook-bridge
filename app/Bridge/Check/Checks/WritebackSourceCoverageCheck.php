@@ -22,6 +22,9 @@ use Throwable;
  * `kbcard --pr-url` + the on-ramp docs). On a NON-shared board the qualifier is omitted
  * (DL-174) so source=null is fine and not warned; a derived source naming a repo NOT mapped
  * to the board still warns everywhere (operator error). Per board (deduped across mappings).
+ * The two legs that DID NOT ANSWER report `unvalidated` instead, not `warn` (DL-251): a
+ * board read that threw, and a read that hit the page ceiling so the cards past it were
+ * never examined.
  *
  * THE MODE GATE MOVED IN WITH THE LEG. Inline it sat on the caller as
  * `if (correlation === 'ref') { checkWritebackSourceCoverage(…) }`; a check owns the

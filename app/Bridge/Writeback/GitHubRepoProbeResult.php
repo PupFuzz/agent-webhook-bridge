@@ -6,8 +6,9 @@ namespace App\Bridge\Writeback;
  * The result of {@see GitHubRepoProbe::probe}: a {@see GitHubRepoProbeKind} plus the
  * fields that case carries. Deliberately non-throwing so each consumer can layer its
  * own error posture — bridge:reconcile maps a problem to a loud non-zero exit,
- * bridge:check to a preflight warn — over ONE resolve+probe+classify decision that
- * therefore can't drift between them (canon #5, DL-185/186).
+ * bridge:check to a preflight `warn` (or, where the probe never completed, an
+ * `unvalidated`) — over ONE resolve+probe+classify decision that therefore can't drift
+ * between them (canon #5, DL-185/186).
  */
 final class GitHubRepoProbeResult
 {

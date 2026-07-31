@@ -2571,10 +2571,18 @@ class BridgeCommandsTest extends TestCase
         // sentence became false and the line was narrowed rather than deleted (deleting
         // it would read as "everything unmeasured is now counted", which the sweep does
         // not earn). What survives is the residual the rule cannot reach: it is keyed on
-        // what a leg CONCLUDED, so a leg that never noticed it measured nothing is still
-        // silent (card#5291).
+        // what a leg CONCLUDED (card#5291).
         $this->assertStringContainsString('legs that REPORTED being unable to measure', $out);
-        $this->assertStringContainsString('the disclosed population, not every gap', $out);
+        $this->assertStringContainsString('is not counted here', $out);
+        // THE RESIDUAL IS NOT DESCRIBED AS SILENCE, and this asserts the correction rather
+        // than the wording it replaced. "a leg that failed to notice … still says nothing"
+        // was false — such a leg can also report the conclusion it would have drawn
+        // (card#5698) — and telling an operator the residual is silent implies everything
+        // they DO see is precise.
+        $this->assertStringContainsString('it may say nothing, or say what it would have concluded', $out);
+        // "the disclosed population" is gone for a second reason: `emitInventory()` prints
+        // one line above this and discloses the NOT-RUN checks, which this count excludes.
+        $this->assertStringNotContainsString('the disclosed population', $out);
         // The claim it must NOT make: the old floor-because-of-`warn` wording is gone
         // BECAUSE the sweep landed, so its survival would mean the sweep did not.
         $this->assertStringNotContainsString('This count is a floor', $out);

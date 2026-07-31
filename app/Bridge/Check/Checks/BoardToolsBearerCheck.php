@@ -20,7 +20,8 @@ use App\Bridge\Tools\BoardToolAgentResolver;
  * build out of the roster checks (stage 5c).
  *
  * BOTH PROBLEMS FAIL, under default-ON: a dead or ambiguous bearer is a BROKEN enablement,
- * not the transient board-state condition the legs below it warn about (DL-220's split).
+ * not the transient board-state condition the legs below it report on without failing
+ * (DL-220's split — those legs are `warn` or, where the read never resolved, `unvalidated`).
  * The resolver used to TYPE each entry (`bearer_unreadable` | `collision`) so this check
  * could split severity on it; the split was decided the other way and the type was never
  * read, so DL-251 removed it (card#5292) — `problems()` is a list of messages.

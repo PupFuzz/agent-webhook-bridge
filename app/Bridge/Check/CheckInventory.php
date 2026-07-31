@@ -30,9 +30,13 @@ namespace App\Bridge\Check;
  *    unwritten check, and that file cannot see a written one.
  *  - It does NOT make the severity vocabulary precise, and DL-251 narrowed that bound
  *    rather than removing it. The sweep it carried moved every leg that REPORTS being
- *    unable to measure onto `unvalidated`, so a `warn` here is now a measured finding —
- *    but the rule those severities follow is keyed on what a leg CONCLUDED, so a leg that
- *    never noticed it measured nothing is still silent, here and everywhere.
+ *    unable to measure onto `unvalidated`, so **a `warn` here is a finding, not a
+ *    not-run**. It is NOT therefore a measured one: a leg can warn off a swallowed throw
+ *    having measured nothing, which is a different defect class (card#5698) on a
+ *    different axis from this one. What the rule does and does not buy is owned by
+ *    `App\Bridge\Support\Severity`'s docblock (NAMED, not `{@see}`-linked — a
+ *    fully-qualified `{@see}` becomes a real import under pint) and is deliberately not
+ *    restated here.
  *  - {@see CheckDisposition::NotRun} reasons are the ENVELOPE's claim about itself. If
  *    an envelope's condition is wrong, the reason is confidently wrong with it.
  *  - EVERY COUNT HERE IS KEYED BY CHECK ID, so a per-agent check is one row however many

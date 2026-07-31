@@ -259,7 +259,7 @@ contract (only `fail` flips the exit) are both untouched by construction.
 
 **Scope bound — DISCHARGED BY STAGE 10, and the ruling above is unchanged by it.** This section
 settled the **opt-in-probe axis only** and left the re-assignment sweep card#5291 owns open and
-gated. **DL-251 landed that sweep** (21 sites `warn` → `unvalidated`, plus two legs that emitted
+gated. **DL-251 landed that sweep** (21 sites `warn` → `unvalidated`, plus three legs that emitted
 nothing at all), and the general rule it wrote — *`unvalidated` ⟺ the leg did not answer its own
 question* — is now owned by `App\Bridge\Support\Severity`'s docblock rather than by this doc.
 **Read the two together:** limb 3 of that rule IS this ruling (an absent opt-in flag is not a
@@ -287,7 +287,7 @@ next stage starts.
 | **7b ✅** | Migrate the **board-tools plane** — the `suppressedReason` scan, the resolver's `problems()`, the per-agent board-STATE legs, the DL-225 flipped-default advisory (which reads its input back off another slot's REPORT — a first for this program) and the `--probe-tools` live probe — into **five** new slots. `handle()` now holds derivation and the runner calls alone; see the stage 7b result. | **None** (golden test enforces) | no |
 | **8 ✅** | Turn on the accounting invariant: every registered check is **accounted for** on every run that completes (the runner does not catch, so a throwing check aborts before anything renders the account), and replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above — **and amends two of its bullets in place: the text renderer does NOT stay silent on `not requested`, because this is the gated output-change stage.** **This row originally read "every registered check emits ≥1 finding" — measurement falsified that before any code was written, and the row is corrected rather than quietly built around; see the stage 8 result.** | **Yes** — every run that completes gains one inventory line; the disclaimer is narrowed | **GATE** (granted) |
 | **9 ✅** | `--format=json` renderer. Closes **card#5229**. **This row was INCOMPLETE as written, and the card said so before the stage started: a renderer over the existing report does not close card#5229, because the event-consumer reconciliation was computed as locals inside a check and thrown away — emitting its prose as JSON strings is still prose-parsing. The stage is therefore TWO deliverables — the renderer split AND the reconciliation extracted as data; see the stage 9 result.** | Additive surface | **GATE** (granted) — and the reason is NOT the operator-visible column, which is the weakest of the three gated rows. A JSON shape is a **write contract**: once a machine consumer parses it you cannot un-ship it, so per the fleet write-contract rule it must be versioned and carry its own guard. Recorded here because it was previously asserted with no rationale anywhere in this doc or the decision log, which makes a gate indistinguishable from a habit. |
-| **10 ✅** | Re-assign the sites that disagree on warn ↔ unvalidated, and write the RULE that decides — into `Severity`, replacing the paragraph that said the boundary was not settled. Closes **card#5291**, **card#5292**. **The row named a re-assignment and the stage owed one more thing: two legs that answered nothing and emitted NOTHING, which a warn-keyed sweep is blind to by construction; see the stage 10 result.** | **Yes** — 21 findings change severity and 2 new ones appear | **GATE** (granted) |
+| **10 ✅** | Re-assign the sites that disagree on warn ↔ unvalidated, and write the RULE that decides — into `Severity`, replacing the paragraph that said the boundary was not settled. Closes **card#5291**, **card#5292**. **The row named a re-assignment and the stage owed one more thing: THREE legs that answered nothing and emitted NOTHING, which a warn-keyed sweep is blind to by construction. That set was found by READING, not derived — no command enumerates it — so three is a FLOOR; see the stage 10 result.** | **Yes** — 21 findings change severity and 3 new ones appear | **GATE** (granted) |
 
 Stages 0–7 are pure refactor under a byte-identical output contract — **contingent on Stage 0
 proving that contract is achievable.**
@@ -529,6 +529,12 @@ that are therefore not merely *unobserved* in `check-golden-coverage.md`; they a
 disclosed-gap list entirely**. Stage 2 established that absence from that list is not protection for
 code outside `handle()`; stage 3a sharpens it: **absence is not protection for a `switch` inside it
 either.** Do not let a regenerated count imply those arms were measured.
+**[STAGE 10 TURNED THIS DISCLOSURE INTO A DEMONSTRATION THAT A DISCLOSURE IS NOT A GUARD. This
+paragraph named THIS `switch`, three stages early, as code no instrument can see — and stage 10's
+sweep still missed one of its arms: `Network` shared `Ok`'s `break`, so "the token is valid" and "we
+never reached GitHub to ask" were the same output. The sweep keyed on `Finding::warn` and that arm
+emitted nothing to key on. A gap that is disclosed but unenumerated is closed by whoever happens to
+re-read the file. See the stage 10 result's METHOD DEFECT paragraph.]**
 
 **What the golden fixtures do and do not reach, enumerated rather than assumed.** The seven writeback
 fixtures reach the mapping-count line, the no-identity and missing-token warns, the `Unresolvable`
@@ -1928,7 +1934,7 @@ bump-table rows are written down in `check-json-contract.md` §2.]**
 
 ### Stage 10 result — a warn-keyed sweep is blind to the legs that say NOTHING, and the pairing was not optional
 
-**What changed:** 21 `Finding::warn` sites became `Finding::unvalidated`, two legs that emitted
+**What changed:** 21 `Finding::warn` sites became `Finding::unvalidated`, THREE legs that emitted
 **nothing at all** started emitting one, `Severity`'s "not settled" paragraph was replaced by the
 rule that decides, `severityMeansSetupIncomplete()` widened to include `Unvalidated`, and card#5292's
 `type` key — written at three sites, read at zero — is gone.
@@ -1936,18 +1942,44 @@ rule that decides, `severityMeansSetupIncomplete()` widened to include `Unvalida
 **THE ROW ASKED FOR A RE-ASSIGNMENT AND THE STAGE OWED ONE MORE THING.** Every way of finding the
 sweep's population starts from the sites that *report* `warn` (60 across `app/` before the sweep,
 counted at write time), so the search is structurally blind to
-a leg that fails to answer and prints nothing. Two exist:
-`WritebackBoardStateCheck`'s stage-id compare and `BoardToolsBoardStateCheck`'s `create_stage_id`
+a leg that fails to answer and prints nothing. Three exist.
+Two are comparison legs: `WritebackBoardStateCheck`'s stage-id compare and
+`BoardToolsBoardStateCheck`'s `create_stage_id`
 compare both guarded on a non-empty board-stage read and fell silent otherwise — and both legs are
 *already* silent when they succeed, so silence meant "every id exists" **and** "the ids were never
 compared to anything." That is green-because-never-looked at the two legs whose whole job is to catch
-a silent 422, inside the stage that exists to remove exactly that. Both now emit `unvalidated`. It is
+a silent 422, inside the stage that exists to remove exactly that. **The third is a `switch` arm:**
+`ReconcileRepoTokensCheck` shared one `break` between `GitHubRepoProbeKind::Ok` and `::Network`, and
+`Network` is documented as *"could not reach GitHub (timeout/connection)"* — so "this token is valid"
+and "we never found out" were byte-identical output, at the leg whose entire subject is whether a
+token will work. All three now emit `unvalidated`. It is
 an ADDED line rather than a re-assignment, which is why it needed the row's gate and is called out in
-the release notes. **Cost, measured at write time rather than asserted: 24 added lines across two
-production files** (comment + code, including the `if`/`else` restructure; the severity flips in the
-same two files are excluded, they belong to the sweep) **plus 2 rewritten test methods, against a
-21-site sweep of 51 changed files — it did not materially widen the diff, so the escape hatch the
-build spec left open was not taken.**
+the release notes. **Cost, measured at write time rather than asserted: 42 added lines across THREE production files — 24 for the two comparison legs (13 + 11, re-counted at write time from the diff hunks rather than inherited) and 18 for the `switch`-arm split plus the docblock paragraph that explains it** (comment +
+code, including the `if`/`else` restructure and the `switch`-arm split; the severity flips in those
+same files are excluded, they belong to the sweep) **plus 3 rewritten test methods — it did not
+materially widen the diff, so the escape hatch the build spec left open was not taken.**
+
+**⚠ THE METHOD DEFECT IS THE ROOT CAUSE HERE, AND IT IS NOT DISCHARGED — SO THREE IS A FLOOR, NOT A
+SET.** The first pass of this stage found TWO and shipped the count as though it were the population;
+the third was found afterwards, by re-reading, in a file the stage had never opened. That is not a
+missed entry, it is the same failure the stage's own headline describes, one level up: **a warn-keyed
+sweep is blind to a leg that concludes nothing and prints nothing, and so is every other DERIVATION
+this repo has.** The §6 evidence commands all key on something a leg *emitted* — `Finding::warn`,
+`Severity::Warn`, a message signature, a fixture line — and a silent leg emits none of them. **There
+is no command that enumerates this category**, and rev 4 of the build spec explicitly forbade
+transcribed lists precisely because reading produces floors; the silent-leg set is the one list in
+this stage that had to be produced by reading anyway. The honest statement of what was measured is
+therefore: **the silent-leg set was found by READING the check subsystem, not derived, so the count
+is a floor.** **And the third leg's file had already been called out for this, in this document, at
+stage 3a** — the § stage-3a result says in as many words that `bin/check-golden-mutate.php` does not
+enumerate `switch` arms and that `reconcile.repo_tokens`'s four arms are *absent from the
+disclosed-gap list entirely*. The disclosure was three stages old and correct, and the sweep walked
+past it anyway, because a disclosure is prose and the sweep was a grep. **That is the finding: this
+program has been converting silent gaps into DISCLOSED gaps for ten stages, and a disclosed gap with
+no instrument behind it is still closed only by someone re-reading the file.** The nearest thing to a derivation is structural rather than textual — enumerate every
+`switch` arm, `else`-less `if`, and early `return` inside a `Check::run()`/`runFor()` generator and
+ask what each one CONCLUDED — and that is a static-analysis job nobody has built. Naming it here is
+the filing; it is not claimed as done.
 
 **THE PAIRING WAS LOAD-BEARING, AND THE GOLDEN CORPUS PROVED IT.** `severityMeansSetupIncomplete()`
 is read at exactly one place — the DL-225 flipped-default advisory — and its only input is
@@ -1974,7 +2006,14 @@ captured from an undecorated buffer, so `line()`, `warn()`, `error()` and `info(
 bytes (DL-248). **Not one message line changed in the regeneration.** What moved is the closing tally
 — 6 fixtures gain a tally line where none existed (0→1), one goes 1→2, and one changes only the
 tally's own wording — **8 changed files, every one accounted for.** For those 7 the golden is a real
-site-discriminating witness *through the count*; it is still not a severity witness. **The primary
+site-discriminating witness *through the count*; it is still not a severity witness. **A SECOND
+regeneration followed the tally's re-wording** (the residual is "not counted here", not "silent"):
+the same 8 files, one line each, **every delta the tally's tail and no count moved** — and the fact
+that a corpus of 33 install shapes can absorb a correctness fix to an operator-facing sentence with
+`8 files changed, 8 insertions(+), 8 deletions(-)` and nothing else is itself the measurement that
+the wording is isolated from every other line. The `switch`-arm split reaches **no** fixture: the
+`Network` arm needs a real connection failure to `api.github.com`, which a `Http::fake` corpus
+cannot produce, so its only witness is `ReconcileRepoTokensCheckTest`. **The primary
 evidence is therefore per-site unit assertions, and 7 of the 21 sites had NO severity assertion at
 all** before this stage — the two `CANNOT VERIFY against the reconcile's issue_population` arms that
 resolve no board entry or several; the terminal compare's unresolvable-config, plural-terminal and
@@ -2002,14 +2041,33 @@ not cover an undisclosed re-assignment.
 being deleted (stage 8 narrowed it once). Deleting it would have read as *"everything unmeasured is
 now counted"*, which is a stronger claim than this stage earns: the rule is keyed on **what a leg
 concluded**, so it can only make DISCLOSED blindness precise, and a leg that never notices it measured
-nothing is still silent. The `check-json-contract.md` bound moved in step: `unvalidated` is now sound
+nothing falls outside it. **The residual is NOT "silence", and the first wording of this line said it
+was.** Such a leg may emit nothing — or emit the conclusion it would have drawn had the measurement
+happened, at that conclusion's severity; `EventFollowsConsumerCheck`'s undeclared-classifier advisory
+`warn`s off `CheckCommand`'s swallowed classifier throw and is the live instance (card#5698). Telling
+an operator the residual is silent implies everything they DO see is precise, which is the same
+overclaim one narrowing up, so the tally line now says the residual **is not counted here** and names
+both shapes. The `check-json-contract.md` bound moved in step: `unvalidated` is now sound
 evidence that a leg could not measure; its ABSENCE is still not evidence that everything was.
 
-**SALIENCE LOSS, ACCEPTED AND STATED.** Five swept sites name an actionable coord-config defect —
+**SALIENCE LOSS, ACCEPTED AND STATED — AND ITS FIRST STATEMENT WAS SCOPED TOO NARROWLY.** Five swept
+sites name an actionable coord-config defect —
 the terminal compare's *declares no terminal* / *resolves N terminals* / *not a stage on that board*
 arms, and both `CANNOT VERIFY against the reconcile's issue_population` arms — and go from yellow to
-plain. The argument for accepting it: what those legs report is that the COMPARISON could not be made,
-not that the config is wrong — presenting an unmade comparison in the colour reserved for a measured
+plain. **Scoping the disclosure to "coord-config" implied that cluster was the whole cost. It is
+not.** Re-read against all 21 messages, **seven spell an explicit operator ACTION** and lose their
+yellow, and they are DISJOINT from those five (the five diagnose without naming a command — their
+tails say only what will go wrong): the two *"Point `bridge.writeback.coord_config_path` (or
+`$COORD_CONFIG`) at coordination.config.json"* arms, `SshTransportProbe`'s two *"re-run as root"*
+pinned-line legs, and three `ChannelSnapshotProbe` arms — the deployed `package.json`
+absent/unreadable/malformed (one named action per cause), the BUNDLED `package.json` unreadable
+(*restore or repair a tracked file, and check this process can read it*), and a path this user cannot
+traverse (*re-run as the agent's user, or grant it traversal*). Twelve of 21 therefore carry a named
+defect or a named action into plain text.
+The argument for accepting it is the same for all of them: what those legs report is that the
+MEASUREMENT could not be made,
+not that anything is proven wrong — presenting an unmade measurement in the colour reserved for a
+measured
 anomaly is the miscalibration, not the fix for it. The line still prints, and it now enters the
 closing tally, which is a coverage statement the yellow never made.
 
@@ -2035,7 +2093,27 @@ Re-measured on a detached copy: **observed 45 · observed-via-abort 0 · UNOBSER
 $ctx->configDir !== null`, at a shifted line) — this stage neither closed a gap nor opened one, which
 is what a stage that changes no control flow in `handle()` should show.
 
-**Out of scope, deliberately** — card#5698's overclaim class, card#5701, and the `fail`/`ok`
+**⚠ THE STAGE SHIPS A VISIBLE SELF-CONTRADICTION, AND IT IS DISCLOSED RATHER THAN LEFT TO BE FOUND
+(card#5698).** On a `preload.json` response carrying neither swimlanes nor stages, the new §2b leg
+prints `unvalidated` — *"the board returned no workflow stages, so there was nothing to compare
+against"* — while the **swimlane leg one line above it** convicts the operator's config off the same
+unresolved read: *"swimlane_id X is not on board Y — created cards will 422"*. Two adjacent lines,
+one board read, opposite verdicts. It is real in both board-state checks
+(`BoardToolsBoardStateCheck`'s swimlane leg beside its `create_stage_id` leg, and
+`WritebackBoardStateCheck`'s swimlane leg beside its mapped-stage-id leg).
+**It is deliberately NOT fixed here, because the fix does not belong at these call sites.**
+`KanbanClient::idList()` (and `preloadStages()` with it) collapses three distinct outcomes into one
+`[]` — a genuinely empty collection, an ABSENT `data.swimlanes` / `data.workflows` key, and rows that
+were present but malformed — so no caller can tell "the board has no swimlanes" from "the read did
+not resolve". Guarding each call site would be N downstream patches over one upstream defect (canon
+#2/#5): the client owes its callers a result that distinguishes those cases, and until it does, every
+leg reading it has to guess. Filed on **card#5698** with that analysis. The §2b legs were still worth
+adding — they replace silence with a disclosure, which is strictly better than the swimlane leg's
+current state — but the asymmetry between the two is a defect this stage created visibility for and
+did not close.
+
+**Out of scope, deliberately** — card#5698's overclaim class (which now also carries the
+`idList()` collapse above), card#5701, and the `fail`/`ok`
 populations, which were **not** audited against the rule. Nothing here claims the vocabulary is
 precise everywhere.
 
@@ -2081,6 +2159,18 @@ The existing net goes through the command boundary, so an internal refactor keep
    The golden corpus supplies the breadth (all 33 install shapes must produce a parseable document
    whose verdict, exit and inventory counts agree with the committed **text** capture), so the two
    instruments compose: shape here, agreement there, and neither rebuilds the other's corpus.
+7. **Stage 10's instrument is the per-site assertion, because the golden corpus structurally
+   cannot witness it.** A severity change is invisible to the goldens: `GoldenCapture` reads an
+   undecorated `BufferedOutput`, so all 33 fixtures carry zero ANSI escapes and a `warn` and an
+   `unvalidated` line are byte-identical. The corpus sees the sweep only through the CLOSING
+   TALLY, and only where a fixture crosses 0→1. So the evidence is a per-site unit assertion on
+   each swept finding's severity, each watched RED before green — **7 sites had no severity
+   witness at all and had to be given one first**, which is why the order (assert `warn`, see it
+   pass, sweep, see it fail) is part of the method rather than bookkeeping. The call-site
+   tripwire is a second, weaker instrument: it pins the set of `unvalidated` construction sites
+   so an addition reds, and it required making `Finding`'s constructor private to be exhaustive
+   at all. **It detects that the set changed and forces a human decision; it cannot say which
+   severity is right, and it constrains no `warn` site.**
 
 ## Disproved claims — do not restate
 

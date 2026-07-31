@@ -281,12 +281,18 @@ class WritebackBoardStateCheckTest extends TestCase
      * mean something. Its control is `test_every_source_of_a_targeted_stage_id_…` above:
      * the same mapping against a board that DOES return stages produces the warn and not
      * this line, so the two states are distinguishable in both directions.
+     *
+     * ⚠ THE MAPPING HERE MUST TARGET A STAGE. This test originally used the shared
+     * `mapping()` helper, whose `stages` is `[]` — so it asserted the "could NOT check the
+     * mapped stage ids" line for a mapping that mapped no stage ids, which is the exact
+     * false positive the `$targets === []` guard now removes. A test standing on the
+     * defect's own shape cannot see the defect.
      */
     public function test_a_board_with_no_readable_stages_reports_the_comparison_as_unmade(): void
     {
         $this->fakeBoard(stages: []);
 
-        $findings = $this->findings($this->mapping());
+        $findings = $this->findings(new WritebackMapping(boardId: self::BOARD, stages: ['merged' => 52]));
 
         $this->assertCount(2, $findings);
         $this->assertStringContainsString('token sees', $findings[0]['message']);
@@ -296,6 +302,33 @@ class WritebackBoardStateCheckTest extends TestCase
         // Still no VERDICT: neither the all-clear nor an accusation about the config.
         $this->assertStringNotContainsString('all mapped stage ids exist', $this->joined($findings));
         $this->assertStringNotContainsString('references workflow stage id(s)', $this->joined($findings));
+    }
+
+    /**
+     * A mapping that targets NO stage id asks this leg no question, so it gets no answer —
+     * and that is a third state, distinct from both arms above.
+     *
+     * `stages` is optional in `writeback.json` (`WritebackConfig`: `$m['stages'] ?? []`) and
+     * so is every other target source, so `$targets === []` is a real, loadable config: a
+     * mapping that exists only to bind a repo to a board for by-ref correlation. Both other
+     * arms lie about it — the `unvalidated` says the ids "could NOT be checked" when none
+     * were mapped, and the `ok` says "all mapped stage ids exist" over an empty set — so
+     * this asserts the absence of BOTH, on a board that returns stages and on one that does
+     * not. The presence witness for the absence is the pair of tests above it: the same two
+     * board states with a mapping that DOES target a stage each produce their line.
+     */
+    public function test_a_mapping_targeting_no_stage_ids_says_nothing_about_them(): void
+    {
+        foreach ([[], [['id' => 50, 'name' => 'In Progress', 'position' => 1.0]]] as $stages) {
+            $this->fakeBoard(stages: $stages);
+
+            $findings = $this->findings(new WritebackMapping(boardId: self::BOARD, stages: []));
+
+            $this->assertCount(1, $findings, 'only the board-visibility line is owed');
+            $this->assertStringContainsString('token sees', $findings[0]['message']);
+            $this->assertStringNotContainsString('could NOT check the mapped stage ids', $this->joined($findings));
+            $this->assertStringNotContainsString('all mapped stage ids exist', $this->joined($findings));
+        }
     }
 
     // ---- DL-200: the coord-terminal cross-config compare (the residue arms) ----

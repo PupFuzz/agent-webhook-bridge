@@ -115,6 +115,11 @@ class BoardToolsBoardStateCheckTest extends TestCase
         $findings = $this->findings($this->agent());
         $unmeasured = $findings[1];
 
+        // EXACTLY two, matching this test's twin in `WritebackBoardStateCheckTest`: without
+        // the count a spurious THIRD finding — a second line about the same empty read, or
+        // a leg that started double-reporting — passes every assertion below, because they
+        // all index or search rather than bound.
+        $this->assertCount(2, $findings);
         $this->assertStringNotContainsString('is not a stage on board', $this->joined($findings));
         $this->assertSame(Severity::Unvalidated, $unmeasured['severity']);
         $this->assertStringContainsString('could NOT check create_stage_id 55', $unmeasured['message']);

@@ -69,9 +69,15 @@ namespace App\Bridge\Support;
  *
  * ⚠ WHAT THE RULE DOES NOT BUY, because the disclosure narrows rather than dies: it is
  * keyed on what a leg CONCLUDED, so it can only make DISCLOSED blindness precise. A leg
- * that fails to notice it did not measure something says nothing, and nothing here can
- * see that. The `fail` and `ok` populations were not audited against this rule when it was
- * written (DL-251) — it settles the `warn` ↔ `unvalidated` boundary and only that.
+ * that fails to NOTICE it did not measure something is outside the rule entirely, and it
+ * is not necessarily silent — it may say nothing, or it may report the conclusion it
+ * would have drawn had the measurement happened. Both shapes are live:
+ * `ReconcileRepoTokensCheck`'s unreachable-GitHub arm said nothing until DL-251 split it
+ * from `Ok`, and `EventFollowsConsumerCheck`'s undeclared-classifier advisory `warn`s off
+ * a swallowed throw where the classifier was never asked at all (card#5698 owns that
+ * class; DL-251 did not touch it). The `fail` and `ok` populations were not audited
+ * against this rule when it was written (DL-251) — it settles the `warn` ↔ `unvalidated`
+ * boundary and only that.
  */
 enum Severity: string
 {

@@ -27,7 +27,7 @@ use Throwable;
  *    `result.swimlane_id` must equal the configured scope. A mismatch is an isolation
  *    violation.
  *
- * IT FAILS WHERE THE OFFLINE LEGS WARN. A connection failure, non-2xx or isolation
+ * IT FAILS WHERE THE OFFLINE LEGS ONLY REPORT. A connection failure, non-2xx or isolation
  * mismatch yields `fail` (→ non-zero exit): this probe CERTIFIES the enablement before an
  * operator flips traffic on, so "could not certify" is the answer it exists to refuse.
  *
@@ -89,7 +89,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
             }
             // An enabled agent whose bearer can't be presented IS a broken enablement —
             // the probe certifies before the operator flips traffic on, so these fail
-            // (unlike the offline checks, which only warn).
+            // (unlike the offline checks, which never do).
             try {
                 $token = SecretFile::read($bt->tokenPath);
             } catch (Throwable $e) {
