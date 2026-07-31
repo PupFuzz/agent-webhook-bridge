@@ -786,11 +786,14 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $expectedWarns = $viaBranch = $viaTitle = 0;
 
         foreach ($corpus as $vector) {
-            // Each shape goes to the surface it can actually OCCUR on: a git ref
-            // carries neither whitespace nor a colon (`git check-ref-format`), so
-            // those spellings reach the probe only through a PR title. Both call
-            // sites are the same probe, and this covers both.
-            if (preg_match('/[\s:]/', $vector) === 1) {
+            // Each shape goes to the surface it can actually OCCUR on (DL-250):
+            // across printable ASCII `git check-ref-format` rejects exactly space,
+            // `*`, `:`, `?`, `[`, `\`, `^`, `~` (measured), so those spellings reach
+            // the probe only through a PR title. ALL of them, not just the two
+            // today's separators use — narrower, a separator added later routes
+            // `card^123` to classifyPush() as a ref git can never produce, and this
+            // leg keeps passing while asserting on an impossible input.
+            if (preg_match('/[\s:~^?*\[\\\\]/', $vector) === 1) {
                 $viaTitle++;
                 $r = $this->classify('pull_request.opened', ['title' => "Fix a thing {$vector}", 'head' => ['ref' => 'f']]);
             } else {

@@ -104,16 +104,64 @@ class PrTitleLintTest extends TestCase
         return $m[1];
     }
 
-    /** Run one extracted regex under real bash + `grep -qE`, folded as the step folds. */
-    private function grepMatches(string $regex, string $subject): bool
+    /**
+     * Run one extracted regex under real bash + `grep -E` over MANY subjects in ONE
+     * process, returning the subjects it matched, in corpus order. Batched because
+     * the second tie below asks about ~200 of them: a process per subject measured
+     * 3.0s against 0.02s batched. `grep` is line-oriented and so is the step — its
+     * subject is `printf '%s\n%s' "$TITLE" "$BRANCH"` — so one line per subject is
+     * exactly what CI evaluates. A subject carrying a newline would silently become
+     * two and shift every later line number, so that is asserted, not assumed.
+     *
+     * @param  list<string>  $subjects
+     * @return list<string>
+     */
+    private function grepMatchesAll(string $regex, array $subjects): array
     {
-        $pipeline = 'printf %s '.escapeshellarg($subject)
-            ." | tr '[:upper:]' '[:lower:]' | grep -qE ".escapeshellarg($regex);
+        $this->assertNotEmpty($subjects, 'a batched grep over nothing would report every regex as matching nothing');
+        $this->assertSame([], array_values(array_filter($subjects, fn (string $s) => str_contains($s, "\n"))),
+            'a batched subject must be one line — a newline in one shifts every later line number');
+
+        $pipeline = 'printf '.escapeshellarg('%s\n').' '
+            .implode(' ', array_map('escapeshellarg', $subjects))
+            ." | tr '[:upper:]' '[:lower:]' | grep -nE ".escapeshellarg($regex);
         $rc = 0;
         $out = [];
         exec('bash -c '.escapeshellarg($pipeline).' 2>/dev/null', $out, $rc);
 
-        return $rc === 0;
+        $matched = [];
+        foreach ($out as $line) {
+            $matched[] = $subjects[((int) explode(':', $line, 2)[0]) - 1];
+        }
+
+        return $matched;
+    }
+
+    /** Run one extracted regex under real bash + `grep -E`, folded as the step folds. */
+    private function grepMatches(string $regex, string $subject): bool
+    {
+        return $this->grepMatchesAll($regex, [$subject]) !== [];
+    }
+
+    /**
+     * `card<c>123` and `cards<c>123` for every printable-ASCII `c` — a SUPERSET of
+     * any single-character separator class the YAML's `looks` regex can spell, which
+     * is what lets the tie below compare over both sides' domains without parsing
+     * the YAML's bracket class. Parsing it was the alternative and is the wrong
+     * failure mode for a behavioural tie: it reds on a cosmetic regex edit and says
+     * nothing about what either engine answers.
+     *
+     * @return list<string>
+     */
+    private static function singleCharacterSeparatorVectors(): array
+    {
+        $vectors = [];
+        for ($code = 0x20; $code <= 0x7E; $code++) {
+            $vectors[] = 'card'.chr($code).'123';
+            $vectors[] = 'cards'.chr($code).'123';
+        }
+
+        return $vectors;
     }
 
     /**
@@ -255,33 +303,44 @@ class PrTitleLintTest extends TestCase
      * catch `cards #123` and miss `cards#123` — the one-character shape of the
      * defect that started this — and every other leg here would stay green.
      *
-     * Answer set to answer set over the probe's own derived cross-product, which is
-     * generated from the separator data rather than typed here, plus negatives so
-     * the comparison cannot pass as `[all-true] === [all-true]`.
+     * Answer set to answer set, over the UNION of both sides' separator domains —
+     * and the union is what makes the tie BIDIRECTIONAL. Driven off `probeVectors()`
+     * alone it catches only a WIDENING: the corpus shrinks with the data, so a
+     * separator REMOVED from `NEAR_MISS_SEPARATORS` is simply never asked of the bash
+     * side and the tie stays green (measured). That is one corpus leaving every guard
+     * blind together — the defect DL-250 exists to close, reproduced inside DL-250's
+     * own guard. So the PHP side contributes `probeVectors()`, multi-character
+     * members included, and the YAML side contributes every single-character
+     * separator it could spell; a narrowing on either side now leaves the other
+     * side's separator in the corpus and the answer sets diverge.
      *
-     * The corpus is deliberately NOT the whole vector set: `looks` is legitimately
-     * LOOSER than the runtime probe (it needs no digit after the separator, so
-     * `card-layout-rework` warns in CI and stays out of the bridge log), and its
-     * `[0-9]` is ASCII where the grammar's Unicode row is not. Equality holds on the
-     * cross-product, where both sides carry a digit and no non-ASCII.
+     * BOUND. Single-character separators are exhaustive on both sides by
+     * construction; multi-character ones are covered only as `NEAR_MISS_SEPARATORS`
+     * declares them, so one added to the YAML class alone sits outside the corpus. A
+     * two-character cross-product cannot close that: `cards-x123` would red on
+     * correct code, because `looks` is legitimately LOOSER than the runtime probe (it
+     * needs no digit after the separator, so `card-layout-rework` warns in CI and
+     * stays out of the bridge log). Equality holds where a digit follows the
+     * separator and nothing is non-ASCII, which is what this corpus is.
      */
     public function test_the_looks_predicate_and_the_runtime_probe_return_the_same_answer_set(): void
     {
         $looks = $this->stepRegex('Warn on a card token', 'looks');
-        $corpus = array_merge(CardTokenGrammar::probeVectors(), [
-            'supports card 2 in prose', 'card 123', 'cards 123', 'discards 5 items',
-            'wildcards 3 more', 'scorecard_2', 'no token at all',
-        ]);
+        $corpus = array_values(array_unique(array_merge(
+            CardTokenGrammar::probeVectors(),
+            self::singleCharacterSeparatorVectors(),
+            ['supports card 2 in prose', 'card 123', 'cards 123', 'discards 5 items',
+                'wildcards 3 more', 'scorecard_2', 'no token at all'],
+        )));
 
-        $lintSays = $probeSays = [];
-        foreach ($corpus as $text) {
-            $lintSays[$text] = $this->grepMatches($looks, $text);
-            $probeSays[$text] = CardTokenGrammar::looksLikeCardToken($text);
-        }
+        $probeRecognises = array_values(array_filter($corpus,
+            fn (string $text) => CardTokenGrammar::looksLikeCardToken($text)));
+        $lintRecognises = $this->grepMatchesAll($looks, $corpus);
 
-        $this->assertContains(true, $probeSays, 'the tie needs recognised shapes to compare');
-        $this->assertContains(false, $probeSays, 'the tie needs unrecognised shapes, or it is [all-true] === [all-true]');
-        $this->assertSame($probeSays, $lintSays,
+        $this->assertNotEmpty($probeRecognises, 'the tie needs recognised shapes to compare');
+        $this->assertNotSame(count($corpus), count($probeRecognises),
+            'the tie needs unrecognised shapes, or it is [all-true] === [all-true]');
+        $this->assertSame($probeRecognises, $lintRecognises,
             "the lint's `looks` predicate and the runtime near-miss probe disagree about which shapes appear to name a card");
     }
 
