@@ -43,7 +43,7 @@ The single `ClassifyContext` parameter (DL-025) replaced a positional signature,
 
 - `$intents` — `list<Intent>` staged to `inbox.jsonl`
 - `$targets` — `list<ReactionTarget>` dispatched against the handler registry
-- `$reattributedActor` — *optional* `?Actor`; only for a shared upstream identity (see [Per-agent echo for a shared upstream identity](#per-agent-echo-for-a-shared-upstream-identity)). Null in the common case.
+- `$reattributedActor` — *optional* `?Actor`; only for a shared upstream identity (see [Per-agent echo for a shared upstream identity](#per-agent-echo-for-a-shared-upstream-identity)). Null unless your classifier sets it — and it is an **echo** input, never a display value; among the shipped classifiers `CoordinationClassifier` sets it on every coord-message event whose author it recovers.
 
 ### Minimal worked example
 
@@ -303,7 +303,11 @@ public function classify(ClassifyContext $ctx): ClassifyResult
         }
     }
 
-    // Build intents/targets as normal, using $reattributed ?? $actor for display.
+    // Build intents/targets as normal. What you recovered here is the ECHO input
+    // (the value the dispatcher DROPS on) — NOT a display value: what an Intent
+    // should show is a separate question, and on an action the actor did not
+    // author the two answers differ. See the bullets below, and
+    // consumer-guide.md § Coordination intents: who acted vs. whose thread.
     $intents = [/* ... */];
 
     return new ClassifyResult(intents: $intents, reattributedActor: $reattributed);
@@ -378,7 +382,7 @@ public function classify(ClassifyContext $ctx): ClassifyResult
 
 The three-state return is the contract: `true` wake, `false` skip, **`null` = no `TO:` line → fall back to labels** (a bare/empty `TO:` is treated as absent, so a typo can't silently suppress everyone). Matching is case-insensitive; the first `TO:` line wins; `all` addresses every agent. **Issue/card** events (opened/closed/labeled) keep using labels — only comment bodies carry a `TO:` line. Net: zero false-negatives (every addressed comment still delivered), no more cross-agent wake-noise on a shared thread.
 
-> **⚠ Footgun — route a comment by the comment's OWN `TO:`/`FROM:`, never the parent issue's labels (DL-034).** A thread's issue/card labels freeze at thread-open. If you route *comments* by those labels, a reply that **reverses direction** (B answering A on a thread originally A→B) is silently dropped — the labels still say "A→B" while the reply is "B→A". This is the single most common shared-identity routing bug. Use the body's lines as authoritative: `RecipientAddressing::addresses($body, $me)` for the recipient (above) and **`RecipientAddressing::author($body)`** for the sender, with the label behavior only as the `null` fallback. Worked role-reversal case:
+> **⚠ Footgun — route a comment by the comment's OWN `TO:`/`FROM:`, never the parent issue's labels (DL-035).** A thread's issue/card labels freeze at thread-open. If you route *comments* by those labels, a reply that **reverses direction** (B answering A on a thread originally A→B) is silently dropped — the labels still say "A→B" while the reply is "B→A". This is the single most common shared-identity routing bug. Use the body's lines as authoritative: `RecipientAddressing::addresses($body, $me)` for the recipient (above) and **`RecipientAddressing::author($body)`** for the sender, with the label behavior only as the `null` fallback. Worked role-reversal case:
 >
 > ```php
 > use App\Bridge\Support\RecipientAddressing;

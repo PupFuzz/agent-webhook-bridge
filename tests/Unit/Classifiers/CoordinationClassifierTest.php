@@ -1179,7 +1179,11 @@ class CoordinationClassifierTest extends TestCase
         $this->assertNull($r->intents[0]->actor->name);
         $this->assertSame('unresolved', $r->intents[0]->payload['actor_attribution']);
         $this->assertSame('other', $r->intents[0]->payload['thread_author']);
-        $this->assertStringNotContainsString('from other', $r->intents[0]->summary);
+        // WHOLE STRING, not "does not contain 'from other'": an absence assertion
+        // passes on an implementation that dropped the who-slot entirely or emitted
+        // a bare `from `, so it witnesses nothing. This pins what the reader sees —
+        // the raw actor id in the slot the opener's name used to occupy.
+        $this->assertSame('coord comment #9 from 99: T', $r->intents[0]->summary);
     }
 
     public function test_unresolved_and_unattributable_are_distinguishable_states(): void
@@ -1241,8 +1245,12 @@ class CoordinationClassifierTest extends TestCase
     public function test_authoring_actions_cover_every_handled_family_and_are_handled_actions(): void
     {
         // The two constants must stay keyed alike: a family added to HANDLED with no
-        // AUTHORING_ACTIONS entry would fatal on the derivation, and an authoring
-        // action that is not itself surfaced would never be reached.
+        // AUTHORING_ACTIONS entry raises `Undefined array key` on the derivation — a
+        // PHP warning the framework's error handler promotes to ErrorException, which
+        // the dispatcher's classify catch records as that agent's dispatch error
+        // (loud and replayable, not a silent non-authoring default; not a fatal
+        // either) — and an authoring action that is not itself surfaced would never
+        // be reached.
         $ref = new \ReflectionClass(CoordinationClassifier::class);
         $handled = $ref->getConstant('HANDLED');
         $authoring = $ref->getConstant('AUTHORING_ACTIONS');

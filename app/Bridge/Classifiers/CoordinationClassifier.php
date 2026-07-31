@@ -433,9 +433,13 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         };
 
         // The rendered summary is the ONLY surface a reading agent consumes, so it
-        // carries the same three states as the payload — and on `unattributable` it
-        // names the thread author AS the thread author instead of putting them in
-        // the slot a reader reads as "who did this".
+        // draws the ACTOR-vs-AUTHOR distinction whose absence misled one: on
+        // `unattributable` it names the thread author AS the thread author instead
+        // of putting them in the slot a reader reads as "who did this". It carries
+        // TWO of the payload's three states, not all three: `resolved` and
+        // `unresolved` both render `from <x>` (a recovered name, or the raw actor
+        // id / `?` when nobody is named), so `payload.actor_attribution` is the
+        // only surface that separates those two.
         $by = $attributionState === 'unattributable'
             ? ($threadAuthor !== null
                 ? "by an unattributable actor (thread opened by {$threadAuthor})"
@@ -1208,8 +1212,13 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * opener as the agent that acted (roundtable #209 — a seat read one such
      * summary and posted the wrong agent as fact).
      *
-     * `actor` — WHO PERFORMED THIS EVENT, or null when the event carries no
-     * evidence of that. Evidence, in precedence order:
+     * `actor` — WHO PERFORMED THIS EVENT as RECOVERED FROM THE EVENT'S OWN
+     * CONTENT, or null. Null has two causes, and the caller tells them apart by
+     * reading `$actor->name`: either the event carries no evidence of who acted
+     * (the case below), or the registry ALREADY named the actor — a distinct,
+     * non-shared upstream account — so there is nothing to recover and the
+     * caller keeps that name, which reports `resolved` on ANY action, authoring
+     * or not. Evidence this method reads, in precedence order:
      *   (a) `scope_author_map[scope]` — one agent does everything on that repo, so
      *       it names the actor of ANY action there, and it is the only resolver for
      *       a LABEL-LESS impl event;

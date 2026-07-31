@@ -76,7 +76,7 @@ class RecipientAddressingTest extends TestCase
         $this->assertTrue(RecipientAddressing::addresses("intro\rTO: agentB\rbody", 'agentB'));
     }
 
-    // --- author() (FROM: line) — DL-034 -------------------------------------
+    // --- author() (FROM: line) — DL-035 -------------------------------------
 
     public function test_author_returns_the_from_line_name(): void
     {
