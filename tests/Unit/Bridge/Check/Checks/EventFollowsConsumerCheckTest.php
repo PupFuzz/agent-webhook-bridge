@@ -4,6 +4,7 @@ namespace Tests\Unit\Bridge\Check\Checks;
 
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Checks\EventFollowsConsumerCheck;
+use App\Bridge\Check\EventConsumers\EventConsumerReconciler;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Models\WebhookEvent;
@@ -15,6 +16,12 @@ use Tests\TestCase;
 
 /**
  * `event.follows_consumer` (card#4183 / DL-196), migrated whole in DL-242 stage 7a.
+ *
+ * IT COVERS THE CHECK'S RENDERING AND THE RECONCILER FEEDING IT, as one composition —
+ * see {@see self::findings()}. DL-249 stage 9 moved the derivation into
+ * {@see EventConsumerReconciler} so a second front door could read it; the DATA that
+ * front door emits is asserted separately in `EventConsumerReconcilerTest`, and what
+ * stays here is every claim about the operator-facing sentences.
  *
  * THE UNIT TESTS ARE THE WHOLE PROOF FOR THREE OF THIS CHECK'S FOUR MESSAGE SHAPES.
  * Measured from the rendered golden files, exactly one of the 33 fixtures prints an
@@ -52,9 +59,25 @@ class EventFollowsConsumerCheckTest extends TestCase
 
     public function test_a_scope_map_that_is_empty_yields_nothing(): void
     {
-        // The early return, and the reason no install without github subscriptions
-        // pays for a query at all.
+        // The reason no install without github subscriptions pays for a query at all:
+        // the reconciler has nothing to walk, so the renderer has nothing to say.
         $this->assertSame([], $this->findings(new CheckContext));
+    }
+
+    public function test_a_context_whose_reconciliation_never_ran_is_silent_rather_than_clean(): void
+    {
+        // DL-249 stage 9's one new arm, and the ONLY test that hands the check a context
+        // `CheckCommand` cannot produce — it publishes the reconciliation unconditionally.
+        // It exists because the field is nullable and null is not an empty reconciliation:
+        // an empty one is "no scope had anything to say", null is "nobody asked". Both
+        // render nothing here, and asserting that is what keeps a future edit from making
+        // null mean the FIRST of those.
+        $ctx = new CheckContext;
+        $ctx->githubScopeConsumers = [self::SCOPE => [$this->consumer('wb', consumed: [])]];
+        $this->arrived('issues.closed');
+
+        $this->assertNull($ctx->eventConsumers);
+        $this->assertSame([], iterator_to_array((new EventFollowsConsumerCheck)->run($ctx), false));
     }
 
     public function test_a_scope_where_nothing_arrived_is_silent(): void
@@ -389,9 +412,23 @@ class EventFollowsConsumerCheckTest extends TestCase
         $event->forceFill(['received_at' => self::PINNED])->save();
     }
 
-    /** @return list<Finding> */
+    /**
+     * Drive the same two halves `CheckCommand::handle()` does: reconcile, publish on the
+     * context, then render.
+     *
+     * DL-249 stage 9 split the derivation out ({@see EventConsumerReconciler}), and this
+     * helper deliberately drives BOTH rather than handing the check a pre-built
+     * reconciliation. Every assertion in this class is about what the operator reads, and
+     * a renderer fed synthetic input proves the sentences while saying nothing about
+     * whether the query still produces what they describe — the two halves have to
+     * compose, and this is the only place that is checked end to end.
+     *
+     * @return list<Finding>
+     */
     private function findings(CheckContext $ctx): array
     {
+        $ctx->eventConsumers = (new EventConsumerReconciler)->reconcile($ctx->githubScopeConsumers);
+
         return iterator_to_array((new EventFollowsConsumerCheck)->run($ctx), false);
     }
 }

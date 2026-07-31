@@ -11,8 +11,9 @@ namespace App\Bridge\Check;
  * never invoked is not an inventory of anything.
  *
  * IT IS DATA, NOT PROSE. The wording of the operator-facing summary belongs to the
- * renderer, which stage 9 splits into a text/json pair; putting a sentence here would
- * put the text renderer's voice inside the thing the json renderer also reads.
+ * renderer, and since DL-249 stage 9 there are two of them — `CheckCommand`'s inventory
+ * line and {@see CheckJsonRenderer} — so a sentence here would put the text renderer's
+ * voice inside the thing the json renderer also reads.
  *
  * IT ACCOUNTS FOR EVERY REGISTERED CHECK ON EVERY RUN THAT COMPLETES, and the qualifier is
  * load-bearing rather than pedantic: {@see CheckRunner} deliberately does not catch, so a
