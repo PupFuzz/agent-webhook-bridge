@@ -98,11 +98,17 @@ use App\Bridge\Writeback\WritebackMapping;
  * repo and the cross-project channel unchanged.
  *
  * Shared-identity (DL-002): every agent posts under ONE github account, so
- * `Actor.name` is null; the author is recovered (`reattribute()`) from, in order,
- * the `scope_author_map` (a single-author repo — resolves LABEL-LESS impl events),
- * the `from:<agent>` label, then the body `FROM:` line, and returned as
- * `reattributedActor` so the dispatcher suppresses an agent's own writes
- * post-classify (enrichment, never a filter).
+ * `Actor.name` is null and attribution must come from the event's own content.
+ * {@see attribute()} resolves TWO facts and keeps them apart (DL-252): WHO ACTED
+ * (the Intent's `actor`, from the `scope_author_map` — a single-author repo — else
+ * the `from:<agent>` label or the body `FROM:` line, and each of those two only on
+ * the action that CREATED it, {@see AUTHORING_ACTIONS}) and WHOSE SUBJECT it is
+ * (the frozen thread author, carried as `payload.thread_author`). On an action that
+ * creates nothing — `reopened`, `closed`, `ready_for_review`, … — the actor is
+ * UNRECOVERABLE and the Intent says so explicitly (`payload.actor_attribution`),
+ * rather than naming the thread's opener. `ClassifyResult::reattributedActor`
+ * deliberately keeps the pre-DL-252 union of both facts, because the dispatcher
+ * DROPS on it (DL-005) — see {@see attribute()}'s `echo_author`.
  *
  * Stateless: `$agent`/config are read as call-locals (one cached instance serves
  * every agent in the per-agent dispatch loop — never stash on the instance).
@@ -114,6 +120,28 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         'issues.' => ['opened', 'reopened'],
         'issue_comment.' => ['created'],
         'pull_request.' => ['opened', 'reopened', 'ready_for_review'],
+    ];
+
+    /**
+     * The ONE action per event family on which the event's ACTOR is also the
+     * AUTHOR of the text {@see subject} reads — the action that creates that text
+     * (and, for an issue/PR, the action the `from:`/`to:` labels freeze at).
+     *
+     * Every other action leaves author and actor free to differ (anyone with write
+     * access reopens, closes, labels, or marks ready-for-review a subject someone
+     * else opened), and under a shared upstream identity (DL-002) the webhook
+     * `sender` is the same account for every agent — so on those actions NOTHING in
+     * the payload identifies who acted. Keyed on the same three prefixes as
+     * {@see HANDLED} (pinned by a test, since the two constants must cover the same
+     * families) and an ALLOW-LIST, not a deny-list: an action nobody enumerated here
+     * — a new GitHub action, or one an install adds via `coord_extra_actions` — is
+     * treated as non-authoring, so a widening can only lose a name, never invent
+     * one. DL-252.
+     */
+    private const AUTHORING_ACTIONS = [
+        'issues.' => 'opened',
+        'issue_comment.' => 'created',
+        'pull_request.' => 'opened',
     ];
 
     /**
@@ -372,9 +400,51 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             return null;
         }
 
-        // §1 shared-identity author recovery (scope-map primary, label/body fallback).
-        $reattributed = $this->reattribute($actor, $ctx->scopeId, $labels, $subject['body'], $subject['kind'] === 'comment', $cfg);
-        $who = $this->displayName($reattributed, $actor);
+        // §1 shared-identity attribution — TWO facts, kept apart (DL-252): who
+        // ACTED (null ⇒ this event carries no evidence of it) and whose SUBJECT
+        // this is. `echo_author` is the pre-DL-252 union of the two, and only the
+        // dispatcher's echo check reads it.
+        $attribution = $this->attribute(
+            $actor, $ctx->scopeId, $labels, $subject['body'],
+            subjectIsComment: $subject['kind'] === 'comment',
+            actorAuthoredSubject: $subject['authored_by_actor'],
+            cfg: $cfg,
+        );
+        $acting = $attribution['actor'];
+        $threadAuthor = $attribution['thread_author'];
+        $who = $this->displayName($acting, $actor);
+
+        // THE ATTRIBUTION MARKER IS A VALUE, NEVER AN ABSENT KEY. `actor.name` is
+        // already nullable and null there means "the registry could not resolve it",
+        // so an absent field and a null one read identically — and to a reading
+        // agent an absent field renders as nothing at all, which is indistinguishable
+        // from a summary that simply did not mention who acted. That ambiguity is
+        // what let a seat supply an actor from context and post it as fact
+        // (roundtable #209). Three states, always present, always one of these:
+        //   resolved       — `from` names the agent that performed THIS event
+        //   unresolved     — this action could carry actor evidence; none was present
+        //   unattributable — this action carries NO evidence of who acted, and under
+        //                    a shared identity none exists to find
+        $actingName = $acting->name ?? $actor->name;   // null ⇒ nobody is named for this event
+        $attributionState = match (true) {
+            $actingName !== null => 'resolved',
+            $subject['authored_by_actor'] => 'unresolved',
+            default => 'unattributable',
+        };
+
+        // The rendered summary is the ONLY surface a reading agent consumes, so it
+        // draws the ACTOR-vs-AUTHOR distinction whose absence misled one: on
+        // `unattributable` it names the thread author AS the thread author instead
+        // of putting them in the slot a reader reads as "who did this". It carries
+        // TWO of the payload's three states, not all three: `resolved` and
+        // `unresolved` both render `from <x>` (a recovered name, or the raw actor
+        // id / `?` when nobody is named), so `payload.actor_attribution` is the
+        // only surface that separates those two.
+        $by = $attributionState === 'unattributable'
+            ? ($threadAuthor !== null
+                ? "by an unattributable actor (thread opened by {$threadAuthor})"
+                : 'by an unattributable actor (thread author unknown)')
+            : "from {$who}";
 
         if ($subject['kind'] === 'comment') {
             $to = RecipientAddressing::recipients($subject['body']);   // list<string>|null
@@ -387,12 +457,12 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             kind: 'coord_'.$subject['kind'],
             subjectId: (string) $subject['number'],
             provider: $ctx->provider,
-            actor: $reattributed ?? $actor,
+            actor: $acting ?? $actor,
             summary: sprintf(
-                'coord %s #%s from %s%s: %s',
+                'coord %s #%s %s%s: %s',
                 $subject['kind'],
                 $subject['number'],
-                $who,
+                $by,
                 $toStr !== '' ? " to {$toStr}" : '',
                 $this->oneLine($subject['title'] !== '' ? $subject['title'] : $subject['body']),
             ),
@@ -403,7 +473,9 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'comment_id' => $subject['comment_id'] ?? null,
                 'comment_created_at' => $subject['comment_created_at'] ?? null,
                 'labels' => $labels,
-                'from' => $who,
+                'from' => $attributionState === 'unattributable' ? null : $who,
+                'actor_attribution' => $attributionState,
+                'thread_author' => $threadAuthor,
                 'to' => $to,
             ],
         );
@@ -411,7 +483,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         return new ClassifyResult(
             intents: [$intent],
             targets: $forMe ? $this->wakePush($intent, $ctx) : [],   // non-addressed inbox_stage: staged, never woken
-            reattributedActor: $reattributed,
+            reattributedActor: $attribution['echo_author'],
         );
     }
 
@@ -565,8 +637,18 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      */
     private function makeImplIntent(array $signal, ClassifyContext $ctx, ClassifierConfig $cfg): Intent
     {
-        $reattributed = $this->reattribute($ctx->actor, $ctx->scopeId, [], '', false, $cfg);
-        $who = $this->displayName($reattributed, $ctx->actor);
+        // No labels and no body ⇒ the scope→author map is the ONLY resolver here,
+        // and it names the actor on any action by its own single-author premise. So
+        // this family cannot stamp a thread author into an actor (DL-252 does not
+        // reach it) and the two flags below are inert — both inputs they gate are
+        // empty by construction.
+        $attribution = $this->attribute(
+            $ctx->actor, $ctx->scopeId, [], '',
+            subjectIsComment: false,
+            actorAuthoredSubject: false,
+            cfg: $cfg,
+        );
+        $who = $this->displayName($attribution['actor'], $ctx->actor);
 
         return new Intent(
             kind: 'impl_'.$signal['kind'],
@@ -1032,8 +1114,14 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * Map the event family to a normalized subject, or null if not a handled
      * "new coordination message" event.
      *
+     * `authored_by_actor` is derived HERE, from the same `$prefix`/`$action` pair
+     * that selects the subject, so it cannot drift from the event it describes: it
+     * is true iff this action created the returned `body` ({@see AUTHORING_ACTIONS}),
+     * which is what makes the event's actor its author. {@see attribute()} is its
+     * only reader.
+     *
      * @param  array<mixed>  $payload
-     * @return array{kind:string,number:int|string,title:string,body:string,url:string,comment_id?:int|string|null,comment_created_at?:string|null}|null
+     * @return array{kind:string,number:int|string,title:string,body:string,url:string,authored_by_actor:bool,comment_id?:int|string|null,comment_created_at?:string|null}|null
      */
     private function subject(string $eventType, array $payload, ClassifierConfig $cfg): ?array
     {
@@ -1051,6 +1139,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             if (! in_array($action, $allowed, true)) {
                 return null;
             }
+            $authoredByActor = $action === self::AUTHORING_ACTIONS[$prefix];
 
             if ($prefix === 'issue_comment.') {
                 $comment = $payload['comment'] ?? null;
@@ -1065,6 +1154,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                     'title' => (string) ($issue['title'] ?? ''),
                     'body' => (string) ($comment['body'] ?? ''),
                     'url' => (string) ($comment['html_url'] ?? ''),
+                    'authored_by_actor' => $authoredByActor,
                     'comment_id' => $comment['id'] ?? null,
                     'comment_created_at' => isset($comment['created_at']) ? (string) $comment['created_at'] : null,
                 ];
@@ -1082,6 +1172,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'title' => (string) ($obj['title'] ?? ''),
                 'body' => (string) ($obj['body'] ?? ''),
                 'url' => (string) ($obj['html_url'] ?? ''),
+                'authored_by_actor' => $authoredByActor,
             ];
         }
 
@@ -1115,51 +1206,113 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     }
 
     /**
-     * Recover the author for a shared-identity event (Actor.name === null), else
-     * null (distinct account — pre-classify echo already handled it).
+     * The three attribution facts a shared-identity coordination event supports.
+     * Pre-DL-252 this method returned ONE value that was all three at once, and
+     * placing it in an `Actor` made every bodyless action report its thread's
+     * opener as the agent that acted (roundtable #209 — a seat read one such
+     * summary and posted the wrong agent as fact).
      *
-     * §1 order: (a) `scope_author_map[scope]` — a single-author repo, so a
-     * LABEL-LESS impl event still attributes; else (b) the `from:<agent>` label;
-     * else (c) the body `FROM:` line. For a COMMENT the body FROM: wins over the
-     * label (DL-034 — the from: label is the frozen thread-opener).
+     * `actor` — WHO PERFORMED THIS EVENT as RECOVERED FROM THE EVENT'S OWN
+     * CONTENT, or null. Null has two causes, and the caller tells them apart by
+     * reading `$actor->name`: either the event carries no evidence of who acted
+     * (the case below), or the registry ALREADY named the actor — a distinct,
+     * non-shared upstream account — so there is nothing to recover and the
+     * caller keeps that name, which reports `resolved` on ANY action, authoring
+     * or not. Evidence this method reads, in precedence order:
+     *   (a) `scope_author_map[scope]` — one agent does everything on that repo, so
+     *       it names the actor of ANY action there, and it is the only resolver for
+     *       a LABEL-LESS impl event;
+     *   (b) the `from:<agent>` label — ONLY on the action that OPENED the labelled
+     *       subject. The label freezes at thread-open (DL-035), so on every later
+     *       action it names the opener, who need not be the actor;
+     *   (c) the body `FROM:` line — ONLY on the action that WROTE that body (an
+     *       opened issue/PR, a created comment); on any other action the body is
+     *       older text somebody else wrote.
+     * Both gates are {@see AUTHORING_ACTIONS} via `$actorAuthoredSubject`. Null is
+     * NOT "not implemented": under a shared upstream identity (DL-002) the webhook
+     * `sender` is one account for every agent, so on those actions the true actor
+     * is unrecoverable and the honest report is that nobody may be named.
+     *
+     * `thread_author` — WHOSE SUBJECT THIS IS: the frozen `from:` label, else — for
+     * an issue/PR, whose body IS the opening post — that body's `FROM:` line. A
+     * comment's body names the COMMENTER, so it is deliberately not a fallback
+     * here. A real datum; never evidence of who acted on a later event.
+     *
+     * `echo_author` — the pre-DL-252 UNION of the two above (map, then body-or-label
+     * with a comment preferring the body), UNCHANGED and read by exactly one
+     * caller: `ClassifyResult::reattributedActor`, on which the dispatcher re-runs
+     * the per-agent echo check and DROPS the dispatch (DL-005). Narrowing it to
+     * `actor` would change WHICH events are delivered, not how they read — a
+     * different, hard-gated change. Its known cost is recorded in DL-252 (f).
+     *
+     * @param  list<string>  $labels
+     * @return array{actor: ?Actor, thread_author: ?string, echo_author: ?Actor}
+     */
+    private function attribute(Actor $actor, string $scopeId, array $labels, string $body, bool $subjectIsComment, bool $actorAuthoredSubject, ClassifierConfig $cfg): array
+    {
+        $fromLabel = $this->fromLabel($labels);
+        $fromBody = $this->fromBodyLine($body);
+        $threadAuthor = $fromLabel ?? ($subjectIsComment ? null : $fromBody);
+
+        if ($actor->name !== null) {
+            // A distinct account: the registry named the actor and the pre-classify
+            // echo gate already acted on it — there is nothing to recover.
+            return ['actor' => null, 'thread_author' => $threadAuthor, 'echo_author' => null];
+        }
+
+        $mapped = $cfg->scopeAuthorMap[strtolower($scopeId)] ?? null;
+
+        $actorEvidence = null;
+        if ($actorAuthoredSubject) {
+            $actorEvidence = ($subjectIsComment ? null : $fromLabel) ?? $fromBody;
+        }
+
+        return [
+            'actor' => $this->named($actor, $mapped ?? $actorEvidence),
+            'thread_author' => $threadAuthor,
+            'echo_author' => $this->named($actor, $mapped ?? ($subjectIsComment
+                ? ($fromBody ?? $fromLabel)
+                : ($fromLabel ?? $fromBody))),
+        ];
+    }
+
+    /**
+     * The first `from:<agent>` label's agent, or null (a bare `from:` names nobody).
+     * Labels arrive lowercased from {@see labels()}.
      *
      * @param  list<string>  $labels
      */
-    private function reattribute(Actor $actor, string $scopeId, array $labels, string $body, bool $preferBody, ClassifierConfig $cfg): ?Actor
+    private function fromLabel(array $labels): ?string
     {
-        if ($actor->name !== null) {
-            return null;
-        }
-
-        // (a) scope→author-agent map (single-author repo) — the §1 superset.
-        $mapped = $cfg->scopeAuthorMap[strtolower($scopeId)] ?? null;
-
-        $fromLabel = null;
         foreach ($labels as $label) {
             if (str_starts_with($label, 'from:')) {
-                $fromLabel = substr($label, 5);
-                break;
+                $name = substr($label, 5);
+
+                return $name === '' ? null : $name;
             }
         }
-        $fromLabel = ($fromLabel === '') ? null : $fromLabel;
 
-        $fromBody = preg_match('/^\s*FROM:\s*(\S+)/mi', $body, $m) === 1
+        return null;
+    }
+
+    /** The first body `FROM:` line's agent, lowercased, or null. */
+    private function fromBodyLine(string $body): ?string
+    {
+        return preg_match('/^\s*FROM:\s*(\S+)/mi', $body, $m) === 1
             ? strtolower($m[1])
             : null;
+    }
 
-        // scope-map is primary (resolves label-less impl events, and a
-        // single-author repo has an unambiguous author); label/body only apply on
-        // a multi-author repo (no map entry), where a comment prefers the body.
-        $labelOrBody = $preferBody
-            ? ($fromBody ?? $fromLabel)
-            : ($fromLabel ?? $fromBody);
-        $from = $mapped ?? $labelOrBody;
-
-        if ($from === null || $from === '') {
-            return null;
-        }
-
-        return new Actor(id: $actor->id, name: $from, isKnownAgent: true);
+    /**
+     * A recovered name as a shared-identity Actor; a name nobody supplied is no
+     * Actor. The pre-DL-252 empty-string guard here is gone rather than carried
+     * forward: every input is non-empty-or-null at its own source — `scope_author_map`
+     * values are refused empty at config parse ({@see ClassifierConfig}), {@see fromLabel}
+     * maps a bare `from:` to null, and {@see fromBodyLine}'s `\S+` cannot match empty.
+     */
+    private function named(Actor $actor, ?string $name): ?Actor
+    {
+        return $name === null ? null : new Actor(id: $actor->id, name: $name, isKnownAgent: true);
     }
 
     /**
@@ -1179,14 +1332,15 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     }
 
     /**
-     * The human display name for an event's author: the recovered (re-attributed)
-     * name when a shared identity was resolved, else the actor's own name/id,
-     * else '?'. Never null.
+     * The human display name for whoever ACTED: the recovered agent name when a
+     * shared identity resolved one, else the actor's own name/id, else '?'. Never
+     * null — so a caller with nothing to name still renders something, which is
+     * exactly why a caller that must not IMPLY an actor cannot use this (DL-252).
      */
-    private function displayName(?Actor $reattributed, Actor $actor): string
+    private function displayName(?Actor $acting, Actor $actor): string
     {
-        if ($reattributed !== null && $reattributed->name !== null) {
-            return $reattributed->name;
+        if ($acting !== null && $acting->name !== null) {
+            return $acting->name;
         }
 
         return $actor->name ?? $actor->id ?? '?';
