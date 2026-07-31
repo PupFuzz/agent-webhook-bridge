@@ -155,7 +155,9 @@ final class WritebackMappingConfigCheck implements Check
      * `issue_population` (writeback.json) to the reconcile's (`$COORD_CONFIG`, its source
      * of truth) so `bridge-on-all + reconcile-on-prefixed` — the exact non-prefixed
      * no-backstop gap — is a CHECKABLE DISAGREE, not silence. Three-state (agree /
-     * DISAGREE / CANNOT-VERIFY), warn-never-fail. CANNOT-VERIFY is kept DISTINCT from
+     * DISAGREE / CANNOT-VERIFY), never-fail — and since DL-251 the three states carry
+     * three severities: `ok`, `warn`, and `unvalidated` for CANNOT-VERIFY, which had been
+     * a second `warn`. CANNOT-VERIFY is kept DISTINCT from
      * agreement: an unset/unreadable `$COORD_CONFIG` is "could not ask," not "they agree."
      * Called only when the bridge side is already `all` (the direction that can strand
      * cards); the mirror (reconcile=all, bridge=prefixed) is a lesser not-real-time gap
@@ -182,18 +184,18 @@ final class WritebackMappingConfigCheck implements Check
         if ($config === null) {
             $where = $path === null ? '$COORD_CONFIG is not set' : "the coordination config at {$path} is absent, unreadable, or malformed";
 
-            yield Finding::warn("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
 
             return;
         }
         $theirs = CoordConfigTerminals::issuePopulationsForBoardId($config, $mapping->boardId);
         if ($theirs === []) {
-            yield Finding::warn("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — the coordination config has no kanban.boards[] entry for board {$mapping->boardId}. {$tail}");
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY against the reconcile's issue_population — the coordination config has no kanban.boards[] entry for board {$mapping->boardId}. {$tail}");
 
             return;
         }
         if (count($theirs) > 1) {
-            yield Finding::warn("{$prefix}: CANNOT VERIFY — the coordination config resolves multiple issue_population values for board {$mapping->boardId} (".implode(', ', $theirs)."). {$tail}");
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY — the coordination config resolves multiple issue_population values for board {$mapping->boardId} (".implode(', ', $theirs)."). {$tail}");
 
             return;
         }

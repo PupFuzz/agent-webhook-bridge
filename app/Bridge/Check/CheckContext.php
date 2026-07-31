@@ -227,8 +227,9 @@ final class CheckContext
      *
      * THE FIRST FIELD HERE THAT IS NOT A FACT ABOUT THE INSTALL — it is a fact about what
      * another check REPORTED, so it exists only after that slot has run and it changes
-     * meaning if that slot's severities are re-assigned (stage 10 does exactly that for
-     * this command). Every other field is derived from config, the filesystem or a board
+     * meaning if that slot's severities are re-assigned — which DL-251 did, moving both of
+     * the pinned-line leg's `warn`s to `unvalidated`; the predicate that reads this widened
+     * in the same commit. Every other field is derived from config, the filesystem or a board
      * read, and is therefore true independently of the registry. The cost is a real
      * coupling: the DL-225 advisory that reads this is downstream of another check's
      * SEVERITY vocabulary, not of the install, and `CheckCommand` narrows that coupling

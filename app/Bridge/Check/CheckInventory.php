@@ -28,9 +28,15 @@ namespace App\Bridge\Check;
  *    protection** — it does not speak for a predicate in either direction (DL-243). The
  *    two bounds compose rather than cover for each other: this class cannot see an
  *    unwritten check, and that file cannot see a written one.
- *  - It does NOT make the severity vocabulary precise. A check reporting `warn` because
- *    it could not run still reads as a finding here, not as a not-run. That
- *    re-assignment is card#5291's and is a separate, gated decision.
+ *  - It does NOT make the severity vocabulary precise, and DL-251 narrowed that bound
+ *    rather than removing it. The sweep it carried moved every leg that REPORTS being
+ *    unable to measure onto `unvalidated`, so **a `warn` here is a finding, not a
+ *    not-run**. It is NOT therefore a measured one: a leg can warn off a swallowed throw
+ *    having measured nothing, which is a different defect class (card#5698) on a
+ *    different axis from this one. What the rule does and does not buy is owned by
+ *    `App\Bridge\Support\Severity`'s docblock (NAMED, not `{@see}`-linked — a
+ *    fully-qualified `{@see}` becomes a real import under pint) and is deliberately not
+ *    restated here.
  *  - {@see CheckDisposition::NotRun} reasons are the ENVELOPE's claim about itself. If
  *    an envelope's condition is wrong, the reason is confidently wrong with it.
  *  - EVERY COUNT HERE IS KEYED BY CHECK ID, so a per-agent check is one row however many

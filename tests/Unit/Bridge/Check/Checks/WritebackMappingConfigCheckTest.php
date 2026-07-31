@@ -155,7 +155,7 @@ class WritebackMappingConfigCheckTest extends TestCase
         // Both channels dark: no configured path, no ambient $COORD_CONFIG.
         $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_ALL));
 
-        $this->assertSame(Severity::Warn, $findings[1]['severity']);
+        $this->assertSame(Severity::Unvalidated, $findings[1]['severity']);
         $this->assertStringContainsString('CANNOT VERIFY', $findings[1]['message']);
         $this->assertStringContainsString('$COORD_CONFIG is not set', $findings[1]['message']);
     }
@@ -207,6 +207,7 @@ class WritebackMappingConfigCheckTest extends TestCase
 
         $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_ALL));
 
+        $this->assertSame(Severity::Unvalidated, $findings[1]['severity']);
         $this->assertStringContainsString(
             'the coordination config has no kanban.boards[] entry for board '.self::BOARD,
             $findings[1]['message'],
@@ -219,6 +220,7 @@ class WritebackMappingConfigCheckTest extends TestCase
 
         $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_ALL));
 
+        $this->assertSame(Severity::Unvalidated, $findings[1]['severity']);
         $this->assertStringContainsString(
             'resolves multiple issue_population values for board '.self::BOARD,
             $findings[1]['message'],

@@ -19,9 +19,13 @@ use Throwable;
  * WHAT THESE CATCH THAT AN HTTP ERROR NEVER WILL. A token whose user lost board
  * membership — or a drifted `board_id` — gets a 200 with 0 cards, not an error; a typo'd
  * swimlane / stage id / missing custom field makes the write 422 as a PERMANENT no-op
- * (DL-020). Every one of those is a live writeback that silently moves nothing. All
- * warn-level except the #4553 fail-closed leg below: a temporarily-unreachable kanban or a
- * genuinely-empty new board must not FAIL the install check (DL-026).
+ * (DL-020). Every one of those is a live writeback that silently moves nothing. NOTHING
+ * HERE FAILS except the #4553 fail-closed leg below: a temporarily-unreachable kanban or a
+ * genuinely-empty new board must not FAIL the install check (DL-026). The non-fatal legs
+ * split across two severities since DL-251 — `warn` where the leg ANSWERED and the answer
+ * is bad, `unvalidated` where it could not answer at all (the board read threw, or a
+ * comparand did not resolve) — so "all warn-level", which this said until then, is no
+ * longer a description of this check's output.
  *
  * ONE CHECK, NOT ONE PER LEG, FOR THE SAME REASON {@see WritebackMappingConfigCheck} IS:
  * the inline code iterates mappings on the OUTSIDE and legs on the inside, so a per-leg
@@ -118,8 +122,8 @@ final class WritebackBoardStateCheck implements Check
                 // issue_number registered.
                 if (($mapping->createCoordCards || $mapping->moveCoordCards) && $mapping->issuePopulation === WritebackMapping::POPULATION_ALL) {
                     // Read in its OWN try so a read failure fails CLOSED. This is the one
-                    // fail-closed leg in this check (its siblings warn), so it must NOT be
-                    // swallowed by the per-mapping warn-catch below: a fail-closed invariant
+                    // fail-closed leg in this check (no sibling here fails), so it must NOT
+                    // be swallowed by the per-mapping catch below: a fail-closed invariant
                     // we could not verify is a FAILURE, not a warn (DL-026 / canon #9 — an
                     // unrun measurement is not a pass). A blind token / wrong board / transient
                     // 5xx here therefore exits non-zero rather than certifying blind.
@@ -140,28 +144,51 @@ final class WritebackBoardStateCheck implements Check
                 // forward outcomes) or the `started`/no-regression guard silently
                 // never match. Same silent-misconfig class as the swimlane (DL-027)
                 // and dependabot-CF (DL-162) checks; cheap via boardStageOrder (DL-163).
+                $targets = array_values($mapping->stages);
+                foreach ($mapping->startedFromStages ?? [] as $fromId) {
+                    $targets[] = $fromId;
+                }
+                // DL-194: the unpark_from_stages ids are read on the
+                // `started` path too — a typo'd id makes the auto-unpark
+                // guard silently never match (same class as above).
+                foreach ($mapping->unparkFromStages ?? [] as $fromId) {
+                    $targets[] = $fromId;
+                }
+                // DL-198: the coord-card create stage — a typo'd id makes
+                // every coord-card create 422 and silently no-op (same class).
+                if ($mapping->coordCardStageId !== null) {
+                    $targets[] = $mapping->coordCardStageId;
+                }
+                // DL-200: the coord-card terminal — same class again (a typo'd
+                // id 422s every close→terminal move and silently no-ops).
+                if ($mapping->coordCardTerminalStageId !== null) {
+                    $targets[] = $mapping->coordCardTerminalStageId;
+                }
+                // The read stays UNCONDITIONAL even when there is nothing to compare:
+                // moving it inside the guard below would change this check's HTTP
+                // behaviour, which is a different change from the message correction.
                 $boardStageIds = array_keys($client->boardStageOrder($mapping->boardId));
-                if ($boardStageIds !== []) {   // empty ⇒ no stages read; don't false-warn
-                    $targets = array_values($mapping->stages);
-                    foreach ($mapping->startedFromStages ?? [] as $fromId) {
-                        $targets[] = $fromId;
-                    }
-                    // DL-194: the unpark_from_stages ids are read on the
-                    // `started` path too — a typo'd id makes the auto-unpark
-                    // guard silently never match (same class as above).
-                    foreach ($mapping->unparkFromStages ?? [] as $fromId) {
-                        $targets[] = $fromId;
-                    }
-                    // DL-198: the coord-card create stage — a typo'd id makes
-                    // every coord-card create 422 and silently no-op (same class).
-                    if ($mapping->coordCardStageId !== null) {
-                        $targets[] = $mapping->coordCardStageId;
-                    }
-                    // DL-200: the coord-card terminal — same class again (a typo'd
-                    // id 422s every close→terminal move and silently no-ops).
-                    if ($mapping->coordCardTerminalStageId !== null) {
-                        $targets[] = $mapping->coordCardTerminalStageId;
-                    }
+                if ($targets === []) {
+                    // NOTHING IS MAPPED, so there is no question to answer and no finding
+                    // to make. `stages` is optional (`WritebackConfig`: `$m['stages'] ?? []`)
+                    // and so is every other target source, so a mapping can legitimately
+                    // target no stage at all — a by-ref-correlation-only mapping does. Both
+                    // of the arms below would then say something false about it: the
+                    // `unvalidated` claims the ids "could NOT be checked" when there were
+                    // none, and the `ok` claims "all mapped stage ids exist" on an empty
+                    // set. Silence is the honest answer for a vacuous question; it is limb 1
+                    // of the rule, not limb 2.
+                } elseif ($boardStageIds === []) {
+                    // DL-251 §2b: this leg used to fall silent here. `boardStageOrder()`
+                    // documents the empty read as EXPECTED (the caller treats can't-order
+                    // as fail-open), and not-false-warning was right — but silence made
+                    // "every mapped stage id exists" and "the comparand never resolved"
+                    // the same output, which is green-because-never-looked at the one leg
+                    // whose whole job is to catch a silent 422. The comparison could not be
+                    // made, so it is UNVALIDATED, not a warn about the config: nothing here
+                    // is evidence the ids are wrong.
+                    yield Finding::unvalidated("writeback: could NOT check the mapped stage ids for {$repo} — board {$mapping->boardId} returned no workflow stages, so there was nothing to compare them against; a typo'd id would look exactly like this. Verify board_id + the token's membership and re-run.");
+                } else {
                     $unknownStages = array_values(array_unique(array_diff($targets, $boardStageIds)));
                     if ($unknownStages !== []) {
                         yield Finding::warn("writeback: mapping for {$repo} references workflow stage id(s) ".implode(', ', $unknownStages)." not on board {$mapping->boardId} — those moves will 422 (or the started/no-regression guard will silently never match) until fixed");
@@ -179,7 +206,7 @@ final class WritebackBoardStateCheck implements Check
                     yield from $this->coordTerminalAgreement((string) $repo, $mapping, $client);
                 }
             } catch (Throwable $e) {
-                yield Finding::warn("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".$e->getMessage());
+                yield Finding::unvalidated("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".$e->getMessage());
             }
         }
     }
@@ -202,8 +229,10 @@ final class WritebackBoardStateCheck implements Check
      *      unreadable / malformed / silent-on-this-board coord config means the comparison
      *      COULD NOT RUN. Never print agreement on a read failure — a missing input is not
      *      evidence of agreement, it is evidence we could not ask.
-     *  (b) NEVER FAIL THE BRIDGE. Diagnostics only, warn-never-fail (the DL-196 posture) —
-     *      `bridge:check` must not go non-zero because a coord file moved.
+     *  (b) NEVER FAIL THE BRIDGE. Diagnostics only, never-fail (the DL-196 posture) —
+     *      `bridge:check` must not go non-zero because a coord file moved. Every
+     *      CANNOT-VERIFY arm below reports `unvalidated` rather than `warn` (DL-251):
+     *      the comparison could not be MADE, which is not a finding about the config.
      *
      * @return iterable<Finding>
      */
@@ -241,7 +270,7 @@ final class WritebackBoardStateCheck implements Check
         if ($config === null) {
             $where = $path === null ? '$COORD_CONFIG is not set' : "the coordination config at {$path} is absent, unreadable, or malformed";
 
-            yield Finding::warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY the terminal against the coordination config — {$where}. {$tail} Point bridge.writeback.coord_config_path (or \$COORD_CONFIG) at coordination.config.json.");
 
             return;
         }
@@ -252,7 +281,7 @@ final class WritebackBoardStateCheck implements Check
         // would resolve NOTHING on the canonical lane-model `issues` board.
         $names = CoordConfigTerminals::terminalNamesForBoardId($config, $mapping->boardId);
         if ($names === []) {
-            yield Finding::warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — it declares no terminal for board {$mapping->boardId} (no kanban.boards[] entry carries that board_id, or the entry has neither terminal_columns nor user_lanes). {$tail}");
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY the terminal against the coordination config — it declares no terminal for board {$mapping->boardId} (no kanban.boards[] entry carries that board_id, or the entry has neither terminal_columns nor user_lanes). {$tail}");
 
             return;
         }
@@ -261,7 +290,7 @@ final class WritebackBoardStateCheck implements Check
             // bridge concludes into exactly ONE stage, so which of them it ought to match
             // is genuinely unknowable. Ambiguous ⇒ cannot verify; never pick one and call
             // that agreement.
-            yield Finding::warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — it resolves ".count($names)." terminals for board {$mapping->boardId} (".implode(', ', $names).'), but the bridge concludes cards into exactly one stage, so which it should match is ambiguous. '.$tail);
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY the terminal against the coordination config — it resolves ".count($names)." terminals for board {$mapping->boardId} (".implode(', ', $names).'), but the bridge concludes cards into exactly one stage, so which it should match is ambiguous. '.$tail);
 
             return;
         }
@@ -270,12 +299,12 @@ final class WritebackBoardStateCheck implements Check
         try {
             $byName = $client->boardStageIdsByName($mapping->boardId);
         } catch (Throwable $e) {
-            yield Finding::warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — could not read board {$mapping->boardId} to resolve its terminal column \"{$name}\" to a stage id: ".$e->getMessage().' '.$tail);
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY the terminal against the coordination config — could not read board {$mapping->boardId} to resolve its terminal column \"{$name}\" to a stage id: ".$e->getMessage().' '.$tail);
 
             return;
         }
         if (! array_key_exists($name, $byName)) {
-            yield Finding::warn("{$prefix}: CANNOT VERIFY the terminal against the coordination config — its terminal column \"{$name}\" for board {$mapping->boardId} is not a stage on that board, so it cannot be compared against stage {$mine}. {$tail}");
+            yield Finding::unvalidated("{$prefix}: CANNOT VERIFY the terminal against the coordination config — its terminal column \"{$name}\" for board {$mapping->boardId} is not a stage on that board, so it cannot be compared against stage {$mine}. {$tail}");
 
             return;
         }

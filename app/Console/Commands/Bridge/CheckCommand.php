@@ -371,17 +371,19 @@ class CheckCommand extends BridgeCommand
                         // THE SECOND FAIL-SOFT ENVELOPE, INLINE for the same reason the
                         // outer one is (DL-242 stage 3a): CheckRunner deliberately does not
                         // catch, so wrapping emitReport() keeps "a probe failure degrades to
-                        // one warn" a property of this method rather than an assumption
+                        // ONE FINDING" a property of this method rather than an assumption
                         // about this slot's checks' callees. Its realistic thrower is
                         // WritebackClientFactory::make() above — derivation, inline anyway.
                         //
                         // THE REASON IS PITCHED AT THE ENVELOPE, NOT AT THAT ONE THROWER.
                         // Naming the client construction would be a confident diagnosis the
                         // arm cannot support: a check throwing after the client built lands
-                        // here too, and the warn below would then print a different cause on
-                        // the same screen.
+                        // here too, and the line below would then print a different cause on
+                        // the same screen. That width is also WHY the finding is
+                        // `unvalidated` and not `warn` (DL-251): an envelope that cannot
+                        // name its cause did not answer anything.
                         $runner->noteNotRun(CheckSlot::WritebackProbe, 'the writeback board-visibility probe could not be set up (see the warning above)');
-                        $this->emitUnattributed(Finding::warn('writeback: skipped board-visibility probe — '.$e->getMessage()));
+                        $this->emitUnattributed(Finding::unvalidated('writeback: skipped board-visibility probe — '.$e->getMessage()));
                     }
                 } else {
                     $runner->noteNotRun(CheckSlot::WritebackProbe, 'writeback.json declares no repo mappings, so there is no board to probe');
@@ -422,9 +424,10 @@ class CheckCommand extends BridgeCommand
         // outside the envelope above. Migrated to EventFollowsConsumerCheck (DL-242
         // stage 7a). THE RETURN IS HONOURED EVEN THOUGH THE CHECK CANNOT FAIL TODAY —
         // it yields only ok/warn/unvalidated, so this arm is unreachable now, and it is
-        // still not defensive code: stage 10 re-assigns severities across this command
-        // (cards#5291/#5292), and a call site that ignored the return because "this one
-        // only warns" would swallow the first `fail` a re-assignment gives it, silently.
+        // still not defensive code: DL-251 re-assigned severities across this command
+        // (cards#5291/#5292) and left this check's set unchanged, but a call site that
+        // ignored the return because "this one only warns" would swallow the first `fail`
+        // the next re-assignment gives it, silently.
         //
         // DERIVATION, NOT ASSERTION (plan constraint (c)) — and hoisted here in DL-249
         // stage 9 for the reason the AgentRegistry build above is: TWO renderers read it.
@@ -441,9 +444,11 @@ class CheckCommand extends BridgeCommand
         // DL-242 stage 7b. A default-on block that could not be satisfied
         // (suppressedReason) and a dead/ambiguous bearer FAIL (a broken enablement, not
         // opt-in); the board-STATE legs (swimlane/stage on board, service-user
-        // membership) stay WARN (DL-220 split — a transient/empty kanban read must not
-        // FAIL the install check). What stays here is derivation: which agents have the
-        // block enabled, the bearer index, the SECOND kanban client, and the ssh subset.
+        // membership) NEVER FAIL (DL-220 split — a transient/empty kanban read must not
+        // FAIL the install check). They said "stay WARN" until DL-251 split them: `warn`
+        // where the leg answered badly, `unvalidated` where the read never resolved.
+        // What stays here is derivation: which agents have the block enabled, the bearer
+        // index, the SECOND kanban client, and the ssh subset.
         $ctx->boardToolsEnabled = array_values(array_filter(
             $configs,
             fn (AgentConfig $c) => $c->boardTools !== null && $c->boardTools->enabled,
@@ -495,8 +500,10 @@ class CheckCommand extends BridgeCommand
                 // default bridge:check. A present-but-bad forced-command line (grants
                 // pty/forwarding), an ambiguous/absent-authoritative line, or a
                 // FIPS-rejected key FAILs; an UNVERIFIABLE (non-root / relocated keyfile)
-                // leg WARNs and names the `sudo bridge:check` cert step — never a false
-                // OK, never a hard red. The board-tools security boundary is this pinned
+                // leg reports `unvalidated` (it WARNed until DL-251 — it may have read the
+                // wrong file, so it answered nothing) and names the `sudo bridge:check`
+                // cert step — never a false OK, never a hard red. The board-tools
+                // security boundary is this pinned
                 // line plus the live round-trip, never the account's sshd posture: card
                 // 5091 retired the account-level hardening because the ssh-account
                 // routinely doubles as the operator's interactive login.
@@ -560,7 +567,7 @@ class CheckCommand extends BridgeCommand
         // this command's local checks); when --probe-tools names the endpoint the
         // channel server will use, exercise the real loopback path end to end. A
         // non-2xx or an isolation mismatch is a HARD failure (it certifies a broken
-        // enablement), unlike the offline warns above. Migrated to
+        // enablement), unlike the offline legs above, which never fail. Migrated to
         // BoardToolsHttpProbeCheck; run unconditionally — the check holds the flag and is
         // silent when it was not passed (plan constraint (a)).
         if (! $this->emitReport($runner->run(CheckSlot::ProbeTools, $ctx))) {
@@ -609,13 +616,28 @@ class CheckCommand extends BridgeCommand
         // rather than printing this line into a JSON stream.)
         $this->emitInventory($runner->inventory());
 
-        // The card-5170 tally SURVIVES, narrowed to the one thing it still says. Stage 8
-        // did NOT make the severity vocabulary precise: a leg that could not measure may
-        // still report `warn` rather than `unvalidated` (a dozen-odd sites in this
-        // command, plus ChannelSnapshotProbe's could-not-measure findings). That
-        // re-assignment is card#5291's and is separately gated, so the number remains a
-        // floor FOR THAT QUESTION even though the registry above is now exact — two
-        // different claims, and conflating them is what the old wording did.
+        // The card-5170 tally SURVIVES, NARROWED AGAIN (DL-251) rather than deleted. Stage
+        // 8 narrowed it once, to "the vocabulary is imprecise, so this is a floor"; stage
+        // 10 swept the 21 could-not-measure sites that made it one, so that sentence is now
+        // false and the disclosure has to move rather than go away.
+        //
+        // WHAT IT DISCLOSES NOW is the residual the sweep cannot reach, and it is a
+        // different claim from the one it replaced: the rule this vocabulary follows is
+        // keyed on what a leg CONCLUDED, so it can only make DISCLOSED blindness precise.
+        // `App\Bridge\Support\Severity`'s docblock owns what that does and does not buy —
+        // read it there rather than trusting a restatement here. Deleting the line
+        // outright would have read as "everything unmeasured is now counted", which is a
+        // stronger claim than this change earns.
+        //
+        // THE TAIL SAYS "NOT COUNTED HERE", NOT "SILENT", AND THE DIFFERENCE IS THE WHOLE
+        // POINT. A leg that failed to notice it measured nothing can also report the
+        // conclusion it would have drawn — a confidently WRONG `warn`, not an absence
+        // (`EventFollowsConsumerCheck`'s advisory on the swallowed-throw path; card#5698).
+        // Telling an operator the residual is silence implies everything they DO see is
+        // precise, which is the same overclaim one narrowing up. It also stops saying
+        // "the disclosed population": `emitInventory()` prints one line above this and
+        // discloses the NOT-RUN checks, which are not in this count — two adjacent lines
+        // cannot both own that phrase.
         //
         // `finding(s)`, NOT `check(s)`: {@see self::emitFinding()} counts FINDINGS, and
         // a per-agent check yields one per agent — `ChannelSnapshotCheck` on a two-agent
@@ -624,7 +646,7 @@ class CheckCommand extends BridgeCommand
         // id and counts that same check ONCE, so the two lines contradicted each other on
         // exactly the population this one exists to describe.
         if ($this->unvalidatedCount > 0) {
-            $this->line("{$this->unvalidatedCount} finding(s) reported `unvalidated` — not a failure, and not a pass either: those legs could not run, so this run says nothing about what they would have found (see the lines above). This count is a floor: a leg that could not measure sometimes reports `warn` instead, so it is not the full population of what went unmeasured.");
+            $this->line("{$this->unvalidatedCount} finding(s) reported `unvalidated` — not a failure, and not a pass either: those legs could not answer their own question, so this run says nothing about what they would have found (see the lines above). This counts the legs that REPORTED being unable to measure; a leg that failed to notice it measured nothing is not counted here — it may say nothing, or say what it would have concluded.");
         }
 
         return $ok ? self::SUCCESS : self::FAILURE;
@@ -709,18 +731,43 @@ class CheckCommand extends BridgeCommand
 
     /**
      * Whether a pinned-line finding's severity means the agent's ssh setup is
-     * INCOMPLETE (feeds the DL-225 advisory only). POSITIVE membership,
-     * deliberately: the `!== 'ok'` proxy it replaces silently absorbs any severity
-     * added to the vocabulary later — card 5170's `unvalidated` would have flagged
-     * an agent's setup incomplete on the strength of a check nobody ran. Exhaustive
-     * `match` (card 5178): a fifth {@see Severity} case is a phpstan error here, not
-     * a value that silently picks a side.
+     * INCOMPLETE (feeds the DL-225 advisory only).
+     *
+     * ⚠ AFTER DL-251 THIS IS EXTENSIONALLY `$severity !== Severity::Ok` — the very proxy
+     * DL-236 (f) replaced — AND THAT IS SAID OUT LOUD RATHER THAN LEFT TO BE DISCOVERED.
+     * Exactly one thing still separates them, and it is the thing the proxy was rejected
+     * for: this is an exhaustive `match`, so a FIFTH {@see Severity} case is a phpstan
+     * error here and has to be assigned deliberately, where `!== Ok` would sweep it in
+     * silently. The form is doing its job precisely when it looks redundant.
+     *
+     * `Unvalidated` MOVED TO `true` IN DL-251, IN THE SAME CHANGE AS THE SWEEP AND
+     * NECESSARILY SO. The two findings this method's only caller can see are
+     * `SshTransportProbe::probePinnedLine()`'s, and its two `warn`s — an unreadable
+     * `authorized_keys` and no matching line at a non-authoritative path — are exactly
+     * the sites the sweep re-assigns. Left at `false` this would have gone from
+     * flagging both to flagging neither, silently dropping the DL-225 advisory on the
+     * install shape it was written for (the `board-tools-ssh-default-transport-advisory`
+     * golden carries both lines, so omitting the widening reds it).
+     *
+     * ⚠ THIS NARROWS THE card-5170 HAZARD, IT DOES NOT DISCHARGE IT — the guard below
+     * is a TRIPWIRE, NOT A PROOF. The rejected `!== 'ok'` proxy was rejected because a
+     * later severity would be swept in without anyone deciding; post-sweep,
+     * `unvalidated` on this path means "could not read authorized_keys" (setup IS
+     * incomplete) and would equally mean the opposite for any future structurally-
+     * unmeasurable finding — the SAME enum value, which no severity assertion can
+     * separate. `CheckCommandSeverityContractTest` therefore pins the severities
+     * `SshPinnedLineCheck` actually emits and reds when that set MOVES; it cannot
+     * classify what moved into it. Recorded as DL-238(g), narrowed, not closed.
+     *
+     * ROOT CAUSE, NAMED AND OUT OF SCOPE (canon #2): the advisory infers an install
+     * FACT from a SEVERITY. Having `probePinnedLine()` report setup-incompleteness
+     * directly removes the coupling instead of re-tuning this map — DL-251.
      */
     private static function severityMeansSetupIncomplete(Severity $severity): bool
     {
         return match ($severity) {
-            Severity::Warn, Severity::Fail => true,
-            Severity::Ok, Severity::Unvalidated => false,
+            Severity::Warn, Severity::Fail, Severity::Unvalidated => true,
+            Severity::Ok => false,
         };
     }
 

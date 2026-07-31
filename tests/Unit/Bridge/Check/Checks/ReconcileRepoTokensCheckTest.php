@@ -14,8 +14,8 @@ use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
- * The `Http` arm of this check's probe switch, plus the two arms that are deliberately
- * SILENT — none of which the golden suite can reach.
+ * The `Http` and `Network` arms of this check's probe switch, plus the one arm that is
+ * deliberately SILENT — none of which the golden suite can reach.
  *
  * The `Unresolvable` arm IS golden-measured (two writeback fixtures land on it), so it is
  * absent here on purpose; duplicating it would not strengthen that measurement. The
@@ -29,9 +29,10 @@ use Tests\TestCase;
  * `switch`, and this test is the only thing standing behind these four arms.
  *
  * A SILENT ARM IS ASSERTED WITH A SENT-REQUEST WITNESS, never by emptiness alone: the
- * probe demonstrably ran and chose to say nothing, which is the actual contract (a
- * network blip is not a token-validity signal). Emptiness on its own would be equally
- * satisfied by a check that returned at its first line.
+ * probe demonstrably ran and chose to say nothing, which is the actual contract for a
+ * token that probed clean. Emptiness on its own would be equally satisfied by a check
+ * that returned at its first line — and that indistinguishability is exactly what made
+ * the `Network` arm's shared silence a defect (DL-251): only ONE arm is entitled to it.
  */
 class ReconcileRepoTokensCheckTest extends TestCase
 {
@@ -110,7 +111,13 @@ class ReconcileRepoTokensCheckTest extends TestCase
         Http::assertSentCount(1);
     }
 
-    public function test_a_network_blip_is_not_treated_as_a_token_problem(): void
+    /**
+     * DL-251: this arm shared `Ok`'s `break` until stage 10's follow-up, so an unreachable
+     * GitHub and a token proven good produced the same output — nothing. It is still not
+     * a token-validity signal, and the message says so; what changed is that "we never
+     * found out" is now reported instead of being indistinguishable from "it is fine".
+     */
+    public function test_an_unreachable_github_reports_unvalidated_and_never_accuses_the_token(): void
     {
         // A THROWING fake is never recorded, so `assertSentCount` cannot witness this arm
         // (it reads 0 whether the probe ran or not). The handler's own side effect can.
@@ -120,9 +127,19 @@ class ReconcileRepoTokensCheckTest extends TestCase
             throw new ConnectionException('cURL error 28: Operation timed out');
         });
 
-        $this->assertSame([], $this->findings());
+        $findings = $this->findings();
 
-        $this->assertSame(1, $attempts, 'the probe must have run and swallowed the blip, not been skipped');
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]['severity']);
+        $this->assertStringContainsString('reconcile: '.self::REPO.': could NOT reach GitHub', $findings[0]['message']);
+        // The three properties the message owes, asserted separately because a single
+        // substring would green on a rewording that dropped any one of them: it names the
+        // repo (above), it refuses to convict the token, and it names the operator action.
+        $this->assertStringContainsString('was NOT validated for this repo', $findings[0]['message']);
+        $this->assertStringContainsString('not evidence the token is bad', $findings[0]['message']);
+        $this->assertStringContainsString('Re-run bridge:check once connectivity', $findings[0]['message']);
+
+        $this->assertSame(1, $attempts, 'the probe must have run and reported the blip, not been skipped');
     }
 
     /**

@@ -132,11 +132,29 @@ class ChannelSnapshotProbeTest extends TestCase
         $this->assertStringContainsString('snapshot not validated', $findings[0]->message);
     }
 
+    /**
+     * The DEPLOYED manifest's twin of the leg below, and the one arm of the pair whose
+     * severity nothing pinned before DL-251 — `BridgeCommandsTest` asserts its sentence
+     * over an undecorated capture, where all four severities are the same bytes.
+     */
+    public function test_an_unreadable_deployed_manifest_is_unvalidated_not_a_warn(): void
+    {
+        $deployed = $this->deployment('1.2.3', omit: ['package.json']);
+
+        $findings = ChannelSnapshotProbe::probe($deployed, $this->reference('1.2.3'));
+
+        $finding = $this->findingWith($findings, 'cannot tell whether the deployed copy is stale');
+        $this->assertSame(Severity::Unvalidated, $finding->severity);
+        $this->assertStringContainsString('package.json is not present', $finding->message);
+    }
+
     public function test_an_unreadable_bundled_manifest_names_its_own_remedy(): void
     {
-        // This warn and the unenumerable-reference warn are a MATCHED PAIR — both
-        // say "this checkout's X could not be read" — and the reference one spells
-        // its action while this one did not. A divergence inside a pair, not a
+        // This finding and the unenumerable-reference one were a MATCHED PAIR — both
+        // say "this checkout's X could not be read" — and the reference one spelled
+        // its action while this one did not. (Both were `warn` when that divergence was
+        // found; DL-251 moved this one to `unvalidated`, which changes nothing about
+        // the pairing argument: the version compare did not happen.) A divergence inside a pair, not a
         // message lacking polish: the operator reads the silent one as unactionable
         // when the fix is the same class of thing (restore/repair a tracked file).
         // The branch had no coverage at all before this, which is how it diverged.
@@ -148,7 +166,7 @@ class ChannelSnapshotProbeTest extends TestCase
         $findings = ChannelSnapshotProbe::probe($deployed, $reference);
 
         $warn = $this->findingWith($findings, 'cannot be version-compared');
-        $this->assertSame(Severity::Warn, $warn->severity);
+        $this->assertSame(Severity::Unvalidated, $warn->severity);
         $this->assertStringContainsString('is not present', $warn->message);
         $this->assertStringContainsString('restore or repair it', $warn->message);
         $this->assertStringContainsString('check that this process can read it', $warn->message);
@@ -160,8 +178,9 @@ class ChannelSnapshotProbeTest extends TestCase
     // missing 6 of 10 reference files launches while completeness FAILs it; the
     // DL-230 shape dies on ERR_MODULE_NOT_FOUND). The launch belongs to the SEAT,
     // because the bridge's OS user is not the agent's — so what is left here is the
-    // DISCLOSURE that the question went unmeasured, emitted ONCE per run that reached
-    // the legs, on EVERY branch that did.
+    // DISCLOSURE that the question went unmeasured, emitted ONCE per AGENT whose probe
+    // reached the legs, on EVERY branch that did — not once per run: `ChannelSnapshotCheck`
+    // is a `PerAgentCheck`, so a two-agent install yields two.
 
     /**
      * Every branch that reaches the legs, and the exactly-one-disclosure property
@@ -288,7 +307,7 @@ class ChannelSnapshotProbeTest extends TestCase
         }
 
         $this->assertCount(1, $findings);
-        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
         $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
         $this->assertNoFinding($findings, 'was NOT launch-tested');
     }

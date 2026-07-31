@@ -138,7 +138,7 @@ class WritebackSourceCoverageCheckTest extends TestCase
 
         $this->assertCount(3, $findings);
         $this->assertStringContainsString('dl_number cards on board 8 all have a mapped source', $findings[0]['message']);
-        $this->assertSame(Severity::Warn, $findings[1]['severity']);
+        $this->assertSame(Severity::Unvalidated, $findings[1]['severity']);
         $this->assertStringContainsString('could not read board 9 to check dl source coverage', $findings[1]['message']);
         $this->assertStringContainsString('dl_number cards on board 10 all have a mapped source', $findings[2]['message']);
     }
@@ -158,7 +158,7 @@ class WritebackSourceCoverageCheckTest extends TestCase
         $findings = $this->findings();
 
         $this->assertCount(1, $findings);
-        $this->assertSame(Severity::Warn, $findings[0]['severity']);
+        $this->assertSame(Severity::Unvalidated, $findings[0]['severity']);
         $this->assertStringContainsString('source-coverage check on board 8 is INCOMPLETE', $findings[0]['message']);
         $this->assertStringNotContainsString('all have a mapped source', $this->joined($findings));
     }

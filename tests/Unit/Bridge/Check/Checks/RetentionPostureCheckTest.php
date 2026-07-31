@@ -64,7 +64,7 @@ class RetentionPostureCheckTest extends TestCase
             'retention: could not read the last-failure marker (no connection to localhost:6379)',
             end($messages)['message'],
         );
-        $this->assertSame(Severity::Warn, end($messages)['severity']);
+        $this->assertSame(Severity::Unvalidated, end($messages)['severity']);
     }
 
     /**

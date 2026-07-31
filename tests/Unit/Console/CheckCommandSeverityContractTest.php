@@ -7,8 +7,8 @@ use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\Checks\EventFollowsConsumerCheck;
 use App\Bridge\Check\CheckSlot;
 use App\Bridge\Check\EventConsumers\EventConsumerReconciliation;
-use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Tools\SshTransportProbe;
 use App\Console\Commands\Bridge\CheckCommand;
 use Illuminate\Console\OutputStyle;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -18,6 +18,7 @@ use ReflectionProperty;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\OutputInterface;
+use Tests\Support\FindingFactories;
 
 /**
  * The severity→exit contract of `bridge:check`'s finding renderer (card 5170).
@@ -29,6 +30,8 @@ use Symfony\Component\Console\Output\OutputInterface;
  */
 class CheckCommandSeverityContractTest extends TestCase
 {
+    use FindingFactories;
+
     private CheckCommand $command;
 
     private BufferedOutput $buffer;
@@ -160,24 +163,75 @@ class CheckCommandSeverityContractTest extends TestCase
     }
 
     /**
-     * The DL-225 ssh advisory's incomplete-setup predicate. POSITIVE membership:
-     * the `!== 'ok'` proxy it replaced would sweep every severity added later, so
-     * an agent would be told its ssh setup is incomplete on the strength of a check
-     * nobody ran. Driven off `Severity::cases()` (card 5178) so a case added later
-     * is asserted here too — the hand-written `'some-future-severity'` row this
-     * replaces could only ever stand in for ONE such value.
+     * The DL-225 ssh advisory's incomplete-setup predicate. POSITIVE membership, driven off
+     * `Severity::cases()` (card 5178) so a case added later is asserted here too.
+     *
+     * ⚠ THIS ASSERTS THE MAP, AND THE MAP IS NOT THE HAZARD. DL-238(g) recorded the
+     * canon-#3 watch-item that the `!== 'ok'` proxy this replaced would sweep in any
+     * severity added later. DL-251 moves `unvalidated` to `true` — which LOOKS like the
+     * proxy's behaviour and is not the same thing: it is a decision made about the two
+     * findings this predicate's only caller can actually see (`SshPinnedLineCheck`'s), both
+     * of which the sweep re-assigned from `warn`. What is NOT fixed is that
+     * `unvalidated` now carries two opposite meanings on this path — "could not read
+     * authorized_keys" (setup IS incomplete) and, for any future structurally-unmeasurable
+     * finding, the opposite — with the SAME enum value. No severity assertion can separate
+     * them, so the guard below is a TRIPWIRE for the emitted set MOVING, not a proof that
+     * the map is right for whatever moved into it. DL-238(g) is NARROWED, not closed; the
+     * root-cause option (have `probePinnedLine()` report the fact rather than have the
+     * advisory infer it from a severity) is named in DL-251 and is out of stage-10 scope.
      */
-    public function test_only_warn_and_fail_mean_the_ssh_setup_is_incomplete(): void
+    public function test_the_incomplete_setup_predicate_excludes_only_ok(): void
     {
         $incomplete = new ReflectionMethod(CheckCommand::class, 'severityMeansSetupIncomplete');
 
         foreach (Severity::cases() as $case) {
             $this->assertSame(
-                in_array($case, [Severity::Warn, Severity::Fail], true),
+                $case !== Severity::Ok,
                 $incomplete->invoke(null, $case),
                 "severityMeansSetupIncomplete({$case->value})",
             );
         }
+    }
+
+    /**
+     * THE TRIPWIRE the docblock above describes, and the reason the predicate's widening is
+     * not simply the rejected `!== 'ok'` proxy wearing a `match`: it pins the severity set
+     * `SshPinnedLineCheck` can actually EMIT, so a leg added to that check — or an existing
+     * one re-assigned again — reds here and forces someone to decide whether the DL-225
+     * advisory should fire for it.
+     *
+     * WHAT IT DOES NOT DO, stated because a guard that is trusted for more than it does is
+     * worse than none: it cannot tell anyone the RIGHT severity for a new leg, it says
+     * nothing about whether the advisory's reading of `unvalidated` is correct, and it
+     * constrains no other check.
+     */
+    public function test_the_pinned_line_leg_emits_only_the_severities_the_advisory_was_decided_for(): void
+    {
+        // Derived from the METHOD'S SOURCE, not from a fixture corpus: a behavioural union
+        // over the shapes some test happens to construct is blind to an arm no shape
+        // reaches, which is the failure mode this whole program exists to remove. Every
+        // `Finding::` construction in `probePinnedLine()` is inline in it, so the slice is
+        // the complete set.
+        $method = new ReflectionMethod(SshTransportProbe::class, 'probePinnedLine');
+        $file = $method->getFileName();
+        $this->assertIsString($file);
+        $lines = array_slice(
+            (array) file($file),
+            $method->getStartLine() - 1,
+            $method->getEndLine() - $method->getStartLine() + 1,
+        );
+
+        preg_match_all('/Finding::(ok|warn|unvalidated|fail)\(/', implode('', $lines), $m);
+        $emitted = array_values(array_unique($m[1]));
+        sort($emitted);
+
+        // Non-vacuous: an empty match would satisfy any assertSame against an empty list.
+        $this->assertNotEmpty($emitted, 'the source scan found no Finding factory calls — it has broken');
+        $this->assertSame(
+            ['fail', 'ok', 'unvalidated'],
+            $emitted,
+            'the severity set `SshPinnedLineCheck` can emit has MOVED — decide, per severity, whether the DL-225 flipped-default advisory should treat it as an incomplete ssh setup, then update this pin and `severityMeansSetupIncomplete()` together',
+        );
     }
 
     private function emit(Severity $severity, string $message): bool
@@ -189,7 +243,7 @@ class CheckCommandSeverityContractTest extends TestCase
         // under test is unchanged — which severities flip the exit — so the prefix is
         // kept here, in the message, rather than dropped.
         /** @var bool $result */
-        $result = $emit->invoke($this->command, new Finding($severity, 'agent x: '.$message));
+        $result = $emit->invoke($this->command, self::findingOf($severity, 'agent x: '.$message));
 
         return $result;
     }

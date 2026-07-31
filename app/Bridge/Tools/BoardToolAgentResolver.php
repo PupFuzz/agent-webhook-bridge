@@ -36,10 +36,10 @@ final class BoardToolAgentResolver
     private array $entries = [];
 
     /**
-     * @var list<array{type: string, message: string}> problems (bearer_unreadable |
-     *                                                 collision) for bridge:check to render — TYPED so the check can split severity
-     *                                                 (under default-ON both types FAIL: a dead/ambiguous bearer is a broken
-     *                                                 enablement, not a transient board-state warn).
+     * @var list<string> problem messages (an unreadable bearer file, a token collision) for
+     *                   bridge:check to render. Under default-ON both are the same verdict — a dead or
+     *                   ambiguous bearer is a broken ENABLEMENT and FAILs, never a transient board-state
+     *                   warn — so there is nothing here for a consumer to split on (card#5292).
      */
     private array $problems = [];
 
@@ -105,7 +105,7 @@ final class BoardToolAgentResolver
                 ? 'Each reuses its channel token as the bearer — give each agent a DISTINCT channel token (channel.auth.token_path).'
                 : 'Mint a DISTINCT token per agent (board_tools.auth.token_path).';
             $message = 'board_tools: the same auth token is shared by multiple agents ('.implode(', ', $sharers).') — board tools are DISABLED for all of them (an ambiguous bearer cannot authenticate). '.$cure;
-            $this->problems[] = ['type' => 'collision', 'message' => $message];
+            $this->problems[] = $message;
             Log::warning($message);
         }
     }
@@ -132,10 +132,16 @@ final class BoardToolAgentResolver
     /**
      * Problems accumulated at build (unreadable token files, token collisions) —
      * rendered by bridge:check so a silent per-agent lockout is loud pre-deploy.
-     * Each entry is TYPED (bearer_unreadable | collision) so the check can split
-     * severity.
      *
-     * @return list<array{type: string, message: string}>
+     * ONE MESSAGE PER PROBLEM, AND NO DISCRIMINATOR. Entries used to carry a `type`
+     * (`bearer_unreadable` | `collision`) justified as letting the check split severity;
+     * it was written at three sites and read at ZERO for the whole of its life, because
+     * the split it existed to enable was decided the other way — both problems FAIL under
+     * default-ON (DL-217 v7). An affordance nobody uses is not free: it is a claim in the
+     * source about what a consumer can do, and it was wrong (card#5292). Restore it if and
+     * when a caller genuinely needs to discriminate.
+     *
+     * @return list<string>
      */
     public function problems(): array
     {
@@ -147,12 +153,12 @@ final class BoardToolAgentResolver
         try {
             $token = SecretFile::read($path);
         } catch (InsecureSecretPermsException $e) {
-            $this->problems[] = ['type' => 'bearer_unreadable', 'message' => "board_tools: agent {$agentName}: ".$e->getMessage().' — board tools disabled for this agent until fixed'];
+            $this->problems[] = "board_tools: agent {$agentName}: ".$e->getMessage().' — board tools disabled for this agent until fixed';
 
             return null;
         }
         if ($token === null || $token === '') {
-            $this->problems[] = ['type' => 'bearer_unreadable', 'message' => "board_tools: agent {$agentName}: no token at {$path} — board tools disabled for this agent until a token (chmod 600) is placed"];
+            $this->problems[] = "board_tools: agent {$agentName}: no token at {$path} — board tools disabled for this agent until a token (chmod 600) is placed";
 
             return null;
         }

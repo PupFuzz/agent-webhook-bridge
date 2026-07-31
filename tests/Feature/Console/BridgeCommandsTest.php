@@ -691,7 +691,7 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
-    public function test_check_warns_when_the_board_read_fails(): void
+    public function test_check_reports_a_failed_board_read_as_unvalidated(): void
     {
         $this->writeWritebackWithToken();
         Http::fake(['*/tasks/search.json*' => Http::response(['error' => 'forbidden'], 403)]);
@@ -2565,11 +2565,27 @@ class BridgeCommandsTest extends TestCase
         // zero exit reads as "everything validated".
         $this->assertStringContainsString('1 finding(s) reported `unvalidated`', $out);
         $this->assertStringContainsString('this run says nothing about what they would have found', $out);
-        // And it does not over-claim: the counted population is the `unvalidated`
-        // severity, NOT "checks that report a severity" — a check that could not
-        // run usually reports `warn` and is not in this number.
-        $this->assertStringContainsString('This count is a floor', $out);
-        $this->assertStringContainsString('not the full population of what went unmeasured', $out);
+        // And it does not over-claim — the assertion that has moved TWICE with the
+        // disclosure it guards. It first said the count was a FLOOR because a leg that
+        // could not measure usually reported `warn`; DL-251 swept those, so that
+        // sentence became false and the line was narrowed rather than deleted (deleting
+        // it would read as "everything unmeasured is now counted", which the sweep does
+        // not earn). What survives is the residual the rule cannot reach: it is keyed on
+        // what a leg CONCLUDED (card#5291).
+        $this->assertStringContainsString('legs that REPORTED being unable to measure', $out);
+        $this->assertStringContainsString('is not counted here', $out);
+        // THE RESIDUAL IS NOT DESCRIBED AS SILENCE, and this asserts the correction rather
+        // than the wording it replaced. "a leg that failed to notice … still says nothing"
+        // was false — such a leg can also report the conclusion it would have drawn
+        // (card#5698) — and telling an operator the residual is silent implies everything
+        // they DO see is precise.
+        $this->assertStringContainsString('it may say nothing, or say what it would have concluded', $out);
+        // "the disclosed population" is gone for a second reason: `emitInventory()` prints
+        // one line above this and discloses the NOT-RUN checks, which this count excludes.
+        $this->assertStringNotContainsString('the disclosed population', $out);
+        // The claim it must NOT make: the old floor-because-of-`warn` wording is gone
+        // BECAUSE the sweep landed, so its survival would mean the sweep did not.
+        $this->assertStringNotContainsString('This count is a floor', $out);
         // DL-242 STAGE 8 MOVED THE SECOND HALF OF THIS GUARANTEE TO A STRONGER
         // MECHANISM, and this asserts the mechanism rather than dropping the
         // guarantee. The old wording had to add "no tally line does NOT mean every
@@ -2577,7 +2593,8 @@ class BridgeCommandsTest extends TestCase
         // could not speak for a check that never ran. The inventory line now always
         // prints and accounts for all 37 registered checks, so that caveat is
         // answered by data instead of prose — and the tally is left saying only the
-        // one thing it still says (severity assignment is imprecise; card#5291).
+        // one thing it still says. DL-251 narrowed it AGAIN — the `warn` sites are swept, so
+        // what survives is that the rule is keyed on what a leg CONCLUDED (card#5291).
         $this->assertStringContainsString('37 registered', $out);
         $this->assertStringContainsString('All 37 are accounted for', $out);
     }
@@ -2743,7 +2760,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('is current (deployed 99.0.0 >= bundled', $out);
     }
 
-    public function test_check_warns_and_names_absence_when_the_deployed_package_json_is_missing(): void
+    public function test_check_names_absence_when_the_deployed_package_json_is_missing(): void
     {
         // The version leg never crashes on it: a manifest that is not there is one
         // of the four causes, and the only one the destructive re-copy answers.
@@ -2759,7 +2776,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('cannot tell whether the deployed copy is stale; re-copy the WHOLE directory (cp -R ', $out);
     }
 
-    public function test_check_warns_without_destructive_advice_when_package_json_is_unreadable(): void
+    public function test_check_omits_destructive_advice_when_package_json_is_unreadable(): void
     {
         // SPLIT FROM THE ABOVE (canon #7): "missing or unreadable … cp -R" was false
         // here (the file is right there) and its advice was wrong — a copy lands
@@ -2787,7 +2804,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringNotContainsString('cp -R', $out);
     }
 
-    public function test_check_warns_and_names_malformation_when_package_json_does_not_parse(): void
+    public function test_check_names_malformation_when_package_json_does_not_parse(): void
     {
         // The fourth cause, and the third one "missing or unreadable" misreported.
         // A corrupt manifest does not need a whole directory replaced.
@@ -2853,7 +2870,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('1 finding(s) reported `unvalidated`', $out);
     }
 
-    public function test_check_warns_rather_than_fails_when_the_path_is_invisible_to_this_user(): void
+    public function test_check_reports_unvalidated_rather_than_fails_when_the_path_is_invisible_to_this_user(): void
     {
         // A path we cannot SEE is not a path that is gone: an ancestor denying
         // traversal makes is_dir() false exactly as a removed directory does, and the
@@ -2881,7 +2898,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringNotContainsString('does not resolve', $out);
     }
 
-    public function test_check_warns_rather_than_fails_when_the_deployed_directory_itself_denies_traversal(): void
+    public function test_check_reports_unvalidated_rather_than_fails_when_the_deployed_directory_itself_denies_traversal(): void
     {
         // The SIBLING of the test above, and the topology DL-227 is actually built
         // around: the deployment directory ITSELF is 0700 to the bridge's user.
@@ -3094,7 +3111,7 @@ class BridgeCommandsTest extends TestCase
     {
         // Under default-ON a token collision is a broken enablement (tools DEAD for
         // both agents), so bridge:check FAILs — the opt-in-era WARN (exit 0) is
-        // superseded (DL-217 v5/v7). Reverting the resolver's typed problem to a warn
+        // superseded (DL-217 v5/v7). Reverting the resolver's problem to a warn
         // reds this on the exit code.
         config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
         $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
@@ -3141,7 +3158,7 @@ class BridgeCommandsTest extends TestCase
     {
         // Under default-ON a dead bearer is a broken enablement → FAIL (was WARN/exit
         // 0). The enabled agent's token file is removed, so the resolver accumulates a
-        // typed bearer_unreadable problem the check renders as an error.
+        // unreadable-bearer problem the check renders as an error.
         config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
         $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
         $this->writeBoardToolsAgent('impl', 'tok-impl-1');

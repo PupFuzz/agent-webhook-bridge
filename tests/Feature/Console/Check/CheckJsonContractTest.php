@@ -269,6 +269,37 @@ class CheckJsonContractTest extends TestCase
         $this->assertNull($byId['install.endpoint_urls']['findings'][0]['agent'] ?? null);
     }
 
+    public function test_a_leg_that_could_not_measure_carries_unvalidated_in_the_document(): void
+    {
+        // DL-251's JSON CONSEQUENCE, witnessed here because nothing else can witness it.
+        // No golden file can: `GoldenCapture` reads an undecorated buffer, so all four
+        // severities are the same bytes there and only the closing TALLY moves. No JSON
+        // document is committed. And this class asserted only that `severity` is one of
+        // four values — true before the sweep and after it.
+        //
+        // BOTH HALVES OF THE DOCUMENT, because the sweep touches both: a REGISTERED
+        // check's finding (`channel.transport`, the no-port arm) and a finding from one of
+        // the command's own fail-soft envelopes (the skipped board-visibility probe, which
+        // belongs to no check and reaches the document only through
+        // `findings_outside_registry`).
+        $doc = $this->document('unmeasurable-legs');
+        $byId = array_column($doc['checks'], null, 'id');
+
+        $transport = $byId['channel.transport']['findings'];
+        $this->assertCount(1, $transport);
+        $this->assertSame('unvalidated', $transport[0]['severity']);
+        $this->assertStringContainsString('cannot liveness-probe', $transport[0]['message']);
+
+        $this->assertCount(1, $doc['findings_outside_registry']);
+        $this->assertSame('unvalidated', $doc['findings_outside_registry'][0]['severity']);
+        $this->assertStringContainsString('skipped board-visibility probe', $doc['findings_outside_registry'][0]['message']);
+
+        // WHAT THIS DOES NOT CLAIM. `unvalidated` here says the leg reported that it could
+        // not measure — not that every unmeasured leg in the run says so. The residual is
+        // named in §9 of the stage and in `check-json-contract.md` §4.
+        $this->assertTrue($doc['ok'], 'neither leg may flip the verdict — only `fail` does');
+    }
+
     public function test_the_event_consumer_reconciliation_is_data_not_prose(): void
     {
         // card#5229's deliverable, end to end. Everything a consumer needs is a field:
@@ -371,6 +402,21 @@ class CheckJsonContractTest extends TestCase
                     ."subscriptions:\n  - provider: github\n    scopes: [\"owner/repo\"]\n"
                     ."classifier:\n  class: App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier\n";
                 $install->boot()->agent('alpha', $githubAgent)->agent('beta', $githubAgent);
+                break;
+
+            case 'unmeasurable-legs':
+                // Two legs that cannot answer, one on each side of the registry boundary:
+                // a `channel.url` with no port (nothing to connect to ⇒ the liveness leg
+                // never runs) and a `writeback.json` with mappings but no writeback token
+                // (the board client cannot be constructed ⇒ `handle()`'s second fail-soft
+                // envelope fires and the whole WritebackProbe slot is skipped).
+                $install->boot()
+                    ->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
+                        ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+                        ."channel:\n  url: http://127.0.0.1/push\n")
+                    ->json('writeback.json', ['identity_id' => 4242, 'mappings' => [
+                        'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]],
+                    ]]);
                 break;
 
             case 'event-consumer-unconsumed-type':

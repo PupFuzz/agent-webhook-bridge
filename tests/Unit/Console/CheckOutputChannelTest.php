@@ -4,7 +4,6 @@ namespace Tests\Unit\Console;
 
 use App\Bridge\Check\CheckDisposition;
 use App\Bridge\Check\CheckInventory;
-use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Console\Commands\Bridge\CheckCommand;
 use Illuminate\Console\OutputStyle;
@@ -13,6 +12,7 @@ use ReflectionMethod;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\OutputInterface;
+use Tests\Support\FindingFactories;
 
 /**
  * WHICH CHANNEL each of `bridge:check`'s render decisions dispatches to (DL-248).
@@ -44,6 +44,8 @@ use Symfony\Component\Console\Output\OutputInterface;
  */
 class CheckOutputChannelTest extends TestCase
 {
+    use FindingFactories;
+
     /** Symfony's `<info>`, `<warning>` and `<error>` attributes under a decorated formatter. */
     private const GREEN = "\033[32m";
 
@@ -83,7 +85,7 @@ class CheckOutputChannelTest extends TestCase
     {
         [$command, $buffer] = $this->decorated();
         (new ReflectionMethod(CheckCommand::class, 'emitFinding'))
-            ->invoke($command, new Finding($severity, 'the message'));
+            ->invoke($command, self::findingOf($severity, 'the message'));
 
         return rtrim($buffer->fetch(), "\n");
     }

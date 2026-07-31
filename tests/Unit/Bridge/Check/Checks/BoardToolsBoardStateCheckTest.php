@@ -97,14 +97,33 @@ class BoardToolsBoardStateCheckTest extends TestCase
     }
 
     /**
-     * An EMPTY stage list means the stages were not read, not that 55 is missing —
-     * warning there would report a config error on the strength of a failed read.
+     * An EMPTY stage list means the stages were not read, not that 55 is missing — so this
+     * leg must NOT warn about the config. It used to say nothing at all, which made the
+     * unreadable case byte-identical to the healthy one above (DL-251 §2b): the leg is
+     * silent when it answers "yes", so silence could not also mean "never asked".
+     *
+     * The two assertions are a matched pair, and the SECOND is what keeps the first honest:
+     * an absence assertion on its own passes just as well against a check that stopped
+     * running. `test_a_present_create_stage_is_silent()` above is the mutation-proven
+     * control on the other side — the same fixture with a resolvable stage list emits
+     * neither line.
      */
-    public function test_an_unreadable_stage_list_does_not_warn_about_the_create_stage(): void
+    public function test_an_unreadable_stage_list_is_unvalidated_rather_than_a_config_warn(): void
     {
         $this->fakeBoard(total: 3, swimlaneIds: [4], stages: []);
 
-        $this->assertStringNotContainsString('create_stage_id', $this->joined($this->findings($this->agent())));
+        $findings = $this->findings($this->agent());
+        $unmeasured = $findings[1];
+
+        // EXACTLY two, matching this test's twin in `WritebackBoardStateCheckTest`: without
+        // the count a spurious THIRD finding — a second line about the same empty read, or
+        // a leg that started double-reporting — passes every assertion below, because they
+        // all index or search rather than bound.
+        $this->assertCount(2, $findings);
+        $this->assertStringNotContainsString('is not a stage on board', $this->joined($findings));
+        $this->assertSame(Severity::Unvalidated, $unmeasured['severity']);
+        $this->assertStringContainsString('could NOT check create_stage_id 55', $unmeasured['message']);
+        $this->assertStringContainsString('board 10 returned no workflow stages', $unmeasured['message']);
     }
 
     public function test_a_blind_coord_board_warns(): void
@@ -146,8 +165,12 @@ class BoardToolsBoardStateCheckTest extends TestCase
     /**
      * The degradation AND the line that preceded it — see the class docblock. The board
      * read succeeds, the swimlane read throws, and both must survive.
+     *
+     * DL-251 re-assigns the degradation to `unvalidated`: a board this process could not
+     * read is the install stopping the measurement, and the finding says nothing about
+     * whether the board's state is right. The SURVIVAL property under test is unchanged.
      */
-    public function test_a_read_failure_degrades_to_a_warn_without_discarding_earlier_findings(): void
+    public function test_a_read_failure_degrades_to_unvalidated_without_discarding_earlier_findings(): void
     {
         Http::fake(function (Request $request) {
             if (str_contains($request->url(), 'preload.json')) {
@@ -162,7 +185,7 @@ class BoardToolsBoardStateCheckTest extends TestCase
         $this->assertCount(2, $findings);
         $this->assertSame(Severity::Ok, $findings[0]['severity']);
         $this->assertSame('board_tools: agent prod-agent: writeback token can see board 10', $findings[0]['message']);
-        $this->assertSame(Severity::Warn, $findings[1]['severity']);
+        $this->assertSame(Severity::Unvalidated, $findings[1]['severity']);
         $this->assertStringStartsWith('board_tools: agent prod-agent: could not read board 10 with the writeback token — ', $findings[1]['message']);
     }
 

@@ -44,11 +44,11 @@ final class ChannelSnapshotCheck implements PerAgentCheck
         }
 
         // The `agent <name>: ` prefix was the caller's argument to emitFinding() and is
-        // folded in here. A Finding carries no scope field, so during the migration the
-        // prefix is part of the message; the structured identity a renderer keys on is
-        // id() plus CheckResult::$agent, not this string.
+        // folded in here. A Finding carries no scope field, so the prefix is part of the
+        // message; the structured identity a renderer keys on is id() plus
+        // CheckResult::$agent, not this string.
         foreach (ChannelSnapshotProbe::probe($channel->serverPath, $this->bundledDir) as $finding) {
-            yield new Finding($finding->severity, "agent {$config->agentName}: ".$finding->message);
+            yield $finding->scoped("agent {$config->agentName}");
         }
     }
 }

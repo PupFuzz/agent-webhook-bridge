@@ -30,8 +30,10 @@ use App\Bridge\Support\Finding;
  *   socket. A present socket file proves nothing — the bridge would still deliver
  *   HTTP 202 to a dead endpoint and log `delivered`.
  *
- * WARN, NEVER FAIL, THROUGHOUT: at preflight the channel server legitimately may not be
- * up yet, and the socket is its to create.
+ * NEVER FAIL, THROUGHOUT: at preflight the channel server legitimately may not be
+ * up yet, and the socket is its to create. Said "WARN, NEVER FAIL" until DL-251 — the
+ * HTTP arm's no-explicit-port exit is `unvalidated`, because with no port there is
+ * nothing to connect to and the liveness leg never ran.
  *
  * TOPOLOGY CAVEAT ON THE HTTP ARM. `bridge:check` runs on the RECEIVER host, so for a
  * remote/tunneled agent the connector AND its `…http-<port>.FAILED` marker live on the
@@ -122,7 +124,7 @@ final class ChannelTransportCheck implements PerAgentCheck
         $port = is_array($parts) && isset($parts['port']) ? (int) $parts['port'] : null;
 
         if ($port === null) {
-            yield Finding::warn("agent {$name}: channel.url {$url} has no explicit port — cannot liveness-probe the HTTP channel.");
+            yield Finding::unvalidated("agent {$name}: channel.url {$url} has no explicit port — cannot liveness-probe the HTTP channel.");
 
             return;
         }

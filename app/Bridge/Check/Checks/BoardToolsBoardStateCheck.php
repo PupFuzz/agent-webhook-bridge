@@ -13,10 +13,13 @@ use Throwable;
  * Every per-agent board-tools assertion that needs a live BOARD READ (DL-217/DL-220),
  * migrated out of `CheckCommand::checkBoardTools()` (DL-242 stage 7b).
  *
- * WARN, NEVER FAIL — the DL-220 split, and the structural twin of the writeback
+ * NEVER FAIL — the DL-220 split, and the structural twin of the writeback
  * board-state check: a temporarily-unreachable kanban or a genuinely-empty board must not
  * FAIL the install check (DL-026), while the enablement-breaking conditions above it (a
- * suppressed default block, a dead or ambiguous bearer) do.
+ * suppressed default block, a dead or ambiguous bearer) do. It reports `warn` where a leg
+ * ANSWERED badly and `unvalidated` where it could not answer — the board read threw, or
+ * the stage list came back empty so `create_stage_id` had nothing to compare against
+ * (DL-251). "WARN, NEVER FAIL" was the whole story here until then.
  *
  * PER-AGENT, WHERE ITS WRITEBACK TWIN IS PER-MAPPING, and the difference is the whole
  * reason both exist: board tools are scoped by the AGENT's own `board_tools` block
@@ -73,8 +76,19 @@ final class BoardToolsBoardStateCheck implements PerAgentCheck
             }
 
             $stageIds = array_keys($client->boardStageOrder($bt->boardId));
-            if ($bt->createStageId !== null && $stageIds !== [] && ! in_array($bt->createStageId, $stageIds, true)) {
-                yield Finding::warn("board_tools: agent {$name}: create_stage_id {$bt->createStageId} is not a stage on board {$bt->boardId} — every board_create_card will 422 until fixed.");
+            if ($bt->createStageId !== null) {
+                if ($stageIds === []) {
+                    // DL-251 §2b, the twin of `WritebackBoardStateCheck`'s. The empty read
+                    // was folded into the same conjunction as the mismatch, so it produced
+                    // the identical output as a create_stage_id that IS on the board —
+                    // silence. This leg only speaks on a problem, which is fine for an
+                    // ANSWERED question; it is not fine for one that was never asked.
+                    // UNVALIDATED rather than warn: the comparand is missing, so nothing
+                    // here says the configured id is wrong.
+                    yield Finding::unvalidated("board_tools: agent {$name}: could NOT check create_stage_id {$bt->createStageId} — board {$bt->boardId} returned no workflow stages, so there was nothing to compare it against; a typo'd id would look exactly like this. Verify board_id + the service user's membership and re-run.");
+                } elseif (! in_array($bt->createStageId, $stageIds, true)) {
+                    yield Finding::warn("board_tools: agent {$name}: create_stage_id {$bt->createStageId} is not a stage on board {$bt->boardId} — every board_create_card will 422 until fixed.");
+                }
             }
 
             if ($bt->coordBoardId !== null) {
@@ -84,7 +98,7 @@ final class BoardToolsBoardStateCheck implements PerAgentCheck
                 }
             }
         } catch (Throwable $e) {
-            yield Finding::warn("board_tools: agent {$name}: could not read board {$bt->boardId} with the writeback token — ".$e->getMessage());
+            yield Finding::unvalidated("board_tools: agent {$name}: could not read board {$bt->boardId} with the writeback token — ".$e->getMessage());
         }
     }
 }
