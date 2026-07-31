@@ -41,6 +41,64 @@ class CardTokenGrammarTest extends TestCase
         }
     }
 
+    /**
+     * The near-miss probe's pattern and the corpus that covers it are two
+     * consumers of ONE separator list (DL-250), so this is the ASSEMBLY's own
+     * test: it reds when the built pattern stops carrying that list as written —
+     * a group made mandatory (every glued cell goes dark), a lost `s?` (every
+     * plural goes dark, which is the defect this all came from), a member that
+     * quotes wrong. The negative half is what stops a probe that matches
+     * everything from satisfying it.
+     */
+    public function test_the_probe_recognises_every_cell_of_its_separator_cross_product(): void
+    {
+        $this->assertNotEmpty(CardTokenGrammar::probeVectors(), 'an empty corpus would assert nothing');
+
+        foreach (CardTokenGrammar::probeVectors() as $vector) {
+            $this->assertTrue(CardTokenGrammar::looksLikeCardToken($vector),
+                "'{$vector}' is invisible to the near-miss probe — it could never warn");
+        }
+
+        // A bare space before the id is the DL-201 prose ruling, and `cards 123`
+        // is that ruling's plural — neither is a near-miss. The rest are the
+        // embedded-word cases the leading boundary protects.
+        foreach (['supports card 2 in prose', 'card 123', 'cards 123', 'reorder the cards later',
+            'the discard-1 path', 'a wildcard-2 match', 'discards 5 items', 'wildcards 3 more',
+            'scorecard_2', 'card-layout-rework'] as $text) {
+            $this->assertFalse(CardTokenGrammar::looksLikeCardToken($text),
+                "'{$text}' must not look like a card token");
+        }
+    }
+
+    /**
+     * `-` and `#` sit in the PROBE's separator set even though they are the
+     * ACCEPTED separators. On the singular arm that is inert, and inert only
+     * while this property holds: every text matching `\bcard[-#]\d` parses, so no
+     * such text can reach a probe that is consulted only where {@see
+     * CardTokenGrammar::parse()} returned null. Pinned rather than asserted in a
+     * comment, because a comment cannot red when the pattern moves.
+     */
+    public function test_a_separated_prefix_always_parses_so_the_probes_accepted_separators_stay_inert(): void
+    {
+        $corpus = array_merge(CardTokenGrammar::VECTORS, CardTokenGrammar::probeVectors(), [
+            'feat/card-3054_fix', 'card#0123 fix', 'fix a thing card-3 today',
+            'supports card 2 in prose', 'the discard-1 path', 'a wildcard-2 match',
+            'card-layout-rework', 'no token at all',
+        ]);
+
+        $exercised = 0;
+        foreach ($corpus as $text) {
+            if (preg_match('/\bcard[-#]\d/i', $text) !== 1) {
+                continue;
+            }
+            $exercised++;
+            $this->assertNotNull(CardTokenGrammar::parse($text),
+                "'{$text}' carries a separated prefix but does not parse — the probe's `-`/`#` would newly fire on it");
+        }
+
+        $this->assertGreaterThan(0, $exercised, 'no corpus text reached the implication — this would prove nothing');
+    }
+
     /** The separator set is closed: only `-` and `#` separate, per DL-201. */
     public function test_non_separators_do_not_parse(): void
     {
