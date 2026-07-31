@@ -7,6 +7,7 @@ use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -573,6 +574,57 @@ class CheckGoldenTest extends TestCase
         $this->assertFixtureReachesItsSubject($name, $capture);
     }
 
+    #[DataProvider('fixtures')]
+    public function test_the_json_document_agrees_with_the_committed_text_capture(string $name): void
+    {
+        // DL-249 STAGE 9 — THE CROSS-RENDERER AGREEMENT, over every install shape.
+        //
+        // It lives in this class because this class owns the install-shape corpus, and a
+        // second copy of that corpus is the defect the whole program keeps carding. The
+        // JSON document's own SHAPE is pinned in CheckJsonContractTest; what is asserted
+        // here is that the two renderers cannot disagree about the same run.
+        //
+        // THE TEXT SIDE IS THE COMMITTED FILE, NOT A SECOND RUN. That halves the cost, and
+        // it is also the stronger comparison: the golden file is what a reviewer reads in
+        // the PR diff, so agreement with IT is agreement with the reviewed artifact rather
+        // than with whatever a re-run happens to produce.
+        $golden = $this->goldenFor($name);
+        $doc = $this->captureFixtureAsJson($name);
+
+        preg_match('/^exit: (\d+)$/m', $golden, $exitMatch);
+        $this->assertNotEmpty($exitMatch, "golden fixture '{$name}' has no exit line to compare against");
+        $textExit = (int) $exitMatch[1];
+
+        // THE EXIT CONTRACT, asserted rather than asserted-by-construction. `--format`
+        // gates only which bytes are printed, so a run that exits differently means a
+        // renderer reached the verdict — the one risk card#5229 named for this stage.
+        $this->assertSame($textExit, $doc['exit'], "fixture '{$name}': --format=json exits differently from the text run");
+        $this->assertSame($textExit === 0, $doc['document']['ok'], "fixture '{$name}': the document's `ok` disagrees with the exit code");
+
+        preg_match(
+            '/^checks: (\d+) registered · (\d+) ran \((\d+) reported above, (\d+) with nothing to report\)(.*?)\. All \d+ are accounted for/m',
+            $golden,
+            $m,
+        );
+        $this->assertNotEmpty($m, "golden fixture '{$name}' has no parseable inventory line");
+        $inventory = $doc['document']['inventory'];
+
+        $this->assertSame((int) $m[1], $inventory['registered'], "fixture '{$name}': registered");
+        $this->assertSame((int) $m[2], $inventory['ran'], "fixture '{$name}': ran");
+        $this->assertSame((int) $m[3], $inventory['reported'], "fixture '{$name}': reported");
+        $this->assertSame((int) $m[4], $inventory['silent'], "fixture '{$name}': silent");
+        $this->assertSame(
+            preg_match('/(\d+) opt-in probes? not requested/', $m[5], $nr) ? (int) $nr[1] : 0,
+            $inventory['not_requested'],
+            "fixture '{$name}': not_requested",
+        );
+        $this->assertSame(
+            preg_match('/(\d+) did not run/', $m[5], $dnr) ? (int) $dnr[1] : 0,
+            $inventory['not_run'],
+            "fixture '{$name}': not_run",
+        );
+    }
+
     public function test_every_fixture_declares_a_subject(): void
     {
         // Without this, the guard is opt-in and the next fixture added silently has no
@@ -843,6 +895,39 @@ class CheckGoldenTest extends TestCase
         $host->apply(fpmPresent: $spec['fpm'], coordConfig: $spec['coordConfig']);
 
         return GoldenCapture::capture($install->path(), $spec['args']);
+    }
+
+    /**
+     * The same install shape, run through the JSON renderer (DL-249 stage 9).
+     *
+     * It goes through `Artisan` directly rather than {@see GoldenCapture}: that helper's
+     * path/uid normalization exists to keep a TEXT capture comparable across hosts, and
+     * substituting tokens inside a document under structural assertion would be doing
+     * work for nothing. Nothing here reads a message.
+     *
+     * @return array{exit: int, document: array<string, mixed>}
+     */
+    private function captureFixtureAsJson(string $name): array
+    {
+        $install = new GoldenInstall($name);
+        $host = new PinnedHost($install->path());
+        $this->install = $install;
+        $this->host = $host;
+        $this->app->instance(ChannelProbeEnvironment::class, new GoldenChannelEnvironment);
+        $host->resetAmbientState();
+        $spec = $this->buildFixture($install, $name);
+        $host->apply(fpmPresent: $spec['fpm'], coordConfig: $spec['coordConfig']);
+
+        $exit = Artisan::call('bridge:check', $spec['args'] + ['--format' => 'json']);
+        $raw = trim(Artisan::output());
+        $document = json_decode($raw, true);
+
+        $this->assertIsArray(
+            $document,
+            "fixture '{$name}': --format=json did not put a single JSON document on stdout — got: ".substr($raw, 0, 300),
+        );
+
+        return ['exit' => $exit, 'document' => $document];
     }
 
     private function tearDownFixture(): void

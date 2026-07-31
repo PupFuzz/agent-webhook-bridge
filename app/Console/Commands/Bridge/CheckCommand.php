@@ -6,6 +6,7 @@ use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckDisposition;
 use App\Bridge\Check\CheckInventory;
+use App\Bridge\Check\CheckJsonRenderer;
 use App\Bridge\Check\CheckReport;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\Checks\AgentApiTokenCheck;
@@ -46,6 +47,7 @@ use App\Bridge\Check\Checks\WritebackMappingConfigCheck;
 use App\Bridge\Check\Checks\WritebackSourceCoverageCheck;
 use App\Bridge\Check\Checks\WritebackTokenCheck;
 use App\Bridge\Check\CheckSlot;
+use App\Bridge\Check\EventConsumers\EventConsumerReconciler;
 use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Support\AgentConfig;
@@ -67,9 +69,14 @@ use Throwable;
 class CheckCommand extends BridgeCommand
 {
     protected $signature = 'bridge:check {--probe-tools= : POST a live board_my_cards to this /agent-tools/call endpoint per enabled agent (opt-in — verifies the same-box loopback recipe end to end; the endpoint is the value the channel server uses, e.g. https://<bridge-hostname>/agent-tools/call)}
-                            {--probe-tools-ssh= : round-trip a live board_my_cards over ssh to this <user@host> (opt-in — certifies the SSH-forced-command board-tools transport end to end; card 4952)}';
+                            {--probe-tools-ssh= : round-trip a live board_my_cards over ssh to this <user@host> (opt-in — certifies the SSH-forced-command board-tools transport end to end; card 4952)}
+                            {--format=text : output format — `text` (the operator report) or `json` (a versioned machine-readable document; see docs/check-json-contract.md). The checks that run, and the exit code, are identical either way.}';
 
     protected $description = 'Validate the bridge install config (dirs, DB connectivity, agent YAMLs)';
+
+    private const FORMAT_TEXT = 'text';
+
+    private const FORMAT_JSON = 'json';
 
     /**
      * How many findings this run reported as `unvalidated` — checks that did NOT
@@ -79,10 +86,40 @@ class CheckCommand extends BridgeCommand
      */
     private int $unvalidatedCount = 0;
 
+    /**
+     * Whether this run renders the JSON document instead of the operator report
+     * (DL-249 stage 9). Reset per run for the same reason the tally is.
+     */
+    private bool $json = false;
+
+    /**
+     * Findings this method's fail-soft envelopes produced, which belong to NO registered
+     * check — the JSON document's `findings_outside_registry` (DL-249 stage 9).
+     *
+     * THEY ARE CAPTURED RATHER THAN JUST PRINTED because two of the four flip the exit
+     * code. A document that omitted them would report every check clean and `ok: false`,
+     * with nothing in it naming the cause. Reset per run.
+     *
+     * @var list<Finding>
+     */
+    private array $unattributed = [];
+
     public function handle(): int
     {
+        $format = $this->strOption('format') ?? self::FORMAT_TEXT;
+        if (! in_array($format, [self::FORMAT_TEXT, self::FORMAT_JSON], true)) {
+            // FAIL CLOSED. Falling back to text would hand a machine consumer the
+            // operator report on stdout with a zero exit — a typo'd --format silently
+            // producing unparseable output is the false-clean shape one layer up.
+            $this->error("bridge:check: unknown --format '{$format}' (expected: ".self::FORMAT_TEXT.', '.self::FORMAT_JSON.')');
+
+            return self::FAILURE;
+        }
+
         $ok = true;
+        $this->json = $format === self::FORMAT_JSON;
         $this->unvalidatedCount = 0;
+        $this->unattributed = [];
 
         // The registry, and WHAT IS IN IT is {@see self::registry()}'s docblock — one
         // copy, beside the list it describes.
@@ -144,7 +181,7 @@ class CheckCommand extends BridgeCommand
                 try {
                     $cfg = AgentConfig::load($name, $configDir);
                 } catch (Throwable $e) {
-                    $this->error("agent config {$name}: ".$e->getMessage());
+                    $this->emitUnattributed(Finding::fail("agent config {$name}: ".$e->getMessage()));
                     $ok = false;
 
                     continue;
@@ -344,7 +381,7 @@ class CheckCommand extends BridgeCommand
                         // here too, and the warn below would then print a different cause on
                         // the same screen.
                         $runner->noteNotRun(CheckSlot::WritebackProbe, 'the writeback board-visibility probe could not be set up (see the warning above)');
-                        $this->warn('writeback: skipped board-visibility probe — '.$e->getMessage());
+                        $this->emitUnattributed(Finding::warn('writeback: skipped board-visibility probe — '.$e->getMessage()));
                     }
                 } else {
                     $runner->noteNotRun(CheckSlot::WritebackProbe, 'writeback.json declares no repo mappings, so there is no board to probe');
@@ -369,7 +406,7 @@ class CheckCommand extends BridgeCommand
                 $runner
                     ->noteNotRun(CheckSlot::Writeback, $wbAborted)
                     ->noteNotRun(CheckSlot::WritebackProbe, $wbAborted);
-                $this->error('writeback.json: '.$e->getMessage());
+                $this->emitUnattributed(Finding::fail('writeback.json: '.$e->getMessage()));
                 $ok = false;
             }
         } else {
@@ -388,6 +425,14 @@ class CheckCommand extends BridgeCommand
         // still not defensive code: stage 10 re-assigns severities across this command
         // (cards#5291/#5292), and a call site that ignored the return because "this one
         // only warns" would swallow the first `fail` a re-assignment gives it, silently.
+        //
+        // DERIVATION, NOT ASSERTION (plan constraint (c)) — and hoisted here in DL-249
+        // stage 9 for the reason the AgentRegistry build above is: TWO renderers read it.
+        // The check turns it into prose; the JSON document emits it as data. A check
+        // deriving its own would re-run the per-scope query behind the other renderer's
+        // back and could disagree with it (card#5229).
+        $eventConsumers = (new EventConsumerReconciler)->reconcile($ctx->githubScopeConsumers);
+        $ctx->eventConsumers = $eventConsumers;
         if (! $this->emitReport($runner->run(CheckSlot::EventConsumer, $ctx))) {
             $ok = false;
         }
@@ -436,7 +481,7 @@ class CheckCommand extends BridgeCommand
                     ->noteNotRun(CheckSlot::BoardToolsState, $noClient)
                     ->noteNotRun(CheckSlot::BoardToolsSsh, $noClient)
                     ->noteNotRun(CheckSlot::BoardToolsSshAdvisory, $noClient);
-                $this->warn('board_tools: enabled for '.count($ctx->boardToolsEnabled).' agent(s) but the kanban writeback client is unavailable ('.$e->getMessage().') — the tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.');
+                $this->emitUnattributed(Finding::warn('board_tools: enabled for '.count($ctx->boardToolsEnabled).' agent(s) but the kanban writeback client is unavailable ('.$e->getMessage().') — the tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.'));
             }
 
             if ($ctx->boardToolsClient !== null) {
@@ -531,6 +576,26 @@ class CheckCommand extends BridgeCommand
             $ok = false;
         }
 
+        // DL-249 STAGE 9: the machine document, and the ONLY thing this run writes to
+        // stdout when it was asked for — every other emitter in this method is gated on
+        // the format, so nothing can land beside it and make the stream unparseable.
+        //
+        // IT READS THE SAME `$ok` THE RETURN BELOW DOES, which is what makes "the exit
+        // contract is untouched" true by construction rather than by agreement: the
+        // document's verdict and the exit code are one variable, so no renderer can
+        // compute one of them differently.
+        if ($this->json) {
+            $this->line((new CheckJsonRenderer)->encode(
+                $ok,
+                $runner->results(),
+                $runner->inventory(),
+                $this->unattributed,
+                $eventConsumers,
+            ));
+
+            return $ok ? self::SUCCESS : self::FAILURE;
+        }
+
         // DL-242 STAGE 8: THE EXACT INVENTORY, replacing the card-5170 tally's
         // "floor, not an inventory" disclaimer. That disclaimer had to disclaim because
         // the only thing this command could count was findings carrying one severity,
@@ -539,7 +604,9 @@ class CheckCommand extends BridgeCommand
         //
         // ALWAYS PRINTED, unlike the tally it replaces. A coverage statement the operator
         // gets only sometimes is one they cannot rely on, which is the whole defect: the
-        // value here is that a clean run now says WHAT it covered.
+        // value here is that a clean run now says WHAT it covered. (The json document
+        // above carries the same account per check, which is why that branch returns
+        // rather than printing this line into a JSON stream.)
         $this->emitInventory($runner->inventory());
 
         // The card-5170 tally SURVIVES, narrowed to the one thing it still says. Stage 8
@@ -550,7 +617,7 @@ class CheckCommand extends BridgeCommand
         // floor FOR THAT QUESTION even though the registry above is now exact — two
         // different claims, and conflating them is what the old wording did.
         //
-        // `finding(s)`, NOT `check(s)`: {@see self::emitUnvalidated()} counts FINDINGS, and
+        // `finding(s)`, NOT `check(s)`: {@see self::emitFinding()} counts FINDINGS, and
         // a per-agent check yields one per agent — `ChannelSnapshotCheck` on a two-agent
         // install with no `channel.server_path` declared produces two, from one check id.
         // The old noun put "2 check(s)" directly beneath an inventory line that is keyed by
@@ -660,20 +727,26 @@ class CheckCommand extends BridgeCommand
     /**
      * Render one check's {@see CheckReport} and report whether it was fail-free.
      *
-     * This is the text renderer stage 9 replaces with a {@see Check}-
-     * aware pair (text + json). It walks findings rather than results because today's
-     * output has no per-check framing to render — the id is carried for the inventory,
-     * not for the operator.
+     * THE TEXT RENDERER, one of the pair DL-249 stage 9 completed — {@see
+     * CheckJsonRenderer} is the other, and it reads {@see CheckRunner::results()} rather
+     * than going through here. This one walks findings rather than results because the
+     * operator's output has no per-check framing to render: the id is carried for the
+     * inventory and the JSON document, not for the terminal.
      *
      * `@phpstan-impure` states a fact the analyser does not derive: this call can change
-     * `$this->unvalidatedCount` (via {@see self::emitFinding()} → {@see
-     * self::emitUnvalidated()}). Purity is inferred from the DIRECTLY called method only
-     * — measured, by annotating the two deeper methods instead and watching the error
-     * survive both — so without this, `handle()` keeps the `= 0` it assigned and phpstan
-     * calls the tally's `> 0` guard dead. It is not dead: two golden fixtures render that
-     * line. Nothing was masking this until DL-242 stage 7a; the advisory it migrated was
-     * simply the one direct call between the report renderer and the tally that phpstan
-     * DID infer impure.
+     * `$this->unvalidatedCount` (via {@see self::emitFinding()}). The tally's `> 0` guard
+     * in `handle()` is not dead — two golden fixtures render that line.
+     *
+     * ⚠ IT IS NOT WHAT KEEPS THAT GUARD ALIVE, AND HAS NOT BEEN FOR SOME TIME. This
+     * docblock used to say the analysis fails without it, attributed to purity being
+     * inferred from the directly-called method only. MEASURED AT STAGE 9, on an
+     * unmodified `dev` checkout as well as on this one: removing the annotation leaves
+     * phpstan at 0 errors, and it still does with the tally moved a hop deeper — so the
+     * claim was already stale before this stage touched the method, and the stage did not
+     * isolate what covers for it now. Recorded in the plan's § Disproved claims. The
+     * annotation STAYS: it states a true fact about this method, and deleting it on the
+     * strength of an unidentified substitute is how the guard comes back dead on an
+     * unrelated edit.
      *
      * @phpstan-impure
      */
@@ -710,17 +783,32 @@ class CheckCommand extends BridgeCommand
      * (card 5178). The render arm alone would leave the exit decision as a
      * fall-through, which is the shape that let an unknown severity print green in
      * the first place — one level over. A fifth case reds phpstan at both.
+     *
+     * ONLY THE RENDER ARM IS GATED ON THE FORMAT (DL-249 stage 9); the tally and the
+     * RETURN run either way, and that asymmetry is the exit contract's guarantee. A
+     * `--format=json` run walks the identical decision path — the same checks, the same
+     * findings, the same `fail`-only flip — and differs solely in which bytes reach
+     * stdout. Skipping the call in json mode instead would have made the verdict depend
+     * on the renderer, which is the coupling card#5229 warned this stage could introduce.
      */
     private function emitFinding(Finding $finding): bool
     {
         $message = $finding->message;
 
-        match ($finding->severity) {
-            Severity::Fail => $this->error($message),
-            Severity::Warn => $this->warn($message),
-            Severity::Unvalidated => $this->emitUnvalidated($message),
-            Severity::Ok => $this->info($message),
-        };
+        // Counted HERE — the single chokepoint every probe finding flows through, so any
+        // future probe emitting the severity is tallied without touching its call site.
+        if ($finding->severity === Severity::Unvalidated) {
+            $this->unvalidatedCount++;
+        }
+
+        if (! $this->json) {
+            match ($finding->severity) {
+                Severity::Fail => $this->error($message),
+                Severity::Warn => $this->warn($message),
+                Severity::Unvalidated => $this->line($message),
+                Severity::Ok => $this->info($message),
+            };
+        }
 
         return match ($finding->severity) {
             Severity::Fail => false,
@@ -729,14 +817,21 @@ class CheckCommand extends BridgeCommand
     }
 
     /**
-     * Plain line + the run's tally. Counted HERE — the single chokepoint every probe
-     * finding flows through, so any future probe emitting the severity is tallied
-     * without touching its call site.
+     * Render a finding this method's fail-soft envelopes produced — one belonging to no
+     * registered check — and RECORD it for the JSON document (DL-249 stage 9).
+     *
+     * IT DELIBERATELY DOES NOT TOUCH `$ok`. The two `fail` sites set it themselves, one
+     * line below their call, exactly as they did when they called `error()` directly:
+     * routing the exit decision through this would have moved a control-flow fact into a
+     * helper for no gain, and the property that matters is asserted instead —
+     * `CheckJsonContractTest` requires `ok === false` on any document carrying a `fail`
+     * anywhere, so a future envelope that forgets its `$ok = false` reds rather than
+     * shipping a document that contradicts itself.
      */
-    private function emitUnvalidated(string $message): void
+    private function emitUnattributed(Finding $finding): void
     {
-        $this->unvalidatedCount++;
-        $this->line($message);
+        $this->unattributed[] = $finding;
+        $this->emitFinding($finding);
     }
 
     /**
@@ -777,11 +872,14 @@ class CheckCommand extends BridgeCommand
      * {@see self::emitInventory()} describes). The golden corpus renders neither zero-arm
      * and never the disclosure, so every arm here still needs a test that hands this method
      * an inventory no install produces; what changed is that the arms now include the emit
-     * decision. Stage 9 splits the text/json pair along this same seam.
+     * decision.
      *
      * THE WORDING LIVES HERE, NOT ON {@see CheckInventory}, because that split makes the
      * inventory what BOTH renderers read — a sentence on the value object would put this
-     * renderer's voice inside the json one.
+     * renderer's voice inside the json one. DL-249 stage 9 is where that stopped being a
+     * forecast: {@see CheckJsonRenderer} reads the same inventory and emits every
+     * disposition per check, so this method's counts and its sentences are one of two
+     * views over one value rather than the only view.
      *
      * WHAT THE LINE CLAIMS IS BOUNDED ON PURPOSE, because a coverage claim stated stronger
      * than its evidence is this program's own recurring defect. It accounts for the

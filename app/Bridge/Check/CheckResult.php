@@ -9,7 +9,9 @@ use App\Bridge\Support\Finding;
  *
  * The registry's value over the raw `warn()` sites it replaces is that a check's
  * findings arrive ATTRIBUTED — the id is carried alongside them, so the run can be
- * inventoried rather than only printed. Stage 9's JSON renderer reads these.
+ * inventoried rather than only printed. {@see CheckJsonRenderer} reads these, and the
+ * `agent` below is the one attribution the text renderer has no place to put: it prints
+ * a check's display-ready message and nothing frames it per check (DL-249 stage 9).
  *
  * A RESULT IS NOT THE INVENTORY, and the difference is what stage 8 turned on. A result
  * exists only for a check that RAN, so the set of results cannot speak for a check whose

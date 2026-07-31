@@ -1,8 +1,13 @@
 # `bridge:check` — the Check-registry plan
 
-> **Status: stages 0–8 are BUILT.** 0–7b are merged to `dev`; **8** lands with this change
-> (card#5585, DL-248) and its gate was **granted**.
-> **Stages 9 and 10 remain HARD GATE — stage 8's approval does NOT roll on to them.**
+> **Build state lives in ONE place: the § Staged execution table below.** It is the only
+> statement of which stages are built, and this header deliberately does not restate it —
+> an enumeration here drifted through six merged PRs, each of which updated the table and
+> left this paragraph behind (card#5687). A pointer cannot drift; a second copy always does.
+> **Every remaining stage marked HARD GATE in that table stays gated — an earlier stage's
+> approval never rolls on to a later one.** That is policy, not a moving measurement, which
+> is why it belongs here and the stage list does not.
+>
 > This document owns the *reasoning* for the `bridge:check` consolidation program — the
 > measurements behind it, the target shape, the constraints that would break the refactor
 > mid-flight, and what is deliberately **not** in scope. Read it before prescribing any
@@ -236,11 +241,12 @@ split rather than in the `Severity` enum.**
   statement the operator gets only sometimes is one they cannot rely on, and a disposition
   omitted from the line breaks the arithmetic that is the line's own control. The row-8 gate
   covers this; nothing about the ruling itself changed.
-- The **JSON renderer** (Stage 9 / card#5229) **emits it** in machine-readable form, per check
-  rather than as a count — which is what "the full inventory" buys a machine consumer once the
-  text line already carries the total. **AMENDED BY STAGE 8:** this bullet originally justified
-  itself as *"strictly more than they can get today"*, which was true only while the text
-  renderer stayed silent.
+- The **JSON renderer** (card#5229) **emits it** in machine-readable form, per check rather than as
+  a count — which is what "the full inventory" buys a machine consumer once the text line already
+  carries the total. **AMENDED BY STAGE 8:** this bullet originally justified itself as *"strictly
+  more than they can get today"*, which was true only while the text renderer stayed silent.
+  **SHIPPED in stage 9** as `checks[].disposition: "not-requested"`, keyed by check id; the shape
+  is owned by [`check-json-contract.md`](check-json-contract.md).
 
 Net effect: `unvalidated` keeps exactly one meaning — *"I should have measured this and the
 install stopped me."* **No new `Severity` case**, so the exhaustive-`match` property and the exit
@@ -271,7 +277,7 @@ next stage starts.
 | **7a ✅** | Migrate the **event-follows-consumer plane** — the whole DL-196 advisory — into a new `CheckSlot::EventConsumer`. One check, one slot. **Row 7 splits on SIZE, not on a measured seam**, and the stage 7a result says so rather than manufacturing a discriminator; it is also the first stage whose predicate total goes UP, because it migrates a HELPER method rather than code inside `handle()`. | **None** (golden test enforces) | no |
 | **7b ✅** | Migrate the **board-tools plane** — the `suppressedReason` scan, the resolver's `problems()`, the per-agent board-STATE legs, the DL-225 flipped-default advisory (which reads its input back off another slot's REPORT — a first for this program) and the `--probe-tools` live probe — into **five** new slots. `handle()` now holds derivation and the runner calls alone; see the stage 7b result. | **None** (golden test enforces) | no |
 | **8 ✅** | Turn on the accounting invariant: every registered check is **accounted for** on every run that completes (the runner does not catch, so a throwing check aborts before anything renders the account), and replace the `emitReport()` "floor, not an inventory" disclaimer with an **exact** inventory. Applies the resolved opt-in-probe decision above — **and amends two of its bullets in place: the text renderer does NOT stay silent on `not requested`, because this is the gated output-change stage.** **This row originally read "every registered check emits ≥1 finding" — measurement falsified that before any code was written, and the row is corrected rather than quietly built around; see the stage 8 result.** | **Yes** — every run that completes gains one inventory line; the disclaimer is narrowed | **GATE** (granted) |
-| **9** | `--format=json` renderer. Closes **card#5229**. | Additive surface | **GATE** — and the reason is NOT the operator-visible column, which is the weakest of the three gated rows. A JSON shape is a **write contract**: once a machine consumer parses it you cannot un-ship it, so per the fleet write-contract rule it must be versioned and carry its own guard. Recorded here because it was previously asserted with no rationale anywhere in this doc or the decision log, which makes a gate indistinguishable from a habit. |
+| **9 ✅** | `--format=json` renderer. Closes **card#5229**. **This row was INCOMPLETE as written, and the card said so before the stage started: a renderer over the existing report does not close card#5229, because the event-consumer reconciliation was computed as locals inside a check and thrown away — emitting its prose as JSON strings is still prose-parsing. The stage is therefore TWO deliverables — the renderer split AND the reconciliation extracted as data; see the stage 9 result.** | Additive surface | **GATE** (granted) — and the reason is NOT the operator-visible column, which is the weakest of the three gated rows. A JSON shape is a **write contract**: once a machine consumer parses it you cannot un-ship it, so per the fleet write-contract rule it must be versioned and carry its own guard. Recorded here because it was previously asserted with no rationale anywhere in this doc or the decision log, which makes a gate indistinguishable from a habit. |
 | **10** | Re-assign the sites that disagree on warn ↔ unvalidated. Closes **card#5291**, **card#5292**. | **Yes** — severities change | **GATE** |
 
 Stages 0–7 are pure refactor under a byte-identical output contract — **contingent on Stage 0
@@ -1744,6 +1750,162 @@ slot-collapse restructure the target design describes, which belongs to the fina
 deliberately rather than to stage 8 as a side effect. `registry()` is a private method on the
 command for exactly that reason.
 
+### Stage 9 result — the row named one deliverable and the stage owed two, and the gate's real subject was never the flag
+
+**What the row said and what the card said, and why the card was right.** The row read
+*"`--format=json` renderer"*. card#5229 argued the row was incomplete, and it was — for a mechanical
+reason rather than a matter of taste. **A generic JSON renderer over the existing `CheckReport` does
+not close the card.** The event-consumer reconciliation — observed types vs. what any enabled
+classifier declares it consumes — was computed as **local variables inside
+`EventFollowsConsumerCheck` and thrown away**; the only thing that survived was the sentence. A
+renderer over that emits the same prose as a JSON string, and a consumer still parses prose. So
+stage 9 is **two deliverables**: the renderer split *and* the reconciliation extracted as data. The
+row is corrected in place rather than quietly built around, which is the third time in this program
+a stage row turned out to be a hypothesis (stages 6 and 8 were the others).
+
+**The design fork the card left open, and the mechanism that settled it.** The card asked whether
+this should be `bridge:check --json` or a standalone `bridge:consumed-events` query command, and
+argued they are not equivalent. **Ruled: `--format=json`, one front door.** The deciding facts, not
+the labels:
+
+- **A standalone query command cannot carry the other half.** The resolved opt-in-probe decision
+  above owes `NotRequested` **per check** — an *inventory* fact. A query command has no inventory,
+  so shipping it would close the card and leave this row open, at the cost of a second write
+  contract and a second guard for one known consumer.
+- **The card's binding constraint — *do NOT ship a second derivation* — is honoured either way**,
+  and it is precisely what makes a second front door cheap to add later if the exit-code ergonomics
+  ever bite. `EventConsumerReconciler` is the one derivation; a query command would be a third
+  renderer over it, not a fork of it. The DL-223 `BoardToolDispatcher` split is the precedent.
+- **Stated bound, recorded rather than hidden:** a consumer piping this under `set -e` still gets a
+  non-zero exit on an unhealthy install and aborts before reading the document. The document carries
+  `ok`, so `$?` is never needed — and [`check-json-contract.md`](check-json-contract.md) says so, in
+  the contract itself, rather than leaving a consumer to discover it in production.
+
+**The gate's real subject was the write contract, not the flag** — which is what the row's own gate
+rationale says, and building it confirmed the rationale rather than the intuition. The additive-flag
+framing would have justified skipping the gate; the write-contract framing is what forces the
+version constant, the exact-key-set guard, and an owning doc.
+
+**What shipped.**
+
+- `EventConsumerReconciler` / `EventConsumerReconciliation` / `EventConsumerScope` — the derivation
+  extracted **whole** out of the check, run by `handle()` as derivation (constraint (c), the same
+  treatment the `AgentRegistry` build got in stage 5c) and published on `CheckContext`.
+  `EventFollowsConsumerCheck` is now a **renderer only** — no query, no set arithmetic.
+- `CheckJsonRenderer`, schema **v1**: `schema · ok · checks[] · findings_outside_registry[] ·
+  inventory · event_consumers{error, scopes[]}`.
+- `CheckRunner::results()` — the text renderer emits incrementally and discards each report at its
+  call site; a JSON document is one value emitted once, after the last check, so something has to
+  retain them. The asymmetry is why the method exists at all.
+- **The four fail-soft envelopes in `handle()` now emit `Finding`s and are captured.** Without this
+  the document would show every check clean with `ok: false` and nothing naming the cause — a
+  **machine-readable false clean**, the exact defect this program exists to remove, re-minted at the
+  new surface. Two of the four set the exit code.
+- **`error` is a field on the reconciliation, not an exception channel.** A fail-soft producer that
+  returns only its successes hands every consumer an empty list reading as *"nothing to report"*.
+  An empty `scopes` with a null error is a clean install; with a non-null error it is a measurement
+  that did not happen.
+- The exit contract is untouched **by construction, not by agreement**: only the RENDER arm is
+  format-gated. The document's `ok` and the exit code are literally one variable, so no renderer can
+  compute one of them differently.
+
+**Evidence.**
+
+- **Text output byte-identical: 33/33 goldens green, no regeneration.** Stage 9 is the first gated
+  row whose operator-visible column is *additive*, and a needed regen would have been a signal, not
+  a chore.
+- **Whole suite 1861/1861, 5316 assertions** — named deliberately, because the two defects above
+  are the reason a per-file list is not an evidence set. Within it: `CheckJsonContractTest` 13/13 ·
+  `EventConsumerReconcilerTest` 7/7 · `EventFollowsConsumerCheckTest` 19/19 · `CheckGoldenTest`
+  76/76. phpstan L7 0 · pint clean · `check-doc-refs` clean.
+- **10/10 stage mutations witnessed** (one mutation, one named test, a restore and a compare
+  between each) — the tenth being the `not_run_reason` gate below, added in the doc half.
+  **M9 came back GREEN on the first attempt: dropping per-agent result retention left the
+  whole suite passing**, i.e. the document's `agent` attribution was asserted nowhere. Closed by
+  `test_a_per_agent_check_is_one_entry_whose_findings_name_their_agent`, re-run RED. That is the
+  stage's own instance of the program's recurring lesson — a green suite is evidence only where
+  something could have gone red.
+- **Real surface, and it is what found the `not_run_reason` defect rather than merely confirming
+  the build:** `php artisan bridge:check --format=json` against a live install — exit 0, one
+  parseable document, 37 registered / 31 ran / 15 reported / 16 silent / 2 not-requested / 4
+  not-run, three reconciled scopes. **Re-run after the fix**: zero rows carrying a reason without
+  the matching disposition (there was one before), `channel.server_snapshot`'s reason now null, and
+  `inventory.not_run_reasons` — the already-filtered list — unchanged, so the fix moved exactly the
+  field it was aimed at.
+
+**The code half shipped RED, and only a whole-suite run says so — the stage's sharpest finding.**
+The stage-9 commit's own message claimed *"code + tests complete and green"*. It was not. Two tests
+were failing in it, and **both are invisible to every per-file run the build used as evidence**:
+each passes in isolation and reds only in a process where other tests run after it. Measured, not
+inferred — a detached worktree at that exact commit, with its own `composer install`, reproduces
+them.
+
+1. **`CheckJsonContractTest` leaked a pinned `PATH` into every later test in the process**, which
+   reds 15 tests across three unrelated suites (`PrTitleLintTest`, `GitHubTokenResolverTest`,
+   `ReconcileCommandTest` — everything that shells out; the symptom is `sh: 1: bash: not found` and
+   exit `127`, in a file that has nothing to do with `bridge:check`). Mechanism:
+   `PinnedHost` saves the ambient environment **in its constructor**, and several tests in
+   that class walk a list of install shapes, so the second `build()` constructs a `PinnedHost`
+   while the first is still applied, **saves the PINNED `PATH` as if it were ambient**, and
+   "restores" the process to it at teardown. `CheckGoldenTest` had already met this and handles it
+   by tearing down between captures — the new class reproduced the pattern without the guard.
+   **Fixed structurally rather than by discipline:** `build()` now tears down first, which makes
+   nesting unrepresentable instead of asking each test to remember. That is the same reasoning
+   stage 8 applied to `NotRun` — a mechanism whose correctness depends on remembering to call it
+   has the shape of the bug it closes.
+2. **`CheckCommandSeverityContractTest`'s skipped-advisory test had a stale premise.** It reached
+   the fail-soft state by letting the check's own `WebhookEvent` query throw (no app booted ⇒ null
+   connection resolver). Stage 9 moved that query into `EventConsumerReconciler`, so the throw can
+   no longer happen there and the check correctly yields nothing — leaving the test asserting an
+   advisory the check had no way to emit. **The behaviour is intact** (the check still renders a
+   reconciliation `error` as `unvalidated`, verified at the source before the test was touched),
+   and the catch arm is covered at its new address with a discriminating control. The test now
+   hands the failure in as a value; **every assertion is unchanged** — only the way the state is
+   reached moved with the code.
+
+**The generalisable lesson, and it is one this program has already written down twice:** a
+`--filter` or per-file run is not evidence about the suite. Both defects are *cross-test* — one is
+process state leaking forward, the other is a premise the rest of the suite never exercised — and
+no amount of running the stage's own tests could surface either. A stage's evidence list must
+include a whole-suite run, and the claim *"tests are green"* must name which run produced it.
+
+**Three findings from the doc half — and the first is a CODE defect that only writing the contract
+down exposed, which is the argument for an owning doc rather than a docblock.**
+
+1. **`not_run_reason` was emitted for checks that RAN.** Writing the field's row in the contract doc
+   meant stating when it is non-null, and the live document answered differently from the sentence:
+   `channel.server_snapshot` came back as `disposition: "reported"`, with a finding, **carrying
+   *"every parsed agent aborted before this leg"***. `CheckRunner::noteNotRun()` attaches a reason to
+   every check in a **slot**, before the run knows whether that slot will execute — so a per-agent
+   check noted for the agents that aborted and then run for one that did not holds both. The
+   document contradicted itself, and a consumer keying on a non-null reason to mean *did not run*
+   would have been precisely wrong on it: **a false signal in the write contract, shipped in the
+   stage whose entire subject is not shipping false signals.** Fixed at the renderer — the reason is
+   gated on the disposition, which is what `CheckInventory::notRunReasons()` and
+   `unexplainedNotRun()` already do; **the JSON renderer was the one reader of the raw map that did
+   not filter** (audited: no other field in the document reads an unfiltered map). The existing
+   assertion that a ran check carries no reason **passed under the defect**, because its subject had
+   no reason recorded at all — null for the wrong cause. The new test drives the renderer directly
+   with an inventory whose every id carries a reason, so the gate is the only thing that can make
+   three of the four null; mutation-proven, and it reds that test alone.
+2. The `JSON_PRETTY_PRINT` docblock justified the flag by *"the fixtures under
+   `tests/Fixtures/check-json` are read in a PR diff"*. **There is no such directory and no
+   committed document fixture** — the guard builds its documents by running the command. A true
+   decision resting on a false premise invites a later reversal that sounds correct (claim 6 below
+   is the same shape), so the rationale is restated on the reason that survives inspection:
+   diffability of two real documents.
+3. **The fail-closed unknown-`--format` diagnostic goes to stdout, not stderr** — it is written
+   before any format is in effect, by the same emitter the operator report uses. Harmless for a
+   consumer keying on the exit code or on a parse failure, but it means *unparseable stdout* is a
+   state a consumer must handle. **Stated in the contract doc rather than fixed here:** moving it
+   would change how this command reports an error, which is a gated change and not this stage's.
+
+**What the stage deliberately did not do.** It did not touch the `warn` ↔ `unvalidated`
+assignment — a check reporting `warn` because it could not run still reads as a finding in the
+document. That is stage 10's, it is disclosed in the contract doc as a bound on the surface rather
+than left for a consumer to trip over, and it is the reason `checks[].disposition` is a separate
+axis from `findings[].severity` in the first place.
+
 ## Verification
 
 The existing net goes through the command boundary, so an internal refactor keeps it honest:
@@ -1779,10 +1941,17 @@ The existing net goes through the command boundary, so an internal refactor keep
    control in `CheckInventoryTest`. Five single-arm mutations (one mutation, one named test, a
    restore and a `cmp` between each) confirmed each proof reds; the arms are individually
    attributable, not merely attributable as a batch.
+6. **Stage 9's write contract needs a guard that reds on a SHAPE change, not on a behavior change**,
+   which is a different instrument from every stage before it. `CheckJsonContractTest` asserts the
+   exact key set at every level with `assertSame` against literals — a *contains* assertion greens
+   on a renamed key, and a renamed key is precisely the change that breaks a consumer silently.
+   The golden corpus supplies the breadth (all 33 install shapes must produce a parseable document
+   whose verdict, exit and inventory counts agree with the committed **text** capture), so the two
+   instruments compose: shape here, agreement there, and neither rebuilds the other's corpus.
 
 ## Disproved claims — do not restate
 
-Eight claims from earlier revisions of this analysis — and from the code it describes — were
+Nine claims from earlier revisions of this analysis — and from the code it describes — were
 falsified while it was being built:
 
 1. **"The registry closes card#5310 and card#5312."** False — they live in
@@ -1828,12 +1997,30 @@ falsified while it was being built:
    to every earlier pass: a fixture is only ever compared against itself, so a fixture that
    measures nothing looks exactly like one that works.
 
+9. **"`emitReport()`'s `@phpstan-impure` is what keeps the `unvalidated` tally's `> 0` guard from
+   being called dead."** False, and **already false before stage 9 touched the method** — which is
+   the part that matters. The claim was made by that method's own docblock in stage 7a, stated as a
+   measurement (*"measured, by annotating the two deeper methods instead and watching the error
+   survive both"*), and believed through stage 8. Re-measured at stage 9 **on an unmodified `dev`
+   checkout** — a detached worktree with its own `composer install`, never a symlinked `vendor/`,
+   because composer autoloads `app/` from the target and a symlink silently makes the experiment
+   answer for the wrong checkout — **removing the annotation leaves phpstan at 0 errors**, and it
+   still does on this branch with the tally moved a hop deeper. So something else covers for it now
+   and **the stage did not isolate what**; the honest statement is *"the annotation is not
+   load-bearing and we do not know what replaced it"*, not *"it was never needed"*.
+   **The annotation was KEPT**: it states a true fact about the method, and deleting it on the
+   strength of an unidentified substitute is exactly how the guard comes back dead on an unrelated
+   edit later. Its docblock now says all of this instead of the falsified claim. Same shape as
+   claims 6 and 7 — a justification adjacent to correct code, believed because the code was right.
+
 The general lesson, and the reason this section exists: every count in this document was
 re-measured at the source rather than carried forward between revisions, and four of the first five
-errors above survived one or more review passes before being caught. Claims 6 and 7 extend the
-pattern past this document's own prose: both were **claims made by the code's docblocks**, believed
-across every prior stage, and each was falsified by reading the cited authority rather than the
-citation. A justification is not evidence merely because it is adjacent to correct code. Claim 5 adds the sharper
+errors above survived one or more review passes before being caught. Claims 6, 7 and 9 extend the
+pattern past this document's own prose: each was a **claim made by the code's docblocks**, believed
+across every prior stage, and each was falsified by reading — or re-running — the cited authority
+rather than the citation. A justification is not evidence merely because it is adjacent to correct
+code, and claim 9 sharpens that: a docblock claim can cite a *measurement* and still be stale, because
+the measurement was true once and nothing re-runs it. Claim 5 adds the sharper
 version — a count can be right while the *category* it is attached to is wrong, and only executing
 the work distinguishes those.
 

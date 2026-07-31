@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Check;
 
+use App\Bridge\Check\EventConsumers\EventConsumerReconciliation;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Tools\BoardToolAgentResolver;
@@ -71,6 +72,25 @@ final class CheckContext
      * @var array<string, list<array{agent: string, class: string, consumed: list<string>, declared: bool}>>
      */
     public array $githubScopeConsumers = [];
+
+    /**
+     * The observed-vs-consumed reconciliation of {@see self::$githubScopeConsumers},
+     * derived ONCE per run and read by two renderers (DL-249 stage 9).
+     *
+     * DERIVATION, NOT ASSERTION, and here for the same reason {@see self::$registry} is:
+     * `EventFollowsConsumerCheck` renders it as prose and the `--format=json` document
+     * emits it as data, so a check deriving its own would be the second derivation
+     * card#5229 rules out — and would re-run the per-scope query behind the other
+     * renderer's back.
+     *
+     * NULL MEANS THE DERIVATION NEVER RAN, which `CheckCommand::handle()` cannot produce
+     * — it publishes this unconditionally, before the {@see CheckSlot::EventConsumer}
+     * slot. It is reachable only from a hand-built context, and the check treats it as
+     * nothing to report rather than as an empty (clean) reconciliation: the two are not
+     * the same claim, which is the distinction
+     * {@see EventConsumerReconciliation::$error} draws one level down.
+     */
+    public ?EventConsumerReconciliation $eventConsumers = null;
 
     /**
      * github scopes (repo full_names) covered by SOME agent running a

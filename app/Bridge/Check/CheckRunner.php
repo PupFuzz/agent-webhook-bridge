@@ -89,6 +89,27 @@ final class CheckRunner
      */
     private array $order = [];
 
+    /**
+     * Every result this run produced, in the order the slots were invoked — what a
+     * whole-run renderer walks (DL-249 stage 9).
+     *
+     * THE TEXT RENDERER NEVER NEEDS THIS, and that asymmetry is the reason it exists.
+     * Text is emitted INCREMENTALLY, interleaved with the per-agent loop that produces
+     * it, so each {@see CheckReport} is rendered and discarded at its call site. A JSON
+     * document cannot be interleaved — it is one value, emitted once, after the last
+     * check has run — so something has to retain what the reports carried. Deriving it
+     * from the {@see CheckReport}s at the call sites instead would mean every caller
+     * accumulating, which is the forgotten-call-site shape stage 8 removed from the
+     * inventory.
+     *
+     * A PER-AGENT CHECK APPEARS ONCE PER AGENT here, unlike in {@see inventory()}, which
+     * is keyed by check id. Both are wanted: the inventory answers "did this check get
+     * to look", these answer "what did it say, and for whom".
+     *
+     * @var list<CheckResult>
+     */
+    private array $results = [];
+
     /** @var array<string, CheckDisposition> */
     private array $dispositions = [];
 
@@ -122,7 +143,7 @@ final class CheckRunner
         foreach ($this->checks[$slot->value] ?? [] as $check) {
             $findings = $this->materialize($check->run($ctx));
             $this->recordRan($check, $findings);
-            $results[] = new CheckResult($check->id(), $findings);
+            $results[] = $this->results[] = new CheckResult($check->id(), $findings);
         }
 
         return new CheckReport($results);
@@ -139,7 +160,7 @@ final class CheckRunner
         foreach ($this->perAgentChecks[$slot->value] ?? [] as $check) {
             $findings = $this->materialize($check->runFor($config, $ctx));
             $this->recordRan($check, $findings);
-            $results[] = new CheckResult(
+            $results[] = $this->results[] = new CheckResult(
                 $check->id(),
                 $findings,
                 $config->agentName,
@@ -161,6 +182,16 @@ final class CheckRunner
     public function registeredIds(): array
     {
         return $this->order;
+    }
+
+    /**
+     * Every result this run produced, in invocation order — see {@see self::$results}.
+     *
+     * @return list<CheckResult>
+     */
+    public function results(): array
+    {
+        return $this->results;
     }
 
     /**
