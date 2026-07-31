@@ -6,6 +6,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\Checks\EventFollowsConsumerCheck;
 use App\Bridge\Check\CheckSlot;
+use App\Bridge\Check\EventConsumers\EventConsumerReconciliation;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Console\Commands\Bridge\CheckCommand;
@@ -126,19 +127,23 @@ class CheckCommandSeverityContractTest extends TestCase
         // Driven through the REGISTERED check and the report renderer since DL-242
         // stage 7a, rather than by reflecting on the advisory method it replaced. That
         // keeps the property end-to-end: the check yields the finding, `emitReport`
-        // renders it, and `emitUnvalidated` tallies it — a chain the check's own unit
-        // test (which asserts the yielded Finding) cannot close on its own.
+        // renders it, and the tally counts it — a chain the check's own unit test
+        // (which asserts the yielded Finding) cannot close on its own.
         //
-        // The throw is SYNTHETIC (no app is booted here, so the WebhookEvent query
-        // dies on a null connection resolver) and deliberately so — what is under
-        // test is the catch arm's rendering and counting, and the catch is
-        // `Throwable`, so the DB hiccup it exists for reaches the identical arm.
-        // Forcing a real DB failure would mean DDL inside RefreshDatabase, which
-        // passes on SQLite and reds the MariaDB matrix.
+        // THE FAILURE IS NOW HANDED IN AS A VALUE (DL-249 stage 9), where it used to be
+        // a SYNTHETIC THROW out of the check's own query (no app booted ⇒ the
+        // WebhookEvent read died on a null connection resolver). The derivation moved to
+        // `EventConsumerReconciler`, so the check no longer queries and that throw can no
+        // longer happen here — it would leave this test asserting an advisory the check
+        // had no way to emit. The property is unchanged and so is every assertion below;
+        // only the way the skipped state is reached moved with the code. The catch arm
+        // itself is asserted at its new address, with a discriminating control, by
+        // `EventConsumerReconcilerTest` — so nothing is left proven only by inference.
         $ctx = new CheckContext;
         $ctx->githubScopeConsumers = ['5' => [
             ['agent' => 'prod-agent', 'class' => 'X', 'consumed' => ['push'], 'declared' => true],
         ]];
+        $ctx->eventConsumers = new EventConsumerReconciliation(error: 'db hiccup');
         $report = (new CheckRunner)
             ->register(CheckSlot::EventConsumer, new EventFollowsConsumerCheck)
             ->run(CheckSlot::EventConsumer, $ctx);

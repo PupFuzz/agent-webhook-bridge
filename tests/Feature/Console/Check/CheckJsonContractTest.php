@@ -50,11 +50,29 @@ class CheckJsonContractTest extends TestCase
 
     protected function tearDown(): void
     {
+        $this->tearDownFixture();
+        parent::tearDown();
+    }
+
+    /**
+     * Release the current fixture install and UNPIN the host.
+     *
+     * CALLED FROM {@see self::build()} AS WELL AS `tearDown()`, and that is the whole
+     * point rather than belt-and-braces. {@see PinnedHost} saves the ambient values in its
+     * CONSTRUCTOR, so a second `build()` inside one test method — several tests here walk
+     * a list of shapes — constructs a `PinnedHost` while the first one is still applied,
+     * saves the PINNED `PATH` as if it were ambient, and "restores" the process to it at
+     * `tearDown`. Every later test in the process then runs with `PATH` pointing at a
+     * fixture bin dir holding nothing, which is invisible here and reds unrelated suites
+     * that shell out. Tearing down at the START of a build makes nesting unrepresentable
+     * instead of asking each test to remember.
+     */
+    private function tearDownFixture(): void
+    {
         $this->host?->restore();
         $this->install?->destroy();
         $this->host = null;
         $this->install = null;
-        parent::tearDown();
     }
 
     public function test_the_document_declares_its_schema_and_exactly_these_top_level_keys(): void
@@ -326,6 +344,8 @@ class CheckJsonContractTest extends TestCase
      */
     private function build(string $name): void
     {
+        $this->tearDownFixture();
+
         $install = new GoldenInstall('json-'.$name);
         $host = new PinnedHost($install->path());
         $this->install = $install;

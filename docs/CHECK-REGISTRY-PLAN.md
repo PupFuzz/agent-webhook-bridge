@@ -1814,8 +1814,10 @@ version constant, the exact-key-set guard, and an owning doc.
 - **Text output byte-identical: 33/33 goldens green, no regeneration.** Stage 9 is the first gated
   row whose operator-visible column is *additive*, and a needed regen would have been a signal, not
   a chore.
-- `CheckJsonContractTest` 13/13 · `EventConsumerReconcilerTest` 7/7 ·
-  `EventFollowsConsumerCheckTest` 19/19 · `CheckGoldenTest` 76/76 · phpstan L7 0 · pint clean.
+- **Whole suite 1861/1861, 5316 assertions** — named deliberately, because the two defects above
+  are the reason a per-file list is not an evidence set. Within it: `CheckJsonContractTest` 13/13 ·
+  `EventConsumerReconcilerTest` 7/7 · `EventFollowsConsumerCheckTest` 19/19 · `CheckGoldenTest`
+  76/76. phpstan L7 0 · pint clean · `check-doc-refs` clean.
 - **10/10 stage mutations witnessed** (one mutation, one named test, a restore and a compare
   between each) — the tenth being the `not_run_reason` gate below, added in the doc half.
   **M9 came back GREEN on the first attempt: dropping per-agent result retention left the
@@ -1830,6 +1832,42 @@ version constant, the exact-key-set guard, and an owning doc.
   the matching disposition (there was one before), `channel.server_snapshot`'s reason now null, and
   `inventory.not_run_reasons` — the already-filtered list — unchanged, so the fix moved exactly the
   field it was aimed at.
+
+**The code half shipped RED, and only a whole-suite run says so — the stage's sharpest finding.**
+The stage-9 commit's own message claimed *"code + tests complete and green"*. It was not. Two tests
+were failing in it, and **both are invisible to every per-file run the build used as evidence**:
+each passes in isolation and reds only in a process where other tests run after it. Measured, not
+inferred — a detached worktree at that exact commit, with its own `composer install`, reproduces
+them.
+
+1. **`CheckJsonContractTest` leaked a pinned `PATH` into every later test in the process**, which
+   reds 15 tests across three unrelated suites (`PrTitleLintTest`, `GitHubTokenResolverTest`,
+   `ReconcileCommandTest` — everything that shells out; the symptom is `sh: 1: bash: not found` and
+   exit `127`, in a file that has nothing to do with `bridge:check`). Mechanism:
+   `PinnedHost` saves the ambient environment **in its constructor**, and several tests in
+   that class walk a list of install shapes, so the second `build()` constructs a `PinnedHost`
+   while the first is still applied, **saves the PINNED `PATH` as if it were ambient**, and
+   "restores" the process to it at teardown. `CheckGoldenTest` had already met this and handles it
+   by tearing down between captures — the new class reproduced the pattern without the guard.
+   **Fixed structurally rather than by discipline:** `build()` now tears down first, which makes
+   nesting unrepresentable instead of asking each test to remember. That is the same reasoning
+   stage 8 applied to `NotRun` — a mechanism whose correctness depends on remembering to call it
+   has the shape of the bug it closes.
+2. **`CheckCommandSeverityContractTest`'s skipped-advisory test had a stale premise.** It reached
+   the fail-soft state by letting the check's own `WebhookEvent` query throw (no app booted ⇒ null
+   connection resolver). Stage 9 moved that query into `EventConsumerReconciler`, so the throw can
+   no longer happen there and the check correctly yields nothing — leaving the test asserting an
+   advisory the check had no way to emit. **The behaviour is intact** (the check still renders a
+   reconciliation `error` as `unvalidated`, verified at the source before the test was touched),
+   and the catch arm is covered at its new address with a discriminating control. The test now
+   hands the failure in as a value; **every assertion is unchanged** — only the way the state is
+   reached moved with the code.
+
+**The generalisable lesson, and it is one this program has already written down twice:** a
+`--filter` or per-file run is not evidence about the suite. Both defects are *cross-test* — one is
+process state leaking forward, the other is a premise the rest of the suite never exercised — and
+no amount of running the stage's own tests could surface either. A stage's evidence list must
+include a whole-suite run, and the claim *"tests are green"* must name which run produced it.
 
 **Three findings from the doc half — and the first is a CODE defect that only writing the contract
 down exposed, which is the argument for an owning doc rather than a docblock.**
