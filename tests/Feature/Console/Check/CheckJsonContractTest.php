@@ -113,6 +113,22 @@ class CheckJsonContractTest extends TestCase
         );
     }
 
+    public function test_a_classifier_abort_records_the_github_scopes_it_knows_and_only_those(): void
+    {
+        // The precision half, and the ONLY witness the provider filter has: the golden
+        // corpus cannot see it, because a kanban scope id (`5`) can never collide with a
+        // repo full_name, so including one changes no finding on any install shape. What it
+        // WOULD change is this field, which is named `github_scopes` and would be lying.
+        $doc = $this->document('agent-classifier-missing-mixed-subscriptions');
+
+        $this->assertFalse($doc['agent_scope_coverage']['complete']);
+        $this->assertSame(
+            [['agent' => 'prod-agent', 'github_scopes' => ['owner/repo']]],
+            $doc['agent_scope_coverage']['unread_agents'],
+            'the config PARSED, so the scope set is a real answer — and it is the github half of it',
+        );
+    }
+
     public function test_every_registered_check_is_one_entry_of_a_pinned_shape(): void
     {
         $doc = $this->document('minimal');
@@ -419,6 +435,17 @@ class CheckJsonContractTest extends TestCase
 
             case 'agent-yaml-malformed':
                 $install->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\nsubscriptions: [\n");
+                break;
+
+            case 'agent-classifier-missing-mixed-subscriptions':
+                // A classifier-gate abort — the one that happens with `$cfg` already
+                // parsed — on an agent subscribed to BOTH providers. The ledger's scope
+                // set must carry the github scope and NOT the kanban one, which is the
+                // only shape that can tell the provider filter from its absence.
+                $install->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\n  github_user_id: 555\n"
+                    ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+                    ."  - provider: github\n    scopes: [\"owner/repo\"]\n"
+                    ."classifier:\n  class: App\\Bridge\\Classifiers\\NoSuchClassifier\n");
                 break;
 
             case 'two-agents-missing-secrets':
