@@ -68,10 +68,12 @@ final class CheckJsonRenderer
         CheckInventory $inventory,
         array $unattributed,
         EventConsumerReconciliation $eventConsumers,
+        AgentScopeCoverage $agentScopeCoverage,
     ): array {
         return [
             'schema' => self::SCHEMA_VERSION,
             'ok' => $ok,
+            'agent_scope_coverage' => $this->agentScopeCoverage($agentScopeCoverage),
             'checks' => $this->checks($results, $inventory),
             'findings_outside_registry' => array_map(
                 fn (Finding $f): array => $this->finding($f, null),
@@ -109,9 +111,10 @@ final class CheckJsonRenderer
         CheckInventory $inventory,
         array $unattributed,
         EventConsumerReconciliation $eventConsumers,
+        AgentScopeCoverage $agentScopeCoverage,
     ): string {
         return json_encode(
-            $this->document($ok, $results, $inventory, $unattributed, $eventConsumers),
+            $this->document($ok, $results, $inventory, $unattributed, $eventConsumers, $agentScopeCoverage),
             JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
                 | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR,
         );
@@ -192,6 +195,37 @@ final class CheckJsonRenderer
             'not_run' => $inventory->count(CheckDisposition::NotRun),
             'not_run_reasons' => $inventory->notRunReasons(),
             'unexplained_not_run' => $inventory->unexplainedNotRun(),
+        ];
+    }
+
+    /**
+     * Which agents this run never finished reading (card#5698).
+     *
+     * TOP-LEVEL, NOT NESTED UNDER `event_consumers`, because the fact is about the RUN and
+     * not about that one derivation: the same gap short-changes the writeback orphan and
+     * coord-card-move legs, whose `checks[]` findings carry it as prose. A consumer reading
+     * `event_consumers.scopes[].unconsumed` — the one derived value the gap can inflate —
+     * must read `complete` first, exactly as it must read `event_consumers.error` first.
+     *
+     * `scopes` IS NULL, NEVER `[]`, WHERE THE AGENT'S CONFIG DID NOT PARSE. An empty list
+     * is the real answer for an agent with no github subscription, and collapsing the two
+     * would tell a consumer that a run which knows nothing knows the scope set is empty.
+     *
+     * @return array<string, mixed>
+     */
+    private function agentScopeCoverage(AgentScopeCoverage $coverage): array
+    {
+        return [
+            // FIRST, and the only key a consumer must read: an `unread_agents` it does not
+            // look at is a gap it has silently treated as measured.
+            'complete' => $coverage->isComplete(),
+            'unread_agents' => array_map(
+                static fn (array $entry): array => [
+                    'agent' => $entry['agent'],
+                    'github_scopes' => $entry['scopes'],
+                ],
+                $coverage->unreadAgents(),
+            ),
         ];
     }
 

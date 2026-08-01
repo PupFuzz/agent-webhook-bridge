@@ -2135,6 +2135,48 @@ precise everywhere.
 > above. **A green `PathVisibilityAdoptionTest` does not mean a NEW stat is guarded** — that pin
 > counts adopters, and cannot see a leg that never adopted.
 
+> **[card#5698 UPDATE 2 — the three-`CheckContext`-maps root cause has landed; the class is still
+> open.]** `writebackEmittingScopes`, `coordCardMoveScopes` and `githubScopeConsumers` are all
+> accumulated *inside* `handle()`'s per-agent loop and *after* both of its aborts, so an agent whose
+> YAML did not parse — or whose classifier did not resolve — contributes to none of them, and every
+> consumer read "this scope is absent" as "the operator did not enable it". Fixed as ONE fact, not
+> four call-site guards: `CheckContext::$agentScopeCoverage` records which agents were not read to
+> completion, **with the github scopes each is known to subscribe to** where the config parsed far
+> enough to say. Three legs consult it (the orphaned-mapping accusation, the coord-card-move family
+> gate in the direction that ACCUSES, and the event-consumer dropped-arrival warn) and one more
+> stops silently skipping a preflight its own docblock calls MANDATORY.
+>
+> **Three things this stage settled that a later reader should not re-derive:**
+>
+> 1. **The ledger stores a SCOPE SET, not a count.** A classifier-gate abort happens with the config
+>    already parsed, so its subscriptions are known and an unrelated mapping's accusation must
+>    survive it. A count would have softened every finding on the install for one broken agent, and
+>    the `writeback-orphan-survives-unrelated-unread-agent` fixture exists to hold that line.
+> 2. **One map-fed arm deliberately gets NO disclosure** — the `family-on, terminal-missing` warn in
+>    `WritebackMappingConfigCheck`. It is the only one of the four that asserts *nothing* when the
+>    scope is absent (it is scoped to family-enabled scopes so a pure PR-writeback mapping stays
+>    quiet), so an unread agent costs it no false claim — only the silence it already keeps for
+>    every install that does not use coord cards. Disclosing there would print on EVERY mapping of
+>    every run with an unreadable agent config. That is the silent-LEG class stage 10 handled, whose
+>    members had answering siblings; this arm has none.
+> 3. **The disclosure cannot move an exit code, by construction.** Both abort sites set `$ok = false`
+>    *before* recording, so a run with an incomplete roster has already failed — the new findings
+>    are `unvalidated`, which never flips the exit anyway, and there is no install shape where the
+>    disclosure is the difference between 0 and non-zero.
+>
+> **The corpus could not witness any of this before the stage**: no fixture combined an aborted
+> agent with a writeback mapping, so both new arms and the silent gate were invisible to all 33
+> golden files, which is why two fixtures were added rather than an existing one extended.
+>
+> **Still open on the class**, with one member's root cause now known to be MIS-FILED on the card:
+> the bundled-cause catch, the PATH-proxy leg, and the `idList()` collapse are unchanged. The
+> **swallowed-throw** half of the partial-map pair (`EventFollowsConsumerCheck`'s
+> undeclared-classifier advisory) is **NOT** closed by this stage — the card grouped it under the
+> maps root cause, but its mechanism is a `catch` in the consumed-events derivation that turns
+> *"the classifier was never asked"* into `declared: false`, and no coverage ledger reaches it. Two
+> of the card's four "round-3" members are likewise not map-fed at all: the
+> `boardCustomFieldKeys()` legs belong to the `idList()`/`KanbanClient` primitive shape.
+
 ## Verification
 
 The existing net goes through the command boundary, so an internal refactor keeps it honest:

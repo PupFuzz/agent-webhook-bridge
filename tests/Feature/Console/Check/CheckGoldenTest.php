@@ -224,6 +224,42 @@ class CheckGoldenTest extends TestCase
 
                 return $default;
 
+            case 'writeback-orphan-survives-unrelated-unread-agent':
+                // THE PRECISION CONTROL for card#5698, and the reason the coverage ledger
+                // records a SCOPE SET rather than a count. The agent aborts — so the run's
+                // roster is incomplete — but it aborted at the CLASSIFIER gate, with its
+                // config already parsed, and it subscribes to `other/repo`. It therefore
+                // cannot be the missing driver of `owner/repo`, and the ORPHANED warn must
+                // survive unchanged. A ledger that only counted aborts would soften it.
+                $i->boot()
+                    ->agent('prod-agent', "identity:\n  github_user_id: 555\n"
+                        ."subscriptions:\n  - provider: github\n    scopes: [\"other/repo\"]\n"
+                        ."classifier:\n  class: App\\Bridge\\Classifiers\\NoSuchClassifier\n")
+                    ->json('writeback.json', ['identity_id' => 4242, 'mappings' => [
+                        'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]],
+                    ]]);
+                Http::fake();
+
+                return $default;
+
+            case 'writeback-move-leg-agent-unread':
+                // All THREE card#5698 map-fed legs in one run, which is the only place they
+                // can be seen at the real command surface: no fixture before this one
+                // combined an aborted agent with a writeback mapping, so the corpus could
+                // not tell a leg that answered from one that never could.
+                //   - the orphan leg, whose ORPHANED accusation is not evidence here;
+                //   - the coord-card-move family gate, whose "no agent enables it" is the
+                //     same non-evidence in the mirror direction;
+                //   - the MANDATORY coord-terminal preflight, which this gate would
+                //     otherwise skip in silence on a mapping that opted into the move leg.
+                $this->moveLegInstall($i);
+                // Overwrite the healthy agent in place: the mapping, token and board stubs
+                // must survive, because the point is a well-formed writeback plane read by
+                // a run that could not finish reading its agents.
+                $i->agent('prod-agent', "identity:\n  kanban_user_id: 137\nsubscriptions: [\n");
+
+                return $default;
+
             case 'writeback-half-configured-triggers':
                 // The silent-inert config shapes: `started` half-set, revive_on_reopen
                 // without its two stages, create_coord_cards with no identity_id.
@@ -427,6 +463,8 @@ class CheckGoldenTest extends TestCase
             'agent-ci-failure-patterns-and-wake-membership',
             'shared-identities-present',
             'writeback-orphaned-mapping',
+            'writeback-orphan-survives-unrelated-unread-agent',
+            'writeback-move-leg-agent-unread',
             'writeback-half-configured-triggers',
             'writeback-malformed',
             'writeback-move-leg-coord-config-unset',
@@ -511,6 +549,19 @@ class CheckGoldenTest extends TestCase
 
             // ---- writeback: config-only legs, no client ----
             'writeback-orphaned-mapping' => ['writeback: mapping for owner/repo is ORPHANED'],
+            // BOTH halves are subjects, and that is the point of the pair: the abort has to
+            // be reached (else this is `writeback-orphaned-mapping` under another name) AND
+            // the ORPHANED accusation has to SURVIVE it (else the ledger is blanketing every
+            // scope instead of the ones an unread agent could actually cover).
+            'writeback-orphan-survives-unrelated-unread-agent' => [
+                'classifier class App\Bridge\Classifiers\NoSuchClassifier not found',
+                'writeback: mapping for owner/repo is ORPHANED',
+            ],
+            'writeback-move-leg-agent-unread' => [
+                'could NOT determine whether the mapping for owner/repo is orphaned',
+                'could NOT determine whether any agent enables the coord-card-move family',
+                'CANNOT VERIFY the terminal against the coordination config',
+            ],
             'writeback-half-configured-triggers' => [
                 'sets stages.started but not started_from_stages',
                 'sets revive_on_reopen but not stages.opened',

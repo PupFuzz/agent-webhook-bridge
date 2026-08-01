@@ -41,6 +41,23 @@ use App\Bridge\Writeback\WritebackConfig;
 final class CheckContext
 {
     /**
+     * `$agentScopeCoverage` — which agents never reached the three scope maps below, and
+     * therefore whether an absence in any of them is evidence (card#5698). READ IT BEFORE
+     * CONCLUDING ANYTHING FROM A SCOPE BEING ABSENT: the maps are accumulated only by agents
+     * that got past both of `CheckCommand`'s per-agent aborts, so on a run where one did
+     * not, "no agent enables this" and "the agent that does was never read" are the same
+     * value.
+     *
+     * THE ONE CONSTRUCTOR-PROMOTED FIELD, and only because PHP cannot default a plain
+     * property to an object. Non-nullable is the point: an empty ledger MEANS complete, so a
+     * hand-built context is complete by default and no consumer has to decide what a null
+     * would have meant — the ambiguity this whole type exists to remove.
+     */
+    public function __construct(
+        public AgentScopeCoverage $agentScopeCoverage = new AgentScopeCoverage,
+    ) {}
+
+    /**
      * Every agent YAML that parsed. A config that threw on load is reported and
      * skipped, so absence here is not silence.
      *
@@ -68,6 +85,9 @@ final class CheckContext
      * check reading it from a slot INSIDE the loop would see the agents processed so far
      * and report confidently on a roster that is still being read. It is safe only from a
      * slot that runs after the loop — {@see CheckSlot::EventConsumer} does.
+     *
+     * AND EVEN THEN IT MAY BE SHORT: an aborted agent contributes nothing here, so consult
+     * {@see self::$agentScopeCoverage} before reading an absence as an answer.
      *
      * @var array<string, list<array{agent: string, class: string, consumed: list<string>, declared: bool}>>
      */
@@ -104,6 +124,9 @@ final class CheckContext
      * 7a: false since the field was added, and invisible because no check has ever read
      * it from inside the loop.)
      *
+     * AND EVEN AFTER THE LOOP IT MAY BE SHORT: an aborted agent contributes nothing here,
+     * so consult {@see self::$agentScopeCoverage} before reading an absence as an answer.
+     *
      * @var array<string, true>
      */
     public array $writebackEmittingScopes = [];
@@ -114,7 +137,15 @@ final class CheckContext
      * fleet-default nudges to where the leg can actually fire.
      *
      * ACCUMULATED *DURING* THE PER-AGENT LOOP (see above) — same partial-not-empty trap,
-     * and the same correction.
+     * and the same correction. It carries the abort trap too: consult
+     * {@see self::$agentScopeCoverage} before reading an absence as an answer.
+     *
+     * IT IS ALSO THE MAP AN ABORT COSTS MOST NEEDLESSLY, which is a finding and not a
+     * design note: the derivation behind it is a RAW-CONFIG family membership test that
+     * needs no classifier, yet it sits below the classifier-resolution abort, so a parsed
+     * config whose classifier is missing withholds an answer this command already holds.
+     * Hoisting it above that abort is tracked on card#5698 and deliberately not done here —
+     * it changes what the map MEANS for an agent that cannot classify at all.
      *
      * @var array<string, true>
      */

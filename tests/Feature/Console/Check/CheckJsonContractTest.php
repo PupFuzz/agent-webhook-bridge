@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console\Check;
 
+use App\Bridge\Check\AgentScopeCoverage;
 use App\Bridge\Check\CheckDisposition;
 use App\Bridge\Check\CheckInventory;
 use App\Bridge\Check\CheckJsonRenderer;
@@ -82,8 +83,49 @@ class CheckJsonContractTest extends TestCase
         $this->assertSame(1, CheckJsonRenderer::SCHEMA_VERSION, 'the shipped schema version moved — is that deliberate?');
         $this->assertSame(CheckJsonRenderer::SCHEMA_VERSION, $doc['schema']);
         $this->assertSame(
-            ['schema', 'ok', 'checks', 'findings_outside_registry', 'inventory', 'event_consumers'],
+            ['schema', 'ok', 'agent_scope_coverage', 'checks', 'findings_outside_registry', 'inventory', 'event_consumers'],
             array_keys($doc),
+        );
+    }
+
+    public function test_agent_scope_coverage_is_complete_on_an_install_whose_agents_all_parsed(): void
+    {
+        $doc = $this->document('minimal');
+
+        $this->assertSame(['complete', 'unread_agents'], array_keys($doc['agent_scope_coverage']));
+        $this->assertTrue($doc['agent_scope_coverage']['complete']);
+        $this->assertSame([], $doc['agent_scope_coverage']['unread_agents']);
+    }
+
+    public function test_agent_scope_coverage_names_an_agent_whose_config_did_not_parse(): void
+    {
+        // The document's half of card#5698: `event_consumers.scopes[].unconsumed` and every
+        // scope-keyed negative in `checks[]` are derived from maps this agent never reached,
+        // so the run has to SAY it is short — a `complete: true` here would be the
+        // machine-readable form of the false clean the prose legs stopped printing.
+        $doc = $this->document('agent-yaml-malformed');
+
+        $this->assertFalse($doc['agent_scope_coverage']['complete']);
+        $this->assertSame(
+            [['agent' => 'prod-agent', 'github_scopes' => null]],
+            $doc['agent_scope_coverage']['unread_agents'],
+            'a config that did not parse knows no scopes, so `github_scopes` must be null and not an empty list',
+        );
+    }
+
+    public function test_a_classifier_abort_records_the_github_scopes_it_knows_and_only_those(): void
+    {
+        // The precision half, and the ONLY witness the provider filter has: the golden
+        // corpus cannot see it, because a kanban scope id (`5`) can never collide with a
+        // repo full_name, so including one changes no finding on any install shape. What it
+        // WOULD change is this field, which is named `github_scopes` and would be lying.
+        $doc = $this->document('agent-classifier-missing-mixed-subscriptions');
+
+        $this->assertFalse($doc['agent_scope_coverage']['complete']);
+        $this->assertSame(
+            [['agent' => 'prod-agent', 'github_scopes' => ['owner/repo']]],
+            $doc['agent_scope_coverage']['unread_agents'],
+            'the config PARSED, so the scope set is a real answer — and it is the github half of it',
         );
     }
 
@@ -193,6 +235,7 @@ class CheckJsonContractTest extends TestCase
                 $inventory,
                 [],
                 new EventConsumerReconciliation,
+                new AgentScopeCoverage,
             )['checks'],
             null,
             'id',
@@ -392,6 +435,17 @@ class CheckJsonContractTest extends TestCase
 
             case 'agent-yaml-malformed':
                 $install->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\nsubscriptions: [\n");
+                break;
+
+            case 'agent-classifier-missing-mixed-subscriptions':
+                // A classifier-gate abort — the one that happens with `$cfg` already
+                // parsed — on an agent subscribed to BOTH providers. The ledger's scope
+                // set must carry the github scope and NOT the kanban one, which is the
+                // only shape that can tell the provider filter from its absence.
+                $install->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\n  github_user_id: 555\n"
+                    ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+                    ."  - provider: github\n    scopes: [\"owner/repo\"]\n"
+                    ."classifier:\n  class: App\\Bridge\\Classifiers\\NoSuchClassifier\n");
                 break;
 
             case 'two-agents-missing-secrets':
