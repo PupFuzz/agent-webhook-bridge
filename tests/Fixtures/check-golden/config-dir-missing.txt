@@ -1,6 +1,6 @@
 exit: 1
 --- output ---
-config dir does not exist: <INSTALL>/does-not-exist
+config dir is not usable: <INSTALL>/does-not-exist — it does not exist, or a directory above it denies this process traversal (is_dir() cannot distinguish them). Either way NO agent config was loaded this run, so every per-agent check below is MISSING, not clean; create the directory, or re-run bridge:check as a user that can traverse to it
 secret dir: <INSTALL>
 secret dir <INSTALL> is group/world-accessible (mode 0755) — chmod 700 (it holds secrets)
 database: connected

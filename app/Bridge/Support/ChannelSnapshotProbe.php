@@ -25,6 +25,21 @@ namespace App\Bridge\Support;
  * green `bridge:check` is not evidence the snapshot is sound; `ok` means measured-and-clean
  * and must never carry a not-measured finding. Branch order is load-bearing
  * (see {@see self::probe()}).
+ *
+ * EVERY VERDICT HERE THAT WOULD ASSERT ABSENCE — or hand out destructive remediation
+ * (`cp -R` over a healthy deployment) — sits behind
+ * {@see PathVisibility::unverifiedUnlessVisible()}, at TWO call sites, one per population
+ * whose traversability is an INDEPENDENT question: the configured path (before the
+ * existence verdict) and the deployed directory (once, covering every stat the version +
+ * presence legs make — all of them DIRECT children of it, so neither re-guards). Two is
+ * the complete set again as of DL-237: the third population DL-230 added — the deployed
+ * SUBDIRECTORIES its completeness walk descended into — went with that walk, and nothing
+ * here stats below a direct child any more. The ONE deliberately unguarded stat is this
+ * CHECKOUT's own bundled `package.json` ({@see self::versionLeg()}), which lands on its
+ * own accurate, non-destructive finding naming that file rather than the agent's
+ * directory. These legs are therefore CONCLUSIVE ONLY when the bridge can traverse to the
+ * deployed directory — said plainly in `docs/config-schema.md`. The guard itself was
+ * private to this class until card#5698 hoisted it; that class docs the reasoning.
  */
 final class ChannelSnapshotProbe
 {
@@ -66,7 +81,7 @@ final class ChannelSnapshotProbe
         // against a directory that is not there: a fatal condition misreported as a
         // drift question.
         if (! is_dir($resolved)) {
-            if (($unverified = self::visibleOrUnverified($resolved, $where)) !== null) {
+            if (($unverified = PathVisibility::unverifiedUnlessVisible($resolved, "channel server path {$where}")) !== null) {
                 return [$unverified];
             }
 
@@ -104,7 +119,7 @@ final class ChannelSnapshotProbe
         // deployed directory needs its own guard. No leg makes one today — the
         // completeness walk that did was retired with its leg (DL-237) — so adding
         // one means adding that guard with it.
-        if (($unverified = self::visibleOrUnverified($deployedDir.'/'.self::ENTRY_FILE, $deployedDir)) !== null) {
+        if (($unverified = PathVisibility::unverifiedUnlessVisible($deployedDir.'/'.self::ENTRY_FILE, "channel server path {$deployedDir}")) !== null) {
             return [$unverified];
         }
 
@@ -405,84 +420,6 @@ final class ChannelSnapshotProbe
             'unreadable' => 'exists but is not readable by this user',
             default => 'does not parse as a JSON object',
         };
-    }
-
-    /**
-     * THE guard in front of every verdict in this class that would either ASSERT
-     * ABSENCE or hand out DESTRUCTIVE remediation off a stat. Returns the "could not
-     * be validated" finding — `unvalidated` since DL-251, a WARN before it — when this
-     * process cannot stat $path at all, and null when it
-     * can. TWO call sites, one per population whose traversability is an INDEPENDENT
-     * question: the configured path (before the existence verdict), and the deployed
-     * directory (once, covering every stat the version + presence legs make — all of
-     * them are DIRECT children of it, so neither re-guards). Two is the complete set
-     * again as of DL-237: the third population DL-230 added — the deployed
-     * SUBDIRECTORIES its completeness walk descended into — went with that walk, and
-     * nothing here stats below a direct child any more. The one deliberately
-     * unguarded stat is this CHECKOUT's own bundled `package.json`
-     * ({@see self::versionLeg()}), which lands on its own accurate, non-destructive
-     * finding naming that file rather than the agent's directory.
-     *
-     * A path we cannot SEE is not a path that is gone: `is_dir()`/`is_file()` return
-     * false for EACCES exactly as they do for ENOENT, so on an untraversable path
-     * "absent" is not a conclusion we are entitled to draw — and the bridge routinely
-     * runs as a different OS user than the agent (DL-227's same-box topology), with
-     * the DEPLOYED DIRECTORY ITSELF commonly 0700 to that user. Asserting the fatal
-     * there would be the confident-wrong-answer this whole check exists to avoid, and
-     * its remediation (`cp -R` over a healthy current deployment) is destructive.
-     *
-     * The converse is unavoidable and accepted: under an untraversable directory a
-     * genuinely dangling path also reports unverified rather than fatal. The process
-     * cannot distinguish them — no heuristic can — so the snapshot legs are
-     * CONCLUSIVE ONLY when the bridge can traverse to the deployed directory. Said
-     * plainly in `docs/config-schema.md`.
-     *
-     * @param  string  $display  what to NAME in the message. Required, because at
-     *                           the deployed-directory site $path is a CHILD probe
-     *                           (the entry file) while `+x` on the DIRECTORY is what
-     *                           the operator has to grant — naming $path there sends
-     *                           them to chmod a file.
-     */
-    private static function visibleOrUnverified(string $path, string $display): ?Finding
-    {
-        if (self::ancestorIsTraversable($path)) {
-            return null;
-        }
-
-        return self::unverifiedFinding($display);
-    }
-
-    /**
-     * The ONE "could not be validated" message, spelled once and kept separate from
-     * the guard's control flow. Reached through {@see self::visibleOrUnverified()},
-     * which is its only caller since DL-237 retired the completeness walk — that walk
-     * established the denial segment-by-segment as it descended, so it already knew
-     * which directory had denied traversal and called this directly rather than
-     * re-deriving the answer through a second stat.
-     */
-    private static function unverifiedFinding(string $display): Finding
-    {
-        return Finding::unvalidated("channel server path {$display} is not visible to this user — a directory above it denies this process traversal (the bridge commonly runs as a different OS user than the agent, and the deployed directory itself is often 0700), so the snapshot could NOT be validated; re-run bridge:check as the agent's user, or grant it traversal");
-    }
-
-    /**
-     * Can this process even ANSWER "does $path exist?" — i.e. is the nearest
-     * existing ancestor directory traversable (+x) by us? Readability (+r) is
-     * deliberately NOT required: a 0711 directory answers stat on its children fine.
-     * Only ever called through {@see self::visibleOrUnverified()}.
-     */
-    private static function ancestorIsTraversable(string $path): bool
-    {
-        $dir = dirname($path);
-        while (! is_dir($dir)) {
-            $parent = dirname($dir);
-            if ($parent === $dir) {
-                return false;
-            }
-            $dir = $parent;
-        }
-
-        return is_executable($dir);
     }
 
     /**

@@ -29,6 +29,15 @@ use Tests\TestCase;
  *    hand, and exactly why the sweep needed a human.
  *  - **It says nothing about whether a site is REACHED.** Several of the files below sit
  *    behind envelopes a baseline install never opens, and this pin cannot tell you which.
+ *  - **A SHARED constructor collapses its adopters to ONE entry, and card#5698 made that
+ *    real.** `PathVisibility` constructs the not-visible finding once for SEVEN call sites
+ *    across six files (four checks, the channel probe, the board-tools resolver); a
+ *    further adopter — or an existing one DROPPING its guard and going back to asserting
+ *    absence — moves no number here. That is the exact regression this class was carded for, and this pin cannot
+ *    catch it: the adopting call sites are pinned by their own tests (each check has a
+ *    not-visible case) and by `PathVisibilityAdoptionTest`, which is the guard that
+ *    actually watches the adopter set. Do not read a green run here as "the guard is still
+ *    adopted everywhere".
  *  - **Two evasions get past it, and both are LEXICAL rather than exotic.** (1) A DYNAMIC
  *    construction — `Finding::{$severity}(…)`, `call_user_func([Finding::class, $m], …)`,
  *    or anything else that names the factory at runtime — never contains the literal
@@ -72,11 +81,15 @@ class UnvalidatedCallSiteTest extends TestCase
         //   3. the DEPLOYED `package.json` is absent/unreadable/malformed, so the staleness
         //      compare has no left-hand side;
         //   4. this CHECKOUT's bundled `package.json` is unreadable, so it has no
-        //      right-hand side;
-        //   5. the configured path or the deployed directory is not visible to this user
-        //      (a directory above it denies traversal) — the guard in front of every
-        //      stat-derived verdict in that class.
-        'app/Bridge/Support/ChannelSnapshotProbe.php' => 5,
+        //      right-hand side.
+        // A FIFTH leg lived here until card#5698 — "the configured path or the deployed
+        // directory is not visible to this user". It did not go away; it MOVED to
+        // `PathVisibility` below, which every stat-bearing check now shares.
+        'app/Bridge/Support/ChannelSnapshotProbe.php' => 4,
+        // THE shared not-visible guard (card#5698). One construction, seven adopting call
+        // sites across six files — see the bound above on what that centralization costs
+        // this pin, and `PathVisibilityAdoptionTest` for the set itself.
+        'app/Bridge/Support/PathVisibility.php' => 1,
         // The pinned-line legs that read a possibly-relocated authorized_keys (DL-251 (a)/(b)).
         'app/Bridge/Tools/SshTransportProbe.php' => 2,
         // The command's own fail-soft envelope around the writeback board probe.

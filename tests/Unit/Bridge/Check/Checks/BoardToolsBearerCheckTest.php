@@ -56,6 +56,54 @@ class BoardToolsBearerCheckTest extends TestCase
         );
     }
 
+    /**
+     * The card#5698 arm, and the ONLY adopter whose overclaim flipped the EXIT CODE: a
+     * bearer that exists and is correctly moded, under a directory this process cannot
+     * traverse. `bridge:check` runs as the operator; the resolver that actually serves the
+     * runtime is built by `AgentToolsController` as the WEB user and may read it fine — so
+     * a `fail` here was a false accusation about a runtime this process never observed.
+     *
+     * The severity assertion is the load-bearing half: a message-only fix would still have
+     * failed the run.
+     */
+    public function test_a_bearer_that_cannot_be_seen_is_unvalidated_and_does_not_fail_the_run(): void
+    {
+        if (function_exists('posix_getuid') && posix_getuid() === 0) {
+            $this->markTestSkipped('root bypasses directory permission checks');
+        }
+        $locked = $this->dir.'/locked';
+        File::ensureDirectoryExists($locked);
+        File::put($locked.'/token', 'shhh');
+        chmod($locked.'/token', 0o600);
+        chmod($locked, 0000);
+
+        try {
+            $findings = $this->findingsFor([$this->agent('prod-agent', $locked.'/token')]);
+        } finally {
+            chmod($locked, 0755);
+        }
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
+        $this->assertStringNotContainsString('no token at', $findings[0]->message);
+    }
+
+    /**
+     * The discriminating control for the arm above: a token file that is genuinely absent,
+     * under a directory we CAN traverse, still FAILs. Without this pair, an implementation
+     * that downgraded every missing bearer to `unvalidated` would pass — and that would be
+     * the canon-#3 mistake of loosening a check to make a failure go away.
+     */
+    public function test_a_genuinely_absent_bearer_under_a_readable_dir_still_fails(): void
+    {
+        $findings = $this->findingsFor([$this->agent('prod-agent', $this->dir.'/absent-token')]);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('no token at', $findings[0]->message);
+    }
+
     public function test_an_insecure_token_file_fails(): void
     {
         $path = $this->token('loose', 'shhh', 0o644);

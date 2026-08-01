@@ -1125,7 +1125,8 @@ careful pass — filed as **card#5551**, which also corrects the fix wording car
 because that wording propagates the same defect.
 
 **What the golden corpus does not protect here, stated at fixture scope.** Of the 33 fixtures: none
-renders the `config_dir … is not set` message; one reaches `config dir does not exist`; one reaches
+renders the `config_dir … is not set` message; one reaches `config dir is not usable` (the message
+card#5698 rewrote to name BOTH causes — absent, or present but untraversable); one reaches
 the secret-dir `not set or not absolute` branch; one reaches the receiver-URL leg's refusal — with a
 value that is not a URL at all — and **none** reaches the https-floor refusal that guards the
 token-bearing kanban URL; one reaches `has no adapter`; and all 33 print the inbox ok line, so **no
@@ -2116,6 +2117,23 @@ did not close.
 `idList()` collapse above), card#5701, and the `fail`/`ok`
 populations, which were **not** audited against the rule. Nothing here claims the vocabulary is
 precise everywhere.
+
+> **[card#5698 UPDATE — its FIRST sub-shape has landed; the class is still open.]** The
+> **stat-conflation** sub-shape (a leg reading a bare `is_dir()`/`is_file()` false as ABSENCE) is
+> closed: the guard `ChannelSnapshotProbe` had kept private since DL-230 is hoisted to
+> `App\Bridge\Support\PathVisibility` and adopted at every site whose consequence actually differs
+> between the two worlds. **Two of the card's listed members were re-derived away rather than
+> fixed, and both corrections belong to the card, not to this doc:** `AgentApiTokenCheck` was
+> never a member (its message already says *"not readable"*, which is true under EACCES **and**
+> ENOENT — a claim its evidence supports), and `InstallConfigDirCheck` keeps its `fail` because
+> `CheckCommand` gates the whole agent loop on the same `is_dir()`, so THIS RUN is certainly
+> degraded either way — only its message was wrong. **The one member that moved an exit code** is
+> the board-tools bearer: `bridge:check` runs as the operator while the resolver serving the
+> runtime is built by the receiver as the web user, so a `fail` there convicted a healthy install.
+> **Still open on the class:** the bundled-cause catch, the PATH-proxy leg, the partial-map /
+> swallowed-throw pair, the three-`CheckContext`-maps root cause, and the `idList()` collapse
+> above. **A green `PathVisibilityAdoptionTest` does not mean a NEW stat is guarded** — that pin
+> counts adopters, and cannot see a leg that never adopted.
 
 ## Verification
 

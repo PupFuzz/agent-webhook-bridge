@@ -6,6 +6,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\PerAgentCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\PathVisibility;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
 
@@ -52,7 +53,8 @@ final class AgentWebhookSecretCheck implements PerAgentCheck
         foreach ($config->subscriptions as $sub) {
             $secretPath = SecretPath::for($secretDir, $sub->provider, $sub->scopeId);
             if (! is_file($secretPath)) {
-                yield Finding::warn("agent {$name}: {$sub->provider}:{$sub->scopeId} has no secret at {$secretPath} — run bridge:provision");
+                yield PathVisibility::unverifiedUnlessVisible($secretPath, "agent {$name}: {$sub->provider}:{$sub->scopeId} secret at {$secretPath}")
+                    ?? Finding::warn("agent {$name}: {$sub->provider}:{$sub->scopeId} has no secret at {$secretPath} — run bridge:provision");
             } elseif (SecretFile::isInsecure($secretPath)) {
                 yield Finding::warn("agent {$name}: ".SecretFile::permsMessage($secretPath).' — the receiver will 500 (secret_perms_insecure) until fixed');
             }

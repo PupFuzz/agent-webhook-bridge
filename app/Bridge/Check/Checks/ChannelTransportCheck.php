@@ -7,6 +7,7 @@ use App\Bridge\Check\PerAgentCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\PathVisibility;
 
 /**
  * Whether this agent's live-wake channel can actually be reached — the socket legs
@@ -85,7 +86,8 @@ final class ChannelTransportCheck implements PerAgentCheck
     {
         $dir = dirname($socket);
         if (! is_dir($dir)) {
-            yield Finding::warn("agent {$name}: channel.socket parent dir {$dir} does not exist — live-wake will silently no-op. On systemd Linux this is /run/user/<uid>; a uid change (host restore) breaks it. Repoint channel.socket, or write it uid-agnostically as \${XDG_RUNTIME_DIR}/…");
+            yield PathVisibility::unverifiedUnlessVisible($dir, "agent {$name}: channel.socket parent dir {$dir}")
+                ?? Finding::warn("agent {$name}: channel.socket parent dir {$dir} does not exist — live-wake will silently no-op. On systemd Linux this is /run/user/<uid>; a uid change (host restore) breaks it. Repoint channel.socket, or write it uid-agnostically as \${XDG_RUNTIME_DIR}/…");
         } elseif (! is_writable($dir)) {
             $uid = function_exists('posix_getuid') ? (string) posix_getuid() : '?';
             yield Finding::warn("agent {$name}: channel.socket parent dir {$dir} is not writable by this user (uid {$uid}) — live-wake will fail. Likely a uid mismatch after a host restore.");

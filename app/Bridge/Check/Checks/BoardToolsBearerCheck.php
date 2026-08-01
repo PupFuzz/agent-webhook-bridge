@@ -19,12 +19,21 @@ use App\Bridge\Tools\BoardToolAgentResolver;
  * {@see CheckContext::$boardToolsResolver} — the same rule that keeps the `AgentRegistry`
  * build out of the roster checks (stage 5c).
  *
- * BOTH PROBLEMS FAIL, under default-ON: a dead or ambiguous bearer is a BROKEN enablement,
- * not the transient board-state condition the legs below it report on without failing
- * (DL-220's split — those legs are `warn` or, where the read never resolved, `unvalidated`).
- * The resolver used to TYPE each entry (`bearer_unreadable` | `collision`) so this check
- * could split severity on it; the split was decided the other way and the type was never
- * read, so DL-251 removed it (card#5292) — `problems()` is a list of messages.
+ * BOTH MEASURED PROBLEMS FAIL, under default-ON: a dead or ambiguous bearer is a BROKEN
+ * enablement, not the transient board-state condition the legs below it report on without
+ * failing (DL-220's split — those legs are `warn` or, where the read never resolved,
+ * `unvalidated`). The resolver used to TYPE each entry (`bearer_unreadable` | `collision`)
+ * so this check could split severity on it; the split was decided the other way and the
+ * type was never read, so DL-251 removed it (card#5292).
+ *
+ * THIS CHECK NO LONGER PICKS THE SEVERITY AT ALL (card#5698). It used to wrap every entry
+ * in `Finding::fail()`, which made a THIRD case indistinguishable from the two above: a
+ * token file the build could not SEE. `is_file()` is false for EACCES exactly as for
+ * ENOENT, so on an untraversable path that `fail` accused the operator of a missing token
+ * — and flipped the exit — for a file that may exist and be perfectly readable by the WEB
+ * user whose resolver actually serves the runtime. `problems()` now carries `Finding`s and
+ * this check renders what the build decided. DL-251's ruling is untouched: it settled two
+ * measured faults, and both still FAIL.
  */
 final class BoardToolsBearerCheck implements Check
 {
@@ -43,8 +52,9 @@ final class BoardToolsBearerCheck implements Check
             return;   // no agent enabled ⇒ no index was built; recorded in the run inventory (DL-242 stage 8)
         }
 
-        foreach ($resolver->problems() as $problem) {
-            yield Finding::fail($problem);
-        }
+        // The resolver decides each severity, because only the build knows which problems
+        // it MEASURED — re-severing them here would be this check asserting a fault it
+        // never observed (card#5698).
+        yield from $resolver->problems();
     }
 }
