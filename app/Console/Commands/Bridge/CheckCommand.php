@@ -183,6 +183,11 @@ class CheckCommand extends BridgeCommand
                 } catch (Throwable $e) {
                     $this->emitUnattributed(Finding::fail("agent config {$name}: ".$e->getMessage()));
                     $ok = false;
+                    // NULL, NOT AN EMPTY LIST (card#5698): the load is what would have told
+                    // us which scopes this agent subscribes to, so nothing about its
+                    // coverage is known and every scope's absence from the maps below is in
+                    // doubt. The empty list would claim it covers none.
+                    $ctx->agentScopeCoverage->recordUnread($name, null);
 
                     continue;
                 }
@@ -196,6 +201,17 @@ class CheckCommand extends BridgeCommand
                 // and CheckSlot::AgentClassifier is the abort slot that says so.
                 if (! $this->emitReport($runner->runForAgent(CheckSlot::AgentClassifier, $cfg, $ctx))) {
                     $ok = false;
+                    // The config PARSED, so this abort knows exactly which github scopes it
+                    // is withholding (card#5698) — an agent subscribed to none of them
+                    // cannot be the missing driver of any, and its abort must not cast doubt
+                    // on an unrelated mapping's finding.
+                    $abortedScopes = [];
+                    foreach ($cfg->subscriptions as $sub) {
+                        if ($sub->provider === 'github') {
+                            $abortedScopes[] = $sub->scopeId;
+                        }
+                    }
+                    $ctx->agentScopeCoverage->recordUnread($name, $abortedScopes);
 
                     continue;
                 }
@@ -598,6 +614,7 @@ class CheckCommand extends BridgeCommand
                 $runner->inventory(),
                 $this->unattributed,
                 $eventConsumers,
+                $ctx->agentScopeCoverage,
             ));
 
             return $ok ? self::SUCCESS : self::FAILURE;

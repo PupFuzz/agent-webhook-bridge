@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console\Check;
 
+use App\Bridge\Check\AgentScopeCoverage;
 use App\Bridge\Check\CheckDisposition;
 use App\Bridge\Check\CheckInventory;
 use App\Bridge\Check\CheckJsonRenderer;
@@ -82,8 +83,33 @@ class CheckJsonContractTest extends TestCase
         $this->assertSame(1, CheckJsonRenderer::SCHEMA_VERSION, 'the shipped schema version moved — is that deliberate?');
         $this->assertSame(CheckJsonRenderer::SCHEMA_VERSION, $doc['schema']);
         $this->assertSame(
-            ['schema', 'ok', 'checks', 'findings_outside_registry', 'inventory', 'event_consumers'],
+            ['schema', 'ok', 'agent_scope_coverage', 'checks', 'findings_outside_registry', 'inventory', 'event_consumers'],
             array_keys($doc),
+        );
+    }
+
+    public function test_agent_scope_coverage_is_complete_on_an_install_whose_agents_all_parsed(): void
+    {
+        $doc = $this->document('minimal');
+
+        $this->assertSame(['complete', 'unread_agents'], array_keys($doc['agent_scope_coverage']));
+        $this->assertTrue($doc['agent_scope_coverage']['complete']);
+        $this->assertSame([], $doc['agent_scope_coverage']['unread_agents']);
+    }
+
+    public function test_agent_scope_coverage_names_an_agent_whose_config_did_not_parse(): void
+    {
+        // The document's half of card#5698: `event_consumers.scopes[].unconsumed` and every
+        // scope-keyed negative in `checks[]` are derived from maps this agent never reached,
+        // so the run has to SAY it is short — a `complete: true` here would be the
+        // machine-readable form of the false clean the prose legs stopped printing.
+        $doc = $this->document('agent-yaml-malformed');
+
+        $this->assertFalse($doc['agent_scope_coverage']['complete']);
+        $this->assertSame(
+            [['agent' => 'prod-agent', 'github_scopes' => null]],
+            $doc['agent_scope_coverage']['unread_agents'],
+            'a config that did not parse knows no scopes, so `github_scopes` must be null and not an empty list',
         );
     }
 
@@ -193,6 +219,7 @@ class CheckJsonContractTest extends TestCase
                 $inventory,
                 [],
                 new EventConsumerReconciliation,
+                new AgentScopeCoverage,
             )['checks'],
             null,
             'id',

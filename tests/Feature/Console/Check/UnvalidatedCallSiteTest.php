@@ -94,11 +94,21 @@ class UnvalidatedCallSiteTest extends TestCase
         'app/Bridge/Tools/SshTransportProbe.php' => 2,
         // The command's own fail-soft envelope around the writeback board probe.
         'app/Console/Commands/Bridge/CheckCommand.php' => 1,
-        // The event-consumer reconciliation could not be computed (DL-236).
-        'app/Bridge/Check/Checks/EventFollowsConsumerCheck.php' => 1,
-        // The cross-config compares whose comparand did not resolve (DL-251 (c)).
-        'app/Bridge/Check/Checks/WritebackBoardStateCheck.php' => 7,
-        'app/Bridge/Check/Checks/WritebackMappingConfigCheck.php' => 3,
+        // The event-consumer reconciliation could not be computed (DL-236), plus the
+        // card#5698 leg whose consumer list is short because an agent was never read.
+        'app/Bridge/Check/Checks/EventFollowsConsumerCheck.php' => 2,
+        // The cross-config compares whose comparand did not resolve (DL-251 (c)), plus the
+        // card#5698 legs below. THE THREE NEW SITES ARE ONE SHAPE, NOT THREE DECISIONS:
+        // each reads a `CheckContext` scope map that an aborted agent never reached, so its
+        // NEGATIVE is not evidence — limb (c) of the rule, with the unresolved comparand
+        // being the run's own agent roster rather than a foreign config.
+        //   WritebackBoardStateCheck:  the coord-terminal preflight's family gate.
+        //   WritebackMappingConfigCheck: the orphaned mapping, and the terminal-set-but-
+        //     family-off mirror. A FOURTH map-fed arm (family-on, terminal missing) reads
+        //     the same map and deliberately has NO site here — see its comment for why the
+        //     one arm that asserts nothing gets no disclosure.
+        'app/Bridge/Check/Checks/WritebackBoardStateCheck.php' => 8,
+        'app/Bridge/Check/Checks/WritebackMappingConfigCheck.php' => 5,
         // Board / cache / channel reads that did not complete (DL-251 (a)).
         'app/Bridge/Check/Checks/WritebackSourceCoverageCheck.php' => 2,
         'app/Bridge/Check/Checks/WritebackByRefCheck.php' => 1,

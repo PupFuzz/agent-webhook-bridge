@@ -204,6 +204,14 @@ final class WritebackBoardStateCheck implements Check
                 // cannot fire (family off) and read as though the leg were live.
                 if (isset($ctx->coordCardMoveScopes[$repo])) {
                     yield from $this->coordTerminalAgreement((string) $repo, $mapping, $client);
+                } elseif ($mapping->moveCoordCards && $mapping->coordCardTerminalStageId !== null && $ctx->agentScopeCoverage->mayCover((string) $repo)) {
+                    // card#5698: the gate resolves from a map an aborted agent never
+                    // reached, so an unread agent SKIPS a preflight this check's own
+                    // docblock calls MANDATORY — silently, and on the exact axis (b)
+                    // forbids: a missing input is not evidence of agreement. The two inner
+                    // conditions mirror coordTerminalAgreement()'s own early return, so
+                    // this speaks only where the compare would otherwise have run.
+                    yield Finding::unvalidated("writeback: move_coord_cards ({$repo}, board {$mapping->boardId}): CANNOT VERIFY the terminal against the coordination config — ".$ctx->agentScopeCoverage->gapClause((string) $repo).', so whether any agent enables the coord-card-move family on that scope (the gate this MANDATORY preflight runs behind) could not be resolved. Until this is verified the two movers may disagree about which column is terminal and fight every cycle. Fix the error(s) above and re-run.');
                 }
             } catch (Throwable $e) {
                 yield Finding::unvalidated("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".$e->getMessage());

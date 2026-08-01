@@ -110,6 +110,62 @@ class EventFollowsConsumerCheckTest extends TestCase
         );
     }
 
+    public function test_an_unread_agent_turns_the_dropped_event_warn_into_a_disclosure(): void
+    {
+        // card#5698. The consumer list per scope comes from a `CheckContext` map an
+        // aborted agent never reached, so the classifier that consumes `issues` may be
+        // sitting in the config this run could not read. Warning that the event is
+        // "silently dropped" there sends the operator to add a consuming family for a
+        // fault the agent error above already named.
+        //
+        // NO GOLDEN FIXTURE REACHES THIS, and it is not an oversight of the two card#5698
+        // fixtures: reaching it needs an unread agent AND arrived events on the scope a
+        // DIFFERENT, read agent subscribes to — the golden corpus's abort fixtures have no
+        // arrivals, and its one arrivals fixture has no abort.
+        $this->arrived('issues.closed');
+        $ctx = $this->context([$this->consumer('wb', consumed: ['pull_request'])]);
+        $ctx->agentScopeCoverage->recordUnread('broken-agent', [self::SCOPE]);
+
+        $findings = $this->findings($ctx);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertSame(
+            "event-consumer: github:owner/repo has received 'issues' with no consumer among the"
+                .' agents this run read, but agent broken-agent was not read to completion this run'
+                .' (see the error(s) above) — an agent it never finished reading could consume them,'
+                .' so whether these arrivals are being silently dropped could not be determined.'
+                .' Fix the error(s) above and re-run.',
+            $findings[0]->message,
+        );
+    }
+
+    public function test_a_fully_consumed_scope_needs_no_disclosure_even_with_an_unread_agent(): void
+    {
+        // THE ASYMMETRY IS THE BOUND, and asserting it is what keeps the disclosure from
+        // spreading to every scope on a run with one broken agent: an unread consumer can
+        // only ADD to the consumed set, so it can turn a warn into silence but never
+        // silence into a warn. A run where everything that arrived is already consumed is
+        // therefore just as true with the missing agent as without it.
+        $this->arrived('issues.closed');
+        $ctx = $this->context([$this->consumer('wb', consumed: ['issues'])]);
+        $ctx->agentScopeCoverage->recordUnread('broken-agent', null);
+
+        $this->assertSame([], $this->findings($ctx));
+    }
+
+    public function test_an_unread_agent_on_another_scope_leaves_the_warn_alone(): void
+    {
+        $this->arrived('issues.closed');
+        $ctx = $this->context([$this->consumer('wb', consumed: ['pull_request'])]);
+        $ctx->agentScopeCoverage->recordUnread('broken-agent', ['other/repo']);
+
+        $findings = $this->findings($ctx);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+    }
+
     public function test_the_count_sums_every_action_of_one_top_level_type(): void
     {
         // The top-level projection is what the WARN counts, so two actions of one type

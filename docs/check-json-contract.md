@@ -35,7 +35,7 @@ php artisan bridge:check                    # identical to --format=text
 | The contract has **never been carried by a tagged release** | **No — the change IS the contract** | Nothing to key on: there is no consumer, because there was no version to write one against. The condition is checkable, not a matter of opinion — `git ls-tree <latest tag> app/Bridge/Check/CheckJsonRenderer.php` returns nothing, so no tag ships the renderer. Stated as that command rather than as "it's the same release", which is a judgement about intent. Once one tag carries it, this row is spent forever. |
 | A **pre-disclosed precision correction** to *which findings carry which severity* | **No** | Not a shape change and not a meaning change: §4's `severity` row **pre-disclosed** that the vocabulary was imprecise and named the landing that would fix it, so a consumer written against `schema: 1` was told in the contract not to read the absence of `unvalidated` as "measured". Delivering exactly the disclosed correction is the contract doing its job. This row does **not** cover an undisclosed re-assignment, which changes a key's meaning and bumps. |
 
-**`schema` is currently `1`.** It stayed `1` through DL-251 (stage 10), which re-assigned 21 findings from `warn` to `unvalidated` and added three: both rows above apply independently, and either alone is sufficient.
+**`schema` is currently `1`.** It stayed `1` through DL-251 (stage 10), which re-assigned 21 findings from `warn` to `unvalidated` and added three: both rows above apply independently, and either alone is sufficient. It stayed `1` again through DL-255 (card#5698), which ADDED the top-level `agent_scope_coverage` key (§3a) and re-assigned three more findings to `unvalidated` — the added-key row and the pre-disclosed-precision row, again independently sufficient.
 
 **`message` strings are NOT part of the contract.** They are operator prose, carried so a document is diagnosable by a human reading it. They have been reworded before (DL-236) and will be again. **A consumer keying on message text has re-created the coupling this surface exists to break** — key on `severity`, `disposition`, check `id`, and the structured `event_consumers` fields instead. `CheckJsonContractTest` deliberately does not pin them.
 
@@ -45,6 +45,7 @@ php artisan bridge:check                    # identical to --format=text
 {
   "schema": 1,
   "ok": true,
+  "agent_scope_coverage": { … },        // did the run finish reading every agent? (see §3a)
   "checks": [ … ],                      // every REGISTERED check, in registration order
   "findings_outside_registry": [ … ],   // findings belonging to no check (see §5)
   "inventory": { … },                   // the run's account (see §6)
@@ -56,10 +57,36 @@ php artisan bridge:check                    # identical to --format=text
 | --- | --- | --- |
 | `schema` | int | The document's shape version (§2). |
 | `ok` | bool | The run's verdict — **the same variable as the exit code**. `false` iff at least one finding carried `severity: "fail"`. |
+| `agent_scope_coverage` | object | Whether this run read every agent config, and which it did not — §3a. |
 | `checks` | array | One entry per **registered** check, in registration order — §4. |
 | `findings_outside_registry` | array of findings | Findings the command's own fail-soft envelopes produced, which belong to no registered check — §5. |
 | `inventory` | object | The per-disposition account of the run — §6. |
 | `event_consumers` | object | The observed-vs-consumed reconciliation as data — §7. |
+
+### 3a. `agent_scope_coverage` — read this before any scope-keyed negative
+
+```jsonc
+{
+  "complete": false,
+  "unread_agents": [
+    { "agent": "prod-agent", "github_scopes": null },
+    { "agent": "beta",       "github_scopes": ["owner/repo"] }
+  ]
+}
+```
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `complete` | bool | `true` iff every `*.yml` in the config dir was read far enough for its subscriptions to reach the run's scope maps. |
+| `unread_agents` | array | One entry per agent that was not, in abort order. Empty iff `complete`. |
+| `unread_agents[].agent` | string | The agent name (its `<name>.yml`). |
+| `unread_agents[].github_scopes` | array of string, **or `null`** | The github scopes that agent subscribes to, or `null` when its config did not parse — in which case *which* scopes it covers is itself unknown. **`null` is not `[]`**: an empty array is the real answer for an agent with no github subscription, and it rules that agent out of every scope. |
+
+**Why it is top-level and not nested under `event_consumers`.** The run derives three per-scope maps from the agent loop — which scopes have a writeback-emitting classifier, which enable the coord-card-move family, and which classifiers consume which event types. All three are accumulated only by agents that got past both of the loop's aborts, so on a run with `complete: false` an absence in any of them means *"no agent enables this, OR the agent that does was never read"*. The document exposes one of the three directly (§7), and the other two reach you as `checks[]` findings.
+
+**What a consumer must do.** Treat `complete: false` as poisoning every **negative** derived per scope — most sharply `event_consumers.scopes[].unconsumed`, which can only grow when a consumer is missing. Positives are unaffected: an unread agent can add a consumer, never remove one, so an empty `unconsumed` is sound either way. The corresponding prose findings already carry `severity: "unvalidated"` for exactly the scopes an unread agent could cover; this key is what lets a consumer reach the same conclusion without reading messages.
+
+**It never moves `ok`.** Both abort sites fail the run before recording here, so `complete: false` implies `ok: false` — but not the reverse, and the implication is a property of the command, not a key you may invert.
 
 ## 4. `checks[]` — the per-check account
 
@@ -104,7 +131,7 @@ php artisan bridge:check                    # identical to --format=text
 | `agent` | string \| null | The agent a per-agent check ran for; `null` for a global check. **This attribution exists only in this document** — the text report has no per-check framing to put it in. |
 | `message` | string | Operator prose. **Not part of the contract** (§2). |
 
-**⚠ What `unvalidated` does and does not let you infer — NARROWED by stage 10, not closed.** Until DL-251 this row disclosed that a check reporting `warn` *because it could not run* read here as a finding rather than as a not-run; that sweep has landed, and every leg that reports being unable to measure now carries `unvalidated`. The residual is smaller and different in kind: the rule the vocabulary follows is keyed on **what a leg concluded**, so a leg that fails to *notice* it measured nothing falls outside it — and such a leg is not reliably silent. It may emit nothing, or it may emit the conclusion it would have drawn had the measurement happened, at that conclusion's severity (`bridge:check`'s undeclared-classifier advisory does exactly that on a swallowed-throw path — card#5698). **`severity: "unvalidated"` is therefore sound evidence that a leg could not measure; its ABSENCE is still not evidence that everything was measured, and no other severity is evidence that anything was.** The `fail` and `ok` populations were not audited against the rule.
+**⚠ What `unvalidated` does and does not let you infer — NARROWED by stage 10, not closed.** Until DL-251 this row disclosed that a check reporting `warn` *because it could not run* read here as a finding rather than as a not-run; that sweep has landed, and every leg that reports being unable to measure now carries `unvalidated`. The residual is smaller and different in kind: the rule the vocabulary follows is keyed on **what a leg concluded**, so a leg that fails to *notice* it measured nothing falls outside it — and such a leg is not reliably silent. It may emit nothing, or it may emit the conclusion it would have drawn had the measurement happened, at that conclusion's severity (`bridge:check`'s undeclared-classifier advisory does exactly that on a swallowed-throw path — card#5698). **`severity: "unvalidated"` is therefore sound evidence that a leg could not measure; its ABSENCE is still not evidence that everything was measured, and no other severity is evidence that anything was.** The `fail` and `ok` populations were not audited against the rule. **One member of that residual has since been made explicit and the rest have not:** the legs reading the run's per-scope maps now disclose an incomplete agent roster (§3a) instead of asserting through it, so `agent_scope_coverage.complete` is a *structured* form of the same warning for that one cause. The undeclared-classifier advisory named above is a DIFFERENT cause — a swallowed throw inside the consumed-events derivation — and is untouched; do not read `complete: true` as "everything was measured".
 
 ## 5. `findings_outside_registry[]`
 
@@ -184,7 +211,7 @@ Per scope:
 | `bare` | array of string | The subset of `consumed` some consumer declared **without** an action (`issues` — the type is owned, every action covered). |
 | `qualified` | **object** (map) | Top-level ⇒ the actions declared for it (`issues.opened`), unioned. |
 | `undeclared` | array of `{agent, class}` | Enabled classifiers that do not implement `DeclaresConsumedEvents` — the reconciliation cannot speak for what they consume. |
-| `unconsumed` | array of string | **Derived, and emitted rather than left to you:** types that arrived and no consumer covers — the WARN population. |
+| `unconsumed` | array of string | **Derived, and emitted rather than left to you:** types that arrived and no consumer covers — the WARN population. **⚠ Read `agent_scope_coverage.complete` (§3a) first:** the consumer list behind this comes from a map an unread agent never reached, so on an incomplete run this can list types that ARE consumed. It can only over-list — an empty `unconsumed` is sound either way. |
 | `unlisted_actions` | **object** (map) | **Derived:** actions that arrived on a type consumed *only* via qualified declarations, most-frequent first. A **bare** type is absent here (owned ⇒ every action covered), and so is a type nothing consumes (that is `unconsumed`'s alarm — reporting it at both tiers is the flattening this design avoids). |
 
 **Why `unconsumed` / `unlisted_actions` are in the document rather than left to the consumer:** they *are* what the WARN and INFO lines say, and the point of the surface is that nobody re-implements the projection rule to get them. Both are computed from the operands beside them in the same pass, so they cannot drift from them.

@@ -57,7 +57,16 @@ final class WritebackMappingConfigCheck implements Check
             // writeback client can't be constructed (no token / base URL), which is
             // exactly the half-configured install where an orphan is most likely.
             if (! isset($ctx->writebackEmittingScopes[$repo])) {
-                yield Finding::warn("writeback: mapping for {$repo} is ORPHANED — no agent runs a writeback-emitting classifier (App\\Bridge\\Contracts\\EmitsWritebackReactions) subscribed to github:{$repo}; the mapping is inert (no card will ever move) until an agent subscribes to it with that classifier");
+                // card#5698: the map is accumulated only by agents that got past both
+                // per-agent aborts, so on a run where one did not, ORPHANED and "the agent
+                // that drives it was never read" are the same value. Naming the orphan
+                // there sends the operator to add an agent for a fault a line above already
+                // attributed to the agent they have.
+                if ($ctx->agentScopeCoverage->mayCover((string) $repo)) {
+                    yield Finding::unvalidated("writeback: could NOT determine whether the mapping for {$repo} is orphaned — ".$ctx->agentScopeCoverage->gapClause((string) $repo).", so an agent this run never finished reading could be the one running a writeback-emitting classifier (App\\Bridge\\Contracts\\EmitsWritebackReactions) on github:{$repo}. Fix the error(s) above and re-run; until then this says nothing about whether the mapping is inert.");
+                } else {
+                    yield Finding::warn("writeback: mapping for {$repo} is ORPHANED — no agent runs a writeback-emitting classifier (App\\Bridge\\Contracts\\EmitsWritebackReactions) subscribed to github:{$repo}; the mapping is inert (no card will ever move) until an agent subscribes to it with that classifier");
+                }
             }
             // #2652: the DL-160 branch-create `started` trigger is fail-closed — it needs
             // BOTH `stages.started` AND `started_from_stages`. With exactly one set the
@@ -119,11 +128,28 @@ final class WritebackMappingConfigCheck implements Check
             if (isset($ctx->coordCardMoveScopes[$repo]) && $mapping->coordCardTerminalStageId === null) {
                 yield Finding::warn("writeback: github:{$repo} enables the coord-card-move family but its writeback mapping has no coord_card_terminal_stage_id — the real-time coord-issue close/reopen → card move (DL-200) is INERT (issues.closed/reopened are classified but no card moves). Set coord_card_terminal_stage_id (the fleet default activates the leg where it is present), or remove coord-card-move from classifier.config.families if the move leg is not wanted.");
             }
+            // NO card#5698 DISCLOSURE ON THE ARM ABOVE, and the omission is a ruling rather
+            // than an oversight (the sibling arm below and `WritebackBoardStateCheck`'s
+            // gate both carry one). It is the only one of the four map-fed legs that
+            // asserts NOTHING when the scope is absent: it is scoped to family-enabled
+            // scopes precisely so a pure PR-writeback mapping stays quiet, so an unread
+            // agent costs it no false claim — only the same silence it already keeps for
+            // every install that does not use coord cards. A disclosure here would print on
+            // EVERY mapping of every run with an unreadable agent config, including the
+            // majority that carry no coord-card config at all. That is the silent-LEG
+            // class (DL-251 stage 10), whose members answered nothing while their siblings
+            // answered; this arm has no answering sibling.
             // DL-204 MIRROR: the other silent-inert direction. Gate 2 on but gate 1 off —
             // the handler-side gate is on, but the classifier never emits a move to hand
             // it. This is the DL-204 adoption path ("set the terminal, no flag needed")
             // dying when the operator sets the terminal but never enables the family.
-            if ($mapping->moveCoordCards && ! isset($ctx->coordCardMoveScopes[$repo])) {
+            if ($mapping->moveCoordCards && ! isset($ctx->coordCardMoveScopes[$repo]) && $ctx->agentScopeCoverage->mayCover((string) $repo)) {
+                // card#5698: same map, opposite direction. "No agent enables the family" is
+                // the accusation, and an unread agent is indistinguishable from an absent
+                // one — so the operator would be sent to edit a families list that may
+                // already be correct in the config that failed to load.
+                yield Finding::unvalidated("writeback: could NOT determine whether any agent enables the coord-card-move family on github:{$repo} — ".$ctx->agentScopeCoverage->gapClause((string) $repo).'. This mapping has coord_card_terminal_stage_id set (the move leg is on), so if none does, the leg cannot fire. Fix the error(s) above and re-run.');
+            } elseif ($mapping->moveCoordCards && ! isset($ctx->coordCardMoveScopes[$repo])) {
                 yield Finding::warn("writeback: github:{$repo} has coord_card_terminal_stage_id set (the move leg is on — explicitly or by the DL-204 default) but no agent enables the coord-card-move family on that scope — the leg cannot fire (nothing classifies issues.closed/reopened into a move). Add coord-card-move to the serving agent's classifier.config.families, or remove coord_card_terminal_stage_id to disable the move leg.");
             }
             // DL-207: promote-on-release health. WritebackConfig::load already fails

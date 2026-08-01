@@ -38,6 +38,18 @@ use App\Bridge\Support\Finding;
  * FAILED is `unvalidated`, not green: the advisory did not run, and card#5170 is the
  * ruling that a check which did not run is never reported as one that passed.
  *
+ * TWO BOUNDS ON THE card#5698 COVERAGE DISCLOSURE BELOW, both deliberate and neither
+ * closed by it:
+ *  - **The action inventory is NOT gated on coverage.** An unread consumer can shrink
+ *    `unlistedActions()` exactly as it shrinks `unconsumed()`, so that line can over-list
+ *    for the same reason — but it is `Finding::ok`, and the `ok` population has never been
+ *    audited against `App\Bridge\Support\Severity`'s rule. Gating this one site would be one instance of
+ *    that audit shipped ahead of it, which is how an audit stops happening.
+ *  - **A scope only an UNREAD agent subscribes to has no entry here at all**, so nothing —
+ *    not even a disclosure — is said about arrivals on it. Reaching it would mean deriving
+ *    arrivals for a scope no consumer list mentions, which is the reconciler's job and not
+ *    this renderer's.
+ *
  * THE ERROR IS REPORTED LAST AND THE SCOPES BEFORE IT STILL PRINT, which is the stage-3b
  * constraint restated at its new address. {@see CheckRunner}
  * MATERIALIZES a check's findings before the caller renders any of them, whereas the
@@ -77,6 +89,19 @@ final class EventFollowsConsumerCheck implements Check
 
             $unconsumed = $scope->unconsumed();
             if ($unconsumed === []) {
+                continue;
+            }
+
+            // card#5698: the reconciliation's consumer list per scope comes from
+            // `CheckContext::$githubScopeConsumers`, which an aborted agent never reached —
+            // so an unread agent's classifier is missing from `consumed` and every type it
+            // covers shows up here as dropped. The check is asymmetric on purpose and the
+            // asymmetry is what bounds this to the warn path: an unread consumer can only
+            // ADD to `consumed`, so an EMPTY `unconsumed` (handled above) is robust to the
+            // gap and needs no disclosure, while a non-empty one cannot be stood behind.
+            if ($ctx->agentScopeCoverage->mayCover($scope->scope)) {
+                yield Finding::unvalidated("event-consumer: github:{$scope->scope} has received '".implode("', '", $unconsumed)."' with no consumer among the agents this run read, but ".$ctx->agentScopeCoverage->gapClause($scope->scope).' — an agent it never finished reading could consume them, so whether these arrivals are being silently dropped could not be determined. Fix the error(s) above and re-run.');
+
                 continue;
             }
 
