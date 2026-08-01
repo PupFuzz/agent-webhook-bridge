@@ -327,8 +327,11 @@ retention last-failure marker is cleared from the cache so a fixture that wants 
 question, because PATH is pinned to a fixture bin dir holding (or not holding) a stub.
 
 **What the harness does NOT protect is enumerated, not implied.** The fixture set is derived from
-the 102 `if`/`elseif`/`foreach` predicates in `handle()` (re-measured at the source by
-`bin/check-golden-predicates.php`; the figure agrees with the independent count on card#5464).
+the `if`/`elseif`/`foreach` predicates in `handle()`, enumerated at the source by
+`bin/check-golden-predicates.php`, which prints the live count and its per-kind split on every run.
+**The figure is deliberately not restated here.** It moves whenever `handle()` changes, and a pinned
+number drifts silently — this sentence read `102` long enough to outlive the refactors that took it
+to 48, while the generated coverage doc beside it was reporting 46. Read it from the script.
 Which of them the fixtures can actually *see* is decided by experiment —
 `bin/check-golden-mutate.php` flips each predicate and records whether a golden file changes — and
 the survivors are named individually in **[`check-golden-coverage.md`](check-golden-coverage.md)**.
