@@ -107,13 +107,25 @@ class UnvalidatedCallSiteTest extends TestCase
         //     family-off mirror. A FOURTH map-fed arm (family-on, terminal missing) reads
         //     the same map and deliberately has NO site here — see its comment for why the
         //     one arm that asserts nothing gets no disclosure.
-        'app/Bridge/Check/Checks/WritebackBoardStateCheck.php' => 8,
+        // PLUS the card#5698 idList() slice's three sites — again ONE shape, not three
+        // decisions, and a DIFFERENT shape from the scope-map ones above. Each reads a
+        // kanban collection whose ABSENCE the parser used to render as an empty list, so
+        // the leg's negative ("that lane is not on the board", "those keys are not
+        // registered") was indistinguishable from this run's failure to parse the response
+        // at all — limb (c), the comparand being the board's own lane / custom-field list.
+        //   WritebackBoardStateCheck:   the swimlane lookup, and the dependabot-CF lookup.
+        //   BoardToolsBoardStateCheck:  the swimlane lookup (one finding for both lanes —
+        //     one read failed, so there is one thing the run could not do).
+        // The FOURTH member of that slice — the fail-closed `issue_number` leg — is NOT
+        // here and must not be: it stays `fail`, because an unverifiable board could
+        // silently double-card. Only its message stopped over-claiming.
+        'app/Bridge/Check/Checks/WritebackBoardStateCheck.php' => 10,
         'app/Bridge/Check/Checks/WritebackMappingConfigCheck.php' => 5,
         // Board / cache / channel reads that did not complete (DL-251 (a)).
         'app/Bridge/Check/Checks/WritebackSourceCoverageCheck.php' => 2,
         'app/Bridge/Check/Checks/WritebackByRefCheck.php' => 1,
         'app/Bridge/Check/Checks/RetentionPostureCheck.php' => 1,
-        'app/Bridge/Check/Checks/BoardToolsBoardStateCheck.php' => 2,
+        'app/Bridge/Check/Checks/BoardToolsBoardStateCheck.php' => 3,
         'app/Bridge/Check/Checks/ChannelTransportCheck.php' => 1,
         // The repo probe could not reach GitHub, so the token was never validated — the
         // THIRD silent leg, and the one no warn-keyed sweep could have surfaced.

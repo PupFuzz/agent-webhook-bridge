@@ -163,6 +163,35 @@ class WritebackBoardStateCheckTest extends TestCase
         $this->assertStringContainsString('token sees', $findings[0]['message']);
     }
 
+    /**
+     * card#5698. The two states this separates are NOT symmetric, and the pair below is the
+     * point rather than either case alone: an EMPTY lane list is the ordinary state of every
+     * board in the reference fleet (measured: `data.swimlanes: []` on all three live boards),
+     * so it must keep producing the config accusation — while an ABSENT list must not, since
+     * nothing in it is evidence about the operator's config. Collapsing them, which is what
+     * the code did, spends a definite verdict on this run's own blindness.
+     */
+    public function test_a_board_whose_read_carried_no_swimlane_collection_is_unvalidated_not_a_missing_lane(): void
+    {
+        $this->fakeBoard(omitSwimlanes: true);
+
+        $findings = $this->findings($this->mapping(swimlaneId: 99));
+
+        $this->assertSame(Severity::Unvalidated, $findings[1]['severity']);
+        $this->assertStringContainsString('could NOT check swimlane_id 99', $findings[1]['message']);
+        $this->assertStringNotContainsString('not found on board', $this->joined($findings));
+    }
+
+    public function test_a_board_with_an_empty_lane_list_still_reports_the_lane_as_missing(): void
+    {
+        $this->fakeBoard(swimlaneIds: []);
+
+        $findings = $this->findings($this->mapping(swimlaneId: 99));
+
+        $this->assertSame(Severity::Warn, $findings[1]['severity']);
+        $this->assertStringContainsString('swimlane_id 99 not found on board 8', $findings[1]['message']);
+    }
+
     // ---- #2949: the dependabot create payload's custom fields ----
 
     public function test_a_board_missing_the_dependabot_custom_fields_names_every_missing_key(): void
@@ -187,6 +216,28 @@ class WritebackBoardStateCheckTest extends TestCase
         $this->assertStringContainsString('create_dependabot_cards custom fields ok on board 8', $findings[1]['message']);
     }
 
+    /** card#5698 — the dependabot twin of the swimlane pair above, same asymmetry. */
+    public function test_a_board_whose_read_carried_no_custom_field_collection_is_unvalidated_not_missing_keys(): void
+    {
+        $this->fakeBoard(omitCustomFieldData: true);
+
+        $findings = $this->findings($this->mapping(createDependabotCards: true));
+
+        $this->assertSame(Severity::Unvalidated, $findings[1]['severity']);
+        $this->assertStringContainsString("could NOT check create_dependabot_cards' custom fields", $findings[1]['message']);
+        $this->assertStringNotContainsString('is MISSING the custom field(s)', $this->joined($findings));
+    }
+
+    public function test_a_board_with_no_custom_fields_registered_still_names_every_missing_key(): void
+    {
+        $this->fakeBoard(customFieldKeys: []);
+
+        $findings = $this->findings($this->mapping(createDependabotCards: true));
+
+        $this->assertSame(Severity::Warn, $findings[1]['severity']);
+        $this->assertStringContainsString('is MISSING the custom field(s)', $findings[1]['message']);
+    }
+
     // ---- #4553: the fail-closed issue_number leg (the only `fail` this check yields) ----
 
     /**
@@ -203,6 +254,27 @@ class WritebackBoardStateCheckTest extends TestCase
         $this->assertSame(Severity::Fail, $findings[1]['severity']);
         $this->assertStringContainsString("does not register the 'issue_number' custom field", $findings[1]['message']);
         $this->assertStringContainsString('the bridge would silently double-card', $findings[1]['message']);
+    }
+
+    /**
+     * card#5698, and the ONE member of this class whose severity deliberately does NOT move.
+     * A read carrying no collection already reached the `! in_array` arm and failed there, so
+     * the exit code is identical before and after — what changes is only the CLAIM, which had
+     * asserted the field was unregistered on evidence that could not tell that from a read
+     * this run could not parse. The leg is fail-closed by design (an unverifiable board could
+     * silently double-card), so "could not verify" stays a `fail`; downgrading it to match
+     * the other three members would be loosening a check to make a failure go away.
+     */
+    public function test_a_custom_field_read_carrying_no_collection_still_fails_but_stops_claiming_the_field_is_absent(): void
+    {
+        $this->fakeBoard(omitCustomFieldData: true);
+
+        $findings = $this->findings($this->coordMapping());
+
+        $this->assertSame(Severity::Fail, $findings[1]['severity']);
+        $this->assertStringContainsString('could NOT be verified', $findings[1]['message']);
+        $this->assertStringContainsString('This fail-closed check must not be skipped', $findings[1]['message']);
+        $this->assertStringNotContainsString("does not register the 'issue_number' custom field", $this->joined($findings));
     }
 
     public function test_a_board_registering_issue_number_is_reported_ready(): void
@@ -610,25 +682,39 @@ class WritebackBoardStateCheckTest extends TestCase
      * @param  list<string>  $customFieldKeys
      * @param  list<array<string, mixed>>|null  $stages
      */
+    /**
+     * @param  bool  $omitSwimlanes  drop the `data.swimlanes` KEY, which is a different
+     *                               response from `swimlaneIds: []` — the whole distinction
+     *                               card#5698 turns on, and one an `[]` default cannot express.
+     * @param  bool  $omitCustomFieldData  the same, for `data` on the custom-fields read.
+     */
     private function fakeBoard(
         int $total = 1,
         array $swimlaneIds = [],
         array $customFieldKeys = [],
         ?array $stages = null,
         int $customFieldsStatus = 200,
+        bool $omitSwimlanes = false,
+        bool $omitCustomFieldData = false,
     ): void {
         $stages ??= [['id' => 50, 'name' => 'In Progress', 'position' => 1.0]];
-        Http::fake(function (Request $request) use ($total, $swimlaneIds, $customFieldKeys, $stages, $customFieldsStatus) {
+        Http::fake(function (Request $request) use ($total, $swimlaneIds, $customFieldKeys, $stages, $customFieldsStatus, $omitSwimlanes, $omitCustomFieldData) {
             if (str_contains($request->url(), 'custom_fields.json')) {
-                return $customFieldsStatus === 200
-                    ? Http::response(['data' => array_map(fn (string $k) => ['key' => $k], $customFieldKeys)])
-                    : Http::response(['message' => 'nope'], $customFieldsStatus);
+                if ($customFieldsStatus !== 200) {
+                    return Http::response(['message' => 'nope'], $customFieldsStatus);
+                }
+
+                return $omitCustomFieldData
+                    ? Http::response(['meta' => []])
+                    : Http::response(['data' => array_map(fn (string $k) => ['key' => $k], $customFieldKeys)]);
             }
             if (str_contains($request->url(), 'preload.json')) {
-                return Http::response(['data' => [
-                    'workflows' => [['stages' => $stages]],
-                    'swimlanes' => array_map(fn (int $id) => ['id' => $id], $swimlaneIds),
-                ]]);
+                $data = ['workflows' => [['stages' => $stages]]];
+                if (! $omitSwimlanes) {
+                    $data['swimlanes'] = array_map(fn (int $id) => ['id' => $id], $swimlaneIds);
+                }
+
+                return Http::response(['data' => $data]);
             }
 
             return Http::response(['data' => [], 'meta' => ['total' => $total]]);

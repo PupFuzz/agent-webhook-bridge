@@ -88,7 +88,15 @@ final class WritebackBoardStateCheck implements Check
                 // its board, else card creation 422s and the handler SILENTLY no-ops
                 // (permanent-4xx). A static typo never self-resolves, so name it here.
                 if ($mapping->swimlaneId !== null) {
-                    if (! in_array($mapping->swimlaneId, $client->boardSwimlaneIds($mapping->boardId), true)) {
+                    $lanes = $client->boardSwimlaneIds($mapping->boardId);
+                    if ($lanes === null) {
+                        // card#5698: the warn below names two causes, and neither of them is
+                        // "the read told me nothing". An absent `data.swimlanes` is not an
+                        // empty one — a board with no lanes answers `[]`, which is a real
+                        // answer this leg still judges — so only the missing collection is
+                        // could-not-see, and it must not be spent as a config accusation.
+                        yield Finding::unvalidated("writeback: could NOT check swimlane_id {$mapping->swimlaneId} for {$repo} — board {$mapping->boardId}'s preload read carried no swimlane collection at all (an empty one would have been an answer), so there was nothing to look the id up in; a deleted lane would look exactly like this. Verify board_id + the token's membership and re-run.");
+                    } elseif (! in_array($mapping->swimlaneId, $lanes, true)) {
                         yield Finding::warn("writeback: swimlane_id {$mapping->swimlaneId} not found on board {$mapping->boardId} ({$repo}) — created cards will 422 and SILENTLY no-op until fixed (a deleted lane, or a lane on a different board)");
                     } else {
                         yield Finding::ok("writeback: swimlane_id {$mapping->swimlaneId} ok on board {$mapping->boardId} ({$repo})");
@@ -103,11 +111,18 @@ final class WritebackBoardStateCheck implements Check
                 if ($mapping->createDependabotCards) {
                     $required = KanbanDependabotCardHandler::CREATE_PAYLOAD_KEYS;
                     $present = $client->boardCustomFieldKeys($mapping->boardId);
-                    $missing = array_values(array_diff($required, $present));
-                    if ($missing !== []) {
-                        yield Finding::warn("writeback: create_dependabot_cards is on for {$repo} but board {$mapping->boardId} is MISSING the custom field(s) ".implode(', ', $missing).' the create payload sets ('.implode(', ', $required).') — every dependabot-card create will 422 and SILENTLY no-op until they are registered (add them on the board, or set create_dependabot_cards=false)');
+                    if ($present === null) {
+                        // card#5698, the twin of the swimlane leg above: a board with no
+                        // custom fields registered answers `[]` and IS accused correctly.
+                        // A read carrying no collection accuses on this run's blindness.
+                        yield Finding::unvalidated("writeback: could NOT check create_dependabot_cards' custom fields for {$repo} — board {$mapping->boardId}'s custom-field read carried no collection at all (an empty one would have been an answer), so the required keys (".implode(', ', $required).") could not be looked up; unregistered keys would look exactly like this. Verify board_id + the token's membership and re-run.");
                     } else {
-                        yield Finding::ok("writeback: create_dependabot_cards custom fields ok on board {$mapping->boardId} ({$repo})");
+                        $missing = array_values(array_diff($required, $present));
+                        if ($missing !== []) {
+                            yield Finding::warn("writeback: create_dependabot_cards is on for {$repo} but board {$mapping->boardId} is MISSING the custom field(s) ".implode(', ', $missing).' the create payload sets ('.implode(', ', $required).') — every dependabot-card create will 422 and SILENTLY no-op until they are registered (add them on the board, or set create_dependabot_cards=false)');
+                        } else {
+                            yield Finding::ok("writeback: create_dependabot_cards custom fields ok on board {$mapping->boardId} ({$repo})");
+                        }
                     }
                 }
                 // #4553: population=all correlates + creates by github_issue by-ref, which
@@ -129,7 +144,16 @@ final class WritebackBoardStateCheck implements Check
                     // 5xx here therefore exits non-zero rather than certifying blind.
                     try {
                         $present = $client->boardCustomFieldKeys($mapping->boardId);
-                        if (! in_array('issue_number', $present, true)) {
+                        if ($present === null) {
+                            // card#5698: the fail is UNCHANGED and that is deliberate — a
+                            // null read reached the `! in_array` arm below and failed there
+                            // already, so the exit code moves in neither direction. What was
+                            // wrong is only the claim: this leg is fail-closed BY DESIGN (an
+                            // unverifiable board could silently double-card), so "could not
+                            // verify" is still a failure — it is just not evidence that the
+                            // field is unregistered. Downgrading it would be canon #3.
+                            yield Finding::fail("writeback: issue_population=all for {$repo} but board {$mapping->boardId}'s custom-field read carried no collection at all (an empty one would have been an answer), so issue_number registration could NOT be verified. This fail-closed check must not be skipped — an unverifiable board could silently double-card. Fix board access / board_id and re-run.");
+                        } elseif (! in_array('issue_number', $present, true)) {
                             yield Finding::fail("writeback: issue_population=all for {$repo} but board {$mapping->boardId} does not register the 'issue_number' custom field — every non-prefixed coord-card create 422s as a permanent no-op AND by-ref correlation cannot tell 'not indexed' from 'no match', so the bridge would silently double-card. Register issue_number (+ issue_url for source) on the board, or set issue_population=prefixed.");
                         } else {
                             yield Finding::ok("writeback: issue_number custom field registered on board {$mapping->boardId} ({$repo}) — github_issue by-ref ready (issue_population=all)");

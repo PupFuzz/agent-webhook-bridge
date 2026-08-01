@@ -72,6 +72,24 @@ class BoardToolsBoardStateCheckTest extends TestCase
         $this->assertStringContainsString('swimlane_id 7 is not on board 10', $joined);
     }
 
+    /**
+     * card#5698, the twin of `WritebackBoardStateCheck`'s swimlane leg. ONE finding for the
+     * pair of configured lanes, not one each: a single read failed, so there is a single
+     * thing this run could not do, and per-lane lines would report one fault twice.
+     */
+    public function test_a_read_carrying_no_swimlane_collection_is_one_unvalidated_naming_every_configured_lane(): void
+    {
+        $this->fakeBoard(total: 3, omitSwimlanes: true);
+
+        $findings = $this->findings($this->agent(['shared_swimlane_id' => 7]));
+        $lines = array_values(array_filter($findings, fn (array $f) => str_contains($f['message'], 'swimlane_id')));
+
+        $this->assertCount(1, $lines);
+        $this->assertSame(Severity::Unvalidated, $lines[0]['severity']);
+        $this->assertStringContainsString('could NOT check swimlane_id(s) 4, 7', $lines[0]['message']);
+        $this->assertStringNotContainsString('is not on board', $this->joined($findings));
+    }
+
     public function test_a_present_swimlane_is_silent(): void
     {
         $this->fakeBoard(total: 3, swimlaneIds: [4]);
@@ -226,15 +244,21 @@ class BoardToolsBoardStateCheckTest extends TestCase
      * @param  list<int>  $swimlaneIds
      * @param  list<array<string, mixed>>|null  $stages
      */
-    private function fakeBoard(int $total = 1, array $swimlaneIds = [], ?array $stages = null, ?int $coordTotal = null): void
+    /**
+     * @param  bool  $omitSwimlanes  drop the `data.swimlanes` KEY — a different response from
+     *                               `swimlaneIds: []`, which an `[]` default cannot express.
+     */
+    private function fakeBoard(int $total = 1, array $swimlaneIds = [], ?array $stages = null, ?int $coordTotal = null, bool $omitSwimlanes = false): void
     {
         $stages ??= [['id' => 55, 'name' => 'Backlog', 'position' => 1.0]];
-        Http::fake(function (Request $request) use ($total, $swimlaneIds, $stages, $coordTotal) {
+        Http::fake(function (Request $request) use ($total, $swimlaneIds, $stages, $coordTotal, $omitSwimlanes) {
             if (str_contains($request->url(), 'preload.json')) {
-                return Http::response(['data' => [
-                    'workflows' => [['stages' => $stages]],
-                    'swimlanes' => array_map(fn (int $id) => ['id' => $id], $swimlaneIds),
-                ]]);
+                $data = ['workflows' => [['stages' => $stages]]];
+                if (! $omitSwimlanes) {
+                    $data['swimlanes'] = array_map(fn (int $id) => ['id' => $id], $swimlaneIds);
+                }
+
+                return Http::response(['data' => $data]);
             }
             // The coord board is a SECOND visibility read, distinguished by its board id.
             // The id rides INSIDE the `q` param, so the url arrives percent-encoded and a

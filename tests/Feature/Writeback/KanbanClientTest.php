@@ -449,6 +449,64 @@ class KanbanClientTest extends TestCase
         Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/boards/8/preload.json'));
     }
 
+    /**
+     * card#5698. The pair is the assertion — either case alone would pass under the old
+     * always-a-list behaviour. `[]` is the ordinary answer (measured: every board in the
+     * reference fleet returns `data.swimlanes: []`), so it must stay a list; only the ABSENT
+     * key is the state a caller may not read as an answer.
+     */
+    public function test_board_swimlane_ids_returns_an_empty_list_for_a_board_with_no_lanes(): void
+    {
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['swimlanes' => []]])]);
+
+        $this->assertSame([], $this->client()->boardSwimlaneIds(8));
+    }
+
+    public function test_board_swimlane_ids_returns_null_when_the_read_carried_no_swimlane_collection(): void
+    {
+        Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => []]])]);
+
+        $this->assertNull($this->client()->boardSwimlaneIds(8));
+    }
+
+    public function test_board_custom_field_keys_returns_an_empty_list_for_a_board_registering_none(): void
+    {
+        Http::fake(['*/boards/8/custom_fields.json' => Http::response(['data' => []])]);
+
+        $this->assertSame([], $this->client()->boardCustomFieldKeys(8));
+    }
+
+    public function test_board_custom_field_keys_returns_null_when_the_read_carried_no_collection(): void
+    {
+        Http::fake(['*/boards/8/custom_fields.json' => Http::response(['meta' => []])]);
+
+        $this->assertNull($this->client()->boardCustomFieldKeys(8));
+    }
+
+    /**
+     * The RUNTIME callers keep degrading to a no-op — a 5xx on a deterministic body would
+     * retry-storm an unfixable event for ~11 days (DL-020) — but the degradation stops being
+     * SILENT. "The endpoint answered a body with no card collection" and "no card matched"
+     * are different facts and only the first is a bug to chase.
+     */
+    public function test_an_unreadable_correlation_read_no_ops_but_logs(): void
+    {
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(fn (string $m, array $c) => str_contains($m, 'carried no card collection') && $c['board_id'] === 8);
+        Http::fake(['*/tasks/search.json*' => Http::response(['meta' => []])]);
+
+        $this->assertSame([], $this->client()->cardsByTag(8, 'id:TASK-9'));
+    }
+
+    public function test_an_ordinary_no_match_logs_nothing(): void
+    {
+        Log::shouldReceive('warning')->never();
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+
+        $this->assertSame([], $this->client()->cardsByTag(8, 'id:TASK-9'));
+    }
+
     public function test_board_stage_ids_by_name_maps_names_to_ids(): void
     {
         // DL-200: the coord-config compare resolves a terminal column NAME to a stage
