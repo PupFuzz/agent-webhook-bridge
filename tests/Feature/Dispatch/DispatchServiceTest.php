@@ -479,6 +479,113 @@ class DispatchServiceTest extends TestCase
         $this->assertSame(1, $this->inboxCount());
     }
 
+    // ---- DL-253: the echo recheck decides DELIVERY, so it is asserted through dispatch ----
+    //
+    // THE TEST DEBT THIS CLOSES, stated because it is the reason these live here and
+    // not beside the classifier: every assertion that a coordination event WAKES an
+    // agent had stopped at the ClassifyResult. A grant asserted there greens while the
+    // dispatcher drops the very same event one step later — which is exactly what
+    // happened to DL-235's `bare_reply_to_own_thread` grant, whose unit test passed
+    // throughout. A wake claim is a claim about delivery; only dispatch can witness it.
+
+    /**
+     * A shared-upstream-identity coord seat: agent `me`, one github scope, the REAL
+     * CoordinationClassifier, and a channel to wake. The shared identity is what makes
+     * `Actor.name` null (DL-002) — the precondition for the post-classify echo recheck
+     * to be the only thing between a coordination event and this agent's inbox.
+     */
+    private function writeSharedIdentityCoordAgent(): void
+    {
+        File::put($this->dir.'/me.yml',
+            "subscriptions:\n  - provider: github\n    scopes: ['org/coord']\n"
+            ."classifier:\n  class: '".CoordinationClassifier::class."'\n"
+            ."channel:\n  url: http://127.0.0.1:8788/\n");
+        File::put($this->dir.'/shared-identities.json', (string) json_encode([
+            'shared_identities' => [['github_user_id' => 12000042, 'github_login' => 'shared-bot', 'agents' => ['me']]],
+        ]));
+    }
+
+    /** @param array<mixed> $payload */
+    private function dispatchCoord(string $deliveryId, string $eventType, array $payload): void
+    {
+        $this->dispatcher()->dispatch('github', 'org/coord', new EventDto(
+            deliveryId: $deliveryId, scopeId: 'org/coord', eventType: $eventType, actorId: '12000042',
+        ), $payload);
+    }
+
+    /** @param list<string> $labelNames */
+    private function coordIssue(array $labelNames, string $body = ''): array
+    {
+        return ['issue' => [
+            'number' => 4, 'title' => 'T', 'body' => $body, 'html_url' => 'https://x/4',
+            'labels' => array_map(static fn (string $n): array => ['name' => $n], $labelNames),
+        ]];
+    }
+
+    /** @param list<string> $labelNames */
+    private function coordComment(array $labelNames, string $body): array
+    {
+        return [
+            'issue' => ['number' => 4, 'title' => 'T', 'labels' => array_map(static fn (string $n): array => ['name' => $n], $labelNames)],
+            'comment' => ['body' => $body, 'html_url' => 'https://x/4#c1', 'id' => 1, 'created_at' => '2026-07-31T00:00:00Z'],
+        ];
+    }
+
+    public function test_counterparty_bodyless_action_on_a_thread_this_agent_opened_is_delivered(): void
+    {
+        // THE DEFECT DL-253 CLOSES, end to end. `from:me` is the frozen thread-opener
+        // label (DL-035) — evidence that `me` OPENED this thread, never that `me`
+        // reopened it. Until DL-253 the classifier handed that name to the echo
+        // recheck, which matched the serving agent and dropped the dispatch: the seat
+        // never saw a counterparty's reopen of its own thread, at all.
+        Http::fake(['*' => Http::response('ok', 200)]);
+        $this->writeSharedIdentityCoordAgent();
+
+        $this->dispatchCoord('evt-reopen', 'issues.reopened', $this->coordIssue(['from:me', 'to:all'], 'FROM: me'));
+
+        $d = AgentDispatch::firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DELIVERED, $d->outcome);
+        $this->assertSame(1, $this->inboxCount());
+        Http::assertSent(fn ($r) => $r->url() === 'http://127.0.0.1:8788/');
+    }
+
+    public function test_bare_reply_on_this_agents_own_thread_is_delivered_end_to_end(): void
+    {
+        // DL-235's `bare_reply_to_own_thread` grant, witnessed where it was always
+        // claimed: at the agent. The grant fired from the day it shipped and the
+        // dispatcher dropped it on the way out, because a bare reply's only name is
+        // the thread label — the opener's. This is the 112-dropped-comments-per-seat
+        // population that grant exists to wake.
+        Http::fake(['*' => Http::response('ok', 200)]);
+        $this->writeSharedIdentityCoordAgent();
+
+        $this->dispatchCoord('evt-bare', 'issue_comment.created', $this->coordComment(['from:me'], 'no addressing lines'));
+
+        $d = AgentDispatch::firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DELIVERED, $d->outcome);
+        $this->assertSame(1, $this->inboxCount());
+        Http::assertSent(fn ($r) => $r->url() === 'http://127.0.0.1:8788/');
+    }
+
+    public function test_this_agents_own_comment_is_still_echo_dropped_end_to_end(): void
+    {
+        // The half that must NOT move: a body `FROM:` line on the action that WROTE
+        // that body is real evidence of who acted, so own-write suppression (DL-005)
+        // still fires and still keeps the agent's own post out of its own inbox. The
+        // thread is `to:all` so the recipient gate passes and the echo recheck is
+        // demonstrably the thing doing the dropping.
+        Http::fake(['*' => Http::response('ok', 200)]);
+        $this->writeSharedIdentityCoordAgent();
+
+        $this->dispatchCoord('evt-own', 'issue_comment.created', $this->coordComment(['from:me', 'to:all'], "FROM: me\nmy own post"));
+
+        $d = AgentDispatch::firstOrFail();
+        $this->assertSame(AgentDispatch::OUTCOME_DROPPED, $d->outcome);
+        $this->assertStringContainsString('reattributed', (string) $d->reason);
+        $this->assertSame(0, $this->inboxCount());
+        Http::assertNothingSent();
+    }
+
     public function test_route_intents_attaches_bearer_token_and_never_persists_it(): void
     {
         Http::fake(['*' => Http::response('ok', 202)]);

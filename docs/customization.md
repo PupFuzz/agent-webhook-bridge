@@ -43,7 +43,7 @@ The single `ClassifyContext` parameter (DL-025) replaced a positional signature,
 
 - `$intents` — `list<Intent>` staged to `inbox.jsonl`
 - `$targets` — `list<ReactionTarget>` dispatched against the handler registry
-- `$reattributedActor` — *optional* `?Actor`; only for a shared upstream identity (see [Per-agent echo for a shared upstream identity](#per-agent-echo-for-a-shared-upstream-identity)). Null unless your classifier sets it — and it is an **echo** input, never a display value; among the shipped classifiers `CoordinationClassifier` sets it on every coord-message event whose author it recovers.
+- `$reattributedActor` — *optional* `?Actor`; only for a shared upstream identity (see [Per-agent echo for a shared upstream identity](#per-agent-echo-for-a-shared-upstream-identity)). Null unless your classifier sets it — and it is an **echo** input, never a display value: a name here says *this agent performed this event*, so leave it null when the event carries no evidence of that (DL-253). Among the shipped classifiers `CoordinationClassifier` sets it on every coord-message event whose **actor** it recovers.
 
 ### Minimal worked example
 
@@ -291,8 +291,9 @@ public function classify(ClassifyContext $ctx): ClassifyResult
 {
     $actor = $ctx->actor;
 
-    // Shared account → Actor.name is null. Recover the author from your own
-    // convention (here: a "FROM: <agent>" line in a comment body) via the shipped
+    // Shared account → Actor.name is null. Recover WHO PERFORMED THIS EVENT from
+    // your own convention (here: a "FROM: <agent>" line in a comment body, which
+    // names the actor only because this event CREATED that body) via the shipped
     // RecipientAddressing::author() helper — no hand-rolled regex.
     $reattributed = null;
     if ($actor->name === null) {
@@ -317,7 +318,7 @@ public function classify(ClassifyContext $ctx): ClassifyResult
 - **You report *who*; the dispatcher decides *is that me?*.** Although `classify()` receives the serving agent via `$ctx->agent`, for shared-identity *echo* you still just **name the author** and let the dispatcher apply that agent's own name / `treat_as_echo` — reusing the canonical echo logic rather than reimplementing it per classifier. The same classifier then yields per-agent self-echo across all the agents sharing the account. (One cached instance serves all agents — read `$ctx->agent` as a local, never stash it.)
 - **A different shared-id agent's write still surfaces** — its recovered name isn't the serving agent's own name, so it isn't an echo for that agent.
 - **Leave it `null` when you didn't recover an author** (or there's nothing to recover) — the result dispatches unchanged. It is a no-op for any classifier that never sets it; among the shipped ones, `CoordinationClassifier` **does** set it on every coord-message event whose author it recovers (this line said "every shipped classifier leaves it null" until DL-252 — that stopped being true when that classifier shipped).
-- **What you return here is what the dispatcher DROPS on, so it is not a display value.** `CoordinationClassifier` deliberately returns the *author* here while reporting a narrower *actor* on its Intent (see [`consumer-guide.md` § Coordination intents: who acted vs. whose thread](consumer-guide.md#coordination-intents-who-acted-vs-whose-thread)) — on an event that identifies no actor the two differ, and the wider value is kept only because narrowing it would change which events are delivered. If your classifier makes the same split, make it deliberately.
+- **What you return here is what the dispatcher DROPS on, so it is a claim that THIS AGENT WROTE THIS EVENT — never merely a related name (DL-253).** The thread's opener, the subject's assignee, the last commenter: each is a real datum and none of them is evidence of who performed *this* event. Feeding one in silently drops other people's events — `CoordinationClassifier` returned the author-or-actor union here until DL-253, and a counterparty's `reopened` on a thread the serving agent had opened was suppressed as that agent's own write, invisibly, along with every bare reply to it. It now returns the same *actor* it reports on its Intent (see [`consumer-guide.md` § Coordination intents: who acted vs. whose thread](consumer-guide.md#coordination-intents-who-acted-vs-whose-thread)). **When you cannot evidence the actor, return `null` and let the event be delivered** — a wake you did not need costs a read; a drop costs the message.
 
 This is the completion of the `shared_identities` design (DL-002): the registry preserves the null name on purpose so this recovery layer can re-attribute. See [`multi-agent.md`](multi-agent.md) § Path C for the full shared-identity walkthrough.
 
