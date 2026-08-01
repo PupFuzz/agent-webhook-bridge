@@ -73,11 +73,13 @@ from unittest import mock
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 # The static-call prefixes `ChannelSnapshotProbe` may use DIRECTLY. `self::` is its
-# own helpers; `Finding::` is the same-namespace value object it returns (which is why
-# it needs no `use` import — the probe's no-import assertion still holds). Compared by
-# EXACT equality in both directions, so an entry nothing uses fails too: a permission
-# outlives its reason otherwise, and this list is a trust boundary.
-_ALLOWED_PROBE_STATICS = {"self::", "Finding::"}
+# own helpers; `Finding::` is the same-namespace value object it returns; `PathVisibility::`
+# is the shared not-visible guard the probe AUTHORED and card#5698 hoisted out of it, so
+# every stat-bearing check could stop re-minting the absence overclaim. All three are
+# same-namespace, which is why none needs a `use` import — the probe's no-import assertion
+# still holds. Compared by EXACT equality in both directions, so an entry nothing uses
+# fails too: a permission outlives its reason otherwise, and this list is a trust boundary.
+_ALLOWED_PROBE_STATICS = {"self::", "Finding::", "PathVisibility::"}
 
 # Every class REACHABLE from the probe through the allow-list, scanned for exec
 # primitives on the same terms as the probe itself. Wider than the set above by
@@ -86,6 +88,11 @@ _ALLOWED_PROBE_STATICS = {"self::", "Finding::"}
 _PROBE_COLLABORATORS = (
     "app/Bridge/Support/Finding.php",
     "app/Bridge/Support/Severity.php",
+    # Reaches `Finding` (already listed) and otherwise only stats: dirname/is_dir/
+    # is_executable. `is_executable` is a permission READ, never an invocation, and it
+    # does not trip the scan for two independent reasons — the `_` before `exec` is in the
+    # negative lookbehind, and `executable(` is not `exec\s*\(`.
+    "app/Bridge/Support/PathVisibility.php",
 )
 
 # What may be passed INTO the probe: a variable, a property read chain, a quoted
