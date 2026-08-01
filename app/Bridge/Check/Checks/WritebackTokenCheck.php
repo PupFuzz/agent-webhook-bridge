@@ -5,6 +5,7 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Support\Finding;
+use App\Bridge\Support\PathVisibility;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\TokenPath;
 
@@ -41,7 +42,8 @@ final class WritebackTokenCheck implements Check
 
         $tokenPath = TokenPath::forWriteback($ctx->secretDir, 'kanban');
         if (! is_file($tokenPath)) {
-            yield Finding::warn("writeback: no kanban writeback token at {$tokenPath} — the move will fail until you place a least-privilege token (chmod 600)");
+            yield PathVisibility::unverifiedUnlessVisible($tokenPath, "writeback: kanban writeback token at {$tokenPath}")
+                ?? Finding::warn("writeback: no kanban writeback token at {$tokenPath} — the move will fail until you place a least-privilege token (chmod 600)");
         } elseif (SecretFile::isInsecure($tokenPath)) {
             yield Finding::warn('writeback: '.SecretFile::permsMessage($tokenPath).' — the move will fail until fixed');
         }

@@ -88,7 +88,13 @@ class InstallConfigDirCheckTest extends TestCase
 
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Fail, $findings[0]->severity);
-        $this->assertSame("config dir does not exist: {$missing}", $findings[0]->message);
+        // Both causes, because `is_dir()` cannot tell them apart (card#5698). The severity
+        // stays `fail` on purpose — see the check's own comment: the agent loop is gated on
+        // this same stat, so either cause means this run loaded no agent config.
+        $this->assertSame(
+            "config dir is not usable: {$missing} — it does not exist, or a directory above it denies this process traversal (is_dir() cannot distinguish them). Either way NO agent config was loaded this run, so every per-agent check below is MISSING, not clean; create the directory, or re-run bridge:check as a user that can traverse to it",
+            $findings[0]->message,
+        );
     }
 
     public function test_an_owner_only_dir_reports_ok_and_says_nothing_about_permissions(): void

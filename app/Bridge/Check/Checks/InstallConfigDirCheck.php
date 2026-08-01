@@ -61,8 +61,17 @@ final class InstallConfigDirCheck implements Check
             return;
         }
 
+        // STAYS `fail`, and deliberately does NOT adopt PathVisibility the way its
+        // sibling stat legs did (card#5698). `CheckCommand` gates its entire agent loop
+        // on this same `is_dir()`, so in BOTH worlds — absent, or present but
+        // untraversable — this run certainly loaded no agent config and every per-agent
+        // leg below is missing rather than clean. That is a fact about THIS RUN, known
+        // with certainty, so the exit code is earned and `unvalidated` would be a
+        // downgrade of a real failure. Only the CLAIM was wrong: `is_dir()` cannot tell
+        // the two causes apart, and naming just one sent the operator to create a
+        // directory that may already exist.
         if (! is_dir($configDir)) {
-            yield Finding::fail("config dir does not exist: {$configDir}");
+            yield Finding::fail("config dir is not usable: {$configDir} — it does not exist, or a directory above it denies this process traversal (is_dir() cannot distinguish them). Either way NO agent config was loaded this run, so every per-agent check below is MISSING, not clean; create the directory, or re-run bridge:check as a user that can traverse to it");
 
             return;
         }

@@ -114,6 +114,38 @@ class AgentWebhookSecretCheckTest extends TestCase
         $this->assertSame([], $this->findingsFor([['provider' => 'kanban', 'scopes' => [5]]], withSecretDir: false));
     }
 
+    /**
+     * The card#5698 arm: a secret that EXISTS but sits under a directory this process
+     * cannot traverse. `is_file()` returns false exactly as for a missing one, so before
+     * the guard this printed "has no secret … run bridge:provision" — a definite
+     * accusation, and the wrong remediation, for a correctly-provisioned install.
+     */
+    public function test_a_secret_that_cannot_be_seen_is_unvalidated_not_reported_missing(): void
+    {
+        $this->skipAsRoot();
+        $this->secret('kanban', '5', 0o600);
+        chmod($this->dir.'/kanban', 0000);
+
+        try {
+            $findings = $this->findingsFor([['provider' => 'kanban', 'scopes' => [5]]]);
+        } finally {
+            chmod($this->dir.'/kanban', 0755);
+        }
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
+        $this->assertStringNotContainsString('has no secret', $findings[0]->message);
+        $this->assertStringNotContainsString('run bridge:provision', $findings[0]->message);
+    }
+
+    private function skipAsRoot(): void
+    {
+        if (function_exists('posix_getuid') && posix_getuid() === 0) {
+            $this->markTestSkipped('root bypasses directory permission checks');
+        }
+    }
+
     private function secret(string $provider, string $scope, int $mode): void
     {
         $path = SecretPath::for($this->dir, $provider, $scope);

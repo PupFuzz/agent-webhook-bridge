@@ -87,6 +87,36 @@ class ChannelTransportCheckTest extends TestCase
     }
 
     /**
+     * The card#5698 arm. The parent dir EXISTS and holds a live channel; this process just
+     * cannot traverse to it. Before the guard that printed "does not exist … Repoint
+     * channel.socket", sending the operator to re-point a correct config — and the cause
+     * it named (a uid change after a host restore) was not the cause at all.
+     */
+    public function test_a_socket_parent_dir_that_cannot_be_seen_is_unvalidated_not_reported_missing(): void
+    {
+        if (function_exists('posix_getuid') && posix_getuid() === 0) {
+            $this->markTestSkipped('root bypasses directory permission checks');
+        }
+        $parent = $this->dir.'/locked';
+        File::ensureDirectoryExists($parent.'/inner');
+        $probe = $this->probe(connected: false);
+        chmod($parent, 0000);
+
+        try {
+            $findings = $this->socketFindings($parent.'/inner/agent.sock', $probe);
+        } finally {
+            chmod($parent, 0755);
+        }
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
+        $this->assertStringNotContainsString('does not exist', $findings[0]->message);
+        $this->assertStringNotContainsString('Repoint channel.socket', $findings[0]->message);
+        $this->assertSame([], $probe->dsns);
+    }
+
+    /**
      * Invisible to the golden corpus, and the one leg whose measurability depends on WHO
      * runs the suite:
      * root bypasses the write bit, so PHP's `is_writable()` answers true for a 0500

@@ -473,7 +473,10 @@ class CheckGoldenTest extends TestCase
             'minimal-fpm-present' => ['retention: on (delete >30d'],
 
             // ---- the top-of-handle() install shell ----
-            'config-dir-missing' => ['config dir does not exist:'],
+            // The subject moved with card#5698: `is_dir()` cannot tell an absent dir from an
+            // untraversable one, so the leg names both causes. Anchored on the invariant
+            // stem rather than the full sentence — the remediation prose is operator text.
+            'config-dir-missing' => ['config dir is not usable:'],
             'secret-dir-unset' => ['bridge.secret_dir (BRIDGE_SECRET_DIR) is not set or not absolute'],
             'provider-without-adapter' => ['bridge.providers.gitlab is configured but has no adapter'],
             'bad-receiver-url' => ["bridge.receiver_base_url 'not-a-url' must use http or https"],

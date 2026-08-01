@@ -137,6 +137,31 @@ class WritebackAlertChannelCheckTest extends TestCase
         $this->assertStringContainsString('must not contain a userinfo component', $findings[0]['message']);
     }
 
+    /**
+     * The card#5698 arm: the parent dir exists, but this process cannot traverse to it, so
+     * the "does not exist" verdict was an accusation the stat could not support.
+     */
+    public function test_a_socket_parent_dir_that_cannot_be_seen_is_unvalidated_not_reported_missing(): void
+    {
+        if (function_exists('posix_getuid') && posix_getuid() === 0) {
+            $this->markTestSkipped('root bypasses directory permission checks');
+        }
+        $parent = $this->dir.'/locked';
+        File::ensureDirectoryExists($parent.'/inner');
+        chmod($parent, 0000);
+
+        try {
+            $findings = $this->findings(new AlertChannel(socket: $parent.'/inner/alert.sock'));
+        } finally {
+            chmod($parent, 0755);
+        }
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]['severity']);
+        $this->assertStringContainsString('is not visible to this user', $findings[0]['message']);
+        $this->assertStringNotContainsString('does not exist', $findings[0]['message']);
+    }
+
     /** @return list<array{severity: Severity, message: string}> */
     private function findings(?AlertChannel $channel): array
     {

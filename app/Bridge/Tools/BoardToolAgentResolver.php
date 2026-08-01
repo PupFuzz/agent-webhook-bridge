@@ -5,6 +5,8 @@ namespace App\Bridge\Tools;
 use App\Bridge\Exceptions\InsecureSecretPermsException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\BoardToolsConfig;
+use App\Bridge\Support\Finding;
+use App\Bridge\Support\PathVisibility;
 use App\Bridge\Support\SecretFile;
 use Illuminate\Support\Facades\Log;
 
@@ -36,10 +38,12 @@ final class BoardToolAgentResolver
     private array $entries = [];
 
     /**
-     * @var list<string> problem messages (an unreadable bearer file, a token collision) for
-     *                   bridge:check to render. Under default-ON both are the same verdict — a dead or
-     *                   ambiguous bearer is a broken ENABLEMENT and FAILs, never a transient board-state
-     *                   warn — so there is nothing here for a consumer to split on (card#5292).
+     * @var list<Finding> problems (an unreadable bearer file, a token collision, or a token file
+     *                    this process could not see) for bridge:check to render. The first two are
+     *                    MEASURED faults and both FAIL under default-ON — a dead or ambiguous bearer
+     *                    is a broken ENABLEMENT, never a transient board-state warn (card#5292). The
+     *                    third is not a fault at all: it is this build's own blindness, so it carries
+     *                    `unvalidated` and must never flip the exit (card#5698).
      */
     private array $problems = [];
 
@@ -105,7 +109,7 @@ final class BoardToolAgentResolver
                 ? 'Each reuses its channel token as the bearer — give each agent a DISTINCT channel token (channel.auth.token_path).'
                 : 'Mint a DISTINCT token per agent (board_tools.auth.token_path).';
             $message = 'board_tools: the same auth token is shared by multiple agents ('.implode(', ', $sharers).') — board tools are DISABLED for all of them (an ambiguous bearer cannot authenticate). '.$cure;
-            $this->problems[] = $message;
+            $this->problems[] = Finding::fail($message);
             Log::warning($message);
         }
     }
@@ -133,15 +137,19 @@ final class BoardToolAgentResolver
      * Problems accumulated at build (unreadable token files, token collisions) —
      * rendered by bridge:check so a silent per-agent lockout is loud pre-deploy.
      *
-     * ONE MESSAGE PER PROBLEM, AND NO DISCRIMINATOR. Entries used to carry a `type`
-     * (`bearer_unreadable` | `collision`) justified as letting the check split severity;
-     * it was written at three sites and read at ZERO for the whole of its life, because
-     * the split it existed to enable was decided the other way — both problems FAIL under
-     * default-ON (DL-217 v7). An affordance nobody uses is not free: it is a claim in the
-     * source about what a consumer can do, and it was wrong (card#5292). Restore it if and
-     * when a caller genuinely needs to discriminate.
+     * EACH PROBLEM CARRIES ITS OWN SEVERITY, because only the build knows which of them
+     * it actually MEASURED. This is the discrimination card#5292 removed (DL-251) and
+     * expressly invited back — "restore it if and when a caller genuinely needs to
+     * discriminate" — and it reopens NEITHER of the two rulings behind that removal:
+     * `bearer_unreadable` and `collision` are two MEASURED faults, their both-FAIL
+     * disposition is DL-217 v7's, and both still FAIL. What card#5698 adds is a THIRD
+     * situation neither ruling covered — the build could not see the token file at all —
+     * where a `fail` is a false accusation about a runtime this process cannot observe
+     * (the controller builds its own resolver as the WEB user, which may read the file
+     * fine). Carrying {@see Finding} rather than the old `type` string also hands the
+     * consumer the severity directly instead of a tag it has to interpret.
      *
-     * @return list<string>
+     * @return list<Finding>
      */
     public function problems(): array
     {
@@ -153,12 +161,15 @@ final class BoardToolAgentResolver
         try {
             $token = SecretFile::read($path);
         } catch (InsecureSecretPermsException $e) {
-            $this->problems[] = "board_tools: agent {$agentName}: ".$e->getMessage().' — board tools disabled for this agent until fixed';
+            $this->problems[] = Finding::fail("board_tools: agent {$agentName}: ".$e->getMessage().' — board tools disabled for this agent until fixed');
 
             return null;
         }
         if ($token === null || $token === '') {
-            $this->problems[] = "board_tools: agent {$agentName}: no token at {$path} — board tools disabled for this agent until a token (chmod 600) is placed";
+            // A blank-but-readable file is MEASURED and keeps the definite claim; only an
+            // unseeable one is unvalidated (card#5698).
+            $this->problems[] = PathVisibility::unverifiedUnlessVisible($path, "board_tools: agent {$agentName}: bearer token at {$path}")
+                ?? Finding::fail("board_tools: agent {$agentName}: no token at {$path} — board tools disabled for this agent until a token (chmod 600) is placed");
 
             return null;
         }
