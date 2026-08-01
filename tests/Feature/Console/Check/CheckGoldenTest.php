@@ -320,6 +320,29 @@ class CheckGoldenTest extends TestCase
 
                 return $default;
 
+            case 'writeback-swimlane-collection-absent':
+                // card#5698. Before this slice NO fixture could witness the class at all:
+                // `moveLegInstall`'s preload already omits `data.swimlanes`, but its mapping
+                // declares no `swimlane_id`, so the leg that would have lied never ran — the
+                // same corpus blindness DL-255 recorded for the scope maps. This fixture is
+                // the witness: a mapping that DOES declare a lane, against a preload carrying
+                // no lane collection. Pre-fix it printed a confident "swimlane_id 4 not found
+                // on board 8 … (a deleted lane, or a lane on a different board)".
+                //
+                // The stage list is kept WELL-FORMED on purpose, so the only thing this
+                // fixture's output can move is the lane line — a preload broken in two ways
+                // would not say which leg the diff belongs to.
+                $this->moveLegInstall($i);
+                $i->json('writeback.json', ['identity_id' => 4242, 'mappings' => [
+                    'owner/repo' => [
+                        'board_id' => 8,
+                        'swimlane_id' => 4,
+                        'stages' => ['opened' => 50],
+                    ],
+                ]]);
+
+                return $default;
+
                 // ---- board_tools + the opt-in probes ----
             case 'board-tools-http-enabled':
                 $i->boot()
@@ -471,6 +494,7 @@ class CheckGoldenTest extends TestCase
             'writeback-move-leg-coord-config-unreadable',
             'writeback-move-leg-coord-config-agrees',
             'writeback-board-unreadable',
+            'writeback-swimlane-collection-absent',
             'board-tools-http-enabled',
             'board-tools-ssh-pinned-line',
             'board-tools-ssh-default-transport-advisory',
@@ -574,6 +598,10 @@ class CheckGoldenTest extends TestCase
             'writeback-move-leg-coord-config-unreadable' => ['is absent, unreadable, or malformed'],
             'writeback-move-leg-coord-config-agrees' => ['coord config agrees'],
             'writeback-board-unreadable' => ['writeback: could not read board 8'],
+            // Both halves pinned: the disclosure that must appear, AND the confident
+            // accusation that must not. Pinning only the first would stay green if the
+            // fix regressed into printing both.
+            'writeback-swimlane-collection-absent' => ['could NOT check swimlane_id 4', 'carried no swimlane collection'],
 
             // ---- board_tools + the opt-in probes ----
             // The http plane prints nothing http-SPECIFIC, so the subject is that the plane

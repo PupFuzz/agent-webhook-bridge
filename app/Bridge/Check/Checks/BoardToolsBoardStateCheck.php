@@ -69,9 +69,22 @@ final class BoardToolsBoardStateCheck implements PerAgentCheck
             }
 
             $swimlaneIds = $client->boardSwimlaneIds($bt->boardId);
-            foreach (array_filter([$bt->swimlaneId, $bt->sharedSwimlaneId], fn ($id) => $id !== null) as $swimlaneId) {
-                if (! in_array($swimlaneId, $swimlaneIds, true)) {
-                    yield Finding::warn("board_tools: agent {$name}: swimlane_id {$swimlaneId} is not on board {$bt->boardId} — board_create_card will 422 (create) or board_my_cards will read empty until fixed.");
+            // Never empty for any config that reaches here, so this leg always has a question
+            // to answer: an enabled block REQUIRES swimlane_id, and the two constructions that
+            // leave it null (disabled / suppressed) also null boardId, which the guard above
+            // already returned on. `sharedSwimlaneId` is the only genuinely optional one.
+            $configuredLanes = array_values(array_filter([$bt->swimlaneId, $bt->sharedSwimlaneId], fn ($id) => $id !== null));
+            if ($swimlaneIds === null) {
+                // card#5698, the twin of `WritebackBoardStateCheck`'s swimlane leg. ONE
+                // finding, not one per configured lane: a single read failed, so there is a
+                // single thing this run could not do — per-lane lines would report one fault
+                // N times.
+                yield Finding::unvalidated("board_tools: agent {$name}: could NOT check swimlane_id(s) ".implode(', ', $configuredLanes)." — board {$bt->boardId}'s preload read carried no swimlane collection at all (an empty one would have been an answer), so there was nothing to look them up in; a deleted lane would look exactly like this. Verify board_id + the service user's membership and re-run.");
+            } else {
+                foreach ($configuredLanes as $swimlaneId) {
+                    if (! in_array($swimlaneId, $swimlaneIds, true)) {
+                        yield Finding::warn("board_tools: agent {$name}: swimlane_id {$swimlaneId} is not on board {$bt->boardId} — board_create_card will 422 (create) or board_my_cards will read empty until fixed.");
+                    }
                 }
             }
 
