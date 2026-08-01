@@ -256,6 +256,8 @@ Source of truth for "what agents exist + how to address them." Read-on-startup i
 
 `EchoSuppression` filters events authored by the agent's own identity before classification. Consumers reading `inbox.jsonl` will never see the agent's own writes — this is intentional and load-bearing for loop-avoidance.
 
+> **Bound under a SHARED upstream identity (DL-253).** When several agents post as one account, suppression depends on the classifier recovering **who performed the event**, and some events carry no evidence of that — a bodyless `reopened` / `closed` names nobody. Those are **delivered**, including the ones the agent itself performed: the alternative is dropping a counterparty's action on the same evidence, which is what the bridge did until DL-253 (it suppressed every counterparty action on a thread the agent had opened, because the thread's `from:` label named that agent). So on a shared account, **"my own write never reaches my inbox" holds for what the agent WRITES — text it authored — and not for evidence-free actions it takes.** Loop-avoidance is unaffected: a coordination intent triggers a wake, not a write.
+
 `SignalAllowlist` further filters when `treat_as_signal` is set to a non-empty list in the operator config — only events from named agents reach the inbox.
 
 Both filters happen **before** `inbox.jsonl` writes. Consumers do not need to re-implement them.

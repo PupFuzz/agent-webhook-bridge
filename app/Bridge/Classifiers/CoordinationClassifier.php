@@ -107,8 +107,9 @@ use App\Bridge\Writeback\WritebackMapping;
  * creates nothing — `reopened`, `closed`, `ready_for_review`, … — the actor is
  * UNRECOVERABLE and the Intent says so explicitly (`payload.actor_attribution`),
  * rather than naming the thread's opener. `ClassifyResult::reattributedActor`
- * deliberately keeps the pre-DL-252 union of both facts, because the dispatcher
- * DROPS on it (DL-005) — see {@see attribute()}'s `echo_author`.
+ * carries THAT SAME actor fact (DL-253): the dispatcher DROPS on it (DL-005), and
+ * a drop keyed on the thread's author suppressed a counterparty's bodyless action
+ * on a thread the serving agent had opened.
  *
  * Stateless: `$agent`/config are read as call-locals (one cached instance serves
  * every agent in the per-agent dispatch loop — never stash on the instance).
@@ -402,8 +403,8 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
 
         // §1 shared-identity attribution — TWO facts, kept apart (DL-252): who
         // ACTED (null ⇒ this event carries no evidence of it) and whose SUBJECT
-        // this is. `echo_author` is the pre-DL-252 union of the two, and only the
-        // dispatcher's echo check reads it.
+        // this is. The dispatcher's echo check reads the FIRST (DL-253) — a drop
+        // claims this agent wrote the event, which only `actor` can evidence.
         $attribution = $this->attribute(
             $actor, $ctx->scopeId, $labels, $subject['body'],
             subjectIsComment: $subject['kind'] === 'comment',
@@ -483,7 +484,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         return new ClassifyResult(
             intents: [$intent],
             targets: $forMe ? $this->wakePush($intent, $ctx) : [],   // non-addressed inbox_stage: staged, never woken
-            reattributedActor: $attribution['echo_author'],
+            reattributedActor: $acting,   // the ACTOR fact, never the thread author (DL-253)
         );
     }
 
@@ -1238,15 +1239,20 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * comment's body names the COMMENTER, so it is deliberately not a fallback
      * here. A real datum; never evidence of who acted on a later event.
      *
-     * `echo_author` — the pre-DL-252 UNION of the two above (map, then body-or-label
-     * with a comment preferring the body), UNCHANGED and read by exactly one
-     * caller: `ClassifyResult::reattributedActor`, on which the dispatcher re-runs
-     * the per-agent echo check and DROPS the dispatch (DL-005). Narrowing it to
-     * `actor` would change WHICH events are delivered, not how they read — a
-     * different, hard-gated change. Its known cost is recorded in DL-252 (f).
+     * `actor` IS ALSO THE ECHO INPUT (DL-253). It is what the caller hands to
+     * `ClassifyResult::reattributedActor`, on which the dispatcher re-runs the
+     * per-agent echo check and DROPS the dispatch (DL-005) — and a drop is a claim
+     * that THIS AGENT WROTE THIS EVENT, which is exactly what `actor` means and
+     * what `thread_author` does not. Until DL-253 a third value unioned the two, so
+     * on a thread the serving agent had opened a COUNTERPARTY's bodyless action was
+     * suppressed as that agent's own write and never delivered. Null therefore
+     * DELIVERS: under a shared identity a bodyless event carries no evidence of who
+     * acted, and the honest disposition of "cannot tell" is to deliver, since the
+     * alternative silently drops other people's events. `thread_author` MUST NOT be
+     * fed to an echo check — that is the defect, not a fallback.
      *
      * @param  list<string>  $labels
-     * @return array{actor: ?Actor, thread_author: ?string, echo_author: ?Actor}
+     * @return array{actor: ?Actor, thread_author: ?string}
      */
     private function attribute(Actor $actor, string $scopeId, array $labels, string $body, bool $subjectIsComment, bool $actorAuthoredSubject, ClassifierConfig $cfg): array
     {
@@ -1257,7 +1263,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         if ($actor->name !== null) {
             // A distinct account: the registry named the actor and the pre-classify
             // echo gate already acted on it — there is nothing to recover.
-            return ['actor' => null, 'thread_author' => $threadAuthor, 'echo_author' => null];
+            return ['actor' => null, 'thread_author' => $threadAuthor];
         }
 
         $mapped = $cfg->scopeAuthorMap[strtolower($scopeId)] ?? null;
@@ -1270,9 +1276,6 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         return [
             'actor' => $this->named($actor, $mapped ?? $actorEvidence),
             'thread_author' => $threadAuthor,
-            'echo_author' => $this->named($actor, $mapped ?? ($subjectIsComment
-                ? ($fromBody ?? $fromLabel)
-                : ($fromLabel ?? $fromBody))),
         ];
     }
 

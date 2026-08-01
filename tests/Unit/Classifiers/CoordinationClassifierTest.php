@@ -1261,27 +1261,55 @@ class CoordinationClassifierTest extends TestCase
         }
     }
 
-    public function test_echo_input_still_carries_the_thread_author_on_a_bodyless_action(): void
+    public function test_echo_input_is_the_actor_and_is_null_on_a_bodyless_action(): void
     {
-        // DELIBERATELY UNCHANGED, and pinned so it cannot drift silently. The
-        // dispatcher re-runs its per-agent echo check on reattributedActor and DROPS
-        // the dispatch when it matches (DL-005), so this value decides WHICH events
-        // are delivered — narrowing it to the (now null) actor would start delivering
-        // events that are dropped today. That is a hard-gated change and is not this
-        // one; DL-252 (f) records what it costs to leave.
+        // DL-253 (was pinned the other way by DL-252 (f)). The dispatcher DROPS the
+        // dispatch when this matches the serving agent (DL-005), so a name here
+        // asserts "this agent wrote this event". A bodyless action carries no such
+        // evidence, so the honest value is null — and null DELIVERS. Fed the thread
+        // author instead (the shape shipped until now), a COUNTERPARTY's reopen of a
+        // thread `me` had opened was suppressed as `me`'s own write; the delivery
+        // half of that is proven end-to-end in DispatchServiceTest.
         $r = $this->classify('issues.reopened', $this->issue(4, ['to:me', 'from:other'], 'FROM: other'), 'org/coord');
 
-        $this->assertSame('other', $r->reattributedActor?->name);
-        $this->assertNull($r->intents[0]->actor->name);   // the Intent and the echo input now DIVERGE
+        $this->assertNull($r->reattributedActor);
+        $this->assertNull($r->intents[0]->actor->name);   // the Intent agrees: nobody is named
     }
 
-    public function test_echo_input_still_carries_the_thread_author_on_a_bare_comment(): void
+    public function test_echo_input_is_null_on_a_bare_comment_so_the_dl_235_grant_survives_dispatch(): void
     {
-        // Same non-change on the sibling shape: a bare comment's echo input is still
-        // the frozen label, so the DL-235 grant's delivery behavior is untouched.
+        // The sibling shape, and the one DL-235 exists for: a bare reply with no
+        // body FROM: line. The label names the thread's OPENER, never this
+        // comment's author, so it is not echo evidence.
         $r = $this->classify('issue_comment.created', $this->comment(9, ['to:me', 'from:other'], 'no addressing lines'), 'org/coord');
 
-        $this->assertSame('other', $r->reattributedActor?->name);
+        $this->assertNull($r->reattributedActor);
         $this->assertNull($r->intents[0]->actor->name);
+    }
+
+    public function test_own_write_suppression_is_preserved_wherever_the_actor_is_evidenced(): void
+    {
+        // The half DL-253 must NOT lose: every path that genuinely evidences the
+        // serving agent as the actor still hands the dispatcher its own name, so
+        // its own writes stay suppressed (DL-005). One assertion per evidence path
+        // named in attribute()'s docblock.
+        $ownComment = $this->classify('issue_comment.created', $this->comment(9, ['to:me', 'from:other'], "FROM: me\nbody"), 'org/coord');
+        $this->assertSame('me', $ownComment->reattributedActor?->name);        // (c) body FROM: on the action that wrote it
+
+        $ownThread = $this->classify('issues.opened', $this->issue(4, ['to:all', 'from:me'], 'FROM: me'), 'org/coord');
+        $this->assertSame('me', $ownThread->reattributedActor?->name);         // (b) from: label on the action that opened it
+
+        $mapped = $this->classify('issues.reopened', $this->issue(4, ['to:all', 'from:other'], ''), 'org/solo',
+            classifierConfig: ['scope_author_map' => ['org/solo' => 'me']]);
+        $this->assertSame('me', $mapped->reattributedActor?->name);            // (a) scope_author_map — survives a bodyless action
+    }
+
+    public function test_a_different_shared_id_agents_write_is_still_named_and_still_delivered(): void
+    {
+        // The other half DL-005 owes: a name that is NOT the serving agent must
+        // survive, or the dispatcher cannot tell a peer's write from silence.
+        $r = $this->classify('issue_comment.created', $this->comment(9, ['to:me', 'from:me'], "FROM: other\nbody"), 'org/coord');
+
+        $this->assertSame('other', $r->reattributedActor?->name);
     }
 }
