@@ -103,8 +103,8 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 | File | Role |
 |---|---|
 | `app/Bridge/Dispatch/DispatchService.php` | The loop: record → per-agent (echo-suppress → classify → stage → coalesce targets by `debounceKey` (last-wins) → run handlers) with the three-way failure treatment. Its private `dedupCreate` (create + catch `UniqueConstraintViolationException` → refetch) is the at-least-once write primitive (used for both `webhook_events` and `agent_dispatches`) |
-| `app/Bridge/Dispatch/{Intent,ReactionTarget,Actor,ClassifyResult,IntentLog}.php` | Core data shapes (plain PHP objects/arrays — no freeze/thaw, no serialization layer) |
-| `app/Bridge/Contracts/Classifier.php` | Classifier contract: `classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId): ClassifyResult` |
+| `app/Bridge/Dispatch/{Intent,ReactionTarget,Actor,ClassifyContext,ClassifyResult,IntentLog}.php` | Core data shapes (plain PHP objects/arrays — no freeze/thaw, no serialization layer) |
+| `app/Bridge/Contracts/Classifier.php` | Classifier contract: `classify(ClassifyContext $ctx): ClassifyResult` — the single parameter object (DL-025) carries `eventType`, `payload`, `actor`, `provider`, `scopeId` and the serving `agent` |
 | `app/Bridge/Classifiers/InboxOnlyClassifier.php` | Reference classifier — surfaces lifecycle/activity events as intents; no dispatched targets |
 | `app/Bridge/Classifiers/EventDrivenClassifier.php` | Reference event-driven classifier — emits `channel_push` targets paired with intents |
 | `app/Bridge/Classifiers/GitHubPrCardMoveClassifier.php` | Correlation classifier for the writeback — a `pull_request` event → a `kanban_move_card` target (FR #2016, `docs/writeback.md`) |
