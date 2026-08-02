@@ -49,13 +49,13 @@ use App\Bridge\Support\Finding;
  * to qualify the unconsumed WARNINGS by name, and neither arm emits any — the undeclared
  * set is still carried on the JSON surface for a consumer that wants it.
  *
- * TWO BOUNDS ON THE card#5698 COVERAGE DISCLOSURE BELOW, both deliberate and neither
- * closed by it:
- *  - **The action inventory is NOT gated on coverage.** An unread consumer can shrink
- *    `unlistedActions()` exactly as it shrinks `unconsumed()`, so that line can over-list
- *    for the same reason — but it is `Finding::ok`, and the `ok` population has never been
- *    audited against `App\Bridge\Support\Severity`'s rule. Gating this one site would be one instance of
- *    that audit shipped ahead of it, which is how an audit stops happening.
+ * ONE BOUND REMAINS ON THE card#5698 COVERAGE DISCLOSURE BELOW. The other — that the
+ * action inventory was NOT gated on coverage, deferred because it is `Finding::ok` and the
+ * `ok` population had never been audited against `App\Bridge\Support\Severity`'s rule — is
+ * CLOSED: DL-259 ran that audit whole and the inventory now reports `unvalidated` when
+ * either shortener applies, per corollary (A) (a green line may disclose what a measured
+ * fact implies, never that it could not look). The deferral was right at the time: gating
+ * the one site ahead of the audit is how an audit stops happening.
  *  - **A scope only an UNREAD agent subscribes to has no entry here at all**, so nothing —
  *    not even a disclosure — is said about arrivals on it. Reaching it would mean deriving
  *    arrivals for a scope no consumer list mentions, which is the reconciler's job and not
@@ -96,7 +96,7 @@ final class EventFollowsConsumerCheck implements Check
                 continue;
             }
 
-            yield from $this->actionInventory($scope);
+            yield from $this->actionInventory($scope, $ctx);
 
             $unconsumed = $scope->unconsumed();
             if ($unconsumed === []) {
@@ -161,19 +161,34 @@ final class EventFollowsConsumerCheck implements Check
      *
      * @return iterable<Finding>
      */
-    private function actionInventory(EventConsumerScope $scope): iterable
+    private function actionInventory(EventConsumerScope $scope, CheckContext $ctx): iterable
     {
-        // The second clause PRESERVES this caveat's existing reach and adjudicates nothing
-        // (card#5698): before the tri-state, a classifier whose declaration threw was IN
-        // `undeclared` and already triggered this line, so testing only `undeclared` here
-        // would silently delete a caveat that used to print. It is a SEPARATE clause
-        // rather than a widened trigger for the first because the two causes are different
-        // things to fix, and reusing the word "undeclared" for a throw would re-mint the
-        // class's own defect at the caveat. Whether an `ok` finding may carry a
-        // could-not-measure disclosure at all is the 41-fail / 32-ok severity audit the
-        // card reserves as its own item, and it must not be shipped one site at a time.
+        // THE TWO CAVEATS SPLIT THE FINDING'S SEVERITY, because they are different KINDS
+        // of doubt (DL-259 settled this; the rule is corollary (A) in `Severity`, which
+        // owns it — do not re-argue it here).
+        //
+        // `undeclared` is world-ambiguity: the instanceof was MEASURED, and what it
+        // implies about consumption is what stays open. The inventory is a real
+        // measurement, so it keeps its `ok` and carries the disclosure.
+        //
+        // `unreadable` is measurement-ambiguity: the classifier WAS asked and the
+        // derivation threw, so this run never learned what it consumes and the inventory
+        // it computed may list actions that ARE consumed. A green line disclosing that it
+        // could not look is the shape the vocabulary exists to prevent, so the whole
+        // finding drops to `unvalidated` — which is NOT the action-level alarm this leg
+        // refuses to raise (card#4354): `unvalidated` renders plain, never yellow, and
+        // never touches the exit. The INFO ruling is about `warn`, and is untouched.
+        // BOTH SHORTENERS OF THE CONSUMER LIST REACH THIS LINE, and fixing only one would
+        // leave the site still asserting past its evidence. `unlistedActions()` reads
+        // `consumed` / `bare` / `qualified`, all unioned across the scope's consumers, so a
+        // declaration this run never obtained — whether because the AGENT was never read
+        // (DL-255) or because the classifier was asked and THREW (DL-257) — can make an
+        // action look unlisted when it is declared, and a bare declaration would have
+        // removed the whole type from this inventory.
+        $unmeasured = $ctx->agentScopeCoverage->mayCover($scope->scope) || $scope->unreadable !== [];
         $caveat = ($scope->undeclared !== [] ? ' An undeclared classifier on this scope may consume some of these (possible false inventory).' : '')
-            .($scope->unreadable !== [] ? ' A classifier on this scope did not answer what it consumes, and may consume some of these (possible false inventory).' : '');
+            .($scope->unreadable !== [] ? ' A classifier on this scope did not answer what it consumes, so this inventory could not be stood behind (it may list actions that ARE consumed).' : '')
+            .($ctx->agentScopeCoverage->mayCover($scope->scope) ? ' An agent this run never finished reading may declare some of these, so this inventory could not be stood behind (it may list actions that ARE consumed).' : '');
 
         foreach ($scope->unlistedActions() as $top => $unlisted) {
             $detail = implode(', ', array_map(
@@ -182,7 +197,9 @@ final class EventFollowsConsumerCheck implements Check
                 array_values($unlisted),
             ));
 
-            yield Finding::ok("event-consumer: github:{$scope->scope} '{$top}' actions observed but not action-declared by any family: {$detail} — arrived-and-dropped at the action level (informational; the type itself is consumed).{$caveat}");
+            $message = "event-consumer: github:{$scope->scope} '{$top}' actions observed but not action-declared by any family: {$detail} — arrived-and-dropped at the action level (informational; the type itself is consumed).{$caveat}";
+
+            yield $unmeasured ? Finding::unvalidated($message) : Finding::ok($message);
         }
     }
 

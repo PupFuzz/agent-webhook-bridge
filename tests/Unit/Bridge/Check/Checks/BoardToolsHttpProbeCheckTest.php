@@ -196,8 +196,17 @@ class BoardToolsHttpProbeCheckTest extends TestCase
 
         $findings = $this->findingsFor([$this->httpAgent('prod-agent', $this->dir.'/absent')]);
 
+        // STAYS `fail` (DL-259, card#5698): the operator asked for certification with
+        // --probe-tools and this probe presented no bearer, which is certain in both
+        // worlds. Only the CLAIM changed — `is_file()` is false for EACCES exactly as for
+        // ENOENT, so it may no longer name absence as the sole cause and send the operator
+        // to re-mint a token that is already there.
         $this->assertSame(Severity::Fail, $findings[0]->severity);
-        $this->assertStringContainsString("no bearer at {$this->dir}/absent — run bridge:provision-tools; cannot certify this agent.", $findings[0]->message);
+        $this->assertStringContainsString("no usable bearer at {$this->dir}/absent", $findings[0]->message);
+        $this->assertStringContainsString('denies this process traversal', $findings[0]->message);
+        // The old single-cause claim, pinned as an ABSENCE: asserting only the new
+        // sentence would stay green if the fix appended it alongside the wrong one.
+        $this->assertStringNotContainsString("no bearer at {$this->dir}/absent — run bridge:provision-tools", $findings[0]->message);
         Http::assertNothingSent();
     }
 

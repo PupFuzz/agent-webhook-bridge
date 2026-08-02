@@ -67,17 +67,55 @@ namespace App\Bridge\Support;
  *     is a request the operator declined to make; a leg that runs unconditionally and
  *     cannot read the file it needs is a CAPABILITY THE PROCESS LACKS, which is limb 2.
  *
+ * ── THE `fail` / `ok` POPULATIONS, AUDITED (DL-259, card#5698) ──
+ *
+ * The paragraph below used to close by saying those two populations had never been
+ * audited against this rule. They have been now, and the rule needed no amendment to
+ * decide them — it needed two COROLLARIES spelled out, because both were being answered
+ * ad hoc in local prose at the sites, in two directions.
+ *
+ * **(A) AN `ok` MAY DISCLOSE AMBIGUITY, BUT NOT ITS OWN BLINDNESS.** `Ok` means measured
+ * and clean, so what a green line may add depends on WHICH kind of doubt it is
+ * disclosing — the same distinction the "world-ambiguity is not measurement-ambiguity"
+ * clause below draws, applied to a finding that has already concluded:
+ *   - the doubt is about what the measured fact IMPLIES (a classifier that declares
+ *     nothing MIGHT still consume the event) ⇒ the measurement happened, so `ok` keeps
+ *     the finding and carries the disclosure;
+ *   - the doubt is about whether the measurement HAPPENED (a classifier that was asked
+ *     and threw) ⇒ limb (a), and the whole finding is `unvalidated`. A green line that
+ *     says "…and I may be wrong because I could not look" is the exact shape this
+ *     vocabulary exists to make unrepresentable.
+ * A disclosure is therefore split by its CAUSE, never by its presence.
+ *
+ * **(B) A VACUOUS QUESTION IS SILENT WHEN ITS EMPTINESS IS THE OPERATOR'S OWN CONFIG,
+ * AND `ok` WHEN ONLY THIS RUN COULD ESTABLISH IT.** Two sibling legs answered this
+ * oppositely and both were right; the discriminator was never written down, so each
+ * argued a general principle contradicting the other's. It is: who else holds the fact?
+ *   - `WritebackBoardStateCheck`'s mapped-stage-ids leg falls SILENT when the mapping
+ *     targets no stage. The empty set is the operator's own `writeback.json`, which they
+ *     can read; a line adds nothing and both available claims would be false.
+ *   - `WritebackSourceCoverageCheck` emits `ok` when it read the board and found nothing
+ *     to flag. "This board holds no offending card" is a fact ONLY the read establishes,
+ *     and the `ok` is the witness that the read happened — which is load-bearing here
+ *     precisely because the empty READ next to it is `unvalidated` (DL-258).
+ * So silence and `ok` are not competing styles: an empty COMPARAND from config is limb 1
+ * with nothing to say, while a completed measurement over an empty RESULT is a green
+ * fact the operator cannot otherwise obtain.
+ *
  * ⚠ WHAT THE RULE DOES NOT BUY, because the disclosure narrows rather than dies: it is
  * keyed on what a leg CONCLUDED, so it can only make DISCLOSED blindness precise. A leg
  * that fails to NOTICE it did not measure something is outside the rule entirely, and it
  * is not necessarily silent — it may say nothing, or it may report the conclusion it
  * would have drawn had the measurement happened. Both shapes are live:
  * `ReconcileRepoTokensCheck`'s unreachable-GitHub arm said nothing until DL-251 split it
- * from `Ok`, and `EventFollowsConsumerCheck`'s undeclared-classifier advisory `warn`s off
- * a swallowed throw where the classifier was never asked at all (card#5698 owns that
- * class; DL-251 did not touch it). The `fail` and `ok` populations were not audited
- * against this rule when it was written (DL-251) — it settles the `warn` ↔ `unvalidated`
- * boundary and only that.
+ * from `Ok`. The second example this paragraph used to give — `EventFollowsConsumerCheck`
+ * advising off a swallowed throw where the classifier was never asked — is NO LONGER
+ * LIVE: DL-257 gave that derivation a third state, so the throw is now representable
+ * rather than collapsed into "declares nothing" (card#5698 owns the class).
+ *
+ * DL-251 settled the `warn` ↔ `unvalidated` boundary and only that. The `fail` and `ok`
+ * populations were swept against it afterwards, under corollaries (A) and (B) above
+ * (DL-259).
  */
 enum Severity: string
 {

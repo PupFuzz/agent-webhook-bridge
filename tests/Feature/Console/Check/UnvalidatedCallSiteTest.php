@@ -90,8 +90,13 @@ class UnvalidatedCallSiteTest extends TestCase
         // sites across six files — see the bound above on what that centralization costs
         // this pin, and `PathVisibilityAdoptionTest` for the set itself.
         'app/Bridge/Support/PathVisibility.php' => 1,
-        // The pinned-line legs that read a possibly-relocated authorized_keys (DL-251 (a)/(b)).
-        'app/Bridge/Tools/SshTransportProbe.php' => 2,
+        // The pinned-line legs that read a possibly-relocated authorized_keys (DL-251 (a)/(b)),
+        // plus the DL-259 account-lookup site: a host with no `posix_getpwnam` never
+        // consulted the account database at all, so "no such account" is not a conclusion
+        // available to it — limb (a), a measurement that did not happen. Its SIBLING arm
+        // (the database answered, and has no such account) is NOT here and must not be: it
+        // stays `fail`, because that is a measured config fault.
+        'app/Bridge/Tools/SshTransportProbe.php' => 3,
         // The command's own fail-soft envelope around the writeback board probe.
         'app/Console/Commands/Bridge/CheckCommand.php' => 1,
         // The event-consumer reconciliation could not be computed (DL-236), plus TWO
@@ -100,7 +105,13 @@ class UnvalidatedCallSiteTest extends TestCase
         // `DeclaresConsumedEvents` and threw when asked (DL-257). Both withhold the
         // dropped-arrival verdict; neither can make an EMPTY unconsumed wrong, which is
         // why the third site is not a fourth.
-        'app/Bridge/Check/Checks/EventFollowsConsumerCheck.php' => 3,
+        // The FOURTH is the action inventory (DL-259) — converted from `Finding::ok`, the
+        // second such site in this list after the source-coverage leg above (DL-258): an
+        // unreadable declaration means the inventory may list actions that ARE consumed,
+        // and a green line disclosing its own blindness is what corollary (A) forbids. Its
+        // control is the `undeclared` caveat on the SAME line, which keeps its `ok` — that
+        // doubt is about what a measured `instanceof` implies, not about whether it ran.
+        'app/Bridge/Check/Checks/EventFollowsConsumerCheck.php' => 4,
         // The cross-config compares whose comparand did not resolve (DL-251 (c)), plus the
         // card#5698 legs below. THE THREE NEW SITES ARE ONE SHAPE, NOT THREE DECISIONS:
         // each reads a `CheckContext` scope map that an aborted agent never reached, so its
@@ -140,6 +151,14 @@ class UnvalidatedCallSiteTest extends TestCase
         // The repo probe could not reach GitHub, so the token was never validated — the
         // THIRD silent leg, and the one no warn-keyed sweep could have surfaced.
         'app/Bridge/Check/Checks/ReconcileRepoTokensCheck.php' => 1,
+        // DL-259: the optional shared-identities.json was PRESENT and could not be read, so
+        // how many accounts it declares was never measured. The loader is fail-soft by
+        // design (its other caller is the runtime, which must not 5xx over a bad optional
+        // file), so it answers `[]` for that exactly as for a file declaring none — and
+        // this leg used to spend that as a green `0 shared account(s)`. The MALFORMED case
+        // is deliberately NOT here: those bytes were read, so it is a measured fault and
+        // reports `warn`.
+        'app/Bridge/Check/Checks/SharedIdentitiesCheck.php' => 1,
     ];
 
     public function test_the_unvalidated_construction_sites_are_exactly_these(): void

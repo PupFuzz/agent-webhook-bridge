@@ -48,7 +48,7 @@ final class GoldenSshEnvironment implements SshProbeEnvironment
         return '/home/bridge';
     }
 
-    public function homeForUser(string $user): string
+    public function homeForUser(string $user): ?string
     {
         return "/home/{$user}";
     }

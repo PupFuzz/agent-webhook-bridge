@@ -225,7 +225,7 @@ class BridgeCommandsTest extends TestCase
                 return '/home/bridge';
             }
 
-            public function homeForUser(string $user): string
+            public function homeForUser(string $user): ?string
             {
                 return "/home/{$user}";
             }

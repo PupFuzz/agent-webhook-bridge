@@ -78,6 +78,49 @@ class SharedIdentitiesCheckTest extends TestCase
         $this->assertSame('shared-identities.json: 0 shared account(s)', $findings[0]->message);
     }
 
+    /**
+     * DL-259 (card#5698): the three states `loadSharedIdentities()` answers `[]` for are
+     * not one state. Malformed JSON is MEASURED — the bytes were read and they are not an
+     * object — and it is a real fault: the loader ignores the file, so every agent sharing
+     * an account loses attribution silently. It used to render GREEN at `0 shared
+     * account(s)`, identical to a file that genuinely declares none.
+     */
+    public function test_a_file_that_is_not_a_json_object_warns_instead_of_certifying_zero(): void
+    {
+        File::put($this->dir.'/shared-identities.json', 'not json at all {');
+
+        $findings = $this->findings();
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertStringContainsString('is not a valid JSON object', $findings[0]->message);
+        // The count must not appear: nothing was counted.
+        $this->assertStringNotContainsString('shared account(s)', $findings[0]->message);
+    }
+
+    /**
+     * DL-259: the could-not-READ state. Distinct from the malformed one above — nothing
+     * was measured at all, so this is `unvalidated` and not a verdict about the file's
+     * contents. A green "0 shared account(s)" here was the class's exact shape: a definite
+     * fact asserted on evidence that cannot tell absence from this run's own blindness.
+     */
+    public function test_a_present_but_unreadable_file_is_unvalidated_not_a_green_zero(): void
+    {
+        $path = $this->dir.'/shared-identities.json';
+        File::put($path, (string) json_encode(['shared_identities' => []]));
+        chmod($path, 0o000);
+        if (@file_get_contents($path) !== false) {
+            $this->markTestSkipped('this process can read a 0000 file (running as root) — the unreadable state is unreachable here');
+        }
+
+        $findings = $this->findings();
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('could NOT be read', $findings[0]->message);
+        $this->assertStringNotContainsString('shared account(s)', $findings[0]->message);
+    }
+
     /** The file is optional; absence is the common install and must stay silent. */
     public function test_it_is_silent_when_the_file_is_absent(): void
     {
