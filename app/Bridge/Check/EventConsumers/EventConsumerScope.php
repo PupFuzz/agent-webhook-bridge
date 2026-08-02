@@ -41,6 +41,7 @@ final class EventConsumerScope
      * @param  list<string>  $bare  the subset of {@see $consumed} some consumer declared WITHOUT an action
      * @param  array<string, list<string>>  $qualified  top-level ⇒ the actions declared for it, unioned
      * @param  list<array{agent: string, class: string}>  $undeclared  enabled classifiers that do not implement `DeclaresConsumedEvents`
+     * @param  list<array{agent: string, class: string}>  $unreadable  enabled classifiers that DO implement it and whose declaration threw when asked (card#5698) — disjoint from {@see $undeclared}, and NOT a subset of it: an entry here contributes no `consumed` while nothing may claim it declares none
      * @param  list<string>  $agents  the agents subscribed to this scope, deduplicated
      */
     public function __construct(
@@ -51,6 +52,7 @@ final class EventConsumerScope
         public readonly array $bare,
         public readonly array $qualified,
         public readonly array $undeclared,
+        public readonly array $unreadable,
         public readonly array $agents,
     ) {}
 

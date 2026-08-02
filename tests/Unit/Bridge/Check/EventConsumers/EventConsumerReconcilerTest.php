@@ -103,6 +103,32 @@ class EventConsumerReconcilerTest extends TestCase
             [['agent' => 'wb', 'class' => 'App\Bridge\Classifiers\Custom']],
             $result->scopes[0]->undeclared,
         );
+        $this->assertSame([], $result->scopes[0]->unreadable);
+    }
+
+    public function test_a_declaration_that_could_not_be_read_is_its_own_bucket_and_never_undeclared(): void
+    {
+        // card#5698. `declared` is TRI-state and `! $declared` is true for both `false`
+        // and `null` — the identity that put a classifier which THREW into the same bucket
+        // as one that does not implement the interface, so the check then said it "does
+        // not declare its consumed events" about a classifier that does.
+        //
+        // BOTH SIDES ARE ASSERTED, and the `false` row is the discriminating control: an
+        // implementation that routed everything to `unreadable` would satisfy the first
+        // assertion alone.
+        $result = $this->reconcile([
+            $this->consumer('wb', consumed: [], declared: null),
+            $this->consumer('legacy', consumed: [], declared: false),
+        ]);
+
+        $this->assertSame(
+            [['agent' => 'wb', 'class' => 'App\Bridge\Classifiers\Custom']],
+            $result->scopes[0]->unreadable,
+        );
+        $this->assertSame(
+            [['agent' => 'legacy', 'class' => 'App\Bridge\Classifiers\Custom']],
+            $result->scopes[0]->undeclared,
+        );
     }
 
     public function test_unconsumed_is_the_warn_population_as_data(): void
@@ -156,7 +182,7 @@ class EventConsumerReconcilerTest extends TestCase
     }
 
     /**
-     * @param  list<array{agent: string, class: string, consumed: list<string>, declared: bool}>  $consumers
+     * @param  list<array{agent: string, class: string, consumed: list<string>, declared: ?bool}>  $consumers
      */
     private function reconcile(array $consumers): EventConsumerReconciliation
     {
@@ -165,9 +191,9 @@ class EventConsumerReconcilerTest extends TestCase
 
     /**
      * @param  list<string>  $consumed
-     * @return array{agent: string, class: string, consumed: list<string>, declared: bool}
+     * @return array{agent: string, class: string, consumed: list<string>, declared: ?bool}
      */
-    private function consumer(string $agent, array $consumed, bool $declared = true): array
+    private function consumer(string $agent, array $consumed, ?bool $declared = true): array
     {
         return [
             'agent' => $agent,

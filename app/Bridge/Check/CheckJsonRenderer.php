@@ -261,6 +261,12 @@ final class CheckJsonRenderer
             'bare' => $scope->bare,
             'qualified' => (object) $scope->qualified,
             'undeclared' => $scope->undeclared,
+            // SEPARATE FROM `undeclared`, NEVER FOLDED INTO IT (card#5698): these
+            // classifiers DO declare, and this run could not read what. A consumer that
+            // unions the two is back to the conflation the field exists to remove — and
+            // like `agent_scope_coverage.complete`, a non-empty `unreadable` is a bound on
+            // `unconsumed`, which can only be over-inclusive while it is non-empty.
+            'unreadable' => $scope->unreadable,
             // DERIVED, and emitted rather than left to the consumer: these two ARE what
             // the WARN and INFO lines say, and the whole point of the surface is that a
             // consumer never re-implements the projection rule to get them. Both come

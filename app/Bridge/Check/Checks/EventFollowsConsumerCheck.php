@@ -38,6 +38,17 @@ use App\Bridge\Support\Finding;
  * FAILED is `unvalidated`, not green: the advisory did not run, and card#5170 is the
  * ruling that a check which did not run is never reported as one that passed.
  *
+ * TWO INDEPENDENT REASONS THE CONSUMER LIST CAN BE SHORT, and each gets its own arm
+ * because each has its own fix: an agent the run never finished READING
+ * ({@see CheckContext::$agentScopeCoverage}, DL-255) and a classifier that implements
+ * `DeclaresConsumedEvents` and THREW when asked ({@see EventConsumerScope::$unreadable},
+ * DL-257). Both short-change `consumed` in the same direction, so both downgrade the
+ * unconsumed verdict to `unvalidated` rather than warning; neither can make an EMPTY
+ * `unconsumed` wrong, which is why that case stays silent under both. BOTH ARMS SUPPRESS
+ * {@see self::undeclaredDisclosure()}, and that is inherited rather than chosen: it exists
+ * to qualify the unconsumed WARNINGS by name, and neither arm emits any — the undeclared
+ * set is still carried on the JSON surface for a consumer that wants it.
+ *
  * TWO BOUNDS ON THE card#5698 COVERAGE DISCLOSURE BELOW, both deliberate and neither
  * closed by it:
  *  - **The action inventory is NOT gated on coverage.** An unread consumer can shrink
@@ -105,6 +116,21 @@ final class EventFollowsConsumerCheck implements Check
                 continue;
             }
 
+            // card#5698, the same treatment one arm up for the same reason. An agent whose
+            // classifier implements the interface but threw when asked contributes no
+            // `consumed`, so every type it covers surfaces here — and the run cannot tell
+            // that from a type nothing consumes. The asymmetry that bounds this to the
+            // warn path is the one above's: an unread declaration can only ADD to
+            // `consumed`, so the empty `unconsumed` handled earlier stays empty under it
+            // and needs no disclosure.
+            if ($scope->unreadable !== []) {
+                yield from $this->unreadableDisclosure($scope);
+
+                yield Finding::unvalidated("event-consumer: github:{$scope->scope} has received '".implode("', '", $unconsumed)."' with no consumer among the declarations this run could read, but the classifier(s) named above could consume them, so whether these arrivals are being silently dropped could not be determined. Fix the classifier error(s) and re-run.");
+
+                continue;
+            }
+
             yield from $this->undeclaredDisclosure($scope);
 
             $subscribed = implode(', ', $scope->agents);
@@ -137,7 +163,17 @@ final class EventFollowsConsumerCheck implements Check
      */
     private function actionInventory(EventConsumerScope $scope): iterable
     {
-        $caveat = $scope->undeclared !== [] ? ' An undeclared classifier on this scope may consume some of these (possible false inventory).' : '';
+        // The second clause PRESERVES this caveat's existing reach and adjudicates nothing
+        // (card#5698): before the tri-state, a classifier whose declaration threw was IN
+        // `undeclared` and already triggered this line, so testing only `undeclared` here
+        // would silently delete a caveat that used to print. It is a SEPARATE clause
+        // rather than a widened trigger for the first because the two causes are different
+        // things to fix, and reusing the word "undeclared" for a throw would re-mint the
+        // class's own defect at the caveat. Whether an `ok` finding may carry a
+        // could-not-measure disclosure at all is the 41-fail / 32-ok severity audit the
+        // card reserves as its own item, and it must not be shipped one site at a time.
+        $caveat = ($scope->undeclared !== [] ? ' An undeclared classifier on this scope may consume some of these (possible false inventory).' : '')
+            .($scope->unreadable !== [] ? ' A classifier on this scope did not answer what it consumes, and may consume some of these (possible false inventory).' : '');
 
         foreach ($scope->unlistedActions() as $top => $unlisted) {
             $detail = implode(', ', array_map(
@@ -164,6 +200,26 @@ final class EventFollowsConsumerCheck implements Check
             $desc = $u['class'].' (agent '.$u['agent'].')';
 
             yield Finding::warn("event-consumer: scope github:{$scope->scope} has an enabled classifier {$desc} that does not declare its consumed events (App\\Bridge\\Contracts\\DeclaresConsumedEvents) — the following unconsumed-event WARNING(s) MAY be a false positive if that classifier actually consumes them");
+        }
+    }
+
+    /**
+     * The truthful counterpart of {@see self::undeclaredDisclosure()} for a classifier
+     * that DOES implement the interface and threw when asked (card#5698).
+     *
+     * IT IS A `warn` AND NOT AN `unvalidated`, which is the distinction the whole card
+     * turns on: *the declaration could not be read* is a MEASURED fact — the run caught the
+     * throw — and it is the operator's actual defect to fix. What could not be measured is
+     * the consequence, and that is what the `unvalidated` line above it carries.
+     *
+     * @return iterable<Finding>
+     */
+    private function unreadableDisclosure(EventConsumerScope $scope): iterable
+    {
+        foreach ($scope->unreadable as $u) {
+            $desc = $u['class'].' (agent '.$u['agent'].')';
+
+            yield Finding::warn("event-consumer: scope github:{$scope->scope} has an enabled classifier {$desc} that implements App\\Bridge\\Contracts\\DeclaresConsumedEvents but threw when asked which events it consumes — its declarations are missing from this run, so nothing below can say whether an arriving event is unconsumed. consumedEventTypes() must be a pure \$cfg → event-types map (no I/O, no lazy loading); fix it and re-run.");
         }
     }
 }

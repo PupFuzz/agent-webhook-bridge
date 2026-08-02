@@ -94,9 +94,13 @@ class UnvalidatedCallSiteTest extends TestCase
         'app/Bridge/Tools/SshTransportProbe.php' => 2,
         // The command's own fail-soft envelope around the writeback board probe.
         'app/Console/Commands/Bridge/CheckCommand.php' => 1,
-        // The event-consumer reconciliation could not be computed (DL-236), plus the
-        // card#5698 leg whose consumer list is short because an agent was never read.
-        'app/Bridge/Check/Checks/EventFollowsConsumerCheck.php' => 2,
+        // The event-consumer reconciliation could not be computed (DL-236), plus TWO
+        // card#5698 legs whose consumer list is short for two different causes: an agent
+        // this run never read (DL-255), and a classifier that implements
+        // `DeclaresConsumedEvents` and threw when asked (DL-257). Both withhold the
+        // dropped-arrival verdict; neither can make an EMPTY unconsumed wrong, which is
+        // why the third site is not a fourth.
+        'app/Bridge/Check/Checks/EventFollowsConsumerCheck.php' => 3,
         // The cross-config compares whose comparand did not resolve (DL-251 (c)), plus the
         // card#5698 legs below. THE THREE NEW SITES ARE ONE SHAPE, NOT THREE DECISIONS:
         // each reads a `CheckContext` scope map that an aborted agent never reached, so its

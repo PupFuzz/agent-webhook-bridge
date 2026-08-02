@@ -89,7 +89,11 @@ final class CheckContext
      * AND EVEN THEN IT MAY BE SHORT: an aborted agent contributes nothing here, so consult
      * {@see self::$agentScopeCoverage} before reading an absence as an answer.
      *
-     * @var array<string, list<array{agent: string, class: string, consumed: list<string>, declared: bool}>>
+     * `declared` IS TRI-STATE: true = declares, false = does not implement the interface,
+     * NULL = implements it but the declaration could not be read (card#5698). `null` is
+     * never a synonym for `false` here — see `CheckCommand`'s producing comment.
+     *
+     * @var array<string, list<array{agent: string, class: string, consumed: list<string>, declared: ?bool}>>
      */
     public array $githubScopeConsumers = [];
 

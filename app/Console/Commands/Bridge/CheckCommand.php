@@ -249,11 +249,20 @@ class CheckCommand extends BridgeCommand
                 // consumedEventTypes() call is on the instance for() already resolved
                 // in-process (in AgentClassifierResolvableCheck, after its probeLoadable
                 // passed — a cache hit here, never a fresh load), wrapped in
-                // catch(Throwable) → an undeclared/failing classifier contributes
-                // nothing to `consumed` (conservative — at worst a false WARN, never a
-                // false clean). A classifier NOT implementing the interface is recorded
-                // as `declared:false` so the check can disambiguate a possible false
-                // positive (sola's #22 note).
+                // catch(Throwable) → a classifier whose declaration could not be read
+                // contributes nothing to `consumed` (conservative — at worst a false WARN,
+                // never a false clean). A classifier NOT implementing the interface is
+                // recorded as `declared:false` so the check can disambiguate a possible
+                // false positive (sola's #22 note).
+                //
+                // `declared` IS TRI-STATE, and `null` is the throw path (card#5698,
+                // DL-257): the catch used to write `false`, turning *"it implements the
+                // interface but we could not ask it"* into *"it does not declare"* — a
+                // definite claim on evidence that cannot tell the two apart. `consumed`
+                // is still empty either way; what changes is that nothing downstream may
+                // now assert the classifier declares nothing. Third state over a bool for
+                // the same reason as AgentScopeCoverage's null scopes (DL-255) and
+                // KanbanClient::idList()'s null (DL-256).
                 $declares = ClassifierResolver::probeImplements($cfg->classifierClass, DeclaresConsumedEvents::class);
                 $consumed = [];
                 if ($declares) {
@@ -262,9 +271,11 @@ class CheckCommand extends BridgeCommand
                         $consumed = $instance instanceof DeclaresConsumedEvents
                             ? $instance->consumedEventTypes($cfg->classifierConfig)
                             : [];
+                        // Not the throw path: an instance that is not the probed interface
+                        // is a measured in-process fact, and stays `false`.
                         $declares = $instance instanceof DeclaresConsumedEvents;
                     } catch (Throwable) {
-                        $declares = false;   // treat as undeclared (conservative)
+                        $declares = null;
                         $consumed = [];
                     }
                 }
