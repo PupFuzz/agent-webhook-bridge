@@ -275,7 +275,7 @@ next stage starts.
 |---|---|---|---|
 | **0 ✅** | Golden-output harness + `Check`/`PerAgentCheck`/`CheckContext`/`CheckRunner` scaffolding. Registry empty; nothing migrated. | **None** | no |
 | **1 ✅** | Migrate the two already-`Finding`-shaped probes — **3** of the 4 existing `emitFinding` call sites (the 4th is not a probe; see below). First wiring of `CheckRunner` into `handle()`. | **None** | no |
-| **2 ✅** | Migrate the `retention` cluster into `RetentionPostureCheck` at a new `CheckSlot::Retention`. `receiverSapiFinishesEarly()` moves with it (single caller). | **None** | no |
+| **2 ✅** | Migrate the `retention` cluster into `RetentionPostureCheck` at a new `CheckSlot::Retention`. `earlyFinishIndicated()` moves with it (single caller). | **None** | no |
 | **3a ✅** | Migrate the writeback **config plane** — the six units needing no board read — into `CheckSlot::Writeback`. The cluster splits because its probe half needs a constructed `KanbanClient`; see the stage 3a result. | **None** | no |
 | **3b ✅** | Migrate the writeback **probe plane** (the legs that read the board) into `CheckSlot::WritebackProbe`. Inherited the throw constraint recorded in the stage 3a result; see the stage 3b result. | **None** | no |
 | **4 ✅** | Migrate the `database`/`install-suffix` cluster into `CheckSlot::Database`. Two checks, and the first cluster that is pure assertion — no `CheckContext` field added or read; see the stage 4 result. | **None** | no |
@@ -394,8 +394,11 @@ stage 1 would have merged two stages. It stays inline, now calling the one-argum
 ### Stage 2 result — the first cluster where a plain green run WAS the proof
 
 **What migrated:** the retention posture leg (DL-199) into `RetentionPostureCheck` at a new
-`CheckSlot::Retention`, at the ordinal position the inline code held. `receiverSapiFinishesEarly()`
+`CheckSlot::Retention`, at the ordinal position the inline code held. `earlyFinishIndicated()`
 moved with it — that private method had exactly one caller. `CheckCommand::handle()` lost ~66 lines.
+(That method was named `receiverSapiFinishesEarly()` until DL-261, which renamed it because the name
+asserted an answer it has never produced. Every mention of it in this doc — including the mutation
+lists below — uses the current name; the predicate itself is unchanged by the rename.)
 
 **No stash-and-recapture was needed, and that is a property of this cluster, not a shortcut.** Stage
 1 had to capture fixtures from pre-refactor code because none existed. Here the four retention
@@ -404,7 +407,7 @@ refactor existed**, so a plain green run *is* the byte-identity measurement: **3
 green with `UPDATE_GOLDEN` unset.** The assertion count is the load-bearing half — a regenerating run
 drops to 46, so **79 means asserted; 46 would mean nothing was checked.** Six deliberate mutations
 each red the suite: registration removed, `enabled` inverted, `isUsable()` inverted,
-`receiverSapiFinishesEarly()` inverted, `is_array($lastError)` inverted, and one space dropped from
+`earlyFinishIndicated()` inverted, `is_array($lastError)` inverted, and one space dropped from
 the `retention: on (` message. **⚠ The `is_array($lastError)` arm evidences less than it reads as —
 no fixture reached the marker-present branch until DL-247. See § Disproved claims, claim 8; do not
 restate this list without it.**
@@ -419,7 +422,7 @@ control (reachable backend, no marker ⇒ the line is absent); both directions a
 same double blind spot.
 
 **Coverage-table effect.** The predicate total goes **100 → 97**, and the arithmetic is *not* a plain
-subtraction: the four retention predicates (`enabled`, `isUsable()`, `receiverSapiFinishesEarly()`,
+subtraction: the four retention predicates (`enabled`, `isUsable()`, `earlyFinishIndicated()`,
 `is_array($lastError)`) leave `handle()`, and the one-line `if (! $this->emitReport(...))` guard that
 replaces them **adds one back** — 100 − 4 + 1 = 97. Every migrated cluster will net −(n−1), not −n,
 for the same reason. The gap ids also renumber; that restaling is what `card#5475` exists to fix —
@@ -1099,7 +1102,7 @@ of this very stage — so migrating them meant either one shared primitive or tw
 permission verdict. It became `DirectoryPermissions::warnIfInsecure()`, returning `?Finding` rather
 than yielding, because each caller decides where the warn sits in ITS output: the config-dir check
 emits it straight after its own ok line; the secret-dir check emits it only on a split layout. This
-is the single-caller-set move stage 2 made with `receiverSapiFinishesEarly()`, one stage later than
+is the single-caller-set move stage 2 made with `earlyFinishIndicated()`, one stage later than
 that rule's threshold and exactly at it.
 
 **No `CheckContext` field was added — the second pure-assertion stage after stage 4.** Every value

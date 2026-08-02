@@ -145,7 +145,20 @@ class UnvalidatedCallSiteTest extends TestCase
         // bounds, not another failed-read disclosure.
         'app/Bridge/Check/Checks/WritebackSourceCoverageCheck.php' => 3,
         'app/Bridge/Check/Checks/WritebackByRefCheck.php' => 1,
-        'app/Bridge/Check/Checks/RetentionPostureCheck.php' => 1,
+        // TWO legs, and the second is card#5698 sub-shape (3) / DL-261. (1) the fail-soft
+        // catch around the last-failure marker read — a cache backend that threw. (2) the
+        // early-finish leg: it used to assert "this PHP install has no
+        // fastcgi_finish_request()" off `ExecutableFinder`, which only asks whether a
+        // php-fpm binary is findable on the PATH THIS process sees. The receiver's SAPI is
+        // the subject and `bridge:check` is a console command, so that is limb (b), a
+        // measurement of the wrong subject — the same discriminator as
+        // `ChannelTokenPathCheck` below. Measured, not reasoned: the reference host keeps
+        // php-fpm in /usr/sbin and serves the receiver under FPM, and a login shell whose
+        // PATH omits /usr/sbin produced the old definite claim on it.
+        //   The SIBLING state — a binary WAS found — is deliberately not a second site and
+        // not an `ok`: finding it does not establish the receiver's SAPI either, so the
+        // leg stays silent there rather than minting a green line corollary (A) forbids.
+        'app/Bridge/Check/Checks/RetentionPostureCheck.php' => 2,
         'app/Bridge/Check/Checks/BoardToolsBoardStateCheck.php' => 3,
         'app/Bridge/Check/Checks/ChannelTransportCheck.php' => 1,
         // The repo probe could not reach GitHub, so the token was never validated — the

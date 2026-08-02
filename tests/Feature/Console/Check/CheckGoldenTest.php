@@ -79,7 +79,7 @@ class CheckGoldenTest extends TestCase
             case 'minimal-fpm-present':
                 // Identical fixture, opposite host. The ONLY difference from `minimal`
                 // is whether a php-fpm binary is on PATH (read by
-                // `RetentionPostureCheck::receiverSapiFinishesEarly()`), which is
+                // `RetentionPostureCheck::earlyFinishIndicated()`), which is
                 // reached on the default retention-on path — so it moves nearly every
                 // install's output. This pair is the potency proof for that pin.
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
@@ -958,10 +958,20 @@ class CheckGoldenTest extends TestCase
         // Potency for pin #1. This is the input the stage-0 NAMED GAP was about —
         // whether CI's runner has php-fpm was unverified, and it is reached on the
         // default path. Pinning removes the question; this asserts the pin has teeth.
+        //   The asserted text moved with DL-261: the leg no longer concludes that the
+        // install lacks `fastcgi_finish_request()` — a PATH miss in a console process is
+        // no evidence about the receiver — so it discloses that it could not measure.
+        // What this test needs is unchanged either way: a string the pin's two values
+        // put on opposite sides.
         $absent = $this->goldenFor('minimal');
         $present = $this->goldenFor('minimal-fpm-present');
 
-        $this->assertStringContainsString('no fastcgi_finish_request()', $absent);
+        $this->assertStringContainsString('could NOT determine whether the receiver ends the request early', $absent);
+        $this->assertStringNotContainsString('could NOT determine whether the receiver ends the request early', $present);
+
+        // The retired claim must not come back anywhere in the pair: this is the assertion
+        // that would have caught the old wording surviving a partial regen.
+        $this->assertStringNotContainsString('no fastcgi_finish_request()', $absent);
         $this->assertStringNotContainsString('no fastcgi_finish_request()', $present);
     }
 
