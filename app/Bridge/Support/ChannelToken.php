@@ -44,9 +44,12 @@ final class ChannelToken
     }
 
     /**
-     * Which of the first gate's three worlds we are in — asked ONCE, here, off the same
-     * stat that just failed, because a consumer re-deriving it later would be re-reading
-     * a file that can change underneath it (see {@see ChannelTokenFault}).
+     * Which of the first gate's three worlds we are in — asked HERE, immediately after the
+     * gate that failed, rather than by the consumer. It does re-query the path (`is_file`
+     * comes back off PHP's stat cache; `is_executable` does not), so the claim is adjacency,
+     * not a single syscall: there is no window a caller can act in between the two, whereas
+     * a consumer deriving this from the path later reads a file that has had one
+     * (see {@see ChannelTokenFault}).
      *
      * Order matters: traversability is asked FIRST because without it `is_file()` cannot
      * answer at all, and its `false` would read as an absence this process never

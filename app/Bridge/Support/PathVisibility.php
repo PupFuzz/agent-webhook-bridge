@@ -53,11 +53,16 @@ final class PathVisibility
      *
      *     yield PathVisibility::unverifiedUnlessVisible($p, "…") ?? Finding::warn("… absent …");
      *
-     * @param  string  $display  what to NAME in the message. Separate from $path
-     *                           because the traversal a caller must grant is on a
-     *                           DIRECTORY, while $path is often a child probe (an
-     *                           entry file, a token) — naming $path there sends the
-     *                           operator to chmod the wrong thing.
+     * @param  string  $display  what to NAME in the message: the subject the operator
+     *                           would recognize, which is NOT always $path. A leg that
+     *                           probes a child to ask about its container (the channel
+     *                           probe stats the entry file to ask about the deployed
+     *                           DIRECTORY) names the container; a leg whose subject IS
+     *                           the file (a secret, a token) names the file. Both shapes
+     *                           are live and both read correctly, because the message
+     *                           below supplies the cause and the remedy itself — it says
+     *                           a directory ABOVE denies traversal and asks for traversal,
+     *                           never for a chmod of whatever is named here.
      */
     public static function unverifiedUnlessVisible(string $path, string $display): ?Finding
     {
