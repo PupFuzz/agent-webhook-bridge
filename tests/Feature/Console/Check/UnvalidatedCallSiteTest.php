@@ -125,8 +125,14 @@ class UnvalidatedCallSiteTest extends TestCase
         // silently double-card. Only its message stopped over-claiming.
         'app/Bridge/Check/Checks/WritebackBoardStateCheck.php' => 10,
         'app/Bridge/Check/Checks/WritebackMappingConfigCheck.php' => 5,
-        // Board / cache / channel reads that did not complete (DL-251 (a)).
-        'app/Bridge/Check/Checks/WritebackSourceCoverageCheck.php' => 2,
+        // Board / cache / channel reads that did not complete (DL-251 (a)). The THIRD site on
+        // the source-coverage leg is card#5701 / DL-258 and is a different limb from its two
+        // neighbours: they are reads that FAILED (a throw, a page ceiling), while this one
+        // SUCCEEDED and returned nothing — 0 cards, which kanban answers identically for an
+        // empty board and for one this token's user cannot see. The leg had been reporting
+        // `ok` there, so it is the first `Finding::ok` site converted by the audit this class
+        // bounds, not another failed-read disclosure.
+        'app/Bridge/Check/Checks/WritebackSourceCoverageCheck.php' => 3,
         'app/Bridge/Check/Checks/WritebackByRefCheck.php' => 1,
         'app/Bridge/Check/Checks/RetentionPostureCheck.php' => 1,
         'app/Bridge/Check/Checks/BoardToolsBoardStateCheck.php' => 3,

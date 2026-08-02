@@ -22,9 +22,30 @@ use Throwable;
  * `kbcard --pr-url` + the on-ramp docs). On a NON-shared board the qualifier is omitted
  * (DL-174) so source=null is fine and not warned; a derived source naming a repo NOT mapped
  * to the board still warns everywhere (operator error). Per board (deduped across mappings).
- * The two legs that DID NOT ANSWER report `unvalidated` instead, not `warn` (DL-251): a
- * board read that threw, and a read that hit the page ceiling so the cards past it were
- * never examined.
+ * The three legs that DID NOT ANSWER report `unvalidated` instead, not `warn` (DL-251): a
+ * board read that threw, a read that hit the page ceiling so the cards past it were never
+ * examined, and a read that came back with NO CARDS AT ALL.
+ *
+ * WHY A 0-CARD READ WITHHOLDS THE ALL-CLEAR (DL-258, card#5701). The all-clear below is a
+ * definite claim about a population, and an empty read is not evidence about a population —
+ * kanban answers `200` with no rows identically for a genuinely empty board and for one
+ * whose cards the writeback token's user cannot see, so `flagged === 0` was reached by
+ * examining nothing. `Severity::Ok`'s own docblock states the invariant that made this a
+ * defect rather than untidiness: ok "MUST NEVER carry a not-measured finding". It also
+ * contradicted itself within one run, which was the tell — {@see WritebackBoardStateCheck}'s
+ * DL-029 probe already prints "token sees 0 cards … EITHER the board is empty … OR the
+ * token's user isn't a member" in the same output this leg was certifying green.
+ *
+ * NOTHING AVAILABLE HERE CAN DISAMBIGUATE IT, which is why the fix withholds rather than
+ * re-measures. `visibility()` reports `total === 0` for both worlds and says so itself;
+ * `byRefAvailable()` folds "board not accessible" together with "kanban predates by-ref" and
+ * probes only the FIRST mapped board. A second read would buy no discrimination.
+ *
+ * THIS IS NOT IN TENSION WITH DL-256, though the two rulings point opposite ways on the word
+ * "empty". There, an empty `data.swimlanes` was a REAL answer (measured present-and-empty on
+ * every production board) and only an ABSENT collection was could-not-see — the payload
+ * carried the distinction. Here it carries none: both worlds produce the same rows. Empty is
+ * an answer when the response can still say which empty it is.
  *
  * THE MODE GATE MOVED IN WITH THE LEG. Inline it sat on the caller as
  * `if (correlation === 'ref') { checkWritebackSourceCoverage(…) }`; a check owns the
@@ -96,6 +117,8 @@ final class WritebackSourceCoverageCheck implements Check
             }
             if ($read['truncated']) {
                 yield Finding::unvalidated("writeback: dl source-coverage check on board {$boardId} is INCOMPLETE — the board read hit the page ceiling; cards beyond it were not checked.");
+            } elseif ($read['cards'] === []) {
+                yield Finding::unvalidated("writeback: dl source-coverage on board {$boardId} is UNVERIFIED — the board read returned 0 cards, which kanban answers identically for an empty board and for one whose cards this token's user cannot see, so no card was examined and there is no all-clear to give. If you expect cards on that board, verify board_id and the token user's membership.");
             } elseif ($flagged === 0) {
                 yield Finding::ok("writeback: dl_number cards on board {$boardId} all have a mapped source (self-move-eligible)");
             }

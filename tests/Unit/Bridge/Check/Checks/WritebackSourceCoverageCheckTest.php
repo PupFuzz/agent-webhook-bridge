@@ -101,6 +101,13 @@ class WritebackSourceCoverageCheckTest extends TestCase
     /**
      * Only DL cards are in scope. The ok line is again the witness — it proves the board
      * WAS read and this card examined and skipped, not that the read never happened.
+     *
+     * SINCE DL-258 THIS ALSO PINS THE DISCRIMINATOR of the withheld all-clear above: the
+     * withholding keys on an EMPTY READ, never on "no DL cards were found". This board's
+     * population was fully measured and simply contains no DL card, so the claim over it is
+     * true and stays `ok`. Keying the new branch on the DL count instead would red here —
+     * and in production would print a cannot-verify line on every healthy board that has no
+     * DL cards yet.
      */
     public function test_a_card_with_no_dl_number_is_not_examined(): void
     {
@@ -161,6 +168,43 @@ class WritebackSourceCoverageCheckTest extends TestCase
         $this->assertSame(Severity::Unvalidated, $findings[0]['severity']);
         $this->assertStringContainsString('source-coverage check on board 8 is INCOMPLETE', $findings[0]['message']);
         $this->assertStringNotContainsString('all have a mapped source', $this->joined($findings));
+    }
+
+    /**
+     * card#5701 / DL-258: a board read that SUCCEEDS and returns nothing measured nothing,
+     * so the all-clear is withheld. kanban answers 200-with-no-rows identically for an empty
+     * board and for one whose cards the token's user cannot see, and no read available to
+     * this leg separates them — so `flagged === 0` here is reached by examining no card at
+     * all, which is precisely the "green because never looked" that `Severity::Ok`'s stated
+     * invariant forbids.
+     *
+     * THE CONTROL IS THE SECOND BOARD IN THE SAME RUN, and it is load-bearing: without it, a
+     * check that had simply stopped emitting `ok` at all would satisfy the empty-board half
+     * and read as a pass. Both boards are answered by one stub and walked by one loop, so the
+     * two verdicts differ only in what the read returned.
+     */
+    public function test_a_board_read_returning_no_cards_withholds_the_all_clear(): void
+    {
+        Http::fake(function (Request $request) {
+            return str_contains(urldecode($request->url()), 'board_id=10')
+                ? Http::response(['data' => [$this->dlCard(1, [])], 'links' => ['next' => null]])
+                : Http::response(['data' => [], 'links' => ['next' => null]]);
+        });
+
+        $findings = $this->findings([
+            'owner/repo' => new WritebackMapping(boardId: self::BOARD, stages: []),
+            'owner/other' => new WritebackMapping(boardId: 10, stages: []),
+        ]);
+
+        $this->assertCount(2, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]['severity']);
+        $this->assertStringContainsString('dl source-coverage on board 8 is UNVERIFIED', $findings[0]['message']);
+        $this->assertStringContainsString('returned 0 cards', $findings[0]['message']);
+        $this->assertStringNotContainsString('board 8 all have a mapped source', $this->joined($findings));
+
+        // control: same run, same loop, a board whose read DID return a card.
+        $this->assertSame(Severity::Ok, $findings[1]['severity']);
+        $this->assertStringContainsString('dl_number cards on board 10 all have a mapped source', $findings[1]['message']);
     }
 
     /**
