@@ -129,7 +129,7 @@ term is efficiency + defense-in-depth, not the boundary.
 | Status | Meaning |
 | --- | --- |
 | 403 | The request did not come from loopback (network gate). |
-| 401 | Missing or unrecognized bearer token. |
+| 401 | Missing or unrecognized bearer token. A bearer file that exists but the bridge cannot read, and one belonging to a collided pair, are **deliberately indistinguishable** from an unknown token here — the door never tells an unauthenticated caller that another agent's bearer exists (card#5778; it 500'd on the unreadable case until then). |
 | 422 | A caller-fixable bad request (missing `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool). |
 | 502 | Upstream kanban error (may be retryable). |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |

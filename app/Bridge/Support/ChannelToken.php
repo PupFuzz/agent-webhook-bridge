@@ -4,6 +4,7 @@ namespace App\Bridge\Support;
 
 use App\Bridge\Exceptions\ChannelTokenException;
 use App\Bridge\Exceptions\ChannelTokenFault;
+use App\Bridge\Exceptions\UnreadableSecretException;
 
 /**
  * Read an agent's channel auth token (channel.auth.token_path) for the
@@ -35,7 +36,16 @@ final class ChannelToken
                 (int) fileperms($path) & 0o777,
             ), ChannelTokenFault::InsecurePerms);
         }
-        $token = TokenFile::readTrimmed($path);
+        try {
+            $token = TokenFile::readTrimmed($path);
+        } catch (UnreadableSecretException $e) {
+            // The `is_readable()` gate above is a PREDICTION and this is the actual open,
+            // so the two can disagree — an ACL, a network filesystem, or an unlink in the
+            // window between them. Mapped rather than allowed to escape: every caller of
+            // this method is written against ChannelTokenException, and NotReadable is
+            // already the right fault for it (card#5778).
+            throw new ChannelTokenException($e->getMessage(), ChannelTokenFault::NotReadable);
+        }
         if ($token === null) {
             throw new ChannelTokenException("channel auth token at {$path} is empty", ChannelTokenFault::EmptyFile);
         }

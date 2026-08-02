@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SubscriptionRegistry;
@@ -121,7 +122,17 @@ class ProvisionToolsCommand extends BridgeCommand
 
                     continue;
                 }
-                $value = SecretFile::read($path);
+                try {
+                    $value = SecretFile::read($path);
+                } catch (UnreadableSecretException $e) {
+                    // Minting is the operator's own act, so this process IS the subject:
+                    // it cannot mint over a bearer it cannot read (that would silently
+                    // rotate a live agent's token), and it cannot report the existing one.
+                    $this->error("{$label} FAIL — ".$e->getMessage().'; re-run as a user that can read it');
+                    $rc = self::FAILURE;
+
+                    continue;
+                }
                 if ($value === null) {
                     $this->error("{$label} FAIL — bearer file {$path} is empty; remove it and re-run to mint a fresh one");
                     $rc = self::FAILURE;
