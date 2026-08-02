@@ -59,8 +59,16 @@ final class RetentionPostureCheck implements Check
         // a keep-alive client can sit through the prune. The prune stays correct
         // either way — this degrades latency, silently, which is why it is worth
         // one preflight line.
-        if (! $this->receiverSapiFinishesEarly()) {
-            yield Finding::warn('retention: this PHP install has no fastcgi_finish_request() — retention runs AFTER the response is flushed but BEFORE the request ends, so a keep-alive client may wait for it. Serve the receiver under PHP-FPM (see CLAUDE_DEPLOYMENT.md), or set BRIDGE_RETENTION_ENABLED=false and run bridge:prune on a schedule.');
+        //
+        // THE LINE IS `unvalidated` AND NOT `warn` BECAUSE NOTHING THIS PROCESS CAN SEE
+        // ANSWERS THE QUESTION (card#5698 sub-shape (3)). The subject is the RECEIVER's
+        // SAPI, and the only limb below that could answer for it is dead in a console
+        // command — so what remains is an indicator, not a fact. See the probe's docblock.
+        // It is raised only where that indicator is ABSENT, the one state worth an
+        // operator's attention; a FOUND binary is no answer either, and so earns no green
+        // line rather than an `ok` disclosing its own blindness (`Severity` corollary (A)).
+        if (! $this->earlyFinishIndicated()) {
+            yield Finding::unvalidated('retention: could NOT determine whether the receiver ends the request early — bridge:check is a console command, so the SAPI running it is not the receiver\'s and does not define fastcgi_finish_request(), and no php-fpm binary was findable on the PATH this process sees (a healthy FPM install can keep it in /usr/sbin, off a non-root PATH), so this run is no evidence either way. If the receiver is NOT served under PHP-FPM, retention runs AFTER the response is flushed but BEFORE the request ends, so a keep-alive client may wait for it. Confirm how the receiver is served (see CLAUDE_DEPLOYMENT.md); if it is not PHP-FPM, either serve it under PHP-FPM or set BRIDGE_RETENTION_ENABLED=false and run bridge:prune on a schedule.');
         }
 
         // Config being valid does NOT mean retention is RUNNING. A pass that throws
@@ -87,18 +95,38 @@ final class RetentionPostureCheck implements Check
     }
 
     /**
-     * Whether the RECEIVER's PHP can end a request before running terminating
-     * callbacks. `bridge:check` is CLI, where fastcgi_finish_request is never
-     * defined, so asking about THIS process would warn on every healthy FPM install.
-     * The receiver's SAPI is what matters, and php-fpm ships the function iff the
-     * FPM SAPI is built — so probe the fpm binary's own module list.
+     * Whether any indication is available HERE that the receiver's PHP can end a request
+     * before running terminating callbacks — deliberately not whether it can.
+     *
+     * IT DOES NOT ANSWER THE QUESTION THE CALLER ASKS, and the name now says so. The
+     * previous name (`receiverSapiFinishesEarly()`) claimed it did, and its docblock said
+     * this probed "the fpm binary's own module list" — no module list has ever been read,
+     * by this method or any other. The subject that matters is the RECEIVER's process,
+     * and `bridge:check` is a console command that never runs as it: the same subject
+     * discriminator DL-260 applied to the channel token and DL-254 to the board-tools
+     * resolver.
+     *
+     * Two limbs, and they are not the same kind of evidence:
+     *
+     *  - `function_exists()` is AUTHORITATIVE WHEN TRUE, because the process asking is
+     *    the process answering. It is unreachable today — every caller is `bridge:check`
+     *    and the CLI SAPI never defines the function — and it is kept precisely because
+     *    it is the only limb whose subject is right: a check ever run inside the
+     *    receiver's own SAPI is answered correctly by it and wrongly by the one below.
+     *  - `ExecutableFinder` only asks whether a php-fpm binary is FINDABLE on
+     *    `getenv('PATH')`. That is an indicator about this process's environment, never a
+     *    fact about the receiver, and it is weak in BOTH directions: a healthy FPM
+     *    install can keep the binary in `/usr/sbin`, off a non-root login PATH (measured
+     *    on the reference host — it serves the receiver under FPM and still finds nothing
+     *    from a shell whose PATH omits `/usr/sbin`), and a findable binary does not mean
+     *    the receiver is served by it.
      *
      * ExecutableFinder resolves from `getenv('PATH')` only, which is what makes this
      * host read pinnable from a test — the golden harness's `PinnedHost` (NAMED, never
      * imported: app code must not depend on the suite) points PATH at a fixture bin dir
      * to control the answer.
      */
-    private function receiverSapiFinishesEarly(): bool
+    private function earlyFinishIndicated(): bool
     {
         if (function_exists('fastcgi_finish_request')) {
             return true;   // running under FPM already

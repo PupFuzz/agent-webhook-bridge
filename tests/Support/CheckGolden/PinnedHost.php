@@ -21,14 +21,15 @@ use Illuminate\Support\Facades\File;
  *
  * WHAT IS PINNED, and why each one is here rather than guessed at:
  *
- *   1. `PATH` — `RetentionPostureCheck::receiverSapiFinishesEarly()` asks
+ *   1. `PATH` — `RetentionPostureCheck::earlyFinishIndicated()` asks
  *      Symfony's ExecutableFinder for a `php-fpm<major>.<minor>` or `php-fpm` binary.
  *      ExecutableFinder resolves ONLY from `getenv('PATH')` plus an `exec('command -v')`
  *      fallback that inherits the same PATH, so pointing PATH at a fixture bin dir
  *      controls the answer completely. Reached on the DEFAULT path (retention is on by
  *      default), so it affects nearly every fixture — a host without php-fpm emits an
- *      extra retention warn line. Whether CI's runner has php-fpm was the stage-0 NAMED
- *      GAP; pinning closes it rather than assuming hosts agree.
+ *      extra retention `unvalidated` line (a `warn` until DL-261, which stopped the leg
+ *      convicting the receiver on a PATH read). Whether CI's runner has php-fpm was the
+ *      stage-0 NAMED GAP; pinning closes it rather than assuming hosts agree.
  *   2. `XDG_RUNTIME_DIR` — interpolated into the HTTP channel bind-failure marker path.
  *   3. `COORD_CONFIG` — the proven-divergent one above, read by
  *      `CheckCommand::checkCoordTerminalAgreement()`.
@@ -72,9 +73,12 @@ final class PinnedHost
     public function __construct(private readonly string $root) {}
 
     /**
-     * @param  bool  $fpmPresent  Whether the receiver's SAPI can finish early — i.e.
-     *                            whether a php-fpm binary is on PATH. Both values are
-     *                            reachable on any host because the binary is a stub.
+     * @param  bool  $fpmPresent  Whether a php-fpm binary is on PATH — and ONLY that. It
+     *                            is deliberately not described as "whether the receiver's
+     *                            SAPI can finish early": PATH does not establish that, and
+     *                            saying it did is the conflation DL-261 removed from the
+     *                            check itself. Both values are reachable on any host
+     *                            because the binary is a stub.
      * @param  string|null  $coordConfig  Value for `$COORD_CONFIG`; null leaves it UNSET
      *                                    (a distinct, verdict-bearing state, not a default).
      */
@@ -87,7 +91,7 @@ final class PinnedHost
 
         $bin = $this->root.'/bin';
         File::ensureDirectoryExists($bin);
-        // The name receiverSapiFinishesEarly() looks for FIRST, built from the same
+        // The name earlyFinishIndicated() looks for FIRST, built from the same
         // constants it uses — so the stub matches whatever PHP is running the suite.
         $fpm = $bin.'/php-fpm'.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;
         if ($fpmPresent) {
