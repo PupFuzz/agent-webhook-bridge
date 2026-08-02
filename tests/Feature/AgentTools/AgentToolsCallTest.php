@@ -203,6 +203,30 @@ class AgentToolsCallTest extends TestCase
         Http::assertNothingSent();
     }
 
+    /**
+     * A bearer file that is PRESENT and unreadable by the web user must refuse like any
+     * other unresolvable bearer — 401, no body detail — not 500 (card#5778).
+     *
+     * WHY THE STATUS IS THE SECURITY ASSERTION, not just tidiness: this controller's
+     * stated contract is that it does not distinguish "unknown token" from
+     * "collided/unreadable token" to the caller. A 500 tells an UNAUTHENTICATED caller
+     * that another agent's bearer file exists and could not be read — exactly the
+     * distinction the design refuses to draw — and it does so on the one door reachable
+     * without any credential at all.
+     */
+    public function test_present_but_unreadable_bearer_is_refused_401_not_500(): void
+    {
+        chmod($this->dir.'/me-tools-token', 0o000);
+        if (is_readable($this->dir.'/me-tools-token')) {
+            $this->markTestSkipped('this process reads through mode 0000 (running as root?) — the unreadable state is not reachable here');
+        }
+        Http::fake();
+
+        $this->callTool(['tool' => 'board_my_cards'])->assertStatus(401);
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']])->assertStatus(401);
+        Http::assertNothingSent();
+    }
+
     // ─── board_create_card: scope + sanitization ─────────────────────────────
 
     public function test_create_forces_swimlane_from_config_ignoring_caller(): void

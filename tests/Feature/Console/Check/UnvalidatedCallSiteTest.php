@@ -184,6 +184,17 @@ class UnvalidatedCallSiteTest extends TestCase
         // deliberately absent from this list and keep their `warn`: the receiver hits each
         // of them identically, so "channel_push will FAIL" is earned.
         'app/Bridge/Check/Checks/ChannelTokenPathCheck.php' => 1,
+        // card#5778: the board-tools bearer EXISTS and this process could not read it —
+        // `SecretFile::read`'s third outcome, which used to leave here as an
+        // `ErrorException` and reach no severity at all (it 500'd the board-tools door
+        // and aborted `bridge:check`). Same limb (b) as ChannelTokenPathCheck above, and
+        // for the same reason: this class is built BOTH by `bridge:check` as the operator
+        // and by the controller as the web user, so a mode that stopped one says nothing
+        // about the other.
+        //   ONE site, not two, and the neighbour is the point: the ABSENT-or-blank arm a
+        // few lines below already routes through `PathVisibility` for its unseeable half
+        // and keeps `fail` for its measured half. This is the third state neither covered.
+        'app/Bridge/Tools/BoardToolAgentResolver.php' => 1,
     ];
 
     public function test_the_unvalidated_construction_sites_are_exactly_these(): void

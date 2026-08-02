@@ -177,7 +177,13 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         $this->assertStringContainsString('could NOT connect to '.self::ENDPOINT.' (cURL error 7: connection refused)', $findings[0]->message);
     }
 
-    public function test_an_unreadable_bearer_fails_without_probing(): void
+    /**
+     * Renamed from `test_an_unreadable_bearer_…` (card#5778): the fixture is a 0644 file,
+     * which is the INSECURE-PERMS fault, and the two stopped being one thing when
+     * present-but-unreadable got its own arm below. `chmod 600` is the right remedy HERE
+     * and only here.
+     */
+    public function test_an_insecure_perms_bearer_fails_without_probing(): void
     {
         Http::fake();
         $path = $this->token('loose', 'shhh', 0o644);
@@ -187,6 +193,34 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         $this->assertSame(Severity::Fail, $findings[0]->severity);
         $this->assertStringContainsString('bearer not readable — ', $findings[0]->message);
         $this->assertStringContainsString('(chmod 600); cannot certify this agent.', $findings[0]->message);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * The card#5778 arm: the bearer is PRESENT with a correct mode and this process still
+     * cannot read it (owned by another OS user). It used to leave `SecretFile::read` as an
+     * uncaught `ErrorException` and abort the whole run.
+     *
+     * STAYS `fail` — this probe certifies its OWN run, which the operator explicitly asked
+     * for, and it presented no bearer in either world. What it must NOT do is inherit the
+     * perms arm's remedy: the mode is already correct, so `chmod 600` would send the
+     * operator to loosen permissions on a healthy bearer.
+     */
+    public function test_a_present_but_unreadable_bearer_fails_without_probing_and_does_not_advise_chmod(): void
+    {
+        Http::fake();
+        $path = $this->token('unreadable', 'shhh', 0o000);
+        clearstatcache(true, $path);
+        if (is_readable($path)) {
+            $this->markTestSkipped('this process reads through mode 0000 (running as root?) — the unreadable state is not reachable here');
+        }
+
+        $findings = $this->findingsFor([$this->httpAgent('prod-agent', $path)]);
+
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('could not be read by this process', $findings[0]->message);
+        $this->assertStringContainsString('re-run bridge:check as a user that can read it', $findings[0]->message);
+        $this->assertStringNotContainsString('chmod 600', $findings[0]->message);
         Http::assertNothingSent();
     }
 

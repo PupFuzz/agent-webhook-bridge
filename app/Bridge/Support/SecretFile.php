@@ -43,11 +43,21 @@ final class SecretFile
     }
 
     /**
-     * Perms-enforced trimmed read for the general secret/token case: null when
-     * the file is absent or blank (caller decides whether that is fatal),
-     * throws InsecureSecretPermsException when it is present but
-     * group/world-readable. Trimming stays in TokenFile (the single trim
-     * primitive, DL-008) so the "how is it trimmed" edge can't drift.
+     * Perms-enforced trimmed read for the general secret/token case. THREE outcomes,
+     * and the third is the one a caller forgets (card#5778):
+     *  - null when the file is absent or blank (caller decides whether that is fatal);
+     *  - throws InsecureSecretPermsException when it is present but group/world-readable;
+     *  - throws UnreadableSecretException when it is present and THIS process could not
+     *    read it — which is NOT the same claim as either of the others, and is not a
+     *    claim about any other reader (see that exception's docblock).
+     *
+     * Neither pre-gate a caller reaches for defends against the third: `is_file()` is
+     * true and `isInsecure()` is false on a 0600 secret owned by another OS user, the
+     * exact state correct provisioning produces on the same-box topology (DL-227).
+     *
+     * Trimming stays in TokenFile (the single trim primitive, DL-008) so the "how is it
+     * trimmed" edge can't drift; the unreadable classification lives there too, at the
+     * open that actually fails.
      */
     public static function read(string $path): ?string
     {

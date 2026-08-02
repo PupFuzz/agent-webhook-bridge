@@ -3,6 +3,7 @@
 namespace App\Bridge\Tools;
 
 use App\Bridge\Exceptions\InsecureSecretPermsException;
+use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Support\Finding;
@@ -38,12 +39,16 @@ final class BoardToolAgentResolver
     private array $entries = [];
 
     /**
-     * @var list<Finding> problems (an unreadable bearer file, a token collision, or a token file
-     *                    this process could not see) for bridge:check to render. The first two are
-     *                    MEASURED faults and both FAIL under default-ON — a dead or ambiguous bearer
-     *                    is a broken ENABLEMENT, never a transient board-state warn (card#5292). The
-     *                    third is not a fault at all: it is this build's own blindness, so it carries
-     *                    `unvalidated` and must never flip the exit (card#5698).
+     * @var list<Finding> problems for bridge:check to render, in TWO groups that the severity
+     *                    splits on — is the fault the same for every reader, or only for this one?
+     *                    MEASURED faults, both FAIL under default-ON — a dead or ambiguous bearer
+     *                    is a broken ENABLEMENT, never a transient board-state warn (card#5292):
+     *                    an absent bearer under a readable dir, an insecure-perms bearer, and a
+     *                    token collision.
+     *                    THIS BUILD'S OWN BLINDNESS, `unvalidated`, never flips the exit: a token
+     *                    file this process could not SEE (card#5698), and one that is present and
+     *                    this process could not READ (card#5778). Neither says anything about the
+     *                    web user's read, and the controller builds this class as that user.
      */
     private array $problems = [];
 
@@ -146,8 +151,14 @@ final class BoardToolAgentResolver
      * situation neither ruling covered — the build could not see the token file at all —
      * where a `fail` is a false accusation about a runtime this process cannot observe
      * (the controller builds its own resolver as the WEB user, which may read the file
-     * fine). Carrying {@see Finding} rather than the old `type` string also hands the
-     * consumer the severity directly instead of a tag it has to interpret.
+     * fine). card#5778 adds the FOURTH on the same ground: the file IS there and this
+     * process could not READ it. That state used to reach no severity at all, because it
+     * left `SecretFile::read` as an undocumented `ErrorException` — 500ing the board-tools
+     * door and aborting `bridge:check` rather than being classified. Note this SPLITS the
+     * old `bearer_unreadable` label: the perms half stays a measured `fail`, the
+     * uid-relative half is now `unvalidated`. Carrying {@see Finding} rather than the old
+     * `type` string also hands the consumer the severity directly instead of a tag it has
+     * to interpret.
      *
      * @return list<Finding>
      */
@@ -162,6 +173,15 @@ final class BoardToolAgentResolver
             $token = SecretFile::read($path);
         } catch (InsecureSecretPermsException $e) {
             $this->problems[] = Finding::fail("board_tools: agent {$agentName}: ".$e->getMessage().' — board tools disabled for this agent until fixed');
+
+            return null;
+        } catch (UnreadableSecretException $e) {
+            // The SAME ruling as the not-visible arm below, one gate earlier: a mode that
+            // stopped THIS process is no evidence about the receiver's read, and this
+            // class is built in both places — by `bridge:check` as the operator, and by
+            // the controller as the web user. `unvalidated`, not `fail`, or the operator
+            // is told an agent's tools are broken on a runtime this run never observed.
+            $this->problems[] = Finding::unvalidated("board_tools: agent {$agentName}: ".$e->getMessage());
 
             return null;
         }

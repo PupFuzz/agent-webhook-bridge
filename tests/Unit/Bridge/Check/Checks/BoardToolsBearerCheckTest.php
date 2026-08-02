@@ -90,7 +90,39 @@ class BoardToolsBearerCheckTest extends TestCase
     }
 
     /**
-     * The discriminating control for the arm above: a token file that is genuinely absent,
+     * card#5778's arm, and the THIRD state — distinct from both of its neighbours. The
+     * directory IS traversable and the file IS there (so the not-visible guard above does
+     * not fire and `is_file()` is true), the mode carries no group/world bit (so the perms
+     * gate does not fire either) — and the read still fails. This used to leave the
+     * resolver as an uncaught `ErrorException`, aborting `bridge:check` outright rather
+     * than reaching any severity.
+     *
+     * `unvalidated` for the same reason as the not-visible arm: the resolver that serves
+     * the runtime is built by `AgentToolsController` as the WEB user, and a mode that
+     * stopped the operator is no evidence about that read.
+     */
+    public function test_a_bearer_present_but_unreadable_is_unvalidated_and_does_not_fail_the_run(): void
+    {
+        $path = $this->token('unreadable', 'shhh', 0o000);
+        clearstatcache(true, $path);
+        if (is_readable($path)) {
+            $this->markTestSkipped('this process reads through mode 0000 (running as root?) — the unreadable state is not reachable here');
+        }
+
+        $findings = $this->findingsFor([$this->agent('prod-agent', $path)]);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('board_tools: agent prod-agent: ', $findings[0]->message);
+        $this->assertStringContainsString('could not be read by this process', $findings[0]->message);
+        // It must not borrow either neighbour's claim: the file is neither absent nor
+        // invisible, and saying so would send the operator after the wrong fix.
+        $this->assertStringNotContainsString('no token at', $findings[0]->message);
+        $this->assertStringNotContainsString('is not visible to this user', $findings[0]->message);
+    }
+
+    /**
+     * The discriminating control for the arms above: a token file that is genuinely absent,
      * under a directory we CAN traverse, still FAILs. Without this pair, an implementation
      * that downgraded every missing bearer to `unvalidated` would pass — and that would be
      * the canon-#3 mistake of loosening a check to make a failure go away.

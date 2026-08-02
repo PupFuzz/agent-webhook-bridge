@@ -5,6 +5,7 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckDisposition;
 use App\Bridge\Check\OptInCheck;
+use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\SecretFile;
 use Illuminate\Http\Client\ConnectionException;
@@ -92,6 +93,15 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
             // (unlike the offline checks, which never do).
             try {
                 $token = SecretFile::read($bt->tokenPath);
+            } catch (UnreadableSecretException $e) {
+                // STAYS `fail` on the same ground as the no-usable-bearer arm below — this
+                // probe asserts about its OWN certification, which the operator explicitly
+                // asked for — but it must not inherit the sibling arm's `chmod 600`: the
+                // mode is very likely already correct and the fault is ownership, so that
+                // remedy would send the operator to loosen perms on a healthy bearer.
+                yield Finding::fail("board_tools probe: agent {$name}: bearer not readable — {$e->getMessage()}; re-run bridge:check as a user that can read it. Cannot certify this agent.");
+
+                continue;
             } catch (Throwable $e) {
                 yield Finding::fail("board_tools probe: agent {$name}: bearer not readable — {$e->getMessage()} (chmod 600); cannot certify this agent.");
 
