@@ -356,7 +356,7 @@ class CheckJsonContractTest extends TestCase
 
         $scope = $block['scopes'][0];
         $this->assertSame(
-            ['scope', 'agents', 'observed', 'observed_actions', 'consumed', 'bare', 'qualified', 'undeclared', 'unconsumed', 'unlisted_actions'],
+            ['scope', 'agents', 'observed', 'observed_actions', 'consumed', 'bare', 'qualified', 'undeclared', 'unreadable', 'unconsumed', 'unlisted_actions'],
             array_keys($scope),
         );
         $this->assertSame('owner/repo', $scope['scope']);
@@ -366,6 +366,10 @@ class CheckJsonContractTest extends TestCase
         $this->assertContains('pull_request', $scope['bare']);
         $this->assertSame(['count' => 1, 'last' => '2026-01-01 00:00:00'], $scope['observed']['issues']);
         $this->assertSame([], $scope['undeclared']);
+        // Distinct from `undeclared` and emitted on its own key (card#5698): a consumer
+        // that only ever saw `undeclared` would read a classifier whose declarations the
+        // run could not obtain as one that has none.
+        $this->assertSame([], $scope['unreadable']);
     }
 
     public function test_a_possibly_empty_map_encodes_as_an_object_rather_than_an_empty_list(): void

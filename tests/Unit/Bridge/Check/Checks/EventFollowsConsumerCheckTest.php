@@ -336,6 +336,65 @@ class EventFollowsConsumerCheckTest extends TestCase
         $this->assertStringContainsString('no enabled classifier consumes it', $findings[1]->message);
     }
 
+    public function test_a_classifier_whose_declaration_threw_is_disclosed_truthfully_and_the_verdict_is_withheld(): void
+    {
+        // card#5698. BEFORE: `declared:false` from the catch made the run say this
+        // classifier "does not declare its consumed events" (false — it implements the
+        // interface) and then WARN that the event is "silently dropped on arrival" (a
+        // definite claim the run cannot back, since the declarations it could not read
+        // may well cover it).
+        //
+        // The pairing is the assertion: the DISCLOSURE is a warn (the throw is a measured
+        // fact and the operator's actual defect), the VERDICT is unvalidated (the
+        // consequence is what could not be measured). Either one alone passes under a
+        // wrong split.
+        $this->arrived('issues.closed');
+        $ctx = $this->context([$this->consumer('wb', consumed: [], declared: null)]);
+
+        $findings = $this->findings($ctx);
+
+        $this->assertCount(2, $findings);
+        $this->assertSame(Severity::Warn, $findings[0]->severity);
+        $this->assertSame(
+            'event-consumer: scope github:owner/repo has an enabled classifier'
+                .' App\Bridge\Classifiers\Custom (agent wb) that implements'
+                .' App\Bridge\Contracts\DeclaresConsumedEvents but threw when asked which events it'
+                .' consumes — its declarations are missing from this run, so nothing below can say'
+                .' whether an arriving event is unconsumed. consumedEventTypes() must be a pure'
+                .' $cfg → event-types map (no I/O, no lazy loading); fix it and re-run.',
+            $findings[0]->message,
+        );
+        $this->assertSame(Severity::Unvalidated, $findings[1]->severity);
+        $this->assertSame(
+            "event-consumer: github:owner/repo has received 'issues' with no consumer among the"
+                .' declarations this run could read, but the classifier(s) named above could consume'
+                .' them, so whether these arrivals are being silently dropped could not be'
+                .' determined. Fix the classifier error(s) and re-run.',
+            $findings[1]->message,
+        );
+        // The two claims that were WRONG before, pinned as absences: pinning only the new
+        // sentences would stay green if the fix ADDED them alongside the old ones.
+        $this->assertStringNotContainsString('does not declare its consumed events', $findings[0]->message);
+        $this->assertStringNotContainsString('silently dropped on arrival', $findings[1]->message);
+    }
+
+    public function test_an_unreadable_declaration_cannot_manufacture_a_verdict_where_nothing_is_unconsumed(): void
+    {
+        // The bound that keeps the new arm from crying wolf, and the reason the empty
+        // `unconsumed` case above it stays silent: an unread declaration can only ADD to
+        // `consumed`, so a scope whose arrivals are all covered by the declarations the
+        // run DID read is not in doubt — reading the missing one could not take coverage
+        // away. The discriminating control for the test above, which is the same install
+        // with the arriving type left uncovered.
+        $this->arrived('issues.closed');
+        $ctx = $this->context([
+            $this->consumer('coord', consumed: ['issues']),
+            $this->consumer('wb', consumed: [], declared: null),
+        ]);
+
+        $this->assertSame([], $this->findings($ctx));
+    }
+
     public function test_the_inventory_carries_the_undeclared_caveat_only_when_one_is_on_the_scope(): void
     {
         // Same install twice, differing ONLY in the second consumer's `declared` flag:
@@ -360,6 +419,33 @@ class EventFollowsConsumerCheckTest extends TestCase
             'the type itself is consumed). An undeclared classifier on this scope may consume'
                 .' some of these (possible false inventory).',
             $withCaveat[0]->message,
+        );
+    }
+
+    public function test_the_inventory_caveat_survives_the_move_of_a_throwing_classifier_out_of_undeclared(): void
+    {
+        // THE REGRESSION card#5698 COULD HAVE SHIPPED SILENTLY. This caveat used to be
+        // gated on `undeclared !== []`, and a classifier whose declaration threw WAS in
+        // `undeclared` — so moving it to its own bucket would have deleted a line that
+        // printed before, with no test failing. It is an `ok` finding, so no severity
+        // assertion anywhere would have caught it either.
+        //
+        // The clause is the throw's OWN, not the undeclared one reused: naming a
+        // classifier that does declare "undeclared" is the defect this card is about.
+        $this->arrived('issues.closed');
+        $ctx = $this->context([
+            $this->consumer('coord', consumed: ['issues.opened']),
+            $this->consumer('wb', consumed: [], declared: null),
+        ]);
+
+        $findings = $this->findings($ctx);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringEndsWith(
+            'the type itself is consumed). A classifier on this scope did not answer what it'
+                .' consumes, and may consume some of these (possible false inventory).',
+            $findings[0]->message,
         );
     }
 
@@ -429,7 +515,7 @@ class EventFollowsConsumerCheckTest extends TestCase
     }
 
     /**
-     * @param  list<array{agent: string, class: string, consumed: list<string>, declared: bool}>  $consumers
+     * @param  list<array{agent: string, class: string, consumed: list<string>, declared: ?bool}>  $consumers
      */
     private function context(array $consumers): CheckContext
     {
@@ -441,9 +527,9 @@ class EventFollowsConsumerCheckTest extends TestCase
 
     /**
      * @param  list<string>  $consumed
-     * @return array{agent: string, class: string, consumed: list<string>, declared: bool}
+     * @return array{agent: string, class: string, consumed: list<string>, declared: ?bool}
      */
-    private function consumer(string $agent, array $consumed, bool $declared = true): array
+    private function consumer(string $agent, array $consumed, ?bool $declared = true): array
     {
         return [
             'agent' => $agent,

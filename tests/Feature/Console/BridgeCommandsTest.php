@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Fixtures\UnreadableDeclarationClassifier;
 use Tests\TestCase;
 
 class BridgeCommandsTest extends TestCase
@@ -958,6 +959,29 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:check')
             ->expectsOutputToContain('does not declare its consumed events')
             ->expectsOutputToContain("has received 'pull_request' (1x, last")
+            ->assertExitCode(0);
+    }
+
+    public function test_check_event_consumer_withholds_the_verdict_when_a_declaration_throws(): void
+    {
+        // card#5698, THROUGH THE COMMAND — the only place the catch that mints the
+        // tri-state actually runs. Every unit test around this builds
+        // `CheckContext::$githubScopeConsumers` by hand, so the arm they exercise is the
+        // one this fixture's throw has to reach for them to be about anything.
+        //
+        // The fixture implements DeclaresConsumedEvents (so the out-of-process
+        // probeImplements says true) and throws from consumedEventTypes(), which is the
+        // one reachable throw in that block: for()'s failures are pre-empted by
+        // AgentClassifierResolvableCheck's probeLoadable.
+        $this->writeGithubAgent('wb', UnreadableDeclarationClassifier::class);
+        $this->githubEvent('pull_request.opened', 'e1');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('threw when asked which events it consumes')
+            ->expectsOutputToContain('could not be determined')
+            // The two false claims the swallow used to produce, pinned as absences.
+            ->doesntExpectOutputToContain('does not declare its consumed events')
+            ->doesntExpectOutputToContain('silently dropped on arrival')
             ->assertExitCode(0);
     }
 

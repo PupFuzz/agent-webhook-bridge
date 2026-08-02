@@ -34,7 +34,7 @@ use Throwable;
 final class EventConsumerReconciler
 {
     /**
-     * @param  array<string, list<array{agent: string, class: string, consumed: list<string>, declared: bool}>>  $scopeConsumers
+     * @param  array<string, list<array{agent: string, class: string, consumed: list<string>, declared: ?bool}>>  $scopeConsumers
      */
     public function reconcile(array $scopeConsumers): EventConsumerReconciliation
     {
@@ -55,6 +55,7 @@ final class EventConsumerReconciler
                     bare: $declared['bare'],
                     qualified: $declared['qualified'],
                     undeclared: $declared['undeclared'],
+                    unreadable: $declared['unreadable'],
                     agents: $declared['agents'],
                 );
             }
@@ -120,8 +121,8 @@ final class EventConsumerReconciler
      * subscribed to it — not one per scope; two agents can share a scope and the bridge
      * dispatches to both.
      *
-     * @param  list<array{agent: string, class: string, consumed: list<string>, declared: bool}>  $consumers
-     * @return array{consumed: list<string>, bare: list<string>, qualified: array<string, list<string>>, undeclared: list<array{agent: string, class: string}>, agents: list<string>}
+     * @param  list<array{agent: string, class: string, consumed: list<string>, declared: ?bool}>  $consumers
+     * @return array{consumed: list<string>, bare: list<string>, qualified: array<string, list<string>>, undeclared: list<array{agent: string, class: string}>, unreadable: list<array{agent: string, class: string}>, agents: list<string>}
      */
     private function declarations(array $consumers): array
     {
@@ -133,6 +134,8 @@ final class EventConsumerReconciler
         $qualified = [];
         /** @var array<string, array{agent: string, class: string}> $undeclared */
         $undeclared = [];
+        /** @var array<string, array{agent: string, class: string}> $unreadable */
+        $unreadable = [];
         /** @var array<string, true> $agents */
         $agents = [];
 
@@ -146,10 +149,17 @@ final class EventConsumerReconciler
                     $bare[$parts[0]] = true;
                 }
             }
-            if (! $c['declared']) {
-                // Keyed on the (class, agent) pair the renderer names, so one classifier
-                // shared by two agents is disclosed once per agent — each is a separate
-                // thing the operator can fix.
+            // Keyed on the (class, agent) pair the renderer names, so one classifier
+            // shared by two agents is disclosed once per agent — each is a separate
+            // thing the operator can fix.
+            //
+            // THE `null` ARM IS TESTED FIRST AND SEPARATELY, because `! $c['declared']` is
+            // true for BOTH `false` and `null` — the identity that made the two states one
+            // bucket before card#5698. A classifier whose declaration threw is not a
+            // classifier that declares nothing, and only the second of those is `undeclared`.
+            if ($c['declared'] === null) {
+                $unreadable[$c['class'].'|'.$c['agent']] = ['agent' => $c['agent'], 'class' => $c['class']];
+            } elseif (! $c['declared']) {
                 $undeclared[$c['class'].'|'.$c['agent']] = ['agent' => $c['agent'], 'class' => $c['class']];
             }
             $agents[$c['agent']] = true;
@@ -163,6 +173,7 @@ final class EventConsumerReconciler
                 $qualified,
             ),
             'undeclared' => array_values($undeclared),
+            'unreadable' => array_values($unreadable),
             'agents' => array_keys($agents),
         ];
     }

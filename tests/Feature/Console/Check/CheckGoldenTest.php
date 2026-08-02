@@ -459,6 +459,19 @@ class CheckGoldenTest extends TestCase
                     ."classifier:\n  class: App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier\n");
 
                 return $default;
+
+            case 'event-consumer-declaration-unreadable':
+                // The card#5698 witness, and the DISCRIMINATING PAIR for the fixture two
+                // cases up: the same scope, the same arrival, the same unconsumed type —
+                // differing only in that this classifier's declaration threw. Its golden
+                // file therefore shows the whole delta between an asserted verdict and a
+                // withheld one, which no single-fixture capture could.
+                $i->boot()->agent('wb', "identity:\n  github_user_id: 555\n"
+                    ."subscriptions:\n  - provider: github\n    scopes: [\"owner/repo\"]\n"
+                    .'classifier:'."\n".'  class: Tests\Fixtures\UnreadableDeclarationClassifier'."\n");
+                $this->githubEvent('issues.closed', 'e1');
+
+                return $default;
         }
 
         $this->fail("unknown golden fixture: {$name}");
@@ -504,6 +517,7 @@ class CheckGoldenTest extends TestCase
             'no-opt-in-probes-requested',
             'event-consumer-unconsumed-type',
             'event-consumer-nothing-arrived',
+            'event-consumer-declaration-unreadable',
         ]);
     }
 
@@ -617,6 +631,13 @@ class CheckGoldenTest extends TestCase
             // ---- event-follows-consumer ----
             'event-consumer-unconsumed-type' => ["event-consumer: github:owner/repo has received 'issues'"],
             'event-consumer-nothing-arrived' => ['agent config ok: wb'],
+            // Both halves are subjects: the disclosure that must appear AND the withheld
+            // verdict that replaced the accusation. Pinning only the first would stay
+            // green if the fix printed the disclosure ABOVE the old confident warn.
+            'event-consumer-declaration-unreadable' => [
+                'threw when asked which events it consumes',
+                'could not be determined',
+            ],
         ];
     }
 

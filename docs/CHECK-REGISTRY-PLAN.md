@@ -2048,7 +2048,9 @@ concluded**, so it can only make DISCLOSED blindness precise, and a leg that nev
 nothing falls outside it. **The residual is NOT "silence", and the first wording of this line said it
 was.** Such a leg may emit nothing — or emit the conclusion it would have drawn had the measurement
 happened, at that conclusion's severity; `EventFollowsConsumerCheck`'s undeclared-classifier advisory
-`warn`s off `CheckCommand`'s swallowed classifier throw and is the live instance (card#5698). Telling
+`warn`s off `CheckCommand`'s swallowed classifier throw and was the live instance at this stage
+(card#5698 — **that one instance has since been closed by DL-257, which does not narrow this line:
+the residual is a CLASS, and it was never enumerable**). Telling
 an operator the residual is silent implies everything they DO see is precise, which is the same
 overclaim one narrowing up, so the tally line now says the residual **is not counted here** and names
 both shapes. The `check-json-contract.md` bound moved in step: `unvalidated` is now sound
@@ -2179,6 +2181,51 @@ precise everywhere.
 > *"the classifier was never asked"* into `declared: false`, and no coverage ledger reaches it. Two
 > of the card's four "round-3" members are likewise not map-fed at all: the
 > `boardCustomFieldKeys()` legs belong to the `idList()`/`KanbanClient` primitive shape.
+
+> **[card#5698 UPDATE 3 — the swallowed-throw half is closed; the class is still open.]** The
+> `catch` in `CheckCommand`'s consumed-events derivation wrote `declared: false`, which is the same
+> value a classifier that does not implement `DeclaresConsumedEvents` gets — so *"it declares, and
+> this run could not ask it"* and *"it does not declare"* were one state. Two false claims followed:
+> `EventFollowsConsumerCheck` said the classifier **does not declare its consumed events** (false —
+> it implements the interface), and the emptied `consumed` made `unconsumed()` over-inclusive, so the
+> **silently dropped on arrival** warn could accuse a scope whose arrivals that classifier consumes.
+> Fixed by a THIRD STATE, the same shape as DL-255's null scope set and DL-256's null id list:
+> `declared` is `?bool`, `null` written only in the `catch`, routed to a new
+> `EventConsumerScope::$unreadable` bucket keyed like `undeclared`, disclosed truthfully as a `warn`
+> (the throw IS measured), with the unconsumed verdict downgraded to `unvalidated` — mirroring the
+> `agentScopeCoverage->mayCover()` arm directly above it, which is the same treatment for the same
+> reason. `--format=json` gains `event_consumers.scopes[].unreadable`; `SCHEMA_VERSION` stays **1**
+> (additive).
+>
+> **Three things this slice settled that a later reader should not re-derive:**
+>
+> 1. **The DOMINANT reachable throw is `consumedEventTypes()`, not `for()`.** `for()`'s three throws
+>    are pre-validated by `probeLoadable` in `AgentClassifierResolvableCheck` (same three failure
+>    modes), so the arm that survives is the call INTO classifier code — which is why the witness
+>    fixture had to violate the interface's pure-map contract deliberately. `ThrowingClassifier` was
+>    the wrong fixture: it throws from `classify()`, a leg `bridge:check` never calls.
+> 2. **Path (C) is NOT part of this and stays `false`.** `probeImplements` true, `for()` OK, and the
+>    instance nonetheless not `instanceof` is a MEASURED in-process fact (the out-of-process probe
+>    and the booted process disagreed), not a could-not-measure. Only the `catch` arm moved.
+> 3. **The action-inventory caveat had to be EXTENDED or it would have been silently deleted.** It
+>    was gated on `undeclared !== []`, and a throwing classifier used to be IN `undeclared` — so
+>    moving it out drops a line that used to print, invisible to every test (the finding is `ok`, so
+>    no severity assertion sees it) and to the golden corpus (no fixture reached it). The caveat now
+>    carries a SECOND clause of its own wording rather than widening the first: calling a classifier
+>    that does declare "undeclared" would re-mint this card's defect at the caveat. **That preserves
+>    reach and adjudicates nothing** — whether an `ok` finding may carry a could-not-measure
+>    disclosure at all is the card's own 41-fail / 32-ok severity audit, which must not be shipped
+>    one site at a time.
+>
+> **The corpus could not witness this before the slice**: no fixture ran a classifier that throws
+> from `consumedEventTypes()`, so one was added — and it is the discriminating PAIR for
+> `event-consumer-unconsumed-type` (same scope, same arrival, same unconsumed type; only the
+> readability of the declaration differs). **No existing golden file changed**, which is the
+> evidence that the tri-state is inert on every install shape the corpus already covers.
+>
+> **Still open on the class:** the bundled-cause catch, the PATH-proxy leg, the two
+> `WritebackBoardStateCheck` / `idList()`-shaped round-3 members, and the 41-fail / 32-ok severity
+> audit the card reserves.
 
 ## Verification
 
