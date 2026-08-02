@@ -65,6 +65,22 @@ final class PathVisibility
             return null;
         }
 
+        return self::notVisibleFinding($display);
+    }
+
+    /**
+     * The same finding for a caller that has ALREADY established non-visibility and holds
+     * the answer — a failed READ that classified its own cause, rather than a leg about to
+     * stat (`ChannelToken`, NAMED: this primitive must not import a consumer).
+     *
+     * It exists so that caller reuses the message instead of paraphrasing it, which is the
+     * duplication this class was hoisted to end. Re-statting through
+     * {@see self::unverifiedUnlessVisible} would be the alternative, and it would measure a
+     * second time — a file can change between the read and the re-check, and then the two
+     * measurements disagree about one throw.
+     */
+    public static function notVisibleFinding(string $display): Finding
+    {
         return Finding::unvalidated("{$display} is not visible to this user — a directory above it denies this process traversal (the bridge commonly runs as a different OS user than the agent, and an agent's own directories are often 0700), so this leg could NOT be validated and \"absent\" is NOT a conclusion this run is entitled to draw; re-run bridge:check as the owning user, or grant it traversal");
     }
 

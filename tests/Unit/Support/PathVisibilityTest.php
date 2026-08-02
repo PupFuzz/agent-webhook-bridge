@@ -103,6 +103,21 @@ class PathVisibilityTest extends TestCase
         }
     }
 
+    public function test_the_message_door_states_no_opinion_of_its_own(): void
+    {
+        // `notVisibleFinding()` is for a caller whose failed READ already established
+        // non-visibility, so it must NOT re-measure. Asserted on a path whose ancestor IS
+        // traversable — the world where the statting door returns null — which is exactly
+        // the discriminator: an implementation that re-checked would answer differently here.
+        $this->assertNull(PathVisibility::unverifiedUnlessVisible($this->dir.'/nope', 'the token'));
+
+        $finding = PathVisibility::notVisibleFinding('the token');
+
+        $this->assertSame(Severity::Unvalidated, $finding->severity);
+        $this->assertStringContainsString('the token', $finding->message);
+        $this->assertStringContainsString('is not visible to this user', $finding->message);
+    }
+
     public function test_it_walks_up_to_the_nearest_existin_g_ancestor(): void
     {
         // The path may be several non-existent segments deep; the question is whether the

@@ -3,6 +3,7 @@
 namespace App\Bridge\Support;
 
 use App\Bridge\Exceptions\ChannelTokenException;
+use App\Bridge\Exceptions\ChannelTokenFault;
 
 /**
  * Read an agent's channel auth token (channel.auth.token_path) for the
@@ -22,7 +23,7 @@ final class ChannelToken
     public static function read(string $path): string
     {
         if (! is_file($path) || ! is_readable($path)) {
-            throw new ChannelTokenException("channel auth token not readable at {$path}");
+            throw new ChannelTokenException("channel auth token not readable at {$path}", self::unreadableFault($path));
         }
         // The mode & 0o077 gate lives in SecretFile (DL-010, shared with the HMAC
         // receiver + API/writeback token); the channel-specific message + the
@@ -32,13 +33,34 @@ final class ChannelToken
                 'channel auth token at %s is group/world-readable (mode %04o) — chmod 600',
                 $path,
                 (int) fileperms($path) & 0o777,
-            ));
+            ), ChannelTokenFault::InsecurePerms);
         }
         $token = TokenFile::readTrimmed($path);
         if ($token === null) {
-            throw new ChannelTokenException("channel auth token at {$path} is empty");
+            throw new ChannelTokenException("channel auth token at {$path} is empty", ChannelTokenFault::EmptyFile);
         }
 
         return $token;
+    }
+
+    /**
+     * Which of the first gate's three worlds we are in — asked ONCE, here, off the same
+     * stat that just failed, because a consumer re-deriving it later would be re-reading
+     * a file that can change underneath it (see {@see ChannelTokenFault}).
+     *
+     * Order matters: traversability is asked FIRST because without it `is_file()` cannot
+     * answer at all, and its `false` would read as an absence this process never
+     * established. {@see PathVisibility} owns that predicate — the same guard the stat-
+     * conflation sweep hoisted for the sibling legs.
+     */
+    private static function unreadableFault(string $path): ChannelTokenFault
+    {
+        if (! PathVisibility::ancestorIsTraversable($path)) {
+            return ChannelTokenFault::NotVisible;
+        }
+
+        // Reached only when the gate above failed, so `is_file()` true ⇒ `is_readable()`
+        // was the half that failed.
+        return is_file($path) ? ChannelTokenFault::NotReadable : ChannelTokenFault::Missing;
     }
 }
