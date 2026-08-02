@@ -2135,10 +2135,10 @@ precise everywhere.
 > degraded either way — only its message was wrong. **The one member that moved an exit code** is
 > the board-tools bearer: `bridge:check` runs as the operator while the resolver serving the
 > runtime is built by the receiver as the web user, so a `fail` there convicted a healthy install.
-> **Still open on the class:** the bundled-cause catch, the PATH-proxy leg, the partial-map /
-> swallowed-throw pair, the three-`CheckContext`-maps root cause, and the `idList()` collapse
-> above. **A green `PathVisibilityAdoptionTest` does not mean a NEW stat is guarded** — that pin
-> counts adopters, and cannot see a leg that never adopted.
+> **What remains open on the class lives on card#5698, which owns it** — this doc deliberately
+> keeps no copy (see the retirement note under UPDATE 3). **A green `PathVisibilityAdoptionTest`
+> does not mean a NEW stat is guarded** — that pin counts adopters, and cannot see a leg that
+> never adopted.
 
 > **[card#5698 UPDATE 2 — the three-`CheckContext`-maps root cause has landed; the class is still
 > open.]** `writebackEmittingScopes`, `coordCardMoveScopes` and `githubScopeConsumers` are all
@@ -2173,8 +2173,8 @@ precise everywhere.
 > agent with a writeback mapping, so both new arms and the silent gate were invisible to all 33
 > golden files, which is why two fixtures were added rather than an existing one extended.
 >
-> **Still open on the class**, with one member's root cause now known to be MIS-FILED on the card:
-> the bundled-cause catch, the PATH-proxy leg, and the `idList()` collapse are unchanged. The
+> **One member's root cause was found MIS-FILED on the card** (the open list itself lives there,
+> not here — see the retirement note under UPDATE 3). The
 > **swallowed-throw** half of the partial-map pair (`EventFollowsConsumerCheck`'s
 > undeclared-classifier advisory) is **NOT** closed by this stage — the card grouped it under the
 > maps root cause, but its mechanism is a `catch` in the consumed-events derivation that turns
@@ -2223,11 +2223,17 @@ precise everywhere.
 > readability of the declaration differs). **No existing golden file changed**, which is the
 > evidence that the tri-state is inert on every install shape the corpus already covers.
 >
-> **Still open on the class:** the bundled-cause catch, the PATH-proxy leg, and the 41-fail /
-> 32-ok severity audit the card reserves. **[Corrected — this line was wrong when written.** It
-> also named "the two `WritebackBoardStateCheck` / `idList()`-shaped round-3 members", which
-> DL-256 had already closed in the commit immediately preceding this one. See the note below on
-> why these enumerations are being retired rather than re-synced.**]**
+> **[THE `Still open on the class` ENUMERATIONS ARE RETIRED HERE — DL-259.]** Each slice's UPDATE
+> block used to close by restating the class's remaining members. Three copies of one list, none
+> of them its owner, and the drift ran in BOTH directions: card#5698 was itself missing DL-257,
+> while THIS line was **wrong when written** — it also named "the two `WritebackBoardStateCheck` /
+> `idList()`-shaped round-3 members", which DL-256 had closed in the commit *immediately
+> preceding* the one that added it. A reader cannot tell an honest historical snapshot from a
+> current claim, which is what makes the copies the defect rather than the sync discipline
+> (canon #16: delete the restatement and point at the doc that owns it). **card#5698 owns the open
+> list.** UPDATE 1's and UPDATE 2's enumerations are retired with this one; what each slice
+> *closed* stays, because that is this doc's own record. The `CLAUDE_DECISIONS.md` copies are left
+> alone — that log is append-only, so a later DL corrects an earlier one in place of an edit.
 
 > **[card#5701 UPDATE — the FIRST `Finding::ok` site the stage-10 bound reserved, and it was a
 > live defect.]** Stage 10 disclosed a population it did not sweep: its 32 `Finding::ok`
@@ -2267,7 +2273,58 @@ precise everywhere.
 > class` enumerations above are a second copy of the card's own list, and it has now drifted in
 > both directions — the card was missing DL-257 entirely, and UPDATE 3's copy was wrong the day it
 > was written. Restating a tracked item's state in a doc that does not own it is the defect;
-> retiring those three lines in favour of this pointer is filed on card#5698.
+> retiring those three lines in favour of this pointer is filed on card#5698. **[Done — DL-259
+> retired all three; see the note under UPDATE 3.]**
+
+> **[card#5698 UPDATE — the reserved fail/ok severity audit, RUN. DL-259.]** Stage 10 settled the
+> `warn` ↔ `unvalidated` boundary and disclosed that it had swept neither the `fail` nor the `ok`
+> population against its own rule. Both were re-derived live (**45 `fail` · 33 `ok`**, up from the
+> 41/32 the card recorded — DL-254…258 added sites) and audited whole, which the card required:
+> the population must not be shipped one site at a time, because a rule applied per-site is how a
+> class re-mints itself.
+>
+> **The rule needed no amendment — it needed two corollaries written down**, because both were
+> being decided ad hoc in local prose, in two directions. They now live in `Severity`'s docblock,
+> which owns the vocabulary: **(A)** an `ok` may disclose ambiguity about what a measured fact
+> IMPLIES, but never its own blindness — so a disclosure splits by its CAUSE, not its presence;
+> **(B)** a vacuous universal claim is SILENT when its emptiness is the operator's own config, and
+> `ok` when only this run's measurement could establish it.
+>
+> **Corollary (B) closed a real divergence and changed no behaviour.** The mapped-stage-ids leg
+> falls silent on an empty target set while `WritebackSourceCoverageCheck` emits `ok` on a read
+> that found nothing to flag; each site argued a general principle contradicting the other's. Both
+> are right, and the discriminator was simply never written: who else holds the fact. Recording it
+> was the fix — changing either site to match the other would have destroyed a correct output.
+>
+> **Four sites disagreed with the rule.** `EventFollowsConsumerCheck`'s action inventory rendered
+> GREEN while disclosing that a declaration this run could not obtain may have made it wrong — and
+> it is gated on BOTH shorteners (a classifier asked that threw, an agent never read), because
+> closing one would have left the same site still asserting past its evidence. Its `undeclared`
+> twin is the control and KEEPS its `ok`; this is the first `ok` converted by corollary (A), and
+> it discharges a bound the check's own docblock had deferred to this audit.
+> `SharedIdentitiesCheck` certified `0 shared account(s)` for a file it could not read AND for one
+> that is not JSON — the loader is fail-soft by design, so the count alone could never carry the
+> signal, and the two faults were identical to the benign case at the one preflight meant to
+> surface them. `SshTransportProbe` hard-failed *"does not resolve to an OS account on this host"*
+> on any PHP build without `posix_getpwnam`, where no account database was ever consulted.
+> `BoardToolsHttpProbeCheck` accused *"no bearer at <path>"* off an `is_file()` that is false for
+> EACCES exactly as for ENOENT.
+>
+> **Two of the four kept their severity, and that is the audit's main result, not a shortfall.**
+> The board-tools probe stays `fail` and the ssh no-such-account arm stays `fail`: the
+> `InstallConfigDirCheck` precedent governs both — when THIS RUN certainly certified nothing, the
+> exit code is earned and only the CLAIM was wrong. Downgrading them would have been canon #3.
+> The audit moved a severity only where the run had genuinely measured nothing.
+>
+> **The golden corpus witnessed none of it**: no fixture carries an unreadable shared-identities
+> file, a posix-less host, or an unreadable declaration alongside an unlisted action. All 33
+> fixtures are unchanged, which is the evidence the re-assignments are inert on every install
+> shape the corpus covers — and equally the reason each new arm carries a unit test that was
+> watched go RED against the un-fixed code before it was trusted.
+>
+> **`SshProbeEnvironment::homeForUser()` returns `?string` now** — a primitive change, not four
+> call-site guards: `''` (the database answered: no such account) and `null` (this process cannot
+> look accounts up at all) were one value, and the consumer spent the second as the first.
 
 ## Verification
 

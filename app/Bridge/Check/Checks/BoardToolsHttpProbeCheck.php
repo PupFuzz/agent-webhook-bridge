@@ -98,7 +98,19 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
                 continue;
             }
             if ($token === null) {
-                yield Finding::fail("board_tools probe: agent {$name}: no bearer at {$bt->tokenPath} — run bridge:provision-tools; cannot certify this agent.");
+                // STAYS `fail`, and does NOT adopt PathVisibility the way the resolver's
+                // twin read of this same file did (DL-254) — the InstallConfigDirCheck
+                // precedent, not the BoardToolAgentResolver one (DL-259, card#5698).
+                // The resolver asserts about the RUNTIME's enablement while running as
+                // the wrong OS user, so an unseeable token makes its claim false. This
+                // leg asserts about its OWN certification, which the operator explicitly
+                // asked for with --probe-tools: in BOTH worlds — absent, or present and
+                // unseeable — THIS PROBE certified nothing for this agent, a fact about
+                // the run known with certainty. Only the CLAIM was wrong: `is_file()`
+                // (via SecretFile::read) is false for EACCES exactly as for ENOENT, so
+                // naming just one sent the operator to re-mint a token that may already
+                // be there and readable by the web user the runtime actually serves as.
+                yield Finding::fail("board_tools probe: agent {$name}: no usable bearer at {$bt->tokenPath} — it is absent, or a directory above it denies this process traversal (the read cannot distinguish them; the bridge commonly runs as a different OS user than the agent). Run bridge:provision-tools if it is missing, or re-run bridge:check as a user that can read it; cannot certify this agent.");
 
                 continue;
             }

@@ -213,6 +213,34 @@ class SshTransportProbeTest extends TestCase
         $this->assertNotContains('/.ssh/authorized_keys', $env->readPaths);
     }
 
+    public function test_account_lookup_capability_absent_is_unvalidated_never_the_accusation(): void
+    {
+        // DL-259 (card#5698): homeForUser ⇒ null models a host with no posix_getpwnam, so
+        // the account database was never consulted. The old code returned '' for that too
+        // and spent it as the exit-code-bearing "does not resolve to an OS account on this
+        // host" — hard-failing bridge:check over an account that may be perfectly valid.
+        // The certification still cannot proceed, so it must still REPORT; what it may not
+        // do is accuse.
+        $env = new FakeSshProbeEnvironment(
+            authorizedKeys: self::GOOD_LINE,
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile %h/.ssh/authorized_keys\n",
+            userHomes: ['device' => null],
+        );
+        $probe = new SshTransportProbe($env, 'device');
+
+        $pinned = $probe->probePinnedLine('me');
+
+        $this->assertTrue($this->hasSeverity($pinned, Severity::Unvalidated));
+        $this->assertFalse($this->hasSeverity($pinned, Severity::Fail));
+        $this->assertFalse($this->hasSeverity($pinned, Severity::Ok));
+        // The claim names the missing capability, and never the account's existence.
+        $this->assertNotNull($this->firstMatching($pinned, 'no posix_getpwnam'));
+        $this->assertNull($this->firstMatching($pinned, 'does not resolve to an OS account'));
+        // Same phantom-path guarantee as the measured arm: it stops before the read.
+        $this->assertNotContains('/.ssh/authorized_keys', $env->readPaths);
+    }
+
     public function test_unset_account_with_empty_run_user_home_is_unvalidated_not_hard_fail(): void
     {
         // canon #6: the UNSET fallback path (runUserHome ⇒ '') is a pre-existing edge,
@@ -286,7 +314,8 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
     public array $readPaths = [];
 
     /**
-     * @param  array<string, string>  $userHomes  home dir per named account (homeForUser)
+     * @param  array<string, ?string>  $userHomes  home dir per named account (homeForUser);
+     *                                             '' = no such account, null = cannot look up
      */
     public function __construct(
         private string $authorizedKeys = '',
@@ -298,6 +327,7 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
         private string $sshStderr = '',
         private string $runUser = 'bridge',
         private string $runUserHome = '/home/bridge',
+        /** @var array<string, ?string> */
         private array $userHomes = [],
     ) {}
 
@@ -321,9 +351,10 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
         return $this->runUserHome;
     }
 
-    public function homeForUser(string $user): string
+    public function homeForUser(string $user): ?string
     {
-        return $this->userHomes[$user] ?? "/home/{$user}";
+        // A null entry models a host with no posix_getpwnam — the lookup never happened.
+        return array_key_exists($user, $this->userHomes) ? $this->userHomes[$user] : "/home/{$user}";
     }
 
     public function sshdEffectiveConfig(?string $forUser = null): ?string

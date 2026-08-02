@@ -427,11 +427,18 @@ class EventFollowsConsumerCheckTest extends TestCase
         // THE REGRESSION card#5698 COULD HAVE SHIPPED SILENTLY. This caveat used to be
         // gated on `undeclared !== []`, and a classifier whose declaration threw WAS in
         // `undeclared` — so moving it to its own bucket would have deleted a line that
-        // printed before, with no test failing. It is an `ok` finding, so no severity
-        // assertion anywhere would have caught it either.
+        // printed before, with no test failing.
         //
         // The clause is the throw's OWN, not the undeclared one reused: naming a
         // classifier that does declare "undeclared" is the defect this card is about.
+        //
+        // DL-259 RE-PINS THE SEVERITY THIS TEST ORIGINALLY ASSERTED (`ok`). That was the
+        // pre-adjudication state, recorded as such — the code carried a comment saying the
+        // clause "adjudicates nothing" and deferred the question to the fail/ok severity
+        // audit. The audit ruled: the caveat's CAUSE decides the severity, and an
+        // unreadable declaration means this inventory could not be stood behind, so the
+        // whole finding is `unvalidated`. (The undeclared caveat one test up is the
+        // control and KEEPS its `ok` — that doubt is about what a measured fact implies.)
         $this->arrived('issues.closed');
         $ctx = $this->context([
             $this->consumer('coord', consumed: ['issues.opened']),
@@ -441,12 +448,54 @@ class EventFollowsConsumerCheckTest extends TestCase
         $findings = $this->findings($ctx);
 
         $this->assertCount(1, $findings);
-        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
         $this->assertStringEndsWith(
             'the type itself is consumed). A classifier on this scope did not answer what it'
-                .' consumes, and may consume some of these (possible false inventory).',
+                .' consumes, so this inventory could not be stood behind (it may list actions'
+                .' that ARE consumed).',
             $findings[0]->message,
         );
+    }
+
+    public function test_an_unread_agent_also_takes_the_inventory_out_of_green(): void
+    {
+        // THE SECOND SHORTENER, closed in the same change (DL-259) — fixing only the
+        // throwing-classifier one would have left this site still asserting past its
+        // evidence, which is a half-fix at a single site rather than a smaller scope.
+        // `unlistedActions()` reads `consumed`/`bare`/`qualified`, all unioned across the
+        // scope's consumers, so an agent this run never read can make an action look
+        // unlisted when it is declared — and a BARE declaration from it would have removed
+        // the whole type from this inventory. The class docblock deferred exactly this to
+        // the audit; the audit is what discharges it.
+        $this->arrived('issues.closed');
+        $ctx = $this->context([$this->consumer('coord', consumed: ['issues.opened'])]);
+        $ctx->agentScopeCoverage->recordUnread('broken-agent', [self::SCOPE]);
+
+        $findings = $this->findings($ctx);
+
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('An agent this run never finished reading may declare some of these', $findings[0]->message);
+    }
+
+    public function test_an_undeclared_classifier_alone_leaves_the_inventory_green(): void
+    {
+        // THE CONTROL FOR THE RULING ABOVE, and the reason DL-259 splits on cause rather
+        // than on the caveat's presence: this install also carries a caveat, but its cause
+        // is an `instanceof` that returned false — a MEASURED in-process fact (DL-257).
+        // What stays open is what that implies about consumption, which is
+        // world-ambiguity, so the inventory is a real measurement and keeps its `ok`.
+        // Without this case, "any caveat ⇒ unvalidated" would pass every other assertion.
+        $this->arrived('issues.closed');
+        $ctx = $this->context([
+            $this->consumer('coord', consumed: ['issues.opened']),
+            $this->consumer('wb', consumed: ['issues.opened'], declared: false),
+        ]);
+
+        $findings = $this->findings($ctx);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString('An undeclared classifier on this scope may consume', $findings[0]->message);
     }
 
     public function test_the_last_seen_is_trimmed_to_seconds_so_both_drivers_agree(): void

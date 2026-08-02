@@ -52,29 +52,49 @@ final class SshTransportProbe
         return $this->sshAccount ?? $this->env->runUser();
     }
 
-    /** The forced-command account's home (for the default authorized_keys path + %h). */
+    /**
+     * The forced-command account's home (for the default authorized_keys path + %h).
+     *
+     * The `?? ''` narrows the un-lookup-able account back to the phantom-home value, and is
+     * never reached with it: {@see self::configuredAccountUnresolved} returns a finding for
+     * exactly that state and every caller of this method sits behind that early return.
+     */
     private function forcedCommandHome(): string
     {
         return $this->sshAccount !== null
-            ? $this->env->homeForUser($this->sshAccount)
+            ? ($this->env->homeForUser($this->sshAccount) ?? '')
             : $this->env->runUserHome();
     }
 
     /**
-     * A CONFIGURED ssh_account that does not resolve to an OS account (homeForUser ⇒ '')
-     * cannot be certified — every account-dependent leg would otherwise build a phantom
-     * path from an empty home (e.g. `/.ssh/authorized_keys`) and mis-certify against it.
-     * Gated strictly on a non-null sshAccount: the unset fallback (runUserHome, which can
-     * also be '') keeps its pre-4977 non-authoritative behavior, untouched — that arm now
-     * reports `unvalidated` rather than `warn` (DL-251), which is a severity change and
-     * not a behavior one.
+     * A CONFIGURED ssh_account whose home does not resolve cannot be certified — every
+     * account-dependent leg would otherwise build a phantom path from an empty home (e.g.
+     * `/.ssh/authorized_keys`) and mis-certify against it. Gated strictly on a non-null
+     * sshAccount: the unset fallback (runUserHome, which can also be '') keeps its
+     * pre-4977 non-authoritative behavior, untouched — that arm now reports `unvalidated`
+     * rather than `warn` (DL-251), which is a severity change and not a behavior one.
      *
-     * @return string|null the fail message, or null when there is nothing to report
+     * TWO CAUSES, TWO SEVERITIES (DL-259, card#5698). Both block certification, so both
+     * report; they differ in what this run is entitled to say about WHY:
+     *   - the account database answered "no such account" ⇒ a MEASURED config fault, and
+     *     the `fail` is earned exactly as before;
+     *   - this process cannot look accounts up at all (no posix_getpwnam) ⇒ nothing was
+     *     measured, and the old code spent that as the same accusation — hard-failing
+     *     `bridge:check` over a perfectly valid account on any host without the extension.
+     *     That is limb (a) of {@see Severity}'s rule, so it is `unvalidated`.
      */
-    private function configuredAccountUnresolved(): ?string
+    private function configuredAccountUnresolved(): ?Finding
     {
-        if ($this->sshAccount !== null && $this->env->homeForUser($this->sshAccount) === '') {
-            return "board_tools.ssh_account '{$this->sshAccount}' does not resolve to an OS account on this host — the SSH transport cannot be certified";
+        if ($this->sshAccount === null) {
+            return null;
+        }
+
+        $home = $this->env->homeForUser($this->sshAccount);
+        if ($home === null) {
+            return Finding::unvalidated("board_tools.ssh_account '{$this->sshAccount}' could NOT be resolved: this PHP process has no posix_getpwnam, so it cannot look OS accounts up at all and never consulted the account database — whether the account exists is UNKNOWN and its absence is NOT a conclusion this run may draw. The SSH transport is left uncertified; enable the posix extension, or certify from a host that has it.");
+        }
+        if ($home === '') {
+            return Finding::fail("board_tools.ssh_account '{$this->sshAccount}' does not resolve to an OS account on this host — the SSH transport cannot be certified");
         }
 
         return null;
@@ -86,7 +106,7 @@ final class SshTransportProbe
     public function probePinnedLine(string $agentName): array
     {
         if (($unresolved = $this->configuredAccountUnresolved()) !== null) {
-            return [Finding::fail($unresolved)];
+            return [$unresolved];
         }
 
         $findings = [];
