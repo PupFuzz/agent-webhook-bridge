@@ -176,23 +176,16 @@ See [`docs/customization.md`](customization.md) for the full classifier API. The
 namespace App\Bridge\Classifiers;
 
 use App\Bridge\Contracts\Classifier;
-use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
-use App\Bridge\Support\AgentConfig;
 
 class MyClassifier implements Classifier
 {
-    public function classify(
-        string $eventType,
-        array $payload,
-        Actor $actor,
-        string $provider,
-        string $scopeId,
-        AgentConfig $agent,
-    ): ClassifyResult {
-        if ($eventType !== 'card.updated') {
+    public function classify(ClassifyContext $ctx): ClassifyResult
+    {
+        if ($ctx->eventType !== 'card.updated') {
             return new ClassifyResult;
         }
 
@@ -202,11 +195,11 @@ class MyClassifier implements Classifier
         // catches this misconfig.
         $intent = new Intent(
             kind: 'card_updated',
-            subjectId: "card:{$payload['id']}",
+            subjectId: "card:{$ctx->payload['id']}",
             provider: 'kanban',
-            actor: $actor,
-            summary: "card {$payload['id']} updated",
-            payload: $payload,
+            actor: $ctx->actor,
+            summary: "card {$ctx->payload['id']} updated",
+            payload: $ctx->payload,
         );
 
         // Read the token from an env var or file; never hardcode.
