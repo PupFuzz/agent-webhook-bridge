@@ -41,6 +41,8 @@ class ChannelTokenPathCheckTest extends TestCase
 
     protected function tearDown(): void
     {
+        @chmod($this->dir.'/locked', 0o755);
+        @chmod($this->dir.'/channel-token', 0o600);
         File::deleteDirectory($this->dir);
         parent::tearDown();
     }
@@ -92,6 +94,51 @@ class ChannelTokenPathCheckTest extends TestCase
         );
     }
 
+    /**
+     * THE PROXY-READER BOUND (card#5698). Same `false` from `is_readable()` as the absent
+     * case above, and the opposite verdict — because `bridge:check` reads as the operator
+     * while `channel_push` reads as the OS user the receiver runs as, so an unreadable-to-US
+     * file is no evidence at all about the push. The pair of tests is the assertion: either
+     * one alone passes against a check hard-wired to one severity.
+     */
+    public function test_a_present_but_unreadable_token_does_not_convict_the_push(): void
+    {
+        $this->skipAsRoot();
+        $path = $this->token('tok', 0o000);
+
+        $findings = $this->findingsFor($path);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('exists but is not readable by THIS process', $findings[0]->message);
+        $this->assertStringNotContainsString('will FAIL', $findings[0]->message);
+    }
+
+    /**
+     * The other half of the same bound, and it routes through the SHARED not-visible guard
+     * rather than paraphrasing it — the remedy differs (grant traversal, not chmod the file).
+     */
+    public function test_a_token_under_an_untraversable_dir_reports_the_shared_not_visible_line(): void
+    {
+        $this->skipAsRoot();
+        $locked = $this->dir.'/locked';
+        mkdir($locked, 0o755);
+        file_put_contents($locked.'/channel-token', 'tok');
+        chmod($locked.'/channel-token', 0o600);
+        chmod($locked, 0o000);
+
+        try {
+            $findings = $this->findingsFor($locked.'/channel-token');
+        } finally {
+            chmod($locked, 0o755);
+        }
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
+        $this->assertStringNotContainsString('will FAIL', $findings[0]->message);
+    }
+
     /** The discriminating control: without it a check hard-wired to warn passes all three above. */
     public function test_a_readable_owner_only_token_is_silent(): void
     {
@@ -106,6 +153,13 @@ class ChannelTokenPathCheckTest extends TestCase
     public function test_a_channel_with_no_token_path_is_silent(): void
     {
         $this->assertSame([], $this->findingsFor(null));
+    }
+
+    private function skipAsRoot(): void
+    {
+        if (function_exists('posix_getuid') && posix_getuid() === 0) {
+            $this->markTestSkipped('root bypasses file permission checks');
+        }
     }
 
     private function token(string $contents, int $mode): string

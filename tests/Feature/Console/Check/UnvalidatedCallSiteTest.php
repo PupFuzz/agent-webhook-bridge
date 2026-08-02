@@ -159,6 +159,18 @@ class UnvalidatedCallSiteTest extends TestCase
         // is deliberately NOT here: those bytes were read, so it is a measured fault and
         // reports `warn`.
         'app/Bridge/Check/Checks/SharedIdentitiesCheck.php' => 1,
+        // card#5698 sub-shape (2): the channel token EXISTS and this process cannot read
+        // it. `bridge:check` reads that token as the operator while `channel_push` reads it
+        // inside the receiver request as another OS user, so the mode that stopped US is no
+        // evidence about the push — limb (b), a measurement of the wrong subject.
+        // ONE site, not two, and the missing one is the point: the sibling arm (the parent
+        // directory denies traversal) constructs nothing here because it routes through
+        // `PathVisibility` above — which is precisely the centralization bound this class's
+        // docblock warns about, so `PathVisibilityAdoptionTest` is what watches that arm.
+        // The THREE uid-INDEPENDENT faults — absent, group/world-readable, blank — are
+        // deliberately absent from this list and keep their `warn`: the receiver hits each
+        // of them identically, so "channel_push will FAIL" is earned.
+        'app/Bridge/Check/Checks/ChannelTokenPathCheck.php' => 1,
     ];
 
     public function test_the_unvalidated_construction_sites_are_exactly_these(): void

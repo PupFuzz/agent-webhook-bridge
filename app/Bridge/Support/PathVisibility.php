@@ -53,11 +53,16 @@ final class PathVisibility
      *
      *     yield PathVisibility::unverifiedUnlessVisible($p, "…") ?? Finding::warn("… absent …");
      *
-     * @param  string  $display  what to NAME in the message. Separate from $path
-     *                           because the traversal a caller must grant is on a
-     *                           DIRECTORY, while $path is often a child probe (an
-     *                           entry file, a token) — naming $path there sends the
-     *                           operator to chmod the wrong thing.
+     * @param  string  $display  what to NAME in the message: the subject the operator
+     *                           would recognize, which is NOT always $path. A leg that
+     *                           probes a child to ask about its container (the channel
+     *                           probe stats the entry file to ask about the deployed
+     *                           DIRECTORY) names the container; a leg whose subject IS
+     *                           the file (a secret, a token) names the file. Both shapes
+     *                           are live and both read correctly, because the message
+     *                           below supplies the cause and the remedy itself — it says
+     *                           a directory ABOVE denies traversal and asks for traversal,
+     *                           never for a chmod of whatever is named here.
      */
     public static function unverifiedUnlessVisible(string $path, string $display): ?Finding
     {
@@ -65,6 +70,22 @@ final class PathVisibility
             return null;
         }
 
+        return self::notVisibleFinding($display);
+    }
+
+    /**
+     * The same finding for a caller that has ALREADY established non-visibility and holds
+     * the answer — a failed READ that classified its own cause, rather than a leg about to
+     * stat (`ChannelToken`, NAMED: this primitive must not import a consumer).
+     *
+     * It exists so that caller reuses the message instead of paraphrasing it, which is the
+     * duplication this class was hoisted to end. Re-statting through
+     * {@see self::unverifiedUnlessVisible} would be the alternative, and it would measure a
+     * second time — a file can change between the read and the re-check, and then the two
+     * measurements disagree about one throw.
+     */
+    public static function notVisibleFinding(string $display): Finding
+    {
         return Finding::unvalidated("{$display} is not visible to this user — a directory above it denies this process traversal (the bridge commonly runs as a different OS user than the agent, and an agent's own directories are often 0700), so this leg could NOT be validated and \"absent\" is NOT a conclusion this run is entitled to draw; re-run bridge:check as the owning user, or grant it traversal");
     }
 

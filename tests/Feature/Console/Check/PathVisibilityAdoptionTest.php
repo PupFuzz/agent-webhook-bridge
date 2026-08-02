@@ -18,8 +18,17 @@ use Tests\TestCase;
  * bare stat moves no number there. Since re-minting exactly that defect at the next stat
  * is the failure this class was carded for, the adopter set needs its own pin.
  *
- * WHAT IT DOES: counts `PathVisibility::unverifiedUnlessVisible(` per file under `app/`.
+ * WHAT IT DOES: counts BOTH of the guard's doors per file under `app/` —
+ * `PathVisibility::unverifiedUnlessVisible(` (stat, then decide) and
+ * `PathVisibility::notVisibleFinding(` (a caller whose failed read already decided).
  * Removing a guard, or adding one, reds this test and forces a deliberate update.
+ *
+ * BOTH DOORS COUNT BECAUSE THE PIN IS ABOUT THE VERDICT, NOT THE STAT. The second door
+ * arrived with card#5698's channel-token slice, where the classification happens inside
+ * `ChannelToken::read` and re-statting at the check would measure the file a second time.
+ * Counting only the statting door would have let that adopter drop its guard — and go back
+ * to convicting the push off a read it made as the wrong OS user — without moving a number
+ * anywhere.
  *
  * WHAT IT DOES NOT DO, stated plainly:
  *  - **It cannot tell anyone a NEW stat needs the guard.** A leg added tomorrow that reads
@@ -67,6 +76,10 @@ class PathVisibilityAdoptionTest extends TestCase
         // the board-tools bearer. The only adopter whose pre-fix severity was `fail`, so
         // it is the one where the overclaim flipped bridge:check's EXIT CODE.
         'app/Bridge/Tools/BoardToolAgentResolver.php' => 1,
+        // the channel auth token (card#5698 sub-shape 2) — the only adopter through the
+        // MESSAGE door: `ChannelToken::read` already classified why it failed, so this leg
+        // has the answer and must not re-measure to render it.
+        'app/Bridge/Check/Checks/ChannelTokenPathCheck.php' => 1,
     ];
 
     public function test_the_guard_adoption_sites_are_exactly_these(): void
@@ -103,7 +116,9 @@ class PathVisibilityAdoptionTest extends TestCase
             if (! $file->isFile() || $file->getExtension() !== 'php') {
                 continue;
             }
-            $n = substr_count($this->codeWithoutComments($file->getPathname()), 'PathVisibility::unverifiedUnlessVisible(');
+            $code = $this->codeWithoutComments($file->getPathname());
+            $n = substr_count($code, 'PathVisibility::unverifiedUnlessVisible(')
+                + substr_count($code, 'PathVisibility::notVisibleFinding(');
             if ($n > 0) {
                 $counts[str_replace(base_path().'/', '', $file->getPathname())] = $n;
             }
