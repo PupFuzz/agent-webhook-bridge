@@ -2223,9 +2223,51 @@ precise everywhere.
 > readability of the declaration differs). **No existing golden file changed**, which is the
 > evidence that the tri-state is inert on every install shape the corpus already covers.
 >
-> **Still open on the class:** the bundled-cause catch, the PATH-proxy leg, the two
-> `WritebackBoardStateCheck` / `idList()`-shaped round-3 members, and the 41-fail / 32-ok severity
-> audit the card reserves.
+> **Still open on the class:** the bundled-cause catch, the PATH-proxy leg, and the 41-fail /
+> 32-ok severity audit the card reserves. **[Corrected — this line was wrong when written.** It
+> also named "the two `WritebackBoardStateCheck` / `idList()`-shaped round-3 members", which
+> DL-256 had already closed in the commit immediately preceding this one. See the note below on
+> why these enumerations are being retired rather than re-synced.**]**
+
+> **[card#5701 UPDATE — the FIRST `Finding::ok` site the stage-10 bound reserved, and it was a
+> live defect.]** Stage 10 disclosed a population it did not sweep: its 32 `Finding::ok`
+> construction sites were never audited against the severity rule. `WritebackSourceCoverageCheck`
+> is the first one read, and it was not merely untidy — on a board whose cards the writeback
+> token's user cannot see, `readBoardCards()` returns no rows on a `200`, the per-card loop never
+> runs, `flagged` stays `0`, and the leg certified **green**: *"dl_number cards on board N all
+> have a mapped source"*. It saw nothing and reported a pass, which is the exact invariant
+> `Severity::Ok` states it must never carry.
+>
+> **The run contradicted itself, and that is the tell** — `WritebackBoardStateCheck`'s DL-029
+> probe prints *"token sees 0 cards … EITHER the board is empty … OR the token's user isn't a
+> member"* in the **same output**. One leg disclosed that the population was unknown while its
+> neighbour certified it clean.
+>
+> **The fix WITHHOLDS rather than re-measures, because nothing here can disambiguate.**
+> `visibility()` reports `total === 0` for both worlds and documents that ambiguity itself;
+> `byRefAvailable()` folds "board not accessible" together with "kanban predates by-ref" and
+> probes only the FIRST mapped board. A second read would buy no discrimination, so the leg
+> yields `unvalidated` on an empty read. **The discriminator is the EMPTY READ, never "no DL
+> cards found"** — a fully-read board that simply holds no DL card was measured, and keeps its
+> `ok`; keying on the DL count would print a cannot-verify line on every healthy board.
+>
+> **Not in tension with DL-256, though the two point opposite ways on the word "empty".** There an
+> empty `data.swimlanes` was a REAL answer and only an ABSENT collection was could-not-see — the
+> payload carried the distinction. Here it carries none: both worlds produce identical rows. Empty
+> is an answer only when the response can still say *which* empty it is.
+>
+> **The golden corpus cannot witness this leg at all** — every fixture holding a writeback client
+> runs `scan` correlation and the check is a no-op outside `ref`, verified by a positive-controlled
+> grep (the leg's messages appear in zero fixtures while `writeback` appears in many). So the proof
+> is a unit test carrying its control in the same run (two boards, one stub, one loop — one read
+> empty, one not), mutation-proven: reverting the branch reds exactly that test and nothing else.
+> **No golden file changed**, and no exit code moved (`unvalidated` is not `fail`).
+>
+> **THE OPEN LIST FOR THIS CLASS LIVES ON card#5698, NOT HERE.** The three `Still open on the
+> class` enumerations above are a second copy of the card's own list, and it has now drifted in
+> both directions — the card was missing DL-257 entirely, and UPDATE 3's copy was wrong the day it
+> was written. Restating a tracked item's state in a doc that does not own it is the defect;
+> retiring those three lines in favour of this pointer is filed on card#5698.
 
 ## Verification
 
