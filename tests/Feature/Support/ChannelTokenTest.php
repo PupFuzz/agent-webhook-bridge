@@ -135,11 +135,4 @@ class ChannelTokenTest extends TestCase
 
         $this->fail("expected ChannelTokenException for {$path}");
     }
-
-    private function skipAsRoot(): void
-    {
-        if (function_exists('posix_getuid') && posix_getuid() === 0) {
-            $this->markTestSkipped('root bypasses file permission checks');
-        }
-    }
 }

@@ -8,9 +8,12 @@ use App\Bridge\Support\Severity;
 use Illuminate\Filesystem\Filesystem;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\SkipsAsRoot;
 
 class ChannelSnapshotProbeTest extends TestCase
 {
+    use SkipsAsRoot;
+
     private string $tmp;
 
     protected function setUp(): void
@@ -497,12 +500,5 @@ class ChannelSnapshotProbeTest extends TestCase
             fn (string $message, int $i): bool => $findings[$i]->severity === $severity,
             ARRAY_FILTER_USE_BOTH,
         ));
-    }
-
-    private function skipAsRoot(): void
-    {
-        if (function_exists('posix_getuid') && posix_getuid() === 0) {
-            $this->markTestSkipped('root bypasses directory permission checks');
-        }
     }
 }

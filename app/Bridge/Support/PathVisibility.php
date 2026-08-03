@@ -31,11 +31,14 @@ namespace App\Bridge\Support;
  * NAMED, never `{@see}`-linked: pint rewrites a docblock FQCN into a real `use`, and an
  * import from `Check\Checks` here would invert the layer — this primitive sits BELOW its
  * consumers.)
- *  - `InstallConfigDirCheck` stays `fail`, because
+ *  - `InstallConfigDirCheck`'s `is_dir()` LEG stays `fail`, because
  *    `CheckCommand` gates its whole agent loop on the same `is_dir()`. Whichever world
  *    it is in, THIS RUN certainly produced a degraded result — a fact about the run,
  *    not about the directory — so the exit code is earned. Only its message needed the
- *    two causes.
+ *    two causes. (Its permissions leg is a different leg with a different consequence and
+ *    DOES adopt this guard, via `DirectoryPermissions` — card#5774. The exemption is
+ *    per-leg, which is the granularity the `Severity` rule itself uses; do not read it as
+ *    "this check is exempt".)
  *  - `AgentApiTokenCheck` needs no guard: its message already says "not readable",
  *    which is TRUE under EACCES and ENOENT alike. A claim its evidence supports is not
  *    a member of this class, however much it looks like one.

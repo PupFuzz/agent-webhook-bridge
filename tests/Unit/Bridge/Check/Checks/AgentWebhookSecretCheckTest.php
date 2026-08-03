@@ -139,13 +139,6 @@ class AgentWebhookSecretCheckTest extends TestCase
         $this->assertStringNotContainsString('run bridge:provision', $findings[0]->message);
     }
 
-    private function skipAsRoot(): void
-    {
-        if (function_exists('posix_getuid') && posix_getuid() === 0) {
-            $this->markTestSkipped('root bypasses directory permission checks');
-        }
-    }
-
     private function secret(string $provider, string $scope, int $mode): void
     {
         $path = SecretPath::for($this->dir, $provider, $scope);

@@ -25,6 +25,12 @@ use Tests\TestCase;
  * THE THREE PERMISSION CASES BELOW ARE ONE ASSERTION IN THREE PARTS. Same-path-insecure
  * and split-secure are not extra coverage of the split-insecure case; they are the two
  * controls that make it mean something, one per operand of the `&&`.
+ *
+ * IT ALSO OWNS BOTH FAILED-STAT ARMS (card#5774), for the same reason it owns the guard:
+ * this is the only caller that can REACH them. Its sibling gates on `is_dir()` before
+ * calling, so a `DirectoryPermissions` unit test would be asserting a state no golden
+ * fixture and no other check can produce — the arms are a property of the primitive, but
+ * their reachability is a property of THIS check.
  */
 class InstallSecretDirCheckTest extends TestCase
 {
@@ -126,6 +132,55 @@ class InstallSecretDirCheckTest extends TestCase
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Ok, $findings[0]->severity);
         $this->assertSame("secret dir: {$this->secretDir}", $findings[0]->message);
+    }
+
+    /**
+     * The card#5774 arm, and the reason this check is where it is asserted: it is the ONLY
+     * caller that can reach a failed stat, because it never existence-checks its dir. Before
+     * the split, this exact config printed the `ok` above and nothing else — a directory the
+     * run could not measure, rendered identically to one measured and found owner-only.
+     */
+    public function test_a_split_layout_secret_dir_that_does_not_exist_is_reported_not_certified(): void
+    {
+        $absent = dirname($this->secretDir).'/gone';
+        config(['bridge.secret_dir' => $absent]);
+
+        $findings = $this->findings();
+
+        $this->assertCount(2, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertSame(Severity::Warn, $findings[1]->severity);
+        $this->assertSame(
+            "secret dir {$absent} does not exist, so its mode could not be checked and nothing can be read from it — create it (chmod 700), or correct the setting that points here",
+            $findings[1]->message,
+        );
+    }
+
+    /**
+     * The other half of the same split, and the control that makes the case above mean
+     * something: an identically-failed `fileperms()` whose CAUSE is this process's own
+     * blindness must not be reported as the measured fact "does not exist" — the operator
+     * would go create a directory that is already there.
+     */
+    public function test_a_secret_dir_this_process_cannot_stat_is_unvalidated_not_declared_absent(): void
+    {
+        $this->skipAsRoot();
+        $nested = $this->secretDir.'/inner';
+        File::ensureDirectoryExists($nested);
+        chmod($this->secretDir, 0o600);
+        config(['bridge.secret_dir' => $nested]);
+
+        try {
+            $findings = $this->findings();
+        } finally {
+            chmod($this->secretDir, 0o700);
+        }
+
+        $this->assertCount(2, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertSame(Severity::Unvalidated, $findings[1]->severity);
+        $this->assertStringContainsString('is not visible to this user', $findings[1]->message);
+        $this->assertStringNotContainsString('does not exist', $findings[1]->message);
     }
 
     /**
