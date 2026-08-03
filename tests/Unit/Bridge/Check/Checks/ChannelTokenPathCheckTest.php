@@ -155,13 +155,6 @@ class ChannelTokenPathCheckTest extends TestCase
         $this->assertSame([], $this->findingsFor(null));
     }
 
-    private function skipAsRoot(): void
-    {
-        if (function_exists('posix_getuid') && posix_getuid() === 0) {
-            $this->markTestSkipped('root bypasses file permission checks');
-        }
-    }
-
     private function token(string $contents, int $mode): string
     {
         $path = $this->dir.'/channel-token';

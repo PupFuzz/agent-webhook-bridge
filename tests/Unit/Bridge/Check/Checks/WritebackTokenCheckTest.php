@@ -129,11 +129,4 @@ class WritebackTokenCheckTest extends TestCase
     {
         return TokenPath::forWriteback($this->dir, 'kanban');
     }
-
-    private function skipAsRoot(): void
-    {
-        if (function_exists('posix_getuid') && posix_getuid() === 0) {
-            $this->markTestSkipped('root bypasses directory permission checks');
-        }
-    }
 }

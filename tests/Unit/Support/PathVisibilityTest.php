@@ -124,11 +124,4 @@ class PathVisibilityTest extends TestCase
         // deepest directory that DOES exist lets us look.
         $this->assertTrue(PathVisibility::ancestorIsTraversable($this->dir.'/a/b/c/d'));
     }
-
-    private function skipAsRoot(): void
-    {
-        if (function_exists('posix_getuid') && posix_getuid() === 0) {
-            $this->markTestSkipped('root bypasses directory permission checks');
-        }
-    }
 }

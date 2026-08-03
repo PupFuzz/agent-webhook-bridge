@@ -53,6 +53,10 @@ class PathVisibilityAdoptionTest extends TestCase
      *  - `InstallConfigDirCheck` — its `fail` is earned in BOTH worlds, because
      *    `CheckCommand` gates the whole agent loop on the same `is_dir()`, so the run is
      *    certainly degraded either way. It carries the two causes in its MESSAGE instead.
+     *    ⚠ That is a statement about its OWN `is_dir()` leg only. Since card#5774 the check
+     *    does reach the guard indirectly, through the `DirectoryPermissions` entry below —
+     *    but it cannot reach the arm behind it (that same `is_dir()` gate runs first), so
+     *    the adoption is the primitive's, not this check's, and it stays off this list.
      *  - `AgentApiTokenCheck` — its message already says "not readable", which is true
      *    under EACCES and ENOENT alike. A claim its evidence supports is not this defect.
      *
@@ -76,6 +80,10 @@ class PathVisibilityAdoptionTest extends TestCase
         // the board-tools bearer. The only adopter whose pre-fix severity was `fail`, so
         // it is the one where the overclaim flipped bridge:check's EXIT CODE.
         'app/Bridge/Tools/BoardToolAgentResolver.php' => 1,
+        // the shared secret-dir permission verdict (card#5774). The only adopter that is a
+        // PRIMITIVE rather than a check: a failed `fileperms()` meant "measured and clean"
+        // here, so the guard sits at the return value both dir checks read.
+        'app/Bridge/Check/DirectoryPermissions.php' => 1,
         // the channel auth token (card#5698 sub-shape 2) — the only adopter through the
         // MESSAGE door: `ChannelToken::read` already classified why it failed, so this leg
         // has the answer and must not re-measure to render it.

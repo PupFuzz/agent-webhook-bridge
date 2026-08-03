@@ -1988,6 +1988,30 @@ no instrument behind it is still closed only by someone re-reading the file.** T
 ask what each one CONCLUDED — and that is a static-analysis job nobody has built. Naming it here is
 the filing; it is not claimed as done.
 
+**A FOURTH CANDIDATE WAS FILED AGAINST THIS SET AND WAS NOT A MEMBER — the misfiling is the more
+useful finding (DL-264, card#5774).** The DL-259 audit found `DirectoryPermissions::warnIfInsecure()`
+returning `null` on a failed `fileperms()`, filed it here as the silent-leg shape, and wrote the
+mechanism down: a green `secret dir: …` line followed by silence, "both halves read as certified."
+Every reader of that card — including the one who implemented it — found the reading obvious, because
+the method returns `?Finding` and `null` is its clean answer. **The real surface disagreed.**
+`fileperms()` on an unstattable path RAISES; under Laravel's error handler the warning becomes an
+uncaught `ErrorException`, so the leg was not silently certifying anything — it was **aborting
+`bridge:check` entirely**, exit 1 with no report rendered for any subsystem. The arm the card
+specified (`$perms === false`) is unreachable: control never returns from that line. **Written as
+filed, the fix would have passed review, passed CI, changed nothing, and left the abort in place.**
+
+Three things this costs the paragraph above, and none of them is "the floor was wrong":
+1. **The floor claim stands and is untouched** — this candidate leaves the silent-leg set at three,
+   because it was never in it. What moved is a member of DL-262/DL-263's *raise* class (the read
+   family, now found in the stat family), which is a different class with a different instrument.
+2. **A `?Finding`-returning helper is the shape that makes the two classes look identical from the
+   call site.** The caller reads `null` and cannot see whether the callee concluded "clean" or never
+   returned at all. That is worth more than the entry: it says where to look for the next one.
+3. **The disclosed-gap discipline did not catch this either.** The card WAS the disclosure, it was
+   specific, and it was wrong about the mechanism — so a disclosure is only as good as the one
+   measurement nobody made. The rule that would have caught it is canon #9, not a better grep: run
+   the command against the state before writing the fix for it.
+
 **THE PAIRING WAS LOAD-BEARING, AND THE GOLDEN CORPUS PROVED IT.** `severityMeansSetupIncomplete()`
 is read at exactly one place — the DL-225 flipped-default advisory — and its only input is
 `SshPinnedLineCheck`, whose two `warn`s are both in the sweep. Left at `Unvalidated => false`, the
