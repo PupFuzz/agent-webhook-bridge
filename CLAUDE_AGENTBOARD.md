@@ -1,4 +1,4 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.27.0) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.28.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **What this is.** The solo-agent orientation generated from the Agent Board Framework
@@ -71,7 +71,7 @@ between sessions; verify the board state reflects actual PR state before proceed
 
 - **Engineering canon** — `~/.claude/CLAUDE.md` (seeded per machine at user level). The
   senior-engineer principles. Always on.
-- **`design-review-loop.md`** — the pre-implementation review-to-zero-findings discipline
+- **`design-review-loop.md`** — the pre-implementation review-to-clean discipline
   you run on your own plan before opening a non-trivial PR.
 - **`doc-sync.md`** — the standing rule that every code PR audits and updates affected docs
   in the same PR.
@@ -153,8 +153,7 @@ merge-button intent) using each repo's own conventions. Use it whenever cutting 
 ## Staying continuously busy — finish-to-next + the bounded self-drive loop
 
 **At every task boundary — finish-to-next (canon #17).** Completing an item ends by pulling
-the next unblocked one from your cross-repo queue (§ Your work loop), not by waiting to be
-prompted:
+the next unblocked one from your cross-repo queue (§ Your work loop):
 
 - **Merged + card state confirmed → pull the next unblocked card.** Nothing in the flow waits
   on a human post between items.
