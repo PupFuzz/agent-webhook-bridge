@@ -2516,6 +2516,20 @@ The existing net goes through the command boundary, so an internal refactor keep
    so an addition reds, and it required making `Finding`'s constructor private to be exhaustive
    at all. **It detects that the set changed and forces a human decision; it cannot say which
    severity is right, and it constrains no `warn` site.**
+8. **The instrument behind items 1 and 3 can now fail out loud, which it could not before**
+   (DL-267, card#5548). Every figure this plan quotes as measured comes from
+   `bin/check-golden-mutate.php`, and a failed `file_put_contents` there used to be laundered
+   into a verdict: no mutant reached the file, the golden run aborted for the unrelated reason,
+   and the run printed `observed-via-abort N · UNOBSERVED 0` at **exit 0** — the strongest-looking
+   outcome this document can carry, produced by a run that measured nothing. Writes are now
+   checked at one primitive that THROWS (not exits — `exit()` skips the `finally` restore and
+   would leave a mutant on disk), a whole-run result set that is uniformly `observed-via-abort`
+   or uniformly `UNOBSERVED` is refused as degenerate rather than rendered, and a narrowed
+   (`--only`/`--limit`) run no longer overwrites the artifacts with a partial population — their
+   header claims to cover every predicate in `handle()`. **This changes no measurement already
+   recorded here**; it changes whether a future one can be fabricated. The standing bound is
+   unchanged and is the reason this item is worth stating: a figure in this document is only as
+   good as the run that produced it, and until now nothing in the run could tell you it had died.
 
 ## Disproved claims — do not restate
 
