@@ -30,6 +30,17 @@
  * RUN IT ON A COPY. It rewrites CheckCommand.php in place between runs and restores it
  * in a `finally`, but a crashed interpreter would leave a mutant on disk — and the whole
  * run takes roughly an hour, during which a commit from the same tree would capture one.
+ *
+ * EVERY WRITE IS CHECKED, and the guard THROWS rather than exits: `exit()` does not run
+ * `finally`, so exiting from the loop would leave a mutant on disk — the poisoning the
+ * paragraph above warns about, caused by the guard meant to prevent it. A failed write
+ * used to be laundered into a verdict: no mutant reached the file, the golden run aborted
+ * for the unrelated reason, and all N predicates scored `observed-via-abort` at rc 0.
+ * A run that could not apply its mutation is a DESTROYED run, not a measurement.
+ *
+ * Artifacts are written only by a FULL run. Under `--only`/`--limit` the verdicts go to
+ * stdout instead, because the generated header claims to cover every predicate in
+ * `handle()` and a narrowed run would make that claim false.
  */
 
 require __DIR__.'/../vendor/autoload.php';
@@ -40,6 +51,23 @@ if ($repo === false || ! is_dir($repo)) {
     fwrite(STDERR, "no such repo\n");
     exit(2);
 }
+
+/**
+ * The one write primitive. Throws — never exits — so the `finally` restore still runs.
+ *
+ * @throws RuntimeException
+ */
+$writeOrThrow = function (string $path, string $contents): void {
+    $written = file_put_contents($path, $contents);
+    if ($written !== strlen($contents)) {
+        throw new RuntimeException(sprintf(
+            'write failed: %s (wrote %s of %d bytes)',
+            $path,
+            $written === false ? 'nothing' : $written,
+            strlen($contents)
+        ));
+    }
+};
 
 $target = $repo.'/app/Console/Commands/Bridge/CheckCommand.php';
 $report = $repo.'/docs/check-golden-coverage.md';
@@ -98,13 +126,14 @@ $runGolden = function () use ($repo): array {
 
 $results = [];
 $started = time();
+$failure = null;
 try {
     foreach ($predicates as $index => $predicate) {
         $replacement = $predicate['kind'] === 'foreach'
             ? '[]'
             : '(! ('.substr($original, $predicate['start'], $predicate['end'] - $predicate['start'] + 1).'))';
         $mutant = substr_replace($original, $replacement, $predicate['start'], $predicate['end'] - $predicate['start'] + 1);
-        file_put_contents($target, $mutant);
+        $writeOrThrow($target, $mutant);
 
         [$red, $failing, $aborted] = $runGolden();
         $status = match (true) {
@@ -118,13 +147,85 @@ try {
         ];
         fprintf(STDERR, "[%3d/%3d] %-24s %s\n", $index + 1, count($predicates), $predicate['id'], $status);
     }
+} catch (Throwable $loopFailure) {
+    $failure = $loopFailure;
 } finally {
-    file_put_contents($target, $original);
+    $restoreFailure = null;
+    try {
+        $writeOrThrow($target, $original);
+    } catch (Throwable $caught) {
+        $restoreFailure = $caught;
+    }
+}
+
+// Both are reported, because they normally co-occur: the mutant write and the restore write
+// address the SAME file, so whatever stopped one stops the other, and reporting only the
+// restore would drop the cause.
+if ($failure !== null || $restoreFailure !== null) {
+    $lines = ["\nABORTED — no measurement was produced and no artifact was written."];
+    if ($failure !== null) {
+        $lines[] = sprintf('  cause:   %s (after %d of %d predicates)',
+            $failure->getMessage(), count($results), count($predicates));
+    }
+    if ($restoreFailure === null) {
+        $lines[] = '  restore: ok — the source is back to the original.';
+    } else {
+        // Never guess at the tree's state: read the file back and report what is actually
+        // there. A "mutant is live" message over a pristine file is a wrong-but-specific
+        // cause, which is worse than a generic one.
+        $lines[] = '  restore: FAILED — '.$restoreFailure->getMessage();
+        $lines[] = file_get_contents($target) === $original
+            ? '  state:   the file still matches the original, so nothing is poisoned — but this'
+                ."\n           tree cannot be written to, and no run from it will mean anything."
+            : "  state:   A MUTANT IS LIVE at {$target}."
+                ."\n           Restore it (git checkout -- <path>) BEFORE running anything from this"
+                ."\n           tree, or the next run reads the mutant as its baseline and every"
+                ."\n           verdict it prints is void.";
+    }
+    fwrite(STDERR, implode("\n", $lines)."\n");
+    exit(2);
 }
 
 $observed = array_values(array_filter($results, fn (array $r) => $r['status'] === 'observed'));
 $viaAbort = array_values(array_filter($results, fn (array $r) => $r['status'] === 'observed-via-abort'));
 $gaps = array_values(array_filter($results, fn (array $r) => $r['status'] === 'UNOBSERVED'));
+
+// `--only`/`--limit` measure a SUBSET, and the generated header claims to cover every
+// predicate in handle(). Writing from a narrowed run would put a false denominator in the
+// repo, so the verdicts go to stdout and the artifacts are left alone.
+$narrowed = isset($options['only']) || isset($options['limit']);
+
+// An empty result set is a measurement that never happened. It reaches here from a `--only`
+// that matched no id (an operator typo, which otherwise exits 0 having printed nothing) or
+// from an enumeration that returned no predicates at all — which on a FULL run would write a
+// report claiming to cover "the 0 branch predicates in handle()".
+if ($results === []) {
+    fwrite(STDERR, "\nNO PREDICATES MEASURED: nothing was run, so there is no result to report.\n"
+        ."Check the --only id against `php bin/check-golden-predicates.php`. No artifact was written.\n");
+    exit(2);
+}
+
+// A degenerate corpus is a measurement failure, not a finding. Two signatures, both meaning
+// the fixture set produced NO discriminating signal at all:
+//   observed-via-abort N — the destroyed-run shape. Every mutant aborted the command
+//     identically. Rendered as `observed-via-abort 35 · UNOBSERVED 0` it reads as the
+//     STRONGEST possible outcome, which is what makes it worth refusing rather than printing.
+//   UNOBSERVED N — the suite provably never went red, so it is not running (a `--filter`
+//     that matches no test exits 0), and "every predicate is a disclosed gap" is a statement
+//     about the harness, not about the command.
+// all-`observed` is NOT refused: every flip being caught is a legitimate strong result.
+// Bounded to a full run — under --only one predicate shares one status trivially.
+$soleStatus = count(array_unique(array_column($results, 'status'))) === 1 ? $results[0]['status'] : null;
+if (! $narrowed && count($results) > 1 && $soleStatus !== null && $soleStatus !== 'observed') {
+    fwrite(STDERR, sprintf(
+        "\nDEGENERATE RESULT SET: all %d predicates scored %s, so nothing was distinguished.\n"
+        ."That is what a harness that is not running looks like, not what a measurement looks\n"
+        ."like. No artifact was written — the files still hold the previous run.\n"
+        ."Check that the golden suite runs at all in %s before re-running.\n",
+        count($results), $soleStatus, $repo
+    ));
+    exit(2);
+}
 
 $rows = '';
 foreach ($gaps as $gap) {
@@ -203,8 +304,40 @@ behavior change confined to them.
 {$abortRows}
 MD;
 
-file_put_contents($report, $doc);
-file_put_contents($repo.'/docs/check-golden-coverage.json', json_encode($results, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+printf("observed %d · observed-via-abort %d · UNOBSERVED %d · total %d\n",
+    count($observed), count($viaAbort), count($gaps), $total);
 
-printf("observed %d · observed-via-abort %d · UNOBSERVED %d · total %d\nwrote %s\n",
-    count($observed), count($viaAbort), count($gaps), $total, $report);
+if ($narrowed) {
+    foreach ($results as $result) {
+        printf("  %-24s %s\n", $result['id'], $result['status']);
+    }
+    printf("narrowed run (--only/--limit) — artifacts NOT written; they must describe every predicate\n");
+    exit(0);
+}
+
+// JSON_THROW_ON_ERROR, not the default false-return: `false."\n"` is `"\n"`, so an encode
+// failure would write a syntactically fine, entirely empty artifact.
+// The two artifacts are written in sequence, so a failure on the second leaves the PAIR
+// disagreeing. Which one landed is tracked rather than assumed: "both still hold the previous
+// run" is false when the report was rewritten and only the JSON failed.
+$wrote = [];
+try {
+    $writeOrThrow($report, $doc);
+    $wrote[] = $report;
+    $writeOrThrow(
+        $repo.'/docs/check-golden-coverage.json',
+        json_encode($results, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n"
+    );
+} catch (Throwable $artifactFailure) {
+    fwrite(STDERR, sprintf(
+        "\nARTIFACT WRITE FAILED: %s\nThe measurement completed but is not fully on disk. %s\n",
+        $artifactFailure->getMessage(),
+        $wrote === []
+            ? 'Neither artifact was written; both still hold the previous run.'
+            : "{$report} WAS rewritten and the JSON was not, so the pair now disagrees —\n"
+                .'re-run before trusting either.'
+    ));
+    exit(2);
+}
+
+printf("wrote %s\n", $report);
