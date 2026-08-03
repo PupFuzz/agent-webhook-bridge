@@ -2337,7 +2337,7 @@ The slot-level argument for the widening being safe is separate and holds: a slo
 
 ## DL-261 — A php-fpm binary this process cannot find is not a receiver without `fastcgi_finish_request()`: the retention preflight stops convicting an install on a PATH read
 
-**Card:** #5698 (sub-shape 3 of the class — the PATH-proxy; **the last member, so the class closes here**) · **PR:** #TBD
+**Card:** #5698 (sub-shape 3 of the class — the PATH-proxy; **the last member, so the class closes here**) · **PR:** #461
 
 **Context.** `RetentionPostureCheck` closed with a definite claim — *"retention: this PHP install has no `fastcgi_finish_request()`"* — and prescribed the cure for it (*"Serve the receiver under PHP-FPM"*). The evidence behind it was `ExecutableFinder->find('php-fpm…')`, which asks one question and it is not that one: **is a php-fpm binary findable on the PATH THIS process sees.** `bridge:check` is a console command, and the CLI SAPI never defines `fastcgi_finish_request()` regardless of how the receiver is served, so the function-existence limb can never carry the answer either. The subject that matters is the **receiver's** process, and this command never runs as it — the same discriminator DL-260 applied to the channel token and DL-254 to the board-tools resolver.
 
@@ -2363,7 +2363,7 @@ The slot-level argument for the widening being safe is separate and holds: a slo
 
 ## DL-262 — A secret this process cannot READ is not a secret that is absent: `SecretFile::read`'s undocumented third outcome becomes part of the contract
 
-**Card:** #5778 · **PR:** #TBD
+**Card:** #5778 · **PR:** #462
 
 **Context.** `SecretFile::read()`'s docblock named exactly two outcomes — *"null when the file is absent or blank … throws `InsecureSecretPermsException` when it is present but group/world-readable"*. There was a third. It delegates to `TokenFile::readTrimmed()`, which gates on `! is_file()` and then calls `file_get_contents()` with nothing between the two: on a file that is PRESENT and unreadable by this process, the early return never fires and the read's warning becomes an uncaught `ErrorException`. Four of the primitive's seven callers never expected it.
 
@@ -2393,7 +2393,7 @@ The slot-level argument for the widening being safe is separate and holds: a slo
 
 ## DL-263 — A file this process cannot READ is not a file that is absent: the `is_file()`-gated read is hoisted to one primitive and the third state reaches every caller
 
-**Card:** #5789 · **PR:** #TBD
+**Card:** #5789 · **PR:** #463
 
 **Context.** DL-262 fixed ONE member of a class and filed the rest. The shape is `if (! is_file($path)) { return <benign>; }` followed by an unguarded read: on a file that is PRESENT and unreadable, the benign early-return never fires (`is_file()` is TRUE) and the read's warning becomes an uncaught `ErrorException` — an outcome none of the sites documented and three were explicitly designed NOT to produce.
 
@@ -2421,7 +2421,7 @@ The slot-level argument for the widening being safe is separate and holds: a slo
 
 ## DL-264 — A directory this process cannot STAT is not a directory it certified: the shared permission verdict gates its own stat, and the filed mechanism was wrong
 
-**Card:** #5774 · **PR:** #TBD
+**Card:** #5774 · **PR:** #464
 
 **Context.** `DirectoryPermissions::warnIfInsecure()` is the one group/world-accessible verdict (DL-014) behind both install dir checks. It ran `clearstatcache(); $perms = fileperms($dir);` with nothing in between, and treated a `false` return as indistinguishable from a clean mode. `InstallSecretDirCheck` never existence-checks its directory — its guard is only `is_string() && str_starts_with('/')` — so a `BRIDGE_SECRET_DIR` pointing at an absent or unseeable path reaches that stat.
 
@@ -2440,7 +2440,7 @@ The card's prescribed fix — an arm on `$perms === false` — is **unreachable*
 
 **Fixed at the primitive, not at the one reachable caller.** `InstallConfigDirCheck` cannot reach the gate (its own `is_dir()` runs first, barring a race), so the arms are live via one caller today — but the false return value is the primitive's, and a third caller would inherit the raise. That is how this class keeps being re-minted (card#5698, DL-262, DL-263).
 
-**⚠ `file_exists()` IS THE GATE, NOT `is_dir()`, and the difference is a deliberate refusal to widen scope.** A `secret_dir` pointing at a REGULAR FILE stats fine and still reports that file's mode through the warn — the wrong subject, but pre-existing and LOUD rather than silent. `is_dir()` would have quietly reclassified it as *"does not exist"*, which is a new false claim, in exactly the class this fix belongs to. Left byte-identical and tracked as **card#5796**, which records the rejected `is_dir()` gate as the reason.
+**⚠ `file_exists()` IS THE GATE, NOT `is_dir()`, and the difference is a deliberate refusal to widen scope.** A `secret_dir` pointing at a REGULAR FILE stats fine and still reports that file's mode through the warn — the wrong subject, but pre-existing and LOUD rather than silent. `is_dir()` would have quietly reclassified it as *"does not exist"*, which is a new false claim, in exactly the class this fix belongs to. Left byte-identical and tracked as **card#5796**, which records the rejected `is_dir()` gate as the reason. **[Superseded by DL-265, which closes the wrong-subject report with a NESTED `is_dir()` arm rather than the gate swap rejected here — the rejection above still stands.]**
 
 **Sibling audit (canon #7), by reading each site rather than trusting the grep.** Every stat-family call in `app/` — `fileperms`, `filetype`, `readlink` — was checked for a pre-gate: `ChannelSnapshotProbe::resolveNonStrict` (gated by `is_link`), `ChannelToken` (behind `is_file && is_readable`), `SocketEndpoint` (behind an early throw on `! file_exists && ! is_link`), `ChannelTransportCheck` (behind `file_exists` in the same short-circuiting `&&`), and `SecretFile` ×2 (`@`-suppressed — confirmed under the console kernel to return `false` without throwing). **`DirectoryPermissions` was the only unguarded one.**
 
@@ -2449,3 +2449,32 @@ The card's prescribed fix — an arm on `$perms === false` — is **unreachable*
 **A duplication found in passing and consolidated rather than extended (canon #5/#7).** The skip-if-root helper these tests need existed as **six** private copies, in two wordings ("directory" vs "file" permission checks) already diverging for no stated reason. Adding a seventh was the alternative. It is now `Tests\Support\SkipsAsRoot` — a **trait, not a method on `Tests\TestCase`**, because `ChannelSnapshotProbeTest` extends PHPUnit's base directly and a method on the Laravel base would have left exactly one file holding a private copy.
 
 **Consequences.** `bridge:check` completes and renders its full report on an install where it previously aborted; the secret-dir leg reports `warn` (absent) or `unvalidated` (unseeable) instead of taking the command down. **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change.** The exit code changes only in that a run which previously died at exit 1 with no output now exits on the merits of its findings. `--format=json` `schema` stays **1** (`unvalidated` and `warn` are existing severities at an existing check id). `PathVisibilityAdoptionTest`'s pinned adopter set gains `DirectoryPermissions.php`; `UnvalidatedCallSiteTest` is unmoved (the construction stays inside `PathVisibility`).
+
+## DL-265 — A path that is not a directory is not a directory with bad permissions: the shared permission verdict names the fault instead of reporting a mode for the wrong subject
+
+**Card:** #5796 · **PR:** #465
+
+**Context.** DL-264 gated `DirectoryPermissions`'s stat on `file_exists()`, which is true for a regular file, a socket, a fifo — anything that stats. So `BRIDGE_SECRET_DIR` pointing at a regular file reached `fileperms()`, succeeded, and rendered that file's real mode under the secret dir's label. Measured on the real command before any code was written:
+
+```
+$ BRIDGE_CONFIG_DIR=$T/cfg BRIDGE_SECRET_DIR=/etc/passwd php artisan bridge:check
+   secret dir: /etc/passwd
+   secret dir /etc/passwd is group/world-accessible (mode 0644) — chmod 700 (it holds secrets)
+   EXIT=0
+```
+
+**The mode is real and the subject is wrong**, which is worse than it looks: the remedy the line gives would be actively harmful if followed (`chmod 700 /etc/passwd`), and the operator's actual fault — *this setting does not point at a directory* — is never named. **This card's filed mechanism was accurate**, unlike DL-264's; it was still re-verified against the running command first, because DL-264 is the standing reason not to trust a filed mechanism.
+
+**Decision — a `! is_dir()` arm NESTED INSIDE the existence gate.** Not a replacement of the outer gate: `is_dir()` alone answers false for an absent path AND for a present non-directory, so promoting it to the outer gate would report a regular file as *"does not exist"* — a new false claim in the class DL-262/263/264 exist to close, which is precisely why DL-264 rejected it and left the wrong-subject report standing. Nesting is what makes the third state expressible without that trade: absent (or unseeable) is answered above, non-directory below. Inside the gate `is_dir()` is conclusive — the stat already succeeded, so a false answer is the file type and never an unreadable ancestor.
+
+**⚠ Severity is `fail`, and this is the primitive's first — it flips the exit code where the run previously exited 0.** The card filed severity as genuinely open rather than assuming the primitive's warn-only posture, and the posture does not carry: **DL-014's warn-not-fail rationale is about a loose MODE**, where the bridge still works and is merely less safe, so operator-owned perms can stay advisory with the DL-010 point-of-use gate as the hard backstop. A path that is not a directory is not a weaker version of that state. Every secret and token resolves *underneath* it (`<dir>/<provider>/…` — `SecretPath` / `TokenPath`), so not one can be opened and no inbound webhook can be verified (`VerifyHmacSignature` reaches `unknown_scope` 401 for every delivery). That is `Severity` limb 1 — the leg answered its question and the answer is a fault proven about THIS install — which is the same ground `InstallConfigDirCheck` stands on when it calls its own unusable-dir state a `fail`, and the same call `ChannelSnapshotProbe` already makes for a `channel.server_path` that names a file rather than a directory. **No healthy install newly reds:** the only state that flips is one that already rejects every webhook.
+
+**Renamed `warnIfInsecure()` → `verdictFor()`.** The old name had already stopped being true when DL-264 gave the method an `unvalidated` arm; a `fail` behind a name promising a warn is a trap for exactly the third caller the primitive's own docblock exists to protect. Two call sites, and the class docblock already called this "the shared permission verdict," so the name was available.
+
+**Sibling audit (canon #7), by reading each site.** The shape is *acting on a path whose type was never established*. Every `file_exists()` in `app/` was read: `SocketEndpoint` asserts `filetype($path) !== 'socket'` and throws; `ChannelTransportCheck` requires `filetype($socket) === 'socket'` and says why in a comment; `ChannelSnapshotProbe` already splits not-a-directory from a dangling symlink and **fails** on the former. Every `is_file()`-gated read (`SecretFile`, `ChannelToken`, `AgentApiTokenCheck`, `WritebackTokenCheck`, `AgentWebhookSecretCheck`, `FileContents`) is type-correct by construction. **`DirectoryPermissions` was the only site that acted on a path without establishing its type** — consistent with DL-264 finding it the only unguarded stat.
+
+**A doc-defect class found in passing and closed (canon #16).** DL-261 through DL-264 all carried `**PR:** #TBD` — the placeholder was never resolved after each merged. Corrected to #461/#462/#463/#464 from the merge commits. The DL-264 CHANGELOG entry's claim that the wrong-subject warn is deliberate was accurate when written and is stale as of this entry; both ship in the same release, so it now points forward to this one rather than contradicting it.
+
+**Tests — watched RED against the un-fixed code.** The new case asserted `Warn` where `Fail` was expected before the arm existed. It asserts the exact message AND that the message does **not** contain `group/world-accessible`: a message naming the right fault would still be wrong if it kept reporting a mode for a subject that has none worth reporting, and only the negative assertion catches that. It lives on `InstallSecretDirCheckTest` for the reason that file already documents — this is the only caller that reaches the primitive without an `is_dir()` of its own.
+
+**Consequences.** A `secret_dir` that exists and is not a directory now **fails** `bridge:check` naming the real fault, instead of exiting 0 with a mode for the wrong subject and harmful advice. **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change.** `--format=json` `schema` stays **1** (`fail` is an existing severity at an existing check id). `PathVisibilityAdoptionTest` and `UnvalidatedCallSiteTest` are both unmoved — the arm constructs neither a `PathVisibility` call nor an `unvalidated`.

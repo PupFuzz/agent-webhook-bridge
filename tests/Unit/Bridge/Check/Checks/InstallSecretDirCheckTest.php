@@ -184,6 +184,37 @@ class InstallSecretDirCheckTest extends TestCase
     }
 
     /**
+     * The card#5796 arm, and the third state the existence gate alone cannot express: a path
+     * that stats fine and is not a directory. It is asserted here for the same reason as the
+     * two arms above — this is the only caller that reaches the primitive without an
+     * `is_dir()` of its own.
+     *
+     * THE MODE ASSERTION IS THE POINT. Before the fix this rendered the file's real mode
+     * under the secret dir's label and told the operator to `chmod 700` it, so the negative
+     * assertion below is the regression the positive one cannot catch: a message naming the
+     * right fault would still be wrong if it kept reporting a mode for a subject that has
+     * none worth reporting.
+     */
+    public function test_a_split_layout_secret_dir_that_is_not_a_directory_fails_instead_of_reporting_its_mode(): void
+    {
+        $file = dirname($this->secretDir).'/not-a-dir';
+        file_put_contents($file, "x\n");
+        chmod($file, 0o644);
+        config(['bridge.secret_dir' => $file]);
+
+        $findings = $this->findings();
+
+        $this->assertCount(2, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertSame(Severity::Fail, $findings[1]->severity);
+        $this->assertSame(
+            "secret dir {$file} exists but is not a directory, so no secret or token can be read from it — correct the setting that points here, or replace that path with a directory (chmod 700)",
+            $findings[1]->message,
+        );
+        $this->assertStringNotContainsString('group/world-accessible', $findings[1]->message);
+    }
+
+    /**
      * An unusable `config_dir` must not suppress this dir's own verdict. The comparison is
      * a strict `!==` against the RAW config value, so a non-string one is unequal to any
      * path and the warn still fires — which is the behaviour the operator needs, since the

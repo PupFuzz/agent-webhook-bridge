@@ -78,8 +78,8 @@ final class InstallConfigDirCheck implements Check
 
         yield Finding::ok("config dir: {$configDir}");
 
-        if (($insecure = DirectoryPermissions::warnIfInsecure('config dir', $configDir)) !== null) {
-            yield $insecure;
+        if (($verdict = DirectoryPermissions::verdictFor('config dir', $configDir)) !== null) {
+            yield $verdict;
         }
     }
 }

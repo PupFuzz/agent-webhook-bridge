@@ -59,8 +59,8 @@ final class InstallSecretDirCheck implements Check
         yield Finding::ok("secret dir: {$secretDir}");
 
         if ($secretDir !== config('bridge.config_dir')
-            && ($insecure = DirectoryPermissions::warnIfInsecure('secret dir', $secretDir)) !== null) {
-            yield $insecure;
+            && ($verdict = DirectoryPermissions::verdictFor('secret dir', $secretDir)) !== null) {
+            yield $verdict;
         }
     }
 }

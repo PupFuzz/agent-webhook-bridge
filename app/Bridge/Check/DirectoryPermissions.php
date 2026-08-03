@@ -6,8 +6,10 @@ use App\Bridge\Support\Finding;
 use App\Bridge\Support\PathVisibility;
 
 /**
- * The group/world-accessible verdict on a directory holding secrets (DL-014), shared by
- * the config-dir and secret-dir checks (DL-242 stage 6).
+ * The verdict on a directory holding secrets (DL-014) — group/world-accessible, absent,
+ * unseeable, or not a directory at all — shared by the config-dir and secret-dir checks
+ * (DL-242 stage 6). It began as the group/world-accessible warn alone; each other state
+ * arrived as a way that warn had been answering a question it had not actually asked.
  *
  * EXTRACTED RATHER THAN COPIED because stage 6 is where the second caller arrives. It
  * was a private method on `CheckCommand` with exactly two call sites, and both migrated
@@ -15,8 +17,10 @@ use App\Bridge\Support\PathVisibility;
  * verdict, which is the defect shape this program exists to remove.
  *
  * IT RETURNS A FINDING OR NULL rather than yielding, because the caller decides where the
- * warn sits in ITS output: the config-dir check emits it directly after its own `ok`
- * line, and the secret-dir check emits it only when the two directories differ.
+ * finding sits in ITS output: the config-dir check emits it directly after its own `ok`
+ * line, and the secret-dir check emits it only when the two directories differ. `null` is
+ * the clean answer and the ONLY clean answer — the severity of a non-null return is the
+ * primitive's call, not the caller's, which is why the method is not named for one.
  *
  * IT STATS ONLY WHAT IT HAS ESTABLISHED IT CAN STAT (DL-264, card#5774), and the guard
  * below is not decoration: `fileperms()` on an unstattable path RAISES, it does not
@@ -37,11 +41,15 @@ use App\Bridge\Support\PathVisibility;
  * race), but a THIRD caller would inherit the raise, which is how this class of defect
  * keeps being re-minted (card#5698, DL-262, DL-263).
  *
- * ⚠ `file_exists()` IS THE GATE, NOT `is_dir()`, and the difference is deliberate. A
- * `secret_dir` pointing at a REGULAR FILE stats fine and still reports its mode through
- * the warn below — wrong subject, but that is the pre-existing behaviour and it is loud
- * rather than silent. `is_dir()` here would have quietly reclassified it as "does not
- * exist", which is a false claim this class exists to stop making. Tracked as card#5796.
+ * ⚠ EXISTENCE AND DIRECTORY-NESS ARE TWO GATES, NESTED, NOT ONE (DL-265, card#5796), and
+ * a single `is_dir()` gate is what BOTH of them refuse to be. `is_dir()` alone answers
+ * false for an absent path AND for a present non-directory, so using it as the outer gate
+ * would report a regular file as "does not exist" — a false absence claim, the class of
+ * error DL-262/263/264 exist to stop making, which is why DL-264 chose `file_exists()`
+ * and left the wrong-subject report standing rather than trade one false claim for
+ * another. Nesting is what makes the third state expressible without that trade: absent
+ * (or unseeable) is answered by the outer gate, and a non-directory by the inner one,
+ * which is this primitive's only `fail` — the method docblock carries why.
  */
 final class DirectoryPermissions
 {
@@ -58,16 +66,34 @@ final class DirectoryPermissions
      * the shared guard's job. Traversable ancestor ⇒ the negative stat is conclusive and
      * the path is genuinely absent, which is a measured fact and stays `warn`: an absent
      * dir cannot be chmod'd, and the DL-010 point-of-use gate is fail-closed over it
-     * exactly as it is over a loose mode, so neither arm flips the exit code this
-     * primitive has never flipped.
+     * exactly as it is over a loose mode.
+     *
+     * A NON-DIRECTORY IS THE ONE ARM THAT FAILS, AND DL-014's WARN RATIONALE DOES NOT
+     * REACH IT (DL-265, card#5796). That rationale is about a loose MODE, where the bridge
+     * still works and is merely less safe, so the operator-owned perms can stay advisory.
+     * A path that is not a directory is not a weaker version of that state: every secret
+     * and token resolves UNDER this path (`<dir>/<provider>/…` — see `SecretPath` /
+     * `TokenPath`), so not one of them can be opened and no inbound webhook can be
+     * verified. That is `Severity`'s limb 1 — the leg answered its question, and the
+     * answer is a fault proven about THIS install — which is the same ground the sibling
+     * config-dir leg stands on when it calls its own unusable-dir state a `fail`. It is
+     * also why the arm cannot be reported as a mode: the file's mode is real but its
+     * subject is wrong, and `chmod 700` on it is advice that would make things worse.
      */
-    public static function warnIfInsecure(string $label, string $dir): ?Finding
+    public static function verdictFor(string $label, string $dir): ?Finding
     {
         clearstatcache(true, $dir);
 
         if (! file_exists($dir)) {
             return PathVisibility::unverifiedUnlessVisible($dir, "{$label} {$dir}")
                 ?? Finding::warn("{$label} {$dir} does not exist, so its mode could not be checked and nothing can be read from it — create it (chmod 700), or correct the setting that points here");
+        }
+
+        // INSIDE the existence gate, so this arm cannot absorb an absent path (which has
+        // its own answer above) and `is_dir()` is conclusive here: the stat already
+        // succeeded, so a false answer is the file type, never an unreadable ancestor.
+        if (! is_dir($dir)) {
+            return Finding::fail("{$label} {$dir} exists but is not a directory, so no secret or token can be read from it — correct the setting that points here, or replace that path with a directory (chmod 700)");
         }
 
         // `!== false` is a type guard, not a reachability one: the gate above already
