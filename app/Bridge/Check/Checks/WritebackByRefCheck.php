@@ -5,6 +5,7 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckRunner;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 use App\Bridge\Writeback\WritebackClientFactory;
 use Throwable;
@@ -38,18 +39,24 @@ final class WritebackByRefCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
         $writeback = $ctx->writeback;
         $client = $ctx->client;
         if ($writeback === null || $client === null || $writeback->mappings === []) {
-            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
+            yield Silence::because('there is no writeback config, no constructed client, or no repo mapping — so there is no board to probe by-ref reachability against');
+
+            return;
         }
         if (config('bridge.writeback.correlation', 'ref') !== 'ref') {
-            return;   // scan mode does not use by-ref at all
+            yield Silence::because('correlation is scan, which never calls the by-ref route, so its reachability decides nothing for this install');
+
+            return;
         }
+        // NO TRAILING DECLARATION: every path past the guards yields — both arms of the
+        // probe result, and the `catch`.
 
         $firstBoard = (int) array_values($writeback->mappings)[0]->boardId;
         try {

@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\PerAgentCheck;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\PathVisibility;
@@ -40,13 +41,15 @@ final class AgentWebhookSecretCheck implements PerAgentCheck
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function runFor(AgentConfig $config, CheckContext $ctx): iterable
     {
         $secretDir = $ctx->secretDir;
         if ($secretDir === null) {
-            return;   // no absolute secret dir ⇒ no path to check; recorded in the run inventory (DL-242 stage 8)
+            yield Silence::because('no absolute secret dir resolved, so there is no secret path to check — the dir itself is reported by the install plane');
+
+            return;
         }
 
         $name = $config->agentName;
@@ -59,5 +62,7 @@ final class AgentWebhookSecretCheck implements PerAgentCheck
                 yield Finding::warn("agent {$name}: ".SecretFile::permsMessage($secretPath).' — the receiver will 500 (secret_perms_insecure) until fixed');
             }
         }
+
+        yield Silence::because('every subscription this agent declares has a present, securely-permissioned webhook secret — and an agent with no subscriptions has no secret to check');
     }
 }

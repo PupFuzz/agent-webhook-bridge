@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 use App\Bridge\Writeback\CoordConfigTerminals;
 use App\Bridge\Writeback\GitHubTokenResolver;
@@ -41,13 +42,15 @@ final class WritebackMappingConfigCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
         $writeback = $ctx->writeback;
         if ($writeback === null || $writeback->mappings === []) {
-            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
+            yield Silence::because('there is no writeback config or it maps no repo, so there is no mapping whose keys could disagree with each other');
+
+            return;
         }
 
         foreach ($writeback->mappings as $repo => $mapping) {
@@ -174,6 +177,8 @@ final class WritebackMappingConfigCheck implements Check
                 }
             }
         }
+
+        yield Silence::because('every mapping has a subscribed writeback-emitting classifier and no half-configured optional leg — each of the legs above speaks only when a key is set without the key it needs');
     }
 
     /**

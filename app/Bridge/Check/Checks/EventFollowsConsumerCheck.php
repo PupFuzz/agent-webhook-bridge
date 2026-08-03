@@ -7,6 +7,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\EventConsumers\EventConsumerReconciler;
 use App\Bridge\Check\EventConsumers\EventConsumerScope;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 
 /**
@@ -79,13 +80,15 @@ final class EventFollowsConsumerCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
         $reconciliation = $ctx->eventConsumers;
         if ($reconciliation === null) {
-            return;   // nothing was derived for this run; the inventory records the disposition (DL-242 stage 8)
+            yield Silence::because('no event-consumer reconciliation was derived for this run, so there is no arrived-vs-consumed comparison to report on — the envelope that skipped it records why');
+
+            return;
         }
 
         foreach ($reconciliation->scopes as $scope) {
@@ -151,6 +154,8 @@ final class EventFollowsConsumerCheck implements Check
             // fail the install check.
             yield Finding::unvalidated('event-consumer: check skipped — '.$reconciliation->error);
         }
+
+        yield Silence::because('the reconciliation completed and every subscribed scope came back with nothing to say — either nothing has arrived on it yet (the per-scope silence the loop above declares in prose), or everything that arrived is consumed and action-declared');
     }
 
     /**

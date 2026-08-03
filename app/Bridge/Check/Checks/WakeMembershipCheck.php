@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\PerAgentCheck;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use Throwable;
@@ -43,7 +44,7 @@ final class WakeMembershipCheck implements PerAgentCheck
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function runFor(AgentConfig $config, CheckContext $ctx): iterable
     {
@@ -52,7 +53,9 @@ final class WakeMembershipCheck implements PerAgentCheck
         $coordMessageOn = $families === [] || in_array('coord-message', $families, true);
 
         if (! $coordMessageOn || ! $config->classifierConfig->has('wake_membership')) {
-            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
+            yield Silence::because('this agent does not run coord-message, or it declares no explicit wake_membership — the advisory exists only for a list the operator narrowed by hand, never for the fleet default');
+
+            return;
         }
 
         try {
@@ -63,5 +66,7 @@ final class WakeMembershipCheck implements PerAgentCheck
         } catch (Throwable $e) {
             yield Finding::fail("agent {$name}: classifier.config.wake_membership — ".$e->getMessage());
         }
+
+        yield Silence::because('this agent narrowed wake_membership by hand and its list still carries comment_to, so no directed reply goes dark');
     }
 }

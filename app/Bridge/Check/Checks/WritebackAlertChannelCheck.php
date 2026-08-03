@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\PathVisibility;
 use App\Bridge\Validation\EndpointValidationException;
@@ -35,13 +36,15 @@ final class WritebackAlertChannelCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
         $ac = $ctx->writeback?->alertChannel;
         if ($ac === null) {
-            return;   // not configured; recorded in the run inventory (DL-242 stage 8)
+            yield Silence::because('this install declares no writeback alert_channel — an optional block, and every path past this guard reports, so this is the only silence the check has');
+
+            return;
         }
 
         $socket = $ac->socket;

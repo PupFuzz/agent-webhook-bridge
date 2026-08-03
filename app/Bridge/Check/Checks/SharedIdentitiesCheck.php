@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\Finding;
 
@@ -37,11 +38,13 @@ final class SharedIdentitiesCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
         if ($ctx->configDir === null || ! is_file($path = rtrim($ctx->configDir, '/').'/shared-identities.json')) {
+            yield Silence::because('there is no shared-identities.json to read — the file is optional, and an install where no two agents share an account correctly has none');
+
             return;
         }
 

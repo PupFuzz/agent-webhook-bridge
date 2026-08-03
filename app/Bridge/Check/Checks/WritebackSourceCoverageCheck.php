@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\Finding;
 use App\Bridge\Writeback\WritebackConfig;
@@ -67,18 +68,25 @@ final class WritebackSourceCoverageCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
         $writeback = $ctx->writeback;
         $client = $ctx->client;
         if ($writeback === null || $client === null || $writeback->mappings === []) {
-            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
+            yield Silence::because('there is no writeback config, no constructed client, or no repo mapping — so there is no board whose dl cards could have an uncovered source');
+
+            return;
         }
         if (config('bridge.writeback.correlation', 'ref') !== 'ref') {
-            return;   // scan mode does not repo-qualify, so there is no coverage gap to find
+            yield Silence::because('correlation is scan, which does not repo-qualify the lookup, so there is no coverage gap of this shape to find');
+
+            return;
         }
+        // NO TRAILING DECLARATION: past the guards, `mappings` is non-empty so the board
+        // loop runs at least once, and every board iteration yields on all four arms
+        // (read-failed / truncated / empty-read / clean).
 
         // repos mapped to each board, canonicalized to match the kanban's derived source.
         $refs = new ExternalReferenceNormalizer;

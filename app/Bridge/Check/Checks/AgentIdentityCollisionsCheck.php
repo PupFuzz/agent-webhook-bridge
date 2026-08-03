@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 
 /**
@@ -42,16 +43,20 @@ final class AgentIdentityCollisionsCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
         if ($ctx->registry === null) {
+            yield Silence::because('no agent registry was built, so there is no roster to compare identities across — the build failure is reported where it happens');
+
             return;
         }
 
         foreach ($ctx->registry->collisions() as $warning) {
             yield Finding::warn($warning);
         }
+
+        yield Silence::because('the registry build found no two agents sharing a kanban user id, github user id or github login');
     }
 }

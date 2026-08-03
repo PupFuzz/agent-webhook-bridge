@@ -6,6 +6,7 @@ use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckDisposition;
 use App\Bridge\Check\CheckSlot;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\UrlValidator;
 use Throwable;
@@ -49,7 +50,7 @@ final class InstallEndpointUrlsCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
@@ -69,5 +70,7 @@ final class InstallEndpointUrlsCheck implements Check
                 yield Finding::fail($e->getMessage());
             }
         }
+
+        yield Silence::because('every configured endpoint URL validated — and an unset one is skipped rather than judged, because absence is this install not using that endpoint');
     }
 }

@@ -5,6 +5,7 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckSlot;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 
 /**
@@ -34,7 +35,7 @@ final class BoardToolsSuppressedCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
@@ -46,5 +47,7 @@ final class BoardToolsSuppressedCheck implements Check
 
             yield Finding::fail("board_tools: agent {$config->agentName}: {$bt->suppressedReason} — board tools are OFF for this agent (a default-on block could not be satisfied). Fix the config, or set enabled: false to stage it silently.");
         }
+
+        yield Silence::because('no config carries a default-on board_tools block that could not satisfy itself — the scan covers every config, including a fleet with no board_tools at all');
     }
 }
