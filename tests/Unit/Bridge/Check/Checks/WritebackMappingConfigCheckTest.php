@@ -9,6 +9,7 @@ use App\Bridge\Support\Severity;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Support\Facades\File;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -35,6 +36,8 @@ use Tests\TestCase;
  */
 class WritebackMappingConfigCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private const REPO = 'owner/repo';
 
     private const BOARD = 8;
@@ -356,7 +359,7 @@ class WritebackMappingConfigCheckTest extends TestCase
 
         return array_map(
             fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
-            iterator_to_array((new WritebackMappingConfigCheck)->run($ctx), false),
+            $this->findingsOf((new WritebackMappingConfigCheck), $ctx),
         );
     }
 

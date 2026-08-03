@@ -7,6 +7,7 @@ use App\Bridge\Check\Checks\WakeMembershipCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -23,6 +24,8 @@ use Tests\TestCase;
  */
 class WakeMembershipCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     public function test_it_warns_when_an_explicit_membership_omits_comment_to(): void
     {
         $findings = $this->findingsFor(['wake_membership' => ['to_me']]);
@@ -93,9 +96,6 @@ class WakeMembershipCheckTest extends TestCase
             'classifier' => ['config' => $classifierConfig],
         ]);
 
-        return iterator_to_array(
-            (new WakeMembershipCheck)->runFor($config, new CheckContext),
-            false,
-        );
+        return $this->findingsOfFor(new WakeMembershipCheck, $config, new CheckContext);
     }
 }

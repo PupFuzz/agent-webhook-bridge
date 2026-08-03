@@ -10,6 +10,7 @@ use Illuminate\Cache\ArrayStore;
 use Illuminate\Cache\Repository;
 use Illuminate\Support\Facades\Cache;
 use RuntimeException;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -36,6 +37,8 @@ use Tests\TestCase;
  */
 class RetentionPostureCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     /** @var list<string> */
     private array $tmpDirs = [];
 
@@ -184,7 +187,7 @@ class RetentionPostureCheckTest extends TestCase
     {
         return array_map(
             fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
-            iterator_to_array($check->run(new CheckContext), false),
+            $this->findingsOf($check, new CheckContext),
         );
     }
 }

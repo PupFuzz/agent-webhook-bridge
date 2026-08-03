@@ -9,6 +9,7 @@ use App\Bridge\Check\CheckResult;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\CheckSlot;
 use App\Bridge\Check\PerAgentCheck;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
@@ -288,6 +289,65 @@ class CheckRunnerTest extends TestCase
 
         $this->assertSame([], $runner->run(CheckSlot::BoardToolsSsh, new CheckContext)->results);
         $this->assertSame([], $runner->runForAgent(CheckSlot::AgentConfig, $this->agent('a'), new CheckContext)->results);
+    }
+
+    public function test_a_check_yielding_only_a_declared_silence_produces_a_result_with_no_findings(): void
+    {
+        // THE STRIP-CONTAINMENT PIN (card#5596). `CheckRunner::materialize()` is the only
+        // place a `Silence` is removed from a yield stream, and that containment is the
+        // whole safety argument for putting a non-`Finding` on the wire at all: every
+        // renderer builds from `CheckResult::$findings`, so if the strip holds here no
+        // renderer can be handed one to print. Asserted at the RESULT, not at the report's
+        // flattened findings — a result carrying a leaked sentinel with the report
+        // filtering it later would satisfy the weaker assertion and still be wrong.
+        $check = new class implements Check
+        {
+            public function id(): string
+            {
+                return 'declared.silent';
+            }
+
+            public function run(CheckContext $ctx): iterable
+            {
+                yield Silence::because('nothing was configured, which is the supported default');
+            }
+        };
+
+        $report = (new CheckRunner)->register(CheckSlot::ProbeToolsSsh, $check)->run(CheckSlot::ProbeToolsSsh, new CheckContext);
+
+        $this->assertCount(1, $report->results);
+        $this->assertSame('declared.silent', $report->results[0]->id);
+        $this->assertSame([], $report->results[0]->findings);
+        $this->assertSame([], $report->findings());
+    }
+
+    public function test_a_declaration_yielded_alongside_findings_is_stripped_and_does_not_disturb_their_order(): void
+    {
+        // The PRIMARY idiom is a TRAILING unconditional yield, so the mixed stream is the
+        // common case and not an oddity: a declaration states what a silence WOULD mean,
+        // and the check cannot know while running whether it will be silent. Position is
+        // asserted because the strip is a `continue` inside the materialize loop — an
+        // implementation that appended survivors after the sentinel would reorder output,
+        // which is the byte-identical contract breaking.
+        $check = new class implements Check
+        {
+            public function id(): string
+            {
+                return 'mixed';
+            }
+
+            public function run(CheckContext $ctx): iterable
+            {
+                yield Finding::warn('first');
+                yield Silence::because('this run had something to say, so this is ignored');
+                yield Finding::ok('second');
+            }
+        };
+
+        $report = (new CheckRunner)->register(CheckSlot::ProbeToolsSsh, $check)->run(CheckSlot::ProbeToolsSsh, new CheckContext);
+
+        $this->assertSame(['first', 'second'], array_map(fn (Finding $f) => $f->message, $report->results[0]->findings));
+        $this->assertSame([0, 1], array_keys($report->results[0]->findings));
     }
 
     public function test_the_report_flattens_severities_without_interpreting_them(): void

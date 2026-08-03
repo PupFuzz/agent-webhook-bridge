@@ -8,6 +8,7 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -25,6 +26,8 @@ use Tests\TestCase;
  */
 class AgentTreatAsSignalCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     public function test_it_fails_the_agent_whose_treat_as_signal_names_no_known_agent(): void
     {
         $findings = $this->findingsFor(['alpha' => ['ghost']]);
@@ -74,7 +77,7 @@ class AgentTreatAsSignalCheckTest extends TestCase
             'echo_suppression' => ['treat_as_signal' => ['ghost']],
         ])];
 
-        $this->assertSame([], iterator_to_array((new AgentTreatAsSignalCheck)->run($ctx), false));
+        $this->assertSame([], $this->findingsOf((new AgentTreatAsSignalCheck), $ctx));
     }
 
     /**
@@ -97,6 +100,6 @@ class AgentTreatAsSignalCheckTest extends TestCase
         $ctx->configs = $configs;
         $ctx->registry = AgentRegistry::fromAgentConfigs($configs);
 
-        return iterator_to_array((new AgentTreatAsSignalCheck)->run($ctx), false);
+        return $this->findingsOf((new AgentTreatAsSignalCheck), $ctx);
     }
 }

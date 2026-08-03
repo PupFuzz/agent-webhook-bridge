@@ -12,6 +12,7 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -51,6 +52,7 @@ use Tests\TestCase;
  */
 class EventFollowsConsumerCheckTest extends TestCase
 {
+    use MaterializesChecks;
     use RefreshDatabase;
 
     private const SCOPE = 'owner/repo';
@@ -77,7 +79,7 @@ class EventFollowsConsumerCheckTest extends TestCase
         $this->arrived('issues.closed');
 
         $this->assertNull($ctx->eventConsumers);
-        $this->assertSame([], iterator_to_array((new EventFollowsConsumerCheck)->run($ctx), false));
+        $this->assertSame([], $this->findingsOf((new EventFollowsConsumerCheck), $ctx));
     }
 
     public function test_a_scope_where_nothing_arrived_is_silent(): void
@@ -620,6 +622,6 @@ class EventFollowsConsumerCheckTest extends TestCase
     {
         $ctx->eventConsumers = (new EventConsumerReconciler)->reconcile($ctx->githubScopeConsumers);
 
-        return iterator_to_array((new EventFollowsConsumerCheck)->run($ctx), false);
+        return $this->findingsOf((new EventFollowsConsumerCheck), $ctx);
     }
 }

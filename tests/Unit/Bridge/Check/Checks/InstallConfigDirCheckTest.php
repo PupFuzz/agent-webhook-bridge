@@ -7,6 +7,7 @@ use App\Bridge\Check\Checks\InstallConfigDirCheck;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use Illuminate\Support\Facades\File;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -29,6 +30,8 @@ use Tests\TestCase;
  */
 class InstallConfigDirCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private string $dir;
 
     protected function setUp(): void
@@ -131,6 +134,6 @@ class InstallConfigDirCheckTest extends TestCase
     /** @return list<Finding> */
     private function findings(?CheckContext $ctx = null): array
     {
-        return iterator_to_array((new InstallConfigDirCheck)->run($ctx ?? new CheckContext), false);
+        return $this->findingsOf((new InstallConfigDirCheck), $ctx ?? new CheckContext);
     }
 }

@@ -7,6 +7,7 @@ use App\Bridge\Check\Checks\BoardToolsSuppressedCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -26,6 +27,8 @@ use Tests\TestCase;
  */
 class BoardToolsSuppressedCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     public function test_a_suppressed_default_block_fails(): void
     {
         // `board_tools:` present with no strict-bool `enabled` and an unsatisfiable
@@ -49,7 +52,7 @@ class BoardToolsSuppressedCheckTest extends TestCase
         $ctx->configs = [$this->suppressedAgent('prod-agent')];
         $ctx->boardToolsEnabled = [];
 
-        $findings = iterator_to_array((new BoardToolsSuppressedCheck)->run($ctx), false);
+        $findings = $this->findingsOf((new BoardToolsSuppressedCheck), $ctx);
 
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Fail, $findings[0]->severity);
@@ -130,6 +133,6 @@ class BoardToolsSuppressedCheckTest extends TestCase
         $ctx = new CheckContext;
         $ctx->configs = $configs;
 
-        return iterator_to_array((new BoardToolsSuppressedCheck)->run($ctx), false);
+        return $this->findingsOf((new BoardToolsSuppressedCheck), $ctx);
     }
 }

@@ -9,6 +9,7 @@ use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use Illuminate\Support\Facades\File;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -35,6 +36,8 @@ use Tests\TestCase;
  */
 class ChannelTransportCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private string $dir;
 
     /** @var resource|null */
@@ -334,7 +337,7 @@ class ChannelTransportCheckTest extends TestCase
             'subscriptions' => [],
         ]);
 
-        $findings = iterator_to_array((new ChannelTransportCheck($probe))->runFor($config, new CheckContext), false);
+        $findings = $this->findingsOfFor((new ChannelTransportCheck($probe)), $config, new CheckContext);
 
         $this->assertSame([], $findings);
         $this->assertSame([], $probe->dsns);
@@ -377,7 +380,7 @@ class ChannelTransportCheckTest extends TestCase
             'channel' => $channel,
         ]);
 
-        return iterator_to_array((new ChannelTransportCheck($probe))->runFor($config, new CheckContext), false);
+        return $this->findingsOfFor((new ChannelTransportCheck($probe)), $config, new CheckContext);
     }
 
     /** A probe that records what it was asked, so a silent leg can be told from an unreached one. */

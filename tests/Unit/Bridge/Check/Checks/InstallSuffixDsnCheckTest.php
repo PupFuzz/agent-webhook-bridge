@@ -6,6 +6,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Checks\InstallSuffixDsnCheck;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -28,6 +29,8 @@ use Tests\TestCase;
  */
 class InstallSuffixDsnCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     public function test_a_crosstalking_install_reports_the_guards_own_diagnosis(): void
     {
         config([
@@ -63,6 +66,6 @@ class InstallSuffixDsnCheckTest extends TestCase
     /** @return list<Finding> */
     private function findingsFrom(): array
     {
-        return iterator_to_array((new InstallSuffixDsnCheck)->run(new CheckContext), false);
+        return $this->findingsOf((new InstallSuffixDsnCheck), new CheckContext);
     }
 }

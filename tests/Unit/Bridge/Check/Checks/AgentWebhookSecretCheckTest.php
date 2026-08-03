@@ -9,6 +9,7 @@ use App\Bridge\Support\Finding;
 use App\Bridge\Support\SecretPath;
 use App\Bridge\Support\Severity;
 use Illuminate\Support\Facades\File;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -29,6 +30,8 @@ use Tests\TestCase;
  */
 class AgentWebhookSecretCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private string $dir;
 
     protected function setUp(): void
@@ -160,6 +163,6 @@ class AgentWebhookSecretCheckTest extends TestCase
         $ctx = new CheckContext;
         $ctx->secretDir = $withSecretDir ? $this->dir : null;
 
-        return iterator_to_array((new AgentWebhookSecretCheck)->runFor($config, $ctx), false);
+        return $this->findingsOfFor((new AgentWebhookSecretCheck), $config, $ctx);
     }
 }

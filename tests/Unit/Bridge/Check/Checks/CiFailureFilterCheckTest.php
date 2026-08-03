@@ -7,6 +7,7 @@ use App\Bridge\Check\Checks\CiFailureFilterCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -22,6 +23,8 @@ use Tests\TestCase;
  */
 class CiFailureFilterCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     public function test_it_warns_when_the_filter_is_set_and_the_family_is_enabled(): void
     {
         $findings = $this->findingsFor([
@@ -95,9 +98,6 @@ class CiFailureFilterCheckTest extends TestCase
             'classifier' => ['config' => $classifierConfig],
         ]);
 
-        return iterator_to_array(
-            (new CiFailureFilterCheck)->runFor($config, new CheckContext),
-            false,
-        );
+        return $this->findingsOfFor(new CiFailureFilterCheck, $config, new CheckContext);
     }
 }

@@ -9,6 +9,7 @@ use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Support\SharedIdentity;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -26,6 +27,8 @@ use Tests\TestCase;
  */
 class AgentIdentityCollisionsCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     public function test_it_warns_once_per_colliding_identity_axis(): void
     {
         $findings = $this->findingsFor([
@@ -103,7 +106,7 @@ class AgentIdentityCollisionsCheckTest extends TestCase
             new SharedIdentity(githubUserId: 42, githubLogin: 'shared-bot', agentNames: ['alpha', 'beta']),
         ]);
 
-        $this->assertSame([], iterator_to_array((new AgentIdentityCollisionsCheck)->run($ctx), false));
+        $this->assertSame([], $this->findingsOf((new AgentIdentityCollisionsCheck), $ctx));
     }
 
     /** The healthy population — distinct identities must stay silent. */
@@ -122,7 +125,7 @@ class AgentIdentityCollisionsCheckTest extends TestCase
      */
     public function test_it_is_silent_when_no_registry_was_built(): void
     {
-        $findings = iterator_to_array((new AgentIdentityCollisionsCheck)->run(new CheckContext), false);
+        $findings = $this->findingsOf((new AgentIdentityCollisionsCheck), new CheckContext);
 
         $this->assertSame([], $findings);
     }
@@ -144,6 +147,6 @@ class AgentIdentityCollisionsCheckTest extends TestCase
         $ctx = new CheckContext;
         $ctx->registry = AgentRegistry::fromAgentConfigs($configs);
 
-        return iterator_to_array((new AgentIdentityCollisionsCheck)->run($ctx), false);
+        return $this->findingsOf((new AgentIdentityCollisionsCheck), $ctx);
     }
 }

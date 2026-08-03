@@ -6,6 +6,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Checks\InboxSurfacingConfigCheck;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -26,6 +27,8 @@ use Tests\TestCase;
  */
 class InboxSurfacingConfigCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     public function test_the_ok_line_carries_the_configured_layout(): void
     {
         config(['bridge.inbox_layout' => 'shared']);
@@ -87,6 +90,6 @@ class InboxSurfacingConfigCheckTest extends TestCase
     /** @return list<Finding> */
     private function findings(): array
     {
-        return iterator_to_array((new InboxSurfacingConfigCheck)->run(new CheckContext), false);
+        return $this->findingsOf((new InboxSurfacingConfigCheck), new CheckContext);
     }
 }

@@ -77,14 +77,37 @@ class CheckInventoryLineTest extends TestCase
         return $out[0][1];
     }
 
-    /** The internal-defect disclosure, or null when the inventory does not emit one. */
+    /**
+     * Every warn-channel message, in emission order.
+     *
+     * There are TWO internal-defect disclosures on this channel now (card#5596 added the
+     * undeclared-silence one), and they are independent — an inventory can carry both.
+     *
+     * @return list<string>
+     */
+    private function warns(CheckInventory $inventory): array
+    {
+        return array_values(array_map(
+            fn (array $pair) => $pair[1],
+            array_filter($this->emissions($inventory), fn (array $pair) => $pair[0] === 'warn'),
+        ));
+    }
+
+    /**
+     * The sole internal-defect disclosure, or null when the inventory does not emit one.
+     *
+     * The ≤1 assertion is a real guard for the shapes its callers build (none of them
+     * declares an undeclared silence, so only the not-run disclosure can fire) — it catches
+     * a composition that started emitting a second pair. Shapes that intend both
+     * disclosures use {@see self::warns()} instead.
+     */
     private function internal(CheckInventory $inventory): ?string
     {
-        $warns = array_values(array_filter($this->emissions($inventory), fn (array $pair) => $pair[0] === 'warn'));
+        $warns = $this->warns($inventory);
 
         $this->assertLessThanOrEqual(1, count($warns), 'the inventory emits at most one disclosure');
 
-        return $warns === [] ? null : $warns[0][1];
+        return $warns === [] ? null : $warns[0];
     }
 
     /**
@@ -94,6 +117,7 @@ class CheckInventoryLineTest extends TestCase
      * no install produces, which is the entire reason this file exists.
      *
      * @param  array<string, string>  $reasons  reason keyed by not-run ORDINAL (`not-run-0`)
+     * @param  list<string>  $undeclaredSilent  ids with an undeclared silent execution
      */
     private function inventory(
         int $reported = 0,
@@ -101,6 +125,7 @@ class CheckInventoryLineTest extends TestCase
         int $notRequested = 0,
         int $notRun = 0,
         array $reasons = [],
+        array $undeclaredSilent = [],
     ): CheckInventory {
         $dispositions = [];
         foreach ([
@@ -114,7 +139,7 @@ class CheckInventoryLineTest extends TestCase
             }
         }
 
-        return new CheckInventory($dispositions, $reasons);
+        return new CheckInventory($dispositions, $reasons, $undeclaredSilent);
     }
 
     // ---- the always-present head ----
@@ -304,5 +329,75 @@ class CheckInventoryLineTest extends TestCase
 
         $this->assertCount(1, $out);
         $this->assertSame('line', $out[0][0]);
+    }
+
+    // ---- the undeclared-silence disclosure (card#5596) ----
+
+    public function test_an_undeclared_silent_check_adds_a_disclosure_on_the_warn_channel(): void
+    {
+        // The same call-site witness as the not-run disclosure above, and needed for the
+        // same reason: no golden fixture reaches this arm — every path the corpus exercises
+        // is declared, which `CheckJsonContractTest` asserts rather than assumes — so
+        // without this the whole block could be deleted with the corpus still byte-identical.
+        //
+        // Unlike the not-run disclosure, this one IS reachable on a real install: whether a
+        // silent path executes is a fact about the operator's config, not about `handle()`.
+        $out = $this->emissions($this->inventory(
+            reported: 1,
+            silent: 1,
+            undeclaredSilent: ['silent-0'],
+        ));
+
+        $this->assertCount(2, $out, 'an undeclared silent check must add a second emission');
+        $this->assertSame('line', $out[0][0]);
+        $this->assertSame('warn', $out[1][0], 'the disclosure is a WARN — an unjudged silent path is something to act on');
+        $this->assertStringContainsString('bridge:check internal:', $out[1][1]);
+        $this->assertStringContainsString('did not declare that silence', $out[1][1]);
+        // NAMED, not merely counted — an operator reporting the bug needs the id, and this
+        // is the half of the message a count-only composition would still satisfy.
+        $this->assertStringContainsString('(silent-0)', $out[1][1]);
+    }
+
+    public function test_several_undeclared_silent_checks_are_all_named_and_counted(): void
+    {
+        $disclosure = $this->warns($this->inventory(
+            silent: 3,
+            undeclaredSilent: ['silent-0', 'silent-2'],
+        ));
+
+        $this->assertCount(1, $disclosure);
+        $this->assertStringContainsString('2 registered check(s)', $disclosure[0]);
+        $this->assertStringContainsString('(silent-0, silent-2)', $disclosure[0]);
+        // The declared one must not be swept in with them — the list is the runner's, not a
+        // re-derivation from the `Silent` disposition, and a composition that folded over
+        // `$dispositions` instead would name all three.
+        $this->assertStringNotContainsString('silent-1', $disclosure[0]);
+    }
+
+    public function test_a_run_whose_silent_checks_all_declared_discloses_nothing(): void
+    {
+        // The other half of the decision. Appending unconditionally would pass every string
+        // assertion above and print a "bug in bridge:check" warn on every healthy install —
+        // the arm this file exists because the corpus cannot state.
+        $out = $this->emissions($this->inventory(reported: 2, silent: 4));
+
+        $this->assertCount(1, $out);
+        $this->assertSame('line', $out[0][0]);
+    }
+
+    public function test_the_two_internal_disclosures_are_independent_and_both_print(): void
+    {
+        // They answer different questions — a slot whose invocation was forgotten vs. a
+        // path whose silence nobody judged — so neither may swallow the other. Order is
+        // asserted because both land on one channel and an operator reads them in sequence.
+        $warns = $this->warns($this->inventory(
+            silent: 1,
+            notRun: 1,
+            undeclaredSilent: ['silent-0'],
+        ));
+
+        $this->assertCount(2, $warns);
+        $this->assertStringContainsString('did not run and this command did not record why', $warns[0]);
+        $this->assertStringContainsString('did not declare that silence', $warns[1]);
     }
 }

@@ -8,6 +8,7 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use Illuminate\Support\Facades\File;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -29,6 +30,8 @@ use Tests\TestCase;
  */
 class ChannelTokenPathCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private string $dir;
 
     protected function setUp(): void
@@ -181,6 +184,6 @@ class ChannelTokenPathCheckTest extends TestCase
             'channel' => $channel,
         ]);
 
-        return iterator_to_array((new ChannelTokenPathCheck)->runFor($config, new CheckContext), false);
+        return $this->findingsOfFor((new ChannelTokenPathCheck), $config, new CheckContext);
     }
 }

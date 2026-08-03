@@ -9,6 +9,7 @@ use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use Illuminate\Support\Facades\File;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -29,6 +30,8 @@ use Tests\TestCase;
  */
 class BoardToolsBearerCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private string $dir;
 
     protected function setUp(): void
@@ -178,7 +181,7 @@ class BoardToolsBearerCheckTest extends TestCase
         $ctx = new CheckContext;
 
         $this->assertNull($ctx->boardToolsResolver);
-        $this->assertSame([], iterator_to_array((new BoardToolsBearerCheck)->run($ctx), false));
+        $this->assertSame([], $this->findingsOf((new BoardToolsBearerCheck), $ctx));
     }
 
     public function test_every_problem_is_reported_in_resolver_order(): void
@@ -230,6 +233,6 @@ class BoardToolsBearerCheckTest extends TestCase
         $ctx = new CheckContext;
         $ctx->boardToolsResolver = new BoardToolAgentResolver($configs);
 
-        return iterator_to_array((new BoardToolsBearerCheck)->run($ctx), false);
+        return $this->findingsOf((new BoardToolsBearerCheck), $ctx);
     }
 }

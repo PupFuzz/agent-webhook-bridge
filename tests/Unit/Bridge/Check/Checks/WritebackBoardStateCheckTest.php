@@ -12,6 +12,7 @@ use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -44,6 +45,8 @@ use Tests\TestCase;
  */
 class WritebackBoardStateCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private const REPO = 'owner/repo';
 
     private const BOARD = 8;
@@ -741,7 +744,7 @@ class WritebackBoardStateCheckTest extends TestCase
 
         return array_map(
             fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
-            iterator_to_array((new WritebackBoardStateCheck)->run($ctx), false),
+            $this->findingsOf((new WritebackBoardStateCheck), $ctx),
         );
     }
 

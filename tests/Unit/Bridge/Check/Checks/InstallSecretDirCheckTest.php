@@ -7,6 +7,7 @@ use App\Bridge\Check\Checks\InstallSecretDirCheck;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use Illuminate\Support\Facades\File;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -34,6 +35,8 @@ use Tests\TestCase;
  */
 class InstallSecretDirCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private string $configDir;
 
     private string $secretDir;
@@ -236,6 +239,6 @@ class InstallSecretDirCheckTest extends TestCase
     /** @return list<Finding> */
     private function findings(): array
     {
-        return iterator_to_array((new InstallSecretDirCheck)->run(new CheckContext), false);
+        return $this->findingsOf((new InstallSecretDirCheck), new CheckContext);
     }
 }

@@ -10,6 +10,7 @@ use App\Bridge\Support\Severity;
 use App\Bridge\Writeback\KanbanClient;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -30,6 +31,8 @@ use Tests\TestCase;
  */
 class BoardToolsBoardStateCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     public function test_zero_cards_warns_with_both_readings(): void
     {
         $this->fakeBoard(total: 0);
@@ -212,7 +215,7 @@ class BoardToolsBoardStateCheckTest extends TestCase
         $ctx = new CheckContext;
 
         $this->assertNull($ctx->boardToolsClient);
-        $this->assertSame([], iterator_to_array((new BoardToolsBoardStateCheck)->runFor($this->agent(), $ctx), false));
+        $this->assertSame([], $this->findingsOfFor((new BoardToolsBoardStateCheck), $this->agent(), $ctx));
     }
 
     public function test_an_agent_without_a_board_tools_block_reports_nothing(): void
@@ -221,7 +224,7 @@ class BoardToolsBoardStateCheckTest extends TestCase
         $ctx->boardToolsClient = new KanbanClient('https://kanban.test', 'wb-token');
         $config = AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]);
 
-        $this->assertSame([], iterator_to_array((new BoardToolsBoardStateCheck)->runFor($config, $ctx), false));
+        $this->assertSame([], $this->findingsOfFor((new BoardToolsBoardStateCheck), $config, $ctx));
     }
 
     /** @param array<string, mixed> $extra */
@@ -278,7 +281,7 @@ class BoardToolsBoardStateCheckTest extends TestCase
 
         return array_map(
             fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
-            iterator_to_array((new BoardToolsBoardStateCheck)->runFor($config, $ctx), false),
+            $this->findingsOfFor((new BoardToolsBoardStateCheck), $config, $ctx),
         );
     }
 
