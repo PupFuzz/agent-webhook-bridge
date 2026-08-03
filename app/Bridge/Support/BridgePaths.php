@@ -36,16 +36,38 @@ final class BridgePaths
      * to appendJsonl). Missing file → []. Non-object/garbage lines are skipped.
      * One canonical parse so every state-file consumer agrees on the flags.
      *
+     * A file that is PRESENT and unreadable propagates, for readSeen's reason and one
+     * more: this reader backs the inbox itself, so [] would report "no intents staged"
+     * for a file the process cannot read — the strongest form of the
+     * assert-absence-off-a-permission-denial defect (card#5698). The `?: []` this used to
+     * carry was already dead code under the console and HTTP kernels, where `file()`'s
+     * warning becomes an ErrorException before the fallback is ever reached; it only ran
+     * under a logging-only handler, which is exactly the ambient-state dependence
+     * card#5789 removed.
+     *
+     * BOUND, stated because it looks closed and is not: this covers the READ. An
+     * UNTRAVERSABLE ancestor directory is a different measurement — `is_file()` answers
+     * false for it exactly as for a removed path, so that state still returns [] here.
+     * That is the stat-side shape `PathVisibility` guards for `bridge:check` (NAMED, not
+     * `{@see}`-linked), and no read-side primitive can reach it.
+     *
      * @return list<array<string, mixed>>
      */
     public static function readJsonl(string $path): array
     {
-        if (! is_file($path)) {
+        $raw = FileContents::read($path, 'state file');
+        if ($raw === null) {
             return [];
         }
         $rows = [];
-        foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $raw) {
-            $row = json_decode($raw, true);
+        // strtok, not explode: it yields one line at a time instead of materializing a
+        // second copy of the file as an array, so peak memory is the string plus a line
+        // rather than the string PLUS the array — strictly below what file() itself
+        // peaked at (DL-199 measured ~126MB of array for a 31MB inbox). Its
+        // consecutive-delimiter collapse is exactly file()'s
+        // FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES for this consumer.
+        for ($line = strtok($raw, "\n"); $line !== false; $line = strtok("\n")) {
+            $row = json_decode($line, true);
             if (is_array($row)) {
                 $rows[] = $row;
             }
@@ -113,15 +135,21 @@ final class BridgePaths
      * peek — the reader that only needs to filter (bridge:inbox's unseen scan) uses
      * this; the read-modify-write callers go through updateSeenLocked instead.
      *
+     * A cursor that is PRESENT and unreadable is neither missing nor garbage, and the
+     * `UnreadableFileException` for it PROPAGATES rather than degrading to []. Fail-soft
+     * would be strictly worse here, not merely less tidy: bridge:inbox filters on the
+     * result, so an empty cursor re-surfaces every already-seen intent, and on the
+     * advancing path updateSeenLocked then opens the same file `c+` and throws anyway.
+     * The caller would emit a duplicate inbox and THEN die; on a non-advancing run
+     * (`--no-cursor-advance`, or a hook event whose stdout reaches no consumer) it would
+     * emit the duplicate and exit 0. Aborting is the outcome this path already had;
+     * card#5789 only made the diagnosis name the permissions fault.
+     *
      * @return list<string>
      */
     public static function readSeen(string $path): array
     {
-        if (! is_file($path)) {
-            return [];
-        }
-
-        return self::decodeSeen((string) file_get_contents($path));
+        return self::decodeSeen(FileContents::read($path, 'seen-cursor') ?? '');
     }
 
     /**

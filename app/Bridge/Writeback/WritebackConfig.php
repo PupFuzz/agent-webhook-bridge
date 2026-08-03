@@ -3,6 +3,8 @@
 namespace App\Bridge\Writeback;
 
 use App\Bridge\Exceptions\ConfigException;
+use App\Bridge\Exceptions\UnreadableFileException;
+use App\Bridge\Support\FileContents;
 use App\Bridge\Support\PathHelper;
 
 /**
@@ -55,15 +57,28 @@ final class WritebackConfig
         public readonly ?AlertChannel $alertChannel = null,
     ) {}
 
-    /** Load the policy, or null when `writeback.json` is absent (writeback off). */
+    /**
+     * Load the policy, or null when `writeback.json` is absent (writeback off).
+     *
+     * A file that is PRESENT and unreadable raises ConfigException, never null: null means
+     * "writeback is off", and answering it for a permissions fault would silently disable
+     * every card move on the receiver's dispatch path with nothing said (card#5789). The
+     * outcome is what it always was — this path already threw, as an undocumented
+     * `ErrorException` — so only the type and the diagnosis change.
+     */
     public static function load(string $configDir): ?self
     {
         $path = rtrim($configDir, '/').'/writeback.json';
-        if (! is_file($path)) {
+        try {
+            $contents = FileContents::read($path, 'writeback.json');
+        } catch (UnreadableFileException $e) {
+            throw new ConfigException($e->getMessage(), previous: $e);
+        }
+        if ($contents === null) {
             return null;
         }
 
-        $raw = json_decode((string) file_get_contents($path), true);
+        $raw = json_decode($contents, true);
         if (! is_array($raw) || array_is_list($raw)) {
             throw new ConfigException("writeback.json at {$path} is not a valid JSON object");
         }

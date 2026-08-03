@@ -3,6 +3,7 @@
 namespace App\Bridge\Support;
 
 use App\Bridge\Dispatch\Actor;
+use App\Bridge\Exceptions\UnreadableFileException;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -132,11 +133,25 @@ final class AgentRegistry
     public static function loadSharedIdentities(string $configDir): array
     {
         $path = rtrim($configDir, '/').'/shared-identities.json';
-        if (! is_file($path)) {
+        try {
+            $contents = FileContents::read($path, 'shared-identities.json');
+        } catch (UnreadableFileException $e) {
+            // The ONE site in card#5789's class that degrades rather than propagates, and the
+            // fail-soft contract above is why: this loader's other caller is the receiver,
+            // which must not 5xx over an optional policy file. It already answered [] for a
+            // file it could not PARSE; answering [] for one it could not READ is the same
+            // ruling reaching the same state, and it is what SharedIdentitiesCheck has
+            // documented this loader as doing all along. That check re-reads the file itself
+            // and is where the operator-facing discrimination is pronounced (DL-259).
+            Log::warning($e->getMessage().' — ignoring it; agents sharing an account lose their attribution');
+
+            return [];
+        }
+        if ($contents === null) {
             return [];
         }
 
-        $raw = json_decode((string) file_get_contents($path), true);
+        $raw = json_decode($contents, true);
         if (! is_array($raw)) {
             Log::warning("shared-identities.json at {$path} is not valid JSON / not an object; ignoring it");
 

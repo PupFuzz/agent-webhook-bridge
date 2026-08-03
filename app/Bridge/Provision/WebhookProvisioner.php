@@ -2,9 +2,11 @@
 
 namespace App\Bridge\Provision;
 
+use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\BridgePaths;
 use App\Bridge\Support\SecretFile;
 use App\Bridge\Support\SecretPath;
+use App\Bridge\Support\TokenFile;
 use Throwable;
 
 /**
@@ -106,9 +108,20 @@ final class WebhookProvisioner
         if (SecretFile::isInsecure($secretPath)) {
             return ProvisionResult::cannotReconcile($kind, SecretFile::permsMessage($secretPath));
         }
-        $secret = is_file($secretPath) ? trim((string) file_get_contents($secretPath)) : '';
-        if ($secret === '') {
-            return ProvisionResult::cannotReconcile($kind, $secretPath);
+        // The perms gate above is the one SecretFile::read() would apply, and it maps the
+        // insecure case to a structured refusal rather than the exception that primitive
+        // throws — so the read goes to TokenFile directly (the ChannelToken shape). Reusing
+        // it rather than re-deriving trim/blank/unreadable is the point: this hand-rolled
+        // copy is what left an unreadable secret escaping as an ErrorException, which
+        // ProvisionCommand renders as "API error" — blaming the upstream for a local
+        // permissions fault (card#5789).
+        try {
+            $secret = TokenFile::readTrimmed($secretPath);
+        } catch (UnreadableSecretException $e) {
+            return ProvisionResult::cannotReconcile($kind, $e->getMessage());
+        }
+        if ($secret === null) {
+            return ProvisionResult::cannotReconcile($kind, "secret missing at {$secretPath}");
         }
 
         $client->deleteWebhook($match['id'] ?? $id);
