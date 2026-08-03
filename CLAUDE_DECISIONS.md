@@ -2483,7 +2483,7 @@ $ BRIDGE_CONFIG_DIR=$T/cfg BRIDGE_SECRET_DIR=/etc/passwd php artisan bridge:chec
 
 ## DL-266 — A check must DECLARE its silence: the deliberate empty yield stops being inferred and becomes a `Silence` yielded on the path that produced it
 
-**Card:** #5596 · **PR:** #TBD
+**Card:** #5596 · **PR:** #467
 
 **Context.** DL-242 stage 8 made a check's silence **visible and counted** — `CheckDisposition::Silent`, with the whole registry accounted for on every completing run. It could not say what that silence MEANT. Two different things produced the identical row: a check that looked and correctly had nothing to report, and a check falling off the end of its generator through a path its author did not intend. The stage disclosed that bound as open in `docs/CHECK-REGISTRY-PLAN.md` and filed it as card#5596, recording the deferral's reasoning so it would not later read as arbitrary. This is that landing.
 
