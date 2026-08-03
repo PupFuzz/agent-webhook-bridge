@@ -5,6 +5,7 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckDisposition;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 
 /**
@@ -29,11 +30,13 @@ final class WritebackIdentityCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
         if ($ctx->writeback === null || $ctx->writeback->identityId !== null) {
+            yield Silence::because('there is no writeback config to judge, or it carries the identity_id that makes its own card_updated webhook echo-suppressed — the healthy case');
+
             return;
         }
 

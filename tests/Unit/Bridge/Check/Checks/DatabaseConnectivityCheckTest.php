@@ -6,6 +6,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Checks\DatabaseConnectivityCheck;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -27,6 +28,8 @@ use Tests\TestCase;
  */
 class DatabaseConnectivityCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     public function test_an_unresolvable_connection_is_reported_rather_than_aborting_the_check(): void
     {
         config([
@@ -85,6 +88,6 @@ class DatabaseConnectivityCheckTest extends TestCase
     /** @return list<Finding> */
     private function findingsFrom(): array
     {
-        return iterator_to_array((new DatabaseConnectivityCheck)->run(new CheckContext), false);
+        return $this->findingsOf((new DatabaseConnectivityCheck), new CheckContext);
     }
 }

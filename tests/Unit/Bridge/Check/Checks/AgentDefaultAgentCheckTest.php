@@ -7,6 +7,7 @@ use App\Bridge\Check\Checks\AgentDefaultAgentCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -23,6 +24,8 @@ use Tests\TestCase;
  */
 class AgentDefaultAgentCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     public function test_it_warns_when_the_default_agent_names_no_scanned_config(): void
     {
         $findings = $this->findingsFor('ghost-agent', ['prod-agent'], '/etc/bridge');
@@ -77,7 +80,7 @@ class AgentDefaultAgentCheckTest extends TestCase
 
         config(['bridge.default_agent' => 'broken-agent']);
 
-        $this->assertSame([], iterator_to_array((new AgentDefaultAgentCheck)->run($ctx), false));
+        $this->assertSame([], $this->findingsOf((new AgentDefaultAgentCheck), $ctx));
     }
 
     /**
@@ -108,6 +111,6 @@ class AgentDefaultAgentCheckTest extends TestCase
         $ctx->agentNames = $agentNames;
         $ctx->configDir = $configDir;
 
-        return iterator_to_array((new AgentDefaultAgentCheck)->run($ctx), false);
+        return $this->findingsOf((new AgentDefaultAgentCheck), $ctx);
     }
 }

@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\PerAgentCheck;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use Throwable;
@@ -41,7 +42,7 @@ final class CiFailureFilterCheck implements PerAgentCheck
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function runFor(AgentConfig $config, CheckContext $ctx): iterable
     {
@@ -55,5 +56,7 @@ final class CiFailureFilterCheck implements PerAgentCheck
         } catch (Throwable $e) {
             yield Finding::fail("agent {$name}: classifier.config.ci_failure_workflow_patterns — ".$e->getMessage());
         }
+
+        yield Silence::because('this agent sets no ci_failure_workflow_patterns, or does not run impl-ci-wake at all — there is no filter narrowing its CI-failure wakes, so nothing to put in front of the operator');
     }
 }

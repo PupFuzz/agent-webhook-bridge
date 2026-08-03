@@ -10,6 +10,7 @@ use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -30,6 +31,8 @@ use Tests\TestCase;
  */
 class WritebackByRefCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private const REPO = 'owner/repo';
 
     private const BOARD = 8;
@@ -151,7 +154,7 @@ class WritebackByRefCheckTest extends TestCase
 
         return array_map(
             fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
-            iterator_to_array((new WritebackByRefCheck)->run($ctx), false),
+            $this->findingsOf((new WritebackByRefCheck), $ctx),
         );
     }
 }

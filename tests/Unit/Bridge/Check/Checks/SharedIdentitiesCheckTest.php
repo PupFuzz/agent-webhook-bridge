@@ -7,6 +7,7 @@ use App\Bridge\Check\Checks\SharedIdentitiesCheck;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use Illuminate\Support\Facades\File;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -27,6 +28,8 @@ use Tests\TestCase;
  */
 class SharedIdentitiesCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private string $dir;
 
     protected function setUp(): void
@@ -132,7 +135,7 @@ class SharedIdentitiesCheckTest extends TestCase
     {
         $ctx = new CheckContext;
 
-        $this->assertSame([], iterator_to_array((new SharedIdentitiesCheck)->run($ctx), false));
+        $this->assertSame([], $this->findingsOf((new SharedIdentitiesCheck), $ctx));
     }
 
     /** @param array<string, mixed> $payload */
@@ -147,6 +150,6 @@ class SharedIdentitiesCheckTest extends TestCase
         $ctx = new CheckContext;
         $ctx->configDir = $this->dir;
 
-        return iterator_to_array((new SharedIdentitiesCheck)->run($ctx), false);
+        return $this->findingsOf((new SharedIdentitiesCheck), $ctx);
     }
 }

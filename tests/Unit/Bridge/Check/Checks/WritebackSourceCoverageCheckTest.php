@@ -11,6 +11,7 @@ use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -28,6 +29,8 @@ use Tests\TestCase;
  */
 class WritebackSourceCoverageCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private const BOARD = 8;
 
     protected function setUp(): void
@@ -264,7 +267,7 @@ class WritebackSourceCoverageCheckTest extends TestCase
 
         return array_map(
             fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
-            iterator_to_array((new WritebackSourceCoverageCheck)->run($ctx), false),
+            $this->findingsOf((new WritebackSourceCoverageCheck), $ctx),
         );
     }
 

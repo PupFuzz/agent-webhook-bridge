@@ -7,6 +7,7 @@ use App\Bridge\Check\Checks\BoardToolsSshDefaultAdvisoryCheck;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -27,6 +28,8 @@ use Tests\TestCase;
  */
 class BoardToolsSshDefaultAdvisoryCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private const MESSAGE = 'board_tools ssh: agent prod-agent is on ssh by the v0.68.0 default (no explicit transport:); its ssh setup is incomplete or could not be verified from here — pin `transport: http` to keep the loopback path, or complete ssh setup and run `sudo bridge:check` to certify.';
 
     public function test_an_implicit_ssh_agent_with_incomplete_setup_is_advised(): void
@@ -107,6 +110,6 @@ class BoardToolsSshDefaultAdvisoryCheckTest extends TestCase
         $ctx = new CheckContext;
         $ctx->sshSetupIncomplete = $incomplete;
 
-        return iterator_to_array((new BoardToolsSshDefaultAdvisoryCheck)->runFor($config, $ctx), false);
+        return $this->findingsOfFor((new BoardToolsSshDefaultAdvisoryCheck), $config, $ctx);
     }
 }

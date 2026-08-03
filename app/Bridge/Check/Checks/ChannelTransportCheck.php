@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\PerAgentCheck;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Support\Finding;
@@ -66,7 +67,7 @@ final class ChannelTransportCheck implements PerAgentCheck
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function runFor(AgentConfig $config, CheckContext $ctx): iterable
     {
@@ -75,12 +76,17 @@ final class ChannelTransportCheck implements PerAgentCheck
             yield from $this->socketLegs($config->agentName, $channel->socket);
         } elseif ($channel->url !== null) {
             yield from $this->httpLegs($config->agentName, $channel->url);
+        } else {
+            // DECLARED HERE AND NOT AS ONE TRAILING LINE (card#5596): this arm's silence
+            // and a clean socket leg's silence are different facts about the install, and
+            // a single declaration at the end of the method would launder them into one
+            // sentence that is only true of one of them.
+            yield Silence::because('this agent configures neither channel.socket nor channel.url, so there is no transport to probe — an agent that needs one is reported where the push is attempted');
         }
-        // else: no channel configured; recorded in the run inventory (DL-242 stage 8)
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     private function socketLegs(string $name, string $socket): iterable
     {
@@ -114,6 +120,8 @@ final class ChannelTransportCheck implements PerAgentCheck
                 yield Finding::warn("agent {$name}: channel socket {$socket} exists but nothing is listening (stale socket / no live session) — live-wake no-ops until a session starts. If a session IS running, its connector may have come up deaf (look for a .FAILED marker).");
             }
         }
+
+        yield Silence::because('the socket parent dir exists and is writable, no bind-FAILURE marker is present, and no socket file exists to probe — the ordinary between-sessions state, where there is nothing wrong to report and nothing live to certify');
     }
 
     /**

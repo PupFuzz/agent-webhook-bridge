@@ -6,6 +6,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Checks\InstallProviderAdaptersCheck;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -35,6 +36,8 @@ use Tests\TestCase;
  */
 class InstallProviderAdaptersCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     public function test_every_configured_provider_having_an_adapter_yields_nothing(): void
     {
         config(['bridge.providers' => ['kanban' => ['api_base_url' => 'https://kanban.example.com'], 'github' => []]]);
@@ -73,6 +76,6 @@ class InstallProviderAdaptersCheckTest extends TestCase
     /** @return list<Finding> */
     private function findings(): array
     {
-        return iterator_to_array((new InstallProviderAdaptersCheck)->run(new CheckContext), false);
+        return $this->findingsOf((new InstallProviderAdaptersCheck), new CheckContext);
     }
 }

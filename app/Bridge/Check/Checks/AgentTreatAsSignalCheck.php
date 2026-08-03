@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\SignalAllowlist;
 use Throwable;
@@ -50,11 +51,13 @@ final class AgentTreatAsSignalCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
         if ($ctx->registry === null) {
+            yield Silence::because('no agent registry was built, so there is no roster to resolve treat_as_signal names against — the build failure is reported where it happens');
+
             return;
         }
 
@@ -65,5 +68,7 @@ final class AgentTreatAsSignalCheck implements Check
                 yield Finding::fail("agent {$config->agentName}: ".$e->getMessage());
             }
         }
+
+        yield Silence::because('every agent\'s treat_as_signal entries resolve against the roster — including the common case of no agent declaring any');
     }
 }

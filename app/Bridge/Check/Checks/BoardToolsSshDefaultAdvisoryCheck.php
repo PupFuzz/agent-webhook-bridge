@@ -5,6 +5,7 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckSlot;
 use App\Bridge\Check\PerAgentCheck;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 
@@ -46,15 +47,19 @@ final class BoardToolsSshDefaultAdvisoryCheck implements PerAgentCheck
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function runFor(AgentConfig $config, CheckContext $ctx): iterable
     {
         $bt = $config->boardTools;
         if ($bt === null || $bt->transportExplicit) {
-            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
+            yield Silence::because('this agent has no board_tools block, or it names transport: explicitly — the advisory exists only for a block that got ssh from the v0.68.0 flipped default');
+
+            return;
         }
         if (($ctx->sshSetupIncomplete[$config->agentName] ?? false) !== true) {
+            yield Silence::because('this agent is on ssh by the flipped default, and the ssh slot reported its setup complete — the advisory has nothing to warn about');
+
             return;
         }
 

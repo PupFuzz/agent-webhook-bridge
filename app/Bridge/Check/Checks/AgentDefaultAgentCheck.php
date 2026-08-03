@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 
 /**
@@ -32,7 +33,7 @@ final class AgentDefaultAgentCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
@@ -41,5 +42,7 @@ final class AgentDefaultAgentCheck implements Check
         if (is_string($defaultAgent) && $defaultAgent !== '' && ! in_array($defaultAgent, $ctx->agentNames, true)) {
             yield Finding::warn("BRIDGE_DEFAULT_AGENT '{$defaultAgent}' has no matching config {$ctx->configDir}/{$defaultAgent}.yml");
         }
+
+        yield Silence::because('no BRIDGE_DEFAULT_AGENT is set, or the one set names a config this scan found — the healthy case, and the overwhelmingly common one');
     }
 }

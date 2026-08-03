@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 use App\Bridge\Writeback\GitHubRepoProbe;
 use App\Bridge\Writeback\GitHubRepoProbeKind;
@@ -51,12 +52,14 @@ final class ReconcileRepoTokensCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
         if ($ctx->secretDir === null || $ctx->writeback === null || $ctx->writeback->mappings === []) {
-            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
+            yield Silence::because('this install maps no repo to reconcile — no secret dir, no writeback config, or no mappings — so there is no per-repo token to probe');
+
+            return;
         }
 
         $probe = new GitHubRepoProbe;
@@ -82,5 +85,7 @@ final class ReconcileRepoTokensCheck implements Check
                     break;
             }
         }
+
+        yield Silence::because('every mapped repo resolved a token that GitHub accepted — the Ok arm is the one that reports nothing, and this is what its silence means');
     }
 }

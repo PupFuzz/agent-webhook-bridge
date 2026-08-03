@@ -41,13 +41,18 @@ enum CheckDisposition: string
      * and the whole point of this enum is that the three are no longer indistinguishable
      * from one another in a green run.
      *
-     * ⚠ IT IS ALSO NOT DISTINGUISHABLE FROM A BUG, and that bound is disclosed rather
-     * than implied: a check that falls off the end of its generator through a path its
-     * author did not intend records `Silent` too. Making a check DECLARE its silence
-     * is a strictly-additive strengthening, deliberately not built here and tracked as
-     * **card#5596** — what stage 8 buys is that the silence is now VISIBLE and counted
-     * rather than absent from the run entirely, which is the only reason deferring it is
-     * legitimate.
+     * IT IS NO LONGER INDISTINGUISHABLE FROM A BUG (card#5596), and the strengthening is
+     * deliberately NOT a fifth case. A check now DECLARES a deliberate silence by yielding
+     * a {@see Silence}, and an execution that declares nothing is recorded ALONGSIDE this
+     * disposition ({@see CheckInventory::undeclaredSilent()}) rather than beside it in this
+     * enum — so `--format=json`'s four `disposition` values, the exhaustive-`match`
+     * property and the exit contract are untouched by construction, exactly as
+     * {@see self::NotRun}'s reasons are carried alongside rather than encoded here.
+     *
+     * ⚠ A DECLARED SILENCE IS STILL NOT A CORRECT ONE. The declaration records the author's
+     * intent, and the author who returns early by mistake will declare that path by
+     * mistake too; what it buys is that a path nobody judged cannot stay quiet. {@see Silence}
+     * owns that bound in full.
      */
     case Silent = 'silent';
 

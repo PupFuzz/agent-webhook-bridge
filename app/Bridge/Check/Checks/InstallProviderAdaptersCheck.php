@@ -6,6 +6,7 @@ use App\Bridge\Adapters\WebhookAdapterFactory;
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckSlot;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 
 /**
@@ -39,12 +40,14 @@ final class InstallProviderAdaptersCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
         $providers = config('bridge.providers');
         if (! is_array($providers)) {
+            yield Silence::because('bridge.providers is not an array, so there is no provider list to walk — a shape this config file cannot take without being edited by hand');
+
             return;
         }
 
@@ -53,5 +56,7 @@ final class InstallProviderAdaptersCheck implements Check
                 yield Finding::fail("bridge.providers.{$provider} is configured but has no adapter (WebhookAdapterFactory::SUPPORTED = ".implode(', ', WebhookAdapterFactory::SUPPORTED).')');
             }
         }
+
+        yield Silence::because('every configured provider has an adapter registered to receive for it');
     }
 }

@@ -9,6 +9,7 @@ use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\CheckSlot;
 use App\Bridge\Check\OptInCheck;
 use App\Bridge\Check\PerAgentCheck;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use Tests\TestCase;
@@ -328,5 +329,153 @@ class CheckInventoryTest extends TestCase
 
         $this->assertSame(['one', 'two', 'three'], $runner->registeredIds());
         $this->assertSame(['one', 'two', 'three'], array_keys($runner->inventory()->dispositions));
+    }
+
+    // ---- the declared-silence accounting (card#5596) ----
+
+    public function test_a_silent_check_that_declared_its_silence_is_not_reported_as_undeclared(): void
+    {
+        // The NEGATIVE arm, written first because it is what makes the positive arm below
+        // mean something: a runner that never populated the list at all would pass the
+        // positive arm's inverse and every other test in this file.
+        $runner = (new CheckRunner)
+            ->register(CheckSlot::Install, $this->declaredSilent('declared.quiet'));
+        $runner->run(CheckSlot::Install, new CheckContext);
+
+        $inventory = $runner->inventory();
+
+        // Still SILENT — declaredness rides ALONGSIDE the disposition rather than becoming
+        // a fifth one, which is what keeps `--format=json`'s four values and the exhaustive
+        // `match` untouched.
+        $this->assertSame(CheckDisposition::Silent, $inventory->dispositions['declared.quiet']);
+        $this->assertSame([], $inventory->undeclaredSilent());
+    }
+
+    public function test_a_silent_check_that_declared_nothing_is_recorded_as_undeclared(): void
+    {
+        $runner = (new CheckRunner)
+            ->register(CheckSlot::Install, $this->check('undeclared.quiet'));
+        $runner->run(CheckSlot::Install, new CheckContext);
+
+        $inventory = $runner->inventory();
+
+        $this->assertSame(CheckDisposition::Silent, $inventory->dispositions['undeclared.quiet']);
+        $this->assertSame(['undeclared.quiet'], $inventory->undeclaredSilent());
+    }
+
+    public function test_a_per_agent_check_undeclared_silent_for_one_agent_is_recorded_even_though_it_reported_for_another(): void
+    {
+        // THE PROPERTY NO EXISTING TEST SHAPE COVERS, and the reason `undeclaredSilent` is
+        // recorded per EXECUTION rather than folded out of `$dispositions` like every other
+        // accessor on this class. Reporting for ANY agent is the strongest thing true of a
+        // per-agent check, so this run ends `Reported` — and a set derived by filtering
+        // `disposition === Silent` (the shape `unexplainedNotRun()` uses) would therefore
+        // hide precisely the execution that went unjudged. Recording per execution CLOSES
+        // the per-agent granularity bound here instead of disclosing it.
+        $runner = (new CheckRunner)
+            ->registerPerAgent(CheckSlot::AgentConfig, $this->perAgentSpeakingOnlyFor('agent.selective', 'loud-agent'));
+        $runner->runForAgent(CheckSlot::AgentConfig, $this->agent('loud-agent'), new CheckContext);
+        $runner->runForAgent(CheckSlot::AgentConfig, $this->agent('quiet-agent'), new CheckContext);
+
+        $inventory = $runner->inventory();
+
+        $this->assertSame(CheckDisposition::Reported, $inventory->dispositions['agent.selective']);
+        $this->assertSame(['agent.selective'], $inventory->undeclaredSilent());
+    }
+
+    public function test_an_id_with_several_undeclared_silent_executions_is_listed_once(): void
+    {
+        // The list names the CHECK, not the executions — it is read as "these ids have a
+        // path nobody judged", and the same id repeated per agent would report the size of
+        // the roster rather than the size of the defect.
+        $runner = (new CheckRunner)
+            ->registerPerAgent(CheckSlot::AgentConfig, $this->perAgent('agent.mute', []));
+        $runner->runForAgent(CheckSlot::AgentConfig, $this->agent('a'), new CheckContext);
+        $runner->runForAgent(CheckSlot::AgentConfig, $this->agent('b'), new CheckContext);
+
+        $this->assertSame(['agent.mute'], $runner->inventory()->undeclaredSilent());
+    }
+
+    public function test_an_unrequested_opt_in_check_owes_no_declaration(): void
+    {
+        // "The operator did not ask" is ALREADY a declared state, arrived at through the
+        // interface built for it. Demanding a second declaration would put `Silence` into
+        // the not-requested vocabulary the opt-in decision deliberately kept it out of, and
+        // would list every un-probed install's opt-in checks as internal defects.
+        $runner = (new CheckRunner)
+            ->register(CheckSlot::ProbeTools, $this->optIn('optin.unasked', requested: false));
+        $runner->run(CheckSlot::ProbeTools, new CheckContext);
+
+        $inventory = $runner->inventory();
+
+        $this->assertSame(CheckDisposition::NotRequested, $inventory->dispositions['optin.unasked']);
+        $this->assertSame([], $inventory->undeclaredSilent());
+    }
+
+    public function test_a_requested_opt_in_check_that_says_nothing_still_owes_a_declaration(): void
+    {
+        // The other half of the arm above, and the one that keeps `OptInCheck` from being
+        // a blanket exemption: once the operator DID ask, an empty yield is an ordinary
+        // silence and carries the ordinary obligation.
+        $runner = (new CheckRunner)
+            ->register(CheckSlot::ProbeTools, $this->optIn('optin.asked', requested: true));
+        $runner->run(CheckSlot::ProbeTools, new CheckContext);
+
+        $inventory = $runner->inventory();
+
+        $this->assertSame(CheckDisposition::Silent, $inventory->dispositions['optin.asked']);
+        $this->assertSame(['optin.asked'], $inventory->undeclaredSilent());
+    }
+
+    public function test_the_undeclared_list_follows_registration_order(): void
+    {
+        // Same walk as `dispositions` — the list is rendered inline in one operator-facing
+        // sentence, and a set-ordered one would churn that line between runs.
+        $runner = (new CheckRunner)
+            ->register(CheckSlot::Install, $this->check('first.quiet'), $this->declaredSilent('middle.declared'), $this->check('last.quiet'));
+        $runner->run(CheckSlot::Install, new CheckContext);
+
+        $this->assertSame(['first.quiet', 'last.quiet'], $runner->inventory()->undeclaredSilent());
+    }
+
+    private function declaredSilent(string $id): Check
+    {
+        return new class($id) implements Check
+        {
+            public function __construct(private string $id) {}
+
+            public function id(): string
+            {
+                return $this->id;
+            }
+
+            public function run(CheckContext $ctx): iterable
+            {
+                yield Silence::because('nothing applicable was configured on this install');
+            }
+        };
+    }
+
+    private function perAgentSpeakingOnlyFor(string $id, string $agentName): PerAgentCheck
+    {
+        return new class($id, $agentName) implements PerAgentCheck
+        {
+            public function __construct(private string $id, private string $agentName) {}
+
+            public function id(): string
+            {
+                return $this->id;
+            }
+
+            public function runFor(AgentConfig $config, CheckContext $ctx): iterable
+            {
+                if ($config->agentName === $this->agentName) {
+                    yield Finding::warn("something to say about {$config->agentName}");
+                }
+
+                // Deliberately no trailing declaration: this fixture IS the undeclared
+                // fall-through the mechanism exists to catch.
+            }
+        };
     }
 }

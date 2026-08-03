@@ -183,7 +183,12 @@ answers. Stage 8 measured that 13 of 37 checks are never invoked at all on the b
 their slot sits behind a conditional envelope, so no `Finding` object exists to inspect. The two
 mechanisms, neither of which is an absent registration:
 - the check **runs and answers** — a `Finding` (including `unvalidated` when it could not measure),
-  or an empty yield, recorded as `Reported` / `Silent` / `NotRequested`;
+  or an empty yield, recorded as `Reported` / `Silent` / `NotRequested`. **AMENDED BY DL-266
+  (card#5596): an empty yield is no longer the whole story.** A check declares a deliberate silence
+  by also yielding a `Silence`; the disposition set is unchanged, but an execution that yields
+  neither a finding nor a declaration is additionally named in `CheckInventory::undeclaredSilent()`,
+  which is what separates *"looked and correctly had nothing to say"* from *"fell off the end of the
+  generator"*. See § Follow-on to stage 8;
 - the check's **slot never opens**, and the runner DERIVES `NotRun` from the registration list, with
   the envelope's reason attached by `CheckRunner::noteNotRun()`. The reason is the envelope's claim
   about itself, not the check's.
@@ -1639,6 +1644,11 @@ its evidence is this program's own recurring defect:
   deliberately deferred — and deferring it is legitimate only because stage 8 makes the silence
   visible and counted rather than absent. Tracked as **card#5596**, which also records that
   reasoning so the deferral does not later read as arbitrary.
+  **[CLOSED — DL-266, card#5596. A check now DECLARES a deliberate silence by yielding
+  `App\Bridge\Check\Silence`, and an execution that yields neither a finding nor a declaration is
+  named in `CheckInventory::undeclaredSilent()`. See § Follow-on to stage 8 below. The disposition
+  itself is unchanged: declaredness rides ALONGSIDE it, so the four `disposition` values, the
+  exhaustive `match` and the exit contract are untouched.]**
 
 **THE ARITHMETIC IS THE LINE'S OWN CONTROL.** The dispositions sum to the registered total, so a
 reader can see nothing fell out of the inventory without trusting the renderer — asserted across all
@@ -1776,10 +1786,103 @@ corrupting one golden file's arithmetic and observing the named failure.
   both passes rewrote the same single line in the same two files.
 
 **Filed, not fixed here** — output-neutral follow-ons deliberately kept out of a gated stage's PR:
-the declare-your-silence strengthening above, and the fuller `CheckContext`-as-builder /
-slot-collapse restructure the target design describes, which belongs to the final stage making it
-deliberately rather than to stage 8 as a side effect. `registry()` is a private method on the
-command for exactly that reason.
+the declare-your-silence strengthening above (**LANDED — DL-266, card#5596; see the follow-on
+section immediately below**), and the fuller `CheckContext`-as-builder / slot-collapse restructure
+the target design describes, which belongs to the final stage making it deliberately rather than to
+stage 8 as a side effect. `registry()` is a private method on the command for exactly that reason.
+
+### Follow-on to stage 8 — a silence is now DECLARED rather than inferred, and the card's own recommended shape was rejected (DL-266, card#5596)
+
+Stage 8 made a check's silence **visible and counted**; it could not say what that silence MEANT. A
+check that looked and correctly had nothing to report and a check falling off the end of its
+generator through a path its author did not intend produced the identical `Silent` row. That bound
+was disclosed above as open and is now closed: **a deliberate silence is a `Silence` yielded on the
+path that produced it**, `CheckRunner::materialize()` strips it before any `CheckResult` is built,
+and an execution yielding neither a finding nor a declaration lands in
+`CheckInventory::undeclaredSilent()`. Same direction as the not-run accounting — the runner trusts a
+DECLARATION and never an inference from an empty yield — for the same reason `OptInCheck` exists.
+
+**THE CARD'S OWN RECOMMENDED OPTION WAS REJECTED, WITH THE REASONS WRITTEN ON THE CLASS.** The card
+proposed a second contract method, by analogy with `OptInCheck::wasRequested()`. The analogy breaks
+exactly where it matters: `wasRequested()` answers about the INVOCATION and is a constructor-time
+fact, correct however many times `run()` is called, while *"was this silence deliberate"* is a fact
+about the EXIT PATH of ONE execution. A method consulted after the fact would need the check to
+record which path it took — **per-execution mutable state on an object `PerAgentCheck::runFor()`
+re-invokes once per agent** — making correctness depend on every check resetting that state per
+call. **That is the shape stage 8 rejected for the not-run accounting, in its own words.** The
+card's third option, a `return;`-keyed static analyser, is structurally blind: the commonest silent
+path in this registry has no `return` at all — a `foreach` over a collection that is empty — which
+is the same blindness DL-251's sweep had when it keyed on the sites that REPORT.
+
+**THE IDIOM IS A TRAILING UNCONDITIONAL YIELD, AND THAT IS WHAT MAKES THE TRIPWIRE SURVIVE.** A
+declaration does not assert *"I am silent"* — the check cannot know that while it is still running —
+it states what the silence WOULD mean, so the runner IGNORES it when findings were also yielded. Two
+placement rules: one declaration immediately before each explicit early `return;` (the reasons
+differ per path and a single trailing one would launder them into one sentence), plus one for the
+fall-through. **An early `return;` added later sits BEFORE the trailing declaration, so it skips it
+and the execution is recorded undeclared** — a new silent path cannot inherit an old path's
+judgement. A check with no zero-finding path at all needs neither, and adding one would claim a
+state it cannot reach.
+
+**`undeclaredSilent()` IS RECORDED PER EXECUTION, AND THAT CLOSES THE PER-AGENT BOUND RATHER THAN
+DISCLOSING IT.** It is the one accessor on `CheckInventory` that is not a fold over `$dispositions`.
+A per-agent check that reports for agent A and is undeclared-silent for agent B ends the run
+`Reported`, so the `unexplainedNotRun()` shape — filter `disposition === Silent` — would have hidden
+exactly the execution that went unjudged. **Mutation-proven:** re-deriving the list that way reds
+`test_a_per_agent_check_undeclared_silent_for_one_agent_is_recorded_even_though_it_reported_for_another`
+and nothing else.
+
+**THE ONE DEVIATION FROM THE CARD'S BYTE-NEUTRALITY CLAUSE, TAKEN DELIBERATELY.**
+`inventory.undeclared_silent` is added to `--format=json`. `unexplained_not_run` is already there,
+and **a machine consumer blind to an internal defect the text consumer can see is this program's own
+recurring defect re-minted at the new surface** — the same argument stage 9 made for putting the
+fail-soft envelopes' findings in the document. Per `docs/check-json-contract.md` §2 an ADDED key does
+not bump `schema`, which stays `1`.
+
+**THE SECOND `bridge:check internal:` DISCLOSURE IS REACHABLE ON A REAL INSTALL, UNLIKE THE FIRST —
+and the stale docblock claiming otherwise was corrected in the same change.** `emitInventory()` said
+*"NO INSTALL SHAPE CAN REACH IT"* of the `warn` channel, true of the not-run half (every conditional
+slot in `handle()` records a reason by design, so `unexplainedNotRun()` is empty on every real run)
+and now false of the undeclared-silence half: **whether a given silent path executes is a fact about
+the OPERATOR'S install**, which is precisely why it is worth printing at runtime rather than only
+asserting in CI. No fixture reaches it because every path the corpus exercises is declared — and
+that is **asserted** (`CheckJsonContractTest` pins `undeclared_silent` empty), not assumed.
+
+**WHAT A DECLARED SILENCE DOES NOT ESTABLISH**, stated because an unstated bound reads as a
+guarantee: it says the author INTENDED this silence, **not that the silence is CORRECT**. The author
+who wrongly returns early will equally wrongly declare that path. What the mechanism buys is a forced
+review moment over the existing population, once, and an un-bypassable tripwire on every zero-finding
+path added after it — not a detector for a wrong judgement. Written on `Silence`,
+`CheckDisposition::Silent`, `Check::run()` and `CheckInventory::undeclaredSilent()`.
+
+**THE FORCED REVIEW MOMENT FOUND NO WRONG PATH, AND THAT IS REPORTED RATHER THAN ROUNDED UP.** The
+card predicted *"expect to find ≥1 path that should have yielded something"*. Reading all 37 check
+bodies, **no path was judged wrong.** What the reading DID produce is the more useful result:
+
+- **Verifying beat assuming, concretely.** A trailing declaration was written on
+  `ChannelSnapshotCheck` claiming `ChannelSnapshotProbe::probe()` can return nothing. It CANNOT —
+  every path returns ≥1 finding (an undeclared `server_path` is answered with `unvalidated`). It was
+  removed and a comment now says why there is no trailing declaration. The same check was applied to
+  `SshTransportProbe::probePinnedLine()`/`probeLive()` (both always ≥1) and to
+  `WritebackSourceCoverage` / `WritebackByRef` / `BoardToolsBoardState` (every post-guard path
+  yields). **A declaration on a path that cannot be silent is a false statement about the code**, and
+  it is the failure mode a bulk sweep produces.
+- **`BoardToolsHttpProbeCheck`'s defensive `continue` is DELIBERATELY LEFT UNDECLARED.** It is
+  unreachable by construction, so if every enabled agent took it the run SHOULD disclose an
+  undeclared silence rather than have a declaration vouch for an impossible state.
+- **A scripted docblock widen over-reached onto FIVE private helpers that never yield a `Silence`**,
+  caught and reverted per-method. **A bulk regex over docblocks needs a per-method control** — the
+  same lesson as the `return;`-keyed analyser, one layer up.
+
+**THE POSITIVE CONTROL, AND IT IS THE ONLY REASON THE GREEN MEANS ANYTHING.** Removing the trailing
+declaration from `AgentIdentityCollisionsCheck` reds **35 of 84 `CheckGoldenTest` cases**, the diff
+naming `agent.identity_collisions` verbatim; restored, `cmp` byte-identical, 84/84 green. Three
+further single-arm mutations, each with one named test, restore + `cmp` between each: dropping
+`materialize()`'s `continue` (the sentinel leaks into the result) reds
+`test_a_check_yielding_only_a_declared_silence_produces_a_result_with_no_findings`; recording
+unconditionally instead of behind `! $declaredSilence` reds
+`test_a_silent_check_that_declared_its_silence_is_not_reported_as_undeclared`; and the
+per-disposition re-derivation above reds its named per-agent test. Pristine negative control green.
 
 ### Stage 9 result — the row named one deliverable and the stage owed two, and the gate's real subject was never the flag
 

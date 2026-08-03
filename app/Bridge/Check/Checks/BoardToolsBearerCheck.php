@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 use App\Bridge\Tools\BoardToolAgentResolver;
 
@@ -43,18 +44,22 @@ final class BoardToolsBearerCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
         $resolver = $ctx->boardToolsResolver;
         if ($resolver === null) {
-            return;   // no agent enabled ⇒ no index was built; recorded in the run inventory (DL-242 stage 8)
+            yield Silence::because('no agent has board_tools enabled, so no bearer index was built and there is nothing to have a problem with');
+
+            return;
         }
 
         // The resolver decides each severity, because only the build knows which problems
         // it MEASURED — re-severing them here would be this check asserting a fault it
         // never observed (card#5698).
         yield from $resolver->problems();
+
+        yield Silence::because('the bearer index built clean — every enabled agent resolved a readable token and no two shared one');
     }
 }

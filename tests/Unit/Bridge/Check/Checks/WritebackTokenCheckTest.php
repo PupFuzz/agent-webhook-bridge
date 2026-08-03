@@ -9,6 +9,7 @@ use App\Bridge\Support\Severity;
 use App\Bridge\Support\TokenPath;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Support\Facades\File;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -23,6 +24,8 @@ use Tests\TestCase;
  */
 class WritebackTokenCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private string $dir;
 
     protected function setUp(): void
@@ -122,7 +125,7 @@ class WritebackTokenCheckTest extends TestCase
             ? new WritebackConfig(7, $mappings ?? ['owner/repo' => 5])
             : null;
 
-        return iterator_to_array((new WritebackTokenCheck)->run($ctx), false);
+        return $this->findingsOf((new WritebackTokenCheck), $ctx);
     }
 
     private function tokenPath(): string

@@ -25,13 +25,21 @@ interface PerAgentCheck
     public function id(): string;
 
     /**
-     * @return iterable<Finding> Same contract as {@see Check::run()}, including that
-     *                           yielding nothing is legal and is recorded as a
-     *                           disposition rather than lost.
+     * @return iterable<Finding|Silence> Same contract as {@see Check::run()}, including that
+     *                                   yielding nothing is legal and is recorded as a
+     *                                   disposition rather than lost — and that a
+     *                                   deliberate silence must DECLARE itself with a
+     *                                   {@see Silence} (card#5596).
      *
      * ITS DISPOSITION IS KEYED BY CHECK ID, NOT PER AGENT (the plan's accepted
      * granularity cost). Reporting for ANY agent makes the check `Reported` for the run,
      * because that is the strongest thing true of it.
+     *
+     * THE SILENCE DECLARATION IS THE ONE THING KEYED PER AGENT, and it has to be: this
+     * method runs once per agent and can be deliberately silent for one and accidentally
+     * silent for the next. An undeclared execution is recorded even when another agent's
+     * execution reported, so the per-id fold above cannot swallow it
+     * ({@see CheckInventory::undeclaredSilent()}).
      */
     public function runFor(AgentConfig $config, CheckContext $ctx): iterable;
 }

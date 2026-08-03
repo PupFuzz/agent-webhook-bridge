@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\PathVisibility;
 use App\Bridge\Support\SecretFile;
@@ -32,12 +33,14 @@ final class WritebackTokenCheck implements Check
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function run(CheckContext $ctx): iterable
     {
         if ($ctx->secretDir === null || $ctx->writeback === null || $ctx->writeback->mappings === []) {
-            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
+            yield Silence::because('this install writes back to nothing — no secret dir, no writeback config, or no repo mappings — so no writeback token is required to exist');
+
+            return;
         }
 
         $tokenPath = TokenPath::forWriteback($ctx->secretDir, 'kanban');
@@ -47,5 +50,7 @@ final class WritebackTokenCheck implements Check
         } elseif (SecretFile::isInsecure($tokenPath)) {
             yield Finding::warn('writeback: '.SecretFile::permsMessage($tokenPath).' — the move will fail until fixed');
         }
+
+        yield Silence::because('the kanban writeback token is present and securely permissioned — this leg speaks only on a problem, and there is none');
     }
 }

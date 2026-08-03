@@ -30,8 +30,8 @@ interface Check
     public function id(): string;
 
     /**
-     * @return iterable<Finding> Yield `unvalidated` when the check could not run, so a
-     *                           did-not-measure is never rendered as a pass.
+     * @return iterable<Finding|Silence> Yield `unvalidated` when the check could not run, so
+     *                                   a did-not-measure is never rendered as a pass.
      *
      * YIELDING NOTHING IS LEGAL AND IS RECORDED, NOT LOST. An earlier revision of this
      * docblock required at least one finding and said stage 8 would enforce it. Stage 8
@@ -43,9 +43,14 @@ interface Check
      * silence is now counted rather than absent. (A check that throws still aborts the
      * command before anything renders the account; {@see CheckRunner} does not catch.)
      *
-     * ⚠ A silence is not yet DISTINGUISHABLE from falling off the end of the generator by
-     * accident; both record {@see CheckDisposition::Silent}. Making a check declare its
-     * silence is **card#5596**.
+     * A SILENCE MUST BE DECLARED (card#5596). Yielding nothing is still legal, but a
+     * DELIBERATE silence says so by yielding a {@see Silence} on the path that produced it
+     * — an execution that yields neither a finding nor a declaration is recorded as an
+     * undeclared silence and disclosed to the operator as an internal defect
+     * ({@see CheckInventory::undeclaredSilent()}). That closes the bound stage 8 disclosed
+     * here: falling off the end of the generator by accident no longer looks like the check
+     * correctly having nothing to say. It does NOT establish that a declared silence is
+     * RIGHT — see {@see Silence} for what the declaration does and does not claim.
      */
     public function run(CheckContext $ctx): iterable;
 }

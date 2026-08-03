@@ -6,6 +6,7 @@ use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Checks\InstallEndpointUrlsCheck;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -29,6 +30,8 @@ use Tests\TestCase;
  */
 class InstallEndpointUrlsCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     public function test_both_urls_unset_is_not_a_fault(): void
     {
         config(['bridge.receiver_base_url' => null, 'bridge.providers.kanban.api_base_url' => null]);
@@ -101,6 +104,6 @@ class InstallEndpointUrlsCheckTest extends TestCase
     /** @return list<Finding> */
     private function findings(): array
     {
-        return iterator_to_array((new InstallEndpointUrlsCheck)->run(new CheckContext), false);
+        return $this->findingsOf((new InstallEndpointUrlsCheck), new CheckContext);
     }
 }

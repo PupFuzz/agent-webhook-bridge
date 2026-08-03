@@ -4,6 +4,7 @@ namespace App\Bridge\Check\Checks;
 
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\PerAgentCheck;
+use App\Bridge\Check\Silence;
 use App\Bridge\Exceptions\ChannelTokenException;
 use App\Bridge\Exceptions\ChannelTokenFault;
 use App\Bridge\Support\AgentConfig;
@@ -46,13 +47,15 @@ final class ChannelTokenPathCheck implements PerAgentCheck
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function runFor(AgentConfig $config, CheckContext $ctx): iterable
     {
         $tokenPath = $config->channel->tokenPath;
         if ($tokenPath === null) {
-            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
+            yield Silence::because('this agent declares no channel auth token path, so there is no file to read — an agent whose channel needs one is reported by the push path, not here');
+
+            return;
         }
 
         try {
@@ -72,5 +75,7 @@ final class ChannelTokenPathCheck implements PerAgentCheck
                 null => Finding::warn("agent {$name}: ".$e->getMessage().' — channel_push will FAIL until fixed'),
             };
         }
+
+        yield Silence::because('the declared channel auth token read cleanly — present, readable by this process, non-empty and securely permissioned');
     }
 }

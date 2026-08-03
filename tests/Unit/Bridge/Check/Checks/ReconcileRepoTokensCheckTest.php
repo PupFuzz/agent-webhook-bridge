@@ -11,6 +11,7 @@ use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -36,6 +37,8 @@ use Tests\TestCase;
  */
 class ReconcileRepoTokensCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private const REPO = 'owner/repo';
 
     private string $dir;
@@ -167,7 +170,7 @@ class ReconcileRepoTokensCheckTest extends TestCase
 
         return array_map(
             fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
-            iterator_to_array((new ReconcileRepoTokensCheck)->run($ctx), false),
+            $this->findingsOf((new ReconcileRepoTokensCheck), $ctx),
         );
     }
 }

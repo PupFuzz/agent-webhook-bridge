@@ -86,7 +86,13 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
                 continue;
             }
             if ($bt === null || $bt->tokenPath === null) {
-                continue;   // defensive: an enabled HTTP agent ⇒ tokenPath non-null by construction (ssh agents handled above)
+                // Defensive: an enabled HTTP agent ⇒ tokenPath non-null by construction
+                // (ssh agents handled above). DELIBERATELY LEFT UNDECLARED (card#5596) —
+                // it is the only way past this loop without yielding, and it is
+                // unreachable, so if every enabled agent took it the run SHOULD disclose
+                // an undeclared silence rather than have a declaration vouch for a state
+                // that cannot happen.
+                continue;
             }
             // An enabled agent whose bearer can't be presented IS a broken enablement —
             // the probe certifies before the operator flips traffic on, so these fail

@@ -54,6 +54,17 @@ use InvalidArgumentException;
  * The enforceable invariant is that every registered check is ACCOUNTED FOR on every run
  * that completes. See the stage 8 result in `docs/CHECK-REGISTRY-PLAN.md`.
  *
+ * A SILENCE IS NOW DECLARED RATHER THAN INFERRED (card#5596). Stage 8's account could say
+ * a check ran and said nothing; it could not say whether that was the check looking and
+ * correctly having nothing to report, or the check falling off the end of its generator
+ * through a path its author did not intend. This class therefore stops inferring: a
+ * deliberate silence is a {@see Silence} yielded on the path that produced it,
+ * {@see materialize()} strips it before any {@see CheckResult} is built, and an execution
+ * that yields neither a finding nor a declaration is recorded in
+ * {@see CheckInventory::undeclaredSilent()}. The same direction as the not-run accounting
+ * — the runner trusts a DECLARATION and never an inference from an empty yield — for the
+ * same reason {@see OptInCheck} exists.
+ *
  * WHICH CHECKS THE COMMAND REGISTERS IS NOW PINNED, by a test asserting the exact id set
  * against {@see registeredIds()}. Before stage 8 a check dropped from `CheckCommand`'s
  * registration list was caught only if its absence changed golden output, so a check
@@ -116,6 +127,22 @@ final class CheckRunner
     /** @var array<string, string> */
     private array $notRunReasons = [];
 
+    /**
+     * Ids that had at least one execution yield NO finding and NO {@see Silence}
+     * (card#5596) — a silence nobody declared.
+     *
+     * RECORDED AT EXECUTION TIME AND NOT FILTERED BY THE FINAL DISPOSITION, which is the
+     * one place this deliberately does NOT mirror {@see self::$notRunReasons}. A
+     * {@see PerAgentCheck} that reports for one agent and is undeclared-silent for another
+     * ends the run {@see CheckDisposition::Reported}, so a set derived by filtering
+     * `disposition === Silent` — the shape {@see CheckInventory::unexplainedNotRun()} uses
+     * — would hide exactly that case. Recording per EXECUTION closes the per-agent
+     * granularity bound here rather than disclosing it.
+     *
+     * @var array<string, true>
+     */
+    private array $undeclaredSilent = [];
+
     public function register(CheckSlot $slot, Check ...$checks): self
     {
         foreach ($checks as $check) {
@@ -141,8 +168,8 @@ final class CheckRunner
     {
         $results = [];
         foreach ($this->checks[$slot->value] ?? [] as $check) {
-            $findings = $this->materialize($check->run($ctx));
-            $this->recordRan($check, $findings);
+            [$findings, $declaredSilence] = $this->materialize($check->run($ctx));
+            $this->recordRan($check, $findings, $declaredSilence);
             $results[] = $this->results[] = new CheckResult($check->id(), $findings);
         }
 
@@ -158,8 +185,8 @@ final class CheckRunner
     {
         $results = [];
         foreach ($this->perAgentChecks[$slot->value] ?? [] as $check) {
-            $findings = $this->materialize($check->runFor($config, $ctx));
-            $this->recordRan($check, $findings);
+            [$findings, $declaredSilence] = $this->materialize($check->runFor($config, $ctx));
+            $this->recordRan($check, $findings, $declaredSilence);
             $results[] = $this->results[] = new CheckResult(
                 $check->id(),
                 $findings,
@@ -224,32 +251,49 @@ final class CheckRunner
     public function inventory(): CheckInventory
     {
         $dispositions = [];
+        $undeclaredSilent = [];
         foreach ($this->order as $id) {
             $dispositions[$id] = $this->dispositions[$id] ?? CheckDisposition::NotRun;
+            if (isset($this->undeclaredSilent[$id])) {
+                $undeclaredSilent[] = $id;
+            }
         }
 
-        return new CheckInventory($dispositions, $this->notRunReasons);
+        return new CheckInventory($dispositions, $this->notRunReasons, $undeclaredSilent);
     }
 
     /**
      * @param  list<Finding>  $findings
+     * @param  bool  $declaredSilence  whether this ONE execution yielded a {@see Silence}
      */
-    private function recordRan(Check|PerAgentCheck $check, array $findings): void
+    private function recordRan(Check|PerAgentCheck $check, array $findings, bool $declaredSilence): void
     {
         $id = $check->id();
         if ($findings !== []) {
             // A per-agent check runs once per agent: reporting for ANY agent is the
             // strongest thing true of it this run, so a later silent agent must not
             // downgrade it.
+            //
+            // A `Silence` yielded alongside findings is IGNORED, and that is the PRIMARY
+            // idiom rather than a tolerated oddity: a declaration says what a silence would
+            // MEAN, so the common shape yields it unconditionally after the loop that may
+            // or may not have reported. See `Silence`'s two placement rules.
             $this->dispositions[$id] = CheckDisposition::Reported;
 
             return;
         }
 
         if ($check instanceof OptInCheck && ! $check->wasRequested()) {
+            // Already a DECLARED state — the check said the operator did not ask — so it
+            // owes no second declaration, and requiring one would put `Silence` in the
+            // not-requested vocabulary the opt-in decision kept it out of.
             $this->dispositions[$id] ??= CheckDisposition::NotRequested;
 
             return;
+        }
+
+        if (! $declaredSilence) {
+            $this->undeclaredSilent[$id] = true;
         }
 
         $this->dispositions[$id] ??= CheckDisposition::Silent;
@@ -268,16 +312,30 @@ final class CheckRunner
     }
 
     /**
-     * @param  iterable<Finding>  $findings
-     * @return list<Finding>
+     * Split one execution's yield stream into the findings a renderer sees and the
+     * declaration it must never see (card#5596).
+     *
+     * THIS IS THE ONLY PLACE A {@see Silence} IS STRIPPED, and that containment is what
+     * makes the sentinel safe: {@see CheckResult} is constructed from the returned
+     * `list<Finding>` alone, so no renderer can be handed one to print. A test pins it —
+     * a check yielding only a `Silence` produces a result with zero findings.
+     *
+     * @param  iterable<Finding|Silence>  $findings
+     * @return array{0: list<Finding>, 1: bool}
      */
     private function materialize(iterable $findings): array
     {
         $out = [];
+        $declaredSilence = false;
         foreach ($findings as $finding) {
+            if ($finding instanceof Silence) {
+                $declaredSilence = true;
+
+                continue;
+            }
             $out[] = $finding;
         }
 
-        return $out;
+        return [$out, $declaredSilence];
     }
 }

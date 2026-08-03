@@ -45,16 +45,21 @@ namespace App\Bridge\Check;
  *    to the agents it actually reached. The bound is stated on
  *    {@see PerAgentCheck::runFor()} as the accepted granularity cost; it is repeated here
  *    because this is the class whose numbers a reader would otherwise take per-agent.
+ *    ONE ACCESSOR IS EXEMPT AND SAYS SO: {@see self::undeclaredSilent()} is recorded per
+ *    EXECUTION rather than derived from a disposition, because the case it exists to catch
+ *    is precisely the one a per-id fold hides (card#5596).
  */
 final class CheckInventory
 {
     /**
      * @param  array<string, CheckDisposition>  $dispositions  every registered check id
      * @param  array<string, string>  $notRunReasons  id ⇒ why its slot never opened
+     * @param  list<string>  $undeclaredSilent  ids with an undeclared silent execution
      */
     public function __construct(
         public readonly array $dispositions,
         public readonly array $notRunReasons = [],
+        private readonly array $undeclaredSilent = [],
     ) {}
 
     public function registered(): int
@@ -124,5 +129,35 @@ final class CheckInventory
         }
 
         return $out;
+    }
+
+    /**
+     * Checks that ran, yielded no finding, and never DECLARED that silence (card#5596).
+     *
+     * A REAL DEFECT, NOT A DEGRADED MESSAGE — the asymmetry with
+     * {@see self::unexplainedNotRun()} is deliberate and is the whole point. A missing
+     * not-run reason costs the operator a sentence about a check the run already accounted
+     * for; an undeclared silence IS the thing stage 8 could not distinguish from a bug, so
+     * the check falling off the end of its generator by accident and the check correctly
+     * having nothing to say are the two states this list separates. Every path in the
+     * registry was audited and declared when the mechanism landed, so a non-empty list here
+     * means a path was ADDED without that judgement being made — or that one was missed.
+     *
+     * IT IS NOT A FILTER OVER `$dispositions`, unlike every other accessor here. The runner
+     * records it per EXECUTION, so a per-agent check that reported for one agent and was
+     * undeclared-silent for another still appears — see `CheckRunner::$undeclaredSilent`
+     * (NAMED, not `{@see}`-linked: a fully-qualified `{@see}` becomes a real import under
+     * pint). That is the one bound in this class that card#5596 closed rather than
+     * inherited.
+     *
+     * WHAT IT DOES NOT ESTABLISH. A declared silence says the author INTENDED it, never
+     * that it is correct; this list is therefore a floor on the undeclared paths, not a
+     * ceiling on the wrong ones. `App\Bridge\Check\Silence` owns that bound.
+     *
+     * @return list<string>
+     */
+    public function undeclaredSilent(): array
+    {
+        return $this->undeclaredSilent;
     }
 }

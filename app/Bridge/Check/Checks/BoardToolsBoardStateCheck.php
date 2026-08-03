@@ -5,6 +5,7 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\CheckRunner;
 use App\Bridge\Check\PerAgentCheck;
+use App\Bridge\Check\Silence;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use Throwable;
@@ -42,7 +43,7 @@ final class BoardToolsBoardStateCheck implements PerAgentCheck
     }
 
     /**
-     * @return iterable<Finding>
+     * @return iterable<Finding|Silence>
      */
     public function runFor(AgentConfig $config, CheckContext $ctx): iterable
     {
@@ -53,8 +54,13 @@ final class BoardToolsBoardStateCheck implements PerAgentCheck
         // block ⇒ boardId non-null by construction), preserved rather than dropped so the
         // migration changes nothing in either direction.
         if ($client === null || $bt === null || $bt->boardId === null) {
-            return;   // nothing to report; the run inventory records the disposition (DL-242 stage 8)
+            yield Silence::because('this agent has no board-tools board to read — the slot guard means no client was constructed, or the block is disabled/suppressed (both of which null boardId), and a suppressed block is reported by its own check');
+
+            return;
         }
+        // NO TRAILING DECLARATION BELOW, and that is deliberate: every path past this guard
+        // yields — the visibility leg answers on both arms and the `catch` covers the rest —
+        // so a trailing one would declare a silence this method cannot reach.
 
         $name = $config->agentName;
         try {

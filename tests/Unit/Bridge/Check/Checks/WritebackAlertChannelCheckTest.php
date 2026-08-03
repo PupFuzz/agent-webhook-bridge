@@ -9,6 +9,7 @@ use App\Bridge\Support\Severity;
 use App\Bridge\Writeback\AlertChannel;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Support\Facades\File;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -26,6 +27,8 @@ use Tests\TestCase;
  */
 class WritebackAlertChannelCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private string $dir;
 
     protected function setUp(): void
@@ -170,7 +173,7 @@ class WritebackAlertChannelCheckTest extends TestCase
 
         return array_map(
             fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
-            iterator_to_array((new WritebackAlertChannelCheck)->run($ctx), false),
+            $this->findingsOf((new WritebackAlertChannelCheck), $ctx),
         );
     }
 }

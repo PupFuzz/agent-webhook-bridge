@@ -9,6 +9,7 @@ use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use Tests\Fixtures\LogIntentClassifier;
 use Tests\Fixtures\ProcessDependentClassifier;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -26,6 +27,8 @@ use Tests\TestCase;
  */
 class AgentClassifierResolvableCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     protected function tearDown(): void
     {
         // The flag is process-global and this suite shares a process with everything
@@ -93,9 +96,6 @@ class AgentClassifierResolvableCheckTest extends TestCase
             'classifier' => ['class' => $classifierClass],
         ]);
 
-        return iterator_to_array(
-            (new AgentClassifierResolvableCheck)->runFor($config, new CheckContext),
-            false,
-        );
+        return $this->findingsOfFor(new AgentClassifierResolvableCheck, $config, new CheckContext);
     }
 }

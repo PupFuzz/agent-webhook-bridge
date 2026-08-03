@@ -157,7 +157,7 @@ class CheckJsonContractTest extends TestCase
         $inventory = $this->document('minimal')['inventory'];
 
         $this->assertSame(
-            ['registered', 'ran', 'reported', 'silent', 'not_requested', 'not_run', 'not_run_reasons', 'unexplained_not_run'],
+            ['registered', 'ran', 'reported', 'silent', 'not_requested', 'not_run', 'not_run_reasons', 'unexplained_not_run', 'undeclared_silent'],
             array_keys($inventory),
         );
         // The same arithmetic the text line carries, asserted on the document so the two
@@ -168,6 +168,10 @@ class CheckJsonContractTest extends TestCase
             $inventory['ran'] + $inventory['not_requested'] + $inventory['not_run'],
         );
         $this->assertSame([], $inventory['unexplained_not_run']);
+        // Not a shape assertion — an assertion that the corpus reaches no undeclared silent
+        // path. It is what makes the text renderer's "no fixture reaches it" claim true
+        // rather than assumed (card#5596).
+        $this->assertSame([], $inventory['undeclared_silent']);
     }
 
     public function test_the_opt_in_dispositions_are_per_check_where_the_text_line_only_counts_them(): void

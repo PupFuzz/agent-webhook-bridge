@@ -10,6 +10,7 @@ use App\Bridge\Support\Severity;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\MaterializesChecks;
 use Tests\TestCase;
 
 /**
@@ -31,6 +32,8 @@ use Tests\TestCase;
  */
 class BoardToolsHttpProbeCheckTest extends TestCase
 {
+    use MaterializesChecks;
+
     private const ENDPOINT = 'https://bridge.test/agent-tools/call';
 
     private string $dir;
@@ -56,7 +59,7 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         $ctx = new CheckContext;
         $ctx->boardToolsEnabled = [$this->httpAgent('prod-agent')];
 
-        $this->assertSame([], iterator_to_array((new BoardToolsHttpProbeCheck(null))->run($ctx), false));
+        $this->assertSame([], $this->findingsOf((new BoardToolsHttpProbeCheck(null)), $ctx));
         Http::assertNothingSent();
     }
 
@@ -323,6 +326,6 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         $ctx = new CheckContext;
         $ctx->boardToolsEnabled = $enabled;
 
-        return iterator_to_array((new BoardToolsHttpProbeCheck(self::ENDPOINT))->run($ctx), false);
+        return $this->findingsOf((new BoardToolsHttpProbeCheck(self::ENDPOINT)), $ctx);
     }
 }

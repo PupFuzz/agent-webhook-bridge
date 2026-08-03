@@ -195,6 +195,7 @@ final class CheckJsonRenderer
             'not_run' => $inventory->count(CheckDisposition::NotRun),
             'not_run_reasons' => $inventory->notRunReasons(),
             'unexplained_not_run' => $inventory->unexplainedNotRun(),
+            'undeclared_silent' => $inventory->undeclaredSilent(),
         ];
     }
 

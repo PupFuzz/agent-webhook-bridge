@@ -922,11 +922,14 @@ class CheckCommand extends BridgeCommand
      * CALLS it. The decision now lives inside the seam, where a test can see it.
      *
      * WHAT IS STILL NOT WITNESSED END TO END, stated rather than rounded up: the `line`
-     * channel's dispatch is exercised by all 33 golden fixtures; the `warn` channel's by
-     * none of them, and NO INSTALL SHAPE CAN REACH IT — every conditional slot in
-     * `handle()` records a not-run reason, by design, so `unexplainedNotRun()` is empty on
-     * every real run. The composition AND the emit decision are proven; the `warn`
-     * channel's DISPATCH is proven only at the seam, because nothing else can reach it.
+     * channel's dispatch is exercised by every golden fixture; the `warn` channel's by none
+     * of them, so its DISPATCH is proven only at the seam. The reason is no longer
+     * "nothing can reach it", and that changed with card#5596: the not-run half still
+     * cannot fire on a real install (every conditional slot in `handle()` records a
+     * reason, by design, so `unexplainedNotRun()` is empty on every real run), but the
+     * undeclared-silence half CAN — whether a silent path executes is a fact about the
+     * operator's install. No fixture reaches it because every path the corpus exercises
+     * is declared, which is asserted rather than assumed.
      */
     private function emitInventory(CheckInventory $inventory): void
     {
@@ -1012,6 +1015,21 @@ class CheckCommand extends BridgeCommand
         if ($unexplained !== []) {
             $out[] = ['warn', 'bridge:check internal: '.count($unexplained).' registered check(s) did not run and this command did not record why ('
                 .implode(', ', $unexplained).'). The run above is still complete, but that is a bug in bridge:check — please report it.'];
+        }
+
+        // THE SECOND INTERNAL-DEFECT DISCLOSURE (card#5596): a check that ran, said
+        // nothing, and never declared it meant to. Same channel and same posture as the
+        // one above — counted on the line, exit code untouched, `warn` because it is
+        // something to act on — but NOT the same reachability, and the difference is why
+        // it is worth printing at runtime rather than only asserting in CI. Every
+        // conditional slot records a not-run reason by design, so the disclosure above
+        // cannot fire on any real install; this one can, because whether a given silent
+        // path executes is a fact about the OPERATOR'S install, and a path no fixture
+        // reaches is exactly the one that would otherwise stay quiet.
+        $undeclaredSilent = $inventory->undeclaredSilent();
+        if ($undeclaredSilent !== []) {
+            $out[] = ['warn', 'bridge:check internal: '.count($undeclaredSilent).' registered check(s) ran, reported nothing, and did not declare that silence ('
+                .implode(', ', $undeclaredSilent).'). Their result is counted above but unjudged — that is a bug in bridge:check, please report it.'];
         }
 
         return $out;
