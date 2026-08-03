@@ -2519,7 +2519,7 @@ $ BRIDGE_CONFIG_DIR=$T/cfg BRIDGE_SECRET_DIR=/etc/passwd php artisan bridge:chec
 
 ## DL-267 — A run that could not apply its mutation is a DESTROYED run, not a measurement: the coverage instrument stops laundering a failed write into a verdict
 
-**Card:** #5548 · **PR:** #TBD
+**Card:** #5548 · **PR:** #468
 
 **Context.** `bin/check-golden-mutate.php` is the instrument the whole DL-242 program's evidence rests on — every stage's disclosed-gap count, and the `## Verification` method's items 1 and 3, are its output, quoted into this plan doc as the program's measured record. It could not distinguish a destroyed run from a completed one. A regen whose copy tree was deleted underneath it had every `file_put_contents($target, $mutant)` fail, so **no mutation was ever applied**; the golden run then aborted for the unrelated reason that the repo was gone, which sets `$aborted` and `$red`, which the `match()` scored as `observed-via-abort`. All 35 predicates scored identically in about two seconds and the run printed `observed-via-abort 35 · UNOBSERVED 0` at **exit 0** — read at face value, the strongest possible outcome. It was caught only because someone checked the artifacts' mtime.
 
