@@ -2452,7 +2452,7 @@ The card's prescribed fix — an arm on `$perms === false` — is **unreachable*
 
 ## DL-265 — A path that is not a directory is not a directory with bad permissions: the shared permission verdict names the fault instead of reporting a mode for the wrong subject
 
-**Card:** #5796 · **PR:** #TBD
+**Card:** #5796 · **PR:** #465
 
 **Context.** DL-264 gated `DirectoryPermissions`'s stat on `file_exists()`, which is true for a regular file, a socket, a fifo — anything that stats. So `BRIDGE_SECRET_DIR` pointing at a regular file reached `fileperms()`, succeeded, and rendered that file's real mode under the secret dir's label. Measured on the real command before any code was written:
 
