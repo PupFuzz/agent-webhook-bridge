@@ -176,3 +176,23 @@ jobs:
           echo "The writeback uses this token as its ONLY key to move the tracking card; without it the card silently never moves."
           echo "Fix: add 'card-$card_id' or the relevant 'DL-<number>' to the PR title, then re-save (the 'edited' event re-runs this check)."
           exit 1
+
+      # TEMPORARY — card#5300 build note: read the runner's ACTUAL locale, which
+      # decides whether the pre-DL-272 collation false green was LIVE on CI or
+      # merely latent. Never read before; documented runner images are not a
+      # measurement. REMOVE in the same PR once the answer is on the card.
+      - name: TEMP runner locale probe (card#5300 build note — remove before merge)
+        shell: bash
+        if: always()
+        run: |
+          set -uo pipefail
+          echo "LANG=${LANG:-unset} LC_ALL=${LC_ALL:-unset} LC_COLLATE=${LC_COLLATE:-unset}"
+          locale || true
+          echo "--- e-acute byte length (2 = single-byte C fallback, 1 = multibyte honored) ---"
+          s=$(printf '\xc3\xa9'); echo "len=${#s}"
+          echo "--- does the PRE-FIX range admit U+0663 here? MATCH = the false green was live ---"
+          t=$(printf 'fix a thing dl-\xd9\xa3')
+          if [[ "$t" =~ (^|[^0-9a-z_])dl-[0-9]{1,4}([^0-9]|$) ]]; then echo "PREFIX_RANGE=MATCH"; else echo "PREFIX_RANGE=no"; fi
+          if [[ "$t" =~ (^|[^0-9a-z_])dl-[0123456789]{1,4}([^0-9]|$) ]]; then echo "SHIPPED_ENUM=MATCH"; else echo "SHIPPED_ENUM=no"; fi
+          echo "--- en_US.UTF-8 installed on this image? ---"
+          locale -a 2>/dev/null | grep -ic 'en_US.utf8' || true
