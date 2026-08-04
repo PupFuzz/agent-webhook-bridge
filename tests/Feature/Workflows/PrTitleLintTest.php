@@ -24,10 +24,15 @@ use Tests\TestCase;
  *    docblock; the tests were a hand-written snapshot that stayed green when the
  *    grammar moved, which is exactly how the near-miss WARN string spent two
  *    releases naming a narrower accept-set than the code enforced.
- *  - PINNED (the require step, `card[-#]?<id>` and `dl-[0-9]{1,4}`). It DISAGREES
- *    with the grammars on MEASURED shapes and is deliberately not fixed — changing
- *    what a CI gate accepts or rejects is a hard gate. Each divergence is
- *    characterized below so it cannot drift unobserved; all are tracked as card#5300.
+ *  - PINNED (the require step's card arm and its four-digit-bounded DL arm — the
+ *    spellings are not quoted here, because a quoted pattern is the restatement
+ *    this file exists to catch, and two copies of it had already gone stale by
+ *    DL-272). It DISAGREES with the grammars on MEASURED shapes and is deliberately
+ *    not fixed by default — changing what a CI gate accepts or rejects is a hard
+ *    gate. ONE row has been approved and fixed (DL-272: the DL arm now enumerates
+ *    its digits, so bash's collation cannot admit non-ASCII ones); the rest stay
+ *    pinned. Each divergence is characterized below so it cannot drift unobserved;
+ *    all are tracked as card#5300.
  *    The count deliberately lives in the tests rather than in this docblock, because
  *    a number here is one more copy nothing holds — and it has already been wrong
  *    once (see below).
@@ -60,7 +65,7 @@ class PrTitleLintTest extends TestCase
      * the runner. Each list is driven by its own pin below as well as by the
      * agreement test, so a stale exemption reds instead of silently excusing.
      *
-     * FALSE RED: the gate's `[0-9]{1,4}` bound reds a DL the classifier parses.
+     * FALSE RED: the gate's four-digit bound reds a DL the classifier parses.
      */
     private const REQUIRE_STEP_DL_FALSE_RED = ['DL-12345'];
 
@@ -544,7 +549,7 @@ class PrTitleLintTest extends TestCase
         $this->assertSame(1, $this->runRequireStep('card#0123 fix', 'fix/123-slug'));
 
         // (3) FALSE RED — a 5-digit DL. The classifier's DL token is `\d+` (unbounded);
-        //     the gate's is `[0-9]{1,4}`. The 4-digit control is what makes the bound
+        //     the gate's is bounded at four. The 4-digit control is what makes the bound
         //     the demonstrated cause rather than an asserted one. Read from the public
         //     owner since card#5308 — this used to reach a `private const` by reflection.
         foreach (self::REQUIRE_STEP_DL_FALSE_RED as $vector) {
