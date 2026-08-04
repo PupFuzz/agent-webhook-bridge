@@ -622,6 +622,163 @@ class GitHubPrCardMoveClassifierTest extends TestCase
             && str_contains((string) $msg, 'card#4811'))->once();
     }
 
+    // --- card#5287 / DL-270: the title-vs-branch card-token conflict + the
+    //     uncorroborated title-only residual ---
+
+    public function test_a_foreign_title_card_token_loses_to_the_head_branchs_own_token(): void
+    {
+        // THE card#5287 defect. `titleAndHead()` concatenates title-then-head and
+        // CardTokenGrammar::parse is a single non-global preg_match, so the LEFTMOST
+        // match won — a descriptively-cited foreign card# in the title silently
+        // outranked the branch ref this install's own tooling minted. The branch is
+        // authoritative; the title token is refused and warned.
+        // (Revert the fix ⇒ card 5139 is targeted ⇒ RED.)
+        Http::fake();
+        Log::spy();
+
+        $result = $this->classify('pull_request.closed', [
+            'number' => 130, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'Rework the widget (card#5139) — coord #369',
+            'head' => ['ref' => 'fix/card-5287-title-hijack'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertCount(1, $move);
+        $this->assertSame(5287, $move[0]->payload['card_id']);   // the BRANCH's card, not the title's 5139
+        // Corroborated by the branch ⇒ no handler-side gate needed.
+        $this->assertArrayNotHasKey('card_token_uncorroborated', $move[0]->payload);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'card#5139')
+            && str_contains((string) $msg, 'card#5287')
+            && str_contains((string) $msg, 'AUTHORITATIVE'))->once();
+    }
+
+    public function test_a_conflicting_titles_sole_dl_is_not_stamped_onto_the_branchs_card(): void
+    {
+        // Once the title is established FOREIGN, a DL sitting in it is foreign to the
+        // branch's card too — stamping it would re-mint the DL-218 correlation poison
+        // one surface over. The sole-DL stamp therefore derives from the head ref
+        // alone on a conflict. DL-77 resolves to nothing (the board has only DL-9), so
+        // without the narrowing it WOULD be stamped.
+        // (Revert to titleAndHead ⇒ stamp_dl present ⇒ RED.)
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9']]]])]);
+        Log::spy();
+
+        $result = $this->classify('pull_request.opened', [
+            'number' => 131,
+            'title' => 'DL-77 rework — supersedes card#5139',
+            'head' => ['ref' => 'fix/card-5287-slug'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertCount(1, $move);
+        $this->assertSame(5287, $move[0]->payload['card_id']);
+        $this->assertArrayNotHasKey('stamp_dl', $move[0]->payload);
+        $this->assertSame(131, $move[0]->payload['stamp_pr']);   // PR provenance still stamped
+    }
+
+    public function test_an_agreeing_title_and_branch_token_is_corroborated_and_silent(): void
+    {
+        // The ordinary shape: the PR title cites the same card the branch names. Not a
+        // conflict, so no warning — and corroborated, so no handler-side gate.
+        Http::fake();
+        Log::spy();
+
+        $result = $this->classify('pull_request.opened', [
+            'number' => 132, 'title' => 'Fix the widget card#5287', 'head' => ['ref' => 'fix/card-5287-slug'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertSame(5287, $move[0]->payload['card_id']);
+        $this->assertArrayNotHasKey('card_token_uncorroborated', $move[0]->payload);
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    public function test_a_branch_only_card_token_is_corroborated(): void
+    {
+        // No token in the title at all — the branch alone names the card. This install
+        // minted that ref, so it needs no corroboration.
+        Http::fake();
+
+        $result = $this->classify('pull_request.opened', [
+            'number' => 133, 'title' => 'Fix the widget', 'head' => ['ref' => 'fix/card-5287-slug'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertSame(5287, $move[0]->payload['card_id']);
+        $this->assertArrayNotHasKey('card_token_uncorroborated', $move[0]->payload);
+    }
+
+    public function test_a_bare_card_id_in_the_head_ref_corroborates_the_titles_token(): void
+    {
+        // The DOMINANT branch convention here is `<type>/<id>-slug`, which carries no
+        // card TOKEN — measured across merged PRs (fix/5915-…, test/5233-…). The ref
+        // still names the card, so it corroborates, and the handler gate stays off.
+        // Without this, almost every real PR would be uncorroborated and any SECOND PR
+        // against a card that already tracks a first would be refused.
+        // (Require a full token in the ref ⇒ flag present ⇒ RED.)
+        Http::fake();
+
+        $result = $this->classify('pull_request.opened', [
+            'number' => 136, 'title' => 'Fix the widget (card#5287)', 'head' => ['ref' => 'fix/5287-widget'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertSame(5287, $move[0]->payload['card_id']);
+        $this->assertArrayNotHasKey('card_token_uncorroborated', $move[0]->payload);
+    }
+
+    public function test_a_bare_id_in_the_head_ref_never_selects_a_card_on_its_own(): void
+    {
+        // Corroboration is strictly WIDER than selection. A ref naming a DIFFERENT bare
+        // id does not make that id the target (it is not a token — CardTokenGrammar
+        // requires the `card` prefix so `chore/2026-cleanup` cannot correlate); it
+        // simply fails to corroborate, and the title's token goes to the handler gate.
+        Http::fake();
+
+        $result = $this->classify('pull_request.opened', [
+            'number' => 137, 'title' => 'Rework (card#5139)', 'head' => ['ref' => 'fix/5287-widget'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertSame(5139, $move[0]->payload['card_id']);   // NOT 5287 — a bare id selects nothing
+        $this->assertTrue($move[0]->payload['card_token_uncorroborated']);
+    }
+
+    public function test_a_title_only_card_token_is_flagged_uncorroborated_for_the_handler(): void
+    {
+        // The residual the branch cannot vouch for: the token is prose-only. The
+        // classifier does not refuse it (that would break every legitimate title-only
+        // PR) — it flags it, and the handler corroborates against the card's own
+        // pr_number using the read it already makes.
+        // (Revert the fix ⇒ flag absent ⇒ RED.)
+        Http::fake();
+
+        $result = $this->classify('pull_request.opened', [
+            'number' => 134, 'title' => 'Fix a thing card#3410', 'head' => ['ref' => 'f'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertSame(3410, $move[0]->payload['card_id']);
+        $this->assertTrue($move[0]->payload['card_token_uncorroborated']);
+    }
+
+    public function test_the_draft_overlay_also_prefers_the_branchs_token_over_a_foreign_title_token(): void
+    {
+        // canon #5: the overlay shares cardTokenResolution, so the title-vs-branch rule
+        // reaches it with no second copy of the predicate. Silent by design (DL-218's
+        // ruling: the move path logs the same tokens on an opened-as-draft PR).
+        $this->writeMapping(['draft_overlay' => true]);
+        Http::fake();
+
+        $result = $this->classify('pull_request.converted_to_draft', [
+            'number' => 135, 'title' => 'Rework (card#5139)', 'head' => ['ref' => 'fix/card-5287-slug'],
+        ]);
+
+        $overlay = $this->targetsNamed($result, 'kanban_block_reason');
+        $this->assertCount(1, $overlay);
+        $this->assertSame('5287', $overlay[0]->targetId);   // the branch's card, not the title's
+    }
+
     public function test_card_token_on_a_branch_create_push_emits_started(): void
     {
         Http::fake();

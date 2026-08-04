@@ -91,6 +91,125 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');   // no move
     }
 
+    // --- card#5287 / DL-270: the uncorroborated title-only card# corroboration gate ---
+
+    public function test_uncorroborated_title_only_token_is_refused_when_the_card_tracks_another_pr(): void
+    {
+        // THE case the gate exists for: a PR title descriptively cites card#5 while its
+        // branch names nothing. Card 5 is on the mapped board, so every guard above
+        // passes — and card 5 already answers to PR 900, which is the evidence that the
+        // title was citing somebody else's work. Refuse, loudly, and write NOTHING.
+        // (Revert the gate ⇒ a PATCH is sent ⇒ RED.)
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => [
+            'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 900],
+        ]])]);
+        Log::spy();
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'REFUSED')
+            && str_contains((string) $msg, 'only in the PR title'))->once();
+    }
+
+    public function test_uncorroborated_title_only_token_moves_when_the_card_tracks_no_pr(): void
+    {
+        // The legitimate title-only PR — the reason refuse-all was declined. The card
+        // carries no pr_number, so nothing contradicts the title's claim.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])
+                ->push(['data' => ['id' => 5]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
+    public function test_uncorroborated_title_only_token_moves_when_the_card_already_tracks_this_pr(): void
+    {
+        // A later action on the SAME PR (or a redelivery): the card's own pr_number IS
+        // this PR, which corroborates the title rather than contradicting it. The
+        // numeric-string form is what a durable-inbox JSON round-trip produces.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => '148']]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
+    public function test_uncorroborated_refusal_also_suppresses_the_already_in_stage_self_heal_stamp(): void
+    {
+        // The gate sits BEFORE the already-in-stage branch on purpose: that branch
+        // still STAMPS correlation refs, so a refused move that reached it would write
+        // this PR's refs onto a card it has no authority over — the hijack surviving
+        // as a stamp instead of a move.
+        // (Move the gate below the self-heal ⇒ a PATCH is sent ⇒ RED.)
+        //
+        // The card carries a pr_number (so the gate refuses) but NO dl_number, and the
+        // payload carries a stamp_dl — so the self-heal has real work to do if it is
+        // reached. Without that the stamp is add-if-missing-empty and the assertion
+        // could not fail whatever the gate did: the first version of this test was a
+        // decoration, and the mutation run is what said so.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => [
+            'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 900],
+        ]])]);
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148, 'stamp_dl' => 'DL-77']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_a_corroborated_token_moves_a_card_that_tracks_another_pr(): void
+    {
+        // The gate is scoped to the flag. A branch-corroborated card# (or a DL move)
+        // on a card that already tracks another PR is a NORMAL second PR against one
+        // card and must keep moving — the gate must not widen into it.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 900]]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 148]));   // no uncorroborated flag
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
+    public function test_uncorroborated_title_only_token_is_refused_when_the_event_carries_no_pr_number(): void
+    {
+        // Fail-closed: an event with no PR number corroborates nothing, so a card that
+        // tracks a PR is not moved on the title's word alone.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => [
+            'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 900],
+        ]])]);
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true]));   // no stamp_pr
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
     public function test_card_on_wrong_board_is_refused_no_move(): void
     {
         $this->writeWriteback();
