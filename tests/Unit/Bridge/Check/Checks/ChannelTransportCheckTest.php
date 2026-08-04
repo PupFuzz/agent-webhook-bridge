@@ -217,13 +217,15 @@ class ChannelTransportCheckTest extends TestCase
     }
 
     /**
-     * The same contract for the symlink case — and the exclusion is OVER-DETERMINED, which
-     * is why this asserts the outcome rather than a clause. PHP's `filetype()` is
-     * lstat-based, so a symlink reads as `link` and the type test alone already rejects it;
-     * the migrated predicate's separate `! is_link()` clause cannot change the conjunction's
-     * value for any input. (It is load-bearing in `SocketEndpoint::assertValid`, where the
-     * two clauses throw DIFFERENT messages — here they collapse to one silence. Recorded in
-     * the plan doc's Stage 5b result; not touched by a byte-identical migration stage.)
+     * The same contract for the symlink case, and it is the SAME clause that enforces it:
+     * PHP's `filetype()` is lstat-based, so a symlink reads as `link` and the type test
+     * alone already rejects it. This test asserts the outcome rather than a clause because
+     * the predicate used to carry a redundant `! is_link()` alongside the type test — each
+     * masked the other's mutation, so neither could be mutation-tested individually. That
+     * clause was dropped (card#5538); the assertion is unchanged because the behavior was
+     * never dependent on it. (`! is_link()` IS load-bearing in `SocketEndpoint::assertValid`,
+     * where the two checks are separate statements throwing DIFFERENT messages — here they
+     * collapsed to one silence, which is what made one of them removable.)
      */
     public function test_a_symlink_to_a_live_socket_is_never_probed(): void
     {

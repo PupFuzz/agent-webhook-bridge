@@ -880,6 +880,14 @@ here: stages 0–7 hold a byte-identical migration contract, and an output-neutr
 land on its own afterward. Sibling audit done and bounded: three `is_link` sites in `app/`, and the
 third (`ChannelSnapshotProbe::resolveNonStrict`) is unrelated path resolution.
 
+> **RESOLVED after the migration stages (card#5538).** `! is_link($socket)` is gone; the conjunction
+> now carries the type test alone, and the adjacent comment states *why* one clause covers both. The
+> paragraph above is kept as the stage-5b record of how the clause was found, not as current code
+> state. Verified on removal: golden corpus byte-identical, and the two exclusion tests
+> (`…regular_file_at_the_socket_path_is_never_probed`, `…symlink_to_a_live_socket_is_never_probed`)
+> **watched go red** with the remaining type test deleted — so the surviving clause is the one
+> actually carrying the behavior, not a second unmeasured passenger.
+
 **Operator-visible change: none.** Golden output byte-identical with `UPDATE_GOLDEN` unset — the
 assertion count is the load-bearing half of that claim, since a run with the variable set regenerates
 rather than asserts and still reports green. The golden suite goes **37 tests / 79 assertions → 38 /
