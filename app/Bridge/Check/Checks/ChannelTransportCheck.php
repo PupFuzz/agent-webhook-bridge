@@ -108,10 +108,11 @@ final class ChannelTransportCheck implements PerAgentCheck
 
         // filetype() over a bare file_exists(): a path that is a regular file or a
         // symlink is a misconfig, not a channel, and connecting to it would report a
-        // liveness verdict about the wrong thing.
+        // liveness verdict about the wrong thing. filetype() alone excludes BOTH because
+        // it is lstat-based — it returns 'link' for a symlink, never the target's type,
+        // so no separate is_link() exclusion can change this conjunction's value.
         clearstatcache(true, $socket);
         if (is_dir($dir) && file_exists($socket)
-            && ! is_link($socket)
             && filetype($socket) === 'socket'
         ) {
             if ($this->probe->probe('unix://'.$socket)['connected']) {
