@@ -7,6 +7,7 @@
 // Run: `node --test examples/channel-servers/tests/`. The "Channel-server supply
 // chain" workflow runs this suite as a CI step (after `npm ci`), so a regression in
 // any refuse-and-exit marker contract fails the PR.
+import './live-state-guard.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';

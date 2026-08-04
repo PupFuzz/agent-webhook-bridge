@@ -157,6 +157,33 @@ re-implementation of the predicate in PHP would drift from what CI actually runs
   `git show 4abe8e3:` returns 128 in a shallow clone — a control read that way passes locally
   and reds in CI.
 
+## The channel-server live-state sandbox (DL-269)
+
+`examples/channel-servers/tests/` spawns the REAL channel server, and the server's
+`markerPath()` falls back to the ambient environment
+(`${SOCKET_PATH}.FAILED` under `unix`, else `${XDG_RUNTIME_DIR || os.tmpdir()}/…FAILED`).
+A seat exports `BRIDGE_CHANNEL_SOCKET` pointing at its LIVE socket, so a child spawned with a
+plain `{...process.env}` binds it, gets `EADDRINUSE`, and writes a `.FAILED` deafness marker
+beside a HEALTHY socket — the exact false signal the marker mechanism exists to make
+trustworthy. That is measured history, not a hypothetical (DL-237(e)).
+
+- **Every test file in that directory imports `./live-state-guard.mjs` first.** The guard
+  neutralises all four channel-addressing inputs at import — before any case runs — and
+  registers an `after()` hook that snapshots the seat's real `$XDG_RUNTIME_DIR` and FAILS the
+  run if it moved. Add the import to any new file in that directory; per-test scrubbing does
+  not close the gap, because nothing notices a test that forgets it.
+- **The assertion is the point, not the redirect.** The two pre-existing suites already
+  scrubbed their child env — one by denylist, one by allowlist — and both were clean when
+  measured. Neither could tell you when it stopped being clean.
+- **`live-state-guard.test.mjs` is its positive control**, including the overwrite-in-place
+  case: a name-set compare reports a run clean when a false marker is written OVER a stale
+  one, which is exactly the state a previously-deaf seat is in.
+- **Snapshots record `(mode, size, mtimeNs)`, via `lstat`** — not the name set, and not
+  following symlinks.
+- The equivalent python-side contract lives in `bin/test_check_channel_snapshot.py`'s
+  `setUpModule`/`tearDownModule`. The two are separate per-language authorities; they must
+  move together when the contract changes.
+
 ## Database configuration
 
 `phpunit.xml` sets the test environment unconditionally:
