@@ -14,8 +14,10 @@ name: PR title correlation-key lint
 # releases naming a narrower set than the code enforced, and how the DL token below
 # spent three grammar edits described to operators as `DL-NNNN` (four digits) against
 # an unbounded `\d+`. The digit-count spelling is gone for the same reason. Where the
-# require step below genuinely DISAGREES with an authority it is PINNED, not fixed —
-# repairing it changes what a CI gate accepts (card#5300). The disagreements are
+# require step below genuinely DISAGREES with an authority it is PINNED rather than
+# repaired by default — repairing one changes what a CI gate accepts, which is a hard
+# gate (card#5300); one row has been approved and fixed (DL-272), the rest are still
+# pinned and the card is still open for them. The disagreements are
 # enumerated in PrTitleLintTest, never here: a count in this header is the same kind
 # of copy nothing holds, and it was already wrong once (the audit that wrote this
 # paragraph found a further divergence the same day).
@@ -149,7 +151,22 @@ jobs:
           # "discard#3770"/"foo_card-3770"; the trailing ([^0-9]|$) rejects a
           # longer id like "card#37700". Inputs are pre-folded, so the lowercase
           # class is the whole alphabet.
-          if [[ "$title_lc" =~ (^|[^0-9a-z_])card[-#]?${card_id}([^0-9]|$) ]] || [[ "$title_lc" =~ (^|[^0-9a-z_])dl-[0-9]{1,4}([^0-9]|$) ]]; then
+          #
+          # The DL arm enumerates its digits instead of writing the range [0-9]
+          # because a bracket RANGE inside bash's [[ =~ ]] is resolved by
+          # COLLATION, not by codepoint: under en_US.UTF-8 (measured; C and
+          # C.UTF-8 disagree) [0-9] admits U+0663 and friends, so the gate
+          # greened "DL-<ARABIC-INDIC THREE>" — a token the classifier's ASCII
+          # \d correlates to nothing, which is the silent no-op this gate exists
+          # to stop, and a breach of DL-231's fleet-wide ASCII-digits-only
+          # clause. An enumerated set depends on no locale data at all, where
+          # [[:digit:]] would trade one piece of locale data for another. The
+          # ranges that REMAIN below are negated ([^0-9], [^0-9a-z_]) and the
+          # branch-shape test, where collation reds instead of greening;
+          # narrowing those would make this gate more permissive, so they are
+          # measured and pinned in PrTitleLintTest under card#5300, not fixed
+          # here.
+          if [[ "$title_lc" =~ (^|[^0-9a-z_])card[-#]?${card_id}([^0-9]|$) ]] || [[ "$title_lc" =~ (^|[^0-9a-z_])dl-[0123456789]{1,4}([^0-9]|$) ]]; then
             echo "OK: title carries a correlation token for card $card_id."
             exit 0
           fi

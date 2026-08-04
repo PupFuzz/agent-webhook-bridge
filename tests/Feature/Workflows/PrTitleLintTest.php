@@ -65,14 +65,19 @@ class PrTitleLintTest extends TestCase
     private const REQUIRE_STEP_DL_FALSE_RED = ['DL-12345'];
 
     /**
-     * FALSE GREEN, and only under some locales: bash resolves `[0-9]` in `[[ =~ ]]`
-     * by COLLATION, so under `en_US.UTF-8` a Unicode-digit DL satisfies the gate
-     * while the classifier (ASCII `\d`, no `/u` — DL-231) correlates it to nothing.
-     * Under `C` / `C.UTF-8` / `POSIX` the gate reds it and agrees. GNU `grep -E`
-     * does NOT do this in any of those locales, which is why the warn step is
-     * unaffected — the engine is the cause, not the pattern.
+     * FIXED (card#5300, user-approved): the DL arm's digit class was the RANGE
+     * `[0-9]`, which bash resolves by COLLATION inside `[[ =~ ]]`, so under
+     * `en_US.UTF-8` a Unicode-digit DL satisfied the gate while the classifier
+     * (ASCII `\d`, no `/u` — DL-231) correlates it to nothing. The arm now
+     * enumerates its digits and the vector reds in every locale.
+     *
+     * The vector stays named here because it is no longer an exemption but a
+     * REGRESSION anchor: it is driven through the agreement loop like any other
+     * vector, AND through the locale characterization below, which measures both
+     * locales and mutates the real workflow back to the range to prove the
+     * enumeration is what carries the answer.
      */
-    private const REQUIRE_STEP_DL_LOCALE_DEPENDENT = ["DL-\u{0663}"];
+    private const REQUIRE_STEP_DL_UNICODE_DIGIT = ["DL-\u{0663}"];
 
     /** Extract one step's `run:` script from the workflow by name prefix. */
     private function stepScript(string $namePrefix): string
@@ -175,10 +180,21 @@ class PrTitleLintTest extends TestCase
      */
     private function runStep(string $namePrefix, string $title, string $branch, ?string $locale = null): array
     {
+        return $this->runScriptText($this->stepScript($namePrefix), $title, $branch, $locale);
+    }
+
+    /**
+     * The exec half of {@see runStep}, split out so a leg can run a MUTATED copy of
+     * a real step script (the locale characterization reverts the fix and re-runs
+     * it) without the mutation having to be re-implemented as a hand-copied regex.
+     *
+     * @return array{0:int,1:string}
+     */
+    private function runScriptText(string $script, string $title, string $branch, ?string $locale = null): array
+    {
         // No `.sh` suffix: appending one would name a DIFFERENT path than tempnam()
         // created, leaking the original empty file on every one of the ~150 runs a
         // full pass of this class makes. `bash <file>` does not care about the name.
-        $script = $this->stepScript($namePrefix);
         $tmp = tempnam(sys_get_temp_dir(), 'lint');
         file_put_contents($tmp, $script);
         $rc = 0;
@@ -544,16 +560,18 @@ class PrTitleLintTest extends TestCase
      * The DL half of the require step is a SECOND implementation of the DL token,
      * in bash, and before card#5308 exactly three of its shapes were checked by
      * hand — so a further divergence could enter unobserved, and one already had
-     * (see the locale characterization below, which this loop is what found). Same
-     * treatment the card half got: drive the whole vector set through the real gate
-     * and require agreement everywhere except the vectors pinned by name.
+     * (the Unicode-digit row below, which this loop is what found — and which is
+     * now fixed, so it is no longer exempt and rides this loop like any other
+     * vector). Same treatment the card half got: drive the whole vector set through
+     * the real gate and require agreement everywhere except the vectors pinned by
+     * name.
      */
     public function test_the_require_steps_dl_arm_agrees_with_the_authority_but_the_pinned_ones(): void
     {
         $this->assertNotEmpty(DlTokenGrammar::accepted(), 'the comparison needs accepted vectors');
         $this->assertNotEmpty(DlTokenGrammar::rejected(), 'the comparison needs rejected vectors');
 
-        $exempt = array_merge(self::REQUIRE_STEP_DL_FALSE_RED, self::REQUIRE_STEP_DL_LOCALE_DEPENDENT);
+        $exempt = self::REQUIRE_STEP_DL_FALSE_RED;
         foreach (DlTokenGrammar::VECTORS as $vector) {
             if (in_array($vector, $exempt, true)) {
                 continue;
@@ -572,46 +590,121 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
-     * THE FOURTH DIVERGENCE, found by the vector loop above the day it was written
-     * (card#5308) — three grammar edits of hand-picked shapes had never reached it.
+     * THE FOURTH DIVERGENCE — found by the vector loop above the day it was written
+     * (card#5308), three grammar edits of hand-picked shapes having never reached
+     * it — and now FIXED (card#5300, the one row the user approved).
      *
-     * `[0-9]` inside bash's `[[ =~ ]]` is a COLLATION range, not an ASCII one, so
-     * under a UTF-8 collation locale U+0663 falls inside it and the gate GREENS a
-     * title carrying a DL the classifier correlates to nothing — the same FALSE
-     * GREEN shape as `card4`, and precisely the fleet-wide invariant DL-231
-     * ratified ("any other engine implementing this grammar matches ASCII digits
-     * only"). The gate is a second engine, and it does not.
+     * A bracket RANGE inside bash's `[[ =~ ]]` is resolved by COLLATION, not by
+     * codepoint, so under a UTF-8 collation locale U+0663 fell inside `[0-9]` and
+     * the gate GREENED a title carrying a DL the classifier correlates to nothing —
+     * the same FALSE GREEN shape as `card4`, and a breach of the fleet-wide
+     * invariant DL-231 ratified ("any other engine implementing this grammar
+     * matches ASCII digits only"). The gate is a second engine, and it did not.
      *
-     * PINNED, not fixed: repairing it means changing what the CI gate accepts, the
-     * hard gate card#5300 owns. Both locale answers are measured here so the pin is
-     * a measurement rather than a claim, and so the C-family half proves the vector
-     * is otherwise ordinary.
+     * WHAT THIS LEG HAS TO PROVE is not "the vector reds" — it red under a C-family
+     * locale before the fix too, so a same-locale assertion would have passed
+     * throughout and measured nothing. It has to prove the ENUMERATION is what
+     * carries the answer. So the real script is mutated back to the range and re-run:
+     * the old spelling must GREEN where the shipped one REDS, under the same locale,
+     * in the same process. That is the control pinned to the exact failure it guards
+     * (and the mutation asserts it applied — a no-op `str_replace` would leave a
+     * control that cannot fail).
      */
-    public function test_the_require_steps_digit_class_is_a_locale_collation_range_unlike_the_authority(): void
+    public function test_the_require_steps_dl_arm_matches_ascii_digits_only_in_every_locale(): void
     {
         $utf8Collation = 'en_US.UTF-8';
         $available = in_array('en_US.utf8', self::availableLocales(), true);
+        $script = $this->stepScript('Require card#/DL token');
 
-        foreach (self::REQUIRE_STEP_DL_LOCALE_DEPENDENT as $vector) {
+        // The mutation: the shipped enumeration reverted to the pre-fix range. Its
+        // application is asserted, so this control can never silently become a
+        // second run of the unmutated script.
+        $reverted = str_replace('dl-[0123456789]{1,4}', 'dl-[0-9]{1,4}', $script, $applied);
+        $this->assertSame(1, $applied,
+            'the DL arm no longer spells its digits as an enumerated set — the collation fix this leg guards is gone or renamed');
+
+        foreach (self::REQUIRE_STEP_DL_UNICODE_DIGIT as $vector) {
             $title = "fix a thing {$vector}";
             $this->assertNull(DlTokenGrammar::parse($title),
-                'the classifier correlates a Unicode-digit DL to NOTHING (DL-231) — that is what makes a green gate false');
+                'the classifier correlates a Unicode-digit DL to NOTHING (DL-231) — that is what would make a green gate false');
 
-            $this->assertSame(1, $this->runRequireStep($title, 'fix/999-slug', 'C.UTF-8'),
-                'under a C-family locale the gate reds it and agrees with the grammar');
-
-            if (! $available) {
-                $this->markTestIncomplete("no {$utf8Collation} on this box — the FALSE-GREEN half was NOT measured");
+            foreach (['C.UTF-8', $utf8Collation] as $locale) {
+                if ($locale === $utf8Collation && ! $available) {
+                    $this->markTestIncomplete("no {$utf8Collation} on this box — the collation half was NOT measured");
+                }
+                $this->assertSame(1, $this->runRequireStep($title, 'fix/999-slug', $locale),
+                    "under {$locale} the gate must red a DL the grammar correlates to nothing");
             }
-            $this->assertSame(0, $this->runRequireStep($title, 'fix/999-slug', $utf8Collation),
-                "under {$utf8Collation} the gate PASSES a title that will never move a card — the pinned FALSE GREEN");
 
-            // The warn step is the control: same pattern class, different engine.
-            // GNU grep's `[0-9]` is ASCII in every locale measured, so the near-miss
-            // leg is unaffected — which is what identifies bash as the cause.
+            // THE DISCRIMINATOR: same locale, same vector, only the digit class
+            // differs. A run where this greens is what makes the two reds above
+            // evidence rather than a locale that was never going to match.
+            $this->assertSame(0, $this->runScriptText($reverted, $title, 'fix/999-slug', $utf8Collation)[0],
+                "the pre-fix range GREENS under {$utf8Collation} — if this reds, the collation behaviour is gone and the "
+                .'enumeration is no longer the thing being measured');
+            $this->assertSame(1, $this->runScriptText($reverted, $title, 'fix/999-slug', 'C.UTF-8')[0],
+                'and reds under C.UTF-8 — which is what makes the locale, not the pattern, the variable');
+
+            // The warn step is the second control: same pattern class, different
+            // engine. GNU grep's `[0-9]` is ASCII in every locale measured, so the
+            // near-miss leg never had the defect — which is what identified bash's
+            // engine as the cause rather than the bracket expression.
             $this->assertFalse($this->grepMatches('(^|[^0-9a-z_])dl-[0-9]{1,4}([^0-9]|$)', $title),
-                'control: the same bracket range under grep -E does NOT match — the divergence is bash\'s engine');
+                'control: the same bracket range under grep -E does NOT match — the divergence was bash\'s engine');
         }
+    }
+
+    /**
+     * THE SIBLINGS THE FIX ABOVE DELIBERATELY DID NOT TOUCH (canon #7, measured
+     * during card#5300's build, appended to that card).
+     *
+     * The require step's REMAINING bracket expressions are locale-collation
+     * sensitive too, but they are all NEGATED classes or the branch-shape test,
+     * where a collation-wide range REDS a title the authority correlates instead of
+     * greening one it does not. Narrowing them would make this gate MORE PERMISSIVE
+     * — a hard gate the user has not answered — so they are measured here and left
+     * alone. Every row is a FALSE RED: annoying, never silent.
+     *
+     * These are characterizations. A RED here means the divergence moved, and the
+     * pin is what to revisit first — not the gate.
+     */
+    public function test_the_require_steps_negated_classes_are_still_collation_sensitive_pending_a_gate(): void
+    {
+        if (! in_array('en_US.utf8', self::availableLocales(), true)) {
+            $this->markTestIncomplete('no en_US.UTF-8 on this box — the collation half of these rows was NOT measured');
+        }
+
+        // Each row: [title, branch, what the authority answers]. The authority is
+        // ASSERTED, not assumed, because "false red" is a claim about both engines.
+        $this->assertSame(4, CardTokenGrammar::parse('card-4'."\u{0663}"));
+        $this->assertSame('DL-1234', DlTokenGrammar::parse('fix dl-1234'."\u{0663}"));
+        $this->assertSame(44, CardTokenGrammar::parse("\u{e9}".'card-44'));
+
+        $rows = [
+            // trailing ([^0-9]|$), card arm — a Unicode digit after the id is not a
+            // boundary under a collation locale, so the token stops being bounded.
+            ['card-4'."\u{0663}", 'fix/4-slug'],
+            // trailing ([^0-9]|$), DL arm — same shape, other grammar.
+            ['fix dl-1234'."\u{0663}", 'fix/999-slug'],
+            // leading (^|[^0-9a-z_]) — here the collation-wide range is `a-z`, not
+            // the digits, which is why narrowing the digit class did not move it.
+            ["\u{e9}".'card-44', 'fix/44-slug'],
+        ];
+        foreach ($rows as [$title, $branch]) {
+            $this->assertSame(0, $this->runRequireStep($title, $branch, 'C.UTF-8'),
+                "'{$title}' passes the gate under C.UTF-8, agreeing with the authority");
+            $this->assertSame(1, $this->runRequireStep($title, $branch, 'en_US.UTF-8'),
+                "'{$title}' is the pinned locale-dependent FALSE RED under en_US.UTF-8");
+        }
+
+        // The branch-shape test `^[a-z-]+/[0-9]+-` is the fourth site and differs in
+        // KIND: it decides whether the step enforces at all, so under a collation
+        // locale a Unicode-digit branch is enforced against (and reds) where a
+        // C-family locale skips it entirely.
+        $this->assertSame(0, $this->runRequireStep('a title with no token at all', 'fix/'."\u{0663}".'-slug', 'C.UTF-8'),
+            'under C.UTF-8 the branch carries no card id and the step skips');
+        $this->assertSame(1, $this->runRequireStep('a title with no token at all', 'fix/'."\u{0663}".'-slug', 'en_US.UTF-8'),
+            'under en_US.UTF-8 the same branch reads as a card branch and is enforced — the step\'s SCOPE is locale-dependent');
     }
 
     /**

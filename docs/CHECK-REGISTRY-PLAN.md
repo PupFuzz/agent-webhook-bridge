@@ -2627,13 +2627,16 @@ the work distinguishes those.
 - **The correlation-token grammars.** `CardTokenGrammar` / `DlTokenGrammar` are well-built — the
   operator-facing accept-set is *derived by running the pattern* (`describe()`), which is the
   right answer. One real gap remains and is **separate from this program**:
-  `.github/workflows/pr-title-lint.yml`'s **gate leg** hand-rolls `card[-#]?${card_id}` (no
-  2-digit floor ⇒ glued `card4` passes CI but never correlates — a silent green) and
-  `dl-[0-9]{1,4}` (bounded where `DlTokenGrammar` is `\bDL-(\d+)`, unbounded ⇒ `DL-12345`
-  false-reds). The *warn* leg already has an answer-set comparison guard; the gate leg does not.
-  That workflow has **no checkout and no PHP setup**, so it cannot call the PHP authority without
-  adding both — extending the existing answer-set guard is the correct fix under that constraint,
-  not a restructure. Tracked as **card#5300** (hard gate).
+  `.github/workflows/pr-title-lint.yml`'s **gate leg** hand-rolls both token grammars: the card
+  arm has no 2-digit floor (⇒ glued `card4` passes CI but never correlates — a silent green) and
+  the DL arm is four-digit-bounded where `DlTokenGrammar` is unbounded (⇒ `DL-12345` false-reds).
+  **Both arms have since been given the answer-set comparison guard the *warn* leg had (DL-240),
+  so the divergences are re-measured every run rather than remembered — what remains open is
+  repairing them, not observing them.** That workflow has **no checkout and no PHP setup**, so it
+  cannot call the PHP authority without adding both; extending the answer-set guard was the
+  correct fix under that constraint, not a restructure. Tracked as **card#5300** (hard gate); one
+  row — the locale-dependent Unicode-digit false green — was approved and fixed under DL-272, the
+  rest are still pinned.
 - **Adding any new `bridge:check` leg** until Stage 8 lands — each one added first is another
   site to migrate and another chance to re-mint the same card. **LIFTED: Stage 8 has landed.** A
   new leg is now added as a registered `Check`, and `CheckCommandRegistrationTest`'s pinned id list

@@ -32,7 +32,7 @@ class DlTokenGrammarTest extends TestCase
             'dl-239' => 'DL-239',       // case-insensitive, prefix normalized to upper
             'DL-0239' => 'DL-0239',     // leading zeros preserved (canonicalized at the stamp site, not here)
             'DL-1' => 'DL-1',           // no digit floor — unlike the glued card token
-            'DL-12345' => 'DL-12345',   // unbounded: the measured divergence from the CI lint's [0-9]{1,4} (card#5300)
+            'DL-12345' => 'DL-12345',   // unbounded: the measured divergence from the CI lint's four-digit bound (card#5300)
             'DL239' => null,            // the separator is MANDATORY — no glued arm
             'DL_239' => null,           // ...and `_` is not the separator
             'IDL-239' => null,          // leading boundary: an embedded token is not a token

@@ -48,7 +48,7 @@ final class DlTokenGrammar
      * this list carries no copy of the accept-set that could disagree with it.
      *
      * `DL-12345` is here because it is the measured divergence between this
-     * grammar and the CI lint's `[0-9]{1,4}` bound (card#5300, a hard gate):
+     * grammar and the CI lint's four-digit bound (card#5300, a hard gate):
      * it is not a hypothetical, and keeping it in the set is what makes the
      * divergence re-measured on every run rather than remembered. `DL-1` sits
      * beside it as the no-floor case, and `DL239` / `DL_239` as the separator
