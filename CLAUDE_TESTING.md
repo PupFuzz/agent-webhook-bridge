@@ -133,6 +133,30 @@ Classifier that always throws. Used to verify case-A failure treatment: classify
 
 Classifier that emits a target naming a handler that doesn't exist. Used to verify case-C failure treatment: handler resolution failure marks the dispatch done-with-note (intent was staged first, per B-before-C ordering).
 
+## The channel-server version-agreement control (DL-268)
+
+`tests/Feature/Workflows/ChannelServerVersionAgreementTest.php` extracts the
+`version-bump-guard` steps' real `run:` blocks out of
+`.github/workflows/channel-server-supply-chain.yml` and executes them under `bash` against a
+throwaway tree — the same shape as `PrTitleLintTest`, and for the same reason: a
+re-implementation of the predicate in PHP would drift from what CI actually runs.
+
+- **Its positive control is real history, not invented JSON.**
+  `tests/Fixtures/channel-server-drift-4abe8e3/` holds `examples/channel-servers/`'s manifest +
+  lockfile as they stood at `4abe8e3`, the last commit at which card#5232's drift was live
+  (manifest `0.8.3`, lock `0.7.1`). The guard is required to reject a state the repo actually
+  shipped.
+- **The fixtures carry a `.fixture` suffix on purpose.** Dependabot *security* updates detect
+  manifests by filename anywhere in the repo, independently of `.github/dependabot.yml`; a file
+  named `package-lock.json` under `tests/` would be eligible for an automated bump, and bumping
+  it would repair the very drift the control reproduces. The test writes the bytes into a temp
+  tree under the real filenames, so the guard reads what it reads in CI.
+- **The test asserts the fixture still carries the drift** before using it, so a resynced or
+  regenerated fixture reds instead of going green over a guard nothing is testing.
+- **Do not reach for `git show` here.** CI checks out at the default depth of 1 and
+  `git show 4abe8e3:` returns 128 in a shallow clone — a control read that way passes locally
+  and reds in CI.
+
 ## Database configuration
 
 `phpunit.xml` sets the test environment unconditionally:

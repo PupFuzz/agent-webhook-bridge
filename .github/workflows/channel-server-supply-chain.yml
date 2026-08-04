@@ -16,9 +16,11 @@ name: Channel-server supply chain
 #      must be loud" posture). You then bump the dep + re-commit the lock.
 #   4. version-bump-guard — consumers COPY this dir into their own deployment
 #      (per the README), so a downstream snapshot drifts silently when these
-#      files change. FAILS a PR that touches a shipped channel-server file
-#      without bumping package.json `version` — the one field a snapshot can
-#      compare to detect drift (DL-038).
+#      files change. Two assertions: FAILS a PR that touches a shipped
+#      channel-server file without bumping package.json `version` — the one field
+#      a snapshot can compare to detect drift (DL-038) — and FAILS whenever
+#      package-lock.json's version disagrees with it, since the field is a signal
+#      only while every file that states it agrees (DL-268).
 #
 # Cost-scoped on purpose: only fires when the example actually changes (PR path
 # filter) plus a weekly cron to catch newly-disclosed CVEs without a code change.
@@ -69,7 +71,9 @@ jobs:
     # Consumers copy examples/channel-servers/ into a per-deployment (often
     # per-agent) snapshot, so a change to a shipped file drifts every copy with
     # no detectable signal. Require a package.json `version` bump on any shipped
-    # change, so a snapshot can detect staleness by comparing one field (DL-038).
+    # change, so a snapshot can detect staleness by comparing one field (DL-038),
+    # AND require package-lock.json to carry that same version — the field is only
+    # a signal while every file that states it agrees (DL-268).
     # PR-only: the cron / workflow_dispatch runs have no base ref to diff against.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -79,13 +83,39 @@ jobs:
         with:
           fetch-depth: 0   # need the merge-base to diff base..head
 
+      # Both files carry the snapshot version and only `npm version` /
+      # `npm install` move them together, so a hand-edited manifest drifts the
+      # lock silently — measured at 0.7.1 against a manifest that reached 0.8.3
+      # across roughly a dozen green bumps (card#5232). Deliberately NOT
+      # diff-gated like the bump step below: agreement is a property of the tree,
+      # so there is no shape of diff that earns an exemption from it. Drift can
+      # only ENTER through a PR touching these files, and the workflow's own
+      # `paths:` filter already fires on every such PR.
+      - name: Require the lockfile version to agree with the manifest version
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest=$(jq -r '.version' examples/channel-servers/package.json)
+          if [ "$manifest" = 'null' ] || [ -z "$manifest" ]; then
+            echo "::error::examples/channel-servers/package.json has no version field. DL-038 makes that field the staleness signal a downstream snapshot reads, so its absence is a failure, not an exemption."
+            exit 1
+          fi
+          for site in '.version' '.packages[""].version'; do
+            lock=$(jq -r "$site" examples/channel-servers/package-lock.json)
+            if [ "$lock" != "$manifest" ]; then
+              echo "::error::examples/channel-servers/package-lock.json $site is '$lock' but package.json version is '$manifest'. Resync at the current version with: cd examples/channel-servers && npm install --package-lock-only — or bump both with npm version <next> --no-git-tag-version."
+              exit 1
+            fi
+          done
+          echo "lockfile version agrees with package.json: '$manifest'"
+
       - name: Require a package.json version bump when shipped files change
+        shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          # Shipped files only: exclude the gitignored node_modules (never copied)
-          # and the CI workflow itself (not part of the downstream snapshot).
+          # Shipped files only: exclude the gitignored node_modules (never copied).
           changed=$(git diff --name-only "$BASE_SHA"...HEAD -- examples/channel-servers/ \
             | grep -v '/node_modules/' || true)
           if [ -z "$changed" ]; then
@@ -97,6 +127,7 @@ jobs:
           new=$(jq -r '.version' examples/channel-servers/package.json)
           if [ "$old" = "$new" ]; then
             echo "::error::examples/channel-servers/ changed but package.json version is still '$new'. Bump it so downstream snapshots can detect drift (DL-038): cd examples/channel-servers && npm version <next> --no-git-tag-version"
+            echo "On a lockfile-only dependency PR (dependabot cannot bump the manifest, so this leg is red by construction) the maintainer adds that ONE command as a commit on the PR branch. Do not exclude the lockfile from this guard: a transitive bump changes what 'npm ci' installs, which is exactly the artifact drift the version signals (DL-268)."
             exit 1
           fi
           echo "package.json version bumped: '$old' -> '$new' ✓"
