@@ -11,11 +11,22 @@ use PHPUnit\Framework\TestCase;
 class ValidatorsTest extends TestCase
 {
     /**
-     * Patterns must stay character-for-character identical to the Python
-     * provisioner side (lib/validators.py), or a value the provisioner
-     * accepts could be rejected by the receiver (or vice versa).
+     * The two patterns pinned character-for-character, because each is a
+     * RECEIVER-BOUNDARY accept-set and a widening is a security change, not a
+     * config one: `{provider}` selects the adapter and `?b=<scope_id>` becomes a
+     * filename component when the per-scope HMAC secret is loaded, so ScopeId's
+     * `..` / `//` / leading-and-trailing-`/` rejections are the path-traversal
+     * defense (see `ScopeId` and `SecretPath` — NAMED, never `{@see}`-linked, so
+     * pint cannot mint an import into a test from a comment). Pinning the
+     * literals is what makes any edit to either deliberate.
+     *
+     * NOT a cross-language lockstep. This pin was introduced claiming the
+     * patterns had to stay identical to a Python provisioner at `lib/validators.py`
+     * — a path that has never existed in this repo (its history begins at the
+     * v0.12.0 Laravel rewrite), and no Python source here carries either pattern.
+     * Do not restore a mirror claim without a mirror to name.
      */
-    public function test_patterns_match_the_python_provisioner(): void
+    public function test_patterns_are_pinned_at_the_receiver_boundary(): void
     {
         $this->assertSame('^[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)*(/[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)*)*$', ScopeId::PATTERN);
         $this->assertSame('^[a-z0-9_]+$', ProviderName::PATTERN);
