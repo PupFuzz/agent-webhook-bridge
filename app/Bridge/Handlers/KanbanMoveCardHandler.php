@@ -32,15 +32,20 @@ use Throwable;
  *  - TRANSIENT / operator-fixable (missing-or-insecure writeback token, a
  *    kanban API error) → THROW → 5xx → redelivery retries once it's fixed.
  *  - PERMANENT / refused (writeback off, no repo mapping, no stage for the
- *    outcome, or the card is NOT on the mapped board) → log + NO-OP. These can
- *    never succeed, so 5xx-retrying would storm; the dispatch acks (a refused
+ *    outcome, the card is NOT on the mapped board, or an uncorroborated title-only
+ *    `card#` names a card that already tracks a different PR) → log + NO-OP. These
+ *    can never succeed, so 5xx-retrying would storm; the dispatch acks (a refused
  *    move is not a delivery failure). The card-not-on-mapped-board case is the
  *    security guard (belongs-to-mapped-board) and is logged as a refusal.
  *
  * Payload: card_id (int), repo ("owner/repo"), outcome (one of
  * WritebackConfig::OUTCOMES, PLUS the handler-internal `reopened` — DL-195 — which
- * has no config stage of its own and reuses the `opened` stage). Any payload
- * board_id/stage_id is IGNORED — the config mapping is authoritative.
+ * has no config stage of its own and reuses the `opened` stage), and the optional
+ * `card_token_uncorroborated` flag (card#5287 / DL-270 — the classifier found the
+ * `card#` in the PR TITLE only, with nothing agreeing in the head branch, so this
+ * handler corroborates it against the card's own `pr_number` before writing
+ * anything: {@see corroboratedByCardPr}). Any payload board_id/stage_id is IGNORED
+ * — the config mapping is authoritative.
  *
  * The `started` outcome (branch-create push, DL-160) carries its own no-regression
  * guard: it only promotes a card whose current stage is in the mapping's
@@ -181,6 +186,28 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 'card_id' => $cardId, 'repo' => $repo, 'card_board' => $boardId, 'mapped_board' => $mapping->boardId,
             ]);
             $this->alerts->notify($repo, $outcome, $cardId, 'card_not_on_mapped_board');
+
+            return;
+        }
+
+        // An UNCORROBORATED title-only `card#` (card#5287 / DL-270). The classifier
+        // found the token in the PR TITLE and nothing agreeing with it in the head
+        // branch — the only surface this install mints itself — so the PR's prose is
+        // the sole claim that this PR is work on this card. A descriptive citation of
+        // ANOTHER card ("… — supersedes card#5139") is lexically identical to that
+        // claim, and when the cited card is on the SAME mapped board every guard above
+        // passes: the read succeeds, the board matches, and somebody else's card moves.
+        // So corroborate with evidence the card already carries — accept only when it
+        // tracks NO PR yet, or already tracks THIS one. Placed before the
+        // already-in-stage self-heal because that branch STAMPS, and a refused move
+        // must write nothing at all. Permanent refusal: log + no-op, never retry.
+        if (($payload['card_token_uncorroborated'] ?? null) === true && ! $this->corroboratedByCardPr($card, $payload)) {
+            Log::warning('kanban_move_card: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and the card already tracks a DIFFERENT PR', [
+                'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome,
+                'card_pr_number' => (is_array($card['payload'] ?? null) ? $card['payload'] : [])['pr_number'] ?? null,
+                'event_pr_number' => $payload['stamp_pr'] ?? null,
+            ]);
+            $this->alerts->notify($repo, $outcome, $cardId, 'card_token_uncorroborated');
 
             return;
         }
@@ -396,6 +423,39 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             }
             throw $e;   // transient → 5xx → redelivery re-stamps (add-if-missing idempotent)
         }
+    }
+
+    /**
+     * Does the CARD itself corroborate an uncorroborated title-only `card#` token
+     * (card#5287)? True when the card tracks NO PR yet — the normal shape of a card
+     * this PR is legitimately the first to touch — or already tracks THIS PR
+     * (redelivery, or a later action on the same PR). False only when it tracks a
+     * DIFFERENT one: a card that already answers to another PR is overwhelmingly the
+     * foreign card a title cited descriptively, and that is the single case where
+     * taking the title's word for it moves somebody else's work.
+     *
+     * The card's ALREADY-READ payload is the authority — no extra read, which is the
+     * property that made this the affordable residual answer. "Tracks no PR" uses the
+     * same emptiness test as the add-if-missing stamp ({@see stampCorrelationRefs}) so
+     * the two can never disagree about whether a card carries a PR ref. A numeric
+     * string compares equal to its int (kanban's payload and the durable inbox JSON
+     * round-trip each produce either). Fail-closed on anything else: an event with no
+     * PR number, or a non-numeric `pr_number` on the card, corroborates nothing.
+     *
+     * @param  array<string, mixed>  $card  the card as already read by getCard()
+     * @param  array<string, mixed>  $payload  the target payload (carries stamp_pr = this PR)
+     */
+    private function corroboratedByCardPr(array $card, array $payload): bool
+    {
+        $current = is_array($card['payload'] ?? null) ? $card['payload'] : [];
+        $cardPr = $current['pr_number'] ?? null;
+        if (($cardPr ?? '') === '') {
+            return true;   // tracks no PR → this PR may be its first
+        }
+
+        $eventPr = $payload['stamp_pr'] ?? null;
+
+        return is_numeric($cardPr) && is_numeric($eventPr) && (int) $cardPr === (int) $eventPr;
     }
 
     /**

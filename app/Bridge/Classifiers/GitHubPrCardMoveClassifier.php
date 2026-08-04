@@ -38,8 +38,12 @@ use Illuminate\Support\Facades\Log;
  * stamp the card# card. A co-present card# that AGREES with the DL is redundant (DL
  * wins, nothing dropped). A `DL-NNN` that resolves to no card falls through to a
  * present `card#`; a token present but resolving to nothing is warned loudly (a
- * decision-logged-but-unstamped card — never a silent no-op). The card# fallback
- * stays board-scoped via the durable handler's existing board-membership guard.
+ * decision-logged-but-unstamped card — never a silent no-op).
+ *
+ * The card# token itself has TWO surfaces with different authority — the head branch
+ * (this install's own artifact) outranks the PR title (prose), and a title-only token
+ * is passed to the handler marked UNCORROBORATED for a card-side corroboration gate.
+ * {@see cardTokenResolution} owns that rule (card#5287 / DL-270).
  *
  * Emits NO intents (the writeback is machine-only, "no agent in the loop"). A PR
  * with no parseable card reference, or a repo with no `writeback.json` mapping →
@@ -205,11 +209,26 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             : $outcome;
 
         $dl = $this->dlToken($payload);
-        $cardToken = $this->cardToken($payload);
+        $cardResolution = $this->cardTokenResolution($payload);
+        $cardToken = $cardResolution['token'];
         if ($dl === null && $cardToken === null) {
             $this->warnCardTokenNearMiss($this->titleAndHead($payload), 'PR title/head');
 
             return new ClassifyResult(targets: $overlayTargets);   // no card-first token in the PR → move no-op (overlay may also be empty)
+        }
+
+        // The title-vs-branch card-token CONFLICT (card#5287): the head branch is this
+        // install's own artifact and wins; a disagreeing title token is a foreign or
+        // descriptive citation and is REFUSED — loudly, never silently picked. Logged
+        // HERE rather than inside the resolver because the draft-overlay path resolves
+        // the same two tokens on the same event and would double-log it (the same split
+        // DL-218 made for its own conflict diagnostics).
+        $foreignTitleToken = $cardResolution['foreignTitleToken'];
+        if ($foreignTitleToken !== null) {
+            // Deliberately does NOT claim which card ends up moving: a resolving DL can
+            // still win below (DL-148 makes that one-to-many), and only the token
+            // ruling is decided at this point. What is always true here is the ruling.
+            Log::warning("kanban_move_card: PR title names card#{$foreignTitleToken} but the head branch names card#{$cardToken} — the branch ref is this install's own artifact and is AUTHORITATIVE; the title token is treated as a foreign/descriptive citation and refused (title-vs-branch conflict, card#5287). The card token in force is card#{$cardToken}");
         }
 
         // A DL that resolved to a DIFFERENT card than a co-present card# (the DL-218
@@ -292,18 +311,41 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
 
         // card#<task-id> (FR-7): direct native-id selection — reached when DL is
         // absent, or present-but-unresolved with a card# fallback. Board+stage stay
-        // operator config; the durable handler rejects a card not on the mapped
-        // board and applies the same no-regression guards as a DL move. Carries stamp
-        // refs (FR #3866): the card selected by native id is the one that strands
-        // unstamped for release-promote correlation. (The DL-win path above also
-        // stamps its PR refs — card#4852 — just never the `dl_number` the card
-        // already carries.)
+        // operator config.
+        //
+        // What the durable handler REFUSES, stated as the code delivers it rather than
+        // as one guarantee (card#5287 — the sentence that stood here claimed only the
+        // board guard, and an auditor who read it stopped there): a card the handler
+        // CANNOT READ is refused by the 4xx arm, which returns BEFORE the board guard
+        // ever reads `board_id` — 403 (a card that exists and is another tenant's) and
+        // 404 are split there so the operator gets the right hypothesis (card#5288); a
+        // card it CAN read that is not on the mapped board is refused by the
+        // belongs-to-mapped-board guard; and a card reached by an UNCORROBORATED
+        // title-only token is refused unless the card tracks no PR yet or already
+        // tracks this one. On the same mapped board none of the first two fire, which
+        // is why the third exists. The no-regression guards then apply exactly as for a
+        // DL move.
+        //
+        // Carries stamp refs (FR #3866): the card selected by native id is the one that
+        // strands unstamped for release-promote correlation. (The DL-win path above
+        // also stamps its PR refs — card#4852 — just never the `dl_number` the card
+        // already carries.) On a title-vs-branch conflict the sole-DL stamp derives
+        // from the head ref ALONE: we have just established that this title is about
+        // another card, so a DL sitting in it is foreign to the branch's card too —
+        // the DL-218 `$conflictDl` exclusion applied to the SURFACE rather than to one
+        // already-resolved token.
+        $stampText = $foreignTitleToken !== null ? $this->prHead($payload) : $this->titleAndHead($payload);
+
         return new ClassifyResult(targets: array_merge([
-            ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: array_merge([
-                'card_id' => $cardToken,
-                'repo' => $repo,
-                'outcome' => $moveOutcome,
-            ], $this->stampRefs($this->titleAndHead($payload), $this->prNumber($payload), $this->prUrl($payload), $conflictDl))),
+            ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: array_merge(
+                [
+                    'card_id' => $cardToken,
+                    'repo' => $repo,
+                    'outcome' => $moveOutcome,
+                ],
+                $cardResolution['uncorroborated'] ? ['card_token_uncorroborated' => true] : [],
+                $this->stampRefs($stampText, $this->prNumber($payload), $this->prUrl($payload), $conflictDl),
+            )),
         ], $overlayTargets));
     }
 
@@ -412,13 +454,23 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * PR the move path already emits them for the same tokens, so repeating them here
      * would double-log the identical event.
      *
+     * It shares {@see cardTokenResolution}, so the title-vs-branch rule (card#5287)
+     * applies here too: an overlay never lands on a title's card when the branch names
+     * a different one. What it does NOT inherit is the handler-side corroboration gate
+     * on an uncorroborated TITLE-ONLY token — that gate is the move handler's, and this
+     * overlay target does not carry the flag. So a title-only `card#` can still overlay
+     * a `block_reason` onto a card this PR only cited. Same shape, strictly lower harm
+     * (one add-if-missing field, cleared on ready_for_review, never a stage move), and
+     * it is filed rather than silently widened here: the gate is a change to what the
+     * bridge accepts, and the approved answer named the move path.
+     *
      * @param  array<mixed>  $payload
      * @return list<int>
      */
     private function correlatedCardIds(array $payload, string $repo, WritebackMapping $mapping, WritebackConfig $writeback): array
     {
         $dl = $this->dlToken($payload);
-        $cardToken = $this->cardToken($payload);
+        $cardToken = $this->cardTokenResolution($payload)['token'];
         if ($dl !== null) {
             $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
             $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
@@ -515,7 +567,11 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         }
 
         // card#<task-id> (FR-7): native-id selection — DL absent, or present-but-
-        // unresolved with a card# fallback. Handler-guarded on board membership.
+        // unresolved with a card# fallback. The token came from the branch REF, which
+        // this install's own tooling minted, so it is corroborated by construction and
+        // carries no `card_token_uncorroborated` flag — the title/prose surface that
+        // needs the handler's card-side gate (card#5287) does not exist on a push.
+        // Handler-guarded on readability + board membership beyond that.
         // Carries stamp refs (FR #3866) off the branch ref (no PR on a push).
         return new ClassifyResult(targets: [
             ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: array_merge([
@@ -552,32 +608,142 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     }
 
     /**
-     * The correlation surface — the PR title plus the head branch ref — where both
-     * the `DL-NNN` and `card#<id>` tokens are matched (the shared primitive for
-     * {@see dlToken}/{@see cardToken}/{@see stampRefs}).
+     * The FLATTENED correlation surface — the PR title plus the head branch ref, as
+     * one string — used where the two surfaces genuinely carry equal weight: the
+     * `DL-NNN` match ({@see dlToken}), the sole-DL stamp derivation
+     * ({@see stampRefs}), and the near-miss probe. The card token deliberately does
+     * NOT use it: flattening is exactly what let a title token outrank the branch's,
+     * so {@see cardTokenResolution} reads {@see prTitle} and {@see prHead} separately.
      *
      * @param  array<mixed>  $payload
      */
     private function titleAndHead(array $payload): string
     {
-        $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
-        $title = is_string($pr['title'] ?? null) ? $pr['title'] : '';
-        $head = is_array($pr['head'] ?? null) && is_string($pr['head']['ref'] ?? null) ? $pr['head']['ref'] : '';
-
-        return $title.' '.$head;
+        return $this->prTitle($payload).' '.$this->prHead($payload);
     }
 
     /**
-     * The card token (FR-7, framework v0.2.229) from the PR title or head branch —
-     * the native-kanban-task-id correlation channel for cards that carry no DL.
-     * Same surface + matching style as {@see dlToken}; the accepted spellings are
-     * {@see CardTokenGrammar}'s, never re-listed here.
+     * The PR title — prose, and one of the two card-token surfaces
+     * ({@see cardTokenResolution} says what authority it carries).
      *
      * @param  array<mixed>  $payload
      */
-    private function cardToken(array $payload): ?int
+    private function prTitle(array $payload): string
     {
-        return CardTokenGrammar::parse($this->titleAndHead($payload));
+        $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
+
+        return is_string($pr['title'] ?? null) ? $pr['title'] : '';
+    }
+
+    /**
+     * The head branch ref — this install's OWN artifact, and the authoritative
+     * card-token surface ({@see cardTokenResolution}).
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function prHead(array $payload): string
+    {
+        $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
+
+        return is_array($pr['head'] ?? null) && is_string($pr['head']['ref'] ?? null) ? $pr['head']['ref'] : '';
+    }
+
+    /**
+     * WHICH card this PR authorizes a write against, and how well corroborated that
+     * claim is (card#5287 / DL-270). The card token (FR-7, framework v0.2.229) is the
+     * native-kanban-task-id correlation channel for cards that carry no DL; the
+     * accepted spellings are {@see CardTokenGrammar}'s, never re-listed here. What
+     * this method owns is not the spelling but the AUTHORITY, because the token has
+     * TWO surfaces and they do not carry the same weight:
+     *
+     *  - The HEAD BRANCH ref is minted by this install's own tooling
+     *    (`board-card-start` → `card-<id>-slug`), so it is the authoritative referent
+     *    for what the PR is work ON.
+     *  - The TITLE is prose. A `card#NNNN` in it is as often a DESCRIPTIVE citation of
+     *    another card — the normal consequence of agents citing each other's work —
+     *    as it is a claim about this PR, and the two are lexically identical.
+     *
+     * Reading both as ONE string and taking `preg_match`'s single leftmost match let
+     * the title (which sits first in the concatenation) silently OUTRANK the branch's
+     * own correct token. That is the same hijack DL-218 closed one layer up for
+     * DL-vs-`card#`, whose conflict predicate does not reach across the title/branch
+     * boundary. So the DL-218 SHAPE is applied here (canon #5): the branch is
+     * authoritative, and a DISAGREEING title token is foreign — refused and warned,
+     * never silently picked.
+     *
+     * `uncorroborated` marks the residual the branch cannot vouch for: a title token
+     * that the head ref does not back — neither as a full token nor as the card's bare
+     * id ({@see refCorroborates}), so nothing this install minted agrees with the
+     * prose. Corroboration is deliberately WIDER than selection: a bare id in the ref
+     * can confirm a token but never produce one. The classifier
+     * deliberately does NOT settle that case — it turns on whether the CARD already
+     * answers to another PR, which only the durable handler's existing `getCard` read
+     * can say — so the flag rides the payload and {@see KanbanMoveCardHandler} gates
+     * on it. Costing no read the handler does not already make is precisely why
+     * accept-if-the-card-tracks-no-other-PR was the approved residual answer rather
+     * than refuse-every-title-only-token.
+     *
+     * @param  array<mixed>  $payload
+     * @return array{token: ?int, uncorroborated: bool, foreignTitleToken: ?int}
+     */
+    private function cardTokenResolution(array $payload): array
+    {
+        $titleToken = CardTokenGrammar::parse($this->prTitle($payload));
+        $headToken = CardTokenGrammar::parse($this->prHead($payload));
+
+        if ($headToken !== null) {
+            return [
+                'token' => $headToken,
+                'uncorroborated' => false,
+                // Null when the title agrees or names nothing — only a DISAGREEING
+                // title token is foreign.
+                'foreignTitleToken' => $titleToken !== $headToken ? $titleToken : null,
+            ];
+        }
+
+        if ($titleToken === null) {
+            return ['token' => null, 'uncorroborated' => false, 'foreignTitleToken' => null];
+        }
+
+        return [
+            'token' => $titleToken,
+            'uncorroborated' => ! $this->refCorroborates($this->prHead($payload), $titleToken),
+            'foreignTitleToken' => null,
+        ];
+    }
+
+    /**
+     * Does the head ref carry this card's BARE id — `fix/5287-slug` for a title that
+     * says `card#5287`? Corroboration only. A bare number can CONFIRM a token the
+     * title already produced; it can never SELECT a card by itself, which is exactly
+     * why {@see CardTokenGrammar} requires the `card` prefix (or an ordinary
+     * `chore/2026-cleanup` would correlate). Keeping bare ids on the confirm side
+     * preserves that and adds no correlation channel.
+     *
+     * This is load-bearing for the dominant branch convention, and measuring it is
+     * what stopped this guard from breaking ordinary work (card#5287): real branches
+     * here are overwhelmingly `<type>/<id>-slug` (`fix/5915-…`, `test/5233-…`), which
+     * carries NO card token. Requiring a full token in the ref would have made almost
+     * every PR uncorroborated, and the handler gate then refuses any SECOND PR against
+     * a card that already tracks a first one — which is routine (three merged PRs here
+     * track card 5698). The approved residual says "no BRANCH CORROBORATION", and a ref
+     * naming the id plainly corroborates it.
+     *
+     * Bound, stated rather than discovered later: a numeric branch can accidentally
+     * corroborate a low-id card (`chore/bump-1-2-3` vs `card#2`). That only ever
+     * RELAXES a guard which did not exist at all before this change, and never widens
+     * what can be selected — so it is accepted, not defended against (canon #6).
+     */
+    private function refCorroborates(string $ref, int $cardId): bool
+    {
+        preg_match_all('/\d+/', $ref, $matches);
+        foreach ($matches[0] as $run) {
+            if (ltrim($run, '0') === (string) $cardId) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -656,10 +822,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      */
     private function isDependabot(array $payload): bool
     {
-        $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
-        $head = is_array($pr['head'] ?? null) && is_string($pr['head']['ref'] ?? null) ? $pr['head']['ref'] : '';
-
-        return str_starts_with($head, 'dependabot/');
+        return str_starts_with($this->prHead($payload), 'dependabot/');
     }
 
     /**
