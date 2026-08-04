@@ -7,10 +7,14 @@ name: Channel-server supply chain
 #   1. `npm ci` — fails if package.json and package-lock.json have drifted
 #      (the committed lockfile must stay reproducible: lock regenerated whenever
 #      the dep range changes).
-#   2. `node --test tests/` — the channel server's unit harness (the marker-refusal
-#      regression suite for the FR #2444 refuse-and-exit paths). A refuse path that
-#      stops writing its `.FAILED` marker leaves a seat invisibly deaf to live-wake,
-#      so this fails the PR the moment that contract regresses.
+#   2. `node --test tests/` — the channel server's unit harness. Its sharpest leg is
+#      the marker-refusal regression suite for the FR #2444 refuse-and-exit paths: a
+#      refuse path that stops writing its `.FAILED` marker leaves a seat invisibly
+#      deaf to live-wake, so this fails the PR the moment that contract regresses.
+#      Every file in the suite imports `tests/live-state-guard.mjs`, which sandboxes
+#      the channel-addressing env and FAILS the run if the seat's real runtime dir
+#      changed (DL-269) — these tests spawn the real server, and its marker path
+#      falls back to the ambient environment.
 #   3. `npm audit` — FAILS loudly on a high/critical CVE in the pinned tree, so a
 #      vulnerable-but-pinned dependency can't rot silently (the "degraded states
 #      must be loud" posture). You then bump the dep + re-commit the lock.

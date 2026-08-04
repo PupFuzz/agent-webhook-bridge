@@ -19,6 +19,7 @@
 // handler to always include CLEAR_CONTEXT_TOOL and re-running this suite.
 //
 // Run: `node --test examples/channel-servers/tests/`.
+import './live-state-guard.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';

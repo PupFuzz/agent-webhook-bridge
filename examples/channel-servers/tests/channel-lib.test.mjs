@@ -8,6 +8,7 @@
 // the real server end-to-end, proving no runtime-behavior regression.
 //
 // Run: `node --test examples/channel-servers/tests/`.
+import './live-state-guard.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { scrubSnippet, relayBridgeResponse, deriveMeta } from '../channel-lib.mjs';
