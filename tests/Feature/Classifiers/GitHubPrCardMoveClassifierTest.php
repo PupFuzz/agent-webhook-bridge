@@ -10,6 +10,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClassifierConfig;
+use App\Bridge\Support\DlTokenGrammar;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -976,6 +977,113 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'near-miss'))->times($expectedWarns);
         Log::shouldHaveReceived('warning')->times($expectedWarns);   // and nothing ELSE warned
         Http::assertNothingSent();
+    }
+
+    /**
+     * The DL half of the same mechanism (card#5310). Until this existed a
+     * DL-shaped branch or title that did not parse reached the probe and warned
+     * NOTHING — the branch publishes, the card never moves, nobody is told,
+     * which is the exact silence DL-234 argued was "as high-value a miss as an
+     * unresolvable DL" about the DL token BY NAME.
+     *
+     * DRIVEN OFF THE GRAMMAR, and it accounts for EVERY row rather than
+     * counting only the ones it expects: a row either correlates (and takes the
+     * FR-7 high-value-miss path, which warns for a different reason) or it is a
+     * near-miss. The totals are asserted separately and then against the whole,
+     * so a warning that moved from one class to the other cannot net out.
+     */
+    public function test_the_dl_near_miss_warn_is_driven_by_the_grammar_not_a_hand_written_list(): void
+    {
+        Http::fake();
+        Log::spy();   // Facade::spy() no-ops when already mocked — one spy, count totals
+
+        $corpus = array_values(array_unique(array_merge(
+            DlTokenGrammar::VECTORS,
+            DlTokenGrammar::probeVectors(),
+        )));
+        $expectedNearMiss = $expectedHighValueMiss = $expectedEmptyBoard = $viaBranch = $viaTitle = 0;
+
+        foreach ($corpus as $vector) {
+            // Same routing rule as the card leg: across printable ASCII `git
+            // check-ref-format` rejects exactly space, `*`, `:`, `?`, `[`, `\`,
+            // `^`, `~`, so those spellings reach the probe only through a title.
+            if (preg_match('/[\s:~^?*\[\\\\]/', $vector) === 1) {
+                $viaTitle++;
+                $r = $this->classify('pull_request.opened', ['title' => "Fix a thing {$vector}", 'head' => ['ref' => 'f']]);
+            } else {
+                $viaBranch++;
+                $r = $this->classifyPush(['created' => true, 'ref' => "refs/heads/feat/{$vector}"]);
+            }
+
+            $this->assertSame([], $r->targets, "'{$vector}' must not correlate — no board card carries it");
+
+            if (DlTokenGrammar::parse($vector) !== null) {
+                // It PARSED: the correlation path ran and resolved nothing, so
+                // this row is the FR-7 high-value miss, not a near-miss — and
+                // the board read it made warns once on its own account (the
+                // empty-board diagnostic, which predates this leg). Counted, not
+                // filtered out: an unaccounted-for warning is how a near-miss
+                // that moved class would net out against one that vanished.
+                $expectedHighValueMiss++;
+                $expectedEmptyBoard++;
+
+                continue;
+            }
+            // Which non-parsing rows the probe can SEE is `DlTokenGrammarTest`'s
+            // to pin (the three ratified bounds it cannot); this leg's job is
+            // that the runtime surface asks it, on both call sites, and says so.
+            $expectedNearMiss += DlTokenGrammar::looksLikeDlToken($vector) ? 1 : 0;
+        }
+
+        $this->assertGreaterThan(0, $viaBranch, 'the branch-ref call site must be exercised');
+        $this->assertGreaterThan(0, $viaTitle, 'the PR-title call site must be exercised');
+        $this->assertGreaterThan(0, $expectedNearMiss, 'a corpus expecting no warning at all would assert nothing');
+        $this->assertGreaterThan(0, $expectedHighValueMiss, 'the parsing half must be exercised too');
+
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'name a DL') && str_contains((string) $msg, 'near-miss'))->times($expectedNearMiss);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'high-value miss'))->times($expectedHighValueMiss);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'board read returned 0 cards'))->times($expectedEmptyBoard);
+        Log::shouldHaveReceived('warning')->times($expectedNearMiss + $expectedHighValueMiss + $expectedEmptyBoard);   // and nothing ELSE warned
+    }
+
+    /**
+     * A subject that is a near-miss on BOTH stems warns once per grammar, each
+     * line naming its own accept-set. Pinned because the alternative — one
+     * merged line — would have to pick one grammar's sentence or restate both,
+     * and it is the shape a later "de-duplicate the warnings" edit would produce.
+     */
+    public function test_a_subject_that_misses_both_tokens_warns_once_per_grammar(): void
+    {
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/card_123-DL_239']);
+
+        $this->assertSame([], $r->targets);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'name a card'))->once();
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'name a DL'))->once();
+        Log::shouldHaveReceived('warning')->times(2);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * DL-234(e)'s whole-subject limit, applied to the new stem: a subject whose
+     * CARD token parses moves its card, so it is not in the silent-failure class
+     * this probe exists to catch and must stay silent even beside a malformed
+     * DL. The bounded cost — that card loses its `dl_number` stamp with no
+     * signal — is card#5961, and this leg is what would red if it were ever
+     * closed here by accident rather than by decision.
+     */
+    public function test_a_parsing_card_token_suppresses_the_dl_near_miss_whole_subject(): void
+    {
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/card-3410-DL_239']);
+
+        $this->assertCount(1, $r->targets, 'the card token correlates — the card DOES move');
+        $this->assertSame(3410, $r->targets[0]->payload['card_id']);
+        Log::shouldNotHaveReceived('warning');
     }
 
     public function test_token_less_branch_stays_silent_no_near_miss_spam(): void

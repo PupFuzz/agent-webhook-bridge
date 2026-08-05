@@ -212,7 +212,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         $cardResolution = $this->cardTokenResolution($payload);
         $cardToken = $cardResolution['token'];
         if ($dl === null && $cardToken === null) {
-            $this->warnCardTokenNearMiss($this->titleAndHead($payload), 'PR title/head');
+            $this->warnTokenNearMiss($this->titleAndHead($payload), 'PR title/head');
 
             return new ClassifyResult(targets: $overlayTargets);   // no card-first token in the PR → move no-op (overlay may also be empty)
         }
@@ -525,7 +525,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         $dl = DlTokenGrammar::parse($branch);
         $cardToken = CardTokenGrammar::parse($branch);
         if ($dl === null && $cardToken === null) {
-            $this->warnCardTokenNearMiss($branch, 'branch ref');
+            $this->warnTokenNearMiss($branch, 'branch ref');
 
             return new ClassifyResult;   // no card-first token in the branch ref → un-linked, no-op
         }
@@ -747,25 +747,49 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     }
 
     /**
-     * Warn when text APPEARS to name a card but the token doesn't parse. An
-     * unparsed token is otherwise a silent no-op — the branch publishes, the
-     * card never moves, nobody is told — exactly as high-value a miss as an
-     * unresolvable DL (roundtable #48). Token-less text stays silent: most
-     * branches/PRs legitimately carry no card token, and a bare space before
-     * the id (`card 2`, `cards 2` — no `#`) is deliberately NOT a near-miss —
-     * prose like "supports card 2" in a PR title would warn.
+     * Warn when text APPEARS to name a correlation token but the token doesn't
+     * parse. An unparsed token is otherwise a silent no-op — the branch
+     * publishes, the card never moves, nobody is told — exactly as high-value a
+     * miss as an unresolvable DL (roundtable #48). Token-less text stays silent:
+     * most branches/PRs legitimately carry neither token, and a bare space
+     * before the id (`card 2`, `DL 239`) is deliberately NOT a near-miss — prose
+     * like "supports card 2" in a PR title would warn.
      *
-     * WHICH SHAPES those are is {@see CardTokenGrammar}'s to say — both the
-     * accept-set the warning renders and the probe that decides whether to warn
-     * at all (DL-250). A hand-written accept-set here spent two releases telling
+     * BOTH tokens are probed (card#5310). DL-234's argument — an unparsed token
+     * is as high-value a miss as an unresolvable DL — was made about the DL
+     * token BY NAME, and the DL half is the one that never got the fix: until
+     * this, `DL_239` / `DL239` / `DLs-239` reached here and warned nothing. A
+     * text can be a near-miss on both stems at once and then warns twice, once
+     * per grammar; each line names its own accept-set, so a merged line would
+     * have to pick one or restate both.
+     *
+     * WHICH SHAPES those are is each grammar's to say — both the accept-set the
+     * warning renders and the probe that decides whether to warn at all
+     * (DL-250). A hand-written accept-set here spent two releases telling
      * operators that glued `card123` does not correlate, months after DL-233
      * made it (card#5267); a hand-written probe here was silent on every plural
      * spelling.
+     *
+     * THE WHOLE-SUBJECT LIMIT (DL-234(e)) is why this sits behind the both-null
+     * guard and not behind `$dl === null` alone: a subject carrying a parsing
+     * `card#` beside a malformed `DL_239` moves its card, so it is not in the
+     * silent-failure class this exists to catch — and "no move" below would be
+     * a false statement about it. The bounded cost is that such a subject loses
+     * its `dl_number` stamp with no warning; naming a lost STAMP is a different
+     * signal from naming a lost MOVE, and it is card#5961, not this.
      */
-    private function warnCardTokenNearMiss(string $text, string $surface): void
+    private function warnTokenNearMiss(string $text, string $surface): void
     {
+        $nearMisses = [];
         if (CardTokenGrammar::looksLikeCardToken($text)) {
-            Log::warning("kanban_move_card: {$surface} appears to name a card but the token does not parse (".CardTokenGrammar::describe().") — no move (FR-7 near-miss): {$text}");
+            $nearMisses['a card'] = CardTokenGrammar::describe();
+        }
+        if (DlTokenGrammar::looksLikeDlToken($text)) {
+            $nearMisses['a DL'] = DlTokenGrammar::describe();
+        }
+
+        foreach ($nearMisses as $what => $accepted) {
+            Log::warning("kanban_move_card: {$surface} appears to name {$what} but the token does not parse ({$accepted}) — no move (FR-7 near-miss): {$text}");
         }
     }
 
