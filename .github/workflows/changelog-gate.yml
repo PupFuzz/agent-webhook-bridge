@@ -187,10 +187,10 @@ jobs:
             # direction works and the unpadded one silently does not.
             id=$((10#$id))
             case "$kind" in
-              card) pat="(^|[^0-9a-z_])card[-#]?0*${id}([^0-9]|\$)" ;;
+              card) pat="(^|[^0-9a-z_])card[-#]?0*${id}([^0-9]|\$)"; spelling="card#${id}" ;;
               # The log header and PR titles write DL-275 while the card
               # payload zero-pads to DL-0275; accept either spelling.
-              dl)   pat="(^|[^0-9a-z_])dl-0*${id}([^0-9]|\$)" ;;
+              dl)   pat="(^|[^0-9a-z_])dl-0*${id}([^0-9]|\$)"; spelling="DL-${id}" ;;
             esac
             if grep -qE "$pat" <<<"$section_lc"; then
               echo "OK: the [Unreleased] section names this PR's ${kind} token ${id}."
@@ -199,7 +199,7 @@ jobs:
             echo "::error::this PR changes app/ or bin/, but docs/CHANGELOG.md's [Unreleased] section does not name ${kind} ${id}."
             echo "Nothing reads the CHANGELOG between PRs, so an omission is invisible until a release is cut:"
             echo "25 of 56 tokened commits reached v0.72.0 undocumented this way (card#5971)."
-            echo "Fix: add an [Unreleased] entry citing '${kind}#${id}' (or 'DL-<n>') describing the change."
+            echo "Fix: add an [Unreleased] entry citing '${spelling}' describing the change."
             exit 1
           fi
 

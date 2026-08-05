@@ -369,6 +369,24 @@ class ChangelogGateTest extends TestCase
         $this->assertStringContainsString('names this PR\'s dl token 276', $out);
     }
 
+    public function test_the_remediation_line_spells_a_dl_token_the_way_the_repo_writes_it(): void
+    {
+        // A guard's remediation string is a doc surface: told to cite `dl#276`,
+        // an author writes a spelling nothing in the fleet correlates, and the
+        // gate reds again on the fix it asked for.
+        [$rc, $out] = $this->runFeatureStep(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), 'app/X.php' => 'a'],
+            ['docs/CHANGELOG.md' => $this->changelog('- old
+- unrelated work'), 'app/X.php' => 'b'],
+            'feat(x): a decision (DL-276)',
+            'feat/1234-x',
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString("citing 'DL-276'", $out);
+        $this->assertStringNotContainsString('dl#276', $out);
+    }
+
     public function test_a_broken_extractor_is_reported_as_a_tooling_failure_not_a_missing_section(): void
     {
         // A wrong-but-specific cause is worse than an honest generic one: if
