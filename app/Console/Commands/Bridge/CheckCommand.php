@@ -503,16 +503,21 @@ class CheckCommand extends BridgeCommand
             // THE THIRD FAIL-SOFT ENVELOPE, INLINE, AND NARROW ON PURPOSE. Its realistic
             // thrower is the factory call it wraps; widening it around the loops below
             // would make any inner throw print the client-unavailable diagnosis — a
-            // CHANGED DIAGNOSIS, not a refactor. A failure here skips the board-state legs
-            // AND the ssh legs, which is what the inline code's `return` did.
+            // CHANGED DIAGNOSIS, not a refactor.
+            //
+            // IT SKIPS THE BOARD-STATE LEGS ONLY (DL-275). The inline code's `return` took
+            // the ssh legs with it and stage 7b preserved that; card#5474 is that the ssh
+            // legs READ NOTHING FROM THIS CLIENT — the pinned-line probe is offline
+            // (authorized_keys + the agent's own config) and the advisory reads a map the
+            // ssh loop itself fills. Skipping them here made an absent writeback secret
+            // silently disarm the ssh security certification: a `pty`-granting
+            // forced-command line exits 1 with the token present, and USED TO exit 0,
+            // saying nothing, without it. The skip set is now exactly this client's
+            // dependents.
             try {
                 $ctx->boardToolsClient = WritebackClientFactory::make();
             } catch (Throwable $e) {
-                $noClient = 'the board-tools kanban client is unavailable (see the warning above)';
-                $runner
-                    ->noteNotRun(CheckSlot::BoardToolsState, $noClient)
-                    ->noteNotRun(CheckSlot::BoardToolsSsh, $noClient)
-                    ->noteNotRun(CheckSlot::BoardToolsSshAdvisory, $noClient);
+                $runner->noteNotRun(CheckSlot::BoardToolsState, 'the board-tools kanban client is unavailable (see the warning above)');
                 $this->emitUnattributed(Finding::warn('board_tools: enabled for '.count($ctx->boardToolsEnabled).' agent(s) but the kanban writeback client is unavailable ('.$e->getMessage().') — the tools read/write via the least-privilege writeback token; place it (chmod 600) or the tools will fail at call time.'));
             }
 
@@ -522,59 +527,67 @@ class CheckCommand extends BridgeCommand
                         $ok = false;
                     }
                 }
+            }
 
-                // The SSH-transport pinned-line probe (card 4952) — offline, runs in the
-                // default bridge:check. A present-but-bad forced-command line (grants
-                // pty/forwarding), an ambiguous/absent-authoritative line, or a
-                // FIPS-rejected key FAILs; an UNVERIFIABLE (non-root / relocated keyfile)
-                // leg reports `unvalidated` (it WARNed until DL-251 — it may have read the
-                // wrong file, so it answered nothing) and names the `sudo bridge:check`
-                // cert step — never a false OK, never a hard red. The board-tools
-                // security boundary is this pinned
-                // line plus the live round-trip, never the account's sshd posture: card
-                // 5091 retired the account-level hardening because the ssh-account
-                // routinely doubles as the operator's interactive login.
-                $sshAgents = array_values(array_filter(
-                    $ctx->boardToolsEnabled,
-                    fn (AgentConfig $c) => $c->boardTools?->transport === 'ssh',
-                ));
-                if ($sshAgents === []) {
-                    $noSsh = 'no enabled board_tools agent uses the ssh transport';
-                    $runner
-                        ->noteNotRun(CheckSlot::BoardToolsSsh, $noSsh)
-                        ->noteNotRun(CheckSlot::BoardToolsSshAdvisory, $noSsh);
-                }
+            // The SSH-transport pinned-line probe (card 4952) — offline, runs in the
+            // default bridge:check. A present-but-bad forced-command line (grants
+            // pty/forwarding), an ambiguous/absent-authoritative line, or a
+            // FIPS-rejected key FAILs; an UNVERIFIABLE (non-root / relocated keyfile)
+            // leg reports `unvalidated` (it WARNed until DL-251 — it may have read the
+            // wrong file, so it answered nothing) and names the `sudo bridge:check`
+            // cert step — never a false OK, never a hard red. The board-tools
+            // security boundary is this pinned
+            // line plus the live round-trip, never the account's sshd posture: card
+            // 5091 retired the account-level hardening because the ssh-account
+            // routinely doubles as the operator's interactive login.
+            //
+            // OUTSIDE THE CLIENT GUARD ABOVE (DL-275, card#5474): this plane is offline and
+            // reads nothing the failed construction would have produced, so a missing
+            // writeback token must not decide whether the ssh boundary gets certified. It
+            // stays INSIDE the enabled-subset guard because that dependency is real — with
+            // no enabled block there is no ssh agent to certify. `SshLiveProbeCheck`, the
+            // heavier opt-in LIVE round-trip, has always run outside this guard; the
+            // offline probe needing strictly less was the one gated on the client.
+            $sshAgents = array_values(array_filter(
+                $ctx->boardToolsEnabled,
+                fn (AgentConfig $c) => $c->boardTools?->transport === 'ssh',
+            ));
+            if ($sshAgents === []) {
+                $noSsh = 'no enabled board_tools agent uses the ssh transport';
+                $runner
+                    ->noteNotRun(CheckSlot::BoardToolsSsh, $noSsh)
+                    ->noteNotRun(CheckSlot::BoardToolsSshAdvisory, $noSsh);
+            }
 
-                foreach ($sshAgents as $cfg) {
-                    $report = $runner->runForAgent(CheckSlot::BoardToolsSsh, $cfg, $ctx);
-                    // DERIVATION FROM A CHECK'S RESULTS — the one place this command
-                    // derives context from the registry rather than from the install (see
-                    // CheckContext::$sshSetupIncomplete). Selected BY ID, not by walking
-                    // the whole report: a second check migrated into this slot later must
-                    // not silently start feeding the DL-225 advisory.
-                    foreach ($report->results as $result) {
-                        if ($result->id !== SshPinnedLineCheck::ID) {
-                            continue;
+            foreach ($sshAgents as $cfg) {
+                $report = $runner->runForAgent(CheckSlot::BoardToolsSsh, $cfg, $ctx);
+                // DERIVATION FROM A CHECK'S RESULTS — the one place this command
+                // derives context from the registry rather than from the install (see
+                // CheckContext::$sshSetupIncomplete). Selected BY ID, not by walking
+                // the whole report: a second check migrated into this slot later must
+                // not silently start feeding the DL-225 advisory.
+                foreach ($report->results as $result) {
+                    if ($result->id !== SshPinnedLineCheck::ID) {
+                        continue;
+                    }
+                    foreach ($result->findings as $finding) {
+                        if (self::severityMeansSetupIncomplete($finding->severity)) {
+                            $ctx->sshSetupIncomplete[$cfg->agentName] = true;
                         }
-                        foreach ($result->findings as $finding) {
-                            if (self::severityMeansSetupIncomplete($finding->severity)) {
-                                $ctx->sshSetupIncomplete[$cfg->agentName] = true;
-                            }
-                        }
-                    }
-                    if (! $this->emitReport($report)) {
-                        $ok = false;
                     }
                 }
+                if (! $this->emitReport($report)) {
+                    $ok = false;
+                }
+            }
 
-                // The DL-225 advisory emits AFTER the whole loop above, so it is a SECOND
-                // pass over the same agents rather than a check in that slot — folding it
-                // in would print each agent's advisory before the next agent's
-                // pinned-line result.
-                foreach ($sshAgents as $cfg) {
-                    if (! $this->emitReport($runner->runForAgent(CheckSlot::BoardToolsSshAdvisory, $cfg, $ctx))) {
-                        $ok = false;
-                    }
+            // The DL-225 advisory emits AFTER the whole loop above, so it is a SECOND
+            // pass over the same agents rather than a check in that slot — folding it
+            // in would print each agent's advisory before the next agent's
+            // pinned-line result.
+            foreach ($sshAgents as $cfg) {
+                if (! $this->emitReport($runner->runForAgent(CheckSlot::BoardToolsSshAdvisory, $cfg, $ctx))) {
+                    $ok = false;
                 }
             }
         } else {

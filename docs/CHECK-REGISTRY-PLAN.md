@@ -1420,6 +1420,20 @@ client fine. A feature test now supplies that install, and the mutation reds it.
 shape is the one this program keeps meeting:** a restructure that is output-equivalent on every
 shape the corpus contains is not thereby a no-op; it is unmeasured.
 
+> **⚠ SUPERSEDED BY DL-275 (card#5474) — the skip set above is no longer current.** Stage 7b
+> faithfully preserved the inline `return`, and preserving it was right for a strangler
+> migration; what the preservation carried forward was a defect. **The envelope's failure arm
+> now skips the board-state legs ONLY.** The ssh legs read nothing from that client — the
+> pinned-line probe is offline and the advisory reads a map the ssh loop itself fills — so
+> gating them on it let an absent writeback secret silently disarm the ssh security
+> certification: the same `pty`-granting forced-command line exits 1 with the token present and
+> exited 0 without it. **The paragraph above stays because its lesson is the durable part** (an
+> output-equivalent restructure is unmeasured, not a no-op) and because the install it names is
+> still the only one that distinguishes the two behaviors — that feature test is now the pair
+> that pins the CORRECTED behavior, with the token-present case as its control. Stage 8 had
+> already made the skip visible (`N did not run (…)`); what it could not do was notice that the
+> recorded reason named a dependency the check does not have.
+
 **Unit tests + mutation proofs.** 48 tests / 125 assertions across the five new check tests
 (6/20 suppression, 6/24 bearer, 14/23 board state, 6/18 advisory, 16/40 HTTP probe) plus the
 one feature test above, and **27 mutation proofs**, each RED when the guard is reverted, green
