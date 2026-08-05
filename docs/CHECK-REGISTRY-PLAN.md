@@ -123,11 +123,13 @@ reached twice and applied locally both times, and the migration was never finish
 
 **NOT closed — same shape, different address.** **card#5312**'s unalerted permanent
 `Log::warning` branches are in `app/Bridge/Writeback/WritebackAlertNotifier.php:131,168,190` and
-`KanbanPromoteReleasedHandler`. **card#5310**'s near-miss probe is
-`GitHubPrCardMoveClassifier::warnCardTokenNearMiss()`. Both are the
-silent-degrade shape and both deserve a shared "this degraded silently" reporting primitive, but
-that is a **separate consolidation** over a different call-site set. This program gives the shape
-a vocabulary to be reported in; it does not detect it.
+`KanbanPromoteReleasedHandler`. **card#5310** has since SHIPPED (DL-273) and its probe is now
+`GitHubPrCardMoveClassifier::warnTokenNearMiss()`, covering both correlation tokens — but it
+shipped as a `Log::warning`, which is the very channel this paragraph is about, so it moved from
+"an instance with no signal" to "an instance whose signal is a log line nothing aggregates". Both
+are the silent-degrade shape and both deserve a shared "this degraded silently" reporting
+primitive, but that is a **separate consolidation** over a different call-site set. This program
+gives the shape a vocabulary to be reported in; it does not detect it.
 
 ### The honest trade-off
 
