@@ -8,6 +8,21 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+- **`bridge:check` certifies the board-tools ssh transport even when the kanban writeback client
+  cannot be constructed (card#5474, DL-275).** The board-tools client envelope skipped three
+  slots on a construction failure; two of them — the offline pinned-line probe
+  (`SshPinnedLineCheck`) and the DL-225 flipped-default advisory — read nothing from that client.
+  A missing or unreadable writeback token therefore silently disarmed the ssh security
+  certification: a forced-command `authorized_keys` line granting `pty` exits **1** with the
+  token present and exited **0**, printing nothing about ssh, without it. The envelope now skips
+  the board-**state** legs only (they do read the client). **⚠ This can change an exit code:** an
+  install with an enabled ssh `board_tools` block, no resolvable writeback token, and a bad
+  pinned line goes from exit 0 to exit **1** — surfacing a real failure that was previously
+  hidden, not a new rule. Installs that construct a client are unaffected and their output is
+  unchanged. Note that `SshLiveProbeCheck`, the heavier opt-in live round-trip, already ran
+  outside this guard; the offline probe needing strictly less was the one gated on it.
+
 ## [0.72.0] - 2026-08-05
 
 **Minor — `bridge:check` becomes a machine-readable, self-accounting diagnostic as the DL-242 check registry lands stages 0–10; the writeback stops letting a PR title outrank the branch the PR is work on; and `board_my_cards` can finally carry a card's scope to the seat implementing it.** 65 PRs since v0.71.0 (#413–#484). **The receiver is untouched — zero changes under `app/Http/` or `app/Bridge/Adapters/`, so HMAC verification, dedup, envelope adaptation and what the receiver accepts or rejects are unchanged; no migration (zero files added or changed under `database/migrations/`) and no `.env.example` change.** The behavior that does move is concentrated in the `bridge:check` reporting vocabulary, the PR→card correlation precedence, and the board-tools projection — each called out below.

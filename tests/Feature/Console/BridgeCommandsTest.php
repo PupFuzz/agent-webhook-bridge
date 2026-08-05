@@ -259,14 +259,18 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(1);
     }
 
-    public function test_check_skips_the_ssh_legs_when_the_board_tools_client_is_unavailable(): void
+    public function test_check_runs_the_ssh_legs_when_the_board_tools_client_is_unavailable(): void
     {
-        // The board-tools client envelope SKIPS the per-agent board-STATE legs AND the ssh
-        // legs on a construction failure — the inline code did it with a `return`, the
-        // registry does it with the envelope's guard, and the two are only distinguishable
-        // on an install that has an ssh agent AND no writeback client. No golden fixture is
-        // one (all three ssh installs construct a client), so reverting that guard left the
-        // whole suite GREEN when it was mutation-tested. This is the witness.
+        // DL-275 (card#5474) NARROWED this envelope's skip set rather than removing it. The
+        // client-unavailable arm still warns and still skips the per-agent board-STATE legs
+        // (they read the client), but the ssh legs now RUN: the pinned-line probe is offline
+        // and the advisory reads a map the ssh loop itself fills, so neither reads the client
+        // that failed to construct.
+        //
+        // This test was previously the witness for the opposite behavior. It is rewritten, not
+        // deleted, because the half it protects is still real — `Http::assertNothingSent()` is
+        // what proves the board-STATE legs did not run, and it is the assertion that reds if a
+        // later change lets them through on a null client.
         Http::fake();
         $this->writeSshAgent();
         File::delete($this->dir.'/kanban/writeback-token');   // → the factory throws
@@ -274,8 +278,31 @@ class BridgeCommandsTest extends TestCase
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('the kanban writeback client is unavailable')
-            ->doesntExpectOutputToContain('board_tools ssh:')
-            ->assertExitCode(0);   // the client-unavailable arm warns, never fails
+            ->expectsOutputToContain('board_tools ssh:')
+            ->assertExitCode(0);   // a GOOD pinned line: the ssh legs ran and found nothing wrong
+        Http::assertNothingSent();
+    }
+
+    public function test_check_fails_on_a_bad_ssh_pinned_line_even_with_no_writeback_token(): void
+    {
+        // THE DEFECT card#5474 NAMED, AS A REGRESSION LEG (DL-275). Before the fix this exact
+        // install exited 0 in silence: the same `pty`-granting forced-command line that
+        // `test_check_fails_when_ssh_pinned_line_grants_pty` proves exits 1 was reduced to
+        // nothing at all by deleting an unrelated secret the ssh check never reads.
+        //
+        // That sibling test is this one's CONTROL — the two differ in exactly one variable
+        // (the writeback token), so a revert of the DL-275 guard change reds this leg while
+        // leaving the control green, which is what makes the pair discriminating rather than
+        // merely green.
+        Http::fake();
+        $this->writeSshAgent();
+        File::delete($this->dir.'/kanban/writeback-token');   // → the factory throws
+        $this->bindSshEnv('command="php artisan bridge:tools-call --agent=me",restrict,pty ssh-ed25519 AAAA me');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('the kanban writeback client is unavailable')
+            ->expectsOutputToContain('still grants')
+            ->assertExitCode(1);
         Http::assertNothingSent();
     }
 
