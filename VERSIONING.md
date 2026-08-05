@@ -6,7 +6,7 @@ How the bridge is versioned, released, and tagged. Mirrors the kanban-board proj
 
 1. **Single source of truth for the version:** the [`VERSION`](VERSION) file at the repo root, containing one semver string and a trailing newline. Read it in PHP via `trim(file_get_contents(base_path('VERSION')))`.
 2. **Version bumps happen on `dev` in a release-prep feature PR**, NOT on each feature PR. The bump + CHANGELOG update is the dedicated release act.
-3. **Every release tag `v<version>` corresponds to a `docs/CHANGELOG.md` entry** describing what bundle of merged PRs is in the release.
+3. **Every release tag `v<version>` corresponds to a `docs/CHANGELOG.md` entry** describing what bundle of merged PRs is in the release. **Enforced at PR time** by [`changelog-gate.yml`](.github/workflows/changelog-gate.yml) since DL-276 — before that it was enforced only by whoever cut the release noticing, and a release cut without its entry published a generated placeholder over the gap.
 4. **Tags are created on `main`, not `dev`, by CI.** After the user merges the release PR (`dev` → `main`), the [`auto-tag-version.yml`](.github/workflows/auto-tag-version.yml) workflow fires on the push to `main`, reads `VERSION`, tags the merge commit `v<VERSION>`, and publishes a GitHub Release from that version's `docs/CHANGELOG.md` section. **Claude does not hand-tag** — the workflow owns it (idempotent; a tag already at a *different* SHA fails the workflow loud, meaning the release PR forgot to bump `VERSION`). The tag SHA equals the merge commit's SHA on `main`.
 5. **Back-merge `main` → `dev` after every release** so the branches don't diverge (per [`feedback-auto-backmerge-after-release`](../.claude/projects/-home-kanban/memory/feedback-auto-backmerge-after-release.md)). The user's confirmation that the release PR merged to `main` IS the authorization for the back-merge sync PR — Claude opens it autonomously (no separate ask) and auto-merges on green.
 
@@ -46,6 +46,19 @@ Policy (per `CLAUDE.md` rule #5 — the ask-before-opening checkpoint is retired
 14. Claude opens the back-merge sync PR `main` → `dev` (named `sync/main-to-dev-post-v<version>`) so any commits the user added directly on `main` (e.g., release-PR metadata) get back into `dev`. **No additional ask** — the user's main-merge confirmation covered it.
 15. Wait for ALL CI checks on the sync PR.
 16. **Auto-merge** the sync PR to `dev` on green (it targets `dev`).
+
+## What CI enforces about the CHANGELOG (DL-276)
+
+[`changelog-gate.yml`](.github/workflows/changelog-gate.yml) is the only automation that reads `docs/CHANGELOG.md` **before** a merge. Two assertions, both on `pull_request`:
+
+| When it fires | What it requires | Why here and not post-merge |
+| --- | --- | --- |
+| The PR changes `VERSION` | `docs/CHANGELOG.md` carries a `## [<VERSION>]` section, **and** that section is within GitHub's 125,000-byte release-body limit | Post-merge the tag has already landed. A missing section published a placeholder; an oversize one left the release tagged and **unpublished** (v0.72.0, HTTP 422) |
+| The PR changes `app/` or `bin/` | The `[Unreleased]` section names the PR title's `card#`/`DL-` token — or, for a PR with no such token, `[Unreleased]` changed at all | Nothing else reads the changelog between releases, so an omission is invisible until one is cut. 25 of 56 tokened commits reached v0.72.0 undocumented this way |
+
+Exempt branches (both assertions, same set as `pr-title-lint.yml`): `dependabot/*`, `release/*`, `sync/*`, `revert-*`. A docs-only or test-only PR is exempt by the path scope, not by a carve-out.
+
+Both assertions and the release publisher extract sections through the single `bin/changelog-section.py`, so the gate measures the body the publisher would actually ship. [`auto-tag-version.yml`](.github/workflows/auto-tag-version.yml) **stays fail-soft on a missing section by design** — failing there would leave a merged release untagged — but an oversize section is now truncated to whole lines with a pointer to the full entry at the tag, rather than failing the publish.
 
 ## Anti-patterns
 

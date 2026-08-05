@@ -1,0 +1,225 @@
+name: CHANGELOG gate
+
+# ONE file, TWO assertions about docs/CHANGELOG.md — deliberately not two
+# workflows (card#5910, card#5971, card#5972 were approved as one change):
+#
+#   1. RELEASE PR — a PR that moves VERSION must carry a `## [<VERSION>]`
+#      section, and that section must fit GitHub's release-body limit.
+#      Both halves are the same defect class: `auto-tag-version.yml` is the
+#      only automation that reads VERSION and the CHANGELOG together, and it
+#      runs POST-merge, where the tag has already landed. A missing section
+#      there only WARNs and publishes a placeholder; an oversize section
+#      hard-fails after the tag is pushed, leaving the release tagged but
+#      unpublished (measured: v0.72.0, run 31051259223, HTTP 422). Asserting
+#      here moves both to the point where the fix is still cheap.
+#
+#   2. FEATURE PR — a PR touching app/ or bin/ must be named in the
+#      `[Unreleased]` section. Measured 2026-08-05: 25 of 56 tokened commits
+#      reached v0.72.0 undocumented, against 100% coverage on the prior three
+#      releases, because nothing reads the CHANGELOG on a PR event at all.
+#
+# NOT in scope, and do not "also" add it: `auto-tag-version.yml` staying
+# fail-soft on the TAG half is by design (card#5910 rejected hardening it) —
+# failing there would leave a merged release untagged.
+#
+# SECURITY: the PR title and head branch are author-controlled. They reach the
+# scripts ONLY via `env:` and are used quoted — never interpolated as ${{ }}
+# inside a `run:` body (the Actions script-injection class; DL-182).
+
+on:
+  pull_request:
+    # `edited` is load-bearing for the feature-PR step: the correlation token
+    # comes from the PR TITLE, so a title fix must re-run the check.
+    # `synchronize` is load-bearing for both: the diff is what they read.
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  changelog-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # REQUIRED: both steps diff base..head, and the feature-PR step also
+          # reads the changelog AT THE BASE. A shallow clone has neither.
+          fetch-depth: 0
+
+      - name: Release PR — VERSION has a CHANGELOG section that fits the release-body limit
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # Classified by "does this PR move VERSION?", NOT by the base ref.
+          # That is circular for the guard that asks whether a feature PR
+          # wrongly bumped, but it is not circular here: this assertion IS
+          # "whenever the version moves, its section must exist", so the
+          # version moving is exactly the trigger. It also means the release
+          # branch's TWO PRs (into the integration branch, then into the
+          # release branch) are both covered without naming either branch.
+          # The diff is captured FIRST rather than piped into grep. Under
+          # `pipefail`, `writer | grep -q` reports the WRITER's status when grep
+          # exits on its first match and the writer dies of SIGPIPE — measured:
+          # `seq 1 5000000 | grep -qxF 3` yields 141 on a successful match. Here
+          # that would read as "VERSION is not in the diff" and skip the whole
+          # assertion, silently, on exactly the large PRs most worth checking.
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD")
+          if ! grep -qxF VERSION <<<"$CHANGED"; then
+            echo "OK: this PR does not move VERSION — no release section to assert."
+            exit 0
+          fi
+
+          V=$(tr -d '[:space:]' < VERSION)
+          echo "VERSION moves in this PR; asserting docs/CHANGELOG.md carries [$V]."
+
+          rc=0
+          python3 bin/changelog-section.py \
+            --changelog docs/CHANGELOG.md --section "$V" --enforce-limit >/dev/null || rc=$?
+
+          case "$rc" in
+            0)
+              echo "OK: docs/CHANGELOG.md carries a [$V] section within the release-body limit."
+              ;;
+            3)
+              echo "::error::docs/CHANGELOG.md has no '## [$V]' section, but this PR bumps VERSION to $V."
+              echo "The version bump and its CHANGELOG entry travel together (VERSIONING.md rule 3)."
+              echo "Post-merge, auto-tag-version.yml would tag the release and publish a placeholder"
+              echo "note in place of the entry — a green signal over a missing one."
+              echo "Fix: fold the [Unreleased] content into a '## [$V] - YYYY-MM-DD' heading."
+              exit 1
+              ;;
+            4)
+              echo "::error::the '## [$V]' section is larger than GitHub can publish as a release body."
+              echo "auto-tag-version.yml would tag $V and then fail to create its Release (HTTP 422),"
+              echo "leaving the release tagged but unpublished — the v0.72.0 failure."
+              echo "Fix: trim the section (the per-PR entries it folds in are the bulk), or accept the"
+              echo "truncated-with-pointer body the publisher falls back to and re-run this check."
+              exit 1
+              ;;
+            *)
+              echo "::error::bin/changelog-section.py exited $rc — unexpected; treat as a gate failure."
+              exit 1
+              ;;
+          esac
+
+      - name: Feature PR — the change is named in the CHANGELOG [Unreleased] section
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          # Same exemption set as pr-title-lint.yml, for the same reasons:
+          # dependabot and revert PRs carry no card, and release/sync PRs are
+          # the events that CONSUME [Unreleased] rather than add to it.
+          case "$HEAD_REF" in
+            dependabot/*|release/*|sync/*|revert-*)
+              echo "OK: branch '$HEAD_REF' is exempt (automation/release/revert)."
+              exit 0
+              ;;
+          esac
+
+          # PATH SCOPE, as approved on card#5971: shipped behaviour only. A
+          # docs-only or test-only PR is exempt BY CONSTRUCTION rather than by
+          # a carve-out, because a gate that fires on changes with nothing to
+          # announce is one people learn to bypass.
+          # Captured, not piped — see the release step for the measured reason a
+          # `writer | grep -q` under pipefail can report the writer's SIGPIPE.
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD")
+          if ! grep -qE '^(app|bin)/' <<<"$CHANGED"; then
+            echo "OK: this PR changes no app/ or bin/ file — no [Unreleased] entry required."
+            exit 0
+          fi
+
+          rc=0
+          head_unreleased=$(python3 bin/changelog-section.py \
+            --changelog docs/CHANGELOG.md --section Unreleased) || rc=$?
+          if [ "$rc" -eq 3 ]; then
+            echo "::error::docs/CHANGELOG.md has no '## [Unreleased]' section."
+            echo "Every release re-seeds an empty one (VERSIONING.md § Release flow step 4);"
+            echo "without it there is nowhere for a per-PR entry to go."
+            exit 1
+          elif [ "$rc" -ne 0 ]; then
+            # A wrong-but-specific cause is worse than an honest generic one: an
+            # unreadable changelog must not be reported as an absent section.
+            echo "::error::bin/changelog-section.py exited $rc reading docs/CHANGELOG.md — unexpected."
+            exit 1
+          fi
+
+          # The correlation token comes from the PR TITLE, which pr-title-lint
+          # already requires for a <type>/<card-id>-slug branch — so the two
+          # gates compose: that one proves the token is present, this one proves
+          # the token is documented.
+          #
+          # Digit classes are ENUMERATED, never written as [0-9]: inside bash's
+          # [[ =~ ]] a bracket RANGE is resolved by COLLATION, and under an
+          # ordinary en_US.UTF-8 runner [0-9] admits non-ASCII digits that the
+          # card grammar correlates to nothing (DL-272). The negated classes
+          # below are ranges on purpose — there, collation reds instead of
+          # greening.
+          D='[0123456789]'
+          title_lc=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]')
+
+          kind=''
+          id=''
+          if [[ "$title_lc" =~ (^|[^0-9a-z_])card[-#]($D+)([^0-9]|$) ]]; then
+            kind=card; id="${BASH_REMATCH[2]}"
+          elif [[ "$title_lc" =~ (^|[^0-9a-z_])card($D$D+)([^0-9]|$) ]]; then
+            # The glued form takes 2+ digits (DL-233); `card4` names no card.
+            kind=card; id="${BASH_REMATCH[2]}"
+          elif [[ "$title_lc" =~ (^|[^0-9a-z_])dl-($D{1,4})([^0-9]|$) ]]; then
+            kind=dl; id="${BASH_REMATCH[2]}"
+          fi
+
+          section_lc=$(printf '%s' "$head_unreleased" | tr '[:upper:]' '[:lower:]')
+
+          if [ -n "$kind" ]; then
+            # Normalize away leading zeros so the pattern below is symmetric: a
+            # title spelling `DL-0276` must match a changelog spelling `DL-276`
+            # exactly as `DL-276` matches `DL-0276`. Without this the padded
+            # direction works and the unpadded one silently does not.
+            id=$((10#$id))
+            case "$kind" in
+              card) pat="(^|[^0-9a-z_])card[-#]?0*${id}([^0-9]|\$)" ;;
+              # The log header and PR titles write DL-275 while the card
+              # payload zero-pads to DL-0275; accept either spelling.
+              dl)   pat="(^|[^0-9a-z_])dl-0*${id}([^0-9]|\$)" ;;
+            esac
+            if grep -qE "$pat" <<<"$section_lc"; then
+              echo "OK: the [Unreleased] section names this PR's ${kind} token ${id}."
+              exit 0
+            fi
+            echo "::error::this PR changes app/ or bin/, but docs/CHANGELOG.md's [Unreleased] section does not name ${kind} ${id}."
+            echo "Nothing reads the CHANGELOG between PRs, so an omission is invisible until a release is cut:"
+            echo "25 of 56 tokened commits reached v0.72.0 undocumented this way (card#5971)."
+            echo "Fix: add an [Unreleased] entry citing '${kind}#${id}' (or 'DL-<n>') describing the change."
+            exit 1
+          fi
+
+          # TOKENLESS DISPOSITION — decided explicitly (card#5971 required this
+          # to be a decision, not the script's silence). A PR that reaches here
+          # has no card and no DL in its title AND is not on an exempt branch,
+          # so there is no key to look for. Demanding a token would widen what
+          # CI requires beyond pr-title-lint's own rule (which deliberately
+          # skips branches with no card id in them). Requiring only that the
+          # section MOVED keeps the floor — the change announces itself — while
+          # leaving the token convention exactly where it already is.
+          base_unreleased=$(git show "$BASE:docs/CHANGELOG.md" | python3 bin/changelog-section.py \
+            --changelog - --section Unreleased) || base_unreleased=''
+          if [ "$head_unreleased" != "$base_unreleased" ]; then
+            echo "OK: no correlation token in the title, but this PR changed the [Unreleased] section."
+            exit 0
+          fi
+          echo "::error::this PR changes app/ or bin/ and leaves docs/CHANGELOG.md's [Unreleased] section untouched."
+          echo "Its title carries no card#/DL token, so there is nothing to correlate against — the entry"
+          echo "is the only signal that this change exists before a release is cut."
+          echo "Fix: add an [Unreleased] entry (and, if the work has a card, put its token in the PR title"
+          echo "so this check can verify the entry names it)."
+          exit 1

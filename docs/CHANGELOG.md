@@ -8,6 +8,39 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+- **CI reads `docs/CHANGELOG.md` before a merge for the first time: `changelog-gate.yml`
+  (card#5910, card#5971, card#5972, DL-276).** One workflow, two assertions. **(1)** A PR that
+  moves `VERSION` must carry a matching `## [<VERSION>]` section, and that section must fit
+  GitHub's 125,000-byte release-body limit. **(2)** A PR touching `app/` or `bin/` must be named
+  in the `[Unreleased]` section — by its title's `card#`/`DL-` token, or, for a PR carrying no
+  such token, by having changed the section at all. `dependabot/*`, `release/*`, `sync/*` and
+  `revert-*` branches are exempt (the same set `pr-title-lint.yml` uses); docs-only and
+  test-only PRs are exempt by the path scope rather than by a carve-out.
+  **⚠ THIS CHANGES WHAT CI ACCEPTS** — it can red a PR that would previously have merged. It was
+  user-gated on all three cards before any code.
+  **Why:** `docs/CHANGELOG.md` had exactly one reader, `auto-tag-version.yml`, and only *after*
+  the merge to `main`. Measured 2026-08-05 with a controlled instrument: **25 of 56 tokened
+  commits reached v0.72.0 undocumented**, each absent from the whole file, against 100% coverage
+  on the three prior releases. A missing release section published a generated placeholder over
+  the gap rather than failing.
+
+### Changed
+- **`auto-tag-version.yml` can no longer leave a release tagged but unpublished (card#5972,
+  DL-276).** v0.72.0's CHANGELOG section was 134,904 bytes against GitHub's 125,000 limit, so the
+  publish step — the *last* step, after the tag had already been pushed — returned `HTTP 422:
+  body is too long` and the Release was created by hand. The step now falls back to a
+  line-truncated body ending in a pointer to `docs/CHANGELOG.md` at the tag. **Fail-soft on an
+  *absent* section is unchanged and deliberate** (failing there would leave a merged release
+  untagged); the loud half of that case is the PR-time gate above.
+- **Both workflows extract CHANGELOG sections through one shared `bin/changelog-section.py`
+  (DL-276)**, so the gate measures the body the publisher would actually ship. Byte-identical to
+  the awk one-liner it replaces for any section that fits, so published notes do not change
+  shape. The size limit is enforced in **bytes**: GitHub's 422 says "characters" and documents no
+  unit, and byte length is `>=` both the code-point and UTF-16 counts, so it is conservative
+  under every reading. Correction to card#5972's own figure — 134,904 is the section's **byte**
+  count; its character count is 133,906.
+
 ### Fixed
 - **`bridge:check` certifies the board-tools ssh transport even when the kanban writeback client
   cannot be constructed (card#5474, DL-275).** The board-tools client envelope skipped three
