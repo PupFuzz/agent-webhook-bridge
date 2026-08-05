@@ -7,6 +7,7 @@ use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RefusalContext;
+use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Http\Client\RequestException;
@@ -40,6 +41,21 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
 {
     /** The marker written by an add-if-missing SET; a CLEAR only nulls a block_reason equal to it. */
     public const MARKER = 'PR is in draft';
+
+    /**
+     * The synthetic `outcome` this handler's alerts carry. It has no PR outcome of its
+     * own (it is an overlay, not a move), but the alert dedup tuple is
+     * `(repo, outcome, reason)` — so a constant naming the reaction keeps this handler's
+     * signals from colliding with the move handler's on a shared repo.
+     */
+    private const ALERT_OUTCOME = 'draft_overlay';
+
+    private WritebackAlertNotifier $alerts;
+
+    public function __construct(?WritebackAlertNotifier $alerts = null)
+    {
+        $this->alerts = $alerts ?? new WritebackAlertNotifier;
+    }
 
     public function handle(ReactionTarget $target, AgentConfig $agent): void
     {
@@ -86,7 +102,11 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             $card = $client->getCard($cardId);
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
-                Log::warning('kanban_block_reason: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)', ['card_id' => $cardId] + RefusalContext::from($e));
+                $this->alerts->warnAndNotify(
+                    'kanban_block_reason: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)',
+                    ['card_id' => $cardId] + RefusalContext::from($e),
+                    $repo, self::ALERT_OUTCOME, $cardId, RefusalContext::readReason('getcard', $e),
+                );
 
                 return;
             }
@@ -131,7 +151,11 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             $client->setBlockReason($cardId, $reason);
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
-                Log::warning('kanban_block_reason: setBlockReason refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)', ['card_id' => $cardId] + RefusalContext::from($e));
+                $this->alerts->warnAndNotify(
+                    'kanban_block_reason: setBlockReason refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)',
+                    ['card_id' => $cardId] + RefusalContext::from($e),
+                    $repo, self::ALERT_OUTCOME, $cardId, RefusalContext::writeReason('blockreason', $e),
+                );
 
                 return;
             }

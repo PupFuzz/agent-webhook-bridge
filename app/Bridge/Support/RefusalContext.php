@@ -57,6 +57,43 @@ final class RefusalContext
     }
 
     /**
+     * The alert `reason` for a refused WRITE (a PATCH kanban rejected), keyed on the
+     * status an operator acts on differently: 403 = the token can READ this card but
+     * not write it — the scope-narrowed-token shape that a read-only probe never
+     * reveals, and the one a `getCard`-only signal cannot distinguish; 404 = the card
+     * is gone. Every other 4xx keeps the catch-all, so the split adds vocabulary
+     * without silently re-labelling the rest.
+     *
+     * $verb names the failing call (`movecard`, `stamp`, …) because the dedup tuple is
+     * `(repo, outcome, reason)`: two arms of one event sharing a reason would suppress
+     * each other, so whichever arrived second would alert zero times.
+     */
+    public static function writeReason(string $verb, RequestException $e): string
+    {
+        return match ($e->response->status()) {
+            403 => $verb.'_403_not_writable_by_this_token',
+            404 => $verb.'_404_no_such_card',
+            default => $verb.'_4xx',
+        };
+    }
+
+    /**
+     * The alert `reason` for a refused READ. 404 = no such card; 403 = the card exists
+     * and is NOT visible to this token (a foreign install's id was correlated here, or
+     * this token's scope is missing the card's board). That is a different operator
+     * hypothesis from {@see writeReason}'s 403, which is why the two are separate
+     * helpers rather than one status map.
+     */
+    public static function readReason(string $verb, RequestException $e): string
+    {
+        return match ($e->response->status()) {
+            404 => $verb.'_404_no_such_card',
+            403 => $verb.'_403_not_visible_to_this_token',
+            default => $verb.'_4xx',
+        };
+    }
+
+    /**
      * Redact credential-adjacent values a kanban error body — or an echoed request
      * inside it — could carry: JSON values of a sensitive key, query/form `key=value`
      * pairs, and `Bearer`/`Basic`/`token` auth-scheme values.
