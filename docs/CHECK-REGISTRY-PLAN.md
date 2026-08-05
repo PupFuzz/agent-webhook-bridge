@@ -122,8 +122,15 @@ primitive exists at all. **They are the argument, not the return:** the correct 
 reached twice and applied locally both times, and the migration was never finished.
 
 **NOT closed — same shape, different address.** **card#5312**'s unalerted permanent
-`Log::warning` branches are in `app/Bridge/Writeback/WritebackAlertNotifier.php:131,168,190` and
-`KanbanPromoteReleasedHandler`. **card#5310** has since SHIPPED (DL-273) and its probe is now
+`Log::warning` branches are in the writeback HANDLERS (`KanbanMoveCardHandler`,
+`KanbanPromoteReleasedHandler`, `KanbanBlockReasonHandler`) — not in `bridge:check`, and not, as
+an earlier revision of this paragraph asserted, in `WritebackAlertNotifier` itself (those line
+references were the notifier's own internal push/dedup failure logs, a different instance of the
+shape). It has since **partly SHIPPED (DL-274)**: the seven body-compatible refusal arms now pair
+their log with an alert through one primitive, and `docs/writeback.md` enumerates the remainder
+that is still log-only — the four issue/PR-keyed arms plus the non-4xx permanent branches. So the
+shape persists here, at a smaller address, and the notifier's own three internal `Log::warning`s
+remain a separate instance of it. **card#5310** has since SHIPPED (DL-273) and its probe is now
 `GitHubPrCardMoveClassifier::warnTokenNearMiss()`, covering both correlation tokens — but it
 shipped as a `Log::warning`, which is the very channel this paragraph is about, so it moved from
 "an instance with no signal" to "an instance whose signal is a log line nothing aggregates". Both

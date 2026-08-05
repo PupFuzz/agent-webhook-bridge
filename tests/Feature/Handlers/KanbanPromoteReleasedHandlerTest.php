@@ -52,6 +52,30 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         ]));
     }
 
+    private const ALERT_URL = 'http://127.0.0.1:9932/';
+
+    /**
+     * The same mapping WITH an alert channel — this handler's fixture had none, so its
+     * three pre-existing notify() calls were never exercised (card#5312).
+     *
+     * @param  array<string,mixed>  $extra
+     */
+    private function writeWritebackWithAlert(array $extra): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'alert_channel' => ['url' => self::ALERT_URL],
+            'mappings' => ['owner/repo' => array_merge([
+                'board_id' => 8, 'stages' => ['merged' => 52, 'merged_to_main' => 53],
+            ], $extra)],
+        ]));
+    }
+
+    private function isAlertPush(Request $r): bool
+    {
+        return $r->method() === 'POST' && str_starts_with($r->url(), self::ALERT_URL);
+    }
+
     private function writeTokens(): void
     {
         File::put($this->dir.'/kanban/writeback-token', 'wb-token');
@@ -215,5 +239,152 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
 
         $this->assertMoved(6, 53);
         $this->assertNotMoved(5);
+    }
+
+    // --- card#5312 / DL-274: this leg's three permanent-refusal arms became live signals ---
+
+    public function test_getpull_4xx_alerts_and_skips_the_card(): void
+    {
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+            ], 'links' => ['next' => null]]),
+            'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['message' => 'Not Found'], 404),
+        ]);
+
+        $this->handle();
+
+        // FLAT reason: GitHub answers 404 for a private repo this token cannot see, so a
+        // named 403/404 split here would be wrong-but-specific.
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'promote_getpull_4xx'
+            && $r['outcome'] === 'promote_on_release'
+            && $r['card_id'] === 5);
+        $this->assertNotMoved(5);
+    }
+
+    public function test_compare_status_4xx_alerts_and_skips_the_card(): void
+    {
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+            ], 'links' => ['next' => null]]),
+            'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
+            'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['message' => 'No common ancestor'], 404),
+        ]);
+
+        $this->handle();
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'promote_compare_4xx');
+        $this->assertNotMoved(5);
+    }
+
+    public function test_promote_move_422_alerts_the_only_arm_of_this_class_observed_in_production(): void
+    {
+        // The 2026-07-21 incident: a 422 ("this endpoint does not use a resource wrapper")
+        // no-op'd the promote leg silently for 15 days. This leg has NO reconcile backstop,
+        // so its failure paths are the ones that most need to be loud.
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+            ], 'links' => ['next' => null]]),
+            'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
+            'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
+            '*/tasks/*.json' => Http::response(['message' => 'This endpoint does not use a resource wrapper'], 422),
+        ]);
+
+        $this->handle();
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'promote_movecard_4xx'
+            && $r['card_id'] === 5);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'kanban refused the move')
+            && $ctx['status'] === 422
+            && str_contains($ctx['body'], 'resource wrapper'));
+    }
+
+    public function test_promote_move_403_alerts_the_read_but_not_write_reason(): void
+    {
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+            ], 'links' => ['next' => null]]),
+            'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
+            'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
+            '*/tasks/*.json' => Http::response(['message' => 'forbidden'], 403),
+        ]);
+
+        $this->handle();
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'promote_movecard_403_not_writable_by_this_token');
+    }
+
+    public function test_no_github_token_alerts_now_that_the_fixture_has_a_channel(): void
+    {
+        // A pre-existing notify() call that no test could see: this handler's fixture
+        // carried no alert_channel, so all three of its alerts were unasserted.
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        File::delete($this->dir.'/github/token');
+        config(['bridge.providers.github.token_path' => $this->dir.'/github/absent-token']);
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle();
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'promote_no_github_token'
+            && $r['card_id'] === null);
+    }
+
+    public function test_truncated_board_read_alerts(): void
+    {
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response([
+                'data' => [['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]],
+                'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=99'],
+            ]),
+            'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
+            'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 0]]),
+        ]);
+
+        $this->handle();
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'promote_board_truncated');
+        $this->assertMoved(5, 53);   // the partial view is still promoted
+    }
+
+    public function test_transient_5xx_on_the_promote_move_throws_and_never_alerts(): void
+    {
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+            ], 'links' => ['next' => null]]),
+            'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
+            'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
+            '*/tasks/*.json' => Http::response('upstream error', 503),
+        ]);
+
+        try {
+            $this->handle();
+            $this->fail('a 5xx on the promote move must propagate for redelivery');
+        } catch (RequestException) {
+            // expected
+        }
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 }

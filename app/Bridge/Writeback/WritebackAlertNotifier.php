@@ -47,6 +47,21 @@ final class WritebackAlertNotifier
     }
 
     /**
+     * The PAIRED form of {@see notify}: the durable `Log::warning` FIRST (the record
+     * that survives an undeliverable channel), then the additive live push. Every
+     * permanent-refusal arm that signals goes through this one method, so an arm
+     * cannot log a refusal without alerting on it — the per-call-site opt-in was the
+     * omission that left 11 of 12 refusal arms live-silent (card#5312 / DL-274).
+     *
+     * @param  array<string, mixed>  $logContext
+     */
+    public function warnAndNotify(string $message, array $logContext, string $repo, string $outcome, ?int $cardId, string $reason): void
+    {
+        Log::warning($message, $logContext);
+        $this->notify($repo, $outcome, $cardId, $reason);
+    }
+
+    /**
      * Signal that a PINNED card was auto-unparked (DL-194) from a parked stage on a
      * branch-cut `started` event — the compensating "we overrode a human hold"
      * notification. Emitted AFTER a confirmed move (the handler places it between the

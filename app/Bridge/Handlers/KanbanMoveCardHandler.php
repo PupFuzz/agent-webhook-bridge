@@ -33,10 +33,12 @@ use Throwable;
  *    kanban API error) → THROW → 5xx → redelivery retries once it's fixed.
  *  - PERMANENT / refused (writeback off, no repo mapping, no stage for the
  *    outcome, the card is NOT on the mapped board, or an uncorroborated title-only
- *    `card#` names a card that already tracks a different PR) → log + NO-OP. These
- *    can never succeed, so 5xx-retrying would storm; the dispatch acks (a refused
+ *    `card#` names a card that already tracks a different PR) → alert + log + NO-OP.
+ *    These can never succeed, so 5xx-retrying would storm; the dispatch acks (a refused
  *    move is not a delivery failure). The card-not-on-mapped-board case is the
- *    security guard (belongs-to-mapped-board) and is logged as a refusal.
+ *    security guard (belongs-to-mapped-board) and is logged as a refusal. Every
+ *    permanent refusal here pairs its log with a live signal via one primitive
+ *    (WritebackAlertNotifier::warnAndNotify, DL-274) rather than opting in per site.
  *
  * Payload: card_id (int), repo ("owner/repo"), outcome (one of
  * WritebackConfig::OUTCOMES, PLUS the handler-internal `reopened` — DL-195 — which
@@ -106,15 +108,21 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // that fails identically every time). Log + no-op; the operator fixes the
         // classifier (the event couldn't be moved anyway — we don't know the card).
         if (! is_int($cardId) && ! (is_string($cardId) && ctype_digit($cardId))) {
-            Log::warning('kanban_move_card: payload.card_id is not an integer; ignoring', ['payload' => $payload]);
-            $this->alerts->notify(is_string($repo) ? $repo : '', is_string($outcome) ? $outcome : '', null, 'card_id_not_int');
+            $this->alerts->warnAndNotify(
+                'kanban_move_card: payload.card_id is not an integer; ignoring',
+                ['payload' => $payload],
+                is_string($repo) ? $repo : '', is_string($outcome) ? $outcome : '', null, 'card_id_not_int',
+            );
 
             return;
         }
         $cardId = (int) $cardId;
         if (! is_string($repo) || $repo === '' || ! is_string($outcome) || $outcome === '') {
-            Log::warning('kanban_move_card: payload.repo and payload.outcome must be non-empty strings; ignoring', ['card_id' => $cardId]);
-            $this->alerts->notify(is_string($repo) ? $repo : '', is_string($outcome) ? $outcome : '', $cardId, 'repo_or_outcome_invalid');
+            $this->alerts->warnAndNotify(
+                'kanban_move_card: payload.repo and payload.outcome must be non-empty strings; ignoring',
+                ['card_id' => $cardId],
+                is_string($repo) ? $repo : '', is_string($outcome) ? $outcome : '', $cardId, 'repo_or_outcome_invalid',
+            );
 
             return;
         }
@@ -123,11 +131,14 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         if ($writeback === null) {
             // No writeback.json — the move can't be configured; a target reached
             // us anyway. Permanent: log + no-op (don't 5xx-retry a config gap).
-            Log::warning('kanban_move_card: writeback is not configured (no writeback.json); ignoring move', ['card_id' => $cardId, 'repo' => $repo]);
             // Degrades to log-only: with no writeback.json the notifier has no
             // alert_channel to load, so this branch is inherently quiet (documented
             // in docs/writeback.md). The call is kept for symmetry/correctness.
-            $this->alerts->notify($repo, $outcome, $cardId, 'writeback_not_configured');
+            $this->alerts->warnAndNotify(
+                'kanban_move_card: writeback is not configured (no writeback.json); ignoring move',
+                ['card_id' => $cardId, 'repo' => $repo],
+                $repo, $outcome, $cardId, 'writeback_not_configured',
+            );
 
             return;
         }
@@ -164,13 +175,16 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 // the only signal the operator gets for the case that guard exists to
                 // refuse. 404 = no such card; 403 = the card exists and is not ours.
                 $refusal = RefusalContext::from($e);
-                [$reason, $message] = match ($refusal['status']) {
-                    404 => ['getcard_404_no_such_card', 'kanban_move_card: getCard 404 — no such card (deleted, or an id that never existed); ignoring (see `body` for the reason kanban gave)'],
-                    403 => ['getcard_403_not_visible_to_this_token', 'kanban_move_card: getCard 403 — the card exists but is NOT visible to this writeback token: either a foreign install\'s card id was correlated onto this bridge, or this token\'s scope is missing the card\'s board; ignoring (see `body` for the reason kanban gave)'],
-                    default => ['getcard_4xx', 'kanban_move_card: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)'],
+                $message = match ($refusal['status']) {
+                    404 => 'kanban_move_card: getCard 404 — no such card (deleted, or an id that never existed); ignoring (see `body` for the reason kanban gave)',
+                    403 => 'kanban_move_card: getCard 403 — the card exists but is NOT visible to this writeback token: either a foreign install\'s card id was correlated onto this bridge, or this token\'s scope is missing the card\'s board; ignoring (see `body` for the reason kanban gave)',
+                    default => 'kanban_move_card: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)',
                 };
-                Log::warning($message, ['card_id' => $cardId] + $refusal);
-                $this->alerts->notify($repo, $outcome, $cardId, $reason);
+                $this->alerts->warnAndNotify(
+                    $message,
+                    ['card_id' => $cardId] + $refusal,
+                    $repo, $outcome, $cardId, RefusalContext::readReason('getcard', $e),
+                );
 
                 return;
             }
@@ -182,10 +196,11 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             // SECURITY (belongs-to-mapped-board, DL-009): refuse to move a card
             // that isn't on the operator-mapped board for this repo. Permanent
             // refusal — log + no-op, never retry.
-            Log::warning('kanban_move_card: REFUSED — card is not on the mapped board', [
-                'card_id' => $cardId, 'repo' => $repo, 'card_board' => $boardId, 'mapped_board' => $mapping->boardId,
-            ]);
-            $this->alerts->notify($repo, $outcome, $cardId, 'card_not_on_mapped_board');
+            $this->alerts->warnAndNotify(
+                'kanban_move_card: REFUSED — card is not on the mapped board',
+                ['card_id' => $cardId, 'repo' => $repo, 'card_board' => $boardId, 'mapped_board' => $mapping->boardId],
+                $repo, $outcome, $cardId, 'card_not_on_mapped_board',
+            );
 
             return;
         }
@@ -202,12 +217,15 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // already-in-stage self-heal because that branch STAMPS, and a refused move
         // must write nothing at all. Permanent refusal: log + no-op, never retry.
         if (($payload['card_token_uncorroborated'] ?? null) === true && ! $this->corroboratedByCardPr($card, $payload)) {
-            Log::warning('kanban_move_card: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and the card already tracks a DIFFERENT PR', [
-                'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome,
-                'card_pr_number' => (is_array($card['payload'] ?? null) ? $card['payload'] : [])['pr_number'] ?? null,
-                'event_pr_number' => $payload['stamp_pr'] ?? null,
-            ]);
-            $this->alerts->notify($repo, $outcome, $cardId, 'card_token_uncorroborated');
+            $this->alerts->warnAndNotify(
+                'kanban_move_card: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and the card already tracks a DIFFERENT PR',
+                [
+                    'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome,
+                    'card_pr_number' => (is_array($card['payload'] ?? null) ? $card['payload'] : [])['pr_number'] ?? null,
+                    'event_pr_number' => $payload['stamp_pr'] ?? null,
+                ],
+                $repo, $outcome, $cardId, 'card_token_uncorroborated',
+            );
 
             return;
         }
@@ -215,7 +233,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         if (($card['workflow_stage_id'] ?? null) === $stageId) {
             // Self-heal: the move is a no-op (already here), but a card# fallback card
             // may still be missing its correlation refs — stamp add-if-missing (#3866).
-            $this->stampCorrelationRefs($card, $payload, $cardId, $client);
+            $this->stampCorrelationRefs($card, $payload, $cardId, $client, $repo, $outcome);
 
             return;   // idempotent: already in the target stage
         }
@@ -242,10 +260,11 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             // (and a compensating alert is emitted after the move). Everywhere else
             // DL-178 is byte-identical. Loud so a refused promotion stays visible.
             if (PinGuard::isPinned($card) && ! $isUnpark) {
-                Log::warning('kanban_move_card: started move refused — card is pinned (block_reason/no-automove)', [
-                    'card_id' => $cardId, 'repo' => $repo, 'current_stage' => $current,
-                ]);
-                $this->alerts->notify($repo, $outcome, $cardId, 'pinned_no_automove');
+                $this->alerts->warnAndNotify(
+                    'kanban_move_card: started move refused — card is pinned (block_reason/no-automove)',
+                    ['card_id' => $cardId, 'repo' => $repo, 'current_stage' => $current],
+                    $repo, $outcome, $cardId, 'pinned_no_automove',
+                );
 
                 return;
             }
@@ -311,9 +330,14 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 // deleted card, …): log + no-op rather than 5xx-storm. Hand over what
                 // the server actually said (`body`) instead of guessing the cause —
                 // status alone can't tell a 403 authz refusal from a config typo.
-                Log::warning('kanban_move_card: kanban refused the move (4xx) — see `body` for the reason kanban gave', [
-                    'card_id' => $cardId, 'board' => $mapping->boardId, 'stage' => $stageId,
-                ] + RefusalContext::from($e));
+                // A token that can READ but not WRITE fails HERE and nowhere earlier
+                // (getCard above succeeded), so this arm is the operator's only signal
+                // for the scope-narrowed-token shape (card#5312 / DL-274).
+                $this->alerts->warnAndNotify(
+                    'kanban_move_card: kanban refused the move (4xx) — see `body` for the reason kanban gave',
+                    ['card_id' => $cardId, 'board' => $mapping->boardId, 'stage' => $stageId] + RefusalContext::from($e),
+                    $repo, $outcome, $cardId, RefusalContext::writeReason('movecard', $e),
+                );
 
                 return;
             }
@@ -356,7 +380,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // The card is now legitimately at its target stage (it passed every reject-guard
         // above) — stamp its correlation refs add-if-missing (#3866). Done AFTER the move
         // so a stale/redelivered/regressive event, which the guards no-op, never stamps.
-        $this->stampCorrelationRefs($card, $payload, $cardId, $client);
+        $this->stampCorrelationRefs($card, $payload, $cardId, $client, $repo, $outcome);
         Log::info('kanban_move_card: moved', ['card_id' => $cardId, 'board' => $mapping->boardId, 'stage' => $stageId, 'outcome' => $outcome]);
     }
 
@@ -373,15 +397,24 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * never from a reject-guarded event.
      *
      * Best-effort with the move's transient/permanent split: a 4xx (e.g. the board has no
-     * `dl_number`/`pr_number` custom field) is PERMANENT → log + no-op (never 5xx-storm an
-     * unfixable stamp). A 5xx/timeout PROPAGATES → redelivery re-stamps — safe because the
-     * stamp is add-if-missing-idempotent and the move is idempotent, and it closes the
-     * window where a swallowed transient failure would strand the card unstamped forever.
+     * `dl_number`/`pr_number` custom field) is PERMANENT → alert + log + no-op (never
+     * 5xx-storm an unfixable stamp). A 5xx/timeout PROPAGATES → redelivery re-stamps — safe
+     * because the stamp is add-if-missing-idempotent and the move is idempotent, and it
+     * closes the window where a swallowed transient failure would strand the card unstamped
+     * forever.
+     *
+     * The stamp arm alerts (card#5312 / DL-274) even though a board with no `dl_number`
+     * custom field 4xxs on EVERY stamp: the `(repo, outcome, reason)` dedup bounds that to
+     * one alert per repo+outcome, and a card silently stranded without correlation refs is
+     * exactly what release-promote later fails to find.
+     *
+     * $repo / $outcome are threaded in for the alert's dedup tuple only — the stamp itself
+     * is keyed on the card.
      *
      * @param  array<string, mixed>  $card  the card as already read by getCard()
      * @param  array<string, mixed>  $payload  the target payload (may carry stamp_dl/stamp_pr/stamp_pr_url)
      */
-    private function stampCorrelationRefs(array $card, array $payload, int $cardId, KanbanClient $client): void
+    private function stampCorrelationRefs(array $card, array $payload, int $cardId, KanbanClient $client, string $repo, string $outcome): void
     {
         $current = is_array($card['payload'] ?? null) ? $card['payload'] : [];
         $refs = [];
@@ -417,7 +450,11 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             Log::info('kanban_move_card: stamped correlation refs', ['card_id' => $cardId, 'refs' => array_keys($refs)]);
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
-                Log::warning('kanban_move_card: stamp refused by kanban (4xx) — skipping (see `body` for the reason kanban gave)', ['card_id' => $cardId] + RefusalContext::from($e));
+                $this->alerts->warnAndNotify(
+                    'kanban_move_card: stamp refused by kanban (4xx) — skipping (see `body` for the reason kanban gave)',
+                    ['card_id' => $cardId] + RefusalContext::from($e),
+                    $repo, $outcome, $cardId, RefusalContext::writeReason('stamp', $e),
+                );
 
                 return;
             }

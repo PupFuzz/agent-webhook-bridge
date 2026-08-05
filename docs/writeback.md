@@ -475,7 +475,11 @@ By default a **permanent** move-failure (a refused/un-actionable move — see *F
 
 `socket` and `url` are **mutually exclusive** (exactly one), mirroring an agent's `channel` config. The signal body is one line: `{"type": "writeback_move_failed", "repo": <repo>, "outcome": <outcome>, "card_id": <id|null>, "reason": <reason>}`. (The same `alert_channel` also carries the DL-194 **`writeback_auto_unparked`** and the DL-195 **`writeback_revived_on_reopen`** signals — each a distinct `type`, no dedup — see *auto-unpark a parked card on branch-cut* and *revive a Won't-Do card* above.)
 
-**Which failures signal.** Only the **`Log::warning` permanent branches** — the ones that indicate a real misconfiguration or a refused move — fire a signal:
+**Which failures signal.** **The tables below are the authority — there is no shorter rule that is true.** Every arm that refuses a **kanban or GitHub call with a permanent (4xx)** status signals, in all three writeback handlers. The config- and payload-gap branches are **mixed**: some signal and some do not — the tables say which, and the *Still log-only* paragraph at the end of this section names every permanent branch that emits nothing. The `Log::info` "not tracked" branches stay **quiet** — they're the normal case for an event the operator simply hasn't mapped, not a failure.
+
+Every signalling arm emits its durable `Log::warning` **first** and then the additive push, through a single paired primitive (`WritebackAlertNotifier::warnAndNotify`) — an arm cannot log a refusal without alerting on it. Before DL-274 the notifier was opt-in *per call site* and 11 of the 12 permanent-refusal arms had simply never opted in.
+
+**`kanban_move_card`** (`outcome` = the PR outcome that drove the event):
 
 | Branch | `reason` | Signals? |
 |---|---|---|
@@ -489,8 +493,38 @@ By default a **permanent** move-failure (a refused/un-actionable move — see *F
 | `getCard` refused by kanban — any other 4xx | `getcard_4xx` | ✅ |
 | card not on the mapped board (security refusal) | `card_not_on_mapped_board` | ✅ |
 | uncorroborated title-only `card#` naming a card that tracks a **different** PR (security refusal, DL-270) | `card_token_uncorroborated` | ✅ |
+| `started` move refused — the card is pinned (`block_reason` / `no-automove`, DL-178) | `pinned_no_automove` | ✅ |
+| **`moveCard` PATCH refused — 403** (DL-274) | `movecard_403_not_writable_by_this_token` | ✅ |
+| **`moveCard` PATCH refused — 404** (DL-274) | `movecard_404_no_such_card` | ✅ |
+| **`moveCard` PATCH refused — any other 4xx** (DL-274) | `movecard_4xx` | ✅ |
+| **correlation-ref stamp refused — 403 / 404 / other 4xx** (DL-274) | `stamp_403_not_writable_by_this_token` · `stamp_404_no_such_card` · `stamp_4xx` | ✅ |
+| `started`/`reopened` move skipped by a no-regression guard (`Log::info`) | — | ❌ (working as designed) |
 
-The "not tracked" `Log::info` branches stay **quiet** — they're the normal case for an event the operator simply hasn't mapped, not a failure.
+**`kanban_promote_released`** (`outcome` is always the synthetic `promote_on_release`; this leg has **no reconcile backstop**, so its failure paths are the ones that most need to be loud):
+
+| Branch | `reason` | Signals? |
+|---|---|---|
+| no GitHub read token resolves for the repo (the leg is inert) | `promote_no_github_token` | ✅ |
+| board read hit the page ceiling — cards beyond it never self-heal | `promote_board_truncated` | ✅ |
+| Shipped candidates exceed the per-event cap (the remainder defer) | `promote_candidate_cap` | ✅ |
+| **`getPull` refused by GitHub — 4xx** (DL-274) | `promote_getpull_4xx` | ✅ |
+| **`compareStatus` refused by GitHub — 4xx** (DL-274) | `promote_compare_4xx` | ✅ |
+| **`moveCard` refused by kanban — 403 / 404 / other 4xx** (DL-274) | `promote_movecard_403_not_writable_by_this_token` · `promote_movecard_404_no_such_card` · `promote_movecard_4xx` | ✅ |
+
+**Stated bound on the promote arms — one scan, one alert per reason, not one per card.** These three arms fire *inside a board-wide scan*, and dedup is per `(repo, outcome, reason)` with `outcome` fixed at `promote_on_release` — so N cards failing the same way in one scan produce **one** push (carrying the first card's id), not N. That is the intended bound, not an oversight: keying per card would let a single lost write-scope emit up to `MAX_CANDIDATES` pushes per release event, which is the storm the dedup exists to prevent. **The `Log::warning` still fires per card**, so the log is where you enumerate what was stranded; the push is the wake. The same marker also suppresses the signal on *subsequent* releases until it is cleared (see *Dedup* below) — worth knowing on the one leg with no reconcile backstop.
+
+**`kanban_block_reason`** (the draft overlay; `outcome` is always the synthetic `draft_overlay`, which is what keeps its `getcard_*` reasons from sharing a dedup marker with the move handler's):
+
+| Branch | `reason` | Signals? |
+|---|---|---|
+| **`getCard` refused by kanban — 404 / 403 / other 4xx** (DL-274) | `getcard_404_no_such_card` · `getcard_403_not_visible_to_this_token` · `getcard_4xx` | ✅ |
+| **`setBlockReason` refused by kanban — 403 / 404 / other 4xx** (DL-274) | `blockreason_403_not_writable_by_this_token` · `blockreason_404_no_such_card` · `blockreason_4xx` | ✅ |
+
+**Still log-only (a known gap, not a design).** These `Log::warning` branches refuse permanently and emit **no** signal: `kanban_promote_released`'s three pre-scan gaps (`payload.repo` missing, no `writeback.json`, the mapping is missing its Shipped/Released stage) and `kanban_block_reason`'s four (`target_id` is not a card id, a malformed payload, no `writeback.json`, the card is not on the mapped board). They are the remainder of the DL-274 class, together with the four **issue/PR-keyed** permanent-refusal arms in `kanban_coord_card`, `kanban_coord_card_move` and `kanban_dependabot_card`, which have no notifier wiring at all and no card id to key an alert on. Do not read this section's ✅ rows as install-wide coverage.
+
+**Why the write refusals split 403 from 404.** A `403` on a **write** is the one shape a read probe can never reveal: the token READS the card fine (so `getcard_*` stays quiet) and is refused on the PATCH — the scope-narrowed-token case, where read scopes are commonly broader than write scopes. It is a different operator hypothesis from the `getCard` 403 below, which is why the two carry different reason strings.
+
+**Why the GitHub reads stay flat.** `promote_getpull_4xx` / `promote_compare_4xx` are deliberately **not** status-split: GitHub answers **404 for a private repo the token cannot see**, so a named `403 = forbidden` / `404 = absent` split would be wrong-but-specific. The status and the server's own words are in the log line's `body`.
 
 **Why the `getCard` refusal splits 404 from 403.** The belongs-to-mapped-board security refusal below it (`card_not_on_mapped_board`) reads `board_id` **out of the card**, so it can only fire for a card this token was able to READ. A card on a board the token *cannot* see returns at the `getCard` refusal instead — which makes that reason string the operator's only signal for exactly the case the security guard exists to refuse. So the two hypotheses are named separately:
 
@@ -509,7 +543,7 @@ All three still swallow the event (permanent → log + no-op, never a 5xx retry)
 ## Failure behaviour (what retries vs not)
 
 - **Transient** (kanban 5xx/timeout, a not-yet-placed token) → the webhook **5xx**s and kanban-board redelivers; the move retries once it's fixed.
-- **Permanent** (no mapping, no stage, a malformed payload, a kanban **4xx** like a deleted card or a cross-board stage, the card isn't on the mapped board, or an uncorroborated title-only `card#` names a card tracking a different PR) → **logged + no-op**, the webhook acks 200 (a refused/un-actionable move is not a delivery failure — it would only retry-storm).
+- **Permanent** (no mapping, no stage, a malformed payload, a kanban **4xx** like a deleted card or a cross-board stage, the card isn't on the mapped board, or an uncorroborated title-only `card#` names a card tracking a different PR) → **logged + no-op**, the webhook acks 200 (a refused/un-actionable move is not a delivery failure — it would only retry-storm). With an `alert_channel` configured, the arms marked ✅ in *Which failures signal* above ALSO emit a live signal — the log is the durable record either way.
 
 ### Diagnosing a silent writeback (DL-026)
 
