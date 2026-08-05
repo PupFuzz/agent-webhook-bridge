@@ -33,8 +33,10 @@ use Illuminate\Support\Facades\Log;
  * the writeback won't auto-move it while drafted; clearing on ready_for_review
  * releases the pin. No change to PinGuard.
  *
- * DURABLE, with the same transient(5xx → retry) / permanent(4xx → log + no-op) split
- * as the move handler (DL-020), and the same belongs-to-mapped-board security guard.
+ * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
+ * split as the move handler (DL-020/DL-274), and the same belongs-to-mapped-board
+ * security guard. Its non-4xx refusals (malformed payload, no writeback.json, the
+ * board guard) are still log-only — see docs/writeback.md's "Still log-only".
  * Idempotent: a no-op SET/CLEAR (already-marker / not-ours) writes nothing.
  */
 final class KanbanBlockReasonHandler implements DurableReaction, Handler

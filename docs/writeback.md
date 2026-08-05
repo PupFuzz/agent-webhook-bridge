@@ -475,7 +475,7 @@ By default a **permanent** move-failure (a refused/un-actionable move — see *F
 
 `socket` and `url` are **mutually exclusive** (exactly one), mirroring an agent's `channel` config. The signal body is one line: `{"type": "writeback_move_failed", "repo": <repo>, "outcome": <outcome>, "card_id": <id|null>, "reason": <reason>}`. (The same `alert_channel` also carries the DL-194 **`writeback_auto_unparked`** and the DL-195 **`writeback_revived_on_reopen`** signals — each a distinct `type`, no dedup — see *auto-unpark a parked card on branch-cut* and *revive a Won't-Do card* above.)
 
-**Which failures signal.** **The tables below are the authority — there is no shorter rule that is true.** Every arm that refuses a kanban call with a **permanent (4xx)** status signals, across all three writeback handlers; so do the config/payload gaps enumerated per handler. What does **not** signal is listed under *Still log-only* at the end of this section. The `Log::info` "not tracked" branches stay **quiet** — they're the normal case for an event the operator simply hasn't mapped, not a failure.
+**Which failures signal.** **The tables below are the authority — there is no shorter rule that is true.** Every arm that refuses a **kanban or GitHub call with a permanent (4xx)** status signals, in all three writeback handlers. The config- and payload-gap branches are **mixed**: some signal and some do not — the tables say which, and the *Still log-only* paragraph at the end of this section names every permanent branch that emits nothing. The `Log::info` "not tracked" branches stay **quiet** — they're the normal case for an event the operator simply hasn't mapped, not a failure.
 
 Every signalling arm emits its durable `Log::warning` **first** and then the additive push, through a single paired primitive (`WritebackAlertNotifier::warnAndNotify`) — an arm cannot log a refusal without alerting on it. Before DL-274 the notifier was opt-in *per call site* and 11 of the 12 permanent-refusal arms had simply never opted in.
 
@@ -510,6 +510,8 @@ Every signalling arm emits its durable `Log::warning` **first** and then the add
 | **`getPull` refused by GitHub — 4xx** (DL-274) | `promote_getpull_4xx` | ✅ |
 | **`compareStatus` refused by GitHub — 4xx** (DL-274) | `promote_compare_4xx` | ✅ |
 | **`moveCard` refused by kanban — 403 / 404 / other 4xx** (DL-274) | `promote_movecard_403_not_writable_by_this_token` · `promote_movecard_404_no_such_card` · `promote_movecard_4xx` | ✅ |
+
+**Stated bound on the promote arms — one scan, one alert per reason, not one per card.** These three arms fire *inside a board-wide scan*, and dedup is per `(repo, outcome, reason)` with `outcome` fixed at `promote_on_release` — so N cards failing the same way in one scan produce **one** push (carrying the first card's id), not N. That is the intended bound, not an oversight: keying per card would let a single lost write-scope emit up to `MAX_CANDIDATES` pushes per release event, which is the storm the dedup exists to prevent. **The `Log::warning` still fires per card**, so the log is where you enumerate what was stranded; the push is the wake. The same marker also suppresses the signal on *subsequent* releases until it is cleared (see *Dedup* below) — worth knowing on the one leg with no reconcile backstop.
 
 **`kanban_block_reason`** (the draft overlay; `outcome` is always the synthetic `draft_overlay`, which is what keeps its `getcard_*` reasons from sharing a dedup marker with the move handler's):
 

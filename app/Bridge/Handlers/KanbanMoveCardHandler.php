@@ -33,10 +33,12 @@ use Throwable;
  *    kanban API error) → THROW → 5xx → redelivery retries once it's fixed.
  *  - PERMANENT / refused (writeback off, no repo mapping, no stage for the
  *    outcome, the card is NOT on the mapped board, or an uncorroborated title-only
- *    `card#` names a card that already tracks a different PR) → log + NO-OP. These
- *    can never succeed, so 5xx-retrying would storm; the dispatch acks (a refused
+ *    `card#` names a card that already tracks a different PR) → alert + log + NO-OP.
+ *    These can never succeed, so 5xx-retrying would storm; the dispatch acks (a refused
  *    move is not a delivery failure). The card-not-on-mapped-board case is the
- *    security guard (belongs-to-mapped-board) and is logged as a refusal.
+ *    security guard (belongs-to-mapped-board) and is logged as a refusal. Every
+ *    permanent refusal here pairs its log with a live signal via one primitive
+ *    (WritebackAlertNotifier::warnAndNotify, DL-274) rather than opting in per site.
  *
  * Payload: card_id (int), repo ("owner/repo"), outcome (one of
  * WritebackConfig::OUTCOMES, PLUS the handler-internal `reopened` — DL-195 — which

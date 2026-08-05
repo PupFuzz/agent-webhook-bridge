@@ -5,8 +5,11 @@ namespace App\Bridge\Support;
 use Illuminate\Http\Client\RequestException;
 
 /**
- * Log context for a kanban 4xx refusal: the HTTP status PLUS the response body,
- * verbatim but truncated and credential-scrubbed.
+ * The shared vocabulary for a 4xx refusal: the LOG CONTEXT ({@see from}) — status
+ * plus the response body, verbatim but truncated and credential-scrubbed — and the
+ * ALERT REASON strings ({@see writeReason} / {@see readReason}) the refusal arms
+ * dedup on. Both live here because both are derived from the same response status,
+ * and a second copy of either would let two arms disagree about one refusal.
  *
  * Status alone cannot tell a permission refusal (403) from a validation refusal
  * (422) from a state refusal (404) — the server states the actual reason in the
