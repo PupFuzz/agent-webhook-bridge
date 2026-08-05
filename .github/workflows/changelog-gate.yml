@@ -5,9 +5,10 @@ name: CHANGELOG gate
 #
 #   1. RELEASE PR — a PR that moves VERSION must carry a `## [<VERSION>]`
 #      section, and that section must fit GitHub's release-body limit.
-#      Both halves are the same defect class: `auto-tag-version.yml` is the
-#      only automation that reads VERSION and the CHANGELOG together, and it
-#      runs POST-merge, where the tag has already landed. A missing section
+#      Both halves are the same defect class: until this file existed,
+#      `auto-tag-version.yml` was the only automation reading VERSION and the
+#      CHANGELOG together, and it runs POST-merge, where the tag has already
+#      landed — which is the whole reason this one exists. A missing section
 #      there only WARNs and publishes a placeholder; an oversize section
 #      hard-fails after the tag is pushed, leaving the release tagged but
 #      unpublished (measured: v0.72.0, run 31051259223, HTTP 422). Asserting
