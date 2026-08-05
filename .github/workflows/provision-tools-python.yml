@@ -2,10 +2,17 @@ name: bin/ python unit tests
 
 # The standalone stdlib-Python operator tools under bin/ — the provisioning program
 # bin/provision-board-tools.py (FR #5010), its same-box one-shot wrapper
-# bin/provision-board-tools-samebox.py (card 5090), and the seat-side channel-server
-# launch-assert bin/check-channel-snapshot.py (card 5143, DL-237) — carry
-# red-when-reverted unit tests. This job runs them in CI so the "CI-tested" guarantee
-# the designs rest on is real, not decorative.
+# bin/provision-board-tools-samebox.py (card 5090), the seat-side channel-server
+# launch-assert bin/check-channel-snapshot.py (card 5143, DL-237), and the shared
+# CHANGELOG extractor bin/changelog-section.py (DL-276) that auto-tag-version.yml
+# and changelog-gate.yml both call — carry red-when-reverted unit tests. This job
+# runs them in CI so the "CI-tested" guarantee the designs rest on is real, not
+# decorative.
+#
+# ⚠ THE MODULE LIST IN THE FINAL STEP IS A THIRD COPY of the two path filters
+# below, and adding a bin/ tool means editing all three. That enumeration drifts
+# by construction (card#5977) — a tool added to only two of the three either
+# never runs or runs on the wrong events.
 #
 # ⚠ `app/**` IS IN THE FILTER, AND IT IS LOAD-BEARING — do not "tidy" it out as
 # unrelated to bin/. `bin/test_check_channel_snapshot.py` asserts about `app/` PHP
@@ -33,6 +40,8 @@ on:
       - 'bin/test_provision_board_tools_samebox.py'
       - 'bin/check-channel-snapshot.py'
       - 'bin/test_check_channel_snapshot.py'
+      - 'bin/changelog-section.py'
+      - 'bin/test_changelog_section.py'
       - 'app/**'
       - 'examples/channel-servers/**'
       - '.github/workflows/provision-tools-python.yml'
@@ -45,6 +54,8 @@ on:
       - 'bin/test_provision_board_tools_samebox.py'
       - 'bin/check-channel-snapshot.py'
       - 'bin/test_check_channel_snapshot.py'
+      - 'bin/changelog-section.py'
+      - 'bin/test_changelog_section.py'
       - 'app/**'
       - 'examples/channel-servers/**'
       - '.github/workflows/provision-tools-python.yml'
@@ -71,4 +82,4 @@ jobs:
         run: npm ci --ignore-scripts
         working-directory: examples/channel-servers
       - name: Run bin/ unit tests
-        run: python3 -m unittest bin.test_provision_board_tools bin.test_provision_board_tools_samebox bin.test_check_channel_snapshot -v
+        run: python3 -m unittest bin.test_provision_board_tools bin.test_provision_board_tools_samebox bin.test_check_channel_snapshot bin.test_changelog_section -v
