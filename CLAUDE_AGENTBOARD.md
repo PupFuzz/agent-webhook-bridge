@@ -1,4 +1,4 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.24.0) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.28.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **What this is.** The solo-agent orientation generated from the Agent Board Framework
@@ -53,7 +53,12 @@ call — requirements are the floor, not the ceiling.
 ritual) and injects it as context at every session boundary so you resume **oriented, not
 cold**. It carries the single next action + where you left off; your open PRs remain the
 authoritative in-flight state. (If the hook is unavailable — new machine, misconfigured —
-read the file directly as a fallback.)
+read the file directly as a fallback.) **The injection is honest about its own gaps:** if
+that file is empty or whitespace-only you get a loud `⚠ NO HANDOFF INJECTED
+[coord-empty-handoff]` line instead of a confident header over nothing, and if it was longer
+than the hook injects you get `⚠ HANDOFF TRUNCATED [coord-truncation …]` at the exact cut.
+Either one means **go read the file before you act** — you are resuming colder than the
+header implies.
 
 **Then read all your boards.** There is no inbox (you have no counterparties sending you
 threads). Your source of truth at session start is the state of every board in
@@ -64,9 +69,9 @@ between sessions; verify the board state reflects actual PR state before proceed
 **Canonical docs to orient from** (wherever `coord:init-solo` placed your config —
 `~/.config/coord/` by default — or in the plugin's own `docs/` directory):
 
-- **Engineering canon** — `~/.claude/CLAUDE.md` (seeded per machine at user level). The 17
+- **Engineering canon** — `~/.claude/CLAUDE.md` (seeded per machine at user level). The
   senior-engineer principles. Always on.
-- **`design-review-loop.md`** — the pre-implementation review-to-zero-findings discipline
+- **`design-review-loop.md`** — the pre-implementation review-to-clean discipline
   you run on your own plan before opening a non-trivial PR.
 - **`doc-sync.md`** — the standing rule that every code PR audits and updates affected docs
   in the same PR.
@@ -148,8 +153,7 @@ merge-button intent) using each repo's own conventions. Use it whenever cutting 
 ## Staying continuously busy — finish-to-next + the bounded self-drive loop
 
 **At every task boundary — finish-to-next (canon #17).** Completing an item ends by pulling
-the next unblocked one from your cross-repo queue (§ Your work loop), not by waiting to be
-prompted:
+the next unblocked one from your cross-repo queue (§ Your work loop):
 
 - **Merged + card state confirmed → pull the next unblocked card.** Nothing in the flow waits
   on a human post between items.
@@ -483,10 +487,13 @@ hold.**
      docs/CONTEXT-RESET.md, and hooks/context-backstop.py (which carries it twice: WARNING +
      platform-line) = five copies across four files. Edit all five; the copy registry is
      CONTEXT-RESET.md § "Mirror registry". The MIRROR-BEGIN/END markers are LOAD-BEARING: the
-     CI guard .githooks/chat-gate-mirror-drift.selftest.py extracts exactly what they enclose
-     and reds if any copy diverges — the two per-role tokens ("message from your human" for
-     "user message"; "open exchange with your human" for "open operator exchange") are the ONLY
-     differences it normalizes away, so do not move, rename, or drop the markers. -->
+     framework repo's own CI guard .githooks/chat-gate-mirror-drift.selftest.py extracts exactly
+     what they enclose and reds if any copy diverges — the two per-role tokens ("message from your
+     human" for "user message"; "open exchange with your human" for "open operator exchange") are
+     the ONLY differences it normalizes away, so do not move, rename, or drop the markers.
+     THAT GUARD IS NOT ON THIS SEAT: `.githooks/` is framework-repo CI and is not part of what the
+     plugin installs, so here the five copies are yours to keep in step by hand (card#5190;
+     install-side detector: card#5247). -->
 
 **A decided self-clear is a commit point — freeze inbound, then land it.** Once you've *decided* to
 clear (a CLEAR at a clean boundary), stop **proactively pulling** new inbound — no inbox refresh,

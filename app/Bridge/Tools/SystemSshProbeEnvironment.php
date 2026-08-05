@@ -9,7 +9,9 @@ use Symfony\Component\Process\Process;
  * The real-host {@see SshProbeEnvironment} for `bridge:check` (card 4952). Every leg
  * fails SAFE: an unavailable fact returns null/false (UNVERIFIED), never a fabricated
  * "all good". `sshd -T` is only attempted as root (it loads host private keys); as the
- * unprivileged run-user it returns null so the caller emits an explicit UNVERIFIED warn.
+ * unprivileged run-user it returns null so the caller emits an explicit UNVERIFIED
+ * finding — `unvalidated` since DL-251, because a leg that could not resolve the file it
+ * was going to read did not answer its own question.
  */
 final class SystemSshProbeEnvironment implements SshProbeEnvironment
 {
@@ -53,16 +55,17 @@ final class SystemSshProbeEnvironment implements SshProbeEnvironment
         return '';
     }
 
-    public function homeForUser(string $user): string
+    public function homeForUser(string $user): ?string
     {
-        if (function_exists('posix_getpwnam')) {
-            $pw = posix_getpwnam($user);
-            if (is_array($pw) && $pw['dir'] !== '') {
-                return $pw['dir'];
-            }
+        // The capability test comes FIRST and returns null, because without it there is no
+        // account database to consult and '' would claim one answered (see the interface).
+        if (! function_exists('posix_getpwnam')) {
+            return null;
         }
 
-        return '';
+        $pw = posix_getpwnam($user);
+
+        return is_array($pw) && $pw['dir'] !== '' ? $pw['dir'] : '';
     }
 
     public function sshdEffectiveConfig(?string $forUser = null): ?string

@@ -91,6 +91,125 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');   // no move
     }
 
+    // --- card#5287 / DL-270: the uncorroborated title-only card# corroboration gate ---
+
+    public function test_uncorroborated_title_only_token_is_refused_when_the_card_tracks_another_pr(): void
+    {
+        // THE case the gate exists for: a PR title descriptively cites card#5 while its
+        // branch names nothing. Card 5 is on the mapped board, so every guard above
+        // passes — and card 5 already answers to PR 900, which is the evidence that the
+        // title was citing somebody else's work. Refuse, loudly, and write NOTHING.
+        // (Revert the gate ⇒ a PATCH is sent ⇒ RED.)
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => [
+            'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 900],
+        ]])]);
+        Log::spy();
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'REFUSED')
+            && str_contains((string) $msg, 'only in the PR title'))->once();
+    }
+
+    public function test_uncorroborated_title_only_token_moves_when_the_card_tracks_no_pr(): void
+    {
+        // The legitimate title-only PR — the reason refuse-all was declined. The card
+        // carries no pr_number, so nothing contradicts the title's claim.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])
+                ->push(['data' => ['id' => 5]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
+    public function test_uncorroborated_title_only_token_moves_when_the_card_already_tracks_this_pr(): void
+    {
+        // A later action on the SAME PR (or a redelivery): the card's own pr_number IS
+        // this PR, which corroborates the title rather than contradicting it. The
+        // numeric-string form is what a durable-inbox JSON round-trip produces.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => '148']]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
+    public function test_uncorroborated_refusal_also_suppresses_the_already_in_stage_self_heal_stamp(): void
+    {
+        // The gate sits BEFORE the already-in-stage branch on purpose: that branch
+        // still STAMPS correlation refs, so a refused move that reached it would write
+        // this PR's refs onto a card it has no authority over — the hijack surviving
+        // as a stamp instead of a move.
+        // (Move the gate below the self-heal ⇒ a PATCH is sent ⇒ RED.)
+        //
+        // The card carries a pr_number (so the gate refuses) but NO dl_number, and the
+        // payload carries a stamp_dl — so the self-heal has real work to do if it is
+        // reached. Without that the stamp is add-if-missing-empty and the assertion
+        // could not fail whatever the gate did: the first version of this test was a
+        // decoration, and the mutation run is what said so.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => [
+            'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 900],
+        ]])]);
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148, 'stamp_dl' => 'DL-77']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_a_corroborated_token_moves_a_card_that_tracks_another_pr(): void
+    {
+        // The gate is scoped to the flag. A branch-corroborated card# (or a DL move)
+        // on a card that already tracks another PR is a NORMAL second PR against one
+        // card and must keep moving — the gate must not widen into it.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 900]]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 148]));   // no uncorroborated flag
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
+    public function test_uncorroborated_title_only_token_is_refused_when_the_event_carries_no_pr_number(): void
+    {
+        // Fail-closed: an event with no PR number corroborates nothing, so a card that
+        // tracks a PR is not moved on the title's word alone.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => [
+            'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 900],
+        ]])]);
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true]));   // no stamp_pr
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
     public function test_card_on_wrong_board_is_refused_no_move(): void
     {
         $this->writeWriteback();
@@ -689,6 +808,253 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         $alertPushes = collect(Http::recorded())->filter(fn ($pair) => $this->isAlertPush($pair[0]))->count();
         $this->assertSame(2, $alertPushes, 'a failed first push must re-arm the signature for the next delivery');
+    }
+
+    // --- card#5288: the getCard 4xx refusal splits 404 (no such card) from 403 (exists, not ours) ---
+
+    public function test_getcard_404_and_403_produce_distinct_reasons_and_do_not_collapse_the_dedup(): void
+    {
+        // The DL-009 belongs-to-mapped-board guard reads board_id OUT of the card, so a
+        // card this token cannot READ returns at this branch and never reaches the guard —
+        // the reason string is the operator's ONLY signal for the case that guard exists to
+        // refuse. A single collapsed `getcard_4xx` also DEDUPED the two statuses against
+        // each other within one (repo, outcome): whichever arrived second alerted zero times.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['error' => 'not found'], 404)
+                ->push(['message' => 'forbidden'], 403),
+        ]);
+
+        $this->handle($this->payload());   // 404
+        $this->handle($this->payload());   // 403 — same (repo, outcome), different reason
+
+        $reasons = collect(Http::recorded())
+            ->filter(fn ($pair) => $this->isAlertPush($pair[0]))
+            ->map(fn ($pair) => $pair[0]['reason'])
+            ->values()->all();
+        $this->assertSame(['getcard_404_no_such_card', 'getcard_403_not_visible_to_this_token'], $reasons);
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');   // both still swallow — no move, no 5xx retry
+    }
+
+    public function test_getcard_other_4xx_keeps_the_generic_catchall_reason(): void
+    {
+        // Only 404/403 are named hypotheses; every other 4xx stays `getcard_4xx` (the
+        // catch-all), so the split adds vocabulary without silently re-labelling the rest.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::response(['message' => 'unprocessable'], 422),
+        ]);
+
+        $this->handle($this->payload());
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'getcard_4xx');
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_getcard_403_log_names_both_hypotheses(): void
+    {
+        // The reason slug is diagnostic only if the operator-facing text says WHICH two
+        // causes to check: a foreign install's card id, or this token's board scope.
+        $this->writeWriteback();
+        $this->writeToken();
+        Log::spy();
+        Http::fake(['*/tasks/5.json' => Http::response(['message' => 'forbidden'], 403)]);
+
+        $this->handle($this->payload());
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'getCard 403')
+            && str_contains($msg, 'foreign install')
+            && str_contains($msg, "token's scope")
+            && $ctx['status'] === 403
+            && $ctx['card_id'] === 5);
+    }
+
+    public function test_getcard_404_log_says_no_such_card(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Log::spy();
+        Http::fake(['*/tasks/5.json' => Http::response(['error' => 'not found'], 404)]);
+
+        $this->handle($this->payload());
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'getCard 404')
+            && str_contains($msg, 'no such card')
+            && $ctx['status'] === 404
+            && $ctx['card_id'] === 5);
+    }
+
+    // --- card#5312 / DL-274: the moveCard + stamp refusal arms became live signals ---
+
+    /** The stage-order preload the no-regression guard reads for a `merged` outcome. */
+    private function fakePreload(): array
+    {
+        return ['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
+            ['id' => 49, 'position' => 3], ['id' => 52, 'position' => 5],
+        ]]]]])];
+    }
+
+    public function test_move_403_alerts_with_the_read_but_not_write_reason(): void
+    {
+        // THE card#5312 case: a scope-narrowed token READS the card fine — so the getCard
+        // arm, the only one that alerted before DL-274, stays quiet — and is refused on the
+        // PATCH. The card silently stopped moving and only a log line recorded it.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Log::spy();
+        Http::fake($this->fakePreload() + [
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET ok — read works
+                ->push(['message' => 'this token cannot write board 8'], 403),                  // PATCH refused
+        ]);
+
+        $this->handle($this->payload());
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'movecard_403_not_writable_by_this_token'
+            && $r['repo'] === 'owner/repo'
+            && $r['outcome'] === 'merged'
+            && $r['card_id'] === 5);
+        // The durable record fires independently of the push (log first, then alert).
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'kanban refused the move')
+            && $ctx['status'] === 403);
+    }
+
+    public function test_move_other_4xx_keeps_the_generic_catchall_reason(): void
+    {
+        // Only 403/404 are named hypotheses; the rest stay `movecard_4xx` so the split
+        // adds vocabulary without silently re-labelling every other refusal.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake($this->fakePreload() + [
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['error' => 'invalid stage'], 422),
+        ]);
+
+        $this->handle($this->payload());
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'movecard_4xx');
+    }
+
+    public function test_move_404_alerts_that_the_card_is_gone(): void
+    {
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake($this->fakePreload() + [
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['error' => 'gone'], 404),
+        ]);
+
+        $this->handle($this->payload());
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'movecard_404_no_such_card');
+    }
+
+    public function test_stamp_4xx_alerts_on_the_self_heal_path(): void
+    {
+        // The card is already at the target stage, so ONLY the stamp PATCH fires — a
+        // board with no dl_number custom field refuses it, and the card is left without
+        // the correlation refs release-promote later looks for.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52]])   // already at target
+                ->push(['message' => 'unknown field dl_number'], 422),                          // stamp refused
+        ]);
+
+        $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'stamp_4xx'
+            && $r['outcome'] === 'merged'
+            && $r['card_id'] === 5);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg) => str_contains($msg, 'stamp refused by kanban'));
+    }
+
+    public function test_the_move_and_stamp_arms_do_not_dedup_each_other(): void
+    {
+        // Both arms refuse with the SAME status inside one (repo, outcome). Without the
+        // per-call verb in the reason they would share one dedup marker and whichever
+        // arrived second would alert ZERO times — the collapse card#5288 already found
+        // once on getCard.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake($this->fakePreload() + [
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // event 1 GET
+                ->push(['message' => 'denied'], 403)                                            // event 1 move PATCH
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52]])   // event 2 GET (already there)
+                ->push(['message' => 'denied'], 403),                                           // event 2 stamp PATCH
+        ]);
+
+        $this->handle($this->payload());
+        $this->handle($this->payload(['stamp_dl' => 'DL-42']));
+
+        $reasons = collect(Http::recorded())
+            ->filter(fn ($pair) => $this->isAlertPush($pair[0]))
+            ->map(fn ($pair) => $pair[0]['reason'])
+            ->values()->all();
+        $this->assertSame(
+            ['movecard_403_not_writable_by_this_token', 'stamp_403_not_writable_by_this_token'],
+            $reasons,
+        );
+    }
+
+    public function test_move_4xx_durable_log_still_fires_with_no_alert_channel(): void
+    {
+        // The alert is ADDITIVE. With no alert_channel the arm degrades to exactly its
+        // pre-DL-274 behavior — log + no-op, no push, no throw.
+        $this->writeWriteback();   // no alert_channel key
+        $this->writeToken();
+        Log::spy();
+        Http::fake($this->fakePreload() + [
+            '*://127.0.0.1:*/*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['message' => 'denied'], 403),
+        ]);
+
+        $this->handle($this->payload());
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg) => str_contains($msg, 'kanban refused the move'));
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '127.0.0.1'));
+    }
+
+    public function test_move_5xx_still_throws_and_never_alerts(): void
+    {
+        // The transient/permanent split is untouched: a 5xx on the PATCH propagates for
+        // redelivery, and the alert path (which is permanent-only) must not fire.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake($this->fakePreload() + [
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push('upstream error', 503),
+        ]);
+
+        try {
+            $this->handle($this->payload());
+            $this->fail('a 5xx on the move PATCH must propagate for redelivery');
+        } catch (RequestException) {
+            // expected
+        }
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
     // --- FR #3866 / card#4852: stamp correlation refs (dl_number / pr_number / pr_url) add-if-missing ---

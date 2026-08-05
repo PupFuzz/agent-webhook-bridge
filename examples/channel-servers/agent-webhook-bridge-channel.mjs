@@ -184,8 +184,24 @@ const TOOL_DEFINITIONS = [
     description:
       'Return YOUR OWN cards on the board (your product swimlane grouped by stage, ' +
       'plus any shared/coordination cards your bridge identity is scoped to). Read-only; ' +
-      'the kanban token never leaves the bridge. No arguments.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      'the kanban token never leaves the bridge. Titles only by default — pass ' +
+      'include_description when you need the SCOPE written on a card.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        include_description: {
+          type: 'boolean',
+          description:
+            "Include each card's body (default false). Opt-in because a body is ~2 KB " +
+            'and every card in your lane is returned, so this can multiply the response ' +
+            'size many times over — ask for it when starting work on a card, not when ' +
+            'polling. A body longer than the bridge-configured per-card cap is cut and ' +
+            'the card carries description_truncated: true; never read a truncated body ' +
+            'as the whole scope.',
+        },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: 'board_create_card',

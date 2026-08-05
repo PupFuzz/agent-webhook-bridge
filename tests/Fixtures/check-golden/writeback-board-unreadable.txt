@@ -1,0 +1,20 @@
+exit: 0
+--- output ---
+config dir: <INSTALL>
+config dir <INSTALL> is group/world-accessible (mode 0755) — chmod 700 (it holds secrets)
+secret dir: <INSTALL>
+database: connected
+install-suffix DSN check: ok
+inbox surfacing config: ok (layout=shared)
+retention: on (delete >30d, every 86400s, 500 rows/pass)
+retention: could NOT determine whether the receiver ends the request early — bridge:check is a console command, so the SAPI running it is not the receiver's and does not define fastcgi_finish_request(), and no php-fpm binary was findable on the PATH this process sees (a healthy FPM install can keep it in /usr/sbin, off a non-root PATH), so this run is no evidence either way. If the receiver is NOT served under PHP-FPM, retention runs AFTER the response is flushed but BEFORE the request ends, so a keep-alive client may wait for it. Confirm how the receiver is served (see CLAUDE_DEPLOYMENT.md); if it is not PHP-FPM, either serve it under PHP-FPM or set BRIDGE_RETENTION_ENABLED=false and run bridge:prune on a schedule.
+agent config ok: prod-agent
+agent prod-agent: kanban:5 has no secret at <INSTALL>/kanban/webhook-secret-scope-5 — run bridge:provision
+agent prod-agent: github:owner/repo has no secret at <INSTALL>/github/webhook-secret-scope-owner%2Frepo — run bridge:provision
+agent prod-agent: kanban API token not readable at <INSTALL>/kanban/token — bridge:provision will SKIP kanban scopes
+writeback.json: 1 repo mapping(s)
+writeback: could not read board 8 (owner/repo) with the writeback token — HTTP request returned status code 500:
+{"message":"nope"}
+
+checks: 37 registered · 31 ran (11 reported above, 20 with nothing to report) · 2 opt-in probes not requested · 4 did not run (no agent has an enabled board_tools block). All 37 are accounted for — nothing was skipped uncounted.
+2 finding(s) reported `unvalidated` — not a failure, and not a pass either: those legs could not answer their own question, so this run says nothing about what they would have found (see the lines above). This counts the legs that REPORTED being unable to measure; a leg that failed to notice it measured nothing is not counted here — it may say nothing, or say what it would have concluded.

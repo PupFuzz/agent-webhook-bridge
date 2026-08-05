@@ -41,7 +41,10 @@ use Illuminate\Support\Facades\Log;
  * rediscovered the hard way:
  *  - **PHP-FPM.** The after-response property is `fastcgi_finish_request()`. Without
  *    it (mod_php) Symfony flushes but does not end the request, so a keep-alive
- *    client can wait out the prune. Correctness is unaffected; `bridge:check` warns.
+ *    client can wait out the prune. Correctness is unaffected. `bridge:check` does NOT
+ *    warn about this: it runs as a console command, so the receiver's SAPI is not a fact
+ *    available to it (DL-261). It reports `unvalidated` when nothing it can see indicates
+ *    the capability — a disclosure, not a verdict.
  *  - **Process-per-request.** `Application::terminate()` does not clear its
  *    terminating callbacks, so under a persistent-worker runtime (Octane/Swoole) this
  *    would accumulate one callback per request and re-run earlier ones. The bridge

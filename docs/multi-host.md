@@ -37,7 +37,7 @@ If both run on the same host, use the [Unix domain socket transport](../examples
 - SSH access from B to A via public-key auth (no password prompts).
 - `autossh` installed on host B (`apt install autossh` or `brew install autossh`).
 
-> **Leave `channel.server_path` unset in this topology.** That key (DL-229) lets `bridge:check` validate the deployed channel-server snapshot, but it `stat`s the directory from the bridge process — which here runs on host A while the channel server lives on host B. A host-B path declared on host A resolves to nothing and reports the dangling FAIL ("repoint the symlink") for a deployment that is perfectly healthy, just on the other machine; the probe cannot tell the two apart. Unset, `bridge:check` reports the snapshot legs at severity **`unvalidated`** and counts them in the run's closing tally (card 5170) — that is an accurate statement about *this* host, not a complaint: it is **not a failure and not a warning**, it exits 0, and there is nothing here to fix. It exists so a green `bridge:check` on host A is never mistaken for a validated host-B snapshot. Snapshot drift on host B stays a host-B concern — reconcile it there by diffing against the reference (see [`../examples/channel-servers/README.md`](../examples/channel-servers/README.md) § Staying in sync).
+> **Leave `channel.server_path` unset in this topology.** That key (DL-229) lets `bridge:check` validate the deployed channel-server snapshot, but it `stat`s the directory from the bridge process — which here runs on host A while the channel server lives on host B. A host-B path declared on host A resolves to nothing and reports the dangling FAIL ("repoint the symlink") for a deployment that is perfectly healthy, just on the other machine; the probe cannot tell the two apart. Unset, `bridge:check` reports the snapshot legs at severity **`unvalidated`** and counts them in the run's closing tally (card 5170) — that is an accurate statement about *this* host, not a complaint: it is **not a failure and not a warning**, it exits 0, and there is nothing here to fix. It exists so a green `bridge:check` on host A is never mistaken for a validated host-B snapshot. Snapshot drift on host B stays a host-B concern — reconcile it there by diffing against the reference (see [`../examples/channel-servers/README.md`](../examples/channel-servers/README.md) § Staying in sync). **What you CAN certify on host B: that the deployment will launch.** Copy `bin/check-channel-snapshot.py` there (it is stdlib-only, self-contained, and reads no bridge config or checkout) and run `python3 check-channel-snapshot.py <deployed dir>` **as the OS user whose Claude Code session starts the server**, before a session starts — exit 0 launch OK, 1 launch FAILED with node's own stderr, 2 could not check. This is the topology that makes the seat-side design obvious rather than merely correct (DL-237): host A cannot even `stat` the deployment, let alone run its node. It does **not** close the staleness gap — host A still has no way to compare host B's version, and this tool deliberately makes no claim about it.
 
 ## Setup
 
@@ -176,23 +176,16 @@ See [`docs/customization.md`](customization.md) for the full classifier API. The
 namespace App\Bridge\Classifiers;
 
 use App\Bridge\Contracts\Classifier;
-use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
-use App\Bridge\Support\AgentConfig;
 
 class MyClassifier implements Classifier
 {
-    public function classify(
-        string $eventType,
-        array $payload,
-        Actor $actor,
-        string $provider,
-        string $scopeId,
-        AgentConfig $agent,
-    ): ClassifyResult {
-        if ($eventType !== 'card.updated') {
+    public function classify(ClassifyContext $ctx): ClassifyResult
+    {
+        if ($ctx->eventType !== 'card.updated') {
             return new ClassifyResult;
         }
 
@@ -202,11 +195,11 @@ class MyClassifier implements Classifier
         // catches this misconfig.
         $intent = new Intent(
             kind: 'card_updated',
-            subjectId: "card:{$payload['id']}",
+            subjectId: "card:{$ctx->payload['id']}",
             provider: 'kanban',
-            actor: $actor,
-            summary: "card {$payload['id']} updated",
-            payload: $payload,
+            actor: $ctx->actor,
+            summary: "card {$ctx->payload['id']} updated",
+            payload: $ctx->payload,
         );
 
         // Read the token from an env var or file; never hardcode.
@@ -438,8 +431,10 @@ bridge:check --probe-tools-ssh=<bridge-user>@host-A # live round-trip (from a ho
 key is ed25519; it asserts **no** sshd posture (card 5091 retired the account-level
 hardening — see § 3). Run where it cannot read the forced-command account's
 `authorized_keys` (unprivileged, distinct account) it emits an explicit
-**UNVERIFIED** warn for that leg (never a false OK). Under `sudo` with a distinct
-forced-command account, set `board_tools.ssh_account` (see step 3) so the pinned-line
+**UNVERIFIED** finding for that leg (never a false OK) — at severity `unvalidated`
+since DL-251, so it renders plain and joins the run's closing tally: an insufficient
+euid means the leg could not measure, not that the pinned line is wrong.
+Under `sudo` with a distinct forced-command account, set `board_tools.ssh_account` (see step 3) so the pinned-line
 check certifies that account, not root.
 
 > Live-fire rides the witnesses (aimla same-box + sola cross-host+FIPS). A FIPS sshd's

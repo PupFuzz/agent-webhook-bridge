@@ -161,11 +161,18 @@ final class DispatchService
             // Shared-identity echo completion (DL-005): the pre-classify echo
             // gate above could only match the raw id for a shared upstream
             // account (Actor.name was null by design, DL-002). If the classifier
-            // recovered the true author, re-run the SAME per-agent echo check
-            // now that attribution is better — drop the agent's OWN write (a
-            // different shared-id agent's write has a non-self name and stays).
-            // No-op when the classifier left reattributedActor null, and
-            // redundant when a pre-classify gate already flagged the dispatch.
+            // recovered WHO PERFORMED THIS EVENT, re-run the SAME per-agent echo
+            // check on that — drop the agent's OWN write (a different shared-id
+            // agent's write has a non-self name and stays). No-op when the
+            // classifier left reattributedActor null, and redundant when a
+            // pre-classify gate already flagged the dispatch.
+            //
+            // NULL DELIVERS, AND THAT IS THE CONTRACT (DL-253): a name here is a
+            // claim that this agent WROTE this event, so a classifier that cannot
+            // evidence the actor must leave it null rather than substituting a
+            // related name. Feeding it the thread's AUTHOR — the shape shipped
+            // until DL-253 — dropped a counterparty's bodyless action on a thread
+            // the serving agent had opened, as that agent's own write.
             if ($gateReason === null && $result->reattributedActor !== null && $this->isEcho($agent, $result->reattributedActor)) {
                 if (! $stripToMachine) {
                     $this->markDropped($dispatch, 'echo: own write (reattributed author)');

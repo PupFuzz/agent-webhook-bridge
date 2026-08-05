@@ -1,0 +1,238 @@
+<?php
+
+namespace Tests\Unit\Bridge\Check\Checks;
+
+use App\Bridge\Check\CheckContext;
+use App\Bridge\Check\Checks\BoardToolsBearerCheck;
+use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\Finding;
+use App\Bridge\Support\Severity;
+use App\Bridge\Tools\BoardToolAgentResolver;
+use Illuminate\Support\Facades\File;
+use Tests\Support\MaterializesChecks;
+use Tests\TestCase;
+
+/**
+ * The DL-217 bearer problems (unreadable token file, token collision), migrated in DL-242
+ * stage 7b. No golden fixture reaches them (card#5552), so these tests are the whole proof.
+ *
+ * THE SEVERITY IS THE ASSERTION, not a detail of it. `CheckCommandSeverityContractTest`
+ * pins that `fail` — and only `fail` — flips `bridge:check`'s exit code, so asserting the
+ * severity here is what completes the chain from "a dead or ambiguous bearer" to "the
+ * install check exits non-zero". Under default-ON that is the DL-220 split: a broken
+ * ENABLEMENT fails where a transient BOARD read only warns.
+ *
+ * THE PROBLEMS ARE THE RESOLVER'S, AND THAT IS DELIBERATE. The build reads each enabled
+ * HTTP agent's token file and logs every collision; `problems()` only returns what the
+ * build found. These tests therefore construct a REAL resolver over real 0600 files rather
+ * than injecting a canned problem list — a stub would pass while the two were wired to
+ * different populations.
+ */
+class BoardToolsBearerCheckTest extends TestCase
+{
+    use MaterializesChecks;
+
+    private string $dir;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->dir = sys_get_temp_dir().'/bt-bearer-'.uniqid();
+        File::ensureDirectoryExists($this->dir);
+    }
+
+    protected function tearDown(): void
+    {
+        File::deleteDirectory($this->dir);
+        parent::tearDown();
+    }
+
+    public function test_a_missing_token_file_fails(): void
+    {
+        $findings = $this->findingsFor([$this->agent('prod-agent', $this->dir.'/absent-token')]);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertSame(
+            "board_tools: agent prod-agent: no token at {$this->dir}/absent-token — board tools disabled for this agent until a token (chmod 600) is placed",
+            $findings[0]->message,
+        );
+    }
+
+    /**
+     * The card#5698 arm, and the ONLY adopter whose overclaim flipped the EXIT CODE: a
+     * bearer that exists and is correctly moded, under a directory this process cannot
+     * traverse. `bridge:check` runs as the operator; the resolver that actually serves the
+     * runtime is built by `AgentToolsController` as the WEB user and may read it fine — so
+     * a `fail` here was a false accusation about a runtime this process never observed.
+     *
+     * The severity assertion is the load-bearing half: a message-only fix would still have
+     * failed the run.
+     */
+    public function test_a_bearer_that_cannot_be_seen_is_unvalidated_and_does_not_fail_the_run(): void
+    {
+        if (function_exists('posix_getuid') && posix_getuid() === 0) {
+            $this->markTestSkipped('root bypasses directory permission checks');
+        }
+        $locked = $this->dir.'/locked';
+        File::ensureDirectoryExists($locked);
+        File::put($locked.'/token', 'shhh');
+        chmod($locked.'/token', 0o600);
+        chmod($locked, 0000);
+
+        try {
+            $findings = $this->findingsFor([$this->agent('prod-agent', $locked.'/token')]);
+        } finally {
+            chmod($locked, 0755);
+        }
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
+        $this->assertStringNotContainsString('no token at', $findings[0]->message);
+    }
+
+    /**
+     * card#5778's arm, and the THIRD state — distinct from both of its neighbours. The
+     * directory IS traversable and the file IS there (so the not-visible guard above does
+     * not fire and `is_file()` is true), the mode carries no group/world bit (so the perms
+     * gate does not fire either) — and the read still fails. This used to leave the
+     * resolver as an uncaught `ErrorException`, aborting `bridge:check` outright rather
+     * than reaching any severity.
+     *
+     * `unvalidated` for the same reason as the not-visible arm: the resolver that serves
+     * the runtime is built by `AgentToolsController` as the WEB user, and a mode that
+     * stopped the operator is no evidence about that read.
+     */
+    public function test_a_bearer_present_but_unreadable_is_unvalidated_and_does_not_fail_the_run(): void
+    {
+        $path = $this->token('unreadable', 'shhh', 0o000);
+        clearstatcache(true, $path);
+        if (is_readable($path)) {
+            $this->markTestSkipped('this process reads through mode 0000 (running as root?) — the unreadable state is not reachable here');
+        }
+
+        $findings = $this->findingsFor([$this->agent('prod-agent', $path)]);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('board_tools: agent prod-agent: ', $findings[0]->message);
+        $this->assertStringContainsString('could not be read by this process', $findings[0]->message);
+        // It must not borrow either neighbour's claim: the file is neither absent nor
+        // invisible, and saying so would send the operator after the wrong fix.
+        $this->assertStringNotContainsString('no token at', $findings[0]->message);
+        $this->assertStringNotContainsString('is not visible to this user', $findings[0]->message);
+    }
+
+    /**
+     * The discriminating control for the arms above: a token file that is genuinely absent,
+     * under a directory we CAN traverse, still FAILs. Without this pair, an implementation
+     * that downgraded every missing bearer to `unvalidated` would pass — and that would be
+     * the canon-#3 mistake of loosening a check to make a failure go away.
+     */
+    public function test_a_genuinely_absent_bearer_under_a_readable_dir_still_fails(): void
+    {
+        $findings = $this->findingsFor([$this->agent('prod-agent', $this->dir.'/absent-token')]);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('no token at', $findings[0]->message);
+    }
+
+    public function test_an_insecure_token_file_fails(): void
+    {
+        $path = $this->token('loose', 'shhh', 0o644);
+        $findings = $this->findingsFor([$this->agent('prod-agent', $path)]);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('board_tools: agent prod-agent: ', $findings[0]->message);
+        $this->assertStringContainsString('board tools disabled for this agent until fixed', $findings[0]->message);
+    }
+
+    public function test_a_shared_token_value_fails_for_every_sharer(): void
+    {
+        $findings = $this->findingsFor([
+            $this->agent('alpha', $this->token('a', 'same-secret')),
+            $this->agent('beta', $this->token('b', 'same-secret')),
+        ]);
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('the same auth token is shared by multiple agents (alpha, beta)', $findings[0]->message);
+    }
+
+    public function test_distinct_readable_tokens_report_nothing(): void
+    {
+        $findings = $this->findingsFor([
+            $this->agent('alpha', $this->token('a', 'alpha-secret')),
+            $this->agent('beta', $this->token('b', 'beta-secret')),
+        ]);
+
+        $this->assertSame([], $findings);
+    }
+
+    /**
+     * `CheckCommand` builds no resolver when no agent has the block enabled, so the field
+     * is null there — the check must be silent rather than assume one was built.
+     */
+    public function test_no_resolver_reports_nothing(): void
+    {
+        $ctx = new CheckContext;
+
+        $this->assertNull($ctx->boardToolsResolver);
+        $this->assertSame([], $this->findingsOf((new BoardToolsBearerCheck), $ctx));
+    }
+
+    public function test_every_problem_is_reported_in_resolver_order(): void
+    {
+        $findings = $this->findingsFor([
+            $this->agent('alpha', $this->dir.'/absent-a'),
+            $this->agent('beta', $this->dir.'/absent-b'),
+        ]);
+
+        $this->assertCount(2, $findings);
+        $this->assertStringContainsString('agent alpha:', $findings[0]->message);
+        $this->assertStringContainsString('agent beta:', $findings[1]->message);
+    }
+
+    private function token(string $name, string $value, int $mode = 0o600): string
+    {
+        $path = $this->dir.'/'.$name;
+        File::put($path, $value);
+        chmod($path, $mode);
+
+        return $path;
+    }
+
+    private function agent(string $name, string $tokenPath): AgentConfig
+    {
+        $config = AgentConfig::fromArray($name, [
+            'identity' => ['kanban_user_id' => 1],
+            'subscriptions' => [],
+            'board_tools' => [
+                'enabled' => true,
+                'transport' => 'http',
+                'auth' => ['token_path' => $tokenPath],
+                'board_id' => 10,
+                'swimlane_id' => 4,
+                'create_stage_id' => 55,
+            ],
+        ]);
+        $this->assertTrue($config->boardTools?->enabled, 'fixture precondition: the block must be enabled');
+
+        return $config;
+    }
+
+    /**
+     * @param  list<AgentConfig>  $configs
+     * @return list<Finding>
+     */
+    private function findingsFor(array $configs): array
+    {
+        $ctx = new CheckContext;
+        $ctx->boardToolsResolver = new BoardToolAgentResolver($configs);
+
+        return $this->findingsOf((new BoardToolsBearerCheck), $ctx);
+    }
+}

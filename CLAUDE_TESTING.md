@@ -28,6 +28,7 @@ vendor/bin/pint                                      # fix in place
 | `tests/Unit/Classifiers/` | `InboxOnlyClassifier`, `EventDrivenClassifier` — classify output + intent shapes | Unit; pure PHP |
 | `tests/Unit/Dispatch/` | Plain value objects — `Intent`, `ReactionTarget`, `Actor`, `ClassifyResult` | Unit; pure PHP |
 | `tests/Unit/Validation/` | Format validators (`ProviderName`, `ScopeId`, `SocketPath`) | Unit; pure PHP |
+| `tests/Unit/Bridge/Check/` | The DL-242 check registry: `CheckRunner`'s own contract, plus **per-check tests under `Checks/`** | **Extends `Tests\TestCase`, not `PHPUnit\Framework\TestCase`** — a `Check` reads Laravel `config()`/env and some fake `Http`/`Cache`. Named Unit because the subject is one class in isolation, driven by a hand-built `CheckContext` |
 | `tests/Feature/Webhook/` | End-to-end HTTP status contract through the real middleware + adapter stack | Feature; `RefreshDatabase`; uses `$this->call()` |
 | `tests/Feature/Dispatch/` | `DispatchService` + `AgentRegistry` + echo/signal logic | Feature; `RefreshDatabase`; tmp config dir |
 | `tests/Feature/Config/` | `SubscriptionRegistry`, `AgentConfig`, `InstallGuard`, `ClassifierResolver` | Feature; tmp filesystem or env override |
@@ -132,6 +133,57 @@ Classifier that always throws. Used to verify case-A failure treatment: classify
 
 Classifier that emits a target naming a handler that doesn't exist. Used to verify case-C failure treatment: handler resolution failure marks the dispatch done-with-note (intent was staged first, per B-before-C ordering).
 
+## The channel-server version-agreement control (DL-268)
+
+`tests/Feature/Workflows/ChannelServerVersionAgreementTest.php` extracts the
+`version-bump-guard` steps' real `run:` blocks out of
+`.github/workflows/channel-server-supply-chain.yml` and executes them under `bash` against a
+throwaway tree — the same shape as `PrTitleLintTest`, and for the same reason: a
+re-implementation of the predicate in PHP would drift from what CI actually runs.
+
+- **Its positive control is real history, not invented JSON.**
+  `tests/Fixtures/channel-server-drift-4abe8e3/` holds `examples/channel-servers/`'s manifest +
+  lockfile as they stood at `4abe8e3`, the last commit at which card#5232's drift was live
+  (manifest `0.8.3`, lock `0.7.1`). The guard is required to reject a state the repo actually
+  shipped.
+- **The fixtures carry a `.fixture` suffix on purpose.** Dependabot *security* updates detect
+  manifests by filename anywhere in the repo, independently of `.github/dependabot.yml`; a file
+  named `package-lock.json` under `tests/` would be eligible for an automated bump, and bumping
+  it would repair the very drift the control reproduces. The test writes the bytes into a temp
+  tree under the real filenames, so the guard reads what it reads in CI.
+- **The test asserts the fixture still carries the drift** before using it, so a resynced or
+  regenerated fixture reds instead of going green over a guard nothing is testing.
+- **Do not reach for `git show` here.** CI checks out at the default depth of 1 and
+  `git show 4abe8e3:` returns 128 in a shallow clone — a control read that way passes locally
+  and reds in CI.
+
+## The channel-server live-state sandbox (DL-269)
+
+`examples/channel-servers/tests/` spawns the REAL channel server, and the server's
+`markerPath()` falls back to the ambient environment
+(`${SOCKET_PATH}.FAILED` under `unix`, else `${XDG_RUNTIME_DIR || os.tmpdir()}/…FAILED`).
+A seat exports `BRIDGE_CHANNEL_SOCKET` pointing at its LIVE socket, so a child spawned with a
+plain `{...process.env}` binds it, gets `EADDRINUSE`, and writes a `.FAILED` deafness marker
+beside a HEALTHY socket — the exact false signal the marker mechanism exists to make
+trustworthy. That is measured history, not a hypothetical (DL-237(e)).
+
+- **Every test file in that directory imports `./live-state-guard.mjs` first.** The guard
+  neutralises all four channel-addressing inputs at import — before any case runs — and
+  registers an `after()` hook that snapshots the seat's real `$XDG_RUNTIME_DIR` and FAILS the
+  run if it moved. Add the import to any new file in that directory; per-test scrubbing does
+  not close the gap, because nothing notices a test that forgets it.
+- **The assertion is the point, not the redirect.** The two pre-existing suites already
+  scrubbed their child env — one by denylist, one by allowlist — and both were clean when
+  measured. Neither could tell you when it stopped being clean.
+- **`live-state-guard.test.mjs` is its positive control**, including the overwrite-in-place
+  case: a name-set compare reports a run clean when a false marker is written OVER a stale
+  one, which is exactly the state a previously-deaf seat is in.
+- **Snapshots record `(mode, size, mtimeNs)`, via `lstat`** — not the name set, and not
+  following symlinks.
+- The equivalent python-side contract lives in `bin/test_check_channel_snapshot.py`'s
+  `setUpModule`/`tearDownModule`. The two are separate per-language authorities; they must
+  move together when the contract changes.
+
 ## Database configuration
 
 `phpunit.xml` sets the test environment unconditionally:
@@ -155,7 +207,7 @@ Classifier that emits a target naming a handler that doesn't exist. Used to veri
 **Job 1 — `PHPUnit + Pint + PHPStan (PHP 8.3, SQLite)`:**
 - Push to `main`/`dev`; pull requests to `main`/`dev`
 - Runs on **PHP 8.5** (via the `setup-app` composite action), `pdo_sqlite` + `pdo_mysql` extensions installed. The job **label** still reads "PHP 8.3" — it's a required-status-check identifier pinned in `dev`/`main` branch protection, so renaming it must be done together with a `gh api` branch-protection contexts update (see DL-040), not in a routine PR.
-- Pint style check, PHPStan level 7 on `app/Bridge`, then PHPUnit against SQLite `:memory:`
+- Pint style check, PHPStan level 7 on `app/Bridge` **plus `app/Console/Commands/Bridge/CheckCommand.php`** (the finding renderer — added by DL-238 so an unhandled `Severity` case is a CI error, not a runtime `UnhandledMatchError`; the rest of `app/Console` is still unanalysed), then PHPUnit against SQLite `:memory:`
 
 **Job 2 — `PHPUnit (MariaDB ${{ matrix.mariadb }})` (matrix: `["10.6", "11"]`):**
 - Spins up a `mariadb:<version>` service container matching the production driver versions
@@ -190,6 +242,80 @@ docker rm -f bridge-test-mariadb
 | A new config field | `tests/Feature/Config/AgentConfigTest.php` |
 | A bug fix | a regression test that fails before the fix, passes after. Cite the bug in the test docstring. |
 | A security-sensitive change | additional regression tests for the attack surface (e.g. `WebhookReceiveTest` covers path-traversal scope, empty secret, relative secret_dir) |
+| A change to `bridge:check`'s output, or a refactor of it | see § The `bridge:check` golden harness below — a behavior-preserving refactor is checked by the golden files, an intended change regenerates them |
+| A `Check` migrated into the DL-242 registry | `tests/Unit/Bridge/Check/Checks/<Name>CheckTest.php`, scoped to **the legs the golden suite cannot reach** — `catch` arms, `switch` arms, and any leg needing an unreachable backend or a controlled HTTP outcome. Do NOT re-cover golden-measured legs: the golden files pin the operator-visible line, which is the stronger measurement. Every absence assertion needs a witness that the check ran |
+
+## The `bridge:check` golden harness (DL-242)
+
+`tests/Feature/Console/Check/CheckGoldenTest.php` captures `bridge:check`'s exact stdout + exit
+code into `tests/Fixtures/check-golden/*.txt`, one file per install shape (the harness owns how
+many; a count restated here is a second copy that drifts on the next fixture). It exists because
+the DL-242 Check-registry migration holds stages 0–7 to a byte-identical output contract; it is
+what turns that from an intention into a measurement.
+
+- **A refactor that reds a golden file changed behavior.** Fix the code — do not regenerate.
+- **A change that is MEANT to alter output** regenerates with `UPDATE_GOLDEN=1 vendor/bin/phpunit
+  --filter test_golden_output tests/Feature/Console/Check/CheckGoldenTest.php`, and the regenerated
+  files are then **read in the PR diff**: they are the operator-visible change, and reviewing them
+  is the point.
+- **A fixture must pin every host input it touches.** `bridge:check` reads the ambient host
+  directly, and one of those reads is verdict-bearing (`$COORD_CONFIG` produces two *different
+  diagnoses*, so it is pinned, never normalized). `Tests\Support\CheckGolden\PinnedHost` owns the
+  env pins and `GoldenInstall` owns the `bridge.*` config — including keys that look declared but
+  resolve from the deployed `.env` on an operator box (`default_agent`, `receiver_base_url`).
+  Anything unpinned makes the golden file a property of the machine that wrote it.
+- **A fixture must PROVE it reaches its subject, and that is mechanical, not a review habit.** A
+  golden file is captured once and thereafter only ever compared against ITSELF, so a fixture that
+  never reached the install shape it is named for is indistinguishable from one that works — it
+  just pins some other, healthier output forever. Three were in exactly that state with three
+  unrelated causes (card#5552). Every fixture therefore declares at least one substring its render
+  must CONTAIN, in `CheckGoldenTest::subjects()`, asserted against the capture in the same
+  data-provider run and deliberately AFTER the golden compare — so a `UPDATE_GOLDEN=1` regen cannot
+  mint a fixture that measures nothing. A fixture whose subject is an ABSENCE declares that in
+  `absentSubjects()` as well, never instead: a notContains alone is satisfied by an empty capture,
+  so every fixture carries a positive subject too. `test_every_fixture_declares_a_subject` is what
+  makes the declaration mandatory rather than opt-in — the next fixture added cannot skip it.
+- **Two golden files with the same bytes are one measurement, not two.** Byte-identical fixtures
+  red unless the pairing is declared in `CheckGoldenTest::CONTROL_PAIRS`, and a declared pair must
+  STILL be identical — a pairing that has quietly stopped holding is a defect in the other
+  direction, so the allow-list is asserted both ways rather than being an escape hatch. The one
+  legitimate pair exists because its value is the DIFF against a third fixture, not its own bytes.
+- **A green golden suite is not full protection.** `docs/check-golden-coverage.md` names, by
+  mutation, the predicates in `handle()` that flipping changes no golden file. Read it before
+  concluding a `bridge:check` refactor is covered.
+- **A coverage claim names the scope it was MEASURED at, and the two scopes have two different
+  instruments.** *Fixture scope* — "no golden fixture renders X" — comes from a grep of
+  `tests/Fixtures/check-golden/`, because that corpus is text; it licenses nothing about the rest
+  of the suite. *Whole-suite scope* — "nothing else asserts X" — comes only from a MUTATION:
+  change the arm, run the whole suite, and the set that goes red **is** the measurement set. A
+  grep cannot answer it in either direction, because a command-level test reaches the same arm
+  through a config key that names no symbol — so a symbol-keyed selector reads clean while the
+  behavior is covered. Claims measured at fixture scope and stated at whole-suite strength are
+  the defect this rule exists to stop (card#5551); the rule is mechanical on purpose, because
+  awareness of it was measured to be insufficient.
+- **A BATCH mutation measures ATTRIBUTABLY, not exclusively — say which you ran.** Mutating many
+  arms in one suite run is the affordable form (one run instead of N), each to its own
+  severity-preserving sentinel so exit codes cannot move and mask a result. Attribute each arm's
+  red set by the failing test's EXPECTED STRING, never by grepping the sentinel — that token both
+  over-counts (a token inside a dumped-output diff is not an assertion) and under-counts
+  (truncated diffs). What a batch run cannot distinguish is a test observing TWO mutated arms: it
+  reds once and is attributed to one of them. So "nothing else observes this arm" out of a batch
+  run means *no other test asserts that arm's message* — confirm no cross-arm message overlap in
+  the same pass, or re-run the arm alone before stating it any more strongly.
+- **`docs/check-golden-coverage.md` enumerates `handle()`'s predicates and nothing else.** A
+  migrated check's predicates are not in it and cannot become so, so a comment claiming
+  membership in its disclosed-gap list is false by construction rather than merely stale — state
+  the fixture-scope fact instead. Absence from that file was never protection either way.
+  **CI enforces this** (`bin/check-doc-refs.php`, third rule): under `app/Bridge/Check/`,
+  `tests/Unit/Bridge/Check/`, `tests/Support/CheckGolden/` and `tests/Feature/Console/Check/`, a
+  comment block naming that file — or the bare phrase "disclosed gap" — must also say what naming
+  it does not buy. Satisfy it by stating the bound in the SAME SENTENCE as the mention (that the
+  file is generated from `CheckCommand::handle()`), or by drawing the consequence anywhere in the
+  block: that absence from it is not protection, that it does not speak in either direction, or
+  that the leg was never a disclosed gap. The rule is a whitelist on purpose — an unrecognised
+  wrong sentence would pass silently, where an unrecognised right one merely fails loudly. It
+  gates the copy-a-neighbour path that minted fifteen of these at once, **not** the truth of any
+  individual claim: a false claim carrying a sanctioned sentence still passes.
 
 ## Anti-patterns to avoid
 

@@ -3,45 +3,16 @@
 namespace Tests\Unit\Support;
 
 use App\Bridge\Support\ChannelSnapshotProbe;
+use App\Bridge\Support\Finding;
+use App\Bridge\Support\Severity;
 use Illuminate\Filesystem\Filesystem;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Tests\Support\SkipsAsRoot;
 
 class ChannelSnapshotProbeTest extends TestCase
 {
-    /**
-     * The SHARED FILE-SET vector (DL-230), and the reason it is spelled as a tree
-     * rather than described in prose: the reference enumeration must deliver exactly
-     * what `_deploy_snapshot`'s
-     * `shutil.copytree(..., ignore=shutil.ignore_patterns("node_modules"))` delivers —
-     * RECURSIVE, dotfiles INCLUDED, `node_modules` excluded at ANY depth. The SAME
-     * tree and the SAME expected set are run through the python authority in
-     * `bin/test_provision_board_tools.py` (class `SnapshotFileSetLockstep`). Change
-     * one side without the other and `bridge:check` starts calling a faithful copy
-     * incomplete, or calls an incomplete one whole.
-     *
-     * @var list<string>
-     */
-    private const LOCKSTEP_TREE = [
-        'package.json',
-        'agent-webhook-bridge-channel.mjs',
-        '.gitignore',
-        'lib/helper.mjs',
-        'lib/.hidden',
-        'tests/a.test.mjs',
-        'node_modules/pkg/index.js',
-        'lib/node_modules/nested.js',
-    ];
-
-    /** @var list<string> */
-    private const LOCKSTEP_EXPECTED = [
-        '.gitignore',
-        'agent-webhook-bridge-channel.mjs',
-        'lib/.hidden',
-        'lib/helper.mjs',
-        'package.json',
-        'tests/a.test.mjs',
-    ];
+    use SkipsAsRoot;
 
     private string $tmp;
 
@@ -158,17 +129,35 @@ class ChannelSnapshotProbeTest extends TestCase
         $findings = ChannelSnapshotProbe::probe(null, $this->reference('1.2.3'));
 
         $this->assertCount(1, $findings);
-        $this->assertSame('unvalidated', $findings[0]['severity']);
-        $this->assertNotSame('ok', $findings[0]['severity']);
-        $this->assertStringContainsString('channel.server_path not declared', $findings[0]['message']);
-        $this->assertStringContainsString('snapshot not validated', $findings[0]['message']);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertNotSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString('channel.server_path not declared', $findings[0]->message);
+        $this->assertStringContainsString('snapshot not validated', $findings[0]->message);
+    }
+
+    /**
+     * The DEPLOYED manifest's twin of the leg below, and the one arm of the pair whose
+     * severity nothing pinned before DL-251 — `BridgeCommandsTest` asserts its sentence
+     * over an undecorated capture, where all four severities are the same bytes.
+     */
+    public function test_an_unreadable_deployed_manifest_is_unvalidated_not_a_warn(): void
+    {
+        $deployed = $this->deployment('1.2.3', omit: ['package.json']);
+
+        $findings = ChannelSnapshotProbe::probe($deployed, $this->reference('1.2.3'));
+
+        $finding = $this->findingWith($findings, 'cannot tell whether the deployed copy is stale');
+        $this->assertSame(Severity::Unvalidated, $finding->severity);
+        $this->assertStringContainsString('package.json is not present', $finding->message);
     }
 
     public function test_an_unreadable_bundled_manifest_names_its_own_remedy(): void
     {
-        // This warn and the unenumerable-reference warn are a MATCHED PAIR — both
-        // say "this checkout's X could not be read" — and the reference one spells
-        // its action while this one did not. A divergence inside a pair, not a
+        // This finding and the unenumerable-reference one were a MATCHED PAIR — both
+        // say "this checkout's X could not be read" — and the reference one spelled
+        // its action while this one did not. (Both were `warn` when that divergence was
+        // found; DL-251 moved this one to `unvalidated`, which changes nothing about
+        // the pairing argument: the version compare did not happen.) A divergence inside a pair, not a
         // message lacking polish: the operator reads the silent one as unactionable
         // when the fix is the same class of thing (restore/repair a tracked file).
         // The branch had no coverage at all before this, which is how it diverged.
@@ -180,119 +169,203 @@ class ChannelSnapshotProbeTest extends TestCase
         $findings = ChannelSnapshotProbe::probe($deployed, $reference);
 
         $warn = $this->findingWith($findings, 'cannot be version-compared');
-        $this->assertSame('warn', $warn['severity']);
-        $this->assertStringContainsString('is not present', $warn['message']);
-        $this->assertStringContainsString('restore or repair it', $warn['message']);
-        $this->assertStringContainsString('check that this process can read it', $warn['message']);
+        $this->assertSame(Severity::Unvalidated, $warn->severity);
+        $this->assertStringContainsString('is not present', $warn->message);
+        $this->assertStringContainsString('restore or repair it', $warn->message);
+        $this->assertStringContainsString('check that this process can read it', $warn->message);
     }
 
-    // ---- the VERSION-GATED completeness leg (DL-230) -------------------------
-    // The DL-229 shape passed GREEN on the incident that motivated the feature: an
-    // entry + package.json cherry-picked from the CURRENT reference carry the
-    // version stamp with them, so the version leg reads "current" and every other
-    // leg is satisfied while node dies on ERR_MODULE_NOT_FOUND.
+    // ---- the retired completeness leg + the UNIFORM launch disclosure (DL-237) --
+    // DL-230 answered "will this launch?" by enumerating files. A launch answers it
+    // directly, and is more precise in BOTH directions (measured: a pruned copy
+    // missing 6 of 10 reference files launches while completeness FAILs it; the
+    // DL-230 shape dies on ERR_MODULE_NOT_FOUND). The launch belongs to the SEAT,
+    // because the bridge's OS user is not the agent's — so what is left here is the
+    // DISCLOSURE that the question went unmeasured, emitted ONCE per AGENT whose probe
+    // reached the legs, on EVERY branch that did — not once per run: `ChannelSnapshotCheck`
+    // is a `PerAgentCheck`, so a two-agent install yields two.
 
-    public function test_reference_enumeration_matches_the_python_copytree_authority(): void
+    /**
+     * Every branch that reaches the legs, and the exactly-one-disclosure property
+     * asserted per branch rather than on a single representative — the first shape of
+     * this change put the disclosure on the version-EQUAL branch alone and left
+     * repo-direct (the topology the channel-server README recommends) fully green.
+     *
+     * @return array<string, array{string, string}> label => [deployed version, expected version-leg substring]
+     */
+    public static function reachesTheLegs(): array
     {
-        // LOCKSTEP with `bin/test_provision_board_tools.py` class
-        // `SnapshotFileSetLockstep`, which runs this same tree through the real
-        // `shutil.copytree(..., ignore=ignore_patterns("node_modules"))`.
-        $reference = $this->tree('reference', array_fill_keys(self::LOCKSTEP_TREE, "x\n"));
-
-        $this->assertSame(self::LOCKSTEP_EXPECTED, ChannelSnapshotProbe::referenceFileSet($reference));
+        return [
+            'version-equal' => ['1.2.3', 'is current (deployed 1.2.3'],
+            'stale' => ['1.0.0', 'is STALE (deployed 1.0.0'],
+            'newer' => ['2.0.0', 'is current (deployed 2.0.0'],
+        ];
     }
 
-    public function test_unreadable_reference_directory_does_not_enumerate_as_empty(): void
+    #[DataProvider('reachesTheLegs')]
+    public function test_every_branch_that_reaches_the_legs_discloses_the_unmeasured_launch(string $version, string $versionLegText): void
     {
-        // A set-derived verdict off a read that never happened. An unreadable
-        // reference scandirs to nothing, and "nothing is missing" would be a false
-        // GREEN — the exact defect class this leg closes.
+        $findings = ChannelSnapshotProbe::probe($this->deployment($version), $this->reference('1.2.3'));
+
+        // The version leg still answers the DRIFT question it owns, per branch…
+        $this->findingWith($findings, $versionLegText);
+        // …and the launch disclosure is there regardless of what it found.
+        $notMeasured = $this->findingWith($findings, 'was NOT launch-tested');
+        $this->assertSame(Severity::Unvalidated, $notMeasured->severity);
+        $this->assertNotSame(Severity::Ok, $notMeasured->severity);
+        // EXACTLY one, never per-leg: this is a statement about the run.
+        $this->assertSame(1, $this->countFindings($findings, 'was NOT launch-tested'));
+        // It names the check, where it is run, and AS WHOM — the last of those is the
+        // whole reason this is not a bridge:check leg.
+        $this->assertStringContainsString('bin/check-channel-snapshot.py', $notMeasured->message);
+        $this->assertStringContainsString('ON THAT SEAT', $notMeasured->message);
+        $this->assertStringContainsString('the OS user whose session launches the channel server', $notMeasured->message);
+        // And it must never flip the exit: the deployment may be perfect, and every
+        // co-located install now emits one (DL-236 (c)).
+        $this->assertSame([], $this->severities($findings, Severity::Fail));
+    }
+
+    public function test_the_repo_direct_branch_discloses_it_too(): void
+    {
+        // THE CASE THAT DECIDED THE PLACEMENT. Putting the disclosure on the
+        // version-EQUAL branch alone was a like-for-like replacement for the leg that
+        // used to live there — and it left the symlink topology the channel-server
+        // README RECOMMENDS with a fully green run and no disclosure at all: "green
+        // check, dark seat" reintroduced by the fix for it.
+        $reference = $this->reference('1.2.3');
+        mkdir($reference.'/node_modules');
+        $link = $this->tmp.'/link-to-checkout';
+        symlink($reference, $link);
+
+        $findings = ChannelSnapshotProbe::probe($link, $reference);
+
+        $this->assertSame(Severity::Ok, $this->findingWith($findings, 'no snapshot to drift')->severity);
+        $this->assertNoFinding($findings, 'is current (deployed');   // no version leg at all
+        $this->assertSame(Severity::Unvalidated, $this->findingWith($findings, 'was NOT launch-tested')->severity);
+        $this->assertSame(1, $this->countFindings($findings, 'was NOT launch-tested'));
+    }
+
+    public function test_a_presence_fail_still_carries_the_disclosure(): void
+    {
+        // UNCONDITIONAL of what the legs found, deliberately. Suppressing it beside a
+        // FAIL would make it depend on another leg's severity, so a later change there
+        // would silently change whether it appears — and the sentence stays true: the
+        // legs ran, the launch still did not.
+        $deployed = $this->deployment('1.2.3');
+        (new Filesystem)->deleteDirectory($deployed.'/node_modules');
+
+        $findings = ChannelSnapshotProbe::probe($deployed, $this->reference('1.2.3'));
+
+        $this->assertSame(Severity::Fail, $this->findingWith($findings, 'dependencies are not installed')->severity);
+        $this->assertSame(Severity::Unvalidated, $this->findingWith($findings, 'was NOT launch-tested')->severity);
+    }
+
+    /**
+     * The early returns — every path that ends BEFORE the legs run. A second
+     * not-measured line beside a finding that already says the legs did not run is
+     * the DL-229 (h) shape for real: two findings, one action.
+     *
+     * @return array<string, array{string}> label => [probe argument marker]
+     */
+    public static function returnsBeforeTheLegs(): array
+    {
+        return [
+            'undeclared' => ['undeclared'],
+            'dangling' => ['dangling'],
+            'names-a-file' => ['file'],
+        ];
+    }
+
+    #[DataProvider('returnsBeforeTheLegs')]
+    public function test_a_path_that_never_reached_the_legs_gets_no_second_not_measured_line(string $shape): void
+    {
+        $reference = $this->reference('1.2.3');
+        $path = match ($shape) {
+            'undeclared' => null,
+            'dangling' => $this->danglingLink(),
+            default => $this->tree('wrapper', ['launch.js' => "//\n"]).'/launch.js',
+        };
+
+        $findings = ChannelSnapshotProbe::probe($path, $reference);
+
+        $this->assertCount(1, $findings);
+        $this->assertNoFinding($findings, 'was NOT launch-tested');
+    }
+
+    public function test_an_invisible_deployment_gets_no_second_not_measured_line(): void
+    {
+        // The fourth early return, and the one that most looks like it wants a launch
+        // note: we could not even see the directory. The visibility WARN already says
+        // the snapshot could NOT be validated and already names its one action (grant
+        // traversal / re-run as the agent's user); a launch line beside it would be a
+        // second finding for that same single action.
         $this->skipAsRoot();
-        $reference = $this->tree('reference', ['package.json' => '{"version":"1.0.0"}']);
-        chmod($reference, 0300);   // +x (stat works, so the version leg still reads) but not +r
+        $deployed = $this->deployment('1.2.3');
+        chmod($deployed, 0000);
 
         try {
-            $this->assertNull(ChannelSnapshotProbe::referenceFileSet($reference));
+            $findings = ChannelSnapshotProbe::probe($deployed, $this->reference('1.2.3'));
         } finally {
-            chmod($reference, 0755);
+            chmod($deployed, 0755);
+        }
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]->severity);
+        $this->assertStringContainsString('is not visible to this user', $findings[0]->message);
+        $this->assertNoFinding($findings, 'was NOT launch-tested');
+    }
+
+    public function test_no_branch_says_anything_about_a_leg_that_no_longer_exists(): void
+    {
+        // DL-230 (b) gave the NEWER branch its own `ok` line whose ENTIRE content was
+        // "completeness against X SKIPPED". With no completeness leg that sentence
+        // describes machinery that is gone — a stale claim in operator-facing output,
+        // which is worse than no line at all.
+        $reference = $this->reference('1.2.3');
+        foreach (['1.0.0', '1.2.3', '2.0.0'] as $version) {
+            $deployed = $this->deployment($version, name: 'deployed-'.$version);
+            $findings = ChannelSnapshotProbe::probe($deployed, $reference);
+
+            // POSITIVE CONTROL FIRST. Three absence assertions over a fixture that
+            // could early-return are vacuous — they would pass just as well on a probe
+            // that produced nothing at all. Pin that this branch really did run before
+            // concluding anything from what it did not say.
+            $this->assertSame(Severity::Ok, $this->findingWith($findings, 'has its entry file and node_modules')->severity);
+            $this->assertSame(Severity::Unvalidated, $this->findingWith($findings, 'was NOT launch-tested')->severity);
+
+            $this->assertNoFinding($findings, 'completeness');
+            $this->assertNoFinding($findings, 'SKIPPED');
+            $this->assertNoFinding($findings, 'is MISSING');
         }
     }
 
-    public function test_version_equal_snapshot_missing_a_reference_file_fails(): void
+    public function test_the_probe_never_enumerates_the_reference_directory(): void
     {
-        // THE MOTIVATING INCIDENT, exactly: entry + package.json copied from the
-        // current reference, node_modules present from a prior install, the sibling
-        // module NOT copied.
-        $reference = $this->reference('1.2.3');
-        $deployed = $this->deployment('1.2.3', omit: ['channel-lib.mjs']);
-
-        $findings = ChannelSnapshotProbe::probe($deployed, $reference);
-
-        $completeness = $this->findingWith($findings, 'is MISSING');
-        $this->assertSame('fail', $completeness['severity']);
-        $this->assertStringContainsString('claims version 1.2.3', $completeness['message']);
-        $this->assertStringContainsString('is MISSING 1 of the 5 files a whole-directory copy of', $completeness['message']);
-        $this->assertStringContainsString('delivers: channel-lib.mjs.', $completeness['message']);
-        $this->assertStringContainsString('ERR_MODULE_NOT_FOUND', $completeness['message']);
-        $this->assertStringContainsString('re-copy the WHOLE directory', $completeness['message']);
-        // The legs that certified this deployment GREEN before DL-230 still do — the
-        // incident was that they were the ONLY ones asked.
-        $this->assertSame('ok', $this->findingWith($findings, 'is current (deployed 1.2.3')['severity']);
-        $this->assertSame('ok', $this->findingWith($findings, 'has its entry file and node_modules')['severity']);
-    }
-
-    public function test_version_stale_snapshot_missing_files_does_not_reach_the_completeness_leg(): void
-    {
-        // The population that got the ungated leg CUT (DL-229 (f)): a whole-directory
-        // copy taken at an older tag is legitimately missing everything the checkout
-        // has added since. It must stay a STALE warn and nothing else — the warn
-        // already carries the identical remediation.
-        $reference = $this->reference('1.2.3');
-        $deployed = $this->deployment('1.0.0', omit: ['channel-lib.mjs', 'tests/a.test.mjs']);
-
-        $findings = ChannelSnapshotProbe::probe($deployed, $reference);
-
-        $this->assertSame('warn', $this->findingWith($findings, 'is STALE (deployed 1.0.0')['severity']);
-        $this->assertNoFinding($findings, 'is MISSING');
-        $this->assertNoFinding($findings, 'SKIPPED');   // no second line beside the STALE warn
-        $this->assertSame([], $this->severities($findings, 'fail'));
-    }
-
-    public function test_version_newer_snapshot_skips_completeness_and_says_so(): void
-    {
-        // This checkout is not authoritative for a deployment newer than itself: a
-        // file it does not ship may simply not exist here yet, so "missing" would be
-        // a claim about the checkout. Stated, not left to fall out of the `>=`.
-        $reference = $this->reference('1.2.3');
-        $deployed = $this->deployment('2.0.0', omit: ['channel-lib.mjs']);
-
-        $findings = ChannelSnapshotProbe::probe($deployed, $reference);
-
-        $skip = $this->findingWith($findings, 'completeness against');
-        $this->assertSame('ok', $skip['severity']);
-        $this->assertStringContainsString('is NEWER than this checkout (deployed 2.0.0 > bundled 1.2.3)', $skip['message']);
-        $this->assertNoFinding($findings, 'is MISSING');
-    }
-
-    public function test_a_complete_version_equal_snapshot_is_ok(): void
-    {
-        // The positive control: the FAIL above is caused by the omission, not by the
-        // fixture being generally unlike the reference.
+        // The retirement, asserted structurally rather than by absence of a message:
+        // an UNREADABLE reference directory used to produce a "could not be
+        // enumerated" WARN, because the leg walked it. Nothing walks it now, so the
+        // version leg reads its package.json and the run is otherwise untouched.
+        $this->skipAsRoot();
         $reference = $this->reference('1.2.3');
         $deployed = $this->deployment('1.2.3');
+        chmod($reference, 0300);   // +x so package.json still stats, but not +r
 
-        $findings = ChannelSnapshotProbe::probe($deployed, $reference);
+        try {
+            $findings = ChannelSnapshotProbe::probe($deployed, $reference);
+        } finally {
+            chmod($reference, 0755);
+        }
 
-        $this->assertSame('ok', $this->findingWith($findings, 'holds every file')['severity']);
-        $this->assertNoFinding($findings, 'is MISSING');
-        $this->assertSame([], $this->severities($findings, 'fail'));
+        $this->assertNoFinding($findings, 'could not be enumerated');
+        $this->assertNoFinding($findings, 'reference set');
+        $this->assertSame(Severity::Ok, $this->findingWith($findings, 'is current (deployed 1.2.3')->severity);
     }
 
     public function test_extra_files_in_the_deployment_are_not_a_finding(): void
     {
-        // Only the reference direction is checked. An operator's own modules,
-        // scratch files and edits are their business — the DL-229 (f) surface that
-        // turned a customized deployment into a FAIL with destructive advice.
+        // Unchanged in substance from DL-230, and kept because it is now a property
+        // of the WHOLE probe rather than of one leg: an operator's own modules,
+        // scratch files and edits are their business, and nothing here looks at them.
         $reference = $this->reference('1.2.3');
         $deployed = $this->deployment('1.2.3');
         file_put_contents($deployed.'/my-local-module.mjs', "export const x = 1;\n");
@@ -301,127 +374,8 @@ class ChannelSnapshotProbeTest extends TestCase
 
         $findings = ChannelSnapshotProbe::probe($deployed, $reference);
 
-        $this->assertSame('ok', $this->findingWith($findings, 'holds every file')['severity']);
-        $this->assertSame([], $this->severities($findings, 'fail'));
-    }
-
-    public function test_repo_direct_self_compare_runs_no_completeness_leg(): void
-    {
-        // The symlinked topology the README recommends: the "snapshot" IS the
-        // reference, so the compare is a self-compare — a no-op, not an ok verdict
-        // about a deployment that does not exist.
-        $reference = $this->reference('1.2.3');
-        mkdir($reference.'/node_modules');
-        $link = $this->tmp.'/link-to-checkout';
-        symlink($reference, $link);
-
-        $findings = ChannelSnapshotProbe::probe($link, $reference);
-
-        $this->assertSame('ok', $this->findingWith($findings, 'no snapshot to drift')['severity']);
-        $this->assertNoFinding($findings, 'holds every file');
-        $this->assertNoFinding($findings, 'is MISSING');
-    }
-
-    public function test_an_untraversable_deployed_subdirectory_warns_rather_than_reporting_its_files_missing(): void
-    {
-        // The DL-229 round-1 blocker, one level down: the hoisted visibility gate
-        // proves `+x` for DIRECT CHILDREN of the deployed directory only. A `0700`
-        // `tests/` makes every reference file under it stat as absent, and this leg's
-        // remediation (`cp -R` over the deployment) is destructive — so absence is
-        // not a conclusion we are entitled to draw there either.
-        $this->skipAsRoot();
-        $reference = $this->reference('1.2.3');
-        $deployed = $this->deployment('1.2.3', omit: ['tests/a.test.mjs']);
-        chmod($deployed.'/tests', 0000);
-
-        try {
-            $findings = ChannelSnapshotProbe::probe($deployed, $reference);
-        } finally {
-            chmod($deployed.'/tests', 0755);
-        }
-
-        $unverified = $this->findingWith($findings, 'is not visible to this user');
-        $this->assertSame('warn', $unverified['severity']);
-        // Names the SUBDIRECTORY that needs +x, not the deployment root and not a file.
-        $this->assertStringContainsString("channel server path {$deployed}/tests is not visible", $unverified['message']);
-        $this->assertNoFinding($findings, 'is MISSING');
-        $this->assertSame([], $this->severities($findings, 'fail'));
-    }
-
-    public function test_a_blocked_subdirectory_does_not_discard_a_conclusively_missing_file(): void
-    {
-        // DL-230 (e)'s rule is "absence is not conclusive where we could not see" —
-        // NOT "one unseeable path voids every seen one". Returning on the first block
-        // threw away a module proven absent through a traversable parent, so a
-        // version-matched deployment genuinely missing it exited 0 behind the
-        // visibility WARN: this card's own defect class, one sub-population down.
-        $this->skipAsRoot();
-        $reference = $this->reference('1.2.3');
-        $deployed = $this->deployment('1.2.3', omit: ['channel-lib.mjs', 'tests/a.test.mjs']);
-        chmod($deployed.'/tests', 0000);
-
-        try {
-            $findings = ChannelSnapshotProbe::probe($deployed, $reference);
-        } finally {
-            chmod($deployed.'/tests', 0755);
-        }
-
-        $fail = $this->findingWith($findings, 'is MISSING');
-        $this->assertSame('fail', $fail['severity']);
-        $this->assertStringContainsString('delivers: channel-lib.mjs.', $fail['message']);
-        // The blocked path leaves the ACCOUNTING, not the verdict — and the FAIL
-        // says so, so its list is never read as a complete one.
-        $this->assertStringContainsString('A further 1 reference path(s) could not be checked', $fail['message']);
-        // …and the visibility WARN still names the directory to chmod, alongside.
-        $unverified = $this->findingWith($findings, 'is not visible to this user');
-        $this->assertSame('warn', $unverified['severity']);
-        $this->assertStringContainsString("channel server path {$deployed}/tests is not visible", $unverified['message']);
-    }
-
-    public function test_the_fail_states_what_was_measured_not_how_the_deployment_was_assembled(): void
-    {
-        // A FAITHFUL whole-directory copy, plus an UNTRACKED stray that landed in the
-        // checkout afterwards — `git apply --3way` mints `.orig`/`.rej` and nothing
-        // gitignores them here, while the reference set is the WORKING TREE, so the
-        // DL-038 bump guard (which governs the TRACKED set) says nothing about it.
-        // The FAIL itself is correct and stays; "assembled file-by-file rather than
-        // copied whole" would be FALSE about this operator, which is exactly the
-        // DL-229 (f) shape this leg's gate exists to avoid.
-        $reference = $this->reference('1.2.3');
-        $deployed = $this->deployment('1.2.3');
-        file_put_contents($reference.'/README.md.orig', "<<<<<<< ours\n");
-
-        $message = $this->findingWith(ChannelSnapshotProbe::probe($deployed, $reference), 'is MISSING')['message'];
-
-        $this->assertStringContainsString('is MISSING 1 of the 6 files a whole-directory copy of', $message);
-        $this->assertStringContainsString('delivers: README.md.orig.', $message);
-        $this->assertStringNotContainsString('assembled file-by-file', $message);
-        $this->assertStringNotContainsString('copied whole', $message);
-        $this->assertStringNotContainsString('cannot legitimately', $message);
-    }
-
-    public function test_the_missing_list_is_capped(): void
-    {
-        // One console line. The reference set grows with every channel-server test
-        // file, and a deployment assembled from two files would otherwise print the
-        // whole reference back at the operator.
-        $files = ['package.json' => '{"version":"1.2.3"}'];
-        for ($i = 0; $i < 12; $i++) {
-            $files["mod-{$i}.mjs"] = "export const m = {$i};\n";
-        }
-        $reference = $this->tree('reference', $files);
-        $deployed = $this->tree('deployed', [
-            'package.json' => '{"version":"1.2.3"}',
-            ChannelSnapshotProbe::ENTRY_FILE => "import 'node:http';\n",
-        ]);
-        mkdir($deployed.'/node_modules');
-
-        $message = $this->findingWith(ChannelSnapshotProbe::probe($deployed, $reference), 'is MISSING')['message'];
-
-        $this->assertStringContainsString('is MISSING 12 of the 13 files a whole-directory copy of', $message);
-        $this->assertStringContainsString('(+4 more)', $message);
-        $this->assertStringContainsString('mod-0.mjs, mod-1.mjs', $message);
-        $this->assertStringNotContainsString('mod-9.mjs', $message);
+        $this->assertSame([], $this->severities($findings, Severity::Fail));
+        $this->assertSame(Severity::Ok, $this->findingWith($findings, 'has its entry file and node_modules')->severity);
     }
 
     /**
@@ -446,7 +400,7 @@ class ChannelSnapshotProbeTest extends TestCase
      *
      * @param  list<string>  $omit
      */
-    private function deployment(string $version, array $omit = []): string
+    private function deployment(string $version, array $omit = [], string $name = 'deployed'): string
     {
         $files = [
             'package.json' => (string) json_encode(['name' => 'ref', 'version' => $version]),
@@ -458,7 +412,7 @@ class ChannelSnapshotProbeTest extends TestCase
         foreach ($omit as $relative) {
             unset($files[$relative]);
         }
-        $dir = $this->tree('deployed', $files);
+        $dir = $this->tree($name, $files);
         mkdir($dir.'/node_modules');
         mkdir($dir.'/node_modules/@modelcontextprotocol', 0755, true);
         if (in_array('tests/a.test.mjs', $omit, true)) {
@@ -487,13 +441,12 @@ class ChannelSnapshotProbeTest extends TestCase
     }
 
     /**
-     * @param  list<array{severity: string, message: string}>  $findings
-     * @return array{severity: string, message: string}
+     * @param  list<Finding>  $findings
      */
-    private function findingWith(array $findings, string $needle): array
+    private function findingWith(array $findings, string $needle): Finding
     {
         foreach ($findings as $finding) {
-            if (str_contains($finding['message'], $needle)) {
+            if (str_contains($finding->message, $needle)) {
                 return $finding;
             }
         }
@@ -502,32 +455,50 @@ class ChannelSnapshotProbeTest extends TestCase
     }
 
     /**
-     * @param  list<array{severity: string, message: string}>  $findings
+     * @param  list<Finding>  $findings
+     */
+    private function countFindings(array $findings, string $needle): int
+    {
+        return count(array_filter(
+            array_column($findings, 'message'),
+            static fn (string $message): bool => str_contains($message, $needle),
+        ));
+    }
+
+    /**
+     * A symlink whose target existed and then did not — the branch-1 fatal.
+     */
+    private function danglingLink(): string
+    {
+        $target = $this->tmp.'/removed-deployment';
+        $link = $this->tmp.'/dangling';
+        mkdir($target);
+        symlink($target, $link);
+        rmdir($target);
+
+        return $link;
+    }
+
+    /**
+     * @param  list<Finding>  $findings
      */
     private function assertNoFinding(array $findings, string $needle): void
     {
         foreach ($findings as $finding) {
-            $this->assertStringNotContainsString($needle, $finding['message']);
+            $this->assertStringNotContainsString($needle, $finding->message);
         }
     }
 
     /**
-     * @param  list<array{severity: string, message: string}>  $findings
+     * @param  list<Finding>  $findings
      * @return list<string>
      */
-    private function severities(array $findings, string $severity): array
+    private function severities(array $findings, Severity $severity): array
     {
         return array_values(array_filter(
             array_column($findings, 'message'),
-            fn (string $message, int $i): bool => $findings[$i]['severity'] === $severity,
+            fn (string $message, int $i): bool => $findings[$i]->severity === $severity,
             ARRAY_FILTER_USE_BOTH,
         ));
-    }
-
-    private function skipAsRoot(): void
-    {
-        if (function_exists('posix_getuid') && posix_getuid() === 0) {
-            $this->markTestSkipped('root bypasses directory permission checks');
-        }
     }
 }

@@ -8,7 +8,9 @@ use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClassifierConfig;
+use App\Bridge\Support\DlTokenGrammar;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -621,6 +623,163 @@ class GitHubPrCardMoveClassifierTest extends TestCase
             && str_contains((string) $msg, 'card#4811'))->once();
     }
 
+    // --- card#5287 / DL-270: the title-vs-branch card-token conflict + the
+    //     uncorroborated title-only residual ---
+
+    public function test_a_foreign_title_card_token_loses_to_the_head_branchs_own_token(): void
+    {
+        // THE card#5287 defect. `titleAndHead()` concatenates title-then-head and
+        // CardTokenGrammar::parse is a single non-global preg_match, so the LEFTMOST
+        // match won — a descriptively-cited foreign card# in the title silently
+        // outranked the branch ref this install's own tooling minted. The branch is
+        // authoritative; the title token is refused and warned.
+        // (Revert the fix ⇒ card 5139 is targeted ⇒ RED.)
+        Http::fake();
+        Log::spy();
+
+        $result = $this->classify('pull_request.closed', [
+            'number' => 130, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'Rework the widget (card#5139) — coord #369',
+            'head' => ['ref' => 'fix/card-5287-title-hijack'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertCount(1, $move);
+        $this->assertSame(5287, $move[0]->payload['card_id']);   // the BRANCH's card, not the title's 5139
+        // Corroborated by the branch ⇒ no handler-side gate needed.
+        $this->assertArrayNotHasKey('card_token_uncorroborated', $move[0]->payload);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'card#5139')
+            && str_contains((string) $msg, 'card#5287')
+            && str_contains((string) $msg, 'AUTHORITATIVE'))->once();
+    }
+
+    public function test_a_conflicting_titles_sole_dl_is_not_stamped_onto_the_branchs_card(): void
+    {
+        // Once the title is established FOREIGN, a DL sitting in it is foreign to the
+        // branch's card too — stamping it would re-mint the DL-218 correlation poison
+        // one surface over. The sole-DL stamp therefore derives from the head ref
+        // alone on a conflict. DL-77 resolves to nothing (the board has only DL-9), so
+        // without the narrowing it WOULD be stamped.
+        // (Revert to titleAndHead ⇒ stamp_dl present ⇒ RED.)
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9']]]])]);
+        Log::spy();
+
+        $result = $this->classify('pull_request.opened', [
+            'number' => 131,
+            'title' => 'DL-77 rework — supersedes card#5139',
+            'head' => ['ref' => 'fix/card-5287-slug'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertCount(1, $move);
+        $this->assertSame(5287, $move[0]->payload['card_id']);
+        $this->assertArrayNotHasKey('stamp_dl', $move[0]->payload);
+        $this->assertSame(131, $move[0]->payload['stamp_pr']);   // PR provenance still stamped
+    }
+
+    public function test_an_agreeing_title_and_branch_token_is_corroborated_and_silent(): void
+    {
+        // The ordinary shape: the PR title cites the same card the branch names. Not a
+        // conflict, so no warning — and corroborated, so no handler-side gate.
+        Http::fake();
+        Log::spy();
+
+        $result = $this->classify('pull_request.opened', [
+            'number' => 132, 'title' => 'Fix the widget card#5287', 'head' => ['ref' => 'fix/card-5287-slug'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertSame(5287, $move[0]->payload['card_id']);
+        $this->assertArrayNotHasKey('card_token_uncorroborated', $move[0]->payload);
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    public function test_a_branch_only_card_token_is_corroborated(): void
+    {
+        // No token in the title at all — the branch alone names the card. This install
+        // minted that ref, so it needs no corroboration.
+        Http::fake();
+
+        $result = $this->classify('pull_request.opened', [
+            'number' => 133, 'title' => 'Fix the widget', 'head' => ['ref' => 'fix/card-5287-slug'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertSame(5287, $move[0]->payload['card_id']);
+        $this->assertArrayNotHasKey('card_token_uncorroborated', $move[0]->payload);
+    }
+
+    public function test_a_bare_card_id_in_the_head_ref_corroborates_the_titles_token(): void
+    {
+        // The DOMINANT branch convention here is `<type>/<id>-slug`, which carries no
+        // card TOKEN — measured across merged PRs (fix/5915-…, test/5233-…). The ref
+        // still names the card, so it corroborates, and the handler gate stays off.
+        // Without this, almost every real PR would be uncorroborated and any SECOND PR
+        // against a card that already tracks a first would be refused.
+        // (Require a full token in the ref ⇒ flag present ⇒ RED.)
+        Http::fake();
+
+        $result = $this->classify('pull_request.opened', [
+            'number' => 136, 'title' => 'Fix the widget (card#5287)', 'head' => ['ref' => 'fix/5287-widget'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertSame(5287, $move[0]->payload['card_id']);
+        $this->assertArrayNotHasKey('card_token_uncorroborated', $move[0]->payload);
+    }
+
+    public function test_a_bare_id_in_the_head_ref_never_selects_a_card_on_its_own(): void
+    {
+        // Corroboration is strictly WIDER than selection. A ref naming a DIFFERENT bare
+        // id does not make that id the target (it is not a token — CardTokenGrammar
+        // requires the `card` prefix so `chore/2026-cleanup` cannot correlate); it
+        // simply fails to corroborate, and the title's token goes to the handler gate.
+        Http::fake();
+
+        $result = $this->classify('pull_request.opened', [
+            'number' => 137, 'title' => 'Rework (card#5139)', 'head' => ['ref' => 'fix/5287-widget'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertSame(5139, $move[0]->payload['card_id']);   // NOT 5287 — a bare id selects nothing
+        $this->assertTrue($move[0]->payload['card_token_uncorroborated']);
+    }
+
+    public function test_a_title_only_card_token_is_flagged_uncorroborated_for_the_handler(): void
+    {
+        // The residual the branch cannot vouch for: the token is prose-only. The
+        // classifier does not refuse it (that would break every legitimate title-only
+        // PR) — it flags it, and the handler corroborates against the card's own
+        // pr_number using the read it already makes.
+        // (Revert the fix ⇒ flag absent ⇒ RED.)
+        Http::fake();
+
+        $result = $this->classify('pull_request.opened', [
+            'number' => 134, 'title' => 'Fix a thing card#3410', 'head' => ['ref' => 'f'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertSame(3410, $move[0]->payload['card_id']);
+        $this->assertTrue($move[0]->payload['card_token_uncorroborated']);
+    }
+
+    public function test_the_draft_overlay_also_prefers_the_branchs_token_over_a_foreign_title_token(): void
+    {
+        // canon #5: the overlay shares cardTokenResolution, so the title-vs-branch rule
+        // reaches it with no second copy of the predicate. Silent by design (DL-218's
+        // ruling: the move path logs the same tokens on an opened-as-draft PR).
+        $this->writeMapping(['draft_overlay' => true]);
+        Http::fake();
+
+        $result = $this->classify('pull_request.converted_to_draft', [
+            'number' => 135, 'title' => 'Rework (card#5139)', 'head' => ['ref' => 'fix/card-5287-slug'],
+        ]);
+
+        $overlay = $this->targetsNamed($result, 'kanban_block_reason');
+        $this->assertCount(1, $overlay);
+        $this->assertSame('5287', $overlay[0]->targetId);   // the branch's card, not the title's
+    }
+
     public function test_card_token_on_a_branch_create_push_emits_started(): void
     {
         Http::fake();
@@ -762,23 +921,169 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         }
     }
 
-    public function test_near_miss_card_token_in_branch_warns_and_noops(): void
+    /**
+     * A text that NAMES a card in a shape the token doesn't accept must fail LOUD,
+     * not silent — the branch publishes, the card never moves, nobody is told.
+     *
+     * DRIVEN OFF THE GRAMMAR, not off a list written here (DL-250). The list this
+     * replaces held three shapes and reacted to nothing: adding a spelling to the
+     * corpus reddened three ties in `PrTitleLintTest` and left this leg — the only
+     * one that exercises the runtime surface the whole thing is about — green.
+     * The corpus is the SENTENCE rows union the probe's derived separator
+     * cross-product, so an edit to either artifact reds here too.
+     */
+    public function test_the_near_miss_warn_is_driven_by_the_grammar_not_a_hand_written_list(): void
     {
-        // A branch that NAMES a card in a shape the token doesn't accept must fail
-        // LOUD, not silent — the exact defect class (b) closes: the branch publishes,
-        // the card never moves, nobody is told.
         Http::fake();
         Log::spy();   // Facade::spy() no-ops when already mocked — one spy, count totals
-        // `card3054` (glued) LEFT this list in DL-233 — it now correlates, and is
-        // asserted as such in test_glued_card_token_correlates. The residual
-        // near-miss shapes are the separators the grammar still does not accept.
-        $refs = ['refs/heads/feat/card_3054-fix', 'refs/heads/feat/card.3054', 'refs/heads/feat/card:3054'];
-        foreach ($refs as $ref) {
-            $r = $this->classifyPush(['created' => true, 'ref' => $ref]);
-            $this->assertSame([], $r->targets, $ref);
+
+        $corpus = array_values(array_unique(array_merge(
+            CardTokenGrammar::VECTORS,
+            CardTokenGrammar::probeVectors(),
+        )));
+        $expectedWarns = $viaBranch = $viaTitle = 0;
+
+        foreach ($corpus as $vector) {
+            // Each shape goes to the surface it can actually OCCUR on (DL-250):
+            // across printable ASCII `git check-ref-format` rejects exactly space,
+            // `*`, `:`, `?`, `[`, `\`, `^`, `~` (measured), so those spellings reach
+            // the probe only through a PR title. ALL of them, not just the two
+            // today's separators use — narrower, a separator added later routes
+            // `card^123` to classifyPush() as a ref git can never produce, and this
+            // leg keeps passing while asserting on an impossible input.
+            if (preg_match('/[\s:~^?*\[\\\\]/', $vector) === 1) {
+                $viaTitle++;
+                $r = $this->classify('pull_request.opened', ['title' => "Fix a thing {$vector}", 'head' => ['ref' => 'f']]);
+            } else {
+                $viaBranch++;
+                $r = $this->classifyPush(['created' => true, 'ref' => "refs/heads/feat/{$vector}"]);
+            }
+
+            if (CardTokenGrammar::parse($vector) !== null) {
+                $this->assertCount(1, $r->targets, "'{$vector}' parses — it must move a card, not warn");
+
+                continue;
+            }
+            $this->assertSame([], $r->targets, "'{$vector}' must not correlate");
+            // The probe's digit class is ASCII (DL-231), so a Unicode-digit token is
+            // a KNOWN silent shape. Counted OUT rather than skipped, so every corpus
+            // row is accounted for and the total below stays exact.
+            $expectedWarns += preg_match('/^[\x20-\x7e]+$/', $vector) === 1 ? 1 : 0;
         }
-        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'near-miss'))->times(count($refs));
+
+        $this->assertGreaterThan(0, $viaBranch, 'the branch-ref call site must be exercised');
+        $this->assertGreaterThan(0, $viaTitle, 'the PR-title call site must be exercised');
+        $this->assertGreaterThan(0, $expectedWarns, 'a corpus expecting no warning at all would assert nothing');
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'near-miss'))->times($expectedWarns);
+        Log::shouldHaveReceived('warning')->times($expectedWarns);   // and nothing ELSE warned
         Http::assertNothingSent();
+    }
+
+    /**
+     * The DL half of the same mechanism (card#5310). Until this existed a
+     * DL-shaped branch or title that did not parse reached the probe and warned
+     * NOTHING — the branch publishes, the card never moves, nobody is told,
+     * which is the exact silence DL-234 argued was "as high-value a miss as an
+     * unresolvable DL" about the DL token BY NAME.
+     *
+     * DRIVEN OFF THE GRAMMAR, and it accounts for EVERY row rather than
+     * counting only the ones it expects: a row either correlates (and takes the
+     * FR-7 high-value-miss path, which warns for a different reason) or it is a
+     * near-miss. The totals are asserted separately and then against the whole,
+     * so a warning that moved from one class to the other cannot net out.
+     */
+    public function test_the_dl_near_miss_warn_is_driven_by_the_grammar_not_a_hand_written_list(): void
+    {
+        Http::fake();
+        Log::spy();   // Facade::spy() no-ops when already mocked — one spy, count totals
+
+        $corpus = array_values(array_unique(array_merge(
+            DlTokenGrammar::VECTORS,
+            DlTokenGrammar::probeVectors(),
+        )));
+        $expectedNearMiss = $expectedHighValueMiss = $expectedEmptyBoard = $viaBranch = $viaTitle = 0;
+
+        foreach ($corpus as $vector) {
+            // Same routing rule as the card leg: across printable ASCII `git
+            // check-ref-format` rejects exactly space, `*`, `:`, `?`, `[`, `\`,
+            // `^`, `~`, so those spellings reach the probe only through a title.
+            if (preg_match('/[\s:~^?*\[\\\\]/', $vector) === 1) {
+                $viaTitle++;
+                $r = $this->classify('pull_request.opened', ['title' => "Fix a thing {$vector}", 'head' => ['ref' => 'f']]);
+            } else {
+                $viaBranch++;
+                $r = $this->classifyPush(['created' => true, 'ref' => "refs/heads/feat/{$vector}"]);
+            }
+
+            $this->assertSame([], $r->targets, "'{$vector}' must not correlate — no board card carries it");
+
+            if (DlTokenGrammar::parse($vector) !== null) {
+                // It PARSED: the correlation path ran and resolved nothing, so
+                // this row is the FR-7 high-value miss, not a near-miss — and
+                // the board read it made warns once on its own account (the
+                // empty-board diagnostic, which predates this leg). Counted, not
+                // filtered out: an unaccounted-for warning is how a near-miss
+                // that moved class would net out against one that vanished.
+                $expectedHighValueMiss++;
+                $expectedEmptyBoard++;
+
+                continue;
+            }
+            // Which non-parsing rows the probe can SEE is `DlTokenGrammarTest`'s
+            // to pin (the three ratified bounds it cannot); this leg's job is
+            // that the runtime surface asks it, on both call sites, and says so.
+            $expectedNearMiss += DlTokenGrammar::looksLikeDlToken($vector) ? 1 : 0;
+        }
+
+        $this->assertGreaterThan(0, $viaBranch, 'the branch-ref call site must be exercised');
+        $this->assertGreaterThan(0, $viaTitle, 'the PR-title call site must be exercised');
+        $this->assertGreaterThan(0, $expectedNearMiss, 'a corpus expecting no warning at all would assert nothing');
+        $this->assertGreaterThan(0, $expectedHighValueMiss, 'the parsing half must be exercised too');
+
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'name a DL') && str_contains((string) $msg, 'near-miss'))->times($expectedNearMiss);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'high-value miss'))->times($expectedHighValueMiss);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'board read returned 0 cards'))->times($expectedEmptyBoard);
+        Log::shouldHaveReceived('warning')->times($expectedNearMiss + $expectedHighValueMiss + $expectedEmptyBoard);   // and nothing ELSE warned
+    }
+
+    /**
+     * A subject that is a near-miss on BOTH stems warns once per grammar, each
+     * line naming its own accept-set. Pinned because the alternative — one
+     * merged line — would have to pick one grammar's sentence or restate both,
+     * and it is the shape a later "de-duplicate the warnings" edit would produce.
+     */
+    public function test_a_subject_that_misses_both_tokens_warns_once_per_grammar(): void
+    {
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/card_123-DL_239']);
+
+        $this->assertSame([], $r->targets);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'name a card'))->once();
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'name a DL'))->once();
+        Log::shouldHaveReceived('warning')->times(2);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * DL-234(e)'s whole-subject limit, applied to the new stem: a subject whose
+     * CARD token parses moves its card, so it is not in the silent-failure class
+     * this probe exists to catch and must stay silent even beside a malformed
+     * DL. The bounded cost — that card loses its `dl_number` stamp with no
+     * signal — is card#5961, and this leg is what would red if it were ever
+     * closed here by accident rather than by decision.
+     */
+    public function test_a_parsing_card_token_suppresses_the_dl_near_miss_whole_subject(): void
+    {
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/card-3410-DL_239']);
+
+        $this->assertCount(1, $r->targets, 'the card token correlates — the card DOES move');
+        $this->assertSame(3410, $r->targets[0]->payload['card_id']);
+        Log::shouldNotHaveReceived('warning');
     }
 
     public function test_token_less_branch_stays_silent_no_near_miss_spam(): void

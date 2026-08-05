@@ -1,0 +1,19 @@
+exit: 1
+--- output ---
+config dir: <INSTALL>
+config dir <INSTALL> is group/world-accessible (mode 0755) — chmod 700 (it holds secrets)
+secret dir: <INSTALL>
+database: connected
+install-suffix DSN check: ok
+inbox surfacing config: ok (layout=shared)
+retention: on (delete >30d, every 86400s, 500 rows/pass)
+retention: could NOT determine whether the receiver ends the request early — bridge:check is a console command, so the SAPI running it is not the receiver's and does not define fastcgi_finish_request(), and no php-fpm binary was findable on the PATH this process sees (a healthy FPM install can keep it in /usr/sbin, off a non-root PATH), so this run is no evidence either way. If the receiver is NOT served under PHP-FPM, retention runs AFTER the response is flushed but BEFORE the request ends, so a keep-alive client may wait for it. Confirm how the receiver is served (see CLAUDE_DEPLOYMENT.md); if it is not PHP-FPM, either serve it under PHP-FPM or set BRIDGE_RETENTION_ENABLED=false and run bridge:prune on a schedule.
+agent config prod-agent: config file <INSTALL>/prod-agent.yml is not valid YAML: Malformed inline YAML string at line 4.
+writeback.json: 1 repo mapping(s)
+writeback: could NOT determine whether the mapping for owner/repo is orphaned — agent prod-agent was not read to completion this run (see the error(s) above), so an agent this run never finished reading could be the one running a writeback-emitting classifier (App\Bridge\Contracts\EmitsWritebackReactions) on github:owner/repo. Fix the error(s) above and re-run; until then this says nothing about whether the mapping is inert.
+writeback: could NOT determine whether any agent enables the coord-card-move family on github:owner/repo — agent prod-agent was not read to completion this run (see the error(s) above). This mapping has coord_card_terminal_stage_id set (the move leg is on), so if none does, the leg cannot fire. Fix the error(s) above and re-run.
+writeback: token can see board 8 (owner/repo) (exact card count unavailable — kanban predates pagination meta)
+writeback: all mapped stage ids exist on board 8 (owner/repo)
+writeback: move_coord_cards (owner/repo, board 8): CANNOT VERIFY the terminal against the coordination config — agent prod-agent was not read to completion this run (see the error(s) above), so whether any agent enables the coord-card-move family on that scope (the gate this MANDATORY preflight runs behind) could not be resolved. Until this is verified the two movers may disagree about which column is terminal and fight every cycle. Fix the error(s) above and re-run.
+checks: 37 registered · 23 ran (9 reported above, 14 with nothing to report) · 2 opt-in probes not requested · 12 did not run (no agent config parsed (see the errors above); no agent has an enabled board_tools block). All 37 are accounted for — nothing was skipped uncounted.
+4 finding(s) reported `unvalidated` — not a failure, and not a pass either: those legs could not answer their own question, so this run says nothing about what they would have found (see the lines above). This counts the legs that REPORTED being unable to measure; a leg that failed to notice it measured nothing is not counted here — it may say nothing, or say what it would have concluded.

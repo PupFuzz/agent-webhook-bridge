@@ -19,8 +19,9 @@ use Throwable;
  * with the canonical 401/403/404 → hint table ({@see self::hintFor}) living here ONCE.
  * Non-throwing (the resolver is total; the probe's exceptions are caught) so a consumer
  * can map the result to its own posture. Each consumer keeps its own message wording
- * and severity — reconcile errors + skips + sets hadError; check warns and stays silent
- * on Ok / a network blip (not a token-validity signal).
+ * and severity — reconcile errors + skips + sets hadError; check `warn`s a token problem,
+ * reports a network blip as `unvalidated` (not a token-validity signal, but not a verdict
+ * either), and is silent only on Ok.
  */
 final class GitHubRepoProbe
 {

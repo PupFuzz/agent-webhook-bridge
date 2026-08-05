@@ -2,6 +2,8 @@
 
 namespace Tests\Unit\Tools;
 
+use App\Bridge\Support\Finding;
+use App\Bridge\Support\Severity;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Bridge\Tools\SshTransportProbe;
 use PHPUnit\Framework\TestCase;
@@ -17,11 +19,11 @@ class SshTransportProbeTest extends TestCase
 {
     private const GOOD_LINE = 'command="php artisan bridge:tools-call --agent=me",restrict ssh-ed25519 AAAAKEYBLOB me';
 
-    /** @param array{severity: string, message: string}[] $findings */
-    private function hasSeverity(array $findings, string $severity): bool
+    /** @param list<Finding> $findings */
+    private function hasSeverity(array $findings, Severity $severity): bool
     {
         foreach ($findings as $f) {
-            if ($f['severity'] === $severity) {
+            if ($f->severity === $severity) {
                 return true;
             }
         }
@@ -30,13 +32,12 @@ class SshTransportProbeTest extends TestCase
     }
 
     /**
-     * @param  array{severity: string, message: string}[]  $findings
-     * @return array{severity: string, message: string}|null
+     * @param  list<Finding>  $findings
      */
-    private function firstMatching(array $findings, string $needle): ?array
+    private function firstMatching(array $findings, string $needle): ?Finding
     {
         foreach ($findings as $f) {
-            if (str_contains($f['message'], $needle)) {
+            if (str_contains($f->message, $needle)) {
                 return $f;
             }
         }
@@ -50,8 +51,8 @@ class SshTransportProbeTest extends TestCase
     {
         $env = new FakeSshProbeEnvironment(authorizedKeys: self::GOOD_LINE);
         $findings = (new SshTransportProbe($env))->probePinnedLine('me');
-        $this->assertFalse($this->hasSeverity($findings, 'fail'));
-        $this->assertTrue($this->hasSeverity($findings, 'ok'));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
     }
 
     public function test_present_but_bad_line_at_assumed_path_fails(): void
@@ -60,17 +61,25 @@ class SshTransportProbeTest extends TestCase
         // authoritative-enough to FAIL (not merely warn) even unprivileged.
         $env = new FakeSshProbeEnvironment(authorizedKeys: 'command="php artisan bridge:tools-call --agent=me",restrict,pty ssh-ed25519 AAAA me');
         $findings = (new SshTransportProbe($env))->probePinnedLine('me');
-        $this->assertTrue($this->hasSeverity($findings, 'fail'));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
     }
 
-    public function test_absent_line_at_assumed_path_warns_not_fails(): void
+    public function test_absent_line_at_assumed_path_is_unvalidated_not_a_fail(): void
     {
-        // DR2-3b: pure ABSENCE at an assumed (non-authoritative) path is a WARN — the
-        // AuthorizedKeysFile may be relocated; never a false FAIL.
+        // DR2-3b: pure ABSENCE at an assumed (non-authoritative) path must never be a
+        // false FAIL — the AuthorizedKeysFile may be relocated, so the file just read may
+        // not be the one sshd consults. DL-251 §1(b) re-reads that as UNVALIDATED rather
+        // than warn: the read COMPLETED, but the leg cannot stand behind it, because it
+        // may have measured the wrong subject. `sudo` is not a flag the operator declined
+        // to pass — this leg runs unconditionally, so insufficient euid is a capability
+        // the process lacks, not a request that was never made.
         $env = new FakeSshProbeEnvironment(authorizedKeys: "# empty\n");
         $findings = (new SshTransportProbe($env))->probePinnedLine('me');
-        $this->assertFalse($this->hasSeverity($findings, 'fail'));
-        $this->assertTrue($this->hasSeverity($findings, 'warn'));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Unvalidated));
+        // The discriminating control: the SAME absence at an AUTHORITATIVE path is still a
+        // FAIL (see the test below), so this arm is keyed on authority, not on absence.
+        $this->assertFalse($this->hasSeverity($findings, Severity::Warn));
     }
 
     public function test_absent_line_at_authoritative_path_fails(): void
@@ -83,14 +92,14 @@ class SshTransportProbeTest extends TestCase
             sshdConfig: "authorizedkeysfile /etc/ssh/keys/%u\npasswordauthentication no\n",
         );
         $findings = (new SshTransportProbe($env))->probePinnedLine('me');
-        $this->assertTrue($this->hasSeverity($findings, 'fail'));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
     }
 
     public function test_ambiguous_duplicate_lines_fail(): void
     {
         $env = new FakeSshProbeEnvironment(authorizedKeys: self::GOOD_LINE."\n".self::GOOD_LINE."\n");
         $findings = (new SshTransportProbe($env))->probePinnedLine('me');
-        $this->assertTrue($this->hasSeverity($findings, 'fail'));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
     }
 
     // ─── FIPS ─────────────────────────────────────────────────────────────────
@@ -99,7 +108,7 @@ class SshTransportProbeTest extends TestCase
     {
         $env = new FakeSshProbeEnvironment(authorizedKeys: self::GOOD_LINE, fips: true);
         $findings = (new SshTransportProbe($env))->probePinnedLine('me');
-        $this->assertTrue($this->hasSeverity($findings, 'fail'));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
     }
 
     public function test_fips_mode_with_ecdsa_key_passes(): void
@@ -109,7 +118,7 @@ class SshTransportProbeTest extends TestCase
             fips: true,
         );
         $findings = (new SshTransportProbe($env))->probePinnedLine('me');
-        $this->assertFalse($this->hasSeverity($findings, 'fail'));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
     }
 
     // ─── retired: sshd account posture (card 5091) ────────────────────────────
@@ -154,8 +163,8 @@ class SshTransportProbeTest extends TestCase
         $this->assertNotContains('root', $env->sshdQueriedUsers);
 
         // The pinned forced-command line for device resolved clean.
-        $this->assertFalse($this->hasSeverity($findings, 'fail'));
-        $this->assertTrue($this->hasSeverity($findings, 'ok'));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
     }
 
     public function test_fallback_unset_account_queries_the_invoking_account_exactly_as_before(): void
@@ -197,18 +206,48 @@ class SshTransportProbeTest extends TestCase
 
         $pinned = $probe->probePinnedLine('me');
 
-        $this->assertTrue($this->hasSeverity($pinned, 'fail'));
-        $this->assertFalse($this->hasSeverity($pinned, 'ok'));
+        $this->assertTrue($this->hasSeverity($pinned, Severity::Fail));
+        $this->assertFalse($this->hasSeverity($pinned, Severity::Ok));
         $this->assertNotNull($this->firstMatching($pinned, 'does not resolve to an OS account'));
         // No phantom-path read attempted (the leg fails before authorizedKeysPath).
         $this->assertNotContains('/.ssh/authorized_keys', $env->readPaths);
     }
 
-    public function test_unset_account_with_empty_run_user_home_is_unchanged_warn_not_hard_fail(): void
+    public function test_account_lookup_capability_absent_is_unvalidated_never_the_accusation(): void
+    {
+        // DL-259 (card#5698): homeForUser ⇒ null models a host with no posix_getpwnam, so
+        // the account database was never consulted. The old code returned '' for that too
+        // and spent it as the exit-code-bearing "does not resolve to an OS account on this
+        // host" — hard-failing bridge:check over an account that may be perfectly valid.
+        // The certification still cannot proceed, so it must still REPORT; what it may not
+        // do is accuse.
+        $env = new FakeSshProbeEnvironment(
+            authorizedKeys: self::GOOD_LINE,
+            isRoot: true,
+            sshdConfig: "authorizedkeysfile %h/.ssh/authorized_keys\n",
+            userHomes: ['device' => null],
+        );
+        $probe = new SshTransportProbe($env, 'device');
+
+        $pinned = $probe->probePinnedLine('me');
+
+        $this->assertTrue($this->hasSeverity($pinned, Severity::Unvalidated));
+        $this->assertFalse($this->hasSeverity($pinned, Severity::Fail));
+        $this->assertFalse($this->hasSeverity($pinned, Severity::Ok));
+        // The claim names the missing capability, and never the account's existence.
+        $this->assertNotNull($this->firstMatching($pinned, 'no posix_getpwnam'));
+        $this->assertNull($this->firstMatching($pinned, 'does not resolve to an OS account'));
+        // Same phantom-path guarantee as the measured arm: it stops before the read.
+        $this->assertNotContains('/.ssh/authorized_keys', $env->readPaths);
+    }
+
+    public function test_unset_account_with_empty_run_user_home_is_unvalidated_not_hard_fail(): void
     {
         // canon #6: the UNSET fallback path (runUserHome ⇒ '') is a pre-existing edge,
-        // deliberately unchanged — it stays a non-authoritative warn, never the new
+        // deliberately unchanged in KIND — it stays non-authoritative, never the
         // configured-account hard-fail. Pins that the Defect-2 gate is sshAccount-strict.
+        // DL-251 §1(a) moves the non-authoritative arm to `unvalidated`: the read did not
+        // complete at all here, so nothing was measured.
         $env = new FakeSshProbeEnvironment(
             authorizedKeys: '',   // nothing readable at the assumed default path
             runUserHome: '',
@@ -217,8 +256,8 @@ class SshTransportProbeTest extends TestCase
 
         $findings = $probe->probePinnedLine('me');
 
-        $this->assertTrue($this->hasSeverity($findings, 'warn'));
-        $this->assertFalse($this->hasSeverity($findings, 'fail'));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Unvalidated));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
     }
 
     // ─── live probe ───────────────────────────────────────────────────────────
@@ -230,8 +269,8 @@ class SshTransportProbeTest extends TestCase
             sshStdout: (string) json_encode(['ok' => true, 'tool' => 'board_my_cards', 'result' => ['board_id' => 10, 'swimlane_id' => 4]]),
         );
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
-        $this->assertFalse($this->hasSeverity($findings, 'fail'));
-        $this->assertTrue($this->hasSeverity($findings, 'ok'));
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
     }
 
     public function test_live_probe_dirty_stdout_fails(): void
@@ -241,7 +280,7 @@ class SshTransportProbeTest extends TestCase
             sshStdout: "PHP Warning: something\n".json_encode(['ok' => true, 'result' => ['board_id' => 10, 'swimlane_id' => 4]]),
         );
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
-        $this->assertTrue($this->hasSeverity($findings, 'fail'));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
     }
 
     public function test_live_probe_isolation_mismatch_fails(): void
@@ -251,14 +290,14 @@ class SshTransportProbeTest extends TestCase
             sshStdout: (string) json_encode(['ok' => true, 'result' => ['board_id' => 99, 'swimlane_id' => 99]]),
         );
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
-        $this->assertTrue($this->hasSeverity($findings, 'fail'));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
     }
 
     public function test_live_probe_unreachable_fails(): void
     {
         $env = new FakeSshProbeEnvironment(authorizedKeys: self::GOOD_LINE, sshExit: 255, sshStderr: 'Connection refused');
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
-        $this->assertTrue($this->hasSeverity($findings, 'fail'));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
     }
 }
 
@@ -275,7 +314,8 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
     public array $readPaths = [];
 
     /**
-     * @param  array<string, string>  $userHomes  home dir per named account (homeForUser)
+     * @param  array<string, ?string>  $userHomes  home dir per named account (homeForUser);
+     *                                             '' = no such account, null = cannot look up
      */
     public function __construct(
         private string $authorizedKeys = '',
@@ -287,6 +327,7 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
         private string $sshStderr = '',
         private string $runUser = 'bridge',
         private string $runUserHome = '/home/bridge',
+        /** @var array<string, ?string> */
         private array $userHomes = [],
     ) {}
 
@@ -310,9 +351,10 @@ class FakeSshProbeEnvironment implements SshProbeEnvironment
         return $this->runUserHome;
     }
 
-    public function homeForUser(string $user): string
+    public function homeForUser(string $user): ?string
     {
-        return $this->userHomes[$user] ?? "/home/{$user}";
+        // A null entry models a host with no posix_getpwnam — the lookup never happened.
+        return array_key_exists($user, $this->userHomes) ? $this->userHomes[$user] : "/home/{$user}";
     }
 
     public function sshdEffectiveConfig(?string $forUser = null): ?string

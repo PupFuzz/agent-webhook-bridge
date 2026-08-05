@@ -8,9 +8,11 @@ use App\Bridge\Writeback\KanbanClient;
 
 /**
  * A channel-identity-scoped board tool (DL-217) invoked over the two-way agent
- * channel: the Node MCP server forwards `{tool, args}` to POST /agent-tools/call,
- * the controller resolves the caller's agent from the bearer, and dispatches the
- * named tool through {@see BoardToolsRegistry} onto the shared writeback client.
+ * channel. It is reached through MORE THAN ONE front door and this deliberately
+ * describes none of them: {@see BoardToolDispatcher} is what every door funnels
+ * into, and it owns how each resolves the calling agent. What is common to all —
+ * and all a tool may rely on — is that the agent is resolved BEFORE dispatch and
+ * its config arrives as $cfg; a tool never sees the transport or the credential.
  *
  * The write scope is NOT the caller's to choose — it is the resolved agent's
  * {@see BoardToolsConfig} (swimlane_id / board_id / create_stage_id), so a tool

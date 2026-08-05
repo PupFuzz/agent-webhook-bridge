@@ -10,7 +10,6 @@ Each must-fix has at least one case that goes RED if the guard is reverted:
 import importlib.util
 import json
 import os
-import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -887,80 +886,6 @@ class VersionComparatorLockstep(unittest.TestCase):
         with open(os.path.join(_HERE, "provision-board-tools.py"), encoding="utf-8") as fh:
             src = fh.read()
         self.assertIn("if _version_tuple(deployed_version) >= _version_tuple(bundled_version):", src)
-
-
-class SnapshotFileSetLockstep(unittest.TestCase):
-    """Card 5142 / DL-230: `_deploy_snapshot`'s `shutil.copytree(..., ignore=
-    shutil.ignore_patterns("node_modules"))` is the DECLARED AUTHORITY for WHICH
-    FILES a deployed channel-server snapshot is supposed to hold. `bridge:check`
-    re-implements that enumeration in PHP
-    (`App\\Bridge\\Support\\ChannelSnapshotProbe::referenceFileSet`) so it can tell a
-    version-matched cherry-pick from a whole-directory copy WITHOUT shelling out to
-    this script.
-
-    TREE + EXPECTED below are the LOCKSTEP CONTRACT: the same tree and the same
-    expected set are asserted against the PHP side in
-    `tests/Unit/Support/ChannelSnapshotProbeTest.php` (`LOCKSTEP_TREE` /
-    `LOCKSTEP_EXPECTED`). They pin the three properties that are not obvious and that
-    a hand-rolled enumerator gets wrong: the walk is RECURSIVE, dotfiles are
-    INCLUDED, and `node_modules` is excluded at ANY depth (not only at the top).
-    Diverge on any of them and `bridge:check` calls a faithful copy incomplete — or
-    calls an incomplete one whole, which is the DL-230 incident.
-    """
-
-    TREE = [
-        "package.json",
-        "agent-webhook-bridge-channel.mjs",
-        ".gitignore",
-        "lib/helper.mjs",
-        "lib/.hidden",
-        "tests/a.test.mjs",
-        "node_modules/pkg/index.js",
-        "lib/node_modules/nested.js",
-    ]
-
-    EXPECTED = [
-        ".gitignore",
-        "agent-webhook-bridge-channel.mjs",
-        "lib/.hidden",
-        "lib/helper.mjs",
-        "package.json",
-        "tests/a.test.mjs",
-    ]
-
-    def test_copytree_delivers_exactly_the_shared_expected_set(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            source = os.path.join(tmp, "source")
-            for relative in self.TREE:
-                path = os.path.join(source, *relative.split("/"))
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "w", encoding="utf-8") as fh:
-                    fh.write("x\n")
-
-            deployed = os.path.join(tmp, "deployed")
-            # The EXACT call _deploy_snapshot makes (pinned as source text below).
-            shutil.copytree(
-                source,
-                deployed,
-                ignore=shutil.ignore_patterns("node_modules"),
-                dirs_exist_ok=True,
-            )
-
-            landed = sorted(
-                os.path.relpath(os.path.join(root, name), deployed).replace(os.sep, "/")
-                for root, _dirs, files in os.walk(deployed)
-                for name in files
-            )
-        self.assertEqual(landed, self.EXPECTED)
-
-    def test_deploy_snapshot_uses_this_copy_call(self):
-        # The authority claim holds only while _deploy_snapshot actually copies this
-        # way. Switching to a hand-picked file list, or dropping the ignore, would
-        # silently unbind the two implementations while the test above still passed.
-        with open(os.path.join(_HERE, "provision-board-tools.py"), encoding="utf-8") as fh:
-            src = fh.read()
-        self.assertIn('ignore=shutil.ignore_patterns("node_modules"),', src)
-        self.assertIn("shutil.copytree(\n        source,\n        deploy_dir,\n", src)
 
 
 if __name__ == "__main__":

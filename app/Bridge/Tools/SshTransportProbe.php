@@ -2,6 +2,9 @@
 
 namespace App\Bridge\Tools;
 
+use App\Bridge\Support\Finding;
+use App\Bridge\Support\Severity;
+
 /**
  * The offline SSH-transport pinned-line + sshd-posture probe for `bridge:check`
  * (Finding D, card 4952). Every assertion is OUTCOME-based and fails SAFE:
@@ -11,17 +14,25 @@ namespace App\Bridge\Tools;
  *    {@see AuthorizedKeysLine} last-writer-wins capability model, never a `restrict`
  *    keyword match). On a FIPS seat its key algorithm must be FIPS-approved (an
  *    ed25519 key would never authenticate ⇒ FAIL).
- *  - The sshd password-auth OUTCOME (`PasswordAuthentication no` for the bridge user,
- *    from the Match-resolved `sshd -T`) is a REQUIRED, root-verified leg — a parallel
- *    auth path that bypasses the forced command. `sshd -T` needs root; run
- *    unprivileged it emits an explicit UNVERIFIED warn + the `sudo bridge:check` cert
- *    step (F1 + DR2-3), NEVER a false OK and NEVER a hard fail (new-surface installs
- *    stay exit-0 with a loud warn, not a CI red).
+ *  - The `authorized_keys` PATH is resolved from the Match-resolved `sshd -T` when this
+ *    process can run it. `sshd -T` needs root (it loads host private keys); run
+ *    unprivileged, the path falls back to the account's assumed default, so any verdict
+ *    drawn there may be about the WRONG FILE — it reports UNVERIFIED + the
+ *    `sudo bridge:check` cert step (F1 + DR2-3), NEVER a false OK and NEVER a hard fail
+ *    (new-surface installs stay exit-0 with a loud line, not a CI red).
+ *    (THERE IS NO sshd-POSTURE LEG. An earlier revision of this docblock described a
+ *    required `PasswordAuthentication no` check; card#5091 RETIRED that leg — the
+ *    account-level drop-in it certified locked out an operator sharing the ssh account —
+ *    and left this text behind. The forced-command key is the sole boundary.)
  *
- * Severity ∈ {ok, warn, fail}; only `fail` flips `bridge:check`'s exit. ABSENT
- * pinned line at an ASSUMED (non-authoritative) path ⇒ warn (the AuthorizedKeysFile
- * may be relocated); a PRESENT-BUT-BAD line, or an absent line at an AUTHORITATIVE
- * (root-resolved) path, ⇒ fail (DR2-3b).
+ * Emits {@see Finding}s over the shared {@see Severity} vocabulary;
+ * only `fail` flips `bridge:check`'s exit. It constructs **Ok/Fail/Unvalidated** today and
+ * NO `warn` at all — a statement about these legs, not a constraint on the vocabulary. The
+ * UNVERIFIED legs above were the open question {@see Severity} used to name; DL-251 settled
+ * it and swept them, because a leg that could not read the file, or read the wrong one,
+ * did not answer its own question. ABSENT pinned line at an ASSUMED (non-authoritative)
+ * path ⇒ `unvalidated` (the AuthorizedKeysFile may be relocated); a PRESENT-BUT-BAD line,
+ * or an absent line at an AUTHORITATIVE (root-resolved) path, ⇒ `fail` (DR2-3b).
  */
 final class SshTransportProbe
 {
@@ -41,39 +52,61 @@ final class SshTransportProbe
         return $this->sshAccount ?? $this->env->runUser();
     }
 
-    /** The forced-command account's home (for the default authorized_keys path + %h). */
+    /**
+     * The forced-command account's home (for the default authorized_keys path + %h).
+     *
+     * The `?? ''` narrows the un-lookup-able account back to the phantom-home value, and is
+     * never reached with it: {@see self::configuredAccountUnresolved} returns a finding for
+     * exactly that state and every caller of this method sits behind that early return.
+     */
     private function forcedCommandHome(): string
     {
         return $this->sshAccount !== null
-            ? $this->env->homeForUser($this->sshAccount)
+            ? ($this->env->homeForUser($this->sshAccount) ?? '')
             : $this->env->runUserHome();
     }
 
     /**
-     * A CONFIGURED ssh_account that does not resolve to an OS account (homeForUser ⇒ '')
-     * cannot be certified — every account-dependent leg would otherwise build a phantom
-     * path from an empty home (e.g. `/.ssh/authorized_keys`) and mis-certify against it.
-     * Gated strictly on a non-null sshAccount: the unset fallback (runUserHome, which can
-     * also be '') keeps its pre-4977 non-authoritative warn behavior, untouched.
+     * A CONFIGURED ssh_account whose home does not resolve cannot be certified — every
+     * account-dependent leg would otherwise build a phantom path from an empty home (e.g.
+     * `/.ssh/authorized_keys`) and mis-certify against it. Gated strictly on a non-null
+     * sshAccount: the unset fallback (runUserHome, which can also be '') keeps its
+     * pre-4977 non-authoritative behavior, untouched — that arm now reports `unvalidated`
+     * rather than `warn` (DL-251), which is a severity change and not a behavior one.
      *
-     * @return string|null the fail message, or null when there is nothing to report
+     * TWO CAUSES, TWO SEVERITIES (DL-259, card#5698). Both block certification, so both
+     * report; they differ in what this run is entitled to say about WHY:
+     *   - the account database answered "no such account" ⇒ a MEASURED config fault, and
+     *     the `fail` is earned exactly as before;
+     *   - this process cannot look accounts up at all (no posix_getpwnam) ⇒ nothing was
+     *     measured, and the old code spent that as the same accusation — hard-failing
+     *     `bridge:check` over a perfectly valid account on any host without the extension.
+     *     That is limb (a) of {@see Severity}'s rule, so it is `unvalidated`.
      */
-    private function configuredAccountUnresolved(): ?string
+    private function configuredAccountUnresolved(): ?Finding
     {
-        if ($this->sshAccount !== null && $this->env->homeForUser($this->sshAccount) === '') {
-            return "board_tools.ssh_account '{$this->sshAccount}' does not resolve to an OS account on this host — the SSH transport cannot be certified";
+        if ($this->sshAccount === null) {
+            return null;
+        }
+
+        $home = $this->env->homeForUser($this->sshAccount);
+        if ($home === null) {
+            return Finding::unvalidated("board_tools.ssh_account '{$this->sshAccount}' could NOT be resolved: this PHP process has no posix_getpwnam, so it cannot look OS accounts up at all and never consulted the account database — whether the account exists is UNKNOWN and its absence is NOT a conclusion this run may draw. The SSH transport is left uncertified; enable the posix extension, or certify from a host that has it.");
+        }
+        if ($home === '') {
+            return Finding::fail("board_tools.ssh_account '{$this->sshAccount}' does not resolve to an OS account on this host — the SSH transport cannot be certified");
         }
 
         return null;
     }
 
     /**
-     * @return list<array{severity: string, message: string}>
+     * @return list<Finding>
      */
     public function probePinnedLine(string $agentName): array
     {
         if (($unresolved = $this->configuredAccountUnresolved()) !== null) {
-            return [$this->fail($unresolved)];
+            return [$unresolved];
         }
 
         $findings = [];
@@ -82,8 +115,8 @@ final class SshTransportProbe
 
         if ($content === null) {
             $findings[] = $authoritative
-                ? $this->fail("no readable authorized_keys at {$path} (resolved from sshd -T) — no pinned line for agent {$agentName}")
-                : $this->warn("could not read {$path} (assumed default; the AuthorizedKeysFile may be relocated — re-run as root to resolve it) — the pinned line for agent {$agentName} is UNVERIFIED");
+                ? Finding::fail("no readable authorized_keys at {$path} (resolved from sshd -T) — no pinned line for agent {$agentName}")
+                : Finding::unvalidated("could not read {$path} (assumed default; the AuthorizedKeysFile may be relocated — re-run as root to resolve it) — the pinned line for agent {$agentName} is UNVERIFIED");
 
             return $findings;
         }
@@ -95,13 +128,13 @@ final class SshTransportProbe
 
         if ($matches === []) {
             $findings[] = $authoritative
-                ? $this->fail("no authorized_keys line forces bridge:tools-call --agent={$agentName} at {$path} — the ssh transport for this agent is not wired")
-                : $this->warn("no authorized_keys line forces bridge:tools-call --agent={$agentName} at {$path} (assumed default; may be at a relocated AuthorizedKeysFile) — UNVERIFIED, re-run as root");
+                ? Finding::fail("no authorized_keys line forces bridge:tools-call --agent={$agentName} at {$path} — the ssh transport for this agent is not wired")
+                : Finding::unvalidated("no authorized_keys line forces bridge:tools-call --agent={$agentName} at {$path} (assumed default; may be at a relocated AuthorizedKeysFile) — UNVERIFIED, re-run as root");
 
             return $findings;
         }
         if (count($matches) > 1) {
-            $findings[] = $this->fail("more than one authorized_keys line forces bridge:tools-call --agent={$agentName} — ambiguous; leave exactly one");
+            $findings[] = Finding::fail("more than one authorized_keys line forces bridge:tools-call --agent={$agentName} — ambiguous; leave exactly one");
 
             return $findings;
         }
@@ -109,16 +142,16 @@ final class SshTransportProbe
         $line = $matches[0];
         if (! $line->deniesShellAndForwarding()) {
             $granted = implode(', ', $line->grantedCapabilities());
-            $findings[] = $this->fail("the pinned line for agent {$agentName} still grants: {$granted} — the forced command must deny pty + agent/X11/port-forwarding (use `restrict`, or the enumerated no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding form on a FIPS seat)");
+            $findings[] = Finding::fail("the pinned line for agent {$agentName} still grants: {$granted} — the forced command must deny pty + agent/X11/port-forwarding (use `restrict`, or the enumerated no-pty,no-agent-forwarding,no-X11-forwarding,no-port-forwarding form on a FIPS seat)");
         } else {
-            $findings[] = $this->ok("the pinned line for agent {$agentName} forces bridge:tools-call and denies pty + all forwarding");
+            $findings[] = Finding::ok("the pinned line for agent {$agentName} forces bridge:tools-call and denies pty + all forwarding");
         }
 
         if ($this->env->fipsEnabled()) {
             if (! $line->keyAlgorithmIsFipsApproved()) {
-                $findings[] = $this->fail("FIPS mode is enabled but the pinned key for agent {$agentName} is `".($line->keyAlgorithm ?? 'unknown').'` — a FIPS sshd rejects it (use an ECDSA P-256 key: ssh-keygen -t ecdsa -b 256)');
+                $findings[] = Finding::fail("FIPS mode is enabled but the pinned key for agent {$agentName} is `".($line->keyAlgorithm ?? 'unknown').'` — a FIPS sshd rejects it (use an ECDSA P-256 key: ssh-keygen -t ecdsa -b 256)');
             } else {
-                $findings[] = $this->ok("the pinned key for agent {$agentName} (`{$line->keyAlgorithm}`) is FIPS-approved");
+                $findings[] = Finding::ok("the pinned key for agent {$agentName} (`{$line->keyAlgorithm}`) is FIPS-approved");
             }
         }
 
@@ -133,23 +166,23 @@ final class SshTransportProbe
      * swimlane-isolation observable `--probe-tools` uses).
      *
      * @param  list<array{agent: string, board_id: ?int, swimlane_id: ?int}>  $expectedScopes
-     * @return list<array{severity: string, message: string}>
+     * @return list<Finding>
      */
     public function probeLive(string $target, array $expectedScopes): array
     {
         $r = $this->env->sshRoundTrip($target, (string) json_encode(['tool' => 'board_my_cards']));
         if ($r['exit'] !== 0) {
-            return [$this->fail("ssh {$target} exited {$r['exit']} — unreachable or the forced command failed (stderr: ".trim($r['stderr']).')')];
+            return [Finding::fail("ssh {$target} exited {$r['exit']} — unreachable or the forced command failed (stderr: ".trim($r['stderr']).')')];
         }
 
         $decoded = json_decode($r['stdout'], true);
         if (! is_array($decoded) || ! array_key_exists('ok', $decoded)) {
-            return [$this->fail("ssh {$target}: stdout is not a clean board-tools JSON envelope — got: ".substr(trim($r['stdout']), 0, 200))];
+            return [Finding::fail("ssh {$target}: stdout is not a clean board-tools JSON envelope — got: ".substr(trim($r['stdout']), 0, 200))];
         }
         if ($decoded['ok'] !== true) {
             $error = is_string($decoded['error'] ?? null) ? $decoded['error'] : 'unknown';
 
-            return [$this->fail("ssh {$target}: board_my_cards did not succeed (error: {$error})")];
+            return [Finding::fail("ssh {$target}: board_my_cards did not succeed (error: {$error})")];
         }
 
         $result = $decoded['result'] ?? null;
@@ -157,11 +190,11 @@ final class SshTransportProbe
         $gotSwimlane = is_array($result) && is_numeric($result['swimlane_id'] ?? null) ? (int) $result['swimlane_id'] : null;
         foreach ($expectedScopes as $scope) {
             if ($gotBoard === $scope['board_id'] && $gotSwimlane === $scope['swimlane_id']) {
-                return [$this->ok("ssh {$target}: board_my_cards ok; window scoped to board {$gotBoard} / swimlane {$gotSwimlane} (matches agent {$scope['agent']})")];
+                return [Finding::ok("ssh {$target}: board_my_cards ok; window scoped to board {$gotBoard} / swimlane {$gotSwimlane} (matches agent {$scope['agent']})")];
             }
         }
 
-        return [$this->fail("ssh {$target}: ISOLATION — board_my_cards returned board_id=".($gotBoard ?? 'null').' swimlane_id='.($gotSwimlane ?? 'null').' which matches no configured ssh agent lane; the window is not scoped as expected')];
+        return [Finding::fail("ssh {$target}: ISOLATION — board_my_cards returned board_id=".($gotBoard ?? 'null').' swimlane_id='.($gotSwimlane ?? 'null').' which matches no configured ssh agent lane; the window is not scoped as expected')];
     }
 
     /**
@@ -203,23 +236,5 @@ final class SshTransportProbe
         }
 
         return null;
-    }
-
-    /** @return array{severity: string, message: string} */
-    private function ok(string $message): array
-    {
-        return ['severity' => 'ok', 'message' => $message];
-    }
-
-    /** @return array{severity: string, message: string} */
-    private function warn(string $message): array
-    {
-        return ['severity' => 'warn', 'message' => $message];
-    }
-
-    /** @return array{severity: string, message: string} */
-    private function fail(string $message): array
-    {
-        return ['severity' => 'fail', 'message' => $message];
     }
 }

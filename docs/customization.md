@@ -43,7 +43,7 @@ The single `ClassifyContext` parameter (DL-025) replaced a positional signature,
 
 - `$intents` — `list<Intent>` staged to `inbox.jsonl`
 - `$targets` — `list<ReactionTarget>` dispatched against the handler registry
-- `$reattributedActor` — *optional* `?Actor`; only for a shared upstream identity (see [Per-agent echo for a shared upstream identity](#per-agent-echo-for-a-shared-upstream-identity)). Null in the common case.
+- `$reattributedActor` — *optional* `?Actor`; only for a shared upstream identity (see [Per-agent echo for a shared upstream identity](#per-agent-echo-for-a-shared-upstream-identity)). Null unless your classifier sets it — and it is an **echo** input, never a display value: a name here says *this agent performed this event*, so leave it null when the event carries no evidence of that (DL-253). Among the shipped classifiers `CoordinationClassifier` sets it on every coord-message event whose **actor** it recovers.
 
 ### Minimal worked example
 
@@ -143,7 +143,7 @@ public function consumedEventTypes(ClassifierConfig $cfg): array
 }
 ```
 
-Return the event types as **bare** top-level entries (`pull_request`, `push` — the type is OWNED: every action covered, unlisted actions are deliberate no-ops) and/or **qualified** entries (`issues.opened` — exactly these actions; other observed actions of the type surface in `bridge:check`'s informational action inventory, card #4354; the inventory is INFO, never a WARN — GitHub has no per-action unsubscribe, so there is no remedy to alarm about). Gate on `$cfg` when your consumed set is config-driven (e.g. `CoordinationClassifier` unions only its *enabled* families). **HARD CONTRACT:** the method must be a pure `$cfg` → event-types map — no lazy class-loading, no side effects; it runs inside `bridge:check` and an impl that loads un-probed code can fatal past the guard (DL-025). A classifier that does *not* implement the interface contributes nothing to the consumed set (conservative — at worst a false warn, which `bridge:check` flags as *possibly* a false positive by naming the undeclared classifier, never a false clean). Note: the observed set is the full un-pruned `webhook_events` history (retention is event-gated or manual), so a long-remediated stray keeps warning until pruned — the WARN carries its **occurrence count + last-seen timestamp** so an old last-seen reads as remediated history rather than live drift (deliberately NOT a recency window, which would let old-but-real drift read clean).
+Return the event types as **bare** top-level entries (`pull_request`, `push` — the type is OWNED: every action covered, unlisted actions are deliberate no-ops) and/or **qualified** entries (`issues.opened` — exactly these actions; other observed actions of the type surface in `bridge:check`'s informational action inventory, card #4354; the inventory is INFO, never a WARN — GitHub has no per-action unsubscribe, so there is no remedy to alarm about). Gate on `$cfg` when your consumed set is config-driven (e.g. `CoordinationClassifier` unions only its *enabled* families). **HARD CONTRACT:** the method must be a pure `$cfg` → event-types map — no lazy class-loading, no side effects; it runs inside `bridge:check` and an impl that loads un-probed code can fatal past the guard (DL-025). **If it THROWS, `bridge:check` says so and withholds the verdict rather than guessing** (DL-257): it warns that your classifier implements the interface but did not answer, names it, and reports the scope's uncovered arrivals as `unvalidated` — *whether these are being dropped could not be determined* — instead of asserting that your classifier declares nothing and that its events are dropped. Both of those were the pre-DL-257 output, and both were false. A classifier that does *not* implement the interface contributes nothing to the consumed set (conservative — at worst a false warn, which `bridge:check` flags as *possibly* a false positive by naming the undeclared classifier, never a false clean). Note: the observed set is the full un-pruned `webhook_events` history (retention is event-gated or manual), so a long-remediated stray keeps warning until pruned — the WARN carries its **occurrence count + last-seen timestamp** so an old last-seen reads as remediated history rather than live drift (deliberately NOT a recency window, which would let old-but-real drift read clean).
 
 ### Extending a shipped classifier (subclass pattern)
 
@@ -291,8 +291,9 @@ public function classify(ClassifyContext $ctx): ClassifyResult
 {
     $actor = $ctx->actor;
 
-    // Shared account → Actor.name is null. Recover the author from your own
-    // convention (here: a "FROM: <agent>" line in a comment body) via the shipped
+    // Shared account → Actor.name is null. Recover WHO PERFORMED THIS EVENT from
+    // your own convention (here: a "FROM: <agent>" line in a comment body, which
+    // names the actor only because this event CREATED that body) via the shipped
     // RecipientAddressing::author() helper — no hand-rolled regex.
     $reattributed = null;
     if ($actor->name === null) {
@@ -303,7 +304,11 @@ public function classify(ClassifyContext $ctx): ClassifyResult
         }
     }
 
-    // Build intents/targets as normal, using $reattributed ?? $actor for display.
+    // Build intents/targets as normal. What you recovered here is the ECHO input
+    // (the value the dispatcher DROPS on) — NOT a display value: what an Intent
+    // should show is a separate question, and on an action the actor did not
+    // author the two answers differ. See the bullets below, and
+    // consumer-guide.md § Coordination intents: who acted vs. whose thread.
     $intents = [/* ... */];
 
     return new ClassifyResult(intents: $intents, reattributedActor: $reattributed);
@@ -312,7 +317,8 @@ public function classify(ClassifyContext $ctx): ClassifyResult
 
 - **You report *who*; the dispatcher decides *is that me?*.** Although `classify()` receives the serving agent via `$ctx->agent`, for shared-identity *echo* you still just **name the author** and let the dispatcher apply that agent's own name / `treat_as_echo` — reusing the canonical echo logic rather than reimplementing it per classifier. The same classifier then yields per-agent self-echo across all the agents sharing the account. (One cached instance serves all agents — read `$ctx->agent` as a local, never stash it.)
 - **A different shared-id agent's write still surfaces** — its recovered name isn't the serving agent's own name, so it isn't an echo for that agent.
-- **Leave it `null` when you didn't recover an author** (or there's nothing to recover) — the result dispatches unchanged. Every shipped classifier leaves it null, so this is a no-op unless you opt in.
+- **Leave it `null` when you didn't recover an author** (or there's nothing to recover) — the result dispatches unchanged. It is a no-op for any classifier that never sets it; among the shipped ones, `CoordinationClassifier` **does** set it on every coord-message event whose author it recovers (this line said "every shipped classifier leaves it null" until DL-252 — that stopped being true when that classifier shipped).
+- **What you return here is what the dispatcher DROPS on, so it is a claim that THIS AGENT WROTE THIS EVENT — never merely a related name (DL-253).** The thread's opener, the subject's assignee, the last commenter: each is a real datum and none of them is evidence of who performed *this* event. Feeding one in silently drops other people's events — `CoordinationClassifier` returned the author-or-actor union here until DL-253, and a counterparty's `reopened` on a thread the serving agent had opened was suppressed as that agent's own write, invisibly, along with every bare reply to it. It now returns the same *actor* it reports on its Intent (see [`consumer-guide.md` § Coordination intents: who acted vs. whose thread](consumer-guide.md#coordination-intents-who-acted-vs-whose-thread)). **When you cannot evidence the actor, return `null` and let the event be delivered** — a wake you did not need costs a read; a drop costs the message.
 
 This is the completion of the `shared_identities` design (DL-002): the registry preserves the null name on purpose so this recovery layer can re-attribute. See [`multi-agent.md`](multi-agent.md) § Path C for the full shared-identity walkthrough.
 
@@ -377,7 +383,7 @@ public function classify(ClassifyContext $ctx): ClassifyResult
 
 The three-state return is the contract: `true` wake, `false` skip, **`null` = no `TO:` line → fall back to labels** (a bare/empty `TO:` is treated as absent, so a typo can't silently suppress everyone). Matching is case-insensitive; the first `TO:` line wins; `all` addresses every agent. **Issue/card** events (opened/closed/labeled) keep using labels — only comment bodies carry a `TO:` line. Net: zero false-negatives (every addressed comment still delivered), no more cross-agent wake-noise on a shared thread.
 
-> **⚠ Footgun — route a comment by the comment's OWN `TO:`/`FROM:`, never the parent issue's labels (DL-034).** A thread's issue/card labels freeze at thread-open. If you route *comments* by those labels, a reply that **reverses direction** (B answering A on a thread originally A→B) is silently dropped — the labels still say "A→B" while the reply is "B→A". This is the single most common shared-identity routing bug. Use the body's lines as authoritative: `RecipientAddressing::addresses($body, $me)` for the recipient (above) and **`RecipientAddressing::author($body)`** for the sender, with the label behavior only as the `null` fallback. Worked role-reversal case:
+> **⚠ Footgun — route a comment by the comment's OWN `TO:`/`FROM:`, never the parent issue's labels (DL-035).** A thread's issue/card labels freeze at thread-open. If you route *comments* by those labels, a reply that **reverses direction** (B answering A on a thread originally A→B) is silently dropped — the labels still say "A→B" while the reply is "B→A". This is the single most common shared-identity routing bug. Use the body's lines as authoritative: `RecipientAddressing::addresses($body, $me)` for the recipient (above) and **`RecipientAddressing::author($body)`** for the sender, with the label behavior only as the `null` fallback. Worked role-reversal case:
 >
 > ```php
 > use App\Bridge\Support\RecipientAddressing;

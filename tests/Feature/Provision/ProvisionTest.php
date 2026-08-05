@@ -6,6 +6,7 @@ use App\Bridge\Provision\KanbanProvisionClient;
 use App\Bridge\Provision\WebhookProvisioner;
 use App\Bridge\Support\SecretPath;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -185,8 +186,54 @@ class ProvisionTest extends TestCase
         // Inactive drift but no on-disk secret → cannot reconcile without rotating the key.
         Http::fake(['*' => Http::response(['data' => [['id' => 3, 'url' => $this->receiverUrl, 'active' => false]]])]);
 
-        $this->artisan('bridge:provision', ['--reconcile' => true])->assertExitCode(1);
+        $this->artisan('bridge:provision', ['--reconcile' => true])
+            ->expectsOutputToContain('secret missing at')
+            ->assertExitCode(1);
         Http::assertNotSent(fn (Request $r) => $r->method() === 'DELETE');
+    }
+
+    /**
+     * card#5789: the reconcile read was hand-rolled (`is_file() ? trim(file_get_contents())`),
+     * so a present-but-unreadable secret escaped as an ErrorException and ProvisionCommand
+     * rendered it as "{label} API error" — attributing a LOCAL permissions fault to the
+     * upstream, which sends the operator to the wrong system entirely.
+     *
+     * Both halves are asserted: that the honest cause appears, AND that the two wrong ones do
+     * not. "API error" is the pre-fix rendering; "secret missing" is the wrong cause the
+     * cannot_reconcile template used to assert for every reason it was handed.
+     *
+     * ON THE CAPTURED OUTPUT rather than the `expectsOutputToContain` chain, deliberately.
+     * Those expectations are Mockery `doWrite` matchers, and Mockery dispatches each call to
+     * the FIRST expectation whose matcher passes — so several substrings of ONE rendered line
+     * cannot all be satisfied (the later ones report as missing), and a `doesntExpect`
+     * matcher registered after them never even sees a line an earlier one consumed. Both
+     * halves here live in a single line, so the chain would be unreliable in both directions.
+     */
+    public function test_reconcile_refuses_an_unreadable_secret_without_blaming_the_upstream(): void
+    {
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        $secretPath = SecretPath::for($this->dir, 'kanban', '5');
+        File::put($secretPath, 'existing-secret-value'); // gitleaks:allow — test fixture
+        chmod($secretPath, 0o000);
+        clearstatcache(true, $secretPath);
+        if (is_readable($secretPath)) {
+            $this->markTestSkipped('this process reads through mode 0000 (running as root?) — the unreadable state is not reachable here');
+        }
+
+        // 0000 passes BOTH pre-gates the caller reaches for: is_file() is true and there is
+        // no group/world bit, so the DL-010 perms refusal above does not fire.
+        Http::fake(['*' => Http::response(['data' => [['id' => 3, 'url' => $this->receiverUrl, 'active' => false]]])]);
+
+        $this->withoutMockingConsoleOutput();
+        $exit = Artisan::call('bridge:provision', ['--reconcile' => true]);
+        $output = Artisan::output();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('CANNOT RECONCILE', $output);
+        $this->assertStringContainsString('could not be read by this process', $output);
+        $this->assertStringNotContainsString('API error', $output);
+        $this->assertStringNotContainsString('secret missing at', $output);
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'DELETE' || $r->method() === 'POST');
     }
 
     public function test_service_cleans_up_orphaned_secret_on_create_failure(): void

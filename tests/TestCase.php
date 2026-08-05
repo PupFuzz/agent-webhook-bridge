@@ -3,9 +3,12 @@
 namespace Tests;
 
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
+use Tests\Support\SkipsAsRoot;
 
 abstract class TestCase extends BaseTestCase
 {
+    use SkipsAsRoot;
+
     protected function setUp(): void
     {
         parent::setUp();

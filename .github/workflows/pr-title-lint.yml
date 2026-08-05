@@ -1,9 +1,27 @@
 name: PR title correlation-key lint
 
 # A PR whose head branch follows the <type>/<card-id>-slug convention MUST carry
-# a `card-<id>`/`card#<id>` or `DL-NNNN` token in its title. That token is the ONLY key the
+# a card token or a `DL-<number>` token in its title. That token is the ONLY key the
 # card-movement writeback has to correlate a merged PR back to its tracking card;
-# without it the card silently never moves. The convention was empirically
+# without it the card silently never moves.
+#
+# WHICH spellings correlate is deliberately NOT restated here (card#5267, card#5308):
+# `app/Bridge/Support/CardTokenGrammar.php` and `app/Bridge/Support/DlTokenGrammar.php`
+# are the authorities, and
+# `tests/Feature/Workflows/PrTitleLintTest.php` compares the regexes below against
+# them answer-set to answer-set. A set spelled out in this header instead would be a
+# copy nothing holds — which is how the runtime near-miss warning spent two
+# releases naming a narrower set than the code enforced, and how the DL token below
+# spent three grammar edits described to operators as `DL-NNNN` (four digits) against
+# an unbounded `\d+`. The digit-count spelling is gone for the same reason. Where the
+# require step below genuinely DISAGREES with an authority it is PINNED rather than
+# repaired by default — repairing one changes what a CI gate accepts, which is a hard
+# gate (card#5300); one row has been approved and fixed (DL-272), the rest are still
+# pinned and the card is still open for them. The disagreements are
+# enumerated in PrTitleLintTest, never here: a count in this header is the same kind
+# of copy nothing holds, and it was already wrong once (the audit that wrote this
+# paragraph found a further divergence the same day).
+# The convention was empirically
 # skipped (wave-1 2026-07-08: 8 PRs, zero automated card moves), so this converts
 # the silent "card never moves" into a loud red check with an actionable message
 # — the same silent->loud conversion as the release drift-gate.
@@ -67,17 +85,20 @@ jobs:
           # list someone must remember to extend.
           subject=$(printf '%s\n%s' "$TITLE" "$BRANCH" | tr '[:upper:]' '[:lower:]')
 
-          # looks-like-a-card-token: `card` at a token boundary followed by a
+          # looks-like-a-card-token: `card` — or the plural `cards`, which names
+          # no card in any spelling — at a token boundary, followed by a
           # separator, a digit (the glued form, DL-233), or a space-then-hash.
           # A bare space is deliberately NOT a separator — DL-201 ruled that prose
           # ("supports card 2") stays silent, and that ruling still holds.
-          looks='(^|[^0-9a-z_])card([-#_.:]|[0-9]| #)'
+          looks='(^|[^0-9a-z_])cards?([-#_.:]|[0-9]| #)'
           # the ratified grammar, post-DL-233: separated takes 1+ digits, glued 2+.
-          # Keep in lockstep with CARD_TOKEN_PATTERN in GitHubPrCardMoveClassifier.
+          # NOT kept in lockstep by discipline — PrTitleLintTest extracts this line
+          # and compares its ANSWER SET against CardTokenGrammar's over shared
+          # vectors, so editing either side without the other reds the suite.
           good='(^|[^0-9a-z_])card([-#][0-9]|[0-9]{2})'
 
           if grep -qE "$looks" <<<"$subject" && ! grep -qE "$good" <<<"$subject"; then
-            echo "::warning::This PR's title or branch looks like it names a card, but the token does not match the correlation grammar, so NO card will move. Accepted: card-<id>, card#<id>, or glued card<id> (2+ digits). Common misses: card_123 / card.123 / card:123 / card #123 (underscore, dot, colon, space are not separators), a single-digit glued card4, and non-ASCII digits (the grammar is ASCII 0-9 only, DL-231)."
+            echo "::warning::This PR's title or branch looks like it names a card, but the token does not match the correlation grammar, so NO card will move. Accepted: card-<id>, card#<id>, or glued card<id> (2+ digits). Common misses: card_123 / card.123 / card:123 / card #123 (underscore, dot, colon, space are not separators), the plural in any spelling (cards #123, cards#123, cards-123, ... — the token is singular), a single-digit glued card4, and non-ASCII digits (the grammar is ASCII 0-9 only, DL-231)."
           fi
 
       - name: Require card#/DL token for card-id branches
@@ -119,7 +140,10 @@ jobs:
           # Accept a genuine "card-<exact-id>"/"card#<exact-id>"/glued
           # "card<exact-id>" (the separator is optional since DL-233 — the lint must
           # accept everything the classifier correlates, or it reds a title that
-          # would have moved the card) or "DL-<1-4
+          # would have moved the card — an INTENT, not an invariant: this step has
+          # measured exceptions in both directions, pinned in PrTitleLintTest and
+          # tracked as card#5300, because repairing either changes what this gate
+          # accepts) or "DL-<1-4
           # digits>" token, bounded on BOTH sides so a coincidental substring does
           # not satisfy the check: the leading (^|[^0-9a-z_]) mirrors the
           # classifier's \b (underscore is a word char there — a title the lint
@@ -127,13 +151,28 @@ jobs:
           # "discard#3770"/"foo_card-3770"; the trailing ([^0-9]|$) rejects a
           # longer id like "card#37700". Inputs are pre-folded, so the lowercase
           # class is the whole alphabet.
-          if [[ "$title_lc" =~ (^|[^0-9a-z_])card[-#]?${card_id}([^0-9]|$) ]] || [[ "$title_lc" =~ (^|[^0-9a-z_])dl-[0-9]{1,4}([^0-9]|$) ]]; then
+          #
+          # The DL arm enumerates its digits instead of writing the range [0-9]
+          # because a bracket RANGE inside bash's [[ =~ ]] is resolved by
+          # COLLATION, not by codepoint: under en_US.UTF-8 (measured; C and
+          # C.UTF-8 disagree) [0-9] admits U+0663 and friends, so the gate
+          # greened "DL-<ARABIC-INDIC THREE>" — a token the classifier's ASCII
+          # \d correlates to nothing, which is the silent no-op this gate exists
+          # to stop, and a breach of DL-231's fleet-wide ASCII-digits-only
+          # clause. An enumerated set depends on no locale data at all, where
+          # [[:digit:]] would trade one piece of locale data for another. The
+          # ranges that REMAIN below are negated ([^0-9], [^0-9a-z_]) and the
+          # branch-shape test, where collation reds instead of greening;
+          # narrowing those would make this gate more permissive, so they are
+          # measured and pinned in PrTitleLintTest under card#5300, not fixed
+          # here.
+          if [[ "$title_lc" =~ (^|[^0-9a-z_])card[-#]?${card_id}([^0-9]|$) ]] || [[ "$title_lc" =~ (^|[^0-9a-z_])dl-[0123456789]{1,4}([^0-9]|$) ]]; then
             echo "OK: title carries a correlation token for card $card_id."
             exit 0
           fi
 
           echo "::error::PR title is missing a card-movement correlation token."
-          echo "Branch '$BRANCH' targets card $card_id, but the title carries neither 'card-$card_id' (nor 'card#$card_id') nor a 'DL-NNNN' token."
+          echo "Branch '$BRANCH' targets card $card_id, but the title carries neither 'card-$card_id' (nor 'card#$card_id') nor a 'DL-<number>' token."
           echo "The writeback uses this token as its ONLY key to move the tracking card; without it the card silently never moves."
-          echo "Fix: add 'card-$card_id' or the relevant 'DL-NNNN' to the PR title, then re-save (the 'edited' event re-runs this check)."
+          echo "Fix: add 'card-$card_id' or the relevant 'DL-<number>' to the PR title, then re-save (the 'edited' event re-runs this check)."
           exit 1

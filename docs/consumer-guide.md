@@ -41,6 +41,33 @@ One JSON document per line. Each document is an `Intent` (schema below).
 
 Both schemas are JSON Schema 2020-12 draft. Non-additive changes (renames, removals, type tightening) bump the version; additive fields do not. Pin your parser to the schema version you built against; fail-soft on bump.
 
+### Coordination intents: who acted vs. whose thread
+
+`payload` is per-`kind` (the Intent schema leaves it open), and the `coord_issue` / `coord_pr` / `coord_comment` kinds carry **two different facts about people**. Keeping them apart is load-bearing, so read this before rendering either (DL-252, added in the same release as `actor_attribution`; older lines carry neither new key):
+
+| Field | Type | What it claims |
+|---|---|---|
+| `actor_attribution` | string, **always present**, one of `resolved` / `unresolved` / `unattributable` | How much the event supports naming the agent that **performed** it — see below |
+| `from` | string or **null** | The name of the agent that performed the event. **Null exactly when `actor_attribution` is `unattributable`.** On `unresolved` it falls back to the actor's raw upstream id (or the literal `?` when the event carried no id either) — which under a shared account names the *account*, not an agent |
+| `thread_author` | string or null | The **opener** of the issue/PR the event happened on (the frozen `from:<agent>` label, else — for an issue/PR subject, whose body *is* the opening post — that body's `FROM:` line). Null when neither is present. **Never** evidence of who performed a later event |
+| `actor.name` (top level) | string or null | The same agent as `from`, or null. It is null in **both** the `unresolved` and `unattributable` cases — which is exactly why the marker exists |
+
+The three states of `actor_attribution`:
+
+- **`resolved`** — `from` names the agent that performed this event. **Three** paths produce it, and they are not equally strong:
+  1. **The registry resolved the event's upstream account** — the account is declared in some agent's `identity.github_user_id` **and** is not in `shared-identities.json` (a shared account resolves to a null name on purpose, DL-002). This is the *default* topology for an install that shares no account, and it holds on **any** action, non-authoring ones included: the name comes from the HMAC-verified envelope's `sender.id`, not from text a poster typed.
+  2. **The install's `scope_author_map`** — one agent does everything on that repo, so the map names the actor of any action there (also the only resolver for a label-less impl event).
+  3. **A `from:`/`FROM:` line this event's actor wrote** — they opened the issue/PR, or wrote the comment.
+- **`unresolved`** — this event *could* have carried that evidence and did not (e.g. a comment with no `FROM:` line). Somebody acted and nobody wrote down who.
+- **`unattributable`** — nothing in this event **names** who acted, which takes all three paths failing at once: the upstream account resolved to no declared agent (path 1 — it is shared, or nobody declares it), no `scope_author_map` entry covers the repo (path 2), and the action created none of the text the bridge can read (path 3). That last set is **derived, not listed** — every surfaced action except the one per family that creates the text (`CoordinationClassifier::AUTHORING_ACTIONS`) — so it grows on its own with every action an install adds via `coord_extra_actions` (`issues.closed`, `labeled`, …) and with every future GitHub action, by allow-list. Illustrative only, never a set to key on: of the actions surfaced by default it is currently `issues.reopened`, `pull_request.reopened` and `pull_request.ready_for_review`. The raw upstream `actor.id` is still passed through untouched — what the bridge will not do is put a name on it — and how much that id is worth depends on the install: on a **shared-identity** install it is the *same account* for every agent, so there is genuinely nothing to recover (unrecoverable, **not** merely unresolved-for-now), while on an **undeclared distinct** account it is a real, distinct upstream identity the bridge simply cannot map to an agent name.
+
+**Do not fall back to `thread_author` when `from` is null.** That substitution is the defect this contract exists to prevent: it reports the thread's opener as the agent that reopened/closed/labelled it, and it reads exactly like a correct attribution. The `summary` line makes the same distinction in prose — it renders `by an unattributable actor (thread opened by <name>)` instead of `from <name>` — because for a reading agent the summary *is* the product. **The summary marks `unattributable` and nothing finer:** `resolved` and `unresolved` both render `from <x>`, where `<x>` is a recovered name in the first case and the raw upstream actor id (or `?`) in the second, so anything that needs those two told apart must read `actor_attribution`.
+
+**Bound on what `resolved` buys you — it differs by path, and the payload does not record which path produced it** (a name from the registry and a name off a `FROM:` line are the same string in the same field):
+
+- **Paths 2–3 are not authentication.** `from:` labels and `FROM:` lines are writable by anyone who can post on the repo, and `scope_author_map` is an operator-declared premise — "one agent does everything on this repo" — that mis-names the actor of *every* event there the moment that stops holding. On these, `resolved` says "this event says who acted", never "this is provably who acted".
+- **Path 1 is the upstream sender identity**, not text anyone wrote: it is as good as the provider's own `sender` attribution plus this install's `identity` declarations. Stronger than the other two — and still a claim about an *account*, not proof of which human or process drove it.
+
 ## Consumption patterns
 
 > ### Recommended model for live agents (e.g. PM agents): **MCP channel + upstream reconcile**
@@ -228,6 +255,8 @@ Source of truth for "what agents exist + how to address them." Read-on-startup i
 ## Echo-suppression semantics
 
 `EchoSuppression` filters events authored by the agent's own identity before classification. Consumers reading `inbox.jsonl` will never see the agent's own writes — this is intentional and load-bearing for loop-avoidance.
+
+> **Bound under a SHARED upstream identity (DL-253).** When several agents post as one account, suppression depends on the classifier recovering **who performed the event**, and some events carry no evidence of that — a bodyless `reopened` / `closed` names nobody. Those are **delivered**, including the ones the agent itself performed: the alternative is dropping a counterparty's action on the same evidence, which is what the bridge did until DL-253 (it suppressed every counterparty action on a thread the agent had opened, because the thread's `from:` label named that agent). So on a shared account, **"my own write never reaches my inbox" holds for what the agent WRITES — text it authored — and not for evidence-free actions it takes.** Loop-avoidance is unaffected: a coordination intent triggers a wake, not a write.
 
 `SignalAllowlist` further filters when `treat_as_signal` is set to a non-empty list in the operator config — only events from named agents reach the inbox.
 

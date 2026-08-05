@@ -203,6 +203,30 @@ class AgentToolsCallTest extends TestCase
         Http::assertNothingSent();
     }
 
+    /**
+     * A bearer file that is PRESENT and unreadable by the web user must refuse like any
+     * other unresolvable bearer — 401, no body detail — not 500 (card#5778).
+     *
+     * WHY THE STATUS IS THE SECURITY ASSERTION, not just tidiness: this controller's
+     * stated contract is that it does not distinguish "unknown token" from
+     * "collided/unreadable token" to the caller. A 500 tells an UNAUTHENTICATED caller
+     * that another agent's bearer file exists and could not be read — exactly the
+     * distinction the design refuses to draw — and it does so on the one door reachable
+     * without any credential at all.
+     */
+    public function test_present_but_unreadable_bearer_is_refused_401_not_500(): void
+    {
+        chmod($this->dir.'/me-tools-token', 0o000);
+        if (is_readable($this->dir.'/me-tools-token')) {
+            $this->markTestSkipped('this process reads through mode 0000 (running as root?) — the unreadable state is not reachable here');
+        }
+        Http::fake();
+
+        $this->callTool(['tool' => 'board_my_cards'])->assertStatus(401);
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']])->assertStatus(401);
+        Http::assertNothingSent();
+    }
+
     // ─── board_create_card: scope + sanitization ─────────────────────────────
 
     public function test_create_forces_swimlane_from_config_ignoring_caller(): void
@@ -407,6 +431,166 @@ class AgentToolsCallTest extends TestCase
         // The foreign-swimlane row is NOT present anywhere in the result.
         $this->assertStringNotContainsString('FOREIGN', $res->getContent());
         $this->assertCount(1, $res->json('result.cards_by_stage.Backlog'));
+    }
+
+    // ─── board_my_cards: include_description (DL-245) ────────────────────────
+
+    /**
+     * One row carrying a description, plus the stage names it groups under. The
+     * body is the same in every test below so each one differs only in the
+     * argument / cap under test.
+     *
+     * @param  array<string, mixed>  $rowOverrides
+     */
+    private function fakeOneCardWithDescription(string $description, array $rowOverrides = []): void
+    {
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                array_merge([
+                    'id' => 1, 'name' => 'mine', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                    'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20',
+                    'description' => $description,
+                ], $rowOverrides),
+            ]]),
+        ]);
+    }
+
+    public function test_my_cards_omits_the_description_keys_by_default(): void
+    {
+        // The byte-identical guarantee: without the argument the card shape is the
+        // DL-217 one — the keys are ABSENT, not present-and-null.
+        $this->fakeOneCardWithDescription('the scope nobody asked for');
+
+        $card = $this->callTool(['tool' => 'board_my_cards'])
+            ->assertStatus(200)
+            ->json('result.cards_by_stage.Backlog.0');
+
+        $this->assertArrayNotHasKey('description', $card);
+        $this->assertArrayNotHasKey('description_truncated', $card);
+        $this->assertSame(['id', 'name', 'stage', 'tags', 'dl_number', 'pr_number', 'updated_at'], array_keys($card));
+    }
+
+    public function test_my_cards_include_description_false_is_the_default_shape(): void
+    {
+        $this->fakeOneCardWithDescription('the scope nobody asked for');
+
+        $card = $this->callTool(['tool' => 'board_my_cards', 'args' => ['include_description' => false]])
+            ->assertStatus(200)
+            ->json('result.cards_by_stage.Backlog.0');
+
+        $this->assertArrayNotHasKey('description', $card);
+        $this->assertArrayNotHasKey('description_truncated', $card);
+    }
+
+    public function test_my_cards_returns_the_description_when_opted_in(): void
+    {
+        $this->fakeOneCardWithDescription('## Scope\nimplement the thing');
+
+        $card = $this->callTool(['tool' => 'board_my_cards', 'args' => ['include_description' => true]])
+            ->assertStatus(200)
+            ->json('result.cards_by_stage.Backlog.0');
+
+        $this->assertSame('## Scope\nimplement the thing', $card['description']);
+        $this->assertFalse($card['description_truncated']);
+    }
+
+    public function test_my_cards_reports_a_missing_description_as_null_not_truncated(): void
+    {
+        // A card with no body must not read as "truncated to nothing".
+        $this->fakeOneCardWithDescription('', ['description' => null]);
+
+        $card = $this->callTool(['tool' => 'board_my_cards', 'args' => ['include_description' => true]])
+            ->assertStatus(200)
+            ->json('result.cards_by_stage.Backlog.0');
+
+        $this->assertNull($card['description']);
+        $this->assertFalse($card['description_truncated']);
+    }
+
+    public function test_my_cards_cuts_a_body_past_the_configured_cap_and_flags_it(): void
+    {
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  description_max_bytes: 8\n");
+        $this->fakeOneCardWithDescription('0123456789abcdef');
+
+        $card = $this->callTool(['tool' => 'board_my_cards', 'args' => ['include_description' => true]])
+            ->assertStatus(200)
+            ->json('result.cards_by_stage.Backlog.0');
+
+        $this->assertSame('01234567', $card['description']);
+        $this->assertTrue($card['description_truncated']);
+    }
+
+    public function test_my_cards_never_cuts_a_multibyte_character_in_half(): void
+    {
+        // The cap is a BYTE budget, so a naive substr would split the 4-byte emoji
+        // that straddles byte 8 and emit invalid UTF-8 — which fails json_encode for
+        // the WHOLE response, blanking the caller's entire board window rather than
+        // trimming one card. mb_strcut drops the whole character instead.
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  description_max_bytes: 8\n");
+        $this->fakeOneCardWithDescription('012345🚀tail');
+
+        $res = $this->callTool(['tool' => 'board_my_cards', 'args' => ['include_description' => true]]);
+
+        $res->assertStatus(200);
+        $card = $res->json('result.cards_by_stage.Backlog.0');
+        $this->assertSame('012345', $card['description']);
+        $this->assertTrue($card['description_truncated']);
+        // The response as a whole is well-formed UTF-8 — the failure this guards is
+        // an encode error, which would surface here and nowhere in the card itself.
+        $this->assertTrue(mb_check_encoding((string) $res->getContent(), 'UTF-8'));
+    }
+
+    public function test_my_cards_applies_the_opt_in_to_coord_cards_too(): void
+    {
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  coord_board_id: 12\n  address_tags:\n    - repo:me\n");
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/boards/12/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 70, 'name' => 'Inbox', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 9, 'name' => 'addressed to me', 'workflow_stage_id' => 70, 'swimlane_id' => 4,
+                    'tags' => ['repo:me'], 'payload' => [], 'updated_at' => '2026-07-20',
+                    'description' => 'coord scope'],
+            ]]),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_my_cards', 'args' => ['include_description' => true]]);
+
+        $res->assertStatus(200)->assertJsonPath('result.coord_cards.0.description', 'coord scope');
+        $this->assertFalse($res->json('result.coord_cards.0.description_truncated'));
+    }
+
+    /**
+     * A truthy non-bool must be REFUSED, not coerced — coercion would silently
+     * switch on the expensive projection the opt-in exists to gate.
+     *
+     * @return array<string, array{0: mixed}>
+     */
+    public static function nonBooleanIncludeDescription(): array
+    {
+        return ['string true' => ['true'], 'int 1' => [1], 'array' => [[]], 'string yes' => ['yes']];
+    }
+
+    #[DataProvider('nonBooleanIncludeDescription')]
+    public function test_my_cards_refuses_a_non_boolean_include_description(mixed $value): void
+    {
+        Http::fake();   // the refusal must precede every board read
+
+        $this->callTool(['tool' => 'board_my_cards', 'args' => ['include_description' => $value]])
+            ->assertStatus(422);
+        Http::assertNothingSent();
     }
 
     // ─── tool + body validation ──────────────────────────────────────────────

@@ -227,7 +227,7 @@ final class KanbanClient
         }
         $data = $this->http()->get("/boards/{$boardId}/tasks/by-ref.json", $query)->throw()->json('data');
 
-        return self::idList($data);
+        return self::correlationIds(self::idList($data), "by-ref {$system}", $boardId);
     }
 
     /**
@@ -248,7 +248,7 @@ final class KanbanClient
     {
         $data = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId} tags:\"{$tag}\"", 'limit' => self::SEARCH_LIMIT])->throw()->json('data');
 
-        return self::idList($data);
+        return self::correlationIds(self::idList($data), "tag-search {$tag}", $boardId);
     }
 
     /**
@@ -526,9 +526,17 @@ final class KanbanClient
      * preload endpoint (carries swimlanes, NOT every task) — never the task-heavy
      * GET /boards/{id}.json.
      *
-     * @return list<int>
+     * NULL means the read carried no swimlane collection, and it is NOT the same
+     * answer as `[]` (card#5698). An empty list is ordinary — every board in the
+     * reference fleet answers `data.swimlanes: []` — so a caller that treated empty
+     * as failure would report one on every healthy install. What a caller must not
+     * do is the converse: conclude "that lane is not on this board" from a read that
+     * never carried the lanes. Both `bridge:check` call sites report `unvalidated`
+     * on null, per {@see idList}.
+     *
+     * @return list<int>|null
      */
-    public function boardSwimlaneIds(int $boardId): array
+    public function boardSwimlaneIds(int $boardId): ?array
     {
         $swimlanes = $this->http()->get("/boards/{$boardId}/preload.json")->throw()->json('data.swimlanes');
 
@@ -543,13 +551,23 @@ final class KanbanClient
      * reads the dedicated GET /boards/{id}/custom_fields.json. A board's payload keys
      * are its custom-field `key`s (kanban 422s any unregistered key — DL-028 upstream).
      *
-     * @return list<string>
+     * NULL means the read carried no custom-field collection, on the same rule as
+     * {@see idList} and for the same reason — a board with no custom fields
+     * registered is an ordinary `[]`, so only the absent-collection case is
+     * could-not-see. This projects `key` STRINGS rather than ids, which is why it
+     * does not route through `idList` itself; the discrimination is the shared part,
+     * not the projection.
+     *
+     * @return list<string>|null
      */
-    public function boardCustomFieldKeys(int $boardId): array
+    public function boardCustomFieldKeys(int $boardId): ?array
     {
         $fields = $this->http()->get("/boards/{$boardId}/custom_fields.json")->throw()->json('data');
+        if (! is_array($fields)) {
+            return null;
+        }
         $keys = [];
-        foreach (is_array($fields) ? $fields : [] as $f) {
+        foreach ($fields as $f) {
             if (is_array($f) && isset($f['key']) && is_string($f['key'])) {
                 $keys[] = $f['key'];
             }
@@ -611,23 +629,79 @@ final class KanbanClient
     /**
      * Extract a `list<int>` of numeric top-level `id`s from a decoded kanban
      * collection — the shape shared by the by-ref, tag-search, and preload-swimlane
-     * reads (each a plain "the rows' ids" projection). A non-array element, or one
-     * without a numeric `id`, is skipped. NOT for the scan-correlation loops
+     * reads (each a plain "the rows' ids" projection) — or NULL when the decoded
+     * value is not a collection at all. A non-array element, or one without a
+     * numeric `id`, is skipped. NOT for the scan-correlation loops
      * ({@see correlateDl}/{@see correlatePr}/{@see correlateIssue}), whose id read
      * is ANDed with a payload match, nor the `[id => …]` map extractors.
      *
-     * @return list<int>
+     * THE NULL IS THE WHOLE POINT (card#5698), and `[]` deliberately is NOT it.
+     * An empty list is a real and ordinary answer — every board in the reference
+     * fleet answers `data.swimlanes: []` — so no caller may read emptiness as
+     * failure. What a caller must never do is read "the response carried no such
+     * key" as that same empty answer: `json('data.swimlanes')` yields null for an
+     * absent key exactly as `json()` yields null for a body that is not the shape
+     * this endpoint promises, and collapsing either into `[]` hands a `bridge:check`
+     * leg a definite verdict ("that lane is not on the board") whose only evidence
+     * is this process's own inability to see. That is the class this card names, and
+     * the discrimination has to live HERE: three public reads project through this
+     * one method, so a guard bolted onto any single caller leaves the next one to
+     * re-mint the defect.
+     *
+     * BOUNDED, DELIBERATELY: a row this SKIPS is not reflected in the return. The
+     * question answered is "did the response carry a collection", never "was that
+     * collection complete". Signalling partiality would have to either withhold the
+     * ids that DID parse — breaking the two correlation callers, whose entire job is
+     * to use them — or add a third state no caller has a use for. A kanban row
+     * always carries its primary key, so that state is not worth representing;
+     * a caller needing completeness must assert it against a known expected set.
+     *
+     * @return list<int>|null
      */
-    private static function idList(mixed $rows): array
+    private static function idList(mixed $rows): ?array
     {
+        if (! is_array($rows)) {
+            return null;
+        }
         $ids = [];
-        foreach (is_array($rows) ? $rows : [] as $row) {
+        foreach ($rows as $row) {
             if (is_array($row) && isset($row['id']) && is_numeric($row['id'])) {
                 $ids[] = (int) $row['id'];
             }
         }
 
         return $ids;
+    }
+
+    /**
+     * The ids from a RUNTIME correlation read, degrading an unreadable collection
+     * ({@see idList}'s null) to "no match" — but never silently.
+     *
+     * The degradation itself is settled policy and is not reopened here: a
+     * correlation that cannot read must no-op rather than throw, because a 5xx on a
+     * deterministic body would retry-storm an unfixable event for ~11 days (the
+     * DL-020 anti-pattern), and both callers' contracts already make an empty list a
+     * graceful no-op. What was wrong is that it happened SILENTLY — "the endpoint
+     * answered a body carrying no card collection" and "no card matched" are
+     * different facts, and only the first is a bug to chase. So this is the
+     * {@see correlationCards} treatment (DL-026: make the non-erroring degradation
+     * LOUD at the single read that shares it) applied to the two reads that reach
+     * kanban through a projection rather than through the board scan.
+     *
+     * @param  list<int>|null  $ids
+     * @param  string  $read  the read to NAME in the log — a caller-side label, since
+     *                        this sees only the projection's result, not the endpoint.
+     * @return list<int>
+     */
+    private static function correlationIds(?array $ids, string $read, int $boardId): array
+    {
+        if ($ids !== null) {
+            return $ids;
+        }
+
+        Log::warning("writeback correlation: the {$read} read returned a 200 whose body carried no card collection — it is being treated as a no-match, so this correlation silently no-ops; kanban's response shape may have changed, or something other than kanban (a proxy, an auth portal) may be answering this URL", ['board_id' => $boardId, 'read' => $read]);
+
+        return [];
     }
 
     /**

@@ -31,16 +31,16 @@ jobs:
     name: PHPUnit + Pint + PHPStan (PHP 8.3, SQLite)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: ./.github/actions/setup-app
 
       - name: Pint (code style)
         run: vendor/bin/pint --test
 
-      - name: PHPStan (app/Bridge, level 7)
+      - name: PHPStan (app/Bridge + CheckCommand, level 7)
         run: vendor/bin/phpstan analyse -c phpstan-laravel.neon --no-progress
 
-      - name: Doc-sync (CLAUDE_*.md PHP references resolve)
+      - name: Doc-sync (references resolve, no line citations, no unbounded coverage claims)
         run: php bin/check-doc-refs.php
 
       - name: PHPUnit (SQLite in-memory)
@@ -81,7 +81,7 @@ jobs:
       DB_PASSWORD: ci_user_password
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: ./.github/actions/setup-app
 
       - name: Verify MariaDB connectivity

@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Fixtures\UnreadableDeclarationClassifier;
 use Tests\TestCase;
 
 class BridgeCommandsTest extends TestCase
@@ -26,6 +27,13 @@ class BridgeCommandsTest extends TestCase
     private string $dir;
 
     private string|false $origGhToken;
+
+    /**
+     * A directory a test made unreadable, restored before {@see self::tearDown()} deletes
+     * the fixture tree — `File::deleteDirectory` cannot enumerate a 0000 dir, so an
+     * un-restored mode leaks the temp dir and its contents into every later run.
+     */
+    private ?string $unreadableDir = null;
 
     protected function setUp(): void
     {
@@ -52,6 +60,10 @@ class BridgeCommandsTest extends TestCase
             putenv('GH_TOKEN');
         } else {
             putenv('GH_TOKEN='.$this->origGhToken);
+        }
+        if ($this->unreadableDir !== null) {
+            chmod($this->unreadableDir, 0o755);
+            $this->unreadableDir = null;
         }
         File::deleteDirectory($this->dir);
         parent::tearDown();
@@ -82,6 +94,74 @@ class BridgeCommandsTest extends TestCase
     {
         config(['bridge.secret_dir' => null]);
         $this->artisan('bridge:check')->assertExitCode(1);
+    }
+
+    public function test_check_names_an_unreadable_config_dir_as_why_the_agent_plane_did_not_run(): void
+    {
+        // DL-248: a config dir that EXISTS but the bridge user cannot read passes
+        // `is_dir()` and globs empty, so the arm BELOW this one would tell the operator
+        // the install has no agent config files — a confidently false claim about an
+        // install that holds one. The state is CONSTRUCTED rather than reasoned about,
+        // and the three facts the arm rests on are asserted before the command runs:
+        // otherwise a change to any of them would leave this test green against a
+        // different code path.
+        $configDir = $this->dir.'/unreadable-config';
+        File::ensureDirectoryExists($configDir);
+        File::put($configDir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+        config(['bridge.config_dir' => $configDir]);
+        // Recorded BEFORE the chmod: tearDown must restore the mode even if the chmod is
+        // the last thing that succeeds, or File::deleteDirectory leaves it behind and
+        // every later test in this process inherits an undeletable temp dir.
+        $this->unreadableDir = $configDir;
+        chmod($configDir, 0o000);
+        clearstatcache(true, $configDir);
+
+        // GUARD THE PRECONDITION, NEVER ASSUME IT. A root runner reads a 0000 directory,
+        // which would silently invert this test into a decoration for the arm below.
+        if (is_readable($configDir)) {
+            $this->markTestSkipped('this runner can read a 0000 directory (running as root?), so the unreadable-config-dir arm is unreachable here');
+        }
+        $this->assertTrue(is_dir($configDir), 'an unreadable dir still passes is_dir() — that is the whole trap');
+        // Asserted as the SCAN sees it, not as `glob()` spells it: an unreadable dir makes
+        // glob() return `[]` on some platforms and `false` on others, and `handle()`
+        // coalesces both to an empty iteration. Pinning one of the two spellings would be
+        // asserting something this arm does not depend on.
+        $this->assertSame([], glob($configDir.'/*.yml') ?: [], 'the YAML scan must find nothing, which is what makes the arm below reachable');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('the config dir could not be read, so no agent config was loaded')
+            ->doesntExpectOutputToContain('this install has no agent config files')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_names_an_empty_config_dir_as_why_the_agent_plane_did_not_run(): void
+    {
+        // DL-248, and the SIBLING of the arm above rather than a second copy of it: the
+        // per-agent skip reason is a five-arm `match(true)` whose third and fourth arms are
+        // BOTH true on a config dir that exists, is readable, and holds no `*.yml` —
+        // `$agentNames === []` and `$configs === []` are the same empty state there. Arm 3
+        // wins by POSITION alone, so nothing but this test stops a delete or a reorder, and
+        // the shape it protects is a FRESH INSTALL before its first agent YAML is written —
+        // `bridge:check`'s primary first-run audience. Without arm 3 that operator is told
+        // "no agent config parsed (see the errors above)" on an exit-0 run with no errors
+        // above it, which is the same confidently-false-diagnosis class as the unreadable
+        // arm, one position down.
+        $configDir = $this->dir.'/empty-config';
+        File::ensureDirectoryExists($configDir);
+        config(['bridge.config_dir' => $configDir]);
+
+        // The state is CONSTRUCTED and its three facts pinned before the command runs —
+        // this arm is reachable only while all three hold, and a change to any of them
+        // would otherwise leave this test green against a different arm.
+        $this->assertTrue(is_dir($configDir));
+        $this->assertTrue(is_readable($configDir), 'a readable dir is what separates this arm from the one above it');
+        $this->assertSame([], glob($configDir.'/*.yml') ?: [], 'the YAML scan must find nothing — that is the state both arms answer for');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('this install has no agent config files (no *.yml in the config dir)')
+            ->doesntExpectOutputToContain('no agent config parsed')
+            ->assertExitCode(0);
     }
 
     public function test_check_fails_on_configured_provider_without_adapter(): void
@@ -145,7 +225,7 @@ class BridgeCommandsTest extends TestCase
                 return '/home/bridge';
             }
 
-            public function homeForUser(string $user): string
+            public function homeForUser(string $user): ?string
             {
                 return "/home/{$user}";
             }
@@ -177,6 +257,26 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:check')
             ->expectsOutputToContain('still grants')
             ->assertExitCode(1);
+    }
+
+    public function test_check_skips_the_ssh_legs_when_the_board_tools_client_is_unavailable(): void
+    {
+        // The board-tools client envelope SKIPS the per-agent board-STATE legs AND the ssh
+        // legs on a construction failure — the inline code did it with a `return`, the
+        // registry does it with the envelope's guard, and the two are only distinguishable
+        // on an install that has an ssh agent AND no writeback client. No golden fixture is
+        // one (all three ssh installs construct a client), so reverting that guard left the
+        // whole suite GREEN when it was mutation-tested. This is the witness.
+        Http::fake();
+        $this->writeSshAgent();
+        File::delete($this->dir.'/kanban/writeback-token');   // → the factory throws
+        $this->bindSshEnv('command="php artisan bridge:tools-call --agent=me",restrict ssh-ed25519 AAAA me');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('the kanban writeback client is unavailable')
+            ->doesntExpectOutputToContain('board_tools ssh:')
+            ->assertExitCode(0);   // the client-unavailable arm warns, never fails
+        Http::assertNothingSent();
     }
 
     public function test_check_passes_with_good_ssh_line_unprivileged(): void
@@ -592,7 +692,7 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
-    public function test_check_warns_when_the_board_read_fails(): void
+    public function test_check_reports_a_failed_board_read_as_unvalidated(): void
     {
         $this->writeWritebackWithToken();
         Http::fake(['*/tasks/search.json*' => Http::response(['error' => 'forbidden'], 403)]);
@@ -859,6 +959,29 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:check')
             ->expectsOutputToContain('does not declare its consumed events')
             ->expectsOutputToContain("has received 'pull_request' (1x, last")
+            ->assertExitCode(0);
+    }
+
+    public function test_check_event_consumer_withholds_the_verdict_when_a_declaration_throws(): void
+    {
+        // card#5698, THROUGH THE COMMAND — the only place the catch that mints the
+        // tri-state actually runs. Every unit test around this builds
+        // `CheckContext::$githubScopeConsumers` by hand, so the arm they exercise is the
+        // one this fixture's throw has to reach for them to be about anything.
+        //
+        // The fixture implements DeclaresConsumedEvents (so the out-of-process
+        // probeImplements says true) and throws from consumedEventTypes(), which is the
+        // one reachable throw in that block: for()'s failures are pre-empted by
+        // AgentClassifierResolvableCheck's probeLoadable.
+        $this->writeGithubAgent('wb', UnreadableDeclarationClassifier::class);
+        $this->githubEvent('pull_request.opened', 'e1');
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('threw when asked which events it consumes')
+            ->expectsOutputToContain('could not be determined')
+            // The two false claims the swallow used to produce, pinned as absences.
+            ->doesntExpectOutputToContain('does not declare its consumed events')
+            ->doesntExpectOutputToContain('silently dropped on arrival')
             ->assertExitCode(0);
     }
 
@@ -2393,6 +2516,20 @@ class BridgeCommandsTest extends TestCase
     // bridge:check certified the running socket but never the DEPLOYED files the
     // next session respawns from.
 
+    /**
+     * An agent with NO `channel:` block — the only configuration that reaches zero
+     * `unvalidated` findings since DL-237. `ChannelSnapshotProbe` is invoked only for
+     * an agent with a channel socket, url or server_path, so this one never enters it:
+     * an undeclared server_path reports `unvalidated` (DL-229/DL-236) and a declared
+     * one now reports the launch disclosure (DL-237).
+     */
+    private function writeAgentWithoutChannel(): void
+    {
+        File::put($this->dir.'/prod-agent.yml',
+            "identity:\n  kanban_user_id: 137\n"
+            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+    }
+
     private function writeAgentWithChannelServerPath(?string $serverPath): void
     {
         $block = "channel:\n  socket: {$this->dir}/snap.sock\n";
@@ -2450,30 +2587,66 @@ class BridgeCommandsTest extends TestCase
         // card 5170: and the run DISCLOSES it in aggregate. Without the tally the
         // only trace of a check that never ran is one line among dozens, and a
         // zero exit reads as "everything validated".
-        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $out);
+        $this->assertStringContainsString('1 finding(s) reported `unvalidated`', $out);
         $this->assertStringContainsString('this run says nothing about what they would have found', $out);
-        // And it does not over-claim: the counted population is the `unvalidated`
-        // severity, NOT "checks that report a severity" — a check that could not
-        // run usually reports `warn` and is not in this number, so the tally's
-        // absence is never a certificate that every leg ran.
-        $this->assertStringContainsString('only checks reporting `unvalidated` are counted', $out);
-        $this->assertStringContainsString('no tally line does NOT mean every leg ran', $out);
+        // And it does not over-claim — the assertion that has moved TWICE with the
+        // disclosure it guards. It first said the count was a FLOOR because a leg that
+        // could not measure usually reported `warn`; DL-251 swept those, so that
+        // sentence became false and the line was narrowed rather than deleted (deleting
+        // it would read as "everything unmeasured is now counted", which the sweep does
+        // not earn). What survives is the residual the rule cannot reach: it is keyed on
+        // what a leg CONCLUDED (card#5291).
+        $this->assertStringContainsString('legs that REPORTED being unable to measure', $out);
+        $this->assertStringContainsString('is not counted here', $out);
+        // THE RESIDUAL IS NOT DESCRIBED AS SILENCE, and this asserts the correction rather
+        // than the wording it replaced. "a leg that failed to notice … still says nothing"
+        // was false — such a leg can also report the conclusion it would have drawn
+        // (card#5698) — and telling an operator the residual is silent implies everything
+        // they DO see is precise.
+        $this->assertStringContainsString('it may say nothing, or say what it would have concluded', $out);
+        // "the disclosed population" is gone for a second reason: `emitInventory()` prints
+        // one line above this and discloses the NOT-RUN checks, which this count excludes.
+        $this->assertStringNotContainsString('the disclosed population', $out);
+        // The claim it must NOT make: the old floor-because-of-`warn` wording is gone
+        // BECAUSE the sweep landed, so its survival would mean the sweep did not.
+        $this->assertStringNotContainsString('This count is a floor', $out);
+        // DL-242 STAGE 8 MOVED THE SECOND HALF OF THIS GUARANTEE TO A STRONGER
+        // MECHANISM, and this asserts the mechanism rather than dropping the
+        // guarantee. The old wording had to add "no tally line does NOT mean every
+        // leg ran", because a missing tally was the operator's ONLY signal and it
+        // could not speak for a check that never ran. The inventory line now always
+        // prints and accounts for all 37 registered checks, so that caveat is
+        // answered by data instead of prose — and the tally is left saying only the
+        // one thing it still says. DL-251 narrowed it AGAIN — the `warn` sites are swept, so
+        // what survives is that the rule is keyed on what a leg CONCLUDED (card#5291).
+        $this->assertStringContainsString('37 registered', $out);
+        $this->assertStringContainsString('All 37 are accounted for', $out);
     }
 
-    public function test_check_prints_no_unvalidated_tally_when_every_leg_ran(): void
+    public function test_check_prints_no_unvalidated_tally_when_nothing_reported_unvalidated(): void
     {
         // card 5170: SILENT at zero, not "0 unvalidated". The tally is a
         // disclosure about checks that did not run; an install with none has
         // nothing to disclose, and a permanent zero line is noise operators learn
         // to skip past — which is how the next non-zero one gets missed.
-        $deployed = $this->deploySnapshot($this->dir.'/deployed', '99.0.0');
-        $this->writeAgentWithChannelServerPath($deployed);
+        //
+        // RENAMED from `…_when_every_leg_ran`, and the fixture changed with it
+        // (DL-237). It used to declare a healthy far-future `server_path`; every such
+        // agent now reports the launch disclosure, so that fixture can no longer
+        // produce zero. An agent with no `channel:` block at all never enters the
+        // snapshot probe, which is the honest zero — and the old name was about to
+        // become false either way, since no leg anywhere measures the launch.
+        $this->writeAgentWithoutChannel();
 
         $code = Artisan::call('bridge:check');
         $out = Artisan::output();
         $this->assertSame(0, $code);
+        // POSITIVE CONTROL: asserting the ABSENCE of a tally proves nothing unless the
+        // command actually ran and produced output for this agent — otherwise a config
+        // that fails to load reads as "silent at zero".
+        $this->assertStringContainsString('agent config ok: prod-agent', $out);
         $this->assertStringNotContainsString('unvalidated', $out);
-        $this->assertStringNotContainsString('check(s) reported', $out);
+        $this->assertStringNotContainsString('finding(s) reported', $out);
     }
 
     public function test_the_unvalidated_tally_does_not_accumulate_across_invocations(): void
@@ -2491,8 +2664,8 @@ class BridgeCommandsTest extends TestCase
         $second = Artisan::output();
 
         $this->assertSame(0, $code);
-        $this->assertStringContainsString('1 check(s) reported `unvalidated`', $second);
-        $this->assertStringNotContainsString('2 check(s) reported', $second);
+        $this->assertStringContainsString('1 finding(s) reported `unvalidated`', $second);
+        $this->assertStringNotContainsString('2 finding(s) reported', $second);
     }
 
     public function test_check_fails_on_a_dangling_channel_server_path(): void
@@ -2590,6 +2763,11 @@ class BridgeCommandsTest extends TestCase
         // this instance and leaves the next one to happen.
         $this->assertStringContainsString('deploy as a SYMLINK to '.base_path('examples/channel-servers'), $out);
         $this->assertStringContainsString('has its entry file and node_modules', $out);
+        // The launch disclosure rides on the STALE branch too (DL-237): re-copying
+        // fixes drift and still tells this operator nothing about whether the result
+        // launches. Not the DL-229 (h) shape — (h) rejects two findings pointing at
+        // one action, and these point at two (re-copy; then assert on the seat).
+        $this->assertSame(1, substr_count($out, 'was NOT launch-tested'));
     }
 
     public function test_check_accepts_a_current_snapshot_and_takes_the_entry_mjs_form(): void
@@ -2606,7 +2784,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('is current (deployed 99.0.0 >= bundled', $out);
     }
 
-    public function test_check_warns_and_names_absence_when_the_deployed_package_json_is_missing(): void
+    public function test_check_names_absence_when_the_deployed_package_json_is_missing(): void
     {
         // The version leg never crashes on it: a manifest that is not there is one
         // of the four causes, and the only one the destructive re-copy answers.
@@ -2622,7 +2800,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('cannot tell whether the deployed copy is stale; re-copy the WHOLE directory (cp -R ', $out);
     }
 
-    public function test_check_warns_without_destructive_advice_when_package_json_is_unreadable(): void
+    public function test_check_omits_destructive_advice_when_package_json_is_unreadable(): void
     {
         // SPLIT FROM THE ABOVE (canon #7): "missing or unreadable … cp -R" was false
         // here (the file is right there) and its advice was wrong — a copy lands
@@ -2650,7 +2828,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringNotContainsString('cp -R', $out);
     }
 
-    public function test_check_warns_and_names_malformation_when_package_json_does_not_parse(): void
+    public function test_check_names_malformation_when_package_json_does_not_parse(): void
     {
         // The fourth cause, and the third one "missing or unreadable" misreported.
         // A corrupt manifest does not need a whole directory replaced.
@@ -2707,9 +2885,16 @@ class BridgeCommandsTest extends TestCase
         // case for it — asserted rather than reasoned about, since the repo-direct
         // symlink is the topology the reference README recommends.
         $this->assertStringContainsString('has its entry file and node_modules', $out);
+        // …and so does the launch disclosure (DL-237). THIS is the case that decided
+        // the placement: emitting it on the version-EQUAL branch alone left the
+        // RECOMMENDED topology with a fully green run and no disclosure at all —
+        // "green check, dark seat" reintroduced by the fix for it.
+        $this->assertStringContainsString('was NOT launch-tested', $out);
+        $this->assertSame(1, substr_count($out, 'was NOT launch-tested'));
+        $this->assertStringContainsString('1 finding(s) reported `unvalidated`', $out);
     }
 
-    public function test_check_warns_rather_than_fails_when_the_path_is_invisible_to_this_user(): void
+    public function test_check_reports_unvalidated_rather_than_fails_when_the_path_is_invisible_to_this_user(): void
     {
         // A path we cannot SEE is not a path that is gone: an ancestor denying
         // traversal makes is_dir() false exactly as a removed directory does, and the
@@ -2737,7 +2922,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringNotContainsString('does not resolve', $out);
     }
 
-    public function test_check_warns_rather_than_fails_when_the_deployed_directory_itself_denies_traversal(): void
+    public function test_check_reports_unvalidated_rather_than_fails_when_the_deployed_directory_itself_denies_traversal(): void
     {
         // The SIBLING of the test above, and the topology DL-227 is actually built
         // around: the deployment directory ITSELF is 0700 to the bridge's user.
@@ -2794,19 +2979,19 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringNotContainsString('has its entry file and node_modules', $out);
     }
 
-    // ---- the VERSION-GATED completeness leg (DL-230) ------------------------
-    // DL-229 shipped a check that passed GREEN on the incident that motivated the
-    // whole feature: a cherry-picked entry + package.json carry the CURRENT version
-    // stamp with them, so the version leg reads "current" and every other leg is
-    // satisfied while `node` on that same directory gives ERR_MODULE_NOT_FOUND.
-    // These two run through the REAL command against the REAL checkout reference
-    // (the unit suite covers the matrix hermetically).
+    // ---- the retired completeness leg (DL-237) ------------------------------
+    // DL-230 caught its motivating incident by ENUMERATING the reference file set.
+    // A launch catches the same incident and is more precise in both directions —
+    // but a launch run from the BRIDGE's OS user proves the entry loads for the
+    // bridge's user, not the agent's, so `bridge:check` must NOT execute node. What
+    // it does instead is DISCLOSE that the question went unmeasured. These run
+    // through the REAL command against the REAL checkout reference.
 
     /**
      * A whole-directory copy of this checkout's `examples/channel-servers`, minus
-     * $omit, plus the `node_modules` a prior `npm ci` left behind. Deliberately walks
-     * the reference itself rather than asking the probe what it holds — a fixture
-     * built from the SUT's own enumeration would agree with any answer it gave.
+     * $omit, plus the `node_modules` a prior `npm ci` left behind — so the fixture
+     * stays version-EQUAL with the checkout across every channel-server bump, which
+     * is the branch under test.
      *
      * @param  list<string>  $omit
      */
@@ -2835,67 +3020,39 @@ class BridgeCommandsTest extends TestCase
         return $dir;
     }
 
-    public function test_check_fails_on_a_version_matched_snapshot_missing_a_reference_file(): void
+    public function test_check_does_not_fail_a_version_matched_snapshot_missing_a_reference_file(): void
     {
-        // THE MOTIVATING INCIDENT. The deployed version is read from the checkout so
-        // the fixture stays version-EQUAL across every channel-server bump — the
-        // whole gate turns on that equality.
+        // THE POPULATION THAT RETIRES THE LEG, through the real command. This copy is
+        // missing `channel-lib.mjs` — the DL-230 incident — and `bridge:check` now
+        // exits 0 on it. That is deliberate and it is NOT a regression to a silent
+        // green: the run says outright that the launch was not measured, and names
+        // the seat-side check that measures it. Enumerating files here bought a FAIL
+        // on this deployment at the cost of a FAIL on a pruned-but-working one, and
+        // still never actually launched anything.
         $deployed = $this->copyOfTheReference($this->dir.'/deployed', omit: ['channel-lib.mjs']);
-
         $this->writeAgentWithChannelServerPath($deployed);
 
         $code = Artisan::call('bridge:check');
         $out = Artisan::output();
-        $this->assertSame(1, $code);
-        $this->assertStringContainsString('is MISSING 1 of ', $out);
-        $this->assertStringContainsString('delivers: channel-lib.mjs.', $out);
-        // The verdict claims only what was STAT'ed. It does NOT say the deployment
-        // was assembled by hand: the DL-038 bump guard governs the TRACKED set while
-        // the reference set is the working tree, so an untracked stray in the
-        // checkout (a `.orig` from `git apply --3way`) puts a FAITHFUL whole-directory
-        // copy in this same population — DL-230 (f). Unit-covered hermetically.
-        $this->assertStringNotContainsString('assembled file-by-file', $out);
-        // The legs that certified this deployment green before DL-230 still do; the
-        // incident was that they were the only ones asked.
-        $this->assertStringContainsString('is current (deployed ', $out);
-        $this->assertStringContainsString('has its entry file and node_modules', $out);
-        // Distinct from every other FAIL — a different operator action.
-        $this->assertStringNotContainsString('repoint the symlink', $out);
-        $this->assertStringNotContainsString('dependencies are not installed', $out);
+        $this->assertSame(0, $code);
+        $this->assertStringNotContainsString('is MISSING', $out);
+        $this->assertStringContainsString('was NOT launch-tested', $out);
+        $this->assertStringContainsString('bin/check-channel-snapshot.py', $out);
+        $this->assertStringContainsString('ON THAT SEAT', $out);
+        // EXACTLY one per agent, never one per leg — it is a statement about the run.
+        $this->assertSame(1, substr_count($out, 'was NOT launch-tested'));
+        // …and the disclosure reaches the closing tally, so a zero exit is not read
+        // as "the snapshot was certified" (DL-236).
+        $this->assertStringContainsString('1 finding(s) reported `unvalidated`', $out);
     }
 
-    public function test_check_still_exits_1_when_a_blocked_subdirectory_sits_beside_a_missing_file(): void
+    public function test_check_still_exits_0_when_the_launch_disclosure_is_the_only_unvalidated_finding(): void
     {
-        // Exit-code proof for DL-230 (e): an unseeable `tests/` must not swallow a
-        // module PROVEN absent through a traversable parent. Returning the visibility
-        // WARN on the first block did exactly that — one WARN, exit 0, a dark seat at
-        // the next session start, which is this card's own defect class.
-        if (function_exists('posix_getuid') && posix_getuid() === 0) {
-            $this->markTestSkipped('root bypasses directory permission checks');
-        }
-        $deployed = $this->copyOfTheReference($this->dir.'/deployed', omit: ['channel-lib.mjs']);
-        chmod($deployed.'/tests', 0000);
-        $this->writeAgentWithChannelServerPath($deployed);
-
-        try {
-            $code = Artisan::call('bridge:check');
-            $out = Artisan::output();
-        } finally {
-            chmod($deployed.'/tests', 0755);   // or tearDown cannot delete the tree
-        }
-
-        $this->assertSame(1, $code);
-        $this->assertStringContainsString('delivers: channel-lib.mjs.', $out);
-        $this->assertStringContainsString('could not be checked at all', $out);
-        // …and the operator still gets the traversal fix, alongside the FAIL.
-        $this->assertStringContainsString('is not visible to this user', $out);
-    }
-
-    public function test_check_accepts_a_version_matched_whole_directory_copy(): void
-    {
-        // The positive control for the test above: with nothing omitted the same
-        // fixture certifies clean, so the FAIL is caused by the omission and not by
-        // the fixture being generally unlike the reference.
+        // The exit contract, asserted end to end rather than inferred from
+        // `emitFinding()`'s return type: `unvalidated` renders, counts, and NEVER
+        // flips the exit. A version-matched deployment is the population that would
+        // have been broken by getting this wrong, since every install with a
+        // co-located current snapshot now emits one.
         $deployed = $this->copyOfTheReference($this->dir.'/deployed');
         File::put($deployed.'/my-local-module.mjs', "export const x = 1;\n");   // extra files are not a finding
 
@@ -2904,8 +3061,33 @@ class BridgeCommandsTest extends TestCase
         $code = Artisan::call('bridge:check');
         $out = Artisan::output();
         $this->assertSame(0, $code);
-        $this->assertStringContainsString('holds every file this checkout', $out);
+        $this->assertStringContainsString('is current (deployed ', $out);
+        $this->assertStringContainsString('has its entry file and node_modules', $out);
+        $this->assertSame(1, substr_count($out, 'was NOT launch-tested'));
+        $this->assertStringContainsString('1 finding(s) reported `unvalidated`', $out);
+    }
+
+    public function test_check_no_longer_enumerates_the_reference_file_set(): void
+    {
+        // The retirement, asserted where an operator would see it: none of the
+        // completeness leg's vocabulary survives in the output, on the very fixture
+        // that used to produce all of it.
+        $deployed = $this->copyOfTheReference($this->dir.'/deployed', omit: ['README.md']);
+        $this->writeAgentWithChannelServerPath($deployed);
+
+        $code = Artisan::call('bridge:check');
+        $out = Artisan::output();
+        $this->assertSame(0, $code);
+        // POSITIVE CONTROL: five absence assertions are worth nothing if the snapshot
+        // legs never ran at all on this fixture (a mis-declared path, an early return).
+        // Prove the run reached them before reading anything into their silence.
+        $this->assertStringContainsString('is current (deployed ', $out);
+        $this->assertStringContainsString('has its entry file and node_modules', $out);
         $this->assertStringNotContainsString('is MISSING', $out);
+        $this->assertStringNotContainsString('whole-directory copy of', $out);
+        $this->assertStringNotContainsString('holds every file', $out);
+        $this->assertStringNotContainsString('could not be checked at all', $out);
+        $this->assertStringNotContainsString('reference set', $out);
     }
 
     // ─── DL-217 board_tools probes ───────────────────────────────────────────
@@ -2953,7 +3135,7 @@ class BridgeCommandsTest extends TestCase
     {
         // Under default-ON a token collision is a broken enablement (tools DEAD for
         // both agents), so bridge:check FAILs — the opt-in-era WARN (exit 0) is
-        // superseded (DL-217 v5/v7). Reverting the resolver's typed problem to a warn
+        // superseded (DL-217 v5/v7). Reverting the resolver's problem to a warn
         // reds this on the exit code.
         config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
         $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
@@ -3000,7 +3182,7 @@ class BridgeCommandsTest extends TestCase
     {
         // Under default-ON a dead bearer is a broken enablement → FAIL (was WARN/exit
         // 0). The enabled agent's token file is removed, so the resolver accumulates a
-        // typed bearer_unreadable problem the check renders as an error.
+        // unreadable-bearer problem the check renders as an error.
         config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
         $this->writeSecret($this->dir.'/kanban/writeback-token', 'wb-token');   // gitleaks:allow — test fixture
         $this->writeBoardToolsAgent('impl', 'tok-impl-1');

@@ -3,6 +3,7 @@
 namespace App\Console\Commands\Bridge;
 
 use App\Bridge\Exceptions\InsecureSecretPermsException;
+use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Provision\KanbanProvisionClient;
 use App\Bridge\Provision\ProvisionResult;
 use App\Bridge\Provision\WebhookProvisioner;
@@ -76,9 +77,20 @@ class ProvisionCommand extends BridgeCommand
                     $rc = self::FAILURE;
 
                     continue;
+                } catch (UnreadableSecretException $e) {
+                    // This command provisions AS the operator, and the token it needs is
+                    // the one IT will present — so unlike the checks, the read that
+                    // failed is the read that matters, and a definite failure is earned.
+                    $this->error("{$label} FAIL — ".$e->getMessage());
+                    $rc = self::FAILURE;
+
+                    continue;
                 }
                 if ($token === null) {
-                    $this->warn("{$label} SKIP — token unreadable ({$agent->tokenPath($secretDir, $sub->provider)})");
+                    // "unreadable" until card#5778, which was the wrong half of the split
+                    // even then and is now provably so: an unreadable token throws above,
+                    // so null is absent-or-blank and nothing else.
+                    $this->warn("{$label} SKIP — no token at {$agent->tokenPath($secretDir, $sub->provider)} (place one, chmod 600)");
                     $rc = self::FAILURE;
 
                     continue;

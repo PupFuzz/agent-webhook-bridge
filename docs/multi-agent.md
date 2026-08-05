@@ -364,8 +364,8 @@ namespace YourOrg\KanbanBridge;
 
 use App\Bridge\Contracts\Classifier;
 use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
-use App\Bridge\Support\AgentConfig;
 
 class MyClassifier implements Classifier
 {
@@ -375,14 +375,15 @@ class MyClassifier implements Classifier
         'myorg/acme-inventory' => 'inventory',
     ];
 
-    public function classify(string $eventType, array $payload, Actor $actor, string $provider, string $scopeId, AgentConfig $agent): ClassifyResult
+    public function classify(ClassifyContext $ctx): ClassifyResult
     {
+        $actor = $ctx->actor;
         $reattributed = null;
-        if ($provider === 'github' && $actor->name === null && isset(self::REPO_TO_AGENT[$scopeId])) {
+        if ($ctx->provider === 'github' && $actor->name === null && isset(self::REPO_TO_AGENT[$ctx->scopeId])) {
             // scope_id is the repo full_name for github
             $actor = $reattributed = new Actor(
                 id: $actor->id,
-                name: self::REPO_TO_AGENT[$scopeId],
+                name: self::REPO_TO_AGENT[$ctx->scopeId],
                 isKnownAgent: true,
                 rawEnvelope: $actor->rawEnvelope,
             );
@@ -390,9 +391,11 @@ class MyClassifier implements Classifier
 
         // ... build your intents/targets using the resolved $actor ...
 
-        // Return the recovered author as reattributedActor so the dispatcher
-        // can apply per-agent echo on it (see below). Leave it null when you
-        // didn't recover one — the result is then dispatched unchanged.
+        // Return the recovered ACTOR as reattributedActor so the dispatcher can
+        // apply per-agent echo on it (see below). Leave it null when this event
+        // carries no evidence of who acted — the result is then dispatched
+        // unchanged, which is the correct outcome (DL-253). A repo→agent map is
+        // one of the few signals that survives a bodyless action.
         return new ClassifyResult(intents: $intents, reattributedActor: $reattributed);
     }
 }
@@ -407,4 +410,6 @@ The pre-classify echo gate can only match a shared account by raw id (`treat_as_
 - the event the agent **itself** authored (recovered name == its own name) is suppressed — no inbox noise, no self-react loop;
 - an event a **different** shared-id agent authored (recovered name != its own name) still surfaces.
 
-You report *who* authored the event; the dispatcher decides *is that me?* per agent — so the one classifier, running for all four agents, yields per-agent self-echo from a single shared account. Reporting the author is enough; you do not filter inside `classify` (see [`customization.md`](customization.md) § Per-agent echo for a shared upstream identity).
+You report *who acted*; the dispatcher decides *is that me?* per agent — so the one classifier, running for all four agents, yields per-agent self-echo from a single shared account. Reporting the actor is enough; you do not filter inside `classify` (see [`customization.md`](customization.md) § Per-agent echo for a shared upstream identity).
+
+**Report the ACTOR, not a name that merely relates to the event (DL-253).** The dispatcher DROPS on this value, so a name asserts *this agent performed this event*. A repo→agent map earns that on any action; a thread's opener does not — it is frozen at open, so on a later `reopened`/`closed` it names someone who may not have acted. Substituting it suppresses **other agents'** events as your own. If nothing evidences the actor, return `null`.

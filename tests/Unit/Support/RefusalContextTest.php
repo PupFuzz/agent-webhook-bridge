@@ -124,4 +124,64 @@ class RefusalContextTest extends TestCase
     {
         $this->assertSame($expected, RefusalContext::isPermanent($this->exception('{}', $status)));
     }
+
+    // --- card#5312 / DL-274: the alert-reason vocabulary the refusal arms share ---
+
+    /**
+     * @return list<array{0: int, 1: string}>
+     */
+    public static function writeStatuses(): array
+    {
+        return [
+            'forbidden — read-but-not-write token' => [403, 'movecard_403_not_writable_by_this_token'],
+            'not-found — the card is gone' => [404, 'movecard_404_no_such_card'],
+            'unprocessable — catch-all' => [422, 'movecard_4xx'],
+            'bad request — catch-all' => [400, 'movecard_4xx'],
+            'conflict — catch-all' => [409, 'movecard_4xx'],
+        ];
+    }
+
+    #[DataProvider('writeStatuses')]
+    public function test_write_reason_names_403_and_404_and_keeps_every_other_4xx_generic(int $status, string $expected): void
+    {
+        $this->assertSame($expected, RefusalContext::writeReason('movecard', $this->exception('{}', $status)));
+    }
+
+    /**
+     * @return list<array{0: int, 1: string}>
+     */
+    public static function readStatuses(): array
+    {
+        return [
+            'not-found — the card is gone' => [404, 'getcard_404_no_such_card'],
+            'forbidden — exists, not visible to this token' => [403, 'getcard_403_not_visible_to_this_token'],
+            'unprocessable — catch-all' => [422, 'getcard_4xx'],
+            'bad request — catch-all' => [400, 'getcard_4xx'],
+        ];
+    }
+
+    #[DataProvider('readStatuses')]
+    public function test_read_reason_names_404_and_403_and_keeps_every_other_4xx_generic(int $status, string $expected): void
+    {
+        $this->assertSame($expected, RefusalContext::readReason('getcard', $this->exception('{}', $status)));
+    }
+
+    public function test_read_and_write_403_are_different_reasons(): void
+    {
+        // The two 403s are DIFFERENT operator hypotheses — a token that can read but not
+        // write is invisible to a read probe. Collapsing them would also collapse the
+        // (repo, outcome, reason) dedup tuple, silencing whichever arrived second.
+        $e = $this->exception('{}', 403);
+
+        $this->assertNotSame(RefusalContext::readReason('x', $e), RefusalContext::writeReason('x', $e));
+    }
+
+    public function test_the_verb_scopes_the_reason_so_two_arms_of_one_event_do_not_dedup_each_other(): void
+    {
+        // A move event can fail at the move AND at the stamp. Sharing a reason would put
+        // both under one (repo, outcome, reason) marker — the second would alert zero times.
+        $e = $this->exception('{}', 403);
+
+        $this->assertNotSame(RefusalContext::writeReason('movecard', $e), RefusalContext::writeReason('stamp', $e));
+    }
 }
