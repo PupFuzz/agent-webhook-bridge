@@ -97,7 +97,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   subject, while a parsed card token does not (both directions asserted in PrTitleLintTest).
   Driven over the 400 most recent PRs (review measurement, 2026-08-06): `looks_dl` matches 169
   subjects and `good_dl` suppresses **every one** — in particular, every historical glued-`dlNNN`
-  branch (`feature/dl189-…`, `docs/dl204-…`) sat beside a well-spelled `DL-NNN` in its PR title,
+  branch (`feat/dl189-…`, `docs/dl204-…`) sat beside a well-spelled `DL-NNN` in its PR title,
   so the arm fires **zero** times on that history. The branch-only glued miss DL-273 measured is
   therefore the RUNTIME half's to catch: a branch-create push reaches the classifier as a bare
   ref, where the DL-273 near-miss probe warns when no card token parses, and the new stamp-site
