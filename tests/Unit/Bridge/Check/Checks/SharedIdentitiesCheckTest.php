@@ -4,6 +4,7 @@ namespace Tests\Unit\Bridge\Check\Checks;
 
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Checks\SharedIdentitiesCheck;
+use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use Illuminate\Support\Facades\File;
@@ -65,10 +66,11 @@ class SharedIdentitiesCheckTest extends TestCase
     }
 
     /**
-     * The shape the golden fixture actually writes. The read is fail-soft — it logs and
-     * returns an empty list — so a present-but-wrongly-shaped file reports zero rather
-     * than failing the run, and reporting it at all is the point: silence here reads as
-     * "no such file".
+     * The shape the golden fixture actually writes, and it is a CLEAN parse rather than a
+     * degraded one: the bytes are a valid JSON object that simply carries no
+     * `shared_identities` key, so the read succeeds silently — nothing is logged and no
+     * entry is skipped — and the zero is a real answer. Reporting it at all is the point:
+     * silence here would read as "no such file".
      */
     public function test_a_file_that_parses_to_nothing_is_still_reported_at_zero(): void
     {
@@ -82,8 +84,10 @@ class SharedIdentitiesCheckTest extends TestCase
     }
 
     /**
-     * DL-259 (card#5698): the three states `loadSharedIdentities()` answers `[]` for are
-     * not one state. Malformed JSON is MEASURED — the bytes were read and they are not an
+     * DL-259 (card#5698): the three states `loadSharedIdentities()` collapses onto `[]`
+     * are not one state, and `readSharedIdentities()` is what keeps them apart for this
+     * check to pronounce on.
+     * Malformed JSON is MEASURED — the bytes were read and they are not an
      * object — and it is a real fault: the loader ignores the file, so every agent sharing
      * an account loses attribution silently. It used to render GREEN at `0 shared
      * account(s)`, identical to a file that genuinely declares none.
@@ -130,8 +134,13 @@ class SharedIdentitiesCheckTest extends TestCase
         $this->assertSame([], $this->findings());
     }
 
-    /** No config dir means no path to test — the leg cannot run, and must not throw. */
-    public function test_it_is_silent_when_there_is_no_config_dir(): void
+    /**
+     * A context the derivation never populated — the state a hand-built context is in, and
+     * the one an install with no config dir produces, since no path can be formed to read.
+     * The check must treat the null as nothing to report rather than dereference it: it
+     * asks the context nothing else, so this is the ONLY input that can reach it that way.
+     */
+    public function test_it_is_silent_when_the_derivation_never_ran(): void
     {
         $ctx = new CheckContext;
 
@@ -144,11 +153,18 @@ class SharedIdentitiesCheckTest extends TestCase
         File::put($this->dir.'/shared-identities.json', (string) json_encode($payload));
     }
 
-    /** @return list<Finding> */
+    /**
+     * The context PRODUCTION hands this check: the derivation performs the one read and
+     * publishes its state, and the check reads nothing itself (card#5546). Building it
+     * any other way here would test a composition the command never performs.
+     *
+     * @return list<Finding>
+     */
     private function findings(): array
     {
         $ctx = new CheckContext;
         $ctx->configDir = $this->dir;
+        $ctx->sharedIdentities = AgentRegistry::readSharedIdentities($this->dir);
 
         return $this->findingsOf((new SharedIdentitiesCheck), $ctx);
     }

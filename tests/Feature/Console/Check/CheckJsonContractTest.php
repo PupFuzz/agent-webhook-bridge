@@ -12,8 +12,8 @@ use App\Bridge\Support\Finding;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
+use Tests\Support\CheckGolden\BootsGoldenInstall;
 use Tests\Support\CheckGolden\GoldenInstall;
-use Tests\Support\CheckGolden\PinnedHost;
 use Tests\TestCase;
 
 /**
@@ -43,37 +43,13 @@ use Tests\TestCase;
  */
 class CheckJsonContractTest extends TestCase
 {
+    use BootsGoldenInstall;
     use RefreshDatabase;
-
-    private ?GoldenInstall $install = null;
-
-    private ?PinnedHost $host = null;
 
     protected function tearDown(): void
     {
-        $this->tearDownFixture();
+        $this->tearDownGoldenInstall();
         parent::tearDown();
-    }
-
-    /**
-     * Release the current fixture install and UNPIN the host.
-     *
-     * CALLED FROM {@see self::build()} AS WELL AS `tearDown()`, and that is the whole
-     * point rather than belt-and-braces. {@see PinnedHost} saves the ambient values in its
-     * CONSTRUCTOR, so a second `build()` inside one test method — several tests here walk
-     * a list of shapes — constructs a `PinnedHost` while the first one is still applied,
-     * saves the PINNED `PATH` as if it were ambient, and "restores" the process to it at
-     * `tearDown`. Every later test in the process then runs with `PATH` pointing at a
-     * fixture bin dir holding nothing, which is invisible here and reds unrelated suites
-     * that shell out. Tearing down at the START of a build makes nesting unrepresentable
-     * instead of asking each test to remember.
-     */
-    private function tearDownFixture(): void
-    {
-        $this->host?->restore();
-        $this->install?->destroy();
-        $this->host = null;
-        $this->install = null;
     }
 
     public function test_the_document_declares_its_schema_and_exactly_these_top_level_keys(): void
@@ -426,79 +402,75 @@ class CheckJsonContractTest extends TestCase
      */
     private function build(string $name): void
     {
-        $this->tearDownFixture();
+        // The pin set, its ordering, and the tear-down-before-nesting rule are all
+        // {@see BootsGoldenInstall}'s — including the channel-probe binding this method
+        // used to omit. `fpm` and `coordConfig` take the trait's defaults (absent, unset),
+        // which is what the hand-rolled `apply()` here passed explicitly.
+        $this->bootGoldenInstall('json-'.$name, function (GoldenInstall $install) use ($name): void {
+            $kanbanAgent = "identity:\n  kanban_user_id: 137\nsubscriptions:\n  - provider: kanban\n    scopes: [5]\n";
 
-        $install = new GoldenInstall('json-'.$name);
-        $host = new PinnedHost($install->path());
-        $this->install = $install;
-        $this->host = $host;
-        $host->resetAmbientState();
+            switch ($name) {
+                case 'minimal':
+                    $install->boot()->agent('prod-agent', $kanbanAgent);
+                    break;
 
-        $kanbanAgent = "identity:\n  kanban_user_id: 137\nsubscriptions:\n  - provider: kanban\n    scopes: [5]\n";
+                case 'agent-yaml-malformed':
+                    $install->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\nsubscriptions: [\n");
+                    break;
 
-        switch ($name) {
-            case 'minimal':
-                $install->boot()->agent('prod-agent', $kanbanAgent);
-                break;
-
-            case 'agent-yaml-malformed':
-                $install->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\nsubscriptions: [\n");
-                break;
-
-            case 'agent-classifier-missing-mixed-subscriptions':
-                // A classifier-gate abort — the one that happens with `$cfg` already
-                // parsed — on an agent subscribed to BOTH providers. The ledger's scope
-                // set must carry the github scope and NOT the kanban one, which is the
-                // only shape that can tell the provider filter from its absence.
-                $install->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\n  github_user_id: 555\n"
-                    ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
-                    ."  - provider: github\n    scopes: [\"owner/repo\"]\n"
-                    ."classifier:\n  class: App\\Bridge\\Classifiers\\NoSuchClassifier\n");
-                break;
-
-            case 'two-agents-missing-secrets':
-                // Two agents, each with a github subscription and no secret file: the
-                // per-agent secret/token legs report once PER AGENT, which is the only
-                // shape that can tell one grouped entry from two.
-                $githubAgent = "identity:\n  github_user_id: 555\n"
-                    ."subscriptions:\n  - provider: github\n    scopes: [\"owner/repo\"]\n"
-                    ."classifier:\n  class: App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier\n";
-                $install->boot()->agent('alpha', $githubAgent)->agent('beta', $githubAgent);
-                break;
-
-            case 'unmeasurable-legs':
-                // Two legs that cannot answer, one on each side of the registry boundary:
-                // a `channel.url` with no port (nothing to connect to ⇒ the liveness leg
-                // never runs) and a `writeback.json` with mappings but no writeback token
-                // (the board client cannot be constructed ⇒ `handle()`'s second fail-soft
-                // envelope fires and the whole WritebackProbe slot is skipped).
-                $install->boot()
-                    ->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
+                case 'agent-classifier-missing-mixed-subscriptions':
+                    // A classifier-gate abort — the one that happens with `$cfg` already
+                    // parsed — on an agent subscribed to BOTH providers. The ledger's scope
+                    // set must carry the github scope and NOT the kanban one, which is the
+                    // only shape that can tell the provider filter from its absence.
+                    $install->boot()->agent('prod-agent', "identity:\n  kanban_user_id: 137\n  github_user_id: 555\n"
                         ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
-                        ."channel:\n  url: http://127.0.0.1/push\n")
-                    ->json('writeback.json', ['identity_id' => 4242, 'mappings' => [
-                        'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]],
-                    ]]);
-                break;
+                        ."  - provider: github\n    scopes: [\"owner/repo\"]\n"
+                        ."classifier:\n  class: App\\Bridge\\Classifiers\\NoSuchClassifier\n");
+                    break;
 
-            case 'event-consumer-unconsumed-type':
-                $install->boot()->agent('wb', "identity:\n  github_user_id: 555\n"
-                    ."subscriptions:\n  - provider: github\n    scopes: [\"owner/repo\"]\n"
-                    ."classifier:\n  class: App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier\n");
-                $event = WebhookEvent::create([
-                    'delivery_id' => 'e1', 'provider' => 'github', 'scope_id' => 'owner/repo',
-                    'event_type' => 'issues.closed', 'actor_id' => '1', 'payload' => ['x' => 1],
-                ]);
-                // Pinned: the arrival timestamp is asserted, so a clock read here would
-                // make the assertion expire overnight.
-                $event->forceFill(['received_at' => '2026-01-01 00:00:00'])->save();
-                break;
+                case 'two-agents-missing-secrets':
+                    // Two agents, each with a github subscription and no secret file: the
+                    // per-agent secret/token legs report once PER AGENT, which is the only
+                    // shape that can tell one grouped entry from two.
+                    $githubAgent = "identity:\n  github_user_id: 555\n"
+                        ."subscriptions:\n  - provider: github\n    scopes: [\"owner/repo\"]\n"
+                        ."classifier:\n  class: App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier\n";
+                    $install->boot()->agent('alpha', $githubAgent)->agent('beta', $githubAgent);
+                    break;
 
-            default:
-                $this->fail("unknown json-contract shape: {$name}");
-        }
+                case 'unmeasurable-legs':
+                    // Two legs that cannot answer, one on each side of the registry boundary:
+                    // a `channel.url` with no port (nothing to connect to ⇒ the liveness leg
+                    // never runs) and a `writeback.json` with mappings but no writeback token
+                    // (the board client cannot be constructed ⇒ `handle()`'s second fail-soft
+                    // envelope fires and the whole WritebackProbe slot is skipped).
+                    $install->boot()
+                        ->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
+                            ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+                            ."channel:\n  url: http://127.0.0.1/push\n")
+                        ->json('writeback.json', ['identity_id' => 4242, 'mappings' => [
+                            'owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]],
+                        ]]);
+                    break;
 
-        $host->apply(fpmPresent: false, coordConfig: null);
+                case 'event-consumer-unconsumed-type':
+                    $install->boot()->agent('wb', "identity:\n  github_user_id: 555\n"
+                        ."subscriptions:\n  - provider: github\n    scopes: [\"owner/repo\"]\n"
+                        ."classifier:\n  class: App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier\n");
+                    $event = WebhookEvent::create([
+                        'delivery_id' => 'e1', 'provider' => 'github', 'scope_id' => 'owner/repo',
+                        'event_type' => 'issues.closed', 'actor_id' => '1', 'payload' => ['x' => 1],
+                    ]);
+                    // Pinned: the arrival timestamp is asserted, so a clock read here would
+                    // make the assertion expire overnight.
+                    $event->forceFill(['received_at' => '2026-01-01 00:00:00'])->save();
+                    break;
+
+                default:
+                    $this->fail("unknown json-contract shape: {$name}");
+            }
+        });
     }
 
     private function encoded(string $name): string

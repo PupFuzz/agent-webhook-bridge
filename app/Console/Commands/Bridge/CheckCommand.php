@@ -134,8 +134,10 @@ class CheckCommand extends BridgeCommand
         // RAW, and so does the derivation below: what they report on is the SETTING, and
         // the narrowed value published on the context cannot express an empty string or a
         // value env() coerced away from a string. Reading a config key a second time is
-        // free of side effects, which is why this differs from the shared-identities read
-        // stage 5c preserved rather than collapsed (card#5546) — that one logs.
+        // free of side effects, which is why this differs from the shared-identities read,
+        // which LOGS: stage 5c preserved that one doubled under the byte-identical output
+        // contract and card#5546 later collapsed it to a single read published on the
+        // context. A second config() lookup has nothing to duplicate.
         if (! $this->emitReport($runner->run(CheckSlot::Install, $ctx))) {
             $ok = false;
         }
@@ -349,11 +351,20 @@ class CheckCommand extends BridgeCommand
         // the build cannot move into either check that reads it: two checks each
         // constructing their own would re-log every collision on a colliding install, a
         // behavior change this migration's byte-identical output contract cannot see.
-        if ($configs !== [] && $ctx->configDir !== null) {
-            $ctx->registry = AgentRegistry::fromAgentConfigs(
-                $configs,
-                AgentRegistry::loadSharedIdentities($ctx->configDir),
-            );
+        //
+        // THE FILE READ IS THE SAME SHAPE AND SITS OUTSIDE THE `$configs` HALF ON PURPOSE
+        // (card#5546): reading it LOGS — a permissions fault, a non-object, one line per
+        // wrongly-shaped entry — so the run reads it exactly once and publishes the state,
+        // and SharedIdentitiesCheck reports on that rather than reading it again. It is
+        // gated only on the config dir because that check must answer for an install whose
+        // agent YAMLs all failed to parse; the registry keeps its own `$configs` gate,
+        // because a roster of no agents is not a roster.
+        if ($ctx->configDir !== null) {
+            $shared = AgentRegistry::readSharedIdentities($ctx->configDir);
+            $ctx->sharedIdentities = $shared;
+            if ($configs !== []) {
+                $ctx->registry = AgentRegistry::fromAgentConfigs($configs, $shared->identities);
+            }
         }
 
         // The post-loop ROSTER/IDENTITY legs — migrated to AgentIdentityCollisionsCheck,

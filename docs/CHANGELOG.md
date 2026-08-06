@@ -55,6 +55,19 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   hidden, not a new rule. Installs that construct a client are unaffected and their output is
   unchanged. Note that `SshLiveProbeCheck`, the heavier opt-in live round-trip, already ran
   outside this guard; the offline probe needing strictly less was the one gated on it.
+- **`bridge:check` reads `shared-identities.json` once per run instead of up to three times
+  (card#5546).** The registry derivation read it, and `SharedIdentitiesCheck` read it twice more —
+  once raw for its DL-259 absent/unreadable/malformed/parsed discrimination and once through the
+  loader for the count. The loader LOGS, so on a file that parses as an object but carries an entry
+  with no numeric `github_user_id` the run emitted the same per-entry warning **twice**, and an
+  operator tailing the log (or an alert counting the line) read one install fault as two. The read
+  now happens once in the derivation and is published on `CheckContext` as a state object the check
+  consumes; `AgentRegistry::loadSharedIdentities()` keeps its exact fail-soft list contract for the
+  receiver. **Stdout and every exit code are byte-identical** — which is why the acceptance evidence
+  is a log-count assertion watched to red against the pre-fix code, not a green golden suite. Two
+  log-count deltas otherwise: on an install where *no* agent YAML parsed, an unreadable or malformed
+  file now warns once where it warned not at all (the check has always reported that install; the
+  read reaching it is what the report was missing).
 
 ## [0.72.0] - 2026-08-05
 
