@@ -1160,7 +1160,7 @@ class GitHubPrCardMoveClassifierTest extends TestCase
      * CARD#5961 CLOSED THAT COST, BY DECISION, AND THIS LEG WAS UPDATED FOR IT —
      * the file's convention is to name the card that moved a pin. What changed is
      * NOT this guard: the near-miss probe still sits behind the both-null guard and
-     * this subject still draws no near-miss line, which is what the assertions
+     * this subject still draws no near-miss line in the bridge log, which is what the assertions
      * below now say specifically. What is new is a DISTINCT warning at the stamp
      * site naming the lost `dl_number` — a different signal, made where it is true.
      * A future edit that closes the near-miss half by widening the guard still reds
