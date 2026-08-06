@@ -780,6 +780,89 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame('5287', $overlay[0]->targetId);   // the branch's card, not the title's
     }
 
+    // --- card#5953: the overlay target carries the corroboration flag too ---
+
+    public function test_an_uncorroborated_title_only_token_flags_the_overlay_target(): void
+    {
+        // card#5953: the overlay inherited the title-vs-branch RULE (shared resolver) but
+        // not the handler-side corroboration gate, because its target carried no flag —
+        // so a title-only card# could overlay a block_reason onto a merely-cited card.
+        // The classifier now reports the same evidence it reports on the move path, and
+        // adds the event's PR number, which is what the handler corroborates against.
+        // (Revert blockReasonTargets ⇒ payload has neither key ⇒ RED.)
+        $this->writeMapping(['draft_overlay' => true]);
+        Http::fake();
+
+        $result = $this->classify('pull_request.converted_to_draft', [
+            'number' => 140, 'title' => 'Rework the widget (card#5139)', 'head' => ['ref' => 'f'],
+        ]);
+
+        $overlay = $this->targetsNamed($result, 'kanban_block_reason');
+        $this->assertCount(1, $overlay);
+        $this->assertSame('5139', $overlay[0]->targetId);
+        $this->assertSame([
+            'repo' => 'owner/repo', 'action' => 'set',
+            'card_token_uncorroborated' => true, 'pr_number' => 140,
+        ], $overlay[0]->payload);
+    }
+
+    public function test_the_clear_overlay_carries_the_flag_too_even_though_the_handler_gates_only_set(): void
+    {
+        // The classifier reports EVIDENCE; which action the gate applies to is the
+        // handler's ruling (it gates `set` only — a clear-if-ours can only remove a
+        // marker we ourselves wrote). Emitting the flag on both keeps the two paths one
+        // mechanism rather than encoding the handler's policy in the classifier.
+        $this->writeMapping(['draft_overlay' => true]);
+        Http::fake();
+
+        $result = $this->classify('pull_request.ready_for_review', [
+            'number' => 141, 'title' => 'Ship it (card#5139)', 'head' => ['ref' => 'f'],
+        ]);
+
+        $overlay = $this->targetsNamed($result, 'kanban_block_reason');
+        $this->assertCount(1, $overlay);
+        $this->assertSame('clear', $overlay[0]->payload['action']);
+        $this->assertTrue($overlay[0]->payload['card_token_uncorroborated']);
+    }
+
+    public function test_a_ref_corroborated_overlay_target_is_byte_identical_to_before(): void
+    {
+        // The gate is scoped to the flag, and the flag is scoped to the residual the
+        // branch cannot vouch for. The dominant `<type>/<id>-slug` convention corroborates
+        // by bare id (refCorroborates), so ordinary work emits the SAME payload it always
+        // did — no flag, no pr_number.
+        // (Flag the overlay unconditionally ⇒ two extra keys ⇒ RED.)
+        $this->writeMapping(['draft_overlay' => true]);
+        Http::fake();
+
+        $result = $this->classify('pull_request.converted_to_draft', [
+            'number' => 142, 'title' => 'Rework the widget (card#5287)', 'head' => ['ref' => 'fix/5287-widget'],
+        ]);
+
+        $overlay = $this->targetsNamed($result, 'kanban_block_reason');
+        $this->assertCount(1, $overlay);
+        $this->assertSame('5287', $overlay[0]->targetId);
+        $this->assertSame(['repo' => 'owner/repo', 'action' => 'set'], $overlay[0]->payload);
+    }
+
+    public function test_a_dl_correlated_overlay_target_is_never_flagged(): void
+    {
+        // The flag belongs to the card#-token residual only. A DL that RESOLVES selects
+        // its cards from the board, not from prose, so the overlay it emits carries no
+        // flag — mirroring the move path, where moveTargets() never carries one.
+        // (Flag on the DL branch ⇒ extra keys ⇒ RED.)
+        $this->writeMapping(['draft_overlay' => true]);
+        $this->fakeBoardCards();   // DL-42 → card 5
+
+        $result = $this->classify('pull_request.converted_to_draft', [
+            'number' => 143, 'title' => 'DL-42 wip', 'head' => ['ref' => 'f'],
+        ]);
+
+        $overlay = $this->targetsNamed($result, 'kanban_block_reason');
+        $this->assertCount(1, $overlay);
+        $this->assertSame(['repo' => 'owner/repo', 'action' => 'set'], $overlay[0]->payload);
+    }
+
     public function test_card_token_on_a_branch_create_push_emits_started(): void
     {
         Http::fake();
@@ -1303,7 +1386,14 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $t = $r->targets[0];
         $this->assertSame('kanban_block_reason', $t->handler);
         $this->assertSame('4811', $t->targetId);   // the explicit card#, NOT DL-9's card 7
-        $this->assertSame(['repo' => 'owner/repo', 'action' => 'set'], $t->payload);
+        // The fall-through card# came from the TITLE with head `f` backing nothing, so
+        // it is the card#5953 residual and is flagged for the handler — exactly as the
+        // move path flags its own post-conflict card# fall-through. The event carries no
+        // PR number, which the handler fail-closes on.
+        $this->assertSame([
+            'repo' => 'owner/repo', 'action' => 'set',
+            'card_token_uncorroborated' => true, 'pr_number' => null,
+        ], $t->payload);
         Log::shouldNotHaveReceived('warning');   // overlay path is silent (no double-log)
     }
 

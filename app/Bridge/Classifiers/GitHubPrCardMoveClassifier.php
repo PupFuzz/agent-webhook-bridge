@@ -422,21 +422,36 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     /**
      * One `kanban_block_reason` overlay target per correlated card (DL-193) — the
      * card id is the distinct target_id so bundled-card targets don't coalesce
-     * (DL-003/DL-148), and the payload carries just the repo (for the handler's
-     * board resolution) and the set/clear action. No card correlates → no target
-     * (empty list), exactly like the move path's un-linked no-op.
+     * (DL-003/DL-148), and the payload carries the repo (for the handler's board
+     * resolution) and the set/clear action. No card correlates → no target (empty
+     * list), exactly like the move path's un-linked no-op.
+     *
+     * On the uncorroborated title-only residual it ALSO carries the move path's
+     * `card_token_uncorroborated` flag plus this event's `pr_number` — the evidence
+     * the writeback's shared `CardTokenCorroboration` predicate gates on (card#5953).
+     * (Named, not `{@see}`-linked: an FQCN in a docblock becomes a real `use` under
+     * pint, and this classifier constructs nothing in that namespace.) Both
+     * keys ride together and only on that residual, so an ordinary corroborated overlay
+     * payload is byte-identical to before. `pr_number` rather than the move path's
+     * `stamp_pr`: this overlay never stamps anything, and `kanban_dependabot_card`
+     * already spells a plain event PR number that way.
      *
      * @param  array<mixed>  $payload
      * @return list<ReactionTarget>
      */
     private function blockReasonTargets(array $payload, string $repo, string $action, WritebackMapping $mapping, WritebackConfig $writeback): array
     {
+        $resolution = $this->correlatedCardIds($payload, $repo, $mapping, $writeback);
+        $corroboration = $resolution['uncorroborated']
+            ? ['card_token_uncorroborated' => true, 'pr_number' => $this->prNumber($payload)]
+            : [];
+
         $targets = [];
-        foreach ($this->correlatedCardIds($payload, $repo, $mapping, $writeback) as $cardId) {
-            $targets[] = ReactionTarget::make('kanban_block_reason', (string) $cardId, payload: [
+        foreach ($resolution['ids'] as $cardId) {
+            $targets[] = ReactionTarget::make('kanban_block_reason', (string) $cardId, payload: array_merge([
                 'repo' => $repo,
                 'action' => $action,
-            ]);
+            ], $corroboration));
         }
 
         return $targets;
@@ -456,30 +471,43 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      *
      * It shares {@see cardTokenResolution}, so the title-vs-branch rule (card#5287)
      * applies here too: an overlay never lands on a title's card when the branch names
-     * a different one. What it does NOT inherit is the handler-side corroboration gate
-     * on an uncorroborated TITLE-ONLY token — that gate is the move handler's, and this
-     * overlay target does not carry the flag. So a title-only `card#` can still overlay
-     * a `block_reason` onto a card this PR only cited. Same shape, strictly lower harm
-     * (one add-if-missing field, cleared on ready_for_review, never a stage move), and
-     * it is filed rather than silently widened here: the gate is a change to what the
-     * bridge accepts, and the approved answer named the move path.
+     * a different one. Since card#5953 it also reports the uncorroborated TITLE-ONLY
+     * residual, so {@see blockReasonTargets} can flag the target and the writeback's
+     * shared `CardTokenCorroboration` predicate settle it at the handler on
+     * the card's own evidence — the same mechanism the move path uses, not a second
+     * one. Before that, the overlay inherited the RULE but not the GATE, and a
+     * title-only `card#` could overlay a `block_reason` onto a card this PR had only
+     * cited; the gate is a change to what the bridge accepts, so it was filed and
+     * user-gated rather than widened alongside DL-270.
+     *
+     * `uncorroborated` describes the returned ids, so it is FALSE whenever a resolving
+     * DL selected them: a DL picks its cards out of the board, never out of prose. It
+     * is true only on the `card#` fallback with a prose-only token — mirroring the move
+     * path, where {@see moveTargets} never carries the flag and only the card# return
+     * does. It needs no "and a token was found" clause: {@see cardTokenResolution}
+     * reports `uncorroborated` false whenever its `token` is null, and a null token
+     * yields no ids for the flag to describe anyway.
      *
      * @param  array<mixed>  $payload
-     * @return list<int>
+     * @return array{ids: list<int>, uncorroborated: bool}
      */
     private function correlatedCardIds(array $payload, string $repo, WritebackMapping $mapping, WritebackConfig $writeback): array
     {
         $dl = $this->dlToken($payload);
-        $cardToken = $this->cardTokenResolution($payload)['token'];
+        $cardResolution = $this->cardTokenResolution($payload);
+        $cardToken = $cardResolution['token'];
         if ($dl !== null) {
             $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
             $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
             if ($cardIds !== [] && ! $this->cardConflicts($cardToken, $cardIds)) {
-                return $cardIds;
+                return ['ids' => $cardIds, 'uncorroborated' => false];
             }
         }
 
-        return $cardToken !== null ? [$cardToken] : [];
+        return [
+            'ids' => $cardToken !== null ? [$cardToken] : [],
+            'uncorroborated' => $cardResolution['uncorroborated'],
+        ];
     }
 
     /**
