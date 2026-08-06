@@ -74,6 +74,22 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   the deletion as its own decision; taken now as option (a) on the card.
 
 ### Fixed
+- **Three false code-state claims in comments/docs corrected (card#5952; no behavior change).**
+  Found by the card#5289 comment-truthfulness audit. **(1)** `CoordinationClassifier`'s
+  no-self-wake docblock called the dependabot handler "the bridge's only card-CREATE path" —
+  there are three (the dependabot handler, the DL-198 coord-card handler, the DL-217
+  `board_create_card` tool). All three write through the one writeback client as the
+  `identity_id` user, so the global-echo gate covers them all when it is configured; the
+  `triaged` tag is an independent second layer only the dependabot and poll-backstop paths
+  have. The docblock now states that structure (correction entry DL-277 — the stale claim
+  originated in DL-168, true when written). **(2)** The `board_create_card` reserved-tag guard
+  justified its casefold with "the kanban tag search is case-insensitive (`_ci` collation)" on
+  seven surfaces (tool docblock + three inline comments, `docs/board-tools.md`, two test
+  docblocks) — the MariaDB JSON column collates `utf8mb4_bin` (case-SENSITIVE, measured); the
+  correct justification is defense-in-depth across driver collations plus bridge-side
+  determinism, and all seven surfaces now state it. The guard's behavior was already correct — only its stated
+  reason was wrong. **(3)** The reference channel server cited a README note by a title it never
+  had ("One server per session" → "One server per UDS path").
 - **`bridge:check` certifies the board-tools ssh transport even when the kanban writeback client
   cannot be constructed (card#5474, DL-275).** The board-tools client envelope skipped three
   slots on a construction failure; two of them — the offline pinned-line probe

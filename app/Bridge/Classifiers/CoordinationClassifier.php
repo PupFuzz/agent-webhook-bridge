@@ -866,14 +866,22 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      *   - human-filed — the actor is NOT a known agent, and
      *   - untriaged — no `triaged` tag, no `id:pr:*` tag, no `dl` external reference.
      *
-     * No-self-wake — each automated creator is suppressed by a DIFFERENT mechanism,
+     * No-self-wake — two overlapping mechanisms suppress the automated creators,
      * NOT a single `isKnownAgent` check (which only covers registered agents):
-     *   - the bridge's OWN dependabot-card creations carry `triaged` at create
-     *     (DL-024) → dropped by the untriaged filter (the bridge's only card-CREATE
-     *     path; the writeback move path only moves existing cards);
      *   - the dedicated writeback `identity_id` user's events are dropped PRE-classify
-     *     by the dispatcher global-echo gate (`DispatchService`/`globalEchoIds`);
-     *   - the poll adapter's auto-`triaged` backstops carry `triaged`.
+     *     by the dispatcher global-echo gate (`DispatchService`/`globalEchoIds`,
+     *     active only when a global echo id is configured — in practice
+     *     `writeback.json`'s `identity_id`; `BRIDGE_GLOBAL_ECHO_IDS` also seeds
+     *     it). ALL THREE of the bridge's card-CREATE paths write through the one
+     *     writeback client as that user — the DL-024 dependabot cards, the
+     *     DL-198 coord cards, and the DL-217 `board_create_card` tool (whose
+     *     cards are deliberately born untriaged);
+     *   - independently of that config, the dependabot creations carry `triaged`
+     *     at create, and the poll adapter's auto-`triaged` backstops carry
+     *     `triaged` → dropped by the untriaged filter. The coord and
+     *     tool-created cards have no such second layer: with no global echo id
+     *     configured they can over-wake (like the pre-snapshot case below — at
+     *     worst minor noise, never a miss).
      *
      * The filter reads the DL-164 `card` snapshot the `task.created` webhook carries,
      * so it runs at classify time with NO API call and NO read token. On a kanban that
