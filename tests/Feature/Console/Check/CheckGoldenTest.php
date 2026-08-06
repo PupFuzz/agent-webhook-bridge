@@ -301,8 +301,9 @@ class CheckGoldenTest extends TestCase
                 return ['args' => [], 'fpm' => false, 'coordConfig' => $i->path('coordination.config.json')];
 
             case 'writeback-board-unreadable':
-                // The 500 REPLACES the matching default in place rather than being
-                // registered behind it — see moveLegInstall()'s $stubs note. Scoped to the
+                // The two 500s replace the matching defaults' entries, so they sit ahead
+                // of the '*' catch-all — where a later Http::fake() would land behind it
+                // (see CLAUDE_GOTCHAS.md G-020). Scoped to the
                 // KANBAN board reads rather than blanketed over `'*'`: a blanket 500 also
                 // fails the github token probe, so the fixture would carry a second,
                 // unrelated diagnosis and a later diff could not say which leg moved.
@@ -1079,14 +1080,10 @@ class CheckGoldenTest extends TestCase
      * The fixture shape that provably REACHES the deep writeback/coord legs.
      *
      * @param  array<string, mixed>  $stubs  Http stubs registered AHEAD of the defaults.
-     *                                       Laravel matches stub callbacks in REGISTRATION
-     *                                       order and the default set ends in a `'*'`
-     *                                       catch-all, so a stub a caller registers with a
-     *                                       LATER `Http::fake()` can never run — which is
-     *                                       how `writeback-board-unreadable` spent its life
-     *                                       capturing the fully healthy output instead
-     *                                       (card#5552). Passing them here is the only
-     *                                       ordering that works.
+     *                                       Passing them here rather than via a later
+     *                                       `Http::fake()` is the only ordering that works
+     *                                       once this helper has run; see CLAUDE_GOTCHAS.md
+     *                                       G-020 for why.
      */
     private function moveLegInstall(GoldenInstall $i, array $stubs = []): void
     {

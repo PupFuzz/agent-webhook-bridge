@@ -110,6 +110,8 @@ Http::assertSent(fn (Request $r) => $r->method() === 'POST'
     && $r['url'] === $this->receiverUrl);
 ```
 
+**Register the whole stub set once.** A second `Http::fake()` does not replace the first — it appends to it, the *first* matching stub wins, and it resets the recorded log that `Http::assertSent()` reads. So calling a setup helper and then "overriding" one URL with a later `Http::fake()` silently leaves the helper's answer in place, and the test stays green. Read [`CLAUDE_GOTCHAS.md`](CLAUDE_GOTCHAS.md) G-020 **before** layering fakes.
+
 **Temporary config dirs.** Tests that exercise config loading or filesystem writes create a `sys_get_temp_dir().'/prefix-'.uniqid()` directory in `setUp()` and delete it in `tearDown()`. They point the bridge at it via `config(['bridge.config_dir' => $this->dir, 'bridge.secret_dir' => $this->dir])`. This keeps tests hermetic and avoids leaking into the real install's config paths.
 
 **Fake secrets in test fixtures.** Any test file that writes a literal HMAC secret, token, or password value in source adds a `// gitleaks:allow — test fixture` annotation on that line to suppress scanner false positives:
