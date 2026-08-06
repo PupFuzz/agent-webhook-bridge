@@ -267,10 +267,13 @@ class AgentToolsCallTest extends TestCase
     }
 
     /**
-     * The reserved-tag guard is case-INSENSITIVE: the kanban tag search it
-     * protects folds under a `_ci` collation, so a case-exact guard would let a
-     * mixed/upper-case reserved tag through to poison another agent's lowercase
-     * idempotency/provenance probe. Every case-variant here must 422.
+     * The reserved-tag guard is case-INSENSITIVE: whether the kanban tag search
+     * it protects folds case is a per-driver collation fact (MariaDB utf8mb4_bin
+     * does not; a kanban running on SQLite does), so the guard refuses every case
+     * variant rather than betting on the deployed collation — a case-exact guard
+     * would let a mixed/upper-case reserved tag through to a folding backend to
+     * poison another agent's lowercase idempotency/provenance probe. Every
+     * case-variant here must 422.
      *
      * @return list<array{string}>
      */
@@ -294,7 +297,8 @@ class AgentToolsCallTest extends TestCase
 
     /**
      * The tag-search metacharacters (" * _ %) and any non-ASCII byte are refused:
-     * they defeat the ASCII casefold vs MariaDB's `_ci` folding, or mis-split /
+     * a non-ASCII byte folds differently under the guard's ASCII casefold than
+     * under a Unicode-aware driver collation, and the metacharacters mis-split /
      * wildcard-over-match the kanban tokenizer.
      *
      * @return list<array{string}>
