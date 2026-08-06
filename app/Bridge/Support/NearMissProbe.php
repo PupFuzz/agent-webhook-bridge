@@ -27,10 +27,11 @@ namespace App\Bridge\Support;
  *
  * STATED BOUND, inherited rather than re-decided: the digit class is ASCII (no
  * `/u`) per DL-231, so a Unicode-digit token stays silent at runtime on every
- * stem. That is the ratified position, not an oversight — for the `card` stem
- * the pre-merge CI lint covers the class by name instead. For `DL` nothing
- * covers it on either surface yet; that gap is card#5961, named rather than
- * quietly inherited.
+ * stem. That is the ratified position, not an oversight — the pre-merge CI lint
+ * (`.github/workflows/pr-title-lint.yml`) covers the class by name instead, and
+ * since card#5961 it does so for BOTH stems: it grew a `looks_dl=`/`good_dl=`
+ * arm beside its card one, so `DL-<U+0663>239` is no longer silent on both
+ * surfaces at once.
  */
 final class NearMissProbe
 {

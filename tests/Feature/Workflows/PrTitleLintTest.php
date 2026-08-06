@@ -16,10 +16,12 @@ use Tests\TestCase;
  * is a SECOND implementation of the card-token grammar, in a second language. Two
  * kinds of assertion live here and they are not equally strong:
  *
- *  - TIED (the warn step's `good=` regex). Its accepted/rejected ANSWER SET is
- *    compared against {@see CardTokenGrammar}'s answer set over the SAME vectors,
- *    both computed at run time. Neither side carries a copy of the other's verdicts,
- *    so a change to either — the PHP pattern or the YAML regex — reds this file.
+ *  - TIED (the warn step's `good=` and `good_dl=` regexes — one arm per correlation
+ *    token since card#5961). Each arm's accepted/rejected ANSWER SET is compared over
+ *    the SAME vectors against its own authority — {@see CardTokenGrammar}'s and
+ *    {@see DlTokenGrammar}'s respectively — both computed at run time. Neither side
+ *    carries a copy of the other's verdicts, so a change to either — a PHP pattern or
+ *    a YAML regex — reds this file.
  *    Before card#5267 the lockstep was a comment in the YAML and a claim in this
  *    docblock; the tests were a hand-written snapshot that stayed green when the
  *    grammar moved, which is exactly how the near-miss WARN string spent two
@@ -175,6 +177,25 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
+     * The same construction on the OTHER stem (card#5961) — `DL<c>239` and
+     * `DLs<c>239` for every printable-ASCII `c`. Not folded into one parameterized
+     * helper with the card one: the two feed different ties over different
+     * authorities, and a shared helper would only be shorter, not more tied.
+     *
+     * @return list<string>
+     */
+    private static function singleCharacterSeparatorDlVectors(): array
+    {
+        $vectors = [];
+        for ($code = 0x20; $code <= 0x7E; $code++) {
+            $vectors[] = 'DL'.chr($code).'239';
+            $vectors[] = 'DLs'.chr($code).'239';
+        }
+
+        return $vectors;
+    }
+
+    /**
      * Run a step with a given title/branch; return [exit code, combined output].
      * `$locale` pins `LC_ALL` for the run — needed because bash resolves a `[0-9]`
      * bracket expression by COLLATION, so the require step's answer on a
@@ -214,7 +235,7 @@ class PrTitleLintTest extends TestCase
 
     private function runWarnStep(string $title, string $branch = 'f'): string
     {
-        return $this->runStep('Warn on a card token', $title, $branch)[1];
+        return $this->runStep('Warn on a card or DL token', $title, $branch)[1];
     }
 
     private function warned(string $title, string $branch = 'f'): bool
@@ -275,7 +296,7 @@ class PrTitleLintTest extends TestCase
      */
     public function test_the_warn_steps_accepted_grammar_and_the_authority_return_the_same_answer_set(): void
     {
-        $good = $this->stepRegex('Warn on a card token', 'good');
+        $good = $this->stepRegex('Warn on a card or DL token', 'good');
 
         // An empty vector set would make every comparison below `[] === []`. The
         // tie must be incapable of passing by having measured nothing.
@@ -308,7 +329,7 @@ class PrTitleLintTest extends TestCase
      */
     public function test_the_looks_probe_recognises_every_shape_the_grammar_classifies(): void
     {
-        $looks = $this->stepRegex('Warn on a card token', 'looks');
+        $looks = $this->stepRegex('Warn on a card or DL token', 'looks');
 
         foreach (CardTokenGrammar::VECTORS as $vector) {
             $this->assertTrue($this->grepMatches($looks, $vector),
@@ -346,7 +367,7 @@ class PrTitleLintTest extends TestCase
      */
     public function test_the_looks_predicate_and_the_runtime_probe_return_the_same_answer_set(): void
     {
-        $looks = $this->stepRegex('Warn on a card token', 'looks');
+        $looks = $this->stepRegex('Warn on a card or DL token', 'looks');
         $corpus = array_values(array_unique(array_merge(
             CardTokenGrammar::probeVectors(),
             self::singleCharacterSeparatorVectors(),
@@ -458,7 +479,7 @@ class PrTitleLintTest extends TestCase
         // Severity is the decision: warning, not error. If this ever exits non-zero it
         // has silently become a merge gate.
         $three = "\u{0663}";
-        [$rc] = $this->runStep('Warn on a card token', "card#{$three}", 'f');
+        [$rc] = $this->runStep('Warn on a card or DL token', "card#{$three}", 'f');
         $this->assertSame(0, $rc, 'the near-miss leg must warn, never fail');
     }
 
@@ -488,6 +509,175 @@ class PrTitleLintTest extends TestCase
     {
         $this->assertFalse($this->warned('Fix a thing card_3054', 'card-5150-some-slug'));
         $this->assertFalse($this->warned('card-5150 and also card_3054'));
+    }
+
+    // ---------------------------------------------------------------------
+    // TIED — the warn step's DL arm vs the authority (card#5961)
+    // ---------------------------------------------------------------------
+
+    /**
+     * No DL vector may carry card-ish text, or `warned()` — which asks only whether
+     * SOME `::warning::` was printed — could be answered by the card arm and every
+     * DL leg below would be measuring the wrong regex. Derived rather than eyeballed,
+     * because the corpus is allowed to grow.
+     */
+    private function assertDlVectorsCannotTripTheCardArm(): void
+    {
+        $this->assertSame([], array_values(array_filter(
+            DlTokenGrammar::VECTORS,
+            fn (string $v) => str_contains(mb_strtolower($v), 'card'),
+        )), 'a DL vector carrying card-ish text would make the DL legs unattributable to the DL arm');
+    }
+
+    /**
+     * THE DL TIE — the card arm's first tie, on the other stem. Two independent
+     * implementations, two answer sets, compared; never a hand-written expectation
+     * on either side, and the same three renderings, because the lint's leading
+     * `(^|[^0-9a-z_])` and the grammar's `\b` must agree at the start of the
+     * subject, mid-prose, and inside a branch ref.
+     *
+     * The arm exists because the DL stem was WORSE off than the card stem, not
+     * merely uncovered (DL-273's stated bound): the runtime probe is ASCII by
+     * ratification, so a Unicode-digit DL warns nowhere in the bridge log, and the
+     * card stem survives that only because the CI arm names the class by name. With
+     * no DL arm, `DL-<U+0663>239` was silent on BOTH surfaces.
+     */
+    public function test_the_warn_steps_accepted_dl_grammar_and_the_authority_return_the_same_answer_set(): void
+    {
+        $goodDl = $this->stepRegex('Warn on a card or DL token', 'good_dl');
+
+        $this->assertNotEmpty(DlTokenGrammar::accepted(), 'the tie needs accepted vectors to compare');
+        $this->assertNotEmpty(DlTokenGrammar::rejected(), 'the tie needs rejected vectors to compare');
+
+        foreach (['%s', 'fix a thing %s', 'feat/%s-slug'] as $shape) {
+            $lintAccepts = $lintRejects = [];
+            foreach (DlTokenGrammar::VECTORS as $vector) {
+                if ($this->grepMatches($goodDl, sprintf($shape, $vector))) {
+                    $lintAccepts[] = $vector;
+                } else {
+                    $lintRejects[] = $vector;
+                }
+            }
+
+            $this->assertSame(DlTokenGrammar::accepted(), $lintAccepts,
+                "rendered as '{$shape}': the lint's DL arm accepts a different set than the grammar does");
+            $this->assertSame(DlTokenGrammar::rejected(), $lintRejects,
+                "rendered as '{$shape}': the lint's DL arm rejects a different set than the grammar does");
+        }
+    }
+
+    /**
+     * THE SECOND DL TIE (DL-250(4) applied to the DL stem). `looks_dl` is a second
+     * implementation of "does this text appear to name a DL", in a second language,
+     * and the vector set alone would say nothing about a shape absent from it — so
+     * it is compared to the RUNTIME probe, answer set to answer set, over the UNION
+     * of both engines' separator domains.
+     *
+     * The union is what makes it BIDIRECTIONAL, and the reason is measured, not
+     * reasoned (DL-250): driven off `probeVectors()` alone the corpus SHRINKS with
+     * the data, so a separator removed from `NearMissProbe::SEPARATORS` is simply
+     * never asked of the bash side. The PHP side therefore contributes
+     * `probeVectors()` (multi-character members included) and the YAML side every
+     * single-character separator it could spell.
+     *
+     * BOUND, inherited unchanged: `looks_dl` is legitimately LOOSER than the runtime
+     * probe — it requires no digit after the separator, so `DL-` and `feat/dl-only`
+     * warn in CI and stay out of the bridge log. Equality holds where a digit
+     * follows the separator and nothing is non-ASCII, which is what this corpus is;
+     * a two-character cross-product would red on correct code.
+     */
+    public function test_the_looks_dl_predicate_and_the_runtime_probe_return_the_same_answer_set(): void
+    {
+        $looksDl = $this->stepRegex('Warn on a card or DL token', 'looks_dl');
+        $corpus = array_values(array_unique(array_merge(
+            DlTokenGrammar::probeVectors(),
+            self::singleCharacterSeparatorDlVectors(),
+            ['mentions DL 239 in prose', 'DL 239', 'DLs 239', 'handles idl_239',
+                'the middleware_2 rewrite', 'no token at all'],
+        )));
+
+        $probeRecognises = array_values(array_filter($corpus,
+            fn (string $text) => DlTokenGrammar::looksLikeDlToken($text)));
+        $lintRecognises = $this->grepMatchesAll($looksDl, $corpus);
+
+        $this->assertNotEmpty($probeRecognises, 'the tie needs recognised shapes to compare');
+        $this->assertNotSame(count($corpus), count($probeRecognises),
+            'the tie needs unrecognised shapes, or it is [all-true] === [all-true]');
+        $this->assertSame($probeRecognises, $lintRecognises,
+            "the lint's `looks_dl` predicate and the runtime DL near-miss probe disagree about which shapes appear to name a DL");
+    }
+
+    /**
+     * The whole step, end to end, on every DL vector — which is what proves the arm
+     * is WIRED at all: both ties above read regexes out of the YAML and would stay
+     * green if the `if`/`echo` that consumes them were never added.
+     *
+     * `warn iff looks_dl && ! parses`, with each half taken from the side that owns
+     * it: the recognition half from the extracted predicate, the accept half from
+     * the grammar. Not `iff the grammar rejects it` — the card arm's form — because
+     * `IDL-239` is a leading-boundary row the DL vector set carries and `looks_dl`
+     * correctly cannot see, so that stronger claim is false here and asserting it
+     * would be asserting the wrong thing rather than finding a defect.
+     */
+    public function test_the_step_warns_on_exactly_the_dl_shapes_it_sees_and_the_grammar_rejects(): void
+    {
+        $this->assertDlVectorsCannotTripTheCardArm();
+        $looksDl = $this->stepRegex('Warn on a card or DL token', 'looks_dl');
+
+        $warned = 0;
+        foreach (DlTokenGrammar::VECTORS as $vector) {
+            $subject = "fix a thing {$vector}";
+            $expected = $this->grepMatches($looksDl, $subject) && DlTokenGrammar::parse($subject) === null;
+            $warned += $expected ? 1 : 0;
+
+            $this->assertSame($expected, $this->warned($subject),
+                "'{$vector}' must warn iff the step's own probe sees it and the grammar does not parse it");
+        }
+        $this->assertGreaterThan(0, $warned, 'a vector set expecting no warning at all would assert nothing');
+    }
+
+    /**
+     * The DL arm's operator-facing text names the Unicode-digit class BY NAME, which
+     * is the whole reason this arm exists: the runtime probe's digit class is ASCII
+     * by ratification (DL-231), so `DL-<U+0663>239` can be caught nowhere else. A
+     * codepoint printed at a human would be the wrong call for a human-facing string
+     * — the CLASS is what is named, exactly as the card arm names it.
+     */
+    public function test_the_dl_warning_text_names_the_non_ascii_digit_class(): void
+    {
+        $three = "\u{0663}";
+        $message = $this->runWarnStep("fix a thing DL-{$three}239");
+
+        $this->assertStringContainsString('::warning::', $message, 'positive control: the fixture must actually warn');
+        $this->assertNull(DlTokenGrammar::parse("DL-{$three}239"),
+            'the grammar correlates a Unicode-digit DL to NOTHING — that silence is what this text covers');
+        $this->assertStringContainsString('non-ASCII digits', $message,
+            'the DL arm must name the class the runtime probe cannot see');
+        $this->assertStringContainsString('DL-231', $message,
+            'and cite the ratification that makes it ASCII-only');
+        $this->assertStringContainsString('names a DL', $message,
+            'the warning must be attributable to the DL arm, not read as the card arm\'s');
+    }
+
+    /**
+     * SEVERITY, for the DL arm specifically. The card arm has had this leg since
+     * DL-234, but it drives `card#<U+0663>` — which trips only the CARD arm, so it
+     * says nothing about the one added here: an `exit 1` inside the DL `if` would
+     * have left it green while silently making this a merge gate.
+     *
+     * The subject is chosen to fire the DL arm and ONLY the DL arm (it carries no
+     * card-ish text), and the warning is asserted present in the same run — an exit
+     * code of 0 from a step that printed nothing would pass this while measuring
+     * nothing.
+     */
+    public function test_the_dl_arm_never_fails_the_job(): void
+    {
+        $three = "\u{0663}";
+        [$rc, $out] = $this->runStep('Warn on a card or DL token', "fix a thing DL-{$three}239", 'f');
+
+        $this->assertStringContainsString('names a DL', $out,
+            'positive control: the DL arm must actually have fired, or the exit code is unattributed');
+        $this->assertSame(0, $rc, 'the DL near-miss arm must warn, never fail — DL-234(c)');
     }
 
     // ---------------------------------------------------------------------
