@@ -7,6 +7,7 @@ use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RefusalContext;
+use App\Bridge\Writeback\CardTokenCorroboration;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
@@ -46,8 +47,9 @@ use Throwable;
  * `card_token_uncorroborated` flag (card#5287 / DL-270 — the classifier found the
  * `card#` in the PR TITLE only, with nothing agreeing in the head branch, so this
  * handler corroborates it against the card's own `pr_number` before writing
- * anything: {@see corroboratedByCardPr}). Any payload board_id/stage_id is IGNORED
- * — the config mapping is authoritative.
+ * anything: {@see CardTokenCorroboration}, shared with the draft-overlay handler since
+ * card#5953). Any payload board_id/stage_id is IGNORED — the config mapping is
+ * authoritative.
  *
  * The `started` outcome (branch-create push, DL-160) carries its own no-regression
  * guard: it only promotes a card whose current stage is in the mapping's
@@ -216,12 +218,12 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // tracks NO PR yet, or already tracks THIS one. Placed before the
         // already-in-stage self-heal because that branch STAMPS, and a refused move
         // must write nothing at all. Permanent refusal: log + no-op, never retry.
-        if (($payload['card_token_uncorroborated'] ?? null) === true && ! $this->corroboratedByCardPr($card, $payload)) {
+        if (CardTokenCorroboration::refuses($payload['card_token_uncorroborated'] ?? null, $card, $payload['stamp_pr'] ?? null)) {
             $this->alerts->warnAndNotify(
                 'kanban_move_card: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and the card already tracks a DIFFERENT PR',
                 [
                     'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome,
-                    'card_pr_number' => (is_array($card['payload'] ?? null) ? $card['payload'] : [])['pr_number'] ?? null,
+                    'card_pr_number' => CardTokenCorroboration::cardPr($card),
                     'event_pr_number' => $payload['stamp_pr'] ?? null,
                 ],
                 $repo, $outcome, $cardId, 'card_token_uncorroborated',
@@ -460,39 +462,6 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             }
             throw $e;   // transient → 5xx → redelivery re-stamps (add-if-missing idempotent)
         }
-    }
-
-    /**
-     * Does the CARD itself corroborate an uncorroborated title-only `card#` token
-     * (card#5287)? True when the card tracks NO PR yet — the normal shape of a card
-     * this PR is legitimately the first to touch — or already tracks THIS PR
-     * (redelivery, or a later action on the same PR). False only when it tracks a
-     * DIFFERENT one: a card that already answers to another PR is overwhelmingly the
-     * foreign card a title cited descriptively, and that is the single case where
-     * taking the title's word for it moves somebody else's work.
-     *
-     * The card's ALREADY-READ payload is the authority — no extra read, which is the
-     * property that made this the affordable residual answer. "Tracks no PR" uses the
-     * same emptiness test as the add-if-missing stamp ({@see stampCorrelationRefs}) so
-     * the two can never disagree about whether a card carries a PR ref. A numeric
-     * string compares equal to its int (kanban's payload and the durable inbox JSON
-     * round-trip each produce either). Fail-closed on anything else: an event with no
-     * PR number, or a non-numeric `pr_number` on the card, corroborates nothing.
-     *
-     * @param  array<string, mixed>  $card  the card as already read by getCard()
-     * @param  array<string, mixed>  $payload  the target payload (carries stamp_pr = this PR)
-     */
-    private function corroboratedByCardPr(array $card, array $payload): bool
-    {
-        $current = is_array($card['payload'] ?? null) ? $card['payload'] : [];
-        $cardPr = $current['pr_number'] ?? null;
-        if (($cardPr ?? '') === '') {
-            return true;   // tracks no PR → this PR may be its first
-        }
-
-        $eventPr = $payload['stamp_pr'] ?? null;
-
-        return is_numeric($cardPr) && is_numeric($eventPr) && (int) $cardPr === (int) $eventPr;
     }
 
     /**

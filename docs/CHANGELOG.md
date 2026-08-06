@@ -26,6 +26,30 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   the gap rather than failing.
 
 ### Changed
+- **The draft overlay stops taking a PR title's word for which card it may pin (card#5953).**
+  **⚠ THIS CHANGES WHAT THE BRIDGE ACCEPTS** — a `block_reason` overlay that lands today stops
+  landing. It was user-gated before any code, as option (a) on the card.
+  DL-270 made the head branch outrank the PR title for `card#NNNN` and settled the residual —
+  a title-only token the branch does not back — with a **card-side corroboration gate** in
+  `KanbanMoveCardHandler`. The **draft overlay** shared the resolver, so it inherited the
+  title-vs-branch *rule*, but its `kanban_block_reason` target carried no flag, so it did not
+  inherit the *gate*: a draft PR whose title descriptively cited another card on the same mapped
+  board still wrote the `"PR is in draft"` marker onto that card — **pinning it** against the
+  branch-cut auto-promote (DL-178) on the strength of prose alone. DL-270 recorded that as a
+  known-open gap rather than widening what the bridge accepts unasked; this closes it.
+  A **SET** now refuses an uncorroborated title-only `card#` unless the card **tracks no PR yet
+  or already tracks this PR** — the same predicate, extracted to one shared
+  `App\Bridge\Writeback\CardTokenCorroboration` that both handlers call, never a second copy.
+  The refusal logs and (with an `alert_channel`) signals as `card_token_uncorroborated` under the
+  synthetic `draft_overlay` outcome. **A CLEAR is deliberately NOT gated:** clear-if-ours can only
+  null a `block_reason` that exactly equals our own marker — a human's differing text is
+  untouchable (bounded by the constant-sentinel ambiguity `docs/writeback.md` documents) — and
+  gating it would strand any marker on a card that now tracks a different PR, including those set
+  before this shipped, the guard permanently pinning the card it exists to protect. Accepted
+  residual: a foreign PR's `ready_for_review` can clear the marker (releasing the DL-178 pin)
+  that another PR's draft set. A corroborated overlay target's payload is **byte-identical** to
+  before (the flag and the event `pr_number` ride together and only on the residual), so ordinary
+  `<type>/<id>-slug` work is untouched.
 - **`auto-tag-version.yml` can no longer leave a release tagged but unpublished (card#5972,
   DL-276).** v0.72.0's CHANGELOG section was 134,904 bytes against GitHub's 125,000 limit, so the
   publish step — the *last* step, after the tag had already been pushed — returned `HTTP 422:
