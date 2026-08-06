@@ -301,9 +301,9 @@ class CheckGoldenTest extends TestCase
                 return ['args' => [], 'fpm' => false, 'coordConfig' => $i->path('coordination.config.json')];
 
             case 'writeback-board-unreadable':
-                // The 500 replaces the matching default's entry, so it sits ahead of the
-                // '*' catch-all — where a later Http::fake() would land behind it (see
-                // CLAUDE_GOTCHAS.md G-020). Scoped to the
+                // The two 500s replace the matching defaults' entries, so they sit ahead
+                // of the '*' catch-all — where a later Http::fake() would land behind it
+                // (see CLAUDE_GOTCHAS.md G-020). Scoped to the
                 // KANBAN board reads rather than blanketed over `'*'`: a blanket 500 also
                 // fails the github token probe, so the fixture would carry a second,
                 // unrelated diagnosis and a later diff could not say which leg moved.
