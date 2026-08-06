@@ -873,9 +873,10 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * against an unreachable state (canon #6): both `card#`-path callers are reached
      * only with a non-null card token, and the DL-win caller passes a `$text` its
      * own non-null `$dl` was parsed out of — so `parse($text) === null` here IS the
-     * card# path. A DL that parses but is not SOLE (a bundled / release-shaped
-     * subject) also stamps nothing and is deliberately NOT warned: that DL is
-     * foreign to this card by construction, not lost.
+     * card# path. A DL that parses but is not stamped — not SOLE (a bundled /
+     * release-shaped subject), or excluded as `$excludeDl` on the DL-218 conflict
+     * path — is deliberately NOT warned either: that DL is foreign to this card
+     * by construction, not lost.
      *
      * @return array{stamp_dl?: string, stamp_pr?: int, stamp_pr_url?: string}
      */

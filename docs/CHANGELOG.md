@@ -80,21 +80,44 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   the runtime near-miss probe's digit class is ASCII by ratification (DL-231, not reopened), and
   the card stem survives that only because that step names the non-ASCII-digit class **by name**
   to the author. A `looks_dl=`/`good_dl=` pair now sits in the SAME step at the SAME severity —
-  a `::warning::`, exit 0 pinned (DL-234(c) settled the severity; DL-250(e) ruled this is not a
-  hard gate) — with the DL arm's operator text naming that class by name. **No accept/reject
+  a `::warning::`, exit 0 pinned (DL-234(c) settled the severity; the precedent for shipping a
+  warn-leg widening on the record is DL-250's own `looks=` widening — exit code pinned to 0, no
+  accept/reject change — while DL-250(e) retracted "it changes what a CI check reports" as a
+  gating discriminator and issued no gating verdict either way) — with the DL arm's operator text naming that class by name. **No accept/reject
   change anywhere:** the require step, the correlation grammars and the runtime probe are
   untouched; only which non-correlating title/branch draws a CI annotation changes. Tied the way
   the card arm is: `good_dl` answer-set-to-answer-set against `DlTokenGrammar` in three
   renderings, and `looks_dl` against the RUNTIME probe over the **union** of both engines'
   separator domains, which is what makes it bidirectional (DL-250(4)) — measured, not argued: a
   separator removed from the shared `NearMissProbe::SEPARATORS` alone reds it, and so does one
-  added to the YAML class alone. **Disclosed, not buried — the arm fires on two shapes real
-  subjects here carry, and only one is noise:** `dl` at a token boundary followed by a separator
-  and **no** digit (`fix/dl-parser`) is NOISE, inherited from the card arm's legitimate looseness
-  (`looks_dl` needs no digit after the separator, so it cannot tell that from a real miss); the
-  **glued `dlNNN`** (`feature/dl189-…`, `docs/dl204-…`) is NOT noise — the DL separator is
-  mandatory, so a glued spelling names no DL, which is precisely the shape DL-273 measured across
-  this repo's history and the reason the arm exists. **(2) A lost `dl_number` stamp stops being
+  added to the YAML class alone. **Disclosed, not buried — the arm's reach is bounded by its own
+  whole-subject predicate, and the bound is measured, not argued.** The step probes title+branch
+  as ONE subject, and each arm greps only its own accept pattern — so suppression is
+  whole-subject **per stem**: any parsed `DL-NNN` anywhere suppresses the DL arm for the whole
+  subject, while a parsed card token does not (both directions asserted in PrTitleLintTest).
+  Driven over the 400 most recent PRs (review measurement, 2026-08-06): `looks_dl` matches 169
+  subjects and `good_dl` suppresses **every one** — in particular, every historical glued-`dlNNN`
+  branch (`feature/dl189-…`, `docs/dl204-…`) sat beside a well-spelled `DL-NNN` in its PR title,
+  so the arm fires **zero** times on that history. The branch-only glued miss DL-273 measured is
+  therefore the RUNTIME half's to catch: a branch-create push reaches the classifier as a bare
+  ref, where the DL-273 near-miss probe warns when no card token parses, and the new stamp-site
+  warn (below) does when one does — the latter fires on 2 of the same 400
+  (`card-5156b-dl232-…`, `feat/card-4322-dl199-…`). What the arm actually catches is a subject
+  whose EVERY DL spelling is malformed — the non-ASCII-digit `DL-<U+0663>239` class above being
+  the one no other surface names, and its reason to exist — plus one FALSE-POSITIVE shape both
+  arms share: `dl` at a token boundary then a separator and **no** digit (`fix/dl-parser`;
+  neither arm's `looks` needs a digit after the separator, so neither can tell that from a real
+  miss). DL-250(e) ruled that shape a separate defect and left it surfaced-not-fixed; with a
+  second arm now carrying it, the class is tracked as **card#6028** (12 of the same 400 draw the
+  card arm's warning purely from it). **Both warn lines' operator text is corrected to per-token
+  claims in the same change.** Because suppression is per-stem, the previous "so NO card will
+  move" clause was false whenever the OTHER stem's token correlated: of the shipped card-arm
+  line's 12 fires on the same corpus, **10** carried a parsing `DL-NNN` in the same subject — a
+  card could move by DL resolution while the line said none would (the mirror shape on the new
+  DL arm — a parsing card token beside a malformed DL — is exactly the lost-stamp subject below).
+  Both lines now claim only what is true of the token itself ("it correlates to nothing: no card
+  will move on this token"), the same what-is-true-HERE discipline the stamp-site warning
+  states. **(2) A lost `dl_number` stamp stops being
   silent.** A subject
   like `feat/card-3410-slug-DL_272` moves card 3410 and stamps **no** `dl_number`, because
   `DlTokenGrammar::sole()` returns null on the malformed token. The near-miss probe is
@@ -108,7 +131,9 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   applied-and-asserted, run, and restored from a snapshot: deleting the stamp-site emission reds
   **3** classifier legs (the two lost-stamp legs plus the DL-234(e) pin); dropping its
   `parse() === null` clause reds 3, two of them PRE-EXISTING DL-win legs; removing the CI arm's
-  `if`/`echo` while leaving both regexes in place reds the three end-to-end legs and **neither
+  `if`/`echo` while leaving both regexes in place reds the four end-to-end legs (the DL
+  shape-sweep, the non-ASCII-digit naming leg, the severity pin, and the cross-stem suppression
+  leg — end-to-end since its assertions moved onto the arm's own message text) and **neither
   tie**, which is why the end-to-end legs exist at all; widening `good_dl` to accept the plural
   `DLs-239` reds the grammar tie; dropping `looks_dl`'s `s?` or its space-then-hash separator reds
   the probe tie; and making the DL arm `exit 1` **after** it warns — so the warning still prints

@@ -493,22 +493,37 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
-     * THE LIMIT, asserted rather than discovered later: the predicate is whole-subject,
-     * not per-token. If ANY accepted token is present across title+branch, nothing warns —
-     * even if a second, malformed token sits beside it.
+     * THE LIMIT, asserted rather than discovered later: each arm's predicate is
+     * whole-subject WITHIN ITS OWN STEM, not per-token. An accepted card token
+     * anywhere across title+branch keeps the CARD arm quiet even when a second,
+     * malformed card token sits beside it — and only the same stem suppresses:
+     * an accepted card token does not quiet the DL arm, nor an accepted DL the
+     * card arm (both directions asserted below).
      *
-     * That is the deliberate no-cry-wolf choice for a WARNING leg: a correlating token
-     * means the card does move, so the PR is not in the silent-failure class this exists
-     * to catch. The cost is real and bounded — an author who writes `card-5150` in the
-     * branch and `card_3054` in the title gets no nudge that the second one is inert, and
-     * card 3054 stays put. Making that warn needs per-token analysis (tokenize, then test
-     * each), which is a bigger change than a warning leg justifies; the co-present-token
-     * case that actually MOVES the wrong card is DL-218's conflict path, not this.
+     * The same-stem half is the deliberate no-cry-wolf choice for a WARNING leg:
+     * a correlating token means that stem's channel works, so the PR is not in
+     * the silent-failure class this exists to catch. The cost is real and
+     * bounded — an author who writes `card-5150` in the branch and `card_3054`
+     * in the title gets no nudge that the second one is inert, and card 3054
+     * stays put. Making that warn needs per-token analysis (tokenize, then test
+     * each), which is a bigger change than a warning leg justifies; the
+     * co-present-token case that actually MOVES the wrong card is DL-218's
+     * conflict path, not this.
      */
-    public function test_whole_subject_predicate_does_not_warn_when_another_token_correlates(): void
+    public function test_suppression_is_whole_subject_within_a_stem_not_across_stems(): void
     {
+        // Same stem suppresses, whole-subject:
         $this->assertFalse($this->warned('Fix a thing card_3054', 'card-5150-some-slug'));
         $this->assertFalse($this->warned('card-5150 and also card_3054'));
+
+        // Cross-stem does not — asserted on each arm's own text, so the warning
+        // is attributed structurally rather than by argument:
+        $this->assertStringContainsString('names a DL',
+            $this->runWarnStep('Fix card-3410 handling of DL_272', 'f'),
+            'an accepted card token must not quiet the DL arm');
+        $this->assertStringContainsString('names a card',
+            $this->runWarnStep('DL-272 fixes card_3054', 'f'),
+            'an accepted DL token must not quiet the card arm');
     }
 
     // ---------------------------------------------------------------------
