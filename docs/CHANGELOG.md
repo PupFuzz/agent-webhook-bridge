@@ -40,6 +40,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   unit, and byte length is `>=` both the code-point and UTF-16 counts, so it is conservative
   under every reading. Correction to card#5972's own figure — 134,904 is the section's **byte**
   count; its character count is 133,906.
+- **The `bridge:check` event-consumer renderer drops its two unreachable `'unknown'` last-seen
+  fallback arms (card#5555).** Output-neutral: `received_at` is `timestamp(3)` NOT NULL with a
+  DB-side default and no app code ever writes it (not fillable — every row takes the default),
+  so the reconciler's `MAX(received_at)` over a non-empty group is always a scalar timestamp
+  string and neither arm could ever fire. Both were inherited by the DL-242
+  stage-7a migration, which deliberately carried them unchanged (deleting a branch that never
+  fires is output-neutral, which is exactly why a byte-identical stage must not do it) and filed
+  the deletion as its own decision; taken now as option (a) on the card.
 
 ### Fixed
 - **`bridge:check` certifies the board-tools ssh transport even when the kanban writeback client
