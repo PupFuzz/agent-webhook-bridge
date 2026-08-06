@@ -5,6 +5,7 @@ namespace Tests\Feature\Dispatch;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\RegisteredAgent;
+use App\Bridge\Support\SharedIdentitiesFileState;
 use App\Bridge\Support\SharedIdentity;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
@@ -258,6 +259,7 @@ class AgentRegistryTest extends TestCase
 
         // Optional file: absent → no shared identities, no warning.
         $this->assertSame([], AgentRegistry::loadSharedIdentities($dir));
+        $this->assertSame(SharedIdentitiesFileState::Absent, AgentRegistry::readSharedIdentities($dir)->state);
     }
 
     public function test_load_shared_identities_parses_file_and_skips_malformed(): void
@@ -270,12 +272,60 @@ class AgentRegistryTest extends TestCase
             ['github_login' => 'no-id'],   // missing numeric github_user_id → skipped
         ]]));
 
-        $shared = AgentRegistry::loadSharedIdentities($dir);
+        $file = AgentRegistry::readSharedIdentities($dir);
+        $shared = $file->identities;
 
+        $this->assertSame(SharedIdentitiesFileState::Parsed, $file->state);
+        $this->assertSame($dir.'/shared-identities.json', $file->path);
         $this->assertCount(1, $shared);
         $this->assertSame(12000042, $shared[0]->githubUserId);
         $this->assertSame(['pm', 'device'], $shared[0]->agentNames);
         Log::shouldHaveReceived('warning')->atLeast()->once();
+        // The adapter is the same read, collapsed: a caller wanting only the list must get
+        // what it always got, which is what keeps the receiver's contract unchanged.
+        $this->assertEquals($shared, AgentRegistry::loadSharedIdentities($dir));
+    }
+
+    /**
+     * MEASURED, not merely empty (card#5546 / DL-259). The bytes were read and are not a
+     * JSON object, and `loadSharedIdentities()` spends that as the same `[]` an install
+     * declaring nothing answers — so the discrimination has to live on the read's result
+     * or no caller can ever recover it.
+     */
+    public function test_read_shared_identities_records_malformed_json_as_its_own_state(): void
+    {
+        Log::spy();
+        $dir = sys_get_temp_dir().'/sharedid-'.uniqid();
+        File::ensureDirectoryExists($dir);
+        File::put($dir.'/shared-identities.json', 'not json {');
+
+        $file = AgentRegistry::readSharedIdentities($dir);
+
+        $this->assertSame(SharedIdentitiesFileState::Malformed, $file->state);
+        $this->assertSame([], $file->identities);
+    }
+
+    /**
+     * The state nothing was measured in: a regular file is there and this process could
+     * not open it. Distinct from malformed — no verdict about the CONTENTS is available —
+     * and distinct from absent, which is the benign install.
+     */
+    public function test_read_shared_identities_records_an_unreadable_file_as_its_own_state(): void
+    {
+        Log::spy();
+        $dir = sys_get_temp_dir().'/sharedid-'.uniqid();
+        File::ensureDirectoryExists($dir);
+        $path = $dir.'/shared-identities.json';
+        File::put($path, (string) json_encode(['shared_identities' => []]));
+        chmod($path, 0o000);
+        if (@file_get_contents($path) !== false) {
+            $this->markTestSkipped('this process can read a 0000 file (running as root) — the unreadable state is unreachable here');
+        }
+
+        $file = AgentRegistry::readSharedIdentities($dir);
+
+        $this->assertSame(SharedIdentitiesFileState::Unreadable, $file->state);
+        $this->assertSame([], $file->identities);
     }
 
     public function test_shared_identity_referencing_unknown_agent_warns(): void

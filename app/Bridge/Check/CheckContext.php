@@ -5,6 +5,7 @@ namespace App\Bridge\Check;
 use App\Bridge\Check\EventConsumers\EventConsumerReconciliation;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
+use App\Bridge\Support\SharedIdentitiesFile;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackConfig;
@@ -194,6 +195,27 @@ final class CheckContext
      * migration.
      */
     public ?AgentRegistry $registry = null;
+
+    /**
+     * The one read of `shared-identities.json` this run performed — its STATE, and the
+     * identities when it parsed. Null means the derivation never ran: a hand-built
+     * context, or an install with no config dir to form the path under.
+     *
+     * POPULATED AFTER THE PER-AGENT LOOP, with the same trap as {@see self::$configs} —
+     * a check reading it from a slot inside that loop sees null and would report the
+     * file absent on an install that has one.
+     *
+     * READ ONCE AND SHARED, for the same reason {@see self::$registry} is BUILT once:
+     * `AgentRegistry::readSharedIdentities()` LOGS — a permissions fault, a non-object,
+     * and one line per wrongly-shaped entry — so a second reader duplicates every one of
+     * those warnings, and stdout is identical either way, which is exactly the kind of
+     * behavior change this migration's output contract cannot see (card#5546).
+     *
+     * IT CARRIES THE STATE AND NOT A BARE LIST because the loader is fail-soft: absent,
+     * unreadable and malformed all answer the empty list, and DL-259 requires the
+     * preflight to pronounce four different verdicts over them.
+     */
+    public ?SharedIdentitiesFile $sharedIdentities = null;
 
     /**
      * The validated secret dir, or null when it is unset / not absolute — the state in

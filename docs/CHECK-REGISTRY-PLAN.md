@@ -1052,6 +1052,16 @@ gap-dense.
 stays measured BY DESIGN: the registry build is derivation and stays inline, so its guard stays in
 `handle()`. It leaves only when the final stage makes `CheckContext` a builder — not before, and a
 stage that "closes" it earlier has moved the build somewhere it re-logs.
+**[card#5546 SPLIT THAT GUARD'S TEXT WITHOUT MOVING THE BUILD.** The conjunction is now an outer
+`$ctx->configDir !== null` — under which the file is read once and published — wrapping the
+unchanged `$configs !== []` the build sits behind, so the build still happens exactly once, inline,
+under the same effective condition. The predicate this entry names is therefore gone as TEXT, and
+the regen re-measured the two that replace it rather than inheriting its verdict: the outer
+`$ctx->configDir !== null` came back observed — it now gates the file READ, whose absent arm the
+corpus can see — while the inner `$configs !== []` is still a gap under a new id, so nothing was
+closed here either. That is this stage's own third method note firing again, one program-stage
+later. A feature test asserts the gate directly instead of waiting for a fixture that could see it,
+and its negative leg was watched to red against a deliberately widened gate.**]**
 
 **An `observed` verdict said nothing about the message again (the trap fires a second time).** The
 `shared-identities-present` fixture is `observed`, yet it pins only `0 shared account(s)`: its JSON
@@ -1063,7 +1073,10 @@ whether a branch's message is asserted anywhere.
 **Filed, not fixed here** — three root-cause items deliberately left out of a migration PR, all
 output-neutral: **card#5546** (`shared-identities.json` is read twice per run, so a malformed file
 logs the same warning twice — preserved here byte-for-byte because collapsing the reads changes
-logging, and stages 0–7 hold the byte-identical contract), **card#5547** (Check-package source
+logging, and stages 0–7 hold the byte-identical contract) **[SINCE LANDED. One read per run,
+published on `CheckContext` as a state object the check consumes; the two log lines become one,
+and stdout is byte-identical, which is exactly why the acceptance evidence is a log-count
+assertion watched to red on the pre-fix code and not a green golden suite.]**, **card#5547** (Check-package source
 comments restate program state that drifts; two were already false and were corrected in this
 stage), and **card#5548** (the coverage instrument ignores the return of every `file_put_contents`,
 so a failed mutation-apply is laundered into an `observed-via-abort` verdict and a destroyed run
@@ -1117,6 +1130,11 @@ malformed file: two reads mean two log lines, a behavior change stdout cannot se
 side-effect-free lookup on an already-built repository — no I/O, no logging, no second anything.
 Both rulings are recorded side by side here on purpose, so a later reader does not "fix" one by
 citing the other.
+**[card#5546 LATER COLLAPSED THE SHARED-IDENTITIES SIDE, and the pairing is why that changes
+nothing here.** That read was carded precisely because it logs; the `config()` double read stands on
+the opposite ground — nothing to duplicate — so it is untouched and stays untouched. The two were
+never one rule, which is what this paragraph exists to say, and one of them landing is not an
+argument for the other.**]**
 
 **`warnIfDirInsecure()` was extracted, not copied, because this is the stage its second caller
 arrives in.** It was a private method on `CheckCommand` with exactly two call sites — units 2 and 4

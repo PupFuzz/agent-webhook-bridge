@@ -34,6 +34,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -42,15 +43,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L139",
+        "id": "if-L141",
         "kind": "if",
-        "line": 139,
-        "start": 7002,
-        "end": 7060,
+        "line": 141,
+        "start": 7169,
+        "end": 7227,
         "source": "! $this->emitReport($runner->run(CheckSlot::Install, $ctx))",
         "status": "observed",
         "failing": [
@@ -73,6 +75,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -81,15 +84,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L143",
+        "id": "if-L145",
         "kind": "if",
-        "line": 143,
-        "start": 7113,
-        "end": 7172,
+        "line": 145,
+        "start": 7280,
+        "end": 7339,
         "source": "! $this->emitReport($runner->run(CheckSlot::Database, $ctx))",
         "status": "observed",
         "failing": [
@@ -110,6 +114,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -118,15 +123,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L149",
+        "id": "if-L151",
         "kind": "if",
-        "line": 149,
-        "start": 7346,
-        "end": 7402,
+        "line": 151,
+        "start": 7513,
+        "end": 7569,
         "source": "! $this->emitReport($runner->run(CheckSlot::Inbox, $ctx))",
         "status": "observed",
         "failing": [
@@ -147,6 +153,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -155,15 +162,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L153",
+        "id": "if-L155",
         "kind": "if",
-        "line": 153,
-        "start": 7455,
-        "end": 7515,
+        "line": 155,
+        "start": 7622,
+        "end": 7682,
         "source": "! $this->emitReport($runner->run(CheckSlot::Retention, $ctx))",
         "status": "observed",
         "failing": [
@@ -184,6 +192,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -192,15 +201,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L159",
+        "id": "if-L161",
         "kind": "if",
-        "line": 159,
-        "start": 7750,
-        "end": 7810,
+        "line": 161,
+        "start": 7917,
+        "end": 7977,
         "source": "! $this->emitReport($runner->run(CheckSlot::Providers, $ctx))",
         "status": "observed",
         "failing": [
@@ -223,6 +233,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -231,15 +242,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L177",
+        "id": "if-L179",
         "kind": "if",
-        "line": 177,
-        "start": 8841,
-        "end": 8883,
+        "line": 179,
+        "start": 9008,
+        "end": 9050,
         "source": "is_string($configDir) && is_dir($configDir)",
         "status": "observed",
         "failing": [
@@ -268,6 +280,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -276,15 +289,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "foreach-L178",
+        "id": "foreach-L180",
         "kind": "foreach",
-        "line": 178,
-        "start": 8909,
-        "end": 8951,
+        "line": 180,
+        "start": 9076,
+        "end": 9118,
         "source": "glob(rtrim($configDir, '/').'/*.yml') ?: []",
         "status": "observed",
         "failing": [
@@ -313,6 +327,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -321,15 +336,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L202",
+        "id": "if-L204",
         "kind": "if",
-        "line": 202,
-        "start": 10349,
-        "end": 10429,
+        "line": 204,
+        "start": 10516,
+        "end": 10596,
         "source": "! $this->emitReport($runner->runForAgent(CheckSlot::AgentClassifier, $cfg, $ctx))",
         "status": "observed",
         "failing": [
@@ -356,6 +372,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -364,137 +381,145 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "foreach-L209",
+        "id": "foreach-L211",
         "kind": "foreach",
-        "line": 209,
-        "start": 10872,
-        "end": 10890,
+        "line": 211,
+        "start": 11039,
+        "end": 11057,
         "source": "$cfg->subscriptions",
         "status": "UNOBSERVED",
         "failing": []
     },
     {
-        "id": "if-L210",
+        "id": "if-L212",
         "kind": "if",
-        "line": 210,
-        "start": 10931,
-        "end": 10957,
+        "line": 212,
+        "start": 11098,
+        "end": 11124,
         "source": "$sub->provider === 'github'",
         "status": "UNOBSERVED",
         "failing": []
     },
     {
-        "id": "if-L225",
+        "id": "if-L227",
         "kind": "if",
-        "line": 225,
-        "start": 11687,
-        "end": 11776,
+        "line": 227,
+        "start": 11854,
+        "end": 11943,
         "source": "ClassifierResolver::probeImplements($cfg->classifierClass, EmitsWritebackReactions::class)",
         "status": "observed",
         "failing": [
             "writeback-move-leg-coord-config-unset",
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
-            "writeback-board-unreadable"
+            "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent"
         ]
     },
     {
-        "id": "foreach-L226",
+        "id": "foreach-L228",
         "kind": "foreach",
-        "line": 226,
-        "start": 11810,
-        "end": 11828,
+        "line": 228,
+        "start": 11977,
+        "end": 11995,
         "source": "$cfg->subscriptions",
         "status": "observed",
         "failing": [
             "writeback-move-leg-coord-config-unset",
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
-            "writeback-board-unreadable"
+            "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent"
         ]
     },
     {
-        "id": "if-L227",
+        "id": "if-L229",
         "kind": "if",
-        "line": 227,
-        "start": 11869,
-        "end": 11895,
+        "line": 229,
+        "start": 12036,
+        "end": 12062,
         "source": "$sub->provider === 'github'",
         "status": "observed",
         "failing": [
             "writeback-move-leg-coord-config-unset",
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
-            "writeback-board-unreadable"
-        ]
-    },
-    {
-        "id": "if-L237",
-        "kind": "if",
-        "line": 237,
-        "start": 12404,
-        "end": 12481,
-        "source": "in_array('coord-card-move', $cfg->classifierConfig->strings('families'), true)",
-        "status": "observed",
-        "failing": [
-            "writeback-move-leg-coord-config-unset",
-            "writeback-move-leg-coord-config-unreadable",
-            "writeback-move-leg-coord-config-agrees",
-            "writeback-board-unreadable"
-        ]
-    },
-    {
-        "id": "foreach-L238",
-        "kind": "foreach",
-        "line": 238,
-        "start": 12515,
-        "end": 12533,
-        "source": "$cfg->subscriptions",
-        "status": "observed",
-        "failing": [
-            "writeback-move-leg-coord-config-unset",
-            "writeback-move-leg-coord-config-unreadable",
-            "writeback-move-leg-coord-config-agrees",
-            "writeback-board-unreadable"
+            "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent"
         ]
     },
     {
         "id": "if-L239",
         "kind": "if",
         "line": 239,
-        "start": 12574,
-        "end": 12600,
+        "start": 12571,
+        "end": 12648,
+        "source": "in_array('coord-card-move', $cfg->classifierConfig->strings('families'), true)",
+        "status": "observed",
+        "failing": [
+            "writeback-move-leg-coord-config-unset",
+            "writeback-move-leg-coord-config-unreadable",
+            "writeback-move-leg-coord-config-agrees",
+            "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent"
+        ]
+    },
+    {
+        "id": "foreach-L240",
+        "kind": "foreach",
+        "line": 240,
+        "start": 12682,
+        "end": 12700,
+        "source": "$cfg->subscriptions",
+        "status": "observed",
+        "failing": [
+            "writeback-move-leg-coord-config-unset",
+            "writeback-move-leg-coord-config-unreadable",
+            "writeback-move-leg-coord-config-agrees",
+            "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent"
+        ]
+    },
+    {
+        "id": "if-L241",
+        "kind": "if",
+        "line": 241,
+        "start": 12741,
+        "end": 12767,
         "source": "$sub->provider === 'github'",
         "status": "observed",
         "failing": [
             "writeback-move-leg-coord-config-unset",
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
-            "writeback-board-unreadable"
+            "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent"
         ]
     },
     {
-        "id": "if-L259",
+        "id": "if-L270",
         "kind": "if",
-        "line": 259,
-        "start": 13911,
-        "end": 13919,
+        "line": 270,
+        "start": 14790,
+        "end": 14798,
         "source": "$declares",
         "status": "observed",
         "failing": [
-            "event-consumer-unconsumed-type"
+            "event-consumer-unconsumed-type",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L277",
+        "id": "if-L290",
         "kind": "if",
-        "line": 277,
-        "start": 14945,
-        "end": 15021,
+        "line": 290,
+        "start": 15952,
+        "end": 16028,
         "source": "! $this->emitReport($runner->runForAgent(CheckSlot::AgentPolicy, $cfg, $ctx))",
         "status": "observed",
         "failing": [
@@ -515,6 +540,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -523,39 +549,42 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "foreach-L281",
+        "id": "foreach-L294",
         "kind": "foreach",
-        "line": 281,
-        "start": 15103,
-        "end": 15121,
+        "line": 294,
+        "start": 16110,
+        "end": 16128,
         "source": "$cfg->subscriptions",
         "status": "observed",
         "failing": [
-            "event-consumer-unconsumed-type"
+            "event-consumer-unconsumed-type",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L282",
+        "id": "if-L295",
         "kind": "if",
-        "line": 282,
-        "start": 15158,
-        "end": 15184,
+        "line": 295,
+        "start": 16165,
+        "end": 16191,
         "source": "$sub->provider === 'github'",
         "status": "observed",
         "failing": [
-            "event-consumer-unconsumed-type"
+            "event-consumer-unconsumed-type",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L300",
+        "id": "if-L313",
         "kind": "if",
-        "line": 300,
-        "start": 16241,
-        "end": 16317,
+        "line": 313,
+        "start": 17248,
+        "end": 17324,
         "source": "! $this->emitReport($runner->runForAgent(CheckSlot::AgentConfig, $cfg, $ctx))",
         "status": "observed",
         "failing": [
@@ -576,6 +605,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -584,25 +614,38 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L341",
+        "id": "if-L362",
         "kind": "if",
-        "line": 341,
-        "start": 18936,
-        "end": 18978,
-        "source": "$configs !== [] && $ctx->configDir !== null",
+        "line": 362,
+        "start": 20558,
+        "end": 20581,
+        "source": "$ctx->configDir !== null",
+        "status": "observed",
+        "failing": [
+            "shared-identities-present"
+        ]
+    },
+    {
+        "id": "if-L365",
+        "kind": "if",
+        "line": 365,
+        "start": 20724,
+        "end": 20738,
+        "source": "$configs !== []",
         "status": "UNOBSERVED",
         "failing": []
     },
     {
-        "id": "if-L354",
+        "id": "if-L376",
         "kind": "if",
-        "line": 354,
-        "start": 19657,
-        "end": 19719,
+        "line": 376,
+        "start": 21355,
+        "end": 21417,
         "source": "! $this->emitReport($runner->run(CheckSlot::AgentRoster, $ctx))",
         "status": "observed",
         "failing": [
@@ -623,6 +666,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -631,15 +675,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L362",
+        "id": "if-L384",
         "kind": "if",
-        "line": 362,
-        "start": 20100,
-        "end": 20173,
+        "line": 384,
+        "start": 21798,
+        "end": 21871,
         "source": "is_string($configDir) && is_file(rtrim($configDir, '/').'/writeback.json')",
         "status": "observed",
         "failing": [
@@ -669,6 +714,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -677,15 +723,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L368",
+        "id": "if-L390",
         "kind": "if",
-        "line": 368,
-        "start": 20484,
-        "end": 20544,
+        "line": 390,
+        "start": 22182,
+        "end": 22242,
         "source": "! $this->emitReport($runner->run(CheckSlot::Writeback, $ctx))",
         "status": "observed",
         "failing": [
@@ -694,15 +741,16 @@
             "writeback-move-leg-coord-config-unset",
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
-            "writeback-board-unreadable"
+            "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent"
         ]
     },
     {
-        "id": "if-L380",
+        "id": "if-L402",
         "kind": "if",
-        "line": 380,
-        "start": 21292,
-        "end": 21351,
+        "line": 402,
+        "start": 22990,
+        "end": 23049,
         "source": "$ctx->writeback !== null && $ctx->writeback->mappings !== []",
         "status": "observed",
         "failing": [
@@ -713,30 +761,32 @@
             "writeback-move-leg-coord-config-unset",
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
-            "writeback-board-unreadable"
+            "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent"
         ]
     },
     {
-        "id": "if-L383",
+        "id": "if-L405",
         "kind": "if",
-        "line": 383,
-        "start": 21481,
-        "end": 21546,
+        "line": 405,
+        "start": 23179,
+        "end": 23244,
         "source": "! $this->emitReport($runner->run(CheckSlot::WritebackProbe, $ctx))",
         "status": "observed",
         "failing": [
             "writeback-move-leg-coord-config-unset",
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
-            "writeback-board-unreadable"
+            "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent"
         ]
     },
     {
-        "id": "if-L455",
+        "id": "if-L477",
         "kind": "if",
-        "line": 455,
-        "start": 26743,
-        "end": 26807,
+        "line": 477,
+        "start": 28441,
+        "end": 28505,
         "source": "! $this->emitReport($runner->run(CheckSlot::EventConsumer, $ctx))",
         "status": "observed",
         "failing": [
@@ -757,6 +807,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -765,15 +816,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L476",
+        "id": "if-L498",
         "kind": "if",
-        "line": 476,
-        "start": 28039,
-        "end": 28111,
+        "line": 498,
+        "start": 29737,
+        "end": 29809,
         "source": "! $this->emitReport($runner->run(CheckSlot::BoardToolsSuppression, $ctx))",
         "status": "observed",
         "failing": [
@@ -794,6 +846,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -802,15 +855,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L480",
+        "id": "if-L502",
         "kind": "if",
-        "line": 480,
-        "start": 28164,
-        "end": 28193,
+        "line": 502,
+        "start": 29862,
+        "end": 29891,
         "source": "$ctx->boardToolsEnabled !== []",
         "status": "observed",
         "failing": [
@@ -840,6 +894,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -848,15 +903,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L488",
+        "id": "if-L510",
         "kind": "if",
-        "line": 488,
-        "start": 28808,
-        "end": 28875,
+        "line": 510,
+        "start": 30506,
+        "end": 30573,
         "source": "! $this->emitReport($runner->run(CheckSlot::BoardToolsBearer, $ctx))",
         "status": "observed",
         "failing": [
@@ -867,11 +923,11 @@
         ]
     },
     {
-        "id": "if-L508",
+        "id": "if-L535",
         "kind": "if",
-        "line": 508,
-        "start": 30186,
-        "end": 30216,
+        "line": 535,
+        "start": 32299,
+        "end": 32329,
         "source": "$ctx->boardToolsClient !== null",
         "status": "observed",
         "failing": [
@@ -882,11 +938,11 @@
         ]
     },
     {
-        "id": "foreach-L509",
+        "id": "foreach-L536",
         "kind": "foreach",
-        "line": 509,
-        "start": 30246,
-        "end": 30268,
+        "line": 536,
+        "start": 32359,
+        "end": 32381,
         "source": "$ctx->boardToolsEnabled",
         "status": "observed",
         "failing": [
@@ -897,11 +953,11 @@
         ]
     },
     {
-        "id": "if-L510",
+        "id": "if-L537",
         "kind": "if",
-        "line": 510,
-        "start": 30305,
-        "end": 30385,
+        "line": 537,
+        "start": 32418,
+        "end": 32498,
         "source": "! $this->emitReport($runner->runForAgent(CheckSlot::BoardToolsState, $cfg, $ctx))",
         "status": "observed",
         "failing": [
@@ -912,11 +968,11 @@
         ]
     },
     {
-        "id": "if-L530",
+        "id": "if-L566",
         "kind": "if",
-        "line": 530,
-        "start": 31608,
-        "end": 31624,
+        "line": 566,
+        "start": 34312,
+        "end": 34328,
         "source": "$sshAgents === []",
         "status": "observed",
         "failing": [
@@ -924,11 +980,11 @@
         ]
     },
     {
-        "id": "foreach-L537",
+        "id": "foreach-L573",
         "kind": "foreach",
-        "line": 537,
-        "start": 31936,
-        "end": 31945,
+        "line": 573,
+        "start": 34616,
+        "end": 34625,
         "source": "$sshAgents",
         "status": "observed",
         "failing": [
@@ -938,11 +994,11 @@
         ]
     },
     {
-        "id": "foreach-L544",
+        "id": "foreach-L580",
         "kind": "foreach",
-        "line": 544,
-        "start": 32508,
-        "end": 32523,
+        "line": 580,
+        "start": 35160,
+        "end": 35175,
         "source": "$report->results",
         "status": "observed",
         "failing": [
@@ -950,11 +1006,11 @@
         ]
     },
     {
-        "id": "if-L545",
+        "id": "if-L581",
         "kind": "if",
-        "line": 545,
-        "start": 32567,
-        "end": 32604,
+        "line": 581,
+        "start": 35215,
+        "end": 35252,
         "source": "$result->id !== SshPinnedLineCheck::ID",
         "status": "observed",
         "failing": [
@@ -962,11 +1018,11 @@
         ]
     },
     {
-        "id": "foreach-L548",
+        "id": "foreach-L584",
         "kind": "foreach",
-        "line": 548,
-        "start": 32706,
-        "end": 32722,
+        "line": 584,
+        "start": 35342,
+        "end": 35358,
         "source": "$result->findings",
         "status": "observed",
         "failing": [
@@ -974,11 +1030,11 @@
         ]
     },
     {
-        "id": "if-L549",
+        "id": "if-L585",
         "kind": "if",
-        "line": 549,
-        "start": 32771,
-        "end": 32824,
+        "line": 585,
+        "start": 35403,
+        "end": 35456,
         "source": "self::severityMeansSetupIncomplete($finding->severity)",
         "status": "observed",
         "failing": [
@@ -986,11 +1042,11 @@
         ]
     },
     {
-        "id": "if-L554",
+        "id": "if-L590",
         "kind": "if",
-        "line": 554,
-        "start": 33013,
-        "end": 33040,
+        "line": 590,
+        "start": 35625,
+        "end": 35652,
         "source": "! $this->emitReport($report)",
         "status": "observed",
         "failing": [
@@ -1000,11 +1056,11 @@
         ]
     },
     {
-        "id": "foreach-L563",
+        "id": "foreach-L599",
         "kind": "foreach",
-        "line": 563,
-        "start": 33451,
-        "end": 33460,
+        "line": 599,
+        "start": 36031,
+        "end": 36040,
         "source": "$sshAgents",
         "status": "observed",
         "failing": [
@@ -1014,11 +1070,11 @@
         ]
     },
     {
-        "id": "if-L564",
+        "id": "if-L600",
         "kind": "if",
-        "line": 564,
-        "start": 33497,
-        "end": 33583,
+        "line": 600,
+        "start": 36073,
+        "end": 36159,
         "source": "! $this->emitReport($runner->runForAgent(CheckSlot::BoardToolsSshAdvisory, $cfg, $ctx))",
         "status": "observed",
         "failing": [
@@ -1028,11 +1084,11 @@
         ]
     },
     {
-        "id": "if-L589",
+        "id": "if-L624",
         "kind": "if",
-        "line": 589,
-        "start": 35023,
-        "end": 35084,
+        "line": 624,
+        "start": 37573,
+        "end": 37634,
         "source": "! $this->emitReport($runner->run(CheckSlot::ProbeTools, $ctx))",
         "status": "observed",
         "failing": [
@@ -1053,6 +1109,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -1061,15 +1118,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L598",
+        "id": "if-L633",
         "kind": "if",
-        "line": 598,
-        "start": 35547,
-        "end": 35611,
+        "line": 633,
+        "start": 38097,
+        "end": 38161,
         "source": "! $this->emitReport($runner->run(CheckSlot::ProbeToolsSsh, $ctx))",
         "status": "observed",
         "failing": [
@@ -1090,6 +1148,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -1098,15 +1157,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L610",
+        "id": "if-L645",
         "kind": "if",
-        "line": 610,
-        "start": 36241,
-        "end": 36251,
+        "line": 645,
+        "start": 38791,
+        "end": 38801,
         "source": "$this->json",
         "status": "observed",
         "failing": [
@@ -1136,6 +1196,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -1144,15 +1205,16 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     },
     {
-        "id": "if-L665",
+        "id": "if-L700",
         "kind": "if",
-        "line": 665,
-        "start": 39766,
-        "end": 39792,
+        "line": 700,
+        "start": 42316,
+        "end": 42342,
         "source": "$this->unvalidatedCount > 0",
         "status": "observed",
         "failing": [
@@ -1182,6 +1244,7 @@
             "writeback-move-leg-coord-config-unreadable",
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
+            "writeback-swimlane-collection-absent",
             "board-tools-http-enabled",
             "board-tools-ssh-pinned-line",
             "board-tools-ssh-default-transport-advisory",
@@ -1190,7 +1253,8 @@
             "probe-tools-with-no-enabled-agent",
             "no-opt-in-probes-requested",
             "event-consumer-unconsumed-type",
-            "event-consumer-nothing-arrived"
+            "event-consumer-nothing-arrived",
+            "event-consumer-declaration-unreadable"
         ]
     }
 ]

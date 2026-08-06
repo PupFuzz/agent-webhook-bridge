@@ -123,14 +123,17 @@ final class AgentRegistry
     }
 
     /**
-     * Read the optional shared-identities.json from the config dir. Missing →
-     * none. Malformed → none, with a warning (it's a declared-once policy file,
-     * not load-bearing for routing — a corrupt one degrades to "no shared
-     * accounts", which surfaces the raw id rather than mis-attributing).
+     * THE read of the optional shared-identities.json — every consumer is served from
+     * one call per run (card#5546). Missing → none. Malformed → none, with a warning
+     * (it's a declared-once policy file, not load-bearing for routing — a corrupt one
+     * degrades to "no shared accounts", which surfaces the raw id rather than
+     * mis-attributing).
      *
-     * @return list<SharedIdentity>
+     * IT LOGS, so calling it twice is not free: a second call re-emits the permissions
+     * warning, the not-an-object warning, and one line per wrongly-shaped entry. Callers
+     * that need both the list and the state read once and pass the result along.
      */
-    public static function loadSharedIdentities(string $configDir): array
+    public static function readSharedIdentities(string $configDir): SharedIdentitiesFile
     {
         $path = rtrim($configDir, '/').'/shared-identities.json';
         try {
@@ -140,25 +143,37 @@ final class AgentRegistry
             // fail-soft contract above is why: this loader's other caller is the receiver,
             // which must not 5xx over an optional policy file. It already answered [] for a
             // file it could not PARSE; answering [] for one it could not READ is the same
-            // ruling reaching the same state, and it is what SharedIdentitiesCheck has
-            // documented this loader as doing all along. That check re-reads the file itself
-            // and is where the operator-facing discrimination is pronounced (DL-259).
+            // ruling reaching the same state. What makes that safe for a preflight report is
+            // the STATE recorded here: SharedIdentitiesCheck consumes it and pronounces the
+            // operator-facing discrimination on it (DL-259), instead of reading the file again.
             Log::warning($e->getMessage().' — ignoring it; agents sharing an account lose their attribution');
 
-            return [];
+            return SharedIdentitiesFile::unreadable($path);
         }
         if ($contents === null) {
-            return [];
+            return SharedIdentitiesFile::absent($path);
         }
 
         $raw = json_decode($contents, true);
         if (! is_array($raw)) {
             Log::warning("shared-identities.json at {$path} is not valid JSON / not an object; ignoring it");
 
-            return [];
+            return SharedIdentitiesFile::malformed($path);
         }
 
-        return self::parseSharedIdentities($raw['shared_identities'] ?? [], $path);
+        return SharedIdentitiesFile::parsed($path, self::parseSharedIdentities($raw['shared_identities'] ?? [], $path));
+    }
+
+    /**
+     * The fail-soft list every RUNTIME caller wants: the states are collapsed onto the
+     * empty list they have always answered, so this contract is unchanged. A caller that
+     * must tell those states apart reads {@see self::readSharedIdentities()} instead.
+     *
+     * @return list<SharedIdentity>
+     */
+    public static function loadSharedIdentities(string $configDir): array
+    {
+        return self::readSharedIdentities($configDir)->identities;
     }
 
     /**
