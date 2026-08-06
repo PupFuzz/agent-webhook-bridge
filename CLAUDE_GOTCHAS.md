@@ -221,6 +221,36 @@ Runtime `config()` overrides the env-derived value, and tests that exercise a no
 
 ---
 
+## G-020 — a second `Http::fake()` APPENDS stubs; the first matching one wins, so a later override silently never runs
+
+**Symptom:** a test calls a helper that sets up the HTTP plane, then calls `Http::fake([...])` itself to override one URL for this case — and the override has no effect. The test is **green**, because it is asserting against whatever the helper stubbed. Nothing errors, nothing warns, and the assertion that was supposed to prove the failure path proves the healthy one instead.
+
+**Cause:** `Http::fake()` does not replace the stub set — it **merges onto it**. `Factory::fake()` ends in `$this->stubCallbacks = $this->stubCallbacks->merge(...)`, and the array form goes through `stubUrl()`, which is itself a `fake()` of a closure that returns `null` when the pattern doesn't match. At request time `PendingRequest::buildStubHandler()` invokes every registered callback and takes `->filter()->first()` — the **first non-null in REGISTRATION order**. So the winner is the *earliest* callback whose pattern matches, not the most specific one and not the most recent one. A helper whose stub set ends in a `'*'` catch-all (or a bare `Http::fake()`, which registers a match-everything callback) therefore answers *every* request, and any stub registered after it is unreachable — dead code that looks live.
+
+**Fix:** the later caller's stubs must be registered **ahead** of the defaults, which means passing them *through* the helper rather than calling `Http::fake()` after it:
+```php
+private function moveLegInstall(GoldenInstall $i, array $stubs = []): void
+{
+    // ...
+    Http::fake($stubs + [
+        '*/tasks/search.json*' => Http::response(...),
+        '*' => Http::response(['data' => []]),   // catch-all — anything behind it is dead
+    ]);
+}
+```
+PHP's array `+` is the operator that works here, and **the operand order is the whole point**: `+` keeps the **left** operand's entries *and their positions*, taking from the right only keys the left does not already have. Two consequences, both of which the cure needs (measured, not inferred):
+
+- a key the defaults **already have** (`*/tasks/search.json*`) keeps its original slot but takes the **caller's** value — the override replaces that default *in place*, still ahead of the `'*'`;
+- a key the defaults **do not** have (say `https://api.github.com/*`) is placed **first**, ahead of the `'*'` catch-all.
+
+That second property is the one `array_merge($defaults, $stubs)` and `[...$defaults, ...$stubs]` lack: for a *new* key both append it **last**, i.e. behind the catch-all, where it is dead — while for an *overlapping* key they happen to give the right answer, so a stub set that only ever overrides existing keys will mask the difference until someone adds a new pattern. Writing the operands the other way round (`$defaults + $stubs`) is wrong both ways: a new key goes last, and an overlapping key silently keeps the **default** value. Scope the override to the URLs under test rather than blanketing `'*'`: a blanket stub also answers unrelated legs, so the fixture ends up carrying a second, unrelated diagnosis.
+
+**Discovery:** DL-247 / card#5552. The `writeback-board-unreadable` golden fixture registered its two 500s with a `Http::fake()` *after* `moveLegInstall()`, whose default set ends in `'*'`. The 500s never ran, and the fixture captured **fully healthy** output for its entire life — committed, reviewed, and green the whole time. A sibling audit (card#5584) over all 426 `Http::fake` / `Http::fakeSequence` call sites in `tests/` found no second live instance; the one adjacent shape worth knowing is `CheckGoldenTest::test_the_capture_does_not_depend_on_terminal_width()`, which calls `captureFixture()` twice in one test method with no HTTP reset between them (`bootGoldenInstall()` resets the host and the install, **not** the stub set). It is benign only because both calls name the same fixture, so the stacked second registration is byte-identical to the first — pass two *different* fixture names there and the second one's HTTP plane is silently the first one's.
+
+**Related:** `Illuminate\Http\Client\Factory::fake()` + `::stubUrl()` and `Illuminate\Http\Client\PendingRequest::buildStubHandler()` in `vendor/` (cited by method, not line — `laravel/framework` is `^13.8`, so vendor line numbers drift on any patch bump), `tests/Feature/Console/Check/CheckGoldenTest.php` `moveLegInstall()` (the `$stubs + [...]` cure and its docblock), `tests/Support/CheckGolden/BootsGoldenInstall.php` (resets the host and install, not the stubs), `CLAUDE_DECISIONS.md` DL-247, `CLAUDE_TESTING.md` (the "Outbound HTTP — `Http::fake()`" paragraph under § Feature tests).
+
+---
+
 ## How to add an entry
 
 1. New `G-NNN` (next available number).
