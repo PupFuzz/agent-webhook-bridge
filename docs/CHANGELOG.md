@@ -42,9 +42,12 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   `App\Bridge\Writeback\CardTokenCorroboration` that both handlers call, never a second copy.
   The refusal logs and (with an `alert_channel`) signals as `card_token_uncorroborated` under the
   synthetic `draft_overlay` outcome. **A CLEAR is deliberately NOT gated:** clear-if-ours can only
-  null a `block_reason` that is exactly our own marker, so it can never alter what a human chose,
-  and gating it would strand every marker set before this shipped — the guard permanently pinning
-  the card it exists to protect. A corroborated overlay target's payload is **byte-identical** to
+  null a `block_reason` that exactly equals our own marker — a human's differing text is
+  untouchable (bounded by the constant-sentinel ambiguity `docs/writeback.md` documents) — and
+  gating it would strand any marker on a card that now tracks a different PR, including those set
+  before this shipped, the guard permanently pinning the card it exists to protect. Accepted
+  residual: a foreign PR's `ready_for_review` can clear the marker (releasing the DL-178 pin)
+  that another PR's draft set. A corroborated overlay target's payload is **byte-identical** to
   before (the flag and the event `pr_number` ride together and only on the residual), so ordinary
   `<type>/<id>-slug` work is untouched.
 - **`auto-tag-version.yml` can no longer leave a release tagged but unpublished (card#5972,

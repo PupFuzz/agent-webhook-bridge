@@ -141,10 +141,13 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         // same refusal as the move handler.
         //
         // Scoped to SET, and that is a ruling rather than an omission: CLEAR is
-        // clear-if-ours, so it can only ever null a block_reason that is EXACTLY our own
-        // marker — it cannot write a foreign card's field to anything a human chose.
-        // Gating it would instead STRAND every marker set before this shipped, leaving
-        // the guard permanently pinning the card it exists to protect.
+        // clear-if-ours, so it can only null a block_reason that EXACTLY equals our
+        // marker — a human's differing text is untouchable (bounded by the constant-
+        // sentinel ambiguity noted in docs/writeback.md). Gating it would instead
+        // STRAND any marker on a card that now tracks a different PR — including those
+        // set before this shipped — leaving the guard permanently pinning the card it
+        // exists to protect. Accepted residual: a foreign PR's ready_for_review can
+        // clear the marker (and release the DL-178 pin) that another PR's draft set.
         if ($action === 'set' && CardTokenCorroboration::refuses($payload['card_token_uncorroborated'] ?? null, $card, $payload['pr_number'] ?? null)) {
             $this->alerts->warnAndNotify(
                 'kanban_block_reason: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and the card already tracks a DIFFERENT PR',
