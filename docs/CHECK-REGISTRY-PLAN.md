@@ -1359,7 +1359,8 @@ The disclosed-gap count holds at **1** — no gap departed, arrived, or closed i
 still the derivation guard `$configs !== [] && $ctx->configDir !== null`, whose text this stage does
 not touch. It stays measured by design until the final stage makes `CheckContext` a builder.
 
-**Two format arms are unreachable rather than untested, and they are carded, not deleted.** Both
+**Two format arms are unreachable rather than untested, and they are carded, not deleted** **[since
+closed — card#5555's own PR deleted both arms once the stage had landed]**. Both
 `'unknown'` last-seen renderings need `MAX(received_at)` to arrive non-scalar or empty;
 `received_at` is `timestamp(3)` NOT NULL with a DB-side default, so over a non-empty group it is
 always a scalar timestamp string. Deleting them changes no output only BECAUSE they never fire —

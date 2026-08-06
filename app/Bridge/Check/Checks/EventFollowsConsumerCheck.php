@@ -139,7 +139,7 @@ final class EventFollowsConsumerCheck implements Check
             $subscribed = implode(', ', $scope->agents);
             foreach ($unconsumed as $eventType) {
                 $count = $scope->observed[$eventType]['count'];
-                $last = $scope->observed[$eventType]['last'] !== '' ? $scope->observed[$eventType]['last'].' UTC' : 'unknown';
+                $last = $scope->observed[$eventType]['last'].' UTC';
 
                 yield Finding::warn("event-consumer: github:{$scope->scope} has received '{$eventType}' ({$count}x, last {$last}) but no enabled classifier consumes it — the event is silently dropped on arrival (agent(s) subscribed: {$subscribed}). A last-seen predating your subscription fix is remediated history, not live drift. Add a consuming family, or drop '{$eventType}' from the subscription via coord:setup-bridge.");
             }
@@ -197,7 +197,7 @@ final class EventFollowsConsumerCheck implements Check
 
         foreach ($scope->unlistedActions() as $top => $unlisted) {
             $detail = implode(', ', array_map(
-                static fn (string $action, array $d): string => "{$action} ({$d['count']}x, last ".($d['last'] !== '' ? $d['last'].' UTC' : 'unknown').')',
+                static fn (string $action, array $d): string => "{$action} ({$d['count']}x, last {$d['last']} UTC)",
                 array_keys($unlisted),
                 array_values($unlisted),
             ));
