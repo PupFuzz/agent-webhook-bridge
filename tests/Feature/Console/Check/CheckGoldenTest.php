@@ -301,8 +301,9 @@ class CheckGoldenTest extends TestCase
                 return ['args' => [], 'fpm' => false, 'coordConfig' => $i->path('coordination.config.json')];
 
             case 'writeback-board-unreadable':
-                // The 500 overrides the matching default and is registered AHEAD of it
-                // rather than behind it — see moveLegInstall()'s $stubs note. Scoped to the
+                // The 500 replaces the matching default's entry, so it sits ahead of the
+                // '*' catch-all — where a later Http::fake() would land behind it (see
+                // CLAUDE_GOTCHAS.md G-020). Scoped to the
                 // KANBAN board reads rather than blanketed over `'*'`: a blanket 500 also
                 // fails the github token probe, so the fixture would carry a second,
                 // unrelated diagnosis and a later diff could not say which leg moved.
@@ -1080,8 +1081,9 @@ class CheckGoldenTest extends TestCase
      *
      * @param  array<string, mixed>  $stubs  Http stubs registered AHEAD of the defaults.
      *                                       Passing them here rather than via a later
-     *                                       `Http::fake()` is the only ordering that works;
-     *                                       see CLAUDE_GOTCHAS.md G-020 for why.
+     *                                       `Http::fake()` is the only ordering that works
+     *                                       once this helper has run; see CLAUDE_GOTCHAS.md
+     *                                       G-020 for why.
      */
     private function moveLegInstall(GoldenInstall $i, array $stubs = []): void
     {
