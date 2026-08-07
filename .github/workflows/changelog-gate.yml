@@ -73,9 +73,13 @@ jobs:
           # default git prints any path carrying a non-ASCII byte as a C-quoted
           # string with a LEADING `"`, which silently defeats a predicate that
           # anchors or matches whole lines. The `-qxF VERSION` below cannot be
-          # fooled that way — an ASCII literal is never quoted — but fixing the
-          # read rather than the reader is what keeps a future predicate change
-          # here safe by construction (card#6101, DL-281).
+          # fooled that way — an ASCII literal is never quoted. The flag is here
+          # anyway because THIS file's predicates demonstrably get rewritten
+          # (card#6056 rewrote the feature step's scope predicate), so the read is
+          # fixed once at the guard rather than re-argued at whichever predicate
+          # moves next. Scoped to this guard: NOT a claim that every path-list
+          # read in the repo wants the flag — DL-281's sibling audit found one
+          # that provably does not.
           CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" "$HEAD")
           if ! grep -qxF VERSION <<<"$CHANGED"; then
             echo "OK: this PR does not move VERSION — no release section to assert."
