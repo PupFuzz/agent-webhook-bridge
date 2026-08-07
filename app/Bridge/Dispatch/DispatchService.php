@@ -3,6 +3,7 @@
 namespace App\Bridge\Dispatch;
 
 use App\Bridge\Adapters\EventDto;
+use App\Bridge\Contracts\Classifier;
 use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Exceptions\ConfigException;
@@ -84,6 +85,13 @@ final class DispatchService
             ['delivery_id' => $dto->deliveryId],
         );
         $event->refresh();   // load the DB-default received_at for stable inbox ts
+
+        // Silent-drop warn dedup, keyed agent|targetId. Declared HERE, not inside
+        // the loop: the two wanted scopes are "within one result" and "across the
+        // agents of one event" (a per-agent loop-local would collapse the second,
+        // and an instance property would add an unwanted third across dispatch()
+        // calls on the bound instance).
+        $warned = [];
 
         // subscribedTo() reads the per-agent YAMLs (fail-closed: a malformed
         // config throws here → 5xx → redelivered once fixed).
@@ -210,6 +218,12 @@ final class DispatchService
             foreach ($result->intents as $index => $intent) {
                 $this->intentLog->stage($agent, $event, $intent, $index);
             }
+
+            // AFTER staging, deliberately: the warn claims the inbox backstop will
+            // not carry this subject, which is a classifier-authoring claim only
+            // once staging itself succeeded — a staging throw (B) propagates first
+            // and an event that never staged is owed no such claim.
+            $this->warnUnpairedPushes($event, $result, $agent, $classifier, $warned);
 
             // (C) handlers — durable-first, then best-effort (DL-009).
             // Same-event coalescing: collapse targets sharing a (handler,
@@ -340,6 +354,42 @@ final class DispatchService
     private function isSignal(AgentConfig $agent, Actor $actor): bool
     {
         return SignalAllowlist::default($agent->echoSuppression->treatAsSignal, $this->agents)->isSignal($actor);
+    }
+
+    /**
+     * The ratified silent-drop guard (DL-278): a `channel_push` whose targetId
+     * pairs with no Intent subject_id in the same result is a wake with no
+     * durable inbox backstop — warn, never change the dispatch outcome.
+     *
+     * @param  array<string, true>  $warned
+     */
+    private function warnUnpairedPushes(WebhookEvent $event, ClassifyResult $result, AgentConfig $agent, Classifier $classifier, array &$warned): void
+    {
+        if (! $agent->surfaceSilentDropWarnings) {
+            return;
+        }
+
+        $subjectIds = array_map(static fn (Intent $intent): string => $intent->subjectId, $result->intents);
+
+        foreach ($result->targets as $t) {
+            // Strict in_array, never array_flip + isset: PHP canonicalizes a
+            // numeric-string array KEY to an int, so subject ids differing only
+            // in that (e.g. '7' vs '07') would pair against each other as keys.
+            if ($t->handler !== 'channel_push' || in_array($t->targetId, $subjectIds, true)) {
+                continue;
+            }
+            $key = $agent->agentName.'|'.$t->targetId;
+            if (isset($warned[$key])) {
+                continue;
+            }
+            $warned[$key] = true;
+            Log::warning('bridge dispatch: channel_push target has no paired Intent (same subject_id) — the inbox backstop will not carry this subject; pair it with an Intent or set surface.silent_drop_warnings: false', [
+                'agent' => $agent->agentName,
+                'event' => $event->id,
+                'classifier' => $classifier::class,
+                'target_id' => $t->targetId,
+            ]);
+        }
     }
 
     private function markDelivered(AgentDispatch $dispatch, ?string $note = null, ?string $reason = null): void
