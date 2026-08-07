@@ -8,6 +8,20 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+- **card#6056** — **`changelog-gate.yml`'s feature-PR path scope widens to `.github/workflows/`.**
+  **⚠ THIS CHANGES WHAT CI REQUIRES ON PRs TOUCHING `.github/workflows/`:** such a PR must now be
+  named in the `[Unreleased]` section — by its title's `card#`/`DL-` token, or, for a title carrying
+  no token, by having changed the section at all — exactly as an `app/` or `bin/` PR must. The scope
+  was `app/`-and-`bin/` on the reasoning that the gate covers shipped behaviour; what CI accepts or
+  rejects IS shipped behaviour for a contributor, and the gap was measured on the gate program's own
+  work — the DL-279 `release-artifacts-gate.yml` adoption changed what CI accepts on every release
+  PR and was itself structurally exempt from the gate that exists to make a change announce itself.
+  `.github/` outside `workflows/` stays out of scope (an issue template or a dependabot config
+  announces no behaviour), the exempt branch set (`dependabot/*`, `release/*`, `sync/*`, `revert-*`)
+  is unchanged, and the release-PR assertions — the `## [<VERSION>]` section and its release-body
+  size limit — are untouched.
+
 ## [0.73.0] - 2026-08-07
 
 ### Fixed

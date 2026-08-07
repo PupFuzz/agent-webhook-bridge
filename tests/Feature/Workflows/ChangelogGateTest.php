@@ -278,7 +278,7 @@ class ChangelogGateTest extends TestCase
         $this->assertStringContainsString('is exempt', $out);
     }
 
-    public function test_a_pr_touching_neither_app_nor_bin_needs_no_entry(): void
+    public function test_a_pr_touching_no_in_scope_path_needs_no_entry(): void
     {
         [$rc, $out] = $this->runFeatureStep(
             ['docs/CHANGELOG.md' => $this->changelog('- old'), 'docs/other.md' => 'a'],
@@ -288,7 +288,7 @@ class ChangelogGateTest extends TestCase
         );
 
         $this->assertSame(0, $rc, $out);
-        $this->assertStringContainsString('no app/ or bin/ file', $out);
+        $this->assertStringContainsString('no app/, bin/, or .github/workflows/ file', $out);
     }
 
     public function test_an_app_change_whose_token_is_named_in_unreleased_passes(): void
@@ -452,6 +452,38 @@ class ChangelogGateTest extends TestCase
 
         $this->assertSame(1, $rc, $out);
         $this->assertStringContainsString('does not name card 1234', $out);
+    }
+
+    public function test_a_workflow_change_is_in_scope_exactly_like_an_app_change(): void
+    {
+        // card#6056: what CI accepts or rejects is shipped behaviour for a
+        // contributor. The DL-279 gate adoption changed what CI accepts on
+        // every release PR and owed no entry under the app/-and-bin/ scope.
+        [$rc, $out] = $this->runFeatureStep(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), '.github/workflows/some-gate.yml' => 'a'],
+            ['.github/workflows/some-gate.yml' => 'b'],
+            'fix(ci): tighten the gate (card#1234)',
+            'fix/1234-gate',
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString('does not name card 1234', $out);
+    }
+
+    public function test_a_github_path_outside_workflows_stays_out_of_scope(): void
+    {
+        // The widening is `.github/workflows/`, not `.github/`: an issue
+        // template or a dependabot config announces no behaviour. Pinned
+        // because `^\.github/` is the easy over-reach.
+        [$rc, $out] = $this->runFeatureStep(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), '.github/dependabot.yml' => 'a'],
+            ['.github/dependabot.yml' => 'b'],
+            'chore(deps): widen the ecosystem list (card#1234)',
+            'chore/1234-deps',
+        );
+
+        $this->assertSame(0, $rc, $out);
+        $this->assertStringContainsString('no app/, bin/, or .github/workflows/ file', $out);
     }
 
     // ---------------------------------------------------------------- publish step
