@@ -14,10 +14,11 @@ name: CHANGELOG gate
 #      unpublished (measured: v0.72.0, run 31051259223, HTTP 422). Asserting
 #      here moves both to the point where the fix is still cheap.
 #
-#   2. FEATURE PR — a PR touching app/ or bin/ must be named in the
-#      `[Unreleased]` section. Measured 2026-08-05: 25 of 56 tokened commits
-#      reached v0.72.0 undocumented, against 100% coverage on the prior three
-#      releases, because nothing reads the CHANGELOG on a PR event at all.
+#   2. FEATURE PR — a PR touching app/, bin/, or .github/workflows/ must be
+#      named in the `[Unreleased]` section. Measured 2026-08-05: 25 of 56
+#      tokened commits reached v0.72.0 undocumented, against 100% coverage on
+#      the prior three releases, because nothing reads the CHANGELOG on a PR
+#      event at all.
 #
 # NOT in scope, and do not "also" add it: `auto-tag-version.yml` staying
 # fail-soft on the TAG half is by design (card#5910 rejected hardening it) —
@@ -127,15 +128,21 @@ jobs:
               ;;
           esac
 
-          # PATH SCOPE, as approved on card#5971: shipped behaviour only. A
-          # docs-only or test-only PR is exempt BY CONSTRUCTION rather than by
-          # a carve-out, because a gate that fires on changes with nothing to
-          # announce is one people learn to bypass.
+          # PATH SCOPE, as approved on card#5971 and widened on card#6056:
+          # shipped behaviour only — and what CI ACCEPTS OR REJECTS is shipped
+          # behaviour for a contributor, so a `.github/workflows/` change owes
+          # the same entry an app/ or bin/ one does. Measured: the DL-279
+          # release-artifacts-gate adoption changed what CI accepts on every
+          # release PR and was structurally exempt from the gate that exists to
+          # make a change announce itself. A docs-only or test-only PR is still
+          # exempt BY CONSTRUCTION rather than by a carve-out, because a gate
+          # that fires on changes with nothing to announce is one people learn
+          # to bypass.
           # Captured, not piped — see the release step for the measured reason a
           # `writer | grep -q` under pipefail can report the writer's SIGPIPE.
           CHANGED=$(git diff --name-only "$BASE" "$HEAD")
-          if ! grep -qE '^(app|bin)/' <<<"$CHANGED"; then
-            echo "OK: this PR changes no app/ or bin/ file — no [Unreleased] entry required."
+          if ! grep -qE '^(app/|bin/|\.github/workflows/)' <<<"$CHANGED"; then
+            echo "OK: this PR changes no app/, bin/, or .github/workflows/ file — no [Unreleased] entry required."
             exit 0
           fi
 
@@ -197,7 +204,7 @@ jobs:
               echo "OK: the [Unreleased] section names this PR's ${kind} token ${id}."
               exit 0
             fi
-            echo "::error::this PR changes app/ or bin/, but docs/CHANGELOG.md's [Unreleased] section does not name ${kind} ${id}."
+            echo "::error::this PR changes app/, bin/, or .github/workflows/, but docs/CHANGELOG.md's [Unreleased] section does not name ${kind} ${id}."
             echo "Nothing reads the CHANGELOG between PRs, so an omission is invisible until a release is cut:"
             echo "25 of 56 tokened commits reached v0.72.0 undocumented this way (card#5971)."
             echo "Fix: add an [Unreleased] entry citing '${spelling}' describing the change."
@@ -218,7 +225,7 @@ jobs:
             echo "OK: no correlation token in the title, but this PR changed the [Unreleased] section."
             exit 0
           fi
-          echo "::error::this PR changes app/ or bin/ and leaves docs/CHANGELOG.md's [Unreleased] section untouched."
+          echo "::error::this PR changes app/, bin/, or .github/workflows/ and leaves docs/CHANGELOG.md's [Unreleased] section untouched."
           echo "Its title carries no card#/DL token, so there is nothing to correlate against — the entry"
           echo "is the only signal that this change exists before a release is cut."
           echo "Fix: add an [Unreleased] entry (and, if the work has a card, put its token in the PR title"
