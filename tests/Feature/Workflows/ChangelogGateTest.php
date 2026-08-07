@@ -470,6 +470,26 @@ class ChangelogGateTest extends TestCase
         $this->assertStringContainsString('does not name card 1234', $out);
     }
 
+    public function test_a_non_ascii_in_scope_path_is_seen_by_the_scope_predicate(): void
+    {
+        // card#6101: `core.quotepath` defaults on, so git prints a path holding
+        // a non-ASCII byte as a C-quoted string with a LEADING `"` — which
+        // defeats the `^` anchor, silently exempting a PR whose in-scope paths
+        // are ALL non-ASCII-named. The fixture is that PR: one in-scope file,
+        // non-ASCII name, and a token the section does not carry, so the gate
+        // must reach its verdict rather than skip.
+        [$rc, $out] = $this->runFeatureStep(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), 'app/café.php' => 'a'],
+            ['docs/CHANGELOG.md' => $this->changelog('- old
+- an entry for some OTHER work (card#9999)'), 'app/café.php' => 'b'],
+            'fix(x): repair the accented one (card#1234)',
+            'fix/1234-x',
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString('does not name card 1234', $out);
+    }
+
     public function test_a_github_path_outside_workflows_stays_out_of_scope(): void
     {
         // The widening is `.github/workflows/`, not `.github/`. Pinned because
