@@ -10,8 +10,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 - **Docs stop restating the dev-PR gate model — and G-002's drifted recipe no longer targets a
-  live database (card#5913).** `CLAUDE_CONVENTIONS.md` § Workflow, `VERSIONING.md` release step 7,
-  and `CLAUDE_TESTING.md`'s pre-merge sentence carried second copies of the gate model
+  live database (card#5913).** `CLAUDE_CONVENTIONS.md` § Workflow, `VERSIONING.md`'s wait-for-CI
+  release step, and `CLAUDE_TESTING.md`'s pre-merge sentence carried second copies of the gate model
   `CLAUDE.md` rule 5 owns; the copies had drifted (retired ask-before-open steps, the card#5575
   named-workflow list, a hand-tag instruction `auto-tag-version.yml` would race). Each is now a
   pointer to its owner. `CLAUDE_GOTCHAS.md` G-002's "run MariaDB locally" block — a drifted copy
@@ -20,6 +20,18 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   dropped; it now points at the owner recipe with an explicit never-target-a-live-install warning.
 
 ### Added
+- **CI asserts the WHOLE declared release-artifact set at release-PR time (card#5910, DL-279).**
+  A new `release-artifacts-gate.yml` runs the toolkit's SHA-pinned `release-artifacts` action,
+  which takes its members from `.release-pr.json`'s `artifacts` array — the declaration that until
+  now had exactly one consumer, the release-PR body generator, which merely PRINTED it as a
+  checklist. A release PR missing the **`CLAUDE.md § Recent releases` row** — the one declared
+  member no gate read, so its absence could not fail any signal — now fails instead of shipping
+  silently. Members come from the declaration, so a fourth is guarded by DECLARING it rather than
+  by remembering to extend a script.
+  **⚠ THIS CHANGES WHAT CI ACCEPTS** on release PRs; it was user-gated on card#5910 before any
+  code. It **composes with** `changelog-gate.yml` rather than replacing it — that gate still owns
+  the release-body size limit and the per-PR `[Unreleased]` entry — and `auto-tag-version.yml`
+  stays fail-soft post-merge by design.
 - **The silent-drop guard the docs have promised since v0.12 now exists (card#6025, DL-278).**
   The dispatcher WARNS when a classifier emits a `channel_push` ReactionTarget whose `targetId`
   equals no `Intent.subjectId` in the same `ClassifyResult` — a wake fired with no durable inbox

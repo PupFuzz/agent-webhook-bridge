@@ -16,7 +16,11 @@ name: Release artifacts
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    # `edited` fires when a PR is RETARGETED to a different base (`synchronize` does not), and the
+    # verdict is a function of the base — the merge base drives both the classification and the
+    # asserted diff. Not for the title, which this action never reads (unlike changelog-gate.yml,
+    # which subscribes to the same event for exactly that reason).
+    types: [opened, edited, reopened, synchronize]
 
 permissions:
   contents: read
