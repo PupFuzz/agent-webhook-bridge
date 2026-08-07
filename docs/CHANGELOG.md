@@ -8,6 +8,17 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+- **Docs stop restating the dev-PR gate model — and G-002's drifted recipe no longer targets a
+  live database (card#5913).** `CLAUDE_CONVENTIONS.md` § Workflow, `VERSIONING.md` release step 7,
+  and `CLAUDE_TESTING.md`'s pre-merge sentence carried second copies of the gate model
+  `CLAUDE.md` rule 5 owns; the copies had drifted (retired ask-before-open steps, the card#5575
+  named-workflow list, a hand-tag instruction `auto-tag-version.yml` would race). Each is now a
+  pointer to its owner. `CLAUDE_GOTCHAS.md` G-002's "run MariaDB locally" block — a drifted copy
+  of the `CLAUDE_TESTING.md` throwaway-container recipe — pointed `phpunit` at
+  `agent_webhook_bridge_dev`, the live dev install's DB, which `RefreshDatabase` would have
+  dropped; it now points at the owner recipe with an explicit never-target-a-live-install warning.
+
 ### Added
 - **The silent-drop guard the docs have promised since v0.12 now exists (card#6025, DL-278).**
   The dispatcher WARNS when a classifier emits a `channel_push` ReactionTarget whose `targetId`

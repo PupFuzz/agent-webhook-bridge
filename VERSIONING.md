@@ -36,7 +36,7 @@ Policy (per `CLAUDE.md` rule #5 — the ask-before-opening checkpoint is retired
 4. **Update `docs/CHANGELOG.md`.** Move `[Unreleased]` content into a `## [X.Y.Z] - YYYY-MM-DD` heading, then re-seed `[Unreleased]` as empty.
 5. Run the pre-PR review loop (CLAUDE.md rule #1) on the release surface.
 6. Open the release-prep PR `release/...` → `dev` with full release notes in the PR body (no ask — PR-opening is pre-authorized per CLAUDE.md rule #5).
-7. Wait for ALL CI checks (Tests + Security + any future workflow) to complete + pass.
+7. Wait for CI to complete + pass per `CLAUDE.md` standing rule #5 — it owns what must be green and how to read the list (card#5575; deliberately not restated here).
 8. **Auto-merge** the release-prep PR to `dev` on green (it targets `dev`).
 9. Open the release PR `release/v<version>` → `main` (no ask to open; the user-merge gate in step 11 is the control point). **CRITICAL: the PR head must be the `release/v<version>` branch, NOT `dev` directly.** GitHub's "Automatically delete head branches" repo setting auto-deletes whichever branch is the merged PR's head — if you set head=`dev`, `dev` gets deleted when the user merges. Repo settings can't reliably exclude `dev` on the free plan (branch protection rules require Pro for private repos), so the discipline lives in the branch-naming convention.
 10. Wait for ALL CI checks on the release → main PR.

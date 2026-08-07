@@ -14,11 +14,8 @@ Entries are added when a bug surfaces during development that took >5 minutes to
 
 **Cause:** MariaDB's `TIMESTAMP(3)` column accepts `YYYY-MM-DD HH:MM:SS.fff` (space separator, no UTC marker). SQLite stores timestamps as text and accepts ISO-8601. `phpunit.xml` defaults to `DB_CONNECTION=sqlite / DB_DATABASE=:memory:` so the full test suite passes locally even when a MariaDB-only bug exists. The CI `phpunit-mariadb` job (`.github/workflows/laravel-tests.yml`) overrides these via real environment variables and catches the divergence — but only after a push.
 
-**Fix:** Run the MariaDB CI job locally when touching any datetime or schema path:
-```bash
-# quick smoke against the local MariaDB — mirrors the CI env override pattern
-DB_CONNECTION=mysql DB_DATABASE=agent_webhook_bridge_dev vendor/bin/phpunit
-```
+**Fix:** Run the MariaDB suite locally when touching any datetime or schema path — use the throwaway-container recipe owned by [`CLAUDE_TESTING.md`](CLAUDE_TESTING.md) § Running MariaDB tests locally. Never point `phpunit` at a live install's database: `RefreshDatabase` drops and re-migrates it, and an install's `.env` names that install's live DB (see [`CLAUDE_DEPLOYMENT.md`](CLAUDE_DEPLOYMENT.md) § Install layout; a drifted earlier revision of this block did exactly that — card#5913).
+
 Laravel's Eloquent datetime serialization handles the format for model attributes, but raw `DB::statement` / `DB::insert` calls that hand-craft datetime strings must use `Y-m-d H:i:s.v` (space, milliseconds), not ISO-8601.
 
 **Discovery:** Original Python-era bug (v0.11.x PR #5); the SQLite-vs-MariaDB test-vs-CI split persists in v0.12. CI job comment in `laravel-tests.yml` calls the divergence explicitly.

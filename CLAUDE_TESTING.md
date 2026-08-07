@@ -216,7 +216,7 @@ trustworthy. That is measured history, not a hypothetical (DL-237(e)).
 - Overrides `phpunit.xml`'s SQLite defaults via real environment variables (`DB_CONNECTION=mysql`, `DB_HOST`, etc.)
 - Runs the full PHPUnit suite against the live MariaDB — no subset, the same suite
 
-Tests must pass on SQLite (Job 1) **and** both MariaDB matrix legs (Job 2) before merge. The lesson from the Python-era `test_db_mariadb.py` incident applies here: a local SQLite-only `vendor/bin/phpunit` run passing does not guarantee CI green when a MariaDB job exists. Driver-specific behavior (transaction semantics, `UNIQUE` constraint timing, `JSON_VALID` enforcement, timestamp precision) only surfaces under the real engine.
+The wait-for-CI discipline before self-merge is owned by [`CLAUDE.md`](CLAUDE.md) standing rule 5 (card#5575; deliberately not restated here). What this section owns is the driver lesson from the Python-era `test_db_mariadb.py` incident: a local SQLite-only `vendor/bin/phpunit` run passing does not guarantee CI green when a MariaDB job exists. Driver-specific behavior (transaction semantics, `UNIQUE` constraint timing, `JSON_VALID` enforcement, timestamp precision) only surfaces under the real engine.
 
 ### Running MariaDB tests locally
 
