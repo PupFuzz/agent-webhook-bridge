@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.73.0] - 2026-08-07
+
 ### Fixed
 - **Docs stop restating the dev-PR gate model — and G-002's drifted recipe no longer targets a
   live database (card#5913).** `CLAUDE_CONVENTIONS.md` § Workflow, `VERSIONING.md`'s wait-for-CI
@@ -229,6 +231,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   log-count deltas otherwise: on an install where *no* agent YAML parsed, an unreadable or malformed
   file now warns once where it warned not at all (the check has always reported that install; the
   read reaching it is what the report was missing).
+
+### Security
+- **league/commonmark bumped 2.8.3 → 2.9.0 for GHSA-29pj-957v-52mc (#496).** Routine dependency
+  bumps in the same release: symfony/yaml 8.1.1 → 8.1.2 (#470), laravel/pao 1.1.2 → 1.1.3 (#471),
+  laravel/pint 1.29.3 → 1.30.0 (#469, dev-only).
 
 ## [0.72.0] - 2026-08-05
 
