@@ -233,7 +233,7 @@ final class GitHubIssueCommentClassifier implements Classifier
 
         // subject_id = the THREAD (owner/repo#N); the comment identity rides in
         // the payload. The channel_push target_id must equal this subject_id
-        // (the silent-drop guard pairs them).
+        // (the silent-drop guard warns when they differ).
         $subjectId = $ctx->scopeId.'#'.$number;
         $who = $ctx->actor->name ?? $ctx->actor->id ?? '?';
 

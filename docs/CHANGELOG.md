@@ -9,6 +9,31 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 ## [Unreleased]
 
 ### Added
+- **The silent-drop guard the docs have promised since v0.12 now exists (card#6025, DL-278).**
+  The dispatcher WARNS when a classifier emits a `channel_push` ReactionTarget whose `targetId`
+  equals no `Intent.subjectId` in the same `ClassifyResult` — a wake fired with no durable inbox
+  backstop behind it, which until now was exactly the silent drop the operator could not see.
+  Implemented per the **ratified card#2014 acceptance criterion**, translated to the PHP model
+  (the pairing partner is the Intent, not the Python-era `log_intent` target — that handler is
+  forensic-only and `bridge:inbox` never reads it).
+  **No dispatch-outcome change: warn only.** Never a throw, never a delivery/drop flip. Thirteen
+  places in the repo already presupposed this guard existed — eight operator-facing doc claims,
+  two source docblocks and three test comments; none of them was true until now, and the two that
+  ALSO overstated it (a warn *ensures* nothing, and does not *pair* anything — the classifier
+  does) are corrected in the same change.
+  **Default-ON**, via the already-parsed `surface.silent_drop_warnings` (default `true`) — a
+  config key that had zero consumers until now. **Opt out per agent** with
+  `surface: {silent_drop_warnings: false}`; no new config, no schema change.
+  **Blast radius: no shipped classifier can warn.** Both `channel_push` construction sites in
+  `app/` — `InboxOnlyClassifier::wakePush()` and the `route_intents` synthesis — build the target
+  FROM the intent, so they are paired by construction; the nine agent configs on the reference
+  install (5 prod, 4 dev) all take the shipped classifiers and the `true` default, and none can
+  emit an unpaired push.
+  **Warn volume, stated plainly:** once per agent+`target_id` **within one event**, and therefore
+  once **per redelivery attempt** — a durable-handler throw after the check 5xxes and the
+  redelivery warns again. There is deliberately **no cross-request dedup** (it would need new
+  cross-request state); a busy stream re-emitting the same unpaired target warns once per
+  delivery until the classifier is fixed or the agent opts out.
 - **CI reads `docs/CHANGELOG.md` before a merge for the first time: `changelog-gate.yml`
   (card#5910, card#5971, card#5972, DL-276).** One workflow, two assertions. **(1)** A PR that
   moves `VERSION` must carry a matching `## [<VERSION>]` section, and that section must fit
