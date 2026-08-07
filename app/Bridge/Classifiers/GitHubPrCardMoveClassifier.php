@@ -802,9 +802,11 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * guard and not behind `$dl === null` alone: a subject carrying a parsing
      * `card#` beside a malformed `DL_239` moves its card, so it is not in the
      * silent-failure class this exists to catch — and "no move" below would be
-     * a false statement about it. The bounded cost is that such a subject loses
-     * its `dl_number` stamp with no warning; naming a lost STAMP is a different
-     * signal from naming a lost MOVE, and it is card#5961, not this.
+     * a false statement about it. That limit STANDS; what changed (card#5961) is
+     * that the cost it leaves — such a subject losing its `dl_number` stamp — is
+     * no longer silent either. Naming a lost STAMP is a different signal from
+     * naming a lost MOVE, so it is emitted where the stamp is built
+     * ({@see stampRefs}) rather than by widening this guard.
      */
     private function warnTokenNearMiss(string $text, string $surface): void
     {
@@ -848,6 +850,34 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * add-if-missing at the handler protects an existing value, so a release PR whose
      * title merely names a feature card's DL cannot overwrite that card's own PR refs.
      *
+     * THE LOST STAMP IS NOW NAMED (card#5961), and it is a different signal from
+     * {@see warnTokenNearMiss}'s. That probe sits behind the both-null guard, so a
+     * subject like `feat/card-3410-slug-DL_272` is silent there BY DECISION — this
+     * event emits a move rather than no-opping, so the near-miss line's "no move"
+     * clause would be false about it (DL-234(e)). What was ALSO silent is the
+     * consequence at THIS site: `sole()` returns null on the malformed token and no
+     * `stamp_dl` rides the target, so nothing carries a `dl_number` for the next
+     * event to correlate by. The warning therefore belongs where the DL result is
+     * CONSUMED.
+     *
+     * WHAT IT MAY CLAIM is bounded by where it is emitted — classify time. It says
+     * a move is EMITTED, never that a card ends up moved: `KanbanMoveCardHandler`
+     * can still refuse the target (the `getCard` 4xx arm, the
+     * belongs-to-mapped-board guard, the uncorroborated-title-token gate, the
+     * `started` no-regression guard). That is the same discipline the DL-148 note
+     * above states for the conflict warning — what is always true HERE is what gets
+     * said. The `dl_number` half needs no such hedge: the stamp is not in the
+     * payload at all, so it cannot be written whatever the handler decides.
+     *
+     * The guard needs no "and a card token parsed" clause, which would defend
+     * against an unreachable state (canon #6): both `card#`-path callers are reached
+     * only with a non-null card token, and the DL-win caller passes a `$text` its
+     * own non-null `$dl` was parsed out of — so `parse($text) === null` here IS the
+     * card# path. A DL that parses but is not stamped — not SOLE (a bundled /
+     * release-shaped subject), or excluded as `$excludeDl` on the DL-218 conflict
+     * path — is deliberately NOT warned either: that DL is foreign to this card
+     * by construction, not lost.
+     *
      * @return array{stamp_dl?: string, stamp_pr?: int, stamp_pr_url?: string}
      */
     private function stampRefs(string $text, ?int $prNumber, ?string $prUrl = null, ?string $excludeDl = null): array
@@ -856,6 +886,10 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         $sole = DlTokenGrammar::sole($text);
         if ($sole !== null && $sole !== $excludeDl) {
             $refs['stamp_dl'] = $sole;
+        }
+        if (DlTokenGrammar::parse($text) === null && DlTokenGrammar::looksLikeDlToken($text)) {
+            Log::warning('kanban_move_card: a card token correlates, so this event moves a card rather than no-opping (the durable handler may still refuse it) — but the subject also carries a DL-shaped token that does not parse ('
+                .DlTokenGrammar::describe().'), so no dl_number is stamped with the move (FR-7 lost DL stamp): '.$text);
         }
         if ($prNumber !== null) {
             $refs['stamp_pr'] = $prNumber;

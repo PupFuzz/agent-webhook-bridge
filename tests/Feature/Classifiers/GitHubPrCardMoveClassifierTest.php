@@ -1154,8 +1154,17 @@ class GitHubPrCardMoveClassifierTest extends TestCase
      * CARD token parses moves its card, so it is not in the silent-failure class
      * this probe exists to catch and must stay silent even beside a malformed
      * DL. The bounded cost — that card loses its `dl_number` stamp with no
-     * signal — is card#5961, and this leg is what would red if it were ever
-     * closed here by accident rather than by decision.
+     * signal — was card#5961, and this leg is what would red if the NEAR-MISS
+     * were ever closed here by accident rather than by decision.
+     *
+     * CARD#5961 CLOSED THAT COST, BY DECISION, AND THIS LEG WAS UPDATED FOR IT —
+     * the file's convention is to name the card that moved a pin. What changed is
+     * NOT this guard: the near-miss probe still sits behind the both-null guard and
+     * this subject still draws no near-miss line in the bridge log, which is what the assertions
+     * below now say specifically. What is new is a DISTINCT warning at the stamp
+     * site naming the lost `dl_number` — a different signal, made where it is true.
+     * A future edit that closes the near-miss half by widening the guard still reds
+     * here, which is the whole point of the pin.
      */
     public function test_a_parsing_card_token_suppresses_the_dl_near_miss_whole_subject(): void
     {
@@ -1164,9 +1173,11 @@ class GitHubPrCardMoveClassifierTest extends TestCase
 
         $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/card-3410-DL_239']);
 
-        $this->assertCount(1, $r->targets, 'the card token correlates — the card DOES move');
+        $this->assertCount(1, $r->targets, 'the card token correlates — this event emits a move target');
         $this->assertSame(3410, $r->targets[0]->payload['card_id']);
-        Log::shouldNotHaveReceived('warning');
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'lost DL stamp')
+            && ! str_contains((string) $msg, 'near-miss'))->once();
+        Log::shouldHaveReceived('warning')->once();   // and nothing ELSE warned — no near-miss line
     }
 
     public function test_token_less_branch_stays_silent_no_near_miss_spam(): void
@@ -1338,6 +1349,84 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame(88, $p['card_id']);
         $this->assertSame('DL-55', $p['stamp_dl']);
         $this->assertArrayNotHasKey('stamp_pr', $p);   // no PR on a push
+    }
+
+    // --- card#5961: a LOST `dl_number` stamp is named, where a lost MOVE is not ---
+
+    /**
+     * THE SHIPPED CASE. `feat/card-3410-slug-DL_272` moves card 3410 and — because
+     * `sole()` returns null on the malformed token — stamps no `dl_number` at all.
+     * The near-miss probe is deliberately silent here (DL-234(e), pinned by its own
+     * leg above), so before this the stamp simply vanished. The warning fires at the
+     * STAMP site instead, and says only what is true THERE, at classify time: a move
+     * is EMITTED (the durable handler may still refuse it) and no `dl_number` rides
+     * it. The emitted-move half is asserted here as a TARGET, not as a board state,
+     * for the same reason the message is worded that way.
+     */
+    public function test_a_lost_dl_stamp_warns_when_a_card_token_moves_beside_a_malformed_dl(): void
+    {
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/card-3410-slug-DL_272']);
+
+        $this->assertCount(1, $r->targets, 'the card token correlates — this event emits a move target');
+        $this->assertSame(3410, $r->targets[0]->payload['card_id']);
+        $this->assertArrayNotHasKey('stamp_dl', $r->targets[0]->payload, 'the malformed DL is exactly what is NOT stamped');
+
+        // A DISTINCT signal, not the near-miss line reused: that one says "no move",
+        // which would be a false statement about this subject.
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'lost DL stamp')
+            && ! str_contains((string) $msg, 'near-miss'))->once();
+        Log::shouldHaveReceived('warning')->once();   // and nothing ELSE warned
+        Http::assertNothingSent();
+    }
+
+    /** The PR surface reaches the same stamp site — both call sites, not just the push. */
+    public function test_a_lost_dl_stamp_warns_on_the_pr_title_surface_too(): void
+    {
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classify('pull_request.opened', ['title' => 'Fix a thing card#3410 for DL_272', 'head' => ['ref' => 'f'], 'number' => 91]);
+
+        $this->assertCount(1, $r->targets);
+        $this->assertArrayNotHasKey('stamp_dl', $r->targets[0]->payload);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'lost DL stamp'))->once();
+        Log::shouldHaveReceived('warning')->once();
+    }
+
+    /**
+     * The other side of the guard: a DL that PARSES beside the card token is stamped,
+     * so nothing was lost and nothing is warned. Without this the new warning could be
+     * unconditional on the card# path and every leg above would still pass.
+     */
+    public function test_a_parsing_dl_beside_a_card_token_stamps_and_does_not_warn(): void
+    {
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);   // DL unresolved → card# fallback
+        Log::spy();
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/card-3410-slug-DL-272']);
+
+        $this->assertSame('DL-272', $r->targets[0]->payload['stamp_dl']);
+        // The empty board the fake serves warns once on its own account (that
+        // diagnostic predates this leg). Counted rather than filtered out, so a
+        // lost-stamp line appearing here cannot net out against it.
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'board read returned 0 cards'))->once();
+        Log::shouldHaveReceived('warning')->once();   // and nothing ELSE warned
+    }
+
+    /** And a subject with nothing DL-shaped in it at all stays silent. */
+    public function test_a_card_token_with_no_dl_shaped_text_does_not_warn_about_a_lost_stamp(): void
+    {
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/card-3410-slug']);
+
+        $this->assertSame(3410, $r->targets[0]->payload['card_id']);
+        $this->assertArrayNotHasKey('stamp_dl', $r->targets[0]->payload);
+        Log::shouldNotHaveReceived('warning');
     }
 
     // --- DL-193: PR draft → block_reason OVERLAY (opt-in `draft_overlay`) ---
