@@ -110,6 +110,8 @@ Http::assertSent(fn (Request $r) => $r->method() === 'POST'
     && $r['url'] === $this->receiverUrl);
 ```
 
+**Register the whole stub set once.** A second `Http::fake()` does not replace the first — it appends to it, the *first* matching stub wins, and it resets the recorded log that `Http::assertSent()` reads. So calling a setup helper and then "overriding" one URL with a later `Http::fake()` silently leaves the helper's answer in place, and the test stays green. Read [`CLAUDE_GOTCHAS.md`](CLAUDE_GOTCHAS.md) G-020 **before** layering fakes.
+
 **Temporary config dirs.** Tests that exercise config loading or filesystem writes create a `sys_get_temp_dir().'/prefix-'.uniqid()` directory in `setUp()` and delete it in `tearDown()`. They point the bridge at it via `config(['bridge.config_dir' => $this->dir, 'bridge.secret_dir' => $this->dir])`. This keeps tests hermetic and avoids leaking into the real install's config paths.
 
 **Fake secrets in test fixtures.** Any test file that writes a literal HMAC secret, token, or password value in source adds a `// gitleaks:allow — test fixture` annotation on that line to suppress scanner false positives:
@@ -214,7 +216,7 @@ trustworthy. That is measured history, not a hypothetical (DL-237(e)).
 - Overrides `phpunit.xml`'s SQLite defaults via real environment variables (`DB_CONNECTION=mysql`, `DB_HOST`, etc.)
 - Runs the full PHPUnit suite against the live MariaDB — no subset, the same suite
 
-Tests must pass on SQLite (Job 1) **and** both MariaDB matrix legs (Job 2) before merge. The lesson from the Python-era `test_db_mariadb.py` incident applies here: a local SQLite-only `vendor/bin/phpunit` run passing does not guarantee CI green when a MariaDB job exists. Driver-specific behavior (transaction semantics, `UNIQUE` constraint timing, `JSON_VALID` enforcement, timestamp precision) only surfaces under the real engine.
+The wait-for-CI discipline before self-merge is owned by [`CLAUDE.md`](CLAUDE.md) standing rule 5 (card#5575; deliberately not restated here). What this section owns is the driver lesson from the Python-era `test_db_mariadb.py` incident: a local SQLite-only `vendor/bin/phpunit` run passing does not guarantee CI green when a MariaDB job exists. Driver-specific behavior (transaction semantics, `UNIQUE` constraint timing, `JSON_VALID` enforcement, timestamp precision) only surfaces under the real engine.
 
 ### Running MariaDB tests locally
 

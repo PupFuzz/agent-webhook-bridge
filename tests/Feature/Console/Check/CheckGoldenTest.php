@@ -3,7 +3,6 @@
 namespace Tests\Feature\Console\Check;
 
 use App\Bridge\Retention\RetentionGate;
-use App\Bridge\Support\ChannelProbeEnvironment;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -11,11 +10,11 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\CheckGolden\BootsGoldenInstall;
 use Tests\Support\CheckGolden\GoldenCapture;
 use Tests\Support\CheckGolden\GoldenChannelEnvironment;
 use Tests\Support\CheckGolden\GoldenInstall;
 use Tests\Support\CheckGolden\GoldenSshEnvironment;
-use Tests\Support\CheckGolden\PinnedHost;
 use Tests\TestCase;
 
 /**
@@ -43,18 +42,12 @@ use Tests\TestCase;
  */
 class CheckGoldenTest extends TestCase
 {
+    use BootsGoldenInstall;
     use RefreshDatabase;
-
-    private ?GoldenInstall $install = null;
-
-    private ?PinnedHost $host = null;
 
     protected function tearDown(): void
     {
-        // The assertions that only READ golden files never build an install, so both
-        // are legitimately unset here — and an un-restored PATH would leak into every
-        // later test in the process.
-        $this->tearDownFixture();
+        $this->tearDownGoldenInstall();
         parent::tearDown();
     }
 
@@ -308,8 +301,9 @@ class CheckGoldenTest extends TestCase
                 return ['args' => [], 'fpm' => false, 'coordConfig' => $i->path('coordination.config.json')];
 
             case 'writeback-board-unreadable':
-                // The 500 REPLACES the matching default in place rather than being
-                // registered behind it — see moveLegInstall()'s $stubs note. Scoped to the
+                // The two 500s replace the matching defaults' entries, so they sit ahead
+                // of the '*' catch-all — where a later Http::fake() would land behind it
+                // (see CLAUDE_GOTCHAS.md G-020). Scoped to the
                 // KANBAN board reads rather than blanketed over `'*'`: a blanket 500 also
                 // fails the github token probe, so the fixture would carry a second,
                 // unrelated diagnosis and a later diff could not say which leg moved.
@@ -981,8 +975,10 @@ class CheckGoldenTest extends TestCase
         // `bridge:check` line went through one of those, every golden file would be a
         // property of the capturing terminal. Measured rather than assumed — and if
         // this ever reds, COLUMNS joins the pinned set.
+        // No teardown between the two: {@see BootsGoldenInstall::bootGoldenInstall()} does it,
+        // and a redundant call here would read as load-bearing to the next author — the exact
+        // remember-to-do-it discipline that hoist exists to remove.
         $narrow = $this->withColumns('40', fn () => $this->captureFixture('writeback-half-configured-triggers'));
-        $this->tearDownFixture();
         $wide = $this->withColumns('400', fn () => $this->captureFixture('writeback-half-configured-triggers'));
 
         $this->assertSame($narrow, $wide);
@@ -992,23 +988,11 @@ class CheckGoldenTest extends TestCase
 
     private function captureFixture(string $name, bool $perturb = false): string
     {
-        $install = new GoldenInstall($name);
-        $host = new PinnedHost($install->path());
-        $this->install = $install;
-        $this->host = $host;
-        // Pinned for EVERY fixture, ahead of buildFixture() so a fixture that ever wants
-        // a live endpoint overrides it deliberately rather than inheriting the box.
-        $this->app->instance(ChannelProbeEnvironment::class, new GoldenChannelEnvironment);
-        // Ahead of the builder: a fixture that WANTS ambient cache state sets it in
-        // buildFixture(), and a reset after that would erase it (card#5552).
-        $host->resetAmbientState();
-        if ($perturb) {
-            $host->perturbAmbient();
-        }
-        $spec = $this->buildFixture($install, $name);
-        $host->apply(fpmPresent: $spec['fpm'], coordConfig: $spec['coordConfig']);
+        // The pin set and its ordering are the trait's — every one of them applies to
+        // every fixture, so no caller gets to assemble a subset.
+        $spec = $this->bootGoldenInstall($name, fn (GoldenInstall $i) => $this->buildFixture($i, $name), perturb: $perturb);
 
-        return GoldenCapture::capture($install->path(), $spec['args']);
+        return GoldenCapture::capture($this->install->path(), $spec['args']);
     }
 
     /**
@@ -1023,14 +1007,7 @@ class CheckGoldenTest extends TestCase
      */
     private function captureFixtureAsJson(string $name): array
     {
-        $install = new GoldenInstall($name);
-        $host = new PinnedHost($install->path());
-        $this->install = $install;
-        $this->host = $host;
-        $this->app->instance(ChannelProbeEnvironment::class, new GoldenChannelEnvironment);
-        $host->resetAmbientState();
-        $spec = $this->buildFixture($install, $name);
-        $host->apply(fpmPresent: $spec['fpm'], coordConfig: $spec['coordConfig']);
+        $spec = $this->bootGoldenInstall($name, fn (GoldenInstall $i) => $this->buildFixture($i, $name));
 
         $exit = Artisan::call('bridge:check', $spec['args'] + ['--format' => 'json']);
         $raw = trim(Artisan::output());
@@ -1042,14 +1019,6 @@ class CheckGoldenTest extends TestCase
         );
 
         return ['exit' => $exit, 'document' => $document];
-    }
-
-    private function tearDownFixture(): void
-    {
-        $this->host?->restore();
-        $this->install?->destroy();
-        $this->host = null;
-        $this->install = null;
     }
 
     private function goldenFor(string $name): string
@@ -1111,14 +1080,10 @@ class CheckGoldenTest extends TestCase
      * The fixture shape that provably REACHES the deep writeback/coord legs.
      *
      * @param  array<string, mixed>  $stubs  Http stubs registered AHEAD of the defaults.
-     *                                       Laravel matches stub callbacks in REGISTRATION
-     *                                       order and the default set ends in a `'*'`
-     *                                       catch-all, so a stub a caller registers with a
-     *                                       LATER `Http::fake()` can never run — which is
-     *                                       how `writeback-board-unreadable` spent its life
-     *                                       capturing the fully healthy output instead
-     *                                       (card#5552). Passing them here is the only
-     *                                       ordering that works.
+     *                                       Passing them here rather than via a later
+     *                                       `Http::fake()` is the only ordering that works
+     *                                       once this helper has run; see CLAUDE_GOTCHAS.md
+     *                                       G-020 for why.
      */
     private function moveLegInstall(GoldenInstall $i, array $stubs = []): void
     {

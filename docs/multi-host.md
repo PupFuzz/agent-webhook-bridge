@@ -280,7 +280,7 @@ Expected: `forwarded` (HTTP 202). The Claude Code session on host B receives `<c
 | `curl` returns `401 unauthorized` | `BRIDGE_CHANNEL_TOKEN` mismatch between `.mcp.json` (server) and classifier (client) | Compare both values; regenerate + redeploy if either rotated |
 | `curl` returns 200 but Claude Code shows nothing | Channel server isn't bound (Claude Code session closed) OR `--dangerously-load-development-channels` flag missing | Run `/mcp` in the Claude Code session; check `~/.claude/debug/<session-id>.txt` for spawn errors |
 | Bridge logs `process_error` constantly | Tunnel is up but channel server crashed | Restart the Claude Code session on B (the server dies and respawns with the session) |
-| `connection refused` only sometimes | Tunnel flapping during autossh reconnect | Standard. The silent-drop guard ensures the Intent emission still feeds `php artisan bridge:inbox` for next-session catch-up |
+| `connection refused` only sometimes | Tunnel flapping during autossh reconnect | Standard. The Intent emission still feeds `php artisan bridge:inbox` for next-session catch-up — and the silent-drop guard warns if the classifier ever emits the push WITHOUT that paired Intent |
 
 ## Board tools (two-way) forward leg
 

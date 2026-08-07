@@ -150,7 +150,7 @@ Bridge code uses Laravel's `Log::warning(...)` / `Log::error(...)` facade for di
 
 `feature/<short-slug>` for new work. `fix/<short-slug>` for bugfix-only PRs. `chore/<short-slug>` for process/tooling work. `refactor/<short-slug>` for behavior-preserving restructures.
 
-**Base branch: always `dev`.** The `main` branch is release-only and merged to by the user. Never branch directly from `main` for new work, and never PR a feature branch directly to `main`.
+**Base branch:** owned by [`CLAUDE.md`](CLAUDE.md) standing rule 4 (the two-branch model — deliberately not restated here).
 
 ### Commit messages
 
@@ -174,31 +174,9 @@ Body: paragraphs describing what + why (NOT how — that's in the diff). Include
 
 ### Workflow
 
-Two-branch (`main` + `dev`). Adopts the kanban-board process.
+The dev-PR gate model — branching model, who opens and merges what, and what CI must show before a self-merge — is owned by [`CLAUDE.md`](CLAUDE.md) standing rules 4–5; the release steps are owned by [`VERSIONING.md`](VERSIONING.md) § Release flow. The merge mechanic itself is in [`CLAUDE_AGENTBOARD.md`](CLAUDE_AGENTBOARD.md) § Your work loop → **Merge authority**. This file deliberately does not restate any of it: a restated copy here drifted into contradicting the owners on the ask-before-open checkpoint (retired), the named-workflow list (card#5575), and hand-tagging (card#5913).
 
-**Feature flow:**
-
-1. `git checkout -b <feature-branch>` off `dev` (never off `main`).
-2. Commit on the feature branch.
-3. Run the review-agent loop until CLEAN.
-4. **ASK user before `gh pr create`.** Wait for explicit go-ahead.
-5. Open PR targeting `dev`.
-6. Wait for ALL CI workflows (Laravel Tests + Security + any future) to complete + pass.
-7. **Auto-merge on green** — Claude runs `gh pr merge --squash --delete-branch` once all checks are green. No second ask. Per [`feedback-git-workflow`](../.claude/projects/-home-kanban/memory/feedback-git-workflow.md): opening creates a visible artifact worth a checkpoint; merging validated work doesn't.
-
-**Releases.** When `dev` accumulates changes worth tagging:
-
-1. Claude bumps `VERSION` (per [`VERSIONING.md`](VERSIONING.md)) + updates `docs/CHANGELOG.md` on a release-prep feature branch off `dev`.
-2. Ask before opening; auto-merge to `dev` on green.
-3. After the release-prep PR is on `dev`, ask before opening the release PR `dev` → `main`.
-4. Wait for ALL CI workflows on the release PR.
-5. **Hand off to user to merge** — Claude never runs `gh pr merge` against a `main`-targeted PR regardless of CI state.
-6. After the user merges to `main` and confirms the merge, that confirmation is the standing authorization for both the tag AND the back-merge sync PR. Claude:
-   - Tags the new main commit with `v<VERSION>`.
-   - Opens the back-merge sync PR (`sync/main-to-dev-post-v<version>`) targeting `dev` **autonomously — no separate ask**.
-   - Auto-merges the sync PR on green (it targets `dev`).
-
-**Security-critical surfaces still pause.** Even on `dev`, PRs touching `VerifyHmacSignature.php` / adapters / HMAC paths / secret-path resolution / DB schema get explicit human approval before merging — on top of the ask-before-open baseline.
+**Security-critical surfaces still pause.** The surfaces are `VerifyHmacSignature.php` / adapters / HMAC paths / secret-path resolution / DB schema; the trigger is **changes to what these surfaces accept, reject, or persist** — not the fact that a change touches one of them (a formatting-only edit carries no gate). Such a change gets explicit human approval before being implemented — see [`CLAUDE_AGENTBOARD.md`](CLAUDE_AGENTBOARD.md) § Ask-first gates and the user-level always-ask gate. The gate is on the change, not the dev merge (`CLAUDE.md` rule 5: no per-merge dev ask).
 
 ## Test conventions
 

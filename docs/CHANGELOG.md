@@ -8,6 +8,235 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.73.0] - 2026-08-07
+
+### Fixed
+- **Docs stop restating the dev-PR gate model — and G-002's drifted recipe no longer targets a
+  live database (card#5913).** `CLAUDE_CONVENTIONS.md` § Workflow, `VERSIONING.md`'s wait-for-CI
+  release step, and `CLAUDE_TESTING.md`'s pre-merge sentence carried second copies of the gate model
+  `CLAUDE.md` rule 5 owns; the copies had drifted (retired ask-before-open steps, the card#5575
+  named-workflow list, a hand-tag instruction `auto-tag-version.yml` would race). Each is now a
+  pointer to its owner. `CLAUDE_GOTCHAS.md` G-002's "run MariaDB locally" block — a drifted copy
+  of the `CLAUDE_TESTING.md` throwaway-container recipe — pointed `phpunit` at
+  `agent_webhook_bridge_dev`, the live dev install's DB, which `RefreshDatabase` would have
+  dropped; it now points at the owner recipe with an explicit never-target-a-live-install warning.
+
+### Added
+- **CI asserts the WHOLE declared release-artifact set at release-PR time (card#5910, DL-279).**
+  A new `release-artifacts-gate.yml` runs the toolkit's SHA-pinned `release-artifacts` action,
+  which takes its members from `.release-pr.json`'s `artifacts` array — the declaration that until
+  now had exactly one consumer, the release-PR body generator, which merely PRINTED it as a
+  checklist. A release PR missing the **`CLAUDE.md § Recent releases` row** — the one declared
+  member no gate read, so its absence could not fail any signal — now fails instead of shipping
+  silently. Members come from the declaration, so a fourth is guarded by DECLARING it rather than
+  by remembering to extend a script.
+  **⚠ THIS CHANGES WHAT CI ACCEPTS** on release PRs; it was user-gated on card#5910 before any
+  code. It **composes with** `changelog-gate.yml` rather than replacing it — that gate still owns
+  the release-body size limit and the per-PR `[Unreleased]` entry — and `auto-tag-version.yml`
+  stays fail-soft post-merge by design.
+- **The silent-drop guard the docs have promised since v0.12 now exists (card#6025, DL-278).**
+  The dispatcher WARNS when a classifier emits a `channel_push` ReactionTarget whose `targetId`
+  equals no `Intent.subjectId` in the same `ClassifyResult` — a wake fired with no durable inbox
+  backstop behind it, which until now was exactly the silent drop the operator could not see.
+  Implemented per the **ratified card#2014 acceptance criterion**, translated to the PHP model
+  (the pairing partner is the Intent, not the Python-era `log_intent` target — that handler is
+  forensic-only and `bridge:inbox` never reads it).
+  **No dispatch-outcome change: warn only.** Never a throw, never a delivery/drop flip. Thirteen
+  places in the repo already presupposed this guard existed — eight operator-facing doc claims,
+  two source docblocks and three test comments; none of them was true until now, and the two that
+  ALSO overstated it (a warn *ensures* nothing, and does not *pair* anything — the classifier
+  does) are corrected in the same change.
+  **Default-ON**, via the already-parsed `surface.silent_drop_warnings` (default `true`) — a
+  config key that had zero consumers until now. **Opt out per agent** with
+  `surface: {silent_drop_warnings: false}`; no new config, no schema change.
+  **Blast radius: no shipped classifier can warn.** Both `channel_push` construction sites in
+  `app/` — `InboxOnlyClassifier::wakePush()` and the `route_intents` synthesis — build the target
+  FROM the intent, so they are paired by construction; the nine agent configs on the reference
+  install (5 prod, 4 dev) all take the shipped classifiers and the `true` default, and none can
+  emit an unpaired push.
+  **Warn volume, stated plainly:** once per agent+`target_id` **within one event**, and therefore
+  once **per redelivery attempt** — a durable-handler throw after the check 5xxes and the
+  redelivery warns again. There is deliberately **no cross-request dedup** (it would need new
+  cross-request state); a busy stream re-emitting the same unpaired target warns once per
+  delivery until the classifier is fixed or the agent opts out.
+- **CI reads `docs/CHANGELOG.md` before a merge for the first time: `changelog-gate.yml`
+  (card#5910, card#5971, card#5972, DL-276).** One workflow, two assertions. **(1)** A PR that
+  moves `VERSION` must carry a matching `## [<VERSION>]` section, and that section must fit
+  GitHub's 125,000-byte release-body limit. **(2)** A PR touching `app/` or `bin/` must be named
+  in the `[Unreleased]` section — by its title's `card#`/`DL-` token, or, for a PR carrying no
+  such token, by having changed the section at all. `dependabot/*`, `release/*`, `sync/*` and
+  `revert-*` branches are exempt (the same set `pr-title-lint.yml` uses); docs-only and
+  test-only PRs are exempt by the path scope rather than by a carve-out.
+  **⚠ THIS CHANGES WHAT CI ACCEPTS** — it can red a PR that would previously have merged. It was
+  user-gated on all three cards before any code.
+  **Why:** `docs/CHANGELOG.md` had exactly one reader, `auto-tag-version.yml`, and only *after*
+  the merge to `main`. Measured 2026-08-05 with a controlled instrument: **25 of 56 tokened
+  commits reached v0.72.0 undocumented**, each absent from the whole file, against 100% coverage
+  on the three prior releases. A missing release section published a generated placeholder over
+  the gap rather than failing.
+
+### Changed
+- **The draft overlay stops taking a PR title's word for which card it may pin (card#5953).**
+  **⚠ THIS CHANGES WHAT THE BRIDGE ACCEPTS** — a `block_reason` overlay that lands today stops
+  landing. It was user-gated before any code, as option (a) on the card.
+  DL-270 made the head branch outrank the PR title for `card#NNNN` and settled the residual —
+  a title-only token the branch does not back — with a **card-side corroboration gate** in
+  `KanbanMoveCardHandler`. The **draft overlay** shared the resolver, so it inherited the
+  title-vs-branch *rule*, but its `kanban_block_reason` target carried no flag, so it did not
+  inherit the *gate*: a draft PR whose title descriptively cited another card on the same mapped
+  board still wrote the `"PR is in draft"` marker onto that card — **pinning it** against the
+  branch-cut auto-promote (DL-178) on the strength of prose alone. DL-270 recorded that as a
+  known-open gap rather than widening what the bridge accepts unasked; this closes it.
+  A **SET** now refuses an uncorroborated title-only `card#` unless the card **tracks no PR yet
+  or already tracks this PR** — the same predicate, extracted to one shared
+  `App\Bridge\Writeback\CardTokenCorroboration` that both handlers call, never a second copy.
+  The refusal logs and (with an `alert_channel`) signals as `card_token_uncorroborated` under the
+  synthetic `draft_overlay` outcome. **A CLEAR is deliberately NOT gated:** clear-if-ours can only
+  null a `block_reason` that exactly equals our own marker — a human's differing text is
+  untouchable (bounded by the constant-sentinel ambiguity `docs/writeback.md` documents) — and
+  gating it would strand any marker on a card that now tracks a different PR, including those set
+  before this shipped, the guard permanently pinning the card it exists to protect. Accepted
+  residual: a foreign PR's `ready_for_review` can clear the marker (releasing the DL-178 pin)
+  that another PR's draft set. A corroborated overlay target's payload is **byte-identical** to
+  before (the flag and the event `pr_number` ride together and only on the residual), so ordinary
+  `<type>/<id>-slug` work is untouched.
+- **`auto-tag-version.yml` can no longer leave a release tagged but unpublished (card#5972,
+  DL-276).** v0.72.0's CHANGELOG section was 134,904 bytes against GitHub's 125,000 limit, so the
+  publish step — the *last* step, after the tag had already been pushed — returned `HTTP 422:
+  body is too long` and the Release was created by hand. The step now falls back to a
+  line-truncated body ending in a pointer to `docs/CHANGELOG.md` at the tag. **Fail-soft on an
+  *absent* section is unchanged and deliberate** (failing there would leave a merged release
+  untagged); the loud half of that case is the PR-time gate above.
+- **Both workflows extract CHANGELOG sections through one shared `bin/changelog-section.py`
+  (DL-276)**, so the gate measures the body the publisher would actually ship. Byte-identical to
+  the awk one-liner it replaces for any section that fits, so published notes do not change
+  shape. The size limit is enforced in **bytes**: GitHub's 422 says "characters" and documents no
+  unit, and byte length is `>=` both the code-point and UTF-16 counts, so it is conservative
+  under every reading. Correction to card#5972's own figure — 134,904 is the section's **byte**
+  count; its character count is 133,906.
+- **The `bridge:check` event-consumer renderer drops its two unreachable `'unknown'` last-seen
+  fallback arms (card#5555).** Output-neutral: `received_at` is `timestamp(3)` NOT NULL with a
+  DB-side default and no app code ever writes it (not fillable — every row takes the default),
+  so the reconciler's `MAX(received_at)` over a non-empty group is always a scalar timestamp
+  string and neither arm could ever fire. Both were inherited by the DL-242
+  stage-7a migration, which deliberately carried them unchanged (deleting a branch that never
+  fires is output-neutral, which is exactly why a byte-identical stage must not do it) and filed
+  the deletion as its own decision; taken now as option (a) on the card.
+
+### Fixed
+- **The two silences DL-273 shipped named — and left open as card#5961 — are closed, each at the
+  surface where its own statement is true.** **(1) The CI PR-title lint grows a DL arm.** Its
+  DL-234 warn step probed only the CARD stem, so `DL-<U+0663>239` warned on **neither** surface:
+  the runtime near-miss probe's digit class is ASCII by ratification (DL-231, not reopened), and
+  the card stem survives that only because that step names the non-ASCII-digit class **by name**
+  to the author. A `looks_dl=`/`good_dl=` pair now sits in the SAME step at the SAME severity —
+  a `::warning::`, exit 0 pinned (DL-234(c) settled the severity; the precedent for shipping a
+  warn-leg widening on the record is DL-250's own `looks=` widening — exit code pinned to 0, no
+  accept/reject change — while DL-250(e) retracted "it changes what a CI check reports" as a
+  gating discriminator and issued no gating verdict either way) — with the DL arm's operator text naming that class by name. **No accept/reject
+  change anywhere:** the require step, the correlation grammars and the runtime probe are
+  untouched; only which non-correlating title/branch draws a CI annotation changes. Tied the way
+  the card arm is: `good_dl` answer-set-to-answer-set against `DlTokenGrammar` in three
+  renderings, and `looks_dl` against the RUNTIME probe over the **union** of both engines'
+  separator domains, which is what makes it bidirectional (DL-250(4)) — measured, not argued: a
+  separator removed from the shared `NearMissProbe::SEPARATORS` alone reds it, and so does one
+  added to the YAML class alone. **Disclosed, not buried — the arm's reach is bounded by its own
+  whole-subject predicate, and the bound is measured, not argued.** The step probes title+branch
+  as ONE subject, and each arm greps only its own accept pattern — so suppression is
+  whole-subject **per stem**: any parsed `DL-NNN` anywhere suppresses the DL arm for the whole
+  subject, while a parsed card token does not (both directions asserted in PrTitleLintTest).
+  Driven over the 400 most recent PRs (review measurement, 2026-08-06): `looks_dl` matches 169
+  subjects and `good_dl` suppresses **every one** — in particular, every historical glued-`dlNNN`
+  branch (`feat/dl189-…`, `docs/dl204-…`) sat beside a well-spelled `DL-NNN` in its PR title,
+  so the arm fires **zero** times on that history. The branch-only glued miss DL-273 measured is
+  therefore the RUNTIME half's to catch: a branch-create push reaches the classifier as a bare
+  ref, where the DL-273 near-miss probe warns when no card token parses, and the new stamp-site
+  warn (below) does when one does — the latter fires on 2 of the same 400
+  (`card-5156b-dl232-…`, `feat/card-4322-dl199-…`). What the arm actually catches is a subject
+  whose EVERY DL spelling is malformed — the non-ASCII-digit `DL-<U+0663>239` class above being
+  the one no other surface names, and its reason to exist — plus one FALSE-POSITIVE shape both
+  arms share: `dl` at a token boundary then a separator and **no** digit (`fix/dl-parser`;
+  neither arm's `looks` needs a digit after the separator, so neither can tell that from a real
+  miss). DL-250(e) ruled that shape a separate defect and left it surfaced-not-fixed; with a
+  second arm now carrying it, the class is tracked as **card#6028** (12 of the same 400 draw the
+  card arm's warning purely from it). **Both warn lines' operator text is corrected to per-token
+  claims in the same change.** Because suppression is per-stem, the previous "so NO card will
+  move" clause was false whenever the OTHER stem's token correlated: of the shipped card-arm
+  line's 12 fires on the same corpus, **10** carried a parsing `DL-NNN` in the same subject — a
+  card could move by DL resolution while the line said none would (the mirror shape on the new
+  DL arm — a parsing card token beside a malformed DL — is exactly the lost-stamp subject below).
+  Both lines now claim only what is true of the token itself ("it correlates to nothing: no card
+  will move on this token"), the same what-is-true-HERE discipline the stamp-site warning
+  states. **(2) A lost `dl_number` stamp stops being
+  silent.** A subject
+  like `feat/card-3410-slug-DL_272` moves card 3410 and stamps **no** `dl_number`, because
+  `DlTokenGrammar::sole()` returns null on the malformed token. The near-miss probe is
+  deliberately silent there and **stays** so — it sits behind the whole-subject guard (DL-234(e))
+  and its own *"no move"* clause would be false about a subject whose card DOES move — so the
+  signal is emitted at the STAMP site instead, as a **distinct** warning saying what is true
+  there: the card moved, and it is unstamped. A lost STAMP and a lost MOVE are two signals at two
+  sites; neither is the other reused, and the pin that reds if the near-miss half is ever closed
+  by accident is still in place (updated, not deleted — this closure was by decision).
+  **Log-only; zero change to moves, stamps or exit paths.** Proven failable by mutation, each
+  applied-and-asserted, run, and restored from a snapshot: deleting the stamp-site emission reds
+  **3** classifier legs (the two lost-stamp legs plus the DL-234(e) pin); dropping its
+  `parse() === null` clause reds 3, two of them PRE-EXISTING DL-win legs; removing the CI arm's
+  `if`/`echo` while leaving both regexes in place reds the four end-to-end legs (the DL
+  shape-sweep, the non-ASCII-digit naming leg, the severity pin, and the cross-stem suppression
+  leg — end-to-end since its assertions moved onto the arm's own message text) and **neither
+  tie**, which is why the end-to-end legs exist at all; widening `good_dl` to accept the plural
+  `DLs-239` reds the grammar tie; dropping `looks_dl`'s `s?` or its space-then-hash separator reds
+  the probe tie; and making the DL arm `exit 1` **after** it warns — so the warning still prints
+  and only the exit code moves — reds exactly one leg, the severity pin, which is the control that
+  keeps a `::warning::` from silently becoming a merge gate.
+- **Three false code-state claims in comments/docs corrected (card#5952; no behavior change).**
+  Found by the card#5289 comment-truthfulness audit. **(1)** `CoordinationClassifier`'s
+  no-self-wake docblock called the dependabot handler "the bridge's only card-CREATE path" —
+  there are three (the dependabot handler, the DL-198 coord-card handler, the DL-217
+  `board_create_card` tool). All three write through the one writeback client as the
+  `identity_id` user, so the global-echo gate covers them all when it is configured; the
+  `triaged` tag is an independent second layer only the dependabot and poll-backstop paths
+  have. The docblock now states that structure (correction entry DL-277 — the stale claim
+  originated in DL-168, true when written). **(2)** The `board_create_card` reserved-tag guard
+  justified its casefold with "the kanban tag search is case-insensitive (`_ci` collation)" on
+  seven surfaces (tool docblock + three inline comments, `docs/board-tools.md`, two test
+  docblocks) — the MariaDB JSON column collates `utf8mb4_bin` (case-SENSITIVE, measured); the
+  correct justification is defense-in-depth across driver collations plus bridge-side
+  determinism, and all seven surfaces now state it. The guard's behavior was already correct — only its stated
+  reason was wrong. **(3)** The reference channel server cited a README note by a title it never
+  had ("One server per session" → "One server per UDS path").
+- **`bridge:check` certifies the board-tools ssh transport even when the kanban writeback client
+  cannot be constructed (card#5474, DL-275).** The board-tools client envelope skipped three
+  slots on a construction failure; two of them — the offline pinned-line probe
+  (`SshPinnedLineCheck`) and the DL-225 flipped-default advisory — read nothing from that client.
+  A missing or unreadable writeback token therefore silently disarmed the ssh security
+  certification: a forced-command `authorized_keys` line granting `pty` exits **1** with the
+  token present and exited **0**, printing nothing about ssh, without it. The envelope now skips
+  the board-**state** legs only (they do read the client). **⚠ This can change an exit code:** an
+  install with an enabled ssh `board_tools` block, no resolvable writeback token, and a bad
+  pinned line goes from exit 0 to exit **1** — surfacing a real failure that was previously
+  hidden, not a new rule. Installs that construct a client are unaffected and their output is
+  unchanged. Note that `SshLiveProbeCheck`, the heavier opt-in live round-trip, already ran
+  outside this guard; the offline probe needing strictly less was the one gated on it.
+- **`bridge:check` reads `shared-identities.json` once per run instead of up to three times
+  (card#5546).** The registry derivation read it, and `SharedIdentitiesCheck` read it twice more —
+  once raw for its DL-259 absent/unreadable/malformed/parsed discrimination and once through the
+  loader for the count. The loader LOGS, so on a file that parses as an object but carries an entry
+  with no numeric `github_user_id` the run emitted the same per-entry warning **twice**, and an
+  operator tailing the log (or an alert counting the line) read one install fault as two. The read
+  now happens once in the derivation and is published on `CheckContext` as a state object the check
+  consumes; `AgentRegistry::loadSharedIdentities()` keeps its exact fail-soft list contract for the
+  receiver. **Stdout and every exit code are byte-identical** — which is why the acceptance evidence
+  is a log-count assertion watched to red against the pre-fix code, not a green golden suite. Two
+  log-count deltas otherwise: on an install where *no* agent YAML parsed, an unreadable or malformed
+  file now warns once where it warned not at all (the check has always reported that install; the
+  read reaching it is what the report was missing).
+
+### Security
+- **league/commonmark bumped 2.8.3 → 2.9.0 for GHSA-29pj-957v-52mc (#496).** Routine dependency
+  bumps in the same release: symfony/yaml 8.1.1 → 8.1.2 (#470), laravel/pao 1.1.2 → 1.1.3 (#471),
+  laravel/pint 1.29.3 → 1.30.0 (#469, dev-only).
+
 ## [0.72.0] - 2026-08-05
 
 **Minor — `bridge:check` becomes a machine-readable, self-accounting diagnostic as the DL-242 check registry lands stages 0–10; the writeback stops letting a PR title outrank the branch the PR is work on; and `board_my_cards` can finally carry a card's scope to the seat implementing it.** 65 PRs since v0.71.0 (#413–#484). **The receiver is untouched — zero changes under `app/Http/` or `app/Bridge/Adapters/`, so HMAC verification, dedup, envelope adaptation and what the receiver accepts or rejects are unchanged; no migration (zero files added or changed under `database/migrations/`) and no `.env.example` change.** The behavior that does move is concentrated in the `bridge:check` reporting vocabulary, the PR→card correlation precedence, and the board-tools projection — each called out below.
@@ -60,7 +289,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 - **Dependencies** — routine dependabot bumps landed on the integration branch this cycle: `laravel/framework` 13.20.0 → 13.23.0 (#415), `phpunit/phpunit` 13.2.4 → 13.2.6 (#414), `actions/checkout` 7.0.0 → 7.0.1 (#416), and the `PupFuzz/agent-board-toolkit/promote` action pin (#417). The channel-server dependency work is separate and is recorded under *Security*, below.
 
 ### Fixed
-- **card#5310, DL-273** — **A `DL-NNN` near-miss was completely silent: there was no DL near-miss probe at all, and the probe that finds one is now a shared primitive instead of a second grammar inside a second grammar.** A branch ref or PR title that APPEARED to name a DL but did not parse published, moved nothing and told nobody — `feat/DL_239-slug` (underscore, not the separator), `feat/DL239-slug` (glued; unlike the card token the DL token has **no** glued arm and its separator is mandatory), and every **plural** spelling (`DLs-239`, `DLs239`, …), silent by the identical mechanism DL-250 measured on the card stem: `\bDL` matches inside `DLs`, the optional separator group cannot consume the `s`, and `\d` then fails against it with no second word boundary to retry from. `warnCardTokenNearMiss()` only ever fired on card-ish text. **Measured on this repo's own history rather than argued from examples: of the 400 most recent PRs, 12 head branches use the glued `dlNNN` spelling** (`feature/dl207-…`, `docs/dl204-…`, `feat/dl189-…`, down to `dl028`) and carry no card token, so every one of those branch-create pushes correlated to nothing and said nothing — and in **all 12 the PR title carried a properly-spelled `DL-NNN`**, so the PR-path move worked and the board looked right while the DL-160 `started` move was silently lost: the card never advanced when work BEGAN, only when the PR opened. (Stated bound: a static evaluation of branch NAMES against today's grammar, not a replay of delivered events — about half carry DL numbers predating the branch-create leg, so 12 is an exact count of the spelling and an upper bound on events actually missed.) **DL-234 shipped exactly this warning for the card token on the argument that an unparsed token is "as high-value a miss as an unresolvable DL" (roundtable #48) — an argument made about the DL token BY NAME, applied only to the other one.** **Severity matches DL-234(c) exactly: a WARNING, never a failure. No accept/reject change** — which text correlates to which card is untouched, and nothing that moved a card before moves differently now; only which NON-correlating text gets an operator log line. **The mechanism moved to `NearMissProbe` rather than being copied** (canon #5, second real caller): DL-250 made the separators DATA so that the pattern and the corpus covering it are two consumers of one definition, and none of that reasoning was ever about cards — duplicating ~15 lines of rule-shaped logic into `DlTokenGrammar` would have re-created, one level up, the restatement shape DL-250 removed one level down. **This supersedes DL-250(1) as a code-state claim** (`NEAR_MISS_SEPARATORS` no longer lives on `CardTokenGrammar`; the public API of that class is unchanged) and reverses none of its reasoning. **One separator list now serves every stem, which is a claim about AUTHORS, not about tokens** — a card-side edit deliberately moves the DL probe too, and can only ever ADD warnings, since the probe is consulted solely where `parse()` returned null. `DlTokenGrammar` gains the **`describe()`** its own docblock said to add *"the day a PHP surface needs it"*, plus one plural sentence row; a subject that misses on both stems warns **once per grammar**, each line naming its own accept-set (pinned, so a later "de-duplicate the warnings" edit reds rather than silently picking one). **⚠ TWO THINGS ARE DELIBERATELY STILL SILENT and are filed as card#5961 — do not read their silence as coverage.** (1) A **Unicode-digit** DL (`DL-<U+0663>239`, one of the three shapes the card named) warns on **neither** surface: the probe's digit class is ASCII by ratification (DL-231), and unlike the card token there is **no DL arm on the CI PR-title lint** to cover the class by name — so scoping this to the runtime surface shipped the half DL-234's own alternative (d) called insufficient (*"the author-facing gate is the PR check"*), on scope and named rather than left to be discovered as an absence. (2) A subject whose **card token parses** beside a malformed DL (`feat/card-3410-slug-DL_272`) moves its card and silently fails to stamp `dl_number` — DL-234(e)'s whole-subject limit, kept because the warning's own *"no move"* clause would be a false statement about exactly the subjects a wider guard would newly cover; a lost STAMP is a different signal from a lost MOVE and needs its own site. **Evidence — 13 mutations, each applied-and-asserted, run, read, restored from a snapshot (baseline 127/127, 902 assertions):** losing `s?` reds 6 legs across 4 files including the silent-set pin, which names `DLs-239` as a NEW SILENT SHAPE rather than absorbing it; unquoting the separators (the `.` becomes the any-character metacharacter) reds the prose legs on BOTH stems; `/u` reds the ASCII-bound leg on both stems AND reds the silent-set pin by LOSING the Unicode row, pinning the bound in both directions; **dropping one separator from the now-SHARED data still reds `PrTitleLintTest`'s bidirectional union tie, and the sharpest of DL-250's rows — the ACCEPTED `-` dropped, once caught by nothing at all — reds 5 legs**, so the hoist did not break DL-250(4)'s removal direction; stopping the CARD probe reds 3 legs including the pre-existing ones, which is what shows the hoist did not blind the side that already worked; **and the mutation this hoist's own risk demanded — `DlTokenGrammar` binding the WRONG stem, the copy-paste bug a hoist actually produces — reds 5 legs across 2 files.** phpstan L7 0, pint clean.
+- **card#5310, DL-273** — **A `DL-NNN` near-miss was completely silent: there was no DL near-miss probe at all, and the probe that finds one is now a shared primitive instead of a second grammar inside a second grammar.** A branch ref or PR title that APPEARED to name a DL but did not parse published, moved nothing and told nobody — `feat/DL_239-slug` (underscore, not the separator), `feat/DL239-slug` (glued; unlike the card token the DL token has **no** glued arm and its separator is mandatory), and every **plural** spelling (`DLs-239`, `DLs239`, …), silent by the identical mechanism DL-250 measured on the card stem: `\bDL` matches inside `DLs`, the optional separator group cannot consume the `s`, and `\d` then fails against it with no second word boundary to retry from. `warnCardTokenNearMiss()` only ever fired on card-ish text. **Measured on this repo's own history rather than argued from examples: of the 400 most recent PRs, 12 head branches use the glued `dlNNN` spelling** (`feature/dl207-…`, `docs/dl204-…`, `feat/dl189-…`, down to `dl028`) and carry no card token, so every one of those branch-create pushes correlated to nothing and said nothing — and in **all 12 the PR title carried a properly-spelled `DL-NNN`**, so the PR-path move worked and the board looked right while the DL-160 `started` move was silently lost: the card never advanced when work BEGAN, only when the PR opened. (Stated bound: a static evaluation of branch NAMES against today's grammar, not a replay of delivered events — about half carry DL numbers predating the branch-create leg, so 12 is an exact count of the spelling and an upper bound on events actually missed.) **DL-234 shipped exactly this warning for the card token on the argument that an unparsed token is "as high-value a miss as an unresolvable DL" (roundtable #48) — an argument made about the DL token BY NAME, applied only to the other one.** **Severity matches DL-234(c) exactly: a WARNING, never a failure. No accept/reject change** — which text correlates to which card is untouched, and nothing that moved a card before moves differently now; only which NON-correlating text gets an operator log line. **The mechanism moved to `NearMissProbe` rather than being copied** (canon #5, second real caller): DL-250 made the separators DATA so that the pattern and the corpus covering it are two consumers of one definition, and none of that reasoning was ever about cards — duplicating ~15 lines of rule-shaped logic into `DlTokenGrammar` would have re-created, one level up, the restatement shape DL-250 removed one level down. **This supersedes DL-250(1) as a code-state claim** (`NEAR_MISS_SEPARATORS` no longer lives on `CardTokenGrammar`; the public API of that class is unchanged) and reverses none of its reasoning. **One separator list now serves every stem, which is a claim about AUTHORS, not about tokens** — a card-side edit deliberately moves the DL probe too, and can only ever ADD warnings, since the probe is consulted solely where `parse()` returned null. `DlTokenGrammar` gains the **`describe()`** its own docblock said to add *"the day a PHP surface needs it"*, plus one plural sentence row; a subject that misses on both stems warns **once per grammar**, each line naming its own accept-set (pinned, so a later "de-duplicate the warnings" edit reds rather than silently picking one). **⚠ TWO THINGS ARE DELIBERATELY STILL SILENT and are filed as card#5961 — do not read their silence as coverage.** (1) A **Unicode-digit** DL (`DL-<U+0663>239`, one of the three shapes the card named) warns on **neither** surface: the probe's digit class is ASCII by ratification (DL-231), and unlike the card token there is **no DL arm on the CI PR-title lint** to cover the class by name — so scoping this to the runtime surface shipped the half DL-234's own alternative (d) called insufficient (*"the author-facing gate is the PR check"*), on scope and named rather than left to be discovered as an absence. (2) A subject whose **card token parses** beside a malformed DL (`feat/card-3410-slug-DL_272`) moves its card and silently fails to stamp `dl_number` — DL-234(e)'s whole-subject limit, kept because the warning's own *"no move"* clause would be a false statement about exactly the subjects a wider guard would newly cover; a lost STAMP is a different signal from a lost MOVE and needs its own site. **Evidence — 13 mutations, each applied-and-asserted, run, read, restored from a snapshot (baseline 127/127, 902 assertions):** losing `s?` reds 6 legs across 4 files including the silent-set pin, which names `DLs-239` as a NEW SILENT SHAPE rather than absorbing it; unquoting the separators (the `.` becomes the any-character metacharacter) reds the prose legs on BOTH stems; `/u` reds the ASCII-bound leg on both stems AND reds the silent-set pin by LOSING the Unicode row, pinning the bound in both directions; **dropping one separator from the now-SHARED data still reds `PrTitleLintTest`'s bidirectional union tie, and the sharpest of DL-250's rows — the ACCEPTED `-` dropped, once caught by nothing at all — reds 5 legs**, so the hoist did not break DL-250(4)'s removal direction; stopping the CARD probe reds 3 legs including the pre-existing ones, which is what shows the hoist did not blind the side that already worked; **and the mutation this hoist's own risk demanded — `DlTokenGrammar` binding the WRONG stem, the copy-paste bug a hoist actually produces — reds 5 legs across 2 files.** phpstan L7 0, pint clean. **[Superseded — see the Unreleased entry for card#5961: BOTH deliberate silences described above are closed one release later. (1) `pr-title-lint.yml` grows a `looks_dl=`/`good_dl=` arm beside its card one, so "there is **no DL arm on the CI PR-title lint**" is no longer true and a Unicode-digit DL is named by class to the PR author — the RUNTIME half of the bound stands, the probe is still ASCII and DL-231 is untouched. (2) The lost `dl_number` stamp is now warned at the STAMP site; DL-234(e)'s whole-subject limit itself is unchanged and that subject still draws no near-miss line from the runtime probe (the CI lint's DL arm is per-stem and does warn on its malformed `DL_272`). Read this entry as the state v0.72.0 shipped.]**
 - **card#5287, DL-270** — **The head branch now outranks the PR title for `card#` authority: a foreign title token could silently move somebody else's card.** **⚠ This changes which card the writeback correlates to when the title and the head ref disagree — previously the title won.** The token was matched over `$title.' '.$head` with a single non-global `preg_match`, so the **LEFTMOST** match won, and the title sits first in that concatenation. The head branch ref is minted by this install's own tooling and is the authoritative referent for what a PR is work ON; the title is prose, where a `card#NNNN` is as often a descriptive citation of another card as a claim about this PR. **The reachable input is a same-board citation:** on the mapped board the `getCard` 4xx arm and the belongs-to-mapped-board guard both pass, and somebody else's card moves. Same shape as the foreign-DL hijack DL-218 closed, one layer up — a boundary its predicate does not reach across. The DL-218 conflict SHAPE is applied to `(title token, head token)`, defined once in `cardTokenResolution` and shared by the move path and the draft overlay: **branch wins; a disagreeing title token is refused and warned.** The residual — a title token the ref does not back — is settled at the handler against the card's own `pr_number` (unset or already this PR, else refused), using the read `getCard` already makes, and gated BEFORE the already-in-stage self-heal because that branch still stamps. **Corroboration is deliberately wider than selection:** a bare id in the ref backs a title token but can never select a card. Measured against merged PRs — the dominant branch convention is `<type>/<id>-slug`, which carries no card token, so requiring one would have refused every second PR against a card. On a conflict the sole-DL stamp derives from the head ref alone. Also corrects the false delegation claim (*"the durable handler rejects a card not on the mapped board"*) at 6 sites, including the Security-notes bound.
 - **DL-269** — **The node channel-server suite could write a false deafness marker beside a perfectly healthy socket, because it inherited the seat's LIVE addressing environment.** The suite spawns the real channel server, whose `markerPath()` falls back to the ambient environment. A seat exports `BRIDGE_CHANNEL_SOCKET` pointing at its **live** socket, so a child spawned with a plain `{...process.env}` binds it, gets `EADDRINUSE`, and writes a `.FAILED` deafness marker next to a socket that is working. **Both existing suites already scrubbed their child env — one by allowlist, one by denylist — and both measured clean; neither could tell you when it STOPPED being clean.** `live-state-guard.mjs` neutralises all four addressing inputs at import and **fails the run if the seat's real runtime dir moved**. DL-269 records the audit across all three languages and why PHP is accepted without a guard. Test-only — no runtime code, no behaviour change.
 - **card#5232, DL-268** — **The channel-server snapshot version drifted across roughly a dozen green CI runs, because the guard that enforces it reads one of the two files that carry it.** **⚠ CHANGES WHAT CI ACCEPTS: a PR whose `examples/channel-servers/package-lock.json` version disagrees with `package.json` now fails.** No app code, no migration, no new required `.env`, no receiver accept/reject change, no token-scope change. DL-038 made `package.json` `version` the staleness signal a copied snapshot compares against canonical and guarded it with `version-bump-guard` — which reads the manifest only. Measured on `dev`: the lockfile's root `version` sat at **`0.7.1`** while the manifest went `0.7.2 → 0.8.3`, every run green, because a guard cannot fail on a field it never reads. **The drift is not live and was never fixed** — it closed at `6c4f504` when an `npm` run resynced the lock as a side effect, so its agreement had been luck. **Not an outage at any point:** `npm ci` validates the dependency tree, not the root `version`. A new step asserts the lockfile's `.version` **and** `.packages[""].version` both equal the manifest's — both, because the defect class is precisely a guard reading one of N fields that must agree, and covering only the root re-mints it one level down. It is **not diff-gated** the way the bump step is (agreement is a property of the tree, so no shape of diff earns an exemption) — though not unconditional either: the workflow's `paths:` filter means a PR touching neither the directory nor the workflow never runs the job at all, which is still complete coverage of the entry path, since drift can only be introduced by a PR that edits those files. An **absent** manifest `version` FAILS rather than comparing jq's `null` to `null`. **The trigger set is deliberately NOT weakened:** a lockfile change keeps demanding a bump, because a transitive dependency bump changes what `npm ci` installs and so genuinely moves the deployed artifact. A lockfile-only dependency PR is therefore red by construction (dependabot cannot bump the manifest) and takes a **one-command maintainer commit**, documented in the guard's own error output — the surface the maintainer actually reaches — rather than in a runbook that has to be found first. The new assertion is driven by a test that extracts the step's real `run:` block from the YAML and executes it under `bash`, so it cannot drift from what CI runs; its positive control is **real history rather than invented JSON** (the pair as it stood at `4abe8e3`, the last commit at which the defect was live), and it is mutation-proven 4/4 against a 5-test baseline with both control axes asserted. **Deleted in passing:** the bump step's comment claimed the filter excludes *"the CI workflow itself"*, which it never did — the workflow was never inside the pathspec, so the clause described a protection that was not performed and read as an invitation to add the lockfile to that same exclusion list. **Sibling audit → card#5910 (one confirmed, one refuted):** `VERSION` vs `docs/CHANGELOG.md` has the same shape — `auto-tag-version.yml` is the only automation reading both and merely WARNs on a missing section while publishing a placeholder release note; left unfixed deliberately, as adding a PR-rejecting check is a hard gate. `composer.json`+`composer.lock` **looked** identical in shape in both this repo and kanban-board (no `composer validate` in either CI) and is **refuted** — `composer install` in the shared `setup-app` composite refuses an out-of-sync pair itself (measured two-sided: rc 4 mismatched, rc 0 restored).

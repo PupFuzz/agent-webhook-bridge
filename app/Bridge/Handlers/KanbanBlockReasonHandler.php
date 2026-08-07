@@ -7,6 +7,7 @@ use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RefusalContext;
+use App\Bridge\Writeback\CardTokenCorroboration;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -38,6 +39,12 @@ use Illuminate\Support\Facades\Log;
  * security guard. Its non-4xx refusals (malformed payload, no writeback.json, the
  * board guard) are still log-only — see docs/writeback.md's "Still log-only".
  * Idempotent: a no-op SET/CLEAR (already-marker / not-ours) writes nothing.
+ *
+ * A SET additionally honors the optional `card_token_uncorroborated` flag + `pr_number`
+ * the classifier attaches to a title-only `card#` residual, through the same
+ * {@see CardTokenCorroboration} primitive the move handler gates on (card#5287 /
+ * DL-270, extended here by card#5953). That refusal is a security refusal like the move
+ * path's twin, so it signals rather than joining the log-only set.
  */
 final class KanbanBlockReasonHandler implements DurableReaction, Handler
 {
@@ -121,6 +128,36 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             Log::warning('kanban_block_reason: REFUSED — card is not on the mapped board', [
                 'card_id' => $cardId, 'repo' => $repo, 'card_board' => $card['board_id'] ?? null, 'mapped_board' => $mapping->boardId,
             ]);
+
+            return;
+        }
+
+        // An UNCORROBORATED title-only `card#` (card#5287 / DL-270, extended to this
+        // overlay by card#5953). The classifier found the token in the PR TITLE with
+        // nothing agreeing in the head branch, so the PR's prose is the sole claim that
+        // this PR is work on this card — and on the SAME mapped board every guard above
+        // passes, so a descriptive citation of another card lands a marker that PINS it
+        // against the `started` auto-promote (DL-178). Same evidence, same primitive and
+        // same refusal as the move handler.
+        //
+        // Scoped to SET, and that is a ruling rather than an omission: CLEAR is
+        // clear-if-ours, so it can only null a block_reason that EXACTLY equals our
+        // marker — a human's differing text is untouchable (bounded by the constant-
+        // sentinel ambiguity noted in docs/writeback.md). Gating it would instead
+        // STRAND any marker on a card that now tracks a different PR — including those
+        // set before this shipped — leaving the guard permanently pinning the card it
+        // exists to protect. Accepted residual: a foreign PR's ready_for_review can
+        // clear the marker (and release the DL-178 pin) that another PR's draft set.
+        if ($action === 'set' && CardTokenCorroboration::refuses($payload['card_token_uncorroborated'] ?? null, $card, $payload['pr_number'] ?? null)) {
+            $this->alerts->warnAndNotify(
+                'kanban_block_reason: REFUSED — the card# token appears only in the PR title, with no corroborating token in the head branch, and the card already tracks a DIFFERENT PR',
+                [
+                    'card_id' => $cardId, 'repo' => $repo,
+                    'card_pr_number' => CardTokenCorroboration::cardPr($card),
+                    'event_pr_number' => $payload['pr_number'] ?? null,
+                ],
+                $repo, self::ALERT_OUTCOME, $cardId, 'card_token_uncorroborated',
+            );
 
             return;
         }

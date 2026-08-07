@@ -780,6 +780,89 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame('5287', $overlay[0]->targetId);   // the branch's card, not the title's
     }
 
+    // --- card#5953: the overlay target carries the corroboration flag too ---
+
+    public function test_an_uncorroborated_title_only_token_flags_the_overlay_target(): void
+    {
+        // card#5953: the overlay inherited the title-vs-branch RULE (shared resolver) but
+        // not the handler-side corroboration gate, because its target carried no flag —
+        // so a title-only card# could overlay a block_reason onto a merely-cited card.
+        // The classifier now reports the same evidence it reports on the move path, and
+        // adds the event's PR number, which is what the handler corroborates against.
+        // (Revert blockReasonTargets ⇒ payload has neither key ⇒ RED.)
+        $this->writeMapping(['draft_overlay' => true]);
+        Http::fake();
+
+        $result = $this->classify('pull_request.converted_to_draft', [
+            'number' => 140, 'title' => 'Rework the widget (card#5139)', 'head' => ['ref' => 'f'],
+        ]);
+
+        $overlay = $this->targetsNamed($result, 'kanban_block_reason');
+        $this->assertCount(1, $overlay);
+        $this->assertSame('5139', $overlay[0]->targetId);
+        $this->assertSame([
+            'repo' => 'owner/repo', 'action' => 'set',
+            'card_token_uncorroborated' => true, 'pr_number' => 140,
+        ], $overlay[0]->payload);
+    }
+
+    public function test_the_clear_overlay_carries_the_flag_too_even_though_the_handler_gates_only_set(): void
+    {
+        // The classifier reports EVIDENCE; which action the gate applies to is the
+        // handler's ruling (it gates `set` only — a clear-if-ours can only remove a
+        // marker we ourselves wrote). Emitting the flag on both keeps the two paths one
+        // mechanism rather than encoding the handler's policy in the classifier.
+        $this->writeMapping(['draft_overlay' => true]);
+        Http::fake();
+
+        $result = $this->classify('pull_request.ready_for_review', [
+            'number' => 141, 'title' => 'Ship it (card#5139)', 'head' => ['ref' => 'f'],
+        ]);
+
+        $overlay = $this->targetsNamed($result, 'kanban_block_reason');
+        $this->assertCount(1, $overlay);
+        $this->assertSame('clear', $overlay[0]->payload['action']);
+        $this->assertTrue($overlay[0]->payload['card_token_uncorroborated']);
+    }
+
+    public function test_a_ref_corroborated_overlay_target_is_byte_identical_to_before(): void
+    {
+        // The gate is scoped to the flag, and the flag is scoped to the residual the
+        // branch cannot vouch for. The dominant `<type>/<id>-slug` convention corroborates
+        // by bare id (refCorroborates), so ordinary work emits the SAME payload it always
+        // did — no flag, no pr_number.
+        // (Flag the overlay unconditionally ⇒ two extra keys ⇒ RED.)
+        $this->writeMapping(['draft_overlay' => true]);
+        Http::fake();
+
+        $result = $this->classify('pull_request.converted_to_draft', [
+            'number' => 142, 'title' => 'Rework the widget (card#5287)', 'head' => ['ref' => 'fix/5287-widget'],
+        ]);
+
+        $overlay = $this->targetsNamed($result, 'kanban_block_reason');
+        $this->assertCount(1, $overlay);
+        $this->assertSame('5287', $overlay[0]->targetId);
+        $this->assertSame(['repo' => 'owner/repo', 'action' => 'set'], $overlay[0]->payload);
+    }
+
+    public function test_a_dl_correlated_overlay_target_is_never_flagged(): void
+    {
+        // The flag belongs to the card#-token residual only. A DL that RESOLVES selects
+        // its cards from the board, not from prose, so the overlay it emits carries no
+        // flag — mirroring the move path, where moveTargets() never carries one.
+        // (Flag on the DL branch ⇒ extra keys ⇒ RED.)
+        $this->writeMapping(['draft_overlay' => true]);
+        $this->fakeBoardCards();   // DL-42 → card 5
+
+        $result = $this->classify('pull_request.converted_to_draft', [
+            'number' => 143, 'title' => 'DL-42 wip', 'head' => ['ref' => 'f'],
+        ]);
+
+        $overlay = $this->targetsNamed($result, 'kanban_block_reason');
+        $this->assertCount(1, $overlay);
+        $this->assertSame(['repo' => 'owner/repo', 'action' => 'set'], $overlay[0]->payload);
+    }
+
     public function test_card_token_on_a_branch_create_push_emits_started(): void
     {
         Http::fake();
@@ -1071,8 +1154,17 @@ class GitHubPrCardMoveClassifierTest extends TestCase
      * CARD token parses moves its card, so it is not in the silent-failure class
      * this probe exists to catch and must stay silent even beside a malformed
      * DL. The bounded cost — that card loses its `dl_number` stamp with no
-     * signal — is card#5961, and this leg is what would red if it were ever
-     * closed here by accident rather than by decision.
+     * signal — was card#5961, and this leg is what would red if the NEAR-MISS
+     * were ever closed here by accident rather than by decision.
+     *
+     * CARD#5961 CLOSED THAT COST, BY DECISION, AND THIS LEG WAS UPDATED FOR IT —
+     * the file's convention is to name the card that moved a pin. What changed is
+     * NOT this guard: the near-miss probe still sits behind the both-null guard and
+     * this subject still draws no near-miss line in the bridge log, which is what the assertions
+     * below now say specifically. What is new is a DISTINCT warning at the stamp
+     * site naming the lost `dl_number` — a different signal, made where it is true.
+     * A future edit that closes the near-miss half by widening the guard still reds
+     * here, which is the whole point of the pin.
      */
     public function test_a_parsing_card_token_suppresses_the_dl_near_miss_whole_subject(): void
     {
@@ -1081,9 +1173,11 @@ class GitHubPrCardMoveClassifierTest extends TestCase
 
         $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/card-3410-DL_239']);
 
-        $this->assertCount(1, $r->targets, 'the card token correlates — the card DOES move');
+        $this->assertCount(1, $r->targets, 'the card token correlates — this event emits a move target');
         $this->assertSame(3410, $r->targets[0]->payload['card_id']);
-        Log::shouldNotHaveReceived('warning');
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'lost DL stamp')
+            && ! str_contains((string) $msg, 'near-miss'))->once();
+        Log::shouldHaveReceived('warning')->once();   // and nothing ELSE warned — no near-miss line
     }
 
     public function test_token_less_branch_stays_silent_no_near_miss_spam(): void
@@ -1257,6 +1351,84 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertArrayNotHasKey('stamp_pr', $p);   // no PR on a push
     }
 
+    // --- card#5961: a LOST `dl_number` stamp is named, where a lost MOVE is not ---
+
+    /**
+     * THE SHIPPED CASE. `feat/card-3410-slug-DL_272` moves card 3410 and — because
+     * `sole()` returns null on the malformed token — stamps no `dl_number` at all.
+     * The near-miss probe is deliberately silent here (DL-234(e), pinned by its own
+     * leg above), so before this the stamp simply vanished. The warning fires at the
+     * STAMP site instead, and says only what is true THERE, at classify time: a move
+     * is EMITTED (the durable handler may still refuse it) and no `dl_number` rides
+     * it. The emitted-move half is asserted here as a TARGET, not as a board state,
+     * for the same reason the message is worded that way.
+     */
+    public function test_a_lost_dl_stamp_warns_when_a_card_token_moves_beside_a_malformed_dl(): void
+    {
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/card-3410-slug-DL_272']);
+
+        $this->assertCount(1, $r->targets, 'the card token correlates — this event emits a move target');
+        $this->assertSame(3410, $r->targets[0]->payload['card_id']);
+        $this->assertArrayNotHasKey('stamp_dl', $r->targets[0]->payload, 'the malformed DL is exactly what is NOT stamped');
+
+        // A DISTINCT signal, not the near-miss line reused: that one says "no move",
+        // which would be a false statement about this subject.
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'lost DL stamp')
+            && ! str_contains((string) $msg, 'near-miss'))->once();
+        Log::shouldHaveReceived('warning')->once();   // and nothing ELSE warned
+        Http::assertNothingSent();
+    }
+
+    /** The PR surface reaches the same stamp site — both call sites, not just the push. */
+    public function test_a_lost_dl_stamp_warns_on_the_pr_title_surface_too(): void
+    {
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classify('pull_request.opened', ['title' => 'Fix a thing card#3410 for DL_272', 'head' => ['ref' => 'f'], 'number' => 91]);
+
+        $this->assertCount(1, $r->targets);
+        $this->assertArrayNotHasKey('stamp_dl', $r->targets[0]->payload);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'lost DL stamp'))->once();
+        Log::shouldHaveReceived('warning')->once();
+    }
+
+    /**
+     * The other side of the guard: a DL that PARSES beside the card token is stamped,
+     * so nothing was lost and nothing is warned. Without this the new warning could be
+     * unconditional on the card# path and every leg above would still pass.
+     */
+    public function test_a_parsing_dl_beside_a_card_token_stamps_and_does_not_warn(): void
+    {
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);   // DL unresolved → card# fallback
+        Log::spy();
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/card-3410-slug-DL-272']);
+
+        $this->assertSame('DL-272', $r->targets[0]->payload['stamp_dl']);
+        // The empty board the fake serves warns once on its own account (that
+        // diagnostic predates this leg). Counted rather than filtered out, so a
+        // lost-stamp line appearing here cannot net out against it.
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'board read returned 0 cards'))->once();
+        Log::shouldHaveReceived('warning')->once();   // and nothing ELSE warned
+    }
+
+    /** And a subject with nothing DL-shaped in it at all stays silent. */
+    public function test_a_card_token_with_no_dl_shaped_text_does_not_warn_about_a_lost_stamp(): void
+    {
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/feat/card-3410-slug']);
+
+        $this->assertSame(3410, $r->targets[0]->payload['card_id']);
+        $this->assertArrayNotHasKey('stamp_dl', $r->targets[0]->payload);
+        Log::shouldNotHaveReceived('warning');
+    }
+
     // --- DL-193: PR draft → block_reason OVERLAY (opt-in `draft_overlay`) ---
 
     /** Enable the draft overlay on the owner/repo mapping (scan correlation stays pinned from setUp). */
@@ -1303,7 +1475,14 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $t = $r->targets[0];
         $this->assertSame('kanban_block_reason', $t->handler);
         $this->assertSame('4811', $t->targetId);   // the explicit card#, NOT DL-9's card 7
-        $this->assertSame(['repo' => 'owner/repo', 'action' => 'set'], $t->payload);
+        // The fall-through card# came from the TITLE with head `f` backing nothing, so
+        // it is the card#5953 residual and is flagged for the handler — exactly as the
+        // move path flags its own post-conflict card# fall-through. The event carries no
+        // PR number, which the handler fail-closes on.
+        $this->assertSame([
+            'repo' => 'owner/repo', 'action' => 'set',
+            'card_token_uncorroborated' => true, 'pr_number' => null,
+        ], $t->payload);
         Log::shouldNotHaveReceived('warning');   // overlay path is silent (no double-log)
     }
 

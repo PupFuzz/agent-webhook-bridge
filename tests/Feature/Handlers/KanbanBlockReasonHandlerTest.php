@@ -69,10 +69,11 @@ class KanbanBlockReasonHandlerTest extends TestCase
         return $r->method() === 'POST' && str_starts_with($r->url(), self::ALERT_URL);
     }
 
-    private function handle(string $action, int $cardId = 5, string $repo = 'owner/repo'): void
+    /** @param array<string, mixed> $extra extra payload keys (the card#5953 corroboration flag + pr_number) */
+    private function handle(string $action, int $cardId = 5, string $repo = 'owner/repo', array $extra = []): void
     {
         (new KanbanBlockReasonHandler)->handle(
-            ReactionTarget::make('kanban_block_reason', (string) $cardId, payload: ['repo' => $repo, 'action' => $action]),
+            ReactionTarget::make('kanban_block_reason', (string) $cardId, payload: array_merge(['repo' => $repo, 'action' => $action], $extra)),
             AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
         );
     }
@@ -356,6 +357,175 @@ class KanbanBlockReasonHandlerTest extends TestCase
             // expected
         }
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    // --- card#5953 / card#5287: the uncorroborated title-only card# corroboration gate,
+    //     extended from the move path to the draft overlay ---
+
+    public function test_uncorroborated_set_is_refused_when_the_card_tracks_another_pr(): void
+    {
+        // THE case the gate exists for, one surface over from the move path: a draft PR's
+        // title descriptively cites card#5 while its branch names nothing. Card 5 is on
+        // the mapped board and its block_reason is EMPTY, so absent the gate the SET has
+        // real work and lands — the marker pins somebody else's card (DL-178). Card 5
+        // already answers to PR 900, which is the evidence the title was citing another
+        // card's work. Refuse, loudly, and write NOTHING.
+        // (Revert the gate ⇒ a PATCH is sent ⇒ RED.)
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'block_reason' => null, 'payload' => ['pr_number' => 900]]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+        Log::spy();
+
+        $this->handle('set', 5, 'owner/repo', ['card_token_uncorroborated' => true, 'pr_number' => 148]);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'REFUSED')
+            && str_contains((string) $msg, 'only in the PR title'))->once();
+    }
+
+    public function test_the_suppressed_set_would_otherwise_have_landed(): void
+    {
+        // The control for the refusal above: the IDENTICAL fixture with the flag absent
+        // writes the marker. Without this, "no PATCH was sent" could be true because the
+        // set was an add-if-missing no-op rather than because the gate stopped it — a
+        // suppression test needs real work to suppress.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'block_reason' => null, 'payload' => ['pr_number' => 900]]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle('set', 5, 'owner/repo', ['pr_number' => 148]);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r['block_reason'] === KanbanBlockReasonHandler::MARKER);
+    }
+
+    public function test_uncorroborated_refusal_alerts_under_the_draft_overlay_outcome(): void
+    {
+        // The move path's twin refusal signals (DL-274 ✅ row); this security refusal is
+        // not one of this handler's four known log-only gaps, so it signals too — on the
+        // synthetic draft_overlay outcome that keeps its dedup tuple distinct.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'block_reason' => null, 'payload' => ['pr_number' => 900],
+            ]]),
+        ]);
+
+        $this->handle('set', 5, 'owner/repo', ['card_token_uncorroborated' => true, 'pr_number' => 148]);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'card_token_uncorroborated'
+            && $r['outcome'] === 'draft_overlay'
+            && $r['card_id'] === 5);
+    }
+
+    public function test_uncorroborated_set_lands_when_the_card_tracks_no_pr(): void
+    {
+        // The legitimate title-only draft PR — the reason refuse-all was declined on
+        // card#5287. Nothing on the card contradicts the title's claim.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'block_reason' => null, 'payload' => []]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle('set', 5, 'owner/repo', ['card_token_uncorroborated' => true, 'pr_number' => 148]);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r['block_reason'] === KanbanBlockReasonHandler::MARKER);
+    }
+
+    public function test_uncorroborated_set_lands_when_the_card_already_tracks_this_pr(): void
+    {
+        // A later draft action on the SAME PR (or a redelivery). The numeric-string form
+        // is what a durable-inbox JSON round-trip produces.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'block_reason' => null, 'payload' => ['pr_number' => '148']]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle('set', 5, 'owner/repo', ['card_token_uncorroborated' => true, 'pr_number' => 148]);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r['block_reason'] === KanbanBlockReasonHandler::MARKER);
+    }
+
+    public function test_a_corroborated_set_lands_on_a_card_that_tracks_another_pr(): void
+    {
+        // The gate is scoped to the flag. A branch-corroborated card# (or a DL overlay)
+        // on a card that already tracks another PR is a NORMAL second PR against one
+        // card and must keep overlaying — the gate must not widen into it.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'block_reason' => null, 'payload' => ['pr_number' => 900]]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle('set', 5, 'owner/repo', ['pr_number' => 148]);   // no flag
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r['block_reason'] === KanbanBlockReasonHandler::MARKER);
+    }
+
+    public function test_uncorroborated_set_is_refused_when_the_event_carries_no_pr_number(): void
+    {
+        // Fail-closed, exactly as on the move path: an event with no PR number
+        // corroborates nothing, so a card that tracks a PR is not marked on the title's
+        // word alone.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'block_reason' => null, 'payload' => ['pr_number' => 900]]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle('set', 5, 'owner/repo', ['card_token_uncorroborated' => true]);   // no pr_number
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_the_ready_for_review_clear_is_never_gated(): void
+    {
+        // The gate is scoped to `set` and that is a ruling, not an omission: CLEAR is
+        // clear-if-ours, so it can only ever remove the marker WE wrote. Gating it would
+        // strand a marker set before this shipped — the guard causing the harm it exists
+        // to prevent, permanently pinning the very card it was meant to protect.
+        // (Widen the gate to both actions ⇒ no PATCH ⇒ RED.)
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => [
+                    'id' => 5, 'board_id' => 8,
+                    'block_reason' => KanbanBlockReasonHandler::MARKER,
+                    'payload' => ['pr_number' => 900],
+                ]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle('clear', 5, 'owner/repo', ['card_token_uncorroborated' => true, 'pr_number' => 148]);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && array_key_exists('block_reason', $r->data())
+            && $r['block_reason'] === null);
     }
 
     // --- malformed payloads (deterministic classifier bug → permanent no-op) ---

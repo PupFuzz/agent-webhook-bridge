@@ -41,14 +41,15 @@ use Tests\TestCase;
  * method's before it were ever enumerated there. Absence from that file is not
  * evidence of protection.
  *
- * TWO FORMAT ARMS ARE DELIBERATELY NOT ASSERTED HERE, and the reason is that they
- * cannot be reached, not that they were missed: both `unknown` renderings (the
- * inventory's and the warn's) require `last_seen` to arrive non-scalar or empty, and
- * `received_at` is `timestamp(3)` NOT NULL with a DB-side default, so `MAX(received_at)`
- * over a non-empty group is always a scalar timestamp string. They are inherited
- * unchanged by this migration (output-neutral); filed as card#5555 rather than tested or
- * deleted here, because deleting them changes no output only BECAUSE they never fire —
- * which is exactly the kind of edit a byte-identical migration stage must not smuggle in.
+ * THE LAST-SEEN RENDERS UNCONDITIONALLY AND NO EMPTY-LAST CASE IS ASSERTED, because none
+ * is representable: `received_at` is `timestamp(3)` NOT NULL with a DB-side default, and
+ * no code writes it — it is not fillable and every row takes the default — so the
+ * reconciler's `MAX(received_at)` over a non-empty group is always a scalar timestamp
+ * string, and every `observed` entry carries it. The two inherited `'unknown'` fallback
+ * arms guarded on that impossibility were carried unchanged through the byte-identical
+ * DL-242 stage-7a migration (deleting them then would have smuggled a semantic edit into
+ * a stage whose revertibility rested on changing nothing) and deleted once it landed
+ * (card#5555): a branch no input can reach is a branch no reviewer can check.
  */
 class EventFollowsConsumerCheckTest extends TestCase
 {

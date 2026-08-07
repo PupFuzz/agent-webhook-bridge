@@ -28,18 +28,23 @@ use Illuminate\Support\Facades\Log;
  * `type:`) or the bare `triaged` are refused (422-class) — no forging an audit
  * stamp, no poisoning idempotency, no hijacking the coord adoption/type keys, no
  * defeating born-untriaged. The reserved match is CASEFOLDED (`strtolower(trim)`
- * vs the lowercase reserved set), because the kanban tag search this guards is
- * case-INSENSITIVE (`tags LIKE '%"needle"%'` under a `_ci` collation): a
- * case-exact guard let `IDEM:agentB:daily` past, whereupon it case-folds into
- * another agent's lowercase idempotency probe and poisons it. To make
- * `strtolower` == the MariaDB `_ci` fold for the surviving charset, each caller
- * tag is first charset-constrained to printable ASCII with the tag-search
- * metacharacters (`"`/`*`/`_`/`%`) excluded — non-ASCII bytes defeat an ASCII
- * casefold vs Unicode `_ci` folding, and the metacharacters mis-split or
- * wildcard-over-match the kanban tokenizer. The idempotency_key is
- * charset-constrained to `[A-Za-z0-9.-]{1,64}` for the same tokenizer reason AND
- * lowercased after it validates, so the stored/searched `idem:<agent>:<key>` tag
- * is deterministic (a `Report`/`report` pair cannot false-collide at kanban).
+ * vs the lowercase reserved set) as defense-in-depth across driver collations:
+ * whether the backing tag search folds case is a per-driver fact (MariaDB's JSON
+ * column collates utf8mb4_bin ⇒ case-SENSITIVE, measured; a kanban running on
+ * SQLite folds ASCII in LIKE), so the guard refuses every case variant rather
+ * than betting on the deployed collation — a case-exact guard would let
+ * `IDEM:agentB:daily` through to a folding backend, where it collides with
+ * another agent's lowercase idempotency probe and poisons it. To keep the
+ * bridge-side `strtolower` fold deterministic for the surviving charset, each
+ * caller tag is first charset-constrained to printable ASCII with the
+ * tag-search metacharacters (`"`/`*`/`_`/`%`) excluded — non-ASCII bytes fold
+ * differently under an ASCII casefold than under a Unicode-aware collation, and
+ * the metacharacters mis-split or wildcard-over-match the kanban tokenizer. The
+ * idempotency_key is charset-constrained to `[A-Za-z0-9.-]{1,64}` for the same
+ * tokenizer reason AND lowercased after it validates, so the bridge always
+ * stores/searches one deterministic `idem:<agent>:<key>` tag (a
+ * `Report`/`report` pair cannot mint two probe tags whose correlation would
+ * then depend on the backend's collation).
  */
 final class BoardCreateCardTool implements Tool
 {
@@ -163,17 +168,19 @@ final class BoardCreateCardTool implements Tool
                 throw new ToolRefusalException('board_create_card: `tags` entries must be non-empty strings');
             }
             // Charset constraint (mirrors the idem-key posture): a tag outside
-            // printable ASCII, or carrying a kanban tag-search metacharacter
-            // (" * _ %), would defeat the ASCII casefold below vs MariaDB's `_ci`
-            // Unicode folding, or mis-split/wildcard-over-match the tokenizer.
+            // printable ASCII folds differently under the ASCII casefold below
+            // than under a Unicode-aware driver collation, and a kanban
+            // tag-search metacharacter (" * _ %) mis-splits or
+            // wildcard-over-matches the tokenizer.
             // `D` anchor: PCRE `$` otherwise matches before a trailing "\n", so a
             // "tag\n" would pass — self-contained, not reliant on TrimStrings.
             if (preg_match('/^[\x20-\x7E]+$/D', $tag) !== 1 || strpbrk($tag, '"*_%') !== false) {
                 throw new ToolRefusalException("board_create_card: the tag `{$tag}` contains a character outside printable ASCII or a kanban tag-search metacharacter (\" * _ %) — these defeat the case-insensitive reserved-tag guard or mis-match the kanban tokenizer");
             }
-            // Casefold the reserved match: the kanban tag search this guards is
-            // case-insensitive, so a case-exact guard is bypassable (IDEM:… → the
-            // lowercase idem probe). Safe now the charset is ASCII-constrained.
+            // Casefold the reserved match: whether the backing tag search folds
+            // case is a per-driver collation fact (see class docblock), so refuse
+            // every case variant (IDEM:… reaches the lowercase idem probe on a
+            // folding backend). Safe now the charset is ASCII-constrained.
             $folded = strtolower(trim($tag));
             foreach (self::RESERVED_PREFIXES as $prefix) {
                 if (str_starts_with($folded, $prefix)) {
@@ -202,11 +209,13 @@ final class BoardCreateCardTool implements Tool
             throw new ToolRefusalException('board_create_card: `idempotency_key` must match [A-Za-z0-9.-]{1,64} — other characters (notably " * _ %) are kanban tag-search metacharacters that could correlate the wrong card');
         }
 
-        // Normalize case AFTER the charset check: the stored/searched
-        // `idem:<agent>:<key>` tag matches case-insensitively at kanban, so a
-        // mixed-case key (`Report` vs `report`) would false-collide. Lowercasing
-        // makes the correlation deterministic. The key is used nowhere
-        // case-sensitively (only to build the idem tag above).
+        // Normalize case AFTER the charset check: whether the stored/searched
+        // `idem:<agent>:<key>` tag correlates case-sensitively is a per-driver
+        // collation fact (see class docblock) — on a case-sensitive backend a
+        // re-sent key differing only in case would miss its own prior card and
+        // mint a duplicate. Lowercasing makes the correlation deterministic.
+        // The key is used nowhere case-sensitively (only to build the idem tag
+        // above).
         return strtolower($key);
     }
 }

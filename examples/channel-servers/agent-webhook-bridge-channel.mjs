@@ -714,7 +714,7 @@ if (TRANSPORT === 'unix') {
   // Bind directly. On EADDRINUSE, refuse to start with an operator-actionable
   // message — no auto-unlink, no liveness-probe race.
   // The "two concurrent Claude Code sessions on the same path" case is
-  // operator error per the README "One server per session" note.
+  // operator error per the README "One server per UDS path" note.
   server.on('error', (err) => {
     if (err && err.code === 'EADDRINUSE') {
       writeFailureMarker(

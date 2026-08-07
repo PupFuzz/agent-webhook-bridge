@@ -77,6 +77,26 @@ jobs:
         # reading "the latest release" sees nothing. Publish a Release object
         # whose notes are this version's docs/CHANGELOG.md section, so the
         # Releases page matches the tags. Idempotent: skip if it already exists.
+        #
+        # THE SECTION IS EXTRACTED BY bin/changelog-section.py, not by an awk
+        # one-liner here, because `changelog-gate.yml` asserts against the same
+        # section at PR time: two extractors that disagreed about where a
+        # section ends would let the gate certify a body this step never
+        # publishes (card#5910's class, one level down). Byte-identical to the
+        # awk it replaced for any section that fits.
+        #
+        # OVERSIZE FALLBACK (card#5972). v0.72.0's section was 134,904 bytes
+        # against GitHub's 125,000 limit: steps 1-4 succeeded, so the tag
+        # landed and only this step failed (HTTP 422), leaving the release
+        # tagged but unpublished. The two halves of "mint the tag + Release"
+        # fail independently, so this one must always produce a publishable
+        # body — `--fallback-url` truncates to whole lines and points at the
+        # full entry in the tagged tree. `changelog-gate.yml` is the loud half
+        # and rejects an oversize section at release-PR time; this is the
+        # fallback that keeps a release from being half-published if it ever
+        # gets past that (a merge that bypassed the gate, or a section edited
+        # after the release PR was green).
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.ver.outputs.version }}
@@ -86,14 +106,25 @@ jobs:
             echo "Release $TAG already exists; skipping."
             exit 0
           fi
-          # Notes = this version's section: "## [x.y.z]" up to the next "## [".
-          awk -v v="$VERSION" '
-            $0 ~ ("^## \\[" v "\\]") {flag=1; print; next}
-            flag && /^## \[/ {exit}
-            flag {print}' docs/CHANGELOG.md > release-notes.md
-          if [ ! -s release-notes.md ]; then
+
+          CHANGELOG_AT_TAG="https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/docs/CHANGELOG.md"
+          rc=0
+          python3 bin/changelog-section.py \
+            --changelog docs/CHANGELOG.md --section "$VERSION" \
+            --fallback-url "$CHANGELOG_AT_TAG" > release-notes.md || rc=$?
+
+          # FAIL-SOFT ON AN ABSENT SECTION IS BY DESIGN and must stay: failing
+          # here would leave a merged release untagged. card#5910's gate answer
+          # rejected hardening it, and `changelog-gate.yml` is where a missing
+          # section is refused instead. Any OTHER non-zero exit is a real
+          # tooling failure and stays loud.
+          if [ "$rc" -eq 3 ]; then
             echo "WARNING: no docs/CHANGELOG.md section for [$VERSION]; using a generated note."
             printf 'Release %s. See docs/CHANGELOG.md.\n' "$TAG" > release-notes.md
+          elif [ "$rc" -ne 0 ]; then
+            echo "ERROR: bin/changelog-section.py exited $rc extracting [$VERSION]."
+            exit 1
           fi
+
           gh release create "$TAG" --title "$TAG" --notes-file release-notes.md --verify-tag
           echo "Created GitHub Release $TAG"

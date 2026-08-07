@@ -422,21 +422,36 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     /**
      * One `kanban_block_reason` overlay target per correlated card (DL-193) — the
      * card id is the distinct target_id so bundled-card targets don't coalesce
-     * (DL-003/DL-148), and the payload carries just the repo (for the handler's
-     * board resolution) and the set/clear action. No card correlates → no target
-     * (empty list), exactly like the move path's un-linked no-op.
+     * (DL-003/DL-148), and the payload carries the repo (for the handler's board
+     * resolution) and the set/clear action. No card correlates → no target (empty
+     * list), exactly like the move path's un-linked no-op.
+     *
+     * On the uncorroborated title-only residual it ALSO carries the move path's
+     * `card_token_uncorroborated` flag plus this event's `pr_number` — the evidence
+     * the writeback's shared `CardTokenCorroboration` predicate gates on (card#5953).
+     * (Named, not `{@see}`-linked: an FQCN in a docblock becomes a real `use` under
+     * pint, and this classifier constructs nothing in that namespace.) Both
+     * keys ride together and only on that residual, so an ordinary corroborated overlay
+     * payload is byte-identical to before. `pr_number` rather than the move path's
+     * `stamp_pr`: this overlay never stamps anything, and `kanban_dependabot_card`
+     * already spells a plain event PR number that way.
      *
      * @param  array<mixed>  $payload
      * @return list<ReactionTarget>
      */
     private function blockReasonTargets(array $payload, string $repo, string $action, WritebackMapping $mapping, WritebackConfig $writeback): array
     {
+        $resolution = $this->correlatedCardIds($payload, $repo, $mapping, $writeback);
+        $corroboration = $resolution['uncorroborated']
+            ? ['card_token_uncorroborated' => true, 'pr_number' => $this->prNumber($payload)]
+            : [];
+
         $targets = [];
-        foreach ($this->correlatedCardIds($payload, $repo, $mapping, $writeback) as $cardId) {
-            $targets[] = ReactionTarget::make('kanban_block_reason', (string) $cardId, payload: [
+        foreach ($resolution['ids'] as $cardId) {
+            $targets[] = ReactionTarget::make('kanban_block_reason', (string) $cardId, payload: array_merge([
                 'repo' => $repo,
                 'action' => $action,
-            ]);
+            ], $corroboration));
         }
 
         return $targets;
@@ -456,30 +471,43 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      *
      * It shares {@see cardTokenResolution}, so the title-vs-branch rule (card#5287)
      * applies here too: an overlay never lands on a title's card when the branch names
-     * a different one. What it does NOT inherit is the handler-side corroboration gate
-     * on an uncorroborated TITLE-ONLY token — that gate is the move handler's, and this
-     * overlay target does not carry the flag. So a title-only `card#` can still overlay
-     * a `block_reason` onto a card this PR only cited. Same shape, strictly lower harm
-     * (one add-if-missing field, cleared on ready_for_review, never a stage move), and
-     * it is filed rather than silently widened here: the gate is a change to what the
-     * bridge accepts, and the approved answer named the move path.
+     * a different one. Since card#5953 it also reports the uncorroborated TITLE-ONLY
+     * residual, so {@see blockReasonTargets} can flag the target and the writeback's
+     * shared `CardTokenCorroboration` predicate settle it at the handler on
+     * the card's own evidence — the same mechanism the move path uses, not a second
+     * one. Before that, the overlay inherited the RULE but not the GATE, and a
+     * title-only `card#` could overlay a `block_reason` onto a card this PR had only
+     * cited; the gate is a change to what the bridge accepts, so it was filed and
+     * user-gated rather than widened alongside DL-270.
+     *
+     * `uncorroborated` describes the returned ids, so it is FALSE whenever a resolving
+     * DL selected them: a DL picks its cards out of the board, never out of prose. It
+     * is true only on the `card#` fallback with a prose-only token — mirroring the move
+     * path, where {@see moveTargets} never carries the flag and only the card# return
+     * does. It needs no "and a token was found" clause: {@see cardTokenResolution}
+     * reports `uncorroborated` false whenever its `token` is null, and a null token
+     * yields no ids for the flag to describe anyway.
      *
      * @param  array<mixed>  $payload
-     * @return list<int>
+     * @return array{ids: list<int>, uncorroborated: bool}
      */
     private function correlatedCardIds(array $payload, string $repo, WritebackMapping $mapping, WritebackConfig $writeback): array
     {
         $dl = $this->dlToken($payload);
-        $cardToken = $this->cardTokenResolution($payload)['token'];
+        $cardResolution = $this->cardTokenResolution($payload);
+        $cardToken = $cardResolution['token'];
         if ($dl !== null) {
             $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
             $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
             if ($cardIds !== [] && ! $this->cardConflicts($cardToken, $cardIds)) {
-                return $cardIds;
+                return ['ids' => $cardIds, 'uncorroborated' => false];
             }
         }
 
-        return $cardToken !== null ? [$cardToken] : [];
+        return [
+            'ids' => $cardToken !== null ? [$cardToken] : [],
+            'uncorroborated' => $cardResolution['uncorroborated'],
+        ];
     }
 
     /**
@@ -774,9 +802,11 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * guard and not behind `$dl === null` alone: a subject carrying a parsing
      * `card#` beside a malformed `DL_239` moves its card, so it is not in the
      * silent-failure class this exists to catch — and "no move" below would be
-     * a false statement about it. The bounded cost is that such a subject loses
-     * its `dl_number` stamp with no warning; naming a lost STAMP is a different
-     * signal from naming a lost MOVE, and it is card#5961, not this.
+     * a false statement about it. That limit STANDS; what changed (card#5961) is
+     * that the cost it leaves — such a subject losing its `dl_number` stamp — is
+     * no longer silent either. Naming a lost STAMP is a different signal from
+     * naming a lost MOVE, so it is emitted where the stamp is built
+     * ({@see stampRefs}) rather than by widening this guard.
      */
     private function warnTokenNearMiss(string $text, string $surface): void
     {
@@ -820,6 +850,34 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * add-if-missing at the handler protects an existing value, so a release PR whose
      * title merely names a feature card's DL cannot overwrite that card's own PR refs.
      *
+     * THE LOST STAMP IS NOW NAMED (card#5961), and it is a different signal from
+     * {@see warnTokenNearMiss}'s. That probe sits behind the both-null guard, so a
+     * subject like `feat/card-3410-slug-DL_272` is silent there BY DECISION — this
+     * event emits a move rather than no-opping, so the near-miss line's "no move"
+     * clause would be false about it (DL-234(e)). What was ALSO silent is the
+     * consequence at THIS site: `sole()` returns null on the malformed token and no
+     * `stamp_dl` rides the target, so nothing carries a `dl_number` for the next
+     * event to correlate by. The warning therefore belongs where the DL result is
+     * CONSUMED.
+     *
+     * WHAT IT MAY CLAIM is bounded by where it is emitted — classify time. It says
+     * a move is EMITTED, never that a card ends up moved: `KanbanMoveCardHandler`
+     * can still refuse the target (the `getCard` 4xx arm, the
+     * belongs-to-mapped-board guard, the uncorroborated-title-token gate, the
+     * `started` no-regression guard). That is the same discipline the DL-148 note
+     * above states for the conflict warning — what is always true HERE is what gets
+     * said. The `dl_number` half needs no such hedge: the stamp is not in the
+     * payload at all, so it cannot be written whatever the handler decides.
+     *
+     * The guard needs no "and a card token parsed" clause, which would defend
+     * against an unreachable state (canon #6): both `card#`-path callers are reached
+     * only with a non-null card token, and the DL-win caller passes a `$text` its
+     * own non-null `$dl` was parsed out of — so `parse($text) === null` here IS the
+     * card# path. A DL that parses but is not stamped — not SOLE (a bundled /
+     * release-shaped subject), or excluded as `$excludeDl` on the DL-218 conflict
+     * path — is deliberately NOT warned either: that DL is foreign to this card
+     * by construction, not lost.
+     *
      * @return array{stamp_dl?: string, stamp_pr?: int, stamp_pr_url?: string}
      */
     private function stampRefs(string $text, ?int $prNumber, ?string $prUrl = null, ?string $excludeDl = null): array
@@ -828,6 +886,10 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         $sole = DlTokenGrammar::sole($text);
         if ($sole !== null && $sole !== $excludeDl) {
             $refs['stamp_dl'] = $sole;
+        }
+        if (DlTokenGrammar::parse($text) === null && DlTokenGrammar::looksLikeDlToken($text)) {
+            Log::warning('kanban_move_card: a card token correlates, so this event moves a card rather than no-opping (the durable handler may still refuse it) — but the subject also carries a DL-shaped token that does not parse ('
+                .DlTokenGrammar::describe().'), so no dl_number is stamped with the move (FR-7 lost DL stamp): '.$text);
         }
         if ($prNumber !== null) {
             $refs['stamp_pr'] = $prNumber;

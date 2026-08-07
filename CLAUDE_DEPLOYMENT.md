@@ -237,7 +237,7 @@ kanban-board's webhook delivery retries on **5xx / 429 only** (≈11 attempts ov
 | `413` | body over the size cap | not retried |
 | `500` | transient/internal failure (DB down, **malformed config**, durable inbox-write failure) | **retried** on the ~11-day curve |
 
-A malformed per-agent YAML / `shared-identities.json` is intentionally a `5xx` — the loader fails closed and kanban-board holds everything until the config is fixed and FPM reloaded.
+A malformed per-agent YAML is intentionally a `5xx` — the loader fails closed and kanban-board holds everything until the config is fixed and FPM reloaded. **`shared-identities.json` is the deliberate exception and never 5xxes:** it is an optional policy file, so an unreadable or non-JSON one degrades to "no shared accounts" with a logged warning, and attribution for a shared account silently goes missing instead. That is what `bridge:check` exists to surface before it happens — it reports the file's state (unreadable ⇒ `unvalidated`, not-JSON ⇒ `warn`, DL-259), which the receiver's silence cannot.
 
 ## Per-agent dispatch: done vs errored
 
