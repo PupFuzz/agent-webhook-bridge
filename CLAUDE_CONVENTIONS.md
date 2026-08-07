@@ -176,7 +176,7 @@ Body: paragraphs describing what + why (NOT how — that's in the diff). Include
 
 The dev-PR gate model — branching model, who opens and merges what, and what CI must show before a self-merge — is owned by [`CLAUDE.md`](CLAUDE.md) standing rules 4–5; the release steps are owned by [`VERSIONING.md`](VERSIONING.md) § Release flow. The merge mechanic itself is in [`CLAUDE_AGENTBOARD.md`](CLAUDE_AGENTBOARD.md) § Your work loop → **Merge authority**. This file deliberately does not restate any of it: a restated copy here drifted into contradicting the owners on the ask-before-open checkpoint (retired), the named-workflow list (card#5575), and hand-tagging (card#5913).
 
-**Security-critical surfaces still pause.** Changes touching `VerifyHmacSignature.php` / adapters / HMAC paths / secret-path resolution / DB schema get explicit human approval before being implemented — see [`CLAUDE_AGENTBOARD.md`](CLAUDE_AGENTBOARD.md) § Ask-first gates and the user-level always-ask gate. The gate is on the change, not the dev merge (`CLAUDE.md` rule 5: no per-merge dev ask).
+**Security-critical surfaces still pause.** The surfaces are `VerifyHmacSignature.php` / adapters / HMAC paths / secret-path resolution / DB schema; the trigger is **changes to what these surfaces accept, reject, or persist** — not the fact that a change touches one of them (a formatting-only edit carries no gate). Such a change gets explicit human approval before being implemented — see [`CLAUDE_AGENTBOARD.md`](CLAUDE_AGENTBOARD.md) § Ask-first gates and the user-level always-ask gate. The gate is on the change, not the dev merge (`CLAUDE.md` rule 5: no per-merge dev ask).
 
 ## Test conventions
 
