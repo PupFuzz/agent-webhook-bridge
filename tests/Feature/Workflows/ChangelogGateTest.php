@@ -472,9 +472,11 @@ class ChangelogGateTest extends TestCase
 
     public function test_a_github_path_outside_workflows_stays_out_of_scope(): void
     {
-        // The widening is `.github/workflows/`, not `.github/`: an issue
-        // template or a dependabot config announces no behaviour. Pinned
-        // because `^\.github/` is the easy over-reach.
+        // The widening is `.github/workflows/`, not `.github/`. Pinned because
+        // `^\.github/` is the easy over-reach. Note the boundary is drawn at a
+        // path, not at the criterion: `.github/actions/` and `.release-pr.json`
+        // DO change what CI accepts and are a known accepted gap, gated on
+        // card#6100 — do not read this test as asserting they announce nothing.
         [$rc, $out] = $this->runFeatureStep(
             ['docs/CHANGELOG.md' => $this->changelog('- old'), '.github/dependabot.yml' => 'a'],
             ['.github/dependabot.yml' => 'b'],

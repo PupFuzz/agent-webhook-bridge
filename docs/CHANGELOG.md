@@ -9,7 +9,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 ## [Unreleased]
 
 ### Changed
-- **card#6056** — **`changelog-gate.yml`'s feature-PR path scope widens to `.github/workflows/`.**
+- **card#6056** (**DL-280**) — **`changelog-gate.yml`'s feature-PR path scope widens to `.github/workflows/`.**
   **⚠ THIS CHANGES WHAT CI REQUIRES ON PRs TOUCHING `.github/workflows/`:** such a PR must now be
   named in the `[Unreleased]` section — by its title's `card#`/`DL-` token, or, for a title carrying
   no token, by having changed the section at all — exactly as an `app/` or `bin/` PR must. The scope
@@ -17,10 +17,15 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   rejects IS shipped behaviour for a contributor, and the gap was measured on the gate program's own
   work — the DL-279 `release-artifacts-gate.yml` adoption changed what CI accepts on every release
   PR and was itself structurally exempt from the gate that exists to make a change announce itself.
-  `.github/` outside `workflows/` stays out of scope (an issue template or a dependabot config
-  announces no behaviour), the exempt branch set (`dependabot/*`, `release/*`, `sync/*`, `revert-*`)
-  is unchanged, and the release-PR assertions — the `## [<VERSION>]` section and its release-body
-  size limit — are untouched.
+  `.github/` outside `workflows/` stays out of scope. The criterion is *does this change what CI
+  accepts or rejects* — which `.github/pull_request_template.md` does not, but
+  `.github/actions/setup-app/action.yml` (a composite action both `laravel-tests.yml` jobs run) and
+  `.release-pr.json` (the declared artifact set `release-artifacts-gate.yml` reads as its authority)
+  both DO. Those two are a **known accepted gap, not a claim that they announce nothing** — widening
+  to reach them is itself a change to what CI rejects and so needs its own ruling; filed as
+  card#6100. The exempt branch set (`dependabot/*`, `release/*`, `sync/*`, `revert-*`) is unchanged,
+  and the release-PR assertions — the `## [<VERSION>]` section and its release-body size limit — are
+  untouched.
 
 ## [0.73.0] - 2026-08-07
 
