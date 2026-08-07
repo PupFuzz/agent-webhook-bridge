@@ -372,9 +372,10 @@ final class DispatchService
         $subjectIds = array_map(static fn (Intent $intent): string => $intent->subjectId, $result->intents);
 
         foreach ($result->targets as $t) {
-            // Strict in_array, never array_flip + isset: PHP canonicalizes a
-            // numeric-string array KEY to an int, so subject ids differing only
-            // in that (e.g. '7' vs '07') would pair against each other as keys.
+            // The strict flag is load-bearing: a LOOSE in_array compares two
+            // numeric strings numerically, so a targetId of ' 7' would pair
+            // against a subject of '7' and silently suppress a warn the inbox
+            // cannot back. Ids are opaque to the bridge — only identity pairs.
             if ($t->handler !== 'channel_push' || in_array($t->targetId, $subjectIds, true)) {
                 continue;
             }
