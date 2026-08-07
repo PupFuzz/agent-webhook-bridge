@@ -69,7 +69,18 @@ jobs:
           # `seq 1 5000000 | grep -qxF 3` yields 141 on a successful match. Here
           # that would read as "VERSION is not in the diff" and skip the whole
           # assertion, silently, on exactly the large PRs most worth checking.
-          CHANGED=$(git diff --name-only "$BASE" "$HEAD")
+          # `core.quotepath=false` sits at the CAPTURE, not at the predicate: by
+          # default git prints any path carrying a non-ASCII byte as a C-quoted
+          # string with a LEADING `"`, which silently defeats a predicate that
+          # anchors or matches whole lines. The `-qxF VERSION` below cannot be
+          # fooled that way — an ASCII literal is never quoted. The flag is here
+          # anyway because THIS file's predicates demonstrably get rewritten
+          # (card#6056 rewrote the feature step's scope predicate), so the read is
+          # fixed once at the guard rather than re-argued at whichever predicate
+          # moves next. Scoped to this guard: NOT a claim that every path-list
+          # read in the repo wants the flag — DL-281's sibling audit found one
+          # that provably does not.
+          CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" "$HEAD")
           if ! grep -qxF VERSION <<<"$CHANGED"; then
             echo "OK: this PR does not move VERSION — no release section to assert."
             exit 0
@@ -140,7 +151,15 @@ jobs:
           # to bypass.
           # Captured, not piped — see the release step for the measured reason a
           # `writer | grep -q` under pipefail can report the writer's SIGPIPE.
-          CHANGED=$(git diff --name-only "$BASE" "$HEAD")
+          # `core.quotepath=false` because git's default C-quotes any path with a
+          # non-ASCII byte and prints it with a LEADING `"`, which defeats the
+          # `^` below: a PR whose in-scope paths were ALL non-ASCII-named was
+          # exempted from this gate silently (measured: a commit touching only
+          # `app/café.php` matched 0 times, 1 with the flag; `app/plain.php`
+          # matched under both). Residual, bounded in DL-281 rather than claimed
+          # closed: a path containing `"`, `\`, or a control byte is quoted
+          # regardless of this flag.
+          CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" "$HEAD")
           if ! grep -qE '^(app/|bin/|\.github/workflows/)' <<<"$CHANGED"; then
             echo "OK: this PR changes no app/, bin/, or .github/workflows/ file — no [Unreleased] entry required."
             exit 0

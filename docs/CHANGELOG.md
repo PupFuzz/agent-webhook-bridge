@@ -27,6 +27,29 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   and the release-PR assertions — the `## [<VERSION>]` section and its release-body size limit — are
   untouched.
 
+### Fixed
+- **card#6101** (**DL-281**) — **`changelog-gate.yml` stops silently exempting a PR whose in-scope
+  paths are all non-ASCII-named.** `core.quotepath` defaults ON, so `git diff --name-only` prints any
+  path carrying a non-ASCII byte as a C-quoted string with a **leading `"`** — which defeats the `^`
+  in the feature-PR step's scope predicate. Measured: a commit touching only `app/café.php` matched
+  the predicate **0** times; the same diff read under `git -c core.quotepath=false` matched **1**
+  (control: `app/plain.php` matched under both). The gate did not error — it printed *"OK: this PR
+  changes no app/, bin/, or .github/workflows/ file"* and exited 0, a false claim about the diff.
+  **⚠ THIS CHANGES WHAT CI REQUIRES:** the gate now fires on PRs it previously let through. It was
+  user-gated before any code. **The reach was narrow, and this entry does not oversell the fix** —
+  the miss needed *every* in-scope path in the PR to be non-ASCII-named; one ASCII `app/`, `bin/`, or
+  `.github/workflows/` file anywhere in the diff always fired the gate. The flag is set at the
+  **capture** in both steps rather than at either predicate, so a future predicate change *in this
+  workflow* is safe by construction; the release step's `grep -qxF VERSION` was never exposed (an
+  ASCII literal is never quoted) and its half of the change is deliberately untestable. **Sibling
+  audit run, one instance:** three `git diff --name-only` call sites exist in this repo's automation
+  and only the one is exposed — the release step's fixed-string `-x` match and
+  `channel-server-supply-chain.yml`'s unanchored `grep -v '/node_modules/'` exclusion are both
+  provably unaffected by quoting. Residual, stated rather than claimed closed: a path containing
+  `"`, `\`, or a control byte is C-quoted regardless of this flag. `-z` closes that residual too and
+  was rejected on cost — **DL-281 § Alternatives considered (a) owns that reasoning and what the
+  rejected option would have bought; deliberately not restated here.**
+
 ## [0.73.0] - 2026-08-07
 
 ### Fixed
