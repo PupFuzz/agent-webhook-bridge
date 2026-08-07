@@ -1,0 +1,37 @@
+# This repo's adoption of the release-artifact gate (card#5910). The class rule: every member
+# of a must-move-together set is READ by the guard and a missing member FAILS the PR — a guard
+# reading a proper subset cannot fail on the member it never reads. `changelog-gate.yml`
+# (DL-276) reads two of this repo's three declared members, `VERSION` and the
+# `docs/CHANGELOG.md [<VERSION>]` section, plus the release-body size limit that this action
+# does not check; the third, the `CLAUDE.md § Recent releases` row, is read by nothing. The two
+# gates COMPOSE — neither replaces the other. This one takes its members from
+# `.release-pr.json`'s `artifacts` array, which until now merely PRINTED them as a checklist, so
+# a fourth member is guarded by DECLARING it rather than by remembering to extend a script.
+# Post-merge auto-tag workflows stay fail-soft BY DESIGN (ratified on card#5910); this asserts
+# at release-PR time, where the fix is a commit rather than a retag.
+#
+# No paths filter: the gate must observe EVERY pull request to classify it. Classification is
+# by version VALUE, so a non-release PR exits 0 after two `git show`s.
+name: Release artifacts
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  release-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Required by the action: it resolves the FORK POINT of base and head and reads the
+          # version file plus each artifact's contents at both ends through `git show`, none of
+          # which a shallow clone can serve.
+          fetch-depth: 0
+      - uses: PupFuzz/agent-board-toolkit/release-artifacts@e619c2a2902559ea116e601fe939124425f3e8af  # v0.25.0
+        with:
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
