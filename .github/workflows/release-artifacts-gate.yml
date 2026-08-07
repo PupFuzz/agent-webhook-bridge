@@ -16,10 +16,10 @@ name: Release artifacts
 
 on:
   pull_request:
-    # `edited` fires when a PR is RETARGETED to a different base (`synchronize` does not), and the
-    # verdict is a function of the base — the merge base drives both the classification and the
-    # asserted diff. Not for the title, which this action never reads (unlike changelog-gate.yml,
-    # which subscribes to the same event for exactly that reason).
+    # `edited` fires when a PR is RETARGETED to a different base, and the verdict is a function of
+    # the base — the merge base drives both the classification and the asserted diff. Not for the
+    # title, which this action never reads (unlike changelog-gate.yml, which subscribes to the
+    # same event for exactly that reason).
     types: [opened, edited, reopened, synchronize]
 
 permissions:
@@ -31,9 +31,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # Required by the action: it resolves the FORK POINT of base and head and reads the
-          # version file plus each artifact's contents at both ends through `git show`, none of
-          # which a shallow clone can serve.
+          # Required by the action: it resolves the FORK POINT of base and head, reads the
+          # version file at both ends and each artifact's contents at head through `git show`,
+          # none of which a shallow clone can serve.
           fetch-depth: 0
       - uses: PupFuzz/agent-board-toolkit/release-artifacts@e619c2a2902559ea116e601fe939124425f3e8af  # v0.25.0
         with:
