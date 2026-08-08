@@ -25,7 +25,53 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   to reach them is itself a change to what CI rejects and so needs its own ruling; filed as
   card#6100. The exempt branch set (`dependabot/*`, `release/*`, `sync/*`, `revert-*`) is unchanged,
   and the release-PR assertions — the `## [<VERSION>]` section and its release-body size limit — are
-  untouched.
+  untouched. **[Gap closed in this same release — see the card#6100 / DL-282 entry below: the scope
+  now reaches both files this entry named, and three more it missed, so the accepted gap this entry
+  declared is narrowed rather than still open at ship time. It is not eliminated — that entry
+  discloses what remains.]**
+- **card#6100** (**DL-282**) — **`changelog-gate.yml`'s feature-PR path scope widens: `.github/actions/`
+  and four root CI-config files join the `[Unreleased]` scope.**
+  **⚠ THIS CHANGES WHAT CI REQUIRES:** the scope goes from three members to eight — `app/`, `bin/`,
+  `.github/workflows/`, plus `.github/actions/`, `.release-pr.json`, `phpstan-laravel.neon`,
+  `pint.json` and `phpunit.xml` — so a PR touching any of them must now be named in `[Unreleased]`.
+  Each new member is read by a CI step and therefore changes what CI accepts or rejects:
+  `.github/actions/setup-app/action.yml` pins PHP 8.5, the extension set and composer install for
+  both `laravel-tests.yml` jobs; `.release-pr.json` carries the `artifacts` array `VERSIONING.md`
+  calls *the authority for the member list*; `phpstan-laravel.neon` and `pint.json` define the
+  analyser's and formatter's own rules; and `phpunit.xml`'s `<testsuites>` decides which tests RUN
+  AT ALL, so deleting an entry silently drops a directory from CI with zero touch to `app/` or
+  `bin/`. **Widening to all five rather than the two DL-280 named was the decisive call:** fixing 2
+  of 5 IS the *guard reads a proper subset* defect shape class card#5910 named and card#6056 was
+  filed to close, re-minted one directory down. **The scope is NOT claimed to exhaust the criterion**
+  — `composer.json`, `composer.lock` (`composer audit --locked` reads it as that gate's rule input)
+  and `.env.example` (copied to `.env` for both test jobs) are disclosed CI-half gaps gated on
+  **card#6137**, and `config/`, `routes/` and `database/migrations/` sit outside the software half as
+  a bound inherited from DL-276, stated but not fixed here. **Measured over-reach is zero** — over
+  `v0.70.0..dev` the per-path commit counts are `app/` 58, `bin/` 10, `.github/workflows/` 19
+  against **2** for all five new members combined, and both of those (`phpstan-laravel.neon`) rode
+  commits that also touch `app/` and so already owed an entry, so the widening would have caused
+  **no** additional gate firing over the whole window. The four root files match as **whole paths**,
+  not prefixes: the trailing `$` excludes `phpunit.xml.dist` and the leading `^` excludes
+  `config/pint.json` — different anchors for different lookalikes, pinned by separate tests.
+  **Accepted bound, stated rather than hidden:** `phpunit.xml` also carries a `<php><env>` block that
+  is test *fixture* config rather than policy, and a file-level predicate cannot split those regions
+  — the identical coarse-predicate tradeoff DL-280 already took for `.github/workflows/`. Verified
+  exclusions, deliberately NOT added: `.github/dependabot.yml` (configures PR creation, never runs as
+  a check), `.github/pull_request_template.md`, `.editorconfig`, `.gitattributes`, root
+  `package.json`, `.npmrc`, `vite.config.js` — none has a CI consumer (both `npm ci` steps run
+  against `examples/channel-servers`' own manifest). **`composer.json` is a disclosed accepted gap,
+  not a verified exclusion:** `composer install` runs with scripts enabled in both test jobs and the
+  psr-4 map drives the autoloader every job loads, so the reason first recorded for excluding it was
+  false. The surviving argument — a dependency change alters the subject under test rather than the
+  gate's own rule — is an argument, not a verification; its disposition is gated on **card#6137**,
+  which owns it. The scope ruling itself is unchanged at five new members. Also in this change: the
+  three operator-facing scope messages collapse onto one shell variable, and the `PATH SCOPE` comment
+  table is pinned by a test that DERIVES the members from the predicate — so no surviving copy of the
+  list is unguarded (three against the regex, the test constant against the gate's own output). The first
+  version of that test was **inert** (its haystack included the string it was comparing against);
+  that was found by measurement and is recorded in DL-282 with the eight per-member controls that
+  now isolate it. User-gated before any code. The exempt branch set is unchanged and
+  the release-PR assertions are untouched.
 
 ### Fixed
 - **card#6101** (**DL-281**) — **`changelog-gate.yml` stops silently exempting a PR whose in-scope

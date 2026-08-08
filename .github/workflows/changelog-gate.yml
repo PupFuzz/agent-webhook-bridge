@@ -14,8 +14,10 @@ name: CHANGELOG gate
 #      unpublished (measured: v0.72.0, run 31051259223, HTTP 422). Asserting
 #      here moves both to the point where the fix is still cheap.
 #
-#   2. FEATURE PR — a PR touching app/, bin/, or .github/workflows/ must be
-#      named in the `[Unreleased]` section. Measured 2026-08-05: 25 of 56
+#   2. FEATURE PR — a PR touching an in-scope file must be named in the
+#      `[Unreleased]` section. The step's own PATH SCOPE comment owns the
+#      criterion and enumerates the members; this line deliberately does not
+#      carry a second copy of that list. Measured 2026-08-05: 25 of 56
 #      tokened commits reached v0.72.0 undocumented, against 100% coverage on
 #      the prior three releases, because nothing reads the CHANGELOG on a PR
 #      event at all.
@@ -139,16 +141,76 @@ jobs:
               ;;
           esac
 
-          # PATH SCOPE, as approved on card#5971 and widened on card#6056:
-          # shipped behaviour only — and what CI ACCEPTS OR REJECTS is shipped
-          # behaviour for a contributor, so a `.github/workflows/` change owes
-          # the same entry an app/ or bin/ one does. Measured: the DL-279
-          # release-artifacts-gate adoption changed what CI accepts on every
-          # release PR and was structurally exempt from the gate that exists to
-          # make a change announce itself. A docs-only or test-only PR is still
-          # exempt BY CONSTRUCTION rather than by a carve-out, because a gate
-          # that fires on changes with nothing to announce is one people learn
-          # to bypass.
+          # PATH SCOPE, as approved on card#5971, widened on card#6056, and
+          # widened again on card#6100 (DL-282). It has TWO halves, from two
+          # separate rulings:
+          #
+          #   SOFTWARE half (DL-276) — the shipped code.
+          #   CI half (DL-280, widened by DL-282) — what CI ACCEPTS OR REJECTS,
+          #   which is shipped behaviour for a contributor: a tightened gate
+          #   changes what they must do to merge exactly as an app/ change
+          #   changes what the software does. Measured: the DL-279
+          #   release-artifacts-gate adoption changed what CI accepts on every
+          #   release PR and was structurally exempt from the gate that exists
+          #   to make a change announce itself.
+          #
+          # NEITHER half is claimed complete, and this list is the MEMBERS, not
+          # the closure of either criterion. Known outside it: config/, routes/
+          # and database/migrations/ on the software half (a bound inherited
+          # from DL-276, not introduced by DL-282), and composer.json,
+          # composer.lock and .env.example on the CI half. All are disclosed in
+          # DL-282; card#6137 owns their disposition. Do not read this list as
+          # asserting anything else is out of reach of the criterion.
+          #
+          # The members:
+          #   app/                 the shipped code
+          #   bin/                 the shipped scripts
+          #   .github/workflows/   the checks themselves
+          #   .github/actions/     the composite action both laravel-tests.yml
+          #                        jobs run; it pins PHP 8.5, the extension set
+          #                        and the composer install
+          #   .release-pr.json     VERSIONING.md calls its `artifacts` array
+          #                        the authority for the member list that
+          #                        release-artifacts-gate.yml enforces
+          #   phpstan-laravel.neon the analyser's own `level` and `paths`
+          #   pint.json            the style `preset` and `exclude`
+          #   phpunit.xml          <testsuites> decides which tests RUN AT ALL,
+          #                        so deleting an entry drops a whole directory
+          #                        from CI with nothing else in the diff
+          #
+          # The four ROOT FILES match as WHOLE paths (`^…$`) while the directory
+          # members match as prefixes. Two regimes, and each anchor stops a
+          # DIFFERENT lookalike: without the trailing `$`, `phpunit.xml.dist`
+          # matches; without the leading `^`, `config/pint.json` matches. Both
+          # are pinned, by two separate mutations — neither anchor covers the
+          # other's case.
+          #
+          # They sit in a SECOND alternation with its own `^`…`$` purely to keep
+          # the two regimes visually apart. That is a READABILITY choice, not a
+          # portability one: POSIX allows an anchor anywhere outside a bracket
+          # expression in an ERE (the ends-only rule is BRE), so a single group
+          # `^(app/|pint\.json$)` is equally valid — verified identical under
+          # GNU grep 3.11, under POSIXLY_CORRECT=1, and under busybox grep. The
+          # split form itself puts a `^` immediately after a `|`, so no dialect
+          # argument could favour it anyway. Do not "fix" it back citing
+          # portability.
+          #
+          # ACCEPTED BOUND: phpunit.xml also carries a <php><env> block that is
+          # test-fixture config rather than policy, and a file-level predicate
+          # cannot split those regions — the identical coarse-predicate
+          # tradeoff DL-280 already took for `.github/workflows/`.
+          #
+          # A docs-only or test-only PR is still exempt BY CONSTRUCTION rather
+          # than by a carve-out, because a gate that fires on changes with
+          # nothing to announce is one people learn to bypass.
+          #
+          # ONE operator-facing spelling of the member list, interpolated into
+          # all three messages below. A per-message copy is the enumeration
+          # drifting from the regex — the defect class this scope exists to
+          # close. Shell variable only; the file-header SECURITY block owns the
+          # interpolation rule.
+          SCOPE='(app/, bin/, .github/workflows/, .github/actions/, .release-pr.json, phpstan-laravel.neon, pint.json, phpunit.xml)'
+
           # Captured, not piped — see the release step for the measured reason a
           # `writer | grep -q` under pipefail can report the writer's SIGPIPE.
           # `core.quotepath=false` because git's default C-quotes any path with a
@@ -160,8 +222,8 @@ jobs:
           # closed: a path containing `"`, `\`, or a control byte is quoted
           # regardless of this flag.
           CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" "$HEAD")
-          if ! grep -qE '^(app/|bin/|\.github/workflows/)' <<<"$CHANGED"; then
-            echo "OK: this PR changes no app/, bin/, or .github/workflows/ file — no [Unreleased] entry required."
+          if ! grep -qE '^(app/|bin/|\.github/workflows/|\.github/actions/)|^(\.release-pr\.json|phpstan-laravel\.neon|pint\.json|phpunit\.xml)$' <<<"$CHANGED"; then
+            echo "OK: this PR changes no in-scope file ${SCOPE} — no [Unreleased] entry required."
             exit 0
           fi
 
@@ -223,7 +285,7 @@ jobs:
               echo "OK: the [Unreleased] section names this PR's ${kind} token ${id}."
               exit 0
             fi
-            echo "::error::this PR changes app/, bin/, or .github/workflows/, but docs/CHANGELOG.md's [Unreleased] section does not name ${kind} ${id}."
+            echo "::error::this PR changes an in-scope file ${SCOPE}, but docs/CHANGELOG.md's [Unreleased] section does not name ${kind} ${id}."
             echo "Nothing reads the CHANGELOG between PRs, so an omission is invisible until a release is cut:"
             echo "25 of 56 tokened commits reached v0.72.0 undocumented this way (card#5971)."
             echo "Fix: add an [Unreleased] entry citing '${spelling}' describing the change."
@@ -244,7 +306,7 @@ jobs:
             echo "OK: no correlation token in the title, but this PR changed the [Unreleased] section."
             exit 0
           fi
-          echo "::error::this PR changes app/, bin/, or .github/workflows/ and leaves docs/CHANGELOG.md's [Unreleased] section untouched."
+          echo "::error::this PR changes an in-scope file ${SCOPE} and leaves docs/CHANGELOG.md's [Unreleased] section untouched."
           echo "Its title carries no card#/DL token, so there is nothing to correlate against — the entry"
           echo "is the only signal that this change exists before a release is cut."
           echo "Fix: add an [Unreleased] entry (and, if the work has a card, put its token in the PR title"
