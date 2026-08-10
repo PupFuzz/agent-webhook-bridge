@@ -33,14 +33,18 @@ concurrency:
 
 jobs:
   phpunit:
-    # DO NOT rename this job in a routine PR. The "8.3" is known-stale (the job
-    # runs 8.5 via setup-app) and is left that way ON PURPOSE: this exact string
-    # is a required-status-check context pinned in BOTH dev and main branch
-    # protection. Renaming it without the paired `required_status_checks.contexts`
-    # update leaves protection waiting on a check that never reports, blocking
-    # every PR. The two travel together, as one gated branch-protection op.
+    # DO NOT put a version — of PHP, MariaDB or anything else — in this job's
+    # name. It is a required-status-check context pinned in BOTH dev and main
+    # branch protection, so the name is an IDENTIFIER, not a description.
+    # Coupling it to a runtime version makes every version bump a gated
+    # branch-protection op: rename without the paired
+    # `required_status_checks.contexts` update and protection waits forever on a
+    # check that never reports, blocking every PR on both branches — including
+    # the renaming one. The version this job actually runs is pinned in
+    # .github/actions/setup-app and is the single source of truth for it.
+    # This name was decoupled precisely so that op is paid once, not per bump.
     # See DL-040.
-    name: PHPUnit + Pint + PHPStan (PHP 8.3, SQLite)
+    name: PHPUnit + Pint + PHPStan (SQLite)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
