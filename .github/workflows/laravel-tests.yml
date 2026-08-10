@@ -1,9 +1,14 @@
 name: Laravel Tests
 
 # CI for the v0.12 Laravel app (the sole test workflow since the Python tree
-# was removed in Phase 3). Three checks: Pint (style), PHPStan/larastan level 7
-# on app/Bridge, and PHPUnit on the verified Laravel↔PHPUnit↔PHP matrix
-# (Laravel 13 / PHPUnit 12 / PHP 8.5) across SQLite + MariaDB 10.6 + MariaDB 11.
+# was removed in Phase 3). Four checks: Pint (style), PHPStan/larastan level 7
+# on app/Bridge, doc-sync (bin/check-doc-refs.php), and PHPUnit across SQLite
+# plus the MariaDB matrix below.
+#
+# No runtime version literals in this comment, deliberately — a restated version
+# drifts from the pin it restates. Laravel and PHPUnit are pinned in
+# composer.json, PHP in .github/actions/setup-app, MariaDB in this file's own
+# `matrix.mariadb`. Read the pin, don't re-state it here.
 #
 # Shared runtime setup (PHP + composer + .env) lives in the local composite
 # action .github/actions/setup-app so the SQLite and MariaDB jobs can't drift.
@@ -28,6 +33,13 @@ concurrency:
 
 jobs:
   phpunit:
+    # DO NOT rename this job in a routine PR. The "8.3" is known-stale (the job
+    # runs 8.5 via setup-app) and is left that way ON PURPOSE: this exact string
+    # is a required-status-check context pinned in BOTH dev and main branch
+    # protection. Renaming it without the paired `required_status_checks.contexts`
+    # update leaves protection waiting on a check that never reports, blocking
+    # every PR. The two travel together, as one gated branch-protection op.
+    # See DL-040.
     name: PHPUnit + Pint + PHPStan (PHP 8.3, SQLite)
     runs-on: ubuntu-latest
     steps:

@@ -74,6 +74,40 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   the release-PR assertions are untouched.
 
 ### Fixed
+- **card#6155** — **`laravel-tests.yml`'s header comment stops claiming a PHPUnit major the repo has
+  not pinned for two majors; the stale-by-design job label gains a pointer where the edit would be
+  made.** No CI behaviour change — the workflow's steps, jobs, triggers and check names are
+  byte-identical, so nothing about what CI accepts or rejects moves. The card was filed against the
+  SQLite job's `PHP 8.3` label; the label is **left alone deliberately** and the card's premise is
+  the second independent discovery of a documented deferral. That exact string is a required-status-
+  check context in **both** `dev` and `main` branch protection (re-verified live via `gh api`, not
+  recalled), so a bare rename leaves protection waiting on a check that never reports and blocks
+  every PR — DL-040 ruled it a coordinated, gated branch-protection op and that ruling stands. What
+  changes: the job key now carries a DO-NOT-RENAME pointer to DL-040, because a hazard documented
+  only in the decision log and `CLAUDE_TESTING.md` was demonstrably re-found by someone reading the
+  workflow. **Sibling audit run over every version literal in `.github/workflows/` and
+  `.github/actions/`, one further instance:** this workflow's header comment restated *"Laravel 13 /
+  PHPUnit 12 / PHP 8.5"* while `composer.json` requires `phpunit/phpunit: ^13.2.1` and the lock
+  carries **13.2.6**. Fixed by **deleting the version triple rather than re-syncing it** — the
+  restatement is the defect (a comment that re-states a pin drifts from it), so the comment now
+  names where each version is actually pinned. Everything else in that population verified clean and
+  is recorded rather than left implied: all six SHA-pin `# vX.Y.Z` tag comments resolve to exactly
+  the pinned SHA against the GitHub API (control: a deliberately wrong tag returns a different SHA,
+  so the check discriminates); `Set up Node 20` matches `node-version: '20'` and the channel server's
+  `engines: ">=20"`; `Set up PHP 8.5` and the `setup-app` description match its own `php-version`
+  pin; the `changelog-gate.yml` comment's PHP 8.5 is current; and `PHPUnit (MariaDB ${{
+  matrix.mariadb }})` interpolates the matrix, which is the shape that cannot drift. Version strings
+  in historical or measurement prose (`v0.12`, `v0.72.0`, the `0.7.1`/`0.8.3` lock measurement) are
+  frozen-original records, not restatements of a live pin, and are untouched. **A second, different
+  stale claim in the same two comment blocks, found by re-reading rather than by the version grep:**
+  both the workflow header and `CLAUDE_TESTING.md` described the `Laravel Tests` workflow as running
+  *"three checks"* and enumerated Pint / PHPStan / PHPUnit — omitting the `bin/check-doc-refs.php`
+  doc-sync step, which has been a fourth check in the SQLite job since it was added. Both now say
+  four and name it. Corrected in the same change because a comment being rewritten should not ship
+  still miscounting the steps directly beneath it. **Still open, still gated:** the coordinated
+  rename. DL-040's annotation carries the recommendation that it drop the
+  version from the check name entirely rather than move it to `8.5`, so the branch-protection op is
+  paid once instead of at every PHP upgrade — a recommendation, not a decision.
 - **card#6101** (**DL-281**) — **`changelog-gate.yml` stops silently exempting a PR whose in-scope
   paths are all non-ASCII-named.** `core.quotepath` defaults ON, so `git diff --name-only` prints any
   path carrying a non-ASCII byte as a C-quoted string with a **leading `"`** — which defeats the `^`
