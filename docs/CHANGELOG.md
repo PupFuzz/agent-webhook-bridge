@@ -9,6 +9,20 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 ## [Unreleased]
 
 ### Changed
+- **card#6155** (**DL-040**) — **The SQLite CI job's required-status-check context no longer embeds a
+  PHP version: `PHPUnit + Pint + PHPStan (PHP 8.3, SQLite)` → `PHPUnit + Pint + PHPStan (SQLite)`.**
+  ⚠ **This is a branch-protection change on both `dev` and `main`, executed as one coordinated op.**
+  The old name carried a stale `8.3` while the job runs 8.5, but it could not simply be corrected:
+  the string is a required context, so a bare rename leaves protection waiting on a check that never
+  reports and blocks every PR on both branches — including the renaming one. Renaming to "PHP 8.5"
+  would have been accurate today and re-armed the identical gated op at the next bump, so the version
+  was **removed** instead: the context is an identifier, and it is now stable across future runtime
+  upgrades. The PHP version remains pinned in `.github/actions/setup-app`, its single source of
+  truth. Ordering (the two halves cannot change atomically): CI green on the renamed job → remove the
+  stale context from both branches → merge → add the new context to both. The job-key comment now
+  forbids any version in this name, not merely a stale one. **Residual, unchanged:** the two
+  `PHPUnit (MariaDB N)` contexts interpolate the matrix and are not stale, but carry the same
+  coupling — changing that matrix is the same gated op.
 - **card#6056** (**DL-280**) — **`changelog-gate.yml`'s feature-PR path scope widens to `.github/workflows/`.**
   **⚠ THIS CHANGES WHAT CI REQUIRES ON PRs TOUCHING `.github/workflows/`:** such a PR must now be
   named in the `[Unreleased]` section — by its title's `card#`/`DL-` token, or, for a title carrying
