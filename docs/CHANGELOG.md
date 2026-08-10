@@ -74,6 +74,37 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   the release-PR assertions are untouched.
 
 ### Fixed
+- **card#5977** (**DL-283**) — **`provision-tools-python.yml` stops naming the `bin/` python tool set
+  three times: the filesystem becomes the enumeration, and the one copy that cannot follow becomes
+  detectable.** The workflow enumerated the eight tool + test files in both `paths:` filters and again
+  as a `python3 -m unittest <modules>` argument list, so adding a tool meant editing three lists and
+  each omission failed differently and **silently**: absent from the module list, a tool's tests
+  existed, never ran, and the job stayed green; absent from a path filter, the job could not fire at
+  all — the gate went **absent**, not red, which is how the DL-242 regression merged and then sat red
+  on `dev` unseen. The run step now uses `unittest discover -s bin -p 'test_*.py'`, so the module list
+  is gone; both filters become `bin/**`. **The pattern FORM was chosen for verifiability, not for
+  tightness:** `bin/**.py` would have fired on strictly the files the enumeration named — symmetric
+  difference zero over every tracked file under `bin/` — but nothing available here can prove GitHub
+  matches that composed form, and a glob guessed wrong fails by making the gate **absent**, which is
+  the defect being repaired. `docs/**` is a verbatim row in GitHub's own filter-pattern table with
+  worked examples, so `bin/**` is read from the vendor rather than reasoned by analogy. **The
+  resulting over-reach is measured, not waved at:** a PR touching only one of `bin/`'s three `.php`
+  tools now runs this job too — **2** commits over `v0.70.0..dev` (`966b536`, `9566ed1`), both of
+  which the python suite passes in seconds. A python file added to `bin/` tomorrow is now wired into
+  CI by existing. **A `paths:` filter is static YAML GitHub evaluates
+  before the job exists, so nothing inside that workflow can ever check it** — that third copy is not
+  consolidated away, it is made loud: `tests/Feature/Workflows/PythonToolsPathFilterTest.php` asserts
+  both filters cover every python file under `bin/`, that the two filters agree, that the run step
+  still discovers rather than naming modules, and that no python file hides in a `bin/` subdirectory
+  where discovery would skip it. It runs under `laravel-tests.yml`, the workflow that deliberately
+  carries no path filter, so a gap in the python job's filter is red on **every** PR — including the
+  PRs that job cannot see. Each leg was watched red against its own mutation, and the matcher itself
+  has a discrimination control. An empty discovery is loud rather than green: `python3 -m unittest`
+  exits 5 (`NO TESTS RAN`) when it collects nothing, and the step prints `python3 -VV` so that premise
+  is auditable per run. **Sibling audit over all 10 YAML files under `.github/` (9 workflows + the
+  composite action), derived by script rather than recalled:** two carry a `paths:` filter at all, and
+  `channel-server-supply-chain.yml`'s is a directory glob plus its own filename with no membership
+  restated anywhere — **one instance, not a class.** No job, step or check name changes.
 - **card#6155** — **`laravel-tests.yml`'s header comment stops claiming a PHPUnit major the repo has
   not pinned for two majors; the stale-by-design job label gains a pointer where the edit would be
   made.** No CI behaviour change — the workflow's steps, jobs, triggers and check names are
