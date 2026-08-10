@@ -80,8 +80,6 @@ class PythonToolsPathFilterTest extends TestCase
      * `src/js/app.js`. A single `*` is the same minus `/`, and `?`, `+`, `[]`
      * and a leading `!` are all further forms; none is used here and none is
      * approximated here.
-     *
-     * @param  list<string>  $patterns
      */
     private function patternFormIsUnderstood(string $pattern): bool
     {
