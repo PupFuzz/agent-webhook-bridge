@@ -206,7 +206,7 @@ trustworthy. That is measured history, not a hypothetical (DL-237(e)).
 
 `.github/workflows/laravel-tests.yml` — the `Laravel Tests` workflow — runs **four checks in two jobs**:
 
-**Job 1 — `PHPUnit + Pint + PHPStan (PHP 8.3, SQLite)`:**
+**Job 1 — `PHPUnit + Pint + PHPStan (SQLite)`:**
 - Push to `main`/`dev`; pull requests to `main`/`dev`
 - Runs on **PHP 8.5** (via the `setup-app` composite action), `pdo_sqlite` + `pdo_mysql` extensions installed. The job **label** still reads "PHP 8.3" — it's a required-status-check identifier pinned in `dev`/`main` branch protection, so renaming it must be done together with a `gh api` branch-protection contexts update (see DL-040), not in a routine PR.
 - Pint style check, PHPStan level 7 on `app/Bridge` **plus `app/Console/Commands/Bridge/CheckCommand.php`** (the finding renderer — added by DL-238 so an unhandled `Severity` case is a CI error, not a runtime `UnhandledMatchError`; the rest of `app/Console` is still unanalysed), the doc-sync gate (`bin/check-doc-refs.php` — references resolve, no line-number citations, no unbounded coverage claims), then PHPUnit against SQLite `:memory:`
