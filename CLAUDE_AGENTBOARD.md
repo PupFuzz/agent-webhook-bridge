@@ -1,4 +1,4 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.28.0) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.33.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **What this is.** The solo-agent orientation generated from the Agent Board Framework
@@ -281,10 +281,15 @@ spawn a peer-tier reviewer subagent. Never let a cheaper seat rubber-stamp reaso
 actually check. (When the check *is* mechanical, tier doesn't matter — the tool is the
 verifier.)
 
-**Subagent dispatch is REQUIRED for non-trivial coding (card#4870).** Any coding task beyond a
-few trivial lines — feature, bugfix, refactor, test — **MUST** be dispatched to a **fresh
-`coder`** subagent (or **`mechanic`** for a fully-specified mechanical procedure), one-per-task
-so work never accretes onto your session. Inline is legitimate **only for trivial** edits (a
+**Non-trivial coding is dispatched because your human asked for it (card#4870, card#5937).** The
+authorization is **not** this section and **not** framework policy: it is their own dated standing
+request, in the engineering-canon block of your `~/.claude/CLAUDE.md` (*"Standing operator
+instruction — subagent dispatch"*). Read it there — it is deliberately stated in one place and not
+restated here, and it is also where a session rule that permits subagent / AgentTool use only
+*"unless the user requested it"* finds its condition already met. What **this** section owns is the
+operational boundary: any coding task beyond a few trivial lines — feature, bugfix, refactor, test —
+is dispatched to a **fresh `coder`** subagent (or **`mechanic`** for a fully-specified mechanical
+procedure), one-per-task so work never accretes onto your session. Inline is legitimate **only for trivial** edits (a
 version bump, a one-line doc fix) — that trivial-tier carve-out is the *sole* exception **while
 dispatch is available** (the one other inline path, `inline (dispatch-prohibited: …)`, applies only
 when an operator/environment directive prohibits dispatch for the session up front — see the
