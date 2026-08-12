@@ -82,14 +82,27 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
     {
         $repo = $target->payload['repo'] ?? null;
         if (! is_string($repo) || $repo === '') {
-            Log::warning('kanban_promote_released: payload.repo is missing or not a string; ignoring', ['payload' => $target->payload]);
+            // The repo that keys the dedup tuple is what is missing, so this arm degrades
+            // to the empty repo rather than suppressing the signal — the same shape the
+            // move handler's payload arms use.
+            $this->alerts->warnAndNotify(
+                'kanban_promote_released: payload.repo is missing or not a string; ignoring',
+                ['payload' => $target->payload],
+                '', 'promote_on_release', null, 'promote_repo_invalid',
+            );
 
             return;
         }
 
         $writeback = WritebackConfig::loadDefault();
         if ($writeback === null) {
-            Log::warning('kanban_promote_released: writeback is not configured (no writeback.json); ignoring', ['repo' => $repo]);
+            // Degrades to log-only (docs/writeback.md, *Branch-#3 degradation*); the call
+            // is kept so this arm cannot drift out of the paired primitive.
+            $this->alerts->warnAndNotify(
+                'kanban_promote_released: writeback is not configured (no writeback.json); ignoring',
+                ['repo' => $repo],
+                $repo, 'promote_on_release', null, 'writeback_not_configured',
+            );
 
             return;
         }
@@ -103,7 +116,12 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         $shipped = $mapping->stageFor('merged');
         $released = $mapping->stageFor('merged_to_main');
         if ($shipped === null || $released === null) {
-            // WritebackConfig::load fails closed on this; guard anyway (a payload reached us).
+            // DELIBERATELY LOG-ONLY, and the only arm of the DL-274 class that is (card#5968).
+            // This is TYPE-NARROWING, not a refusal an operator can hit: WritebackConfig::load
+            // rejects a promote_on_release mapping missing either stage, and validates every
+            // stage value as numeric — so no config that reaches here can leave either null.
+            // An alert on a branch that cannot fire is a decoration, and it could never be
+            // seen to fail (canon #9). Recorded in docs/writeback.md's *Still log-only*.
             Log::warning('kanban_promote_released: mapping is missing the Shipped and/or Released stage; ignoring', ['repo' => $repo]);
 
             return;

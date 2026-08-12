@@ -3,6 +3,7 @@
 namespace Tests\Feature\Handlers;
 
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Handlers\KanbanPromoteReleasedHandler;
 use App\Bridge\Support\AgentConfig;
 use Illuminate\Http\Client\Request;
@@ -364,6 +365,128 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
 
         Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'promote_board_truncated');
         $this->assertMoved(5, 53);   // the partial view is still promoted
+    }
+
+    // --- card#5968 / DL-285: the three PRE-SCAN gaps join the signalling set ---
+
+    public function test_missing_payload_repo_alerts_on_the_empty_repo_key(): void
+    {
+        // The repo IS the dedup tuple's first element and it is what is missing, so the
+        // arm degrades to '' rather than staying silent — the shape the move handler's
+        // payload arms already use. The alert_channel loads from writeback.json, which
+        // exists here (the mapping is simply never consulted).
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Log::spy();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        (new KanbanPromoteReleasedHandler)->handle(
+            ReactionTarget::make('kanban_promote_released', 'owner/repo', payload: ['repo' => null]),
+            AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
+        );
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'promote_repo_invalid'
+            && $r['repo'] === ''
+            && $r['outcome'] === 'promote_on_release'
+            && $r['card_id'] === null
+            && $r['issue_number'] === null);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m) => str_contains($m, 'payload.repo is missing'));
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/tasks/search.json'));
+    }
+
+    public function test_a_promote_mapping_missing_a_stage_is_refused_at_load_not_at_the_handler(): void
+    {
+        // The disposition of the third pre-scan gap, asserted rather than asserted-about:
+        // its `Log::warning` stays log-only because the branch is TYPE-NARROWING, and the
+        // reason it is unreachable is this fail-closed load. If that guard is ever relaxed,
+        // this test reds and the handler branch becomes a real refusal needing a signal.
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52], 'promote_on_release' => true]],
+        ]));
+
+        $this->expectException(ConfigException::class);
+        $this->handle();
+    }
+
+    public function test_absent_writeback_json_still_logs_and_cannot_push(): void
+    {
+        // The Branch-#3 degradation, asserted rather than assumed: the arm routes through
+        // the paired primitive, but the notifier loads its channel from the very file that
+        // is absent, so no push is structurally possible. The durable log is the record.
+        File::delete($this->dir.'/writeback.json');
+        Log::spy();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle();
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m) => str_contains($m, 'writeback is not configured'));
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    // --- card#5968: promote_candidate_cap, the one DL-274 arm no test could reach ---
+
+    public function test_candidate_overflow_alerts_and_processes_exactly_the_cap(): void
+    {
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        $over = self::cap() + 1;
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => $this->shippedCards($over), 'links' => ['next' => null]]),
+            // Unmerged ⇒ each candidate costs exactly one getPull and promotes nothing, so
+            // the getPull count IS the number of candidates the cap let through.
+            'https://api.github.com/repos/owner/repo/pulls/*' => Http::response(['merged' => false, 'merge_commit_sha' => 'TESTMERGE', 'state' => 'open', 'base' => ['ref' => 'dev']]),
+        ]);
+
+        $this->handle();
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'promote_candidate_cap'
+            && $r['outcome'] === 'promote_on_release'
+            && $r['card_id'] === null);
+        $this->assertSame(self::cap(), $this->getPullCount(), 'the cap must truncate the candidate list, not merely warn about it');
+    }
+
+    public function test_exactly_the_cap_is_not_an_overflow(): void
+    {
+        // The negative control for the leg above: `>` not `>=`. Without it, "an alert
+        // fired" could be true for any board at or near the cap, and the truncation
+        // assertion would hold trivially.
+        $this->writeWritebackWithAlert(['promote_on_release' => true]);
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => $this->shippedCards(self::cap()), 'links' => ['next' => null]]),
+            'https://api.github.com/repos/owner/repo/pulls/*' => Http::response(['merged' => false, 'merge_commit_sha' => 'TESTMERGE', 'state' => 'open', 'base' => ['ref' => 'dev']]),
+        ]);
+
+        $this->handle();
+
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+        $this->assertSame(self::cap(), $this->getPullCount());
+    }
+
+    private static function cap(): int
+    {
+        return KanbanPromoteReleasedHandler::MAX_CANDIDATES;
+    }
+
+    /**
+     * $n Shipped, unpinned, PR-referenced cards — the candidate shape the scan collects.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function shippedCards(int $n): array
+    {
+        return array_map(
+            fn (int $i) => ['id' => 1000 + $i, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 200 + $i]],
+            range(1, $n),
+        );
+    }
+
+    private function getPullCount(): int
+    {
+        return Http::recorded(fn (Request $r) => str_contains($r->url(), 'api.github.com') && str_contains($r->url(), '/pulls/'))->count();
     }
 
     public function test_transient_5xx_on_the_promote_move_throws_and_never_alerts(): void
