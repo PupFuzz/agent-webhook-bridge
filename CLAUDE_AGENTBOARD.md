@@ -1,4 +1,4 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.33.0) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.34.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **What this is.** The solo-agent orientation generated from the Agent Board Framework
@@ -98,12 +98,15 @@ item regardless of which repo it lives in. Work it. Then move to the next.
 3. **Run the design-review loop** before opening a non-trivial PR (scale depth to risk:
    trivial / mechanical work needs no formal loop; a feature gets one fresh-adversarial pass
    on your plan; security-significant / cross-cutting / irreversible work runs the full N-pass
-   loop — see `design-review-loop.md`). Reference findings + resolutions in the PR description.
+   loop — see `design-review-loop.md`). Reference findings + resolutions on the tracking issue
+   or card for the item — not in the PR body (see **PR bodies — write them like a senior dev**,
+   below).
 4. **Doc-sync every code PR** (per `doc-sync.md`). Every PR that changes code audits and
    updates affected docs in the same PR — doc drift is not a follow-up. For an
    architecture-state change, grep the inverted term **and** re-read the affected subsystem (a
    clean grep is not a clean audit). When a review pass corrects a code-state claim, grep that
-   claim across all that repo's docs and fix every stale instance in the same PR (Rule X1).
+   claim across all that repo's docs and fix every stale instance in the same PR, recording the
+   regex + per-file decisions on the item's tracking issue or card (Rule X1).
 5. **PR to the integration branch** (`branch_model.integration`, `dev` by default). Releases
    flow integration → release (`branch_model.release`, `main` by default). A single-branch
    project sets both to the same value.
@@ -118,6 +121,15 @@ belongs to, reference it in your PR, close it on merge.
 **Branch-base hygiene (Rule B).** Before pushing, `git fetch origin <integration> && git
 rebase origin/<integration>` so merged work from a prior PR doesn't show up as a reversion
 in your diff.
+
+**PR bodies — write them like a senior dev (roundtable #255).** *"A human coder would submit a
+merge with a comprehensive list of what the merge includes, and any upgrade warnings / gotchas to
+be aware of (if applicable). A human coder would not write an essay or make comments about what
+isn't included or what still needs to be done."* Body = scope line + highlights + applicable
+gotchas + the machine-read lines; self-review narration, the doc-sync audit trail, and to-dos go
+on the item's tracking issue or card (your install has no coordination thread — that issue/card is
+its stand-in). Full IN/OUT tables: **`coord:release-pr` skill § PR body — write it like a senior
+dev**. Nothing is dropped; only the home moves.
 
 **Cut releases via the `coord:release-pr` skill** — it walks the release-pattern checklist
 (version bump, CHANGELOG entry, "recent changes" doc row, SBOM regeneration, PR title,
