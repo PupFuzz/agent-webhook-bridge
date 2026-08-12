@@ -8,6 +8,26 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+- **card#6152** — **A test guard: no `run:` body in any workflow or composite action may contain a
+  literal `${{`.** DL-182's rule — values reach a run body through the step's `env:` block and are
+  used quoted, never as inline interpolation — had no mechanical check, and the failure it catches is
+  silent in both directions. Beyond the script-injection class the rule was written for, GitHub's
+  template reader scans **every string scalar** for the token regardless of shell comments, so a
+  `${{ }}` written inside a `#` comment in a run body made `changelog-gate.yml` unloadable at the
+  template layer and disabled the gate with nothing red anywhere. The existing workflow tests are
+  structurally unable to see that: they extract a `run:` string and execute it under `bash`, where the
+  token is inert inside a comment. `tests/Feature/Workflows/RunBodyInterpolationTest.php` parses every
+  `.github/workflows/*.yml` and every `.github/actions/**/action.yml`, walks the parsed structure for
+  every `run:` string — no job or step name is hardcoded, so a job or step added tomorrow is covered by
+  existing — and names the file plus a job/step locator on a hit. Its denominator is asserted in three
+  independent legs (workflow files found, action files found, run bodies extracted) because each can
+  empty on its own and an empty population passes silently, and the extractor carries its own
+  discrimination control. **Bound, stated rather than implied:** this checks `run:` bodies only. A
+  `${{` in any other string scalar (`if:`, `name:`, a `with:` value) is equally capable of making a
+  file unloadable and is **not** covered — validating a whole file as an Actions template would need
+  the template engine, which this repo does not run.
+
 ### Changed
 - **card#6155** (**DL-040**) — **The SQLite CI job's required-status-check context no longer embeds a
   PHP version: `PHPUnit + Pint + PHPStan (PHP 8.3, SQLite)` → `PHPUnit + Pint + PHPStan (SQLite)`.**
