@@ -36,8 +36,9 @@ use Illuminate\Support\Facades\Log;
  *
  * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
  * split as the move handler (DL-020/DL-274), and the same belongs-to-mapped-board
- * security guard. Its non-4xx refusals (malformed payload, no writeback.json, the
- * board guard) are still log-only — see docs/writeback.md's "Still log-only".
+ * security guard. Its non-4xx refusals (a non-card target_id, a malformed payload, no
+ * writeback.json, the board guard) signal too since DL-285 — the board guard's twin in
+ * the move handler always did, and the asymmetry was inside one guard.
  * Idempotent: a no-op SET/CLEAR (already-marker / not-ours) writes nothing.
  *
  * A SET additionally honors the optional `card_token_uncorroborated` flag + `pr_number`
@@ -72,7 +73,15 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         // JSON round-trip through the durable inbox keeps it a numeric string.
         $cardIdRaw = $target->targetId;
         if (! ctype_digit($cardIdRaw)) {
-            Log::warning('kanban_block_reason: target_id is not a card id; ignoring', ['target_id' => $cardIdRaw]);
+            // The card id is what is malformed, so the alert carries a null one; the repo
+            // is read straight off the payload (unvalidated here — it is validated at the
+            // next branch) so the signal still names a repo where it can.
+            $repoRaw = $target->payload['repo'] ?? null;
+            $this->alerts->warnAndNotify(
+                'kanban_block_reason: target_id is not a card id; ignoring',
+                ['target_id' => $cardIdRaw],
+                is_string($repoRaw) ? $repoRaw : '', self::ALERT_OUTCOME, null, 'target_id_not_card_id',
+            );
 
             return;
         }
@@ -82,16 +91,26 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         $repo = $payload['repo'] ?? null;
         $action = $payload['action'] ?? null;
         if (! is_string($repo) || $repo === '' || ($action !== 'set' && $action !== 'clear')) {
-            // Malformed payload = a deterministic classifier bug → permanent: log + no-op,
-            // never a durable throw (which would 5xx-storm an identically-failing event).
-            Log::warning('kanban_block_reason: payload.repo must be a non-empty string and payload.action must be set|clear; ignoring', ['card_id' => $cardId, 'payload' => $payload]);
+            // Malformed payload = a deterministic classifier bug → permanent: alert + log
+            // + no-op, never a durable throw (which would 5xx-storm an identically-failing event).
+            $this->alerts->warnAndNotify(
+                'kanban_block_reason: payload.repo must be a non-empty string and payload.action must be set|clear; ignoring',
+                ['card_id' => $cardId, 'payload' => $payload],
+                is_string($repo) ? $repo : '', self::ALERT_OUTCOME, $cardId, 'repo_or_action_invalid',
+            );
 
             return;
         }
 
         $writeback = WritebackConfig::loadDefault();
         if ($writeback === null) {
-            Log::warning('kanban_block_reason: writeback is not configured (no writeback.json); ignoring', ['card_id' => $cardId, 'repo' => $repo]);
+            // Degrades to log-only (docs/writeback.md, *Branch-#3 degradation*); the call
+            // is kept so this arm cannot drift out of the paired primitive.
+            $this->alerts->warnAndNotify(
+                'kanban_block_reason: writeback is not configured (no writeback.json); ignoring',
+                ['card_id' => $cardId, 'repo' => $repo],
+                $repo, self::ALERT_OUTCOME, $cardId, 'writeback_not_configured',
+            );
 
             return;
         }
@@ -124,10 +143,14 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
 
         if (($card['board_id'] ?? null) !== $mapping->boardId) {
             // SECURITY (belongs-to-mapped-board, DL-009): refuse to touch a card that
-            // isn't on the operator-mapped board for this repo. Permanent — log + no-op.
-            Log::warning('kanban_block_reason: REFUSED — card is not on the mapped board', [
-                'card_id' => $cardId, 'repo' => $repo, 'card_board' => $card['board_id'] ?? null, 'mapped_board' => $mapping->boardId,
-            ]);
+            // isn't on the operator-mapped board for this repo. Permanent — alert + log
+            // + no-op. Same reason string as the move handler's twin, kept distinct in the
+            // dedup tuple by the synthetic outcome (DL-274(3)).
+            $this->alerts->warnAndNotify(
+                'kanban_block_reason: REFUSED — card is not on the mapped board',
+                ['card_id' => $cardId, 'repo' => $repo, 'card_board' => $card['board_id'] ?? null, 'mapped_board' => $mapping->boardId],
+                $repo, self::ALERT_OUTCOME, $cardId, 'card_not_on_mapped_board',
+            );
 
             return;
         }

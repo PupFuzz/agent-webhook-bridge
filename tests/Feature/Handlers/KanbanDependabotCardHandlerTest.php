@@ -5,6 +5,8 @@ namespace Tests\Feature\Handlers;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Handlers\KanbanDependabotCardHandler;
 use App\Bridge\Support\AgentConfig;
+use Illuminate\Http\Client\Request;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -42,6 +44,30 @@ class KanbanDependabotCardHandlerTest extends TestCase
     {
         File::deleteDirectory($this->dir);
         parent::tearDown();
+    }
+
+    private const ALERT_URL = 'http://127.0.0.1:9936/';
+
+    /**
+     * setUp's mapping WITH an alert channel. This handler had no notifier wiring of any
+     * kind before card#5968, so none of its refusal arms could signal.
+     */
+    private function writeWritebackWithAlert(): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'alert_channel' => ['url' => self::ALERT_URL],
+            'mappings' => ['owner/repo' => [
+                'board_id' => 8,
+                'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49],
+                'create_dependabot_cards' => true,
+            ]],
+        ]));
+    }
+
+    private function isAlertPush(Request $r): bool
+    {
+        return $r->method() === 'POST' && str_starts_with($r->url(), self::ALERT_URL);
     }
 
     private function handle(string $outcome, int $pr = 42): void
@@ -421,5 +447,99 @@ class KanbanDependabotCardHandlerTest extends TestCase
 
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
             && $r['tags'] === ['dependencies', 'triaged']);
+    }
+
+    // --- card#5968 / DL-285: this handler's refusals are keyed by the PULL REQUEST. The
+    //     body carries it in `issue_number` — GitHub numbers issues and PRs in one
+    //     space, so the signal gained one field rather than two. ---
+
+    public function test_kanban_4xx_alerts_with_the_pr_number_and_a_null_card_id(): void
+    {
+        $this->writeWritebackWithAlert();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['error' => 'unknown payload key'], 422),
+        ]);
+
+        $this->handle('opened');
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'dependabot_card_4xx'
+            && $r['repo'] === 'owner/repo'
+            && $r['outcome'] === 'dependabot_card'
+            && $r['card_id'] === null
+            && $r['issue_number'] === 42);
+        // withArgs BEFORE once(): the empty correlation read emits its own DL-026 0-card
+        // warning in this fixture, so the count is scoped to the refusal's own line.
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'kanban refused (4xx)')
+            && $ctx['status'] === 422)->once();
+    }
+
+    public function test_the_alert_outcome_is_synthetic_not_the_events_pr_outcome(): void
+    {
+        // The event's own outcome (opened/merged/closed_unmerged) would split the dedup
+        // marker per PR state and re-alert one misconfiguration on each — so the tuple
+        // carries a constant naming the reaction instead.
+        $this->writeWritebackWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['error' => 'unknown payload key'], 422),
+        ]);
+
+        $this->handle('merged');
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['outcome'] === 'dependabot_card');
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r) && $r['outcome'] === 'merged');
+    }
+
+    public function test_malformed_payload_alerts_on_the_empty_repo_key(): void
+    {
+        $this->writeWritebackWithAlert();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        (new KanbanDependabotCardHandler)->handle(
+            ReactionTarget::make('kanban_dependabot_card', 'pr-42', payload: ['repo' => null, 'outcome' => 'opened', 'pr_number' => 42]),
+            AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
+        );
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'dependabot_card_payload_invalid'
+            && $r['repo'] === ''
+            && $r['card_id'] === null
+            && $r['issue_number'] === 42);
+    }
+
+    public function test_absent_writeback_json_still_logs_and_cannot_push(): void
+    {
+        File::delete($this->dir.'/writeback.json');
+        Log::spy();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle('opened');
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m) => str_contains($m, 'writeback not configured'));
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    public function test_a_5xx_still_throws_and_never_alerts(): void
+    {
+        $this->writeWritebackWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['error' => 'boom'], 503),
+        ]);
+
+        try {
+            $this->handle('opened');
+            $this->fail('a 5xx must propagate for redelivery');
+        } catch (RequestException) {
+            // expected
+        }
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 }

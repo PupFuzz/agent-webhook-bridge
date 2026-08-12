@@ -475,9 +475,11 @@ By default a **permanent** move-failure (a refused/un-actionable move — see *F
 }
 ```
 
-`socket` and `url` are **mutually exclusive** (exactly one), mirroring an agent's `channel` config. The signal body is one line: `{"type": "writeback_move_failed", "repo": <repo>, "outcome": <outcome>, "card_id": <id|null>, "reason": <reason>}`. (The same `alert_channel` also carries the DL-194 **`writeback_auto_unparked`** and the DL-195 **`writeback_revived_on_reopen`** signals — each a distinct `type`, no dedup — see *auto-unpark a parked card on branch-cut* and *revive a Won't-Do card* above.)
+`socket` and `url` are **mutually exclusive** (exactly one), mirroring an agent's `channel` config. The signal body is one line: `{"type": "writeback_move_failed", "repo": <repo>, "outcome": <outcome>, "card_id": <id|null>, "issue_number": <n|null>, "reason": <reason>}`. (The same `alert_channel` also carries the DL-194 **`writeback_auto_unparked`** and the DL-195 **`writeback_revived_on_reopen`** signals — each a distinct `type`, no dedup — see *auto-unpark a parked card on branch-cut* and *revive a Won't-Do card* above.)
 
-**Which failures signal.** **The tables below are the authority — there is no shorter rule that is true.** Every arm that refuses a **kanban or GitHub call with a permanent (4xx)** status signals, in all three writeback handlers. The config- and payload-gap branches are **mixed**: some signal and some do not — the tables say which, and the *Still log-only* paragraph at the end of this section names every permanent branch that emits nothing. The `Log::info` "not tracked" branches stay **quiet** — they're the normal case for an event the operator simply hasn't mapped, not a failure.
+**`issue_number` (DL-285).** The GitHub **issue or pull-request** number a refusal is keyed by — one field, because GitHub numbers issues and PRs in a single space. It is populated by the three handlers whose refusals happen while *creating* or *finding* a card and so have no card id to report (`kanban_coord_card`, `kanban_coord_card_move`, `kanban_dependabot_card`); it is `null` on every card-keyed arm, and `card_id` is `null` wherever it is set. **It is context, not a dedup key** — the dedup tuple stays `(repo, outcome, reason)`, so a repeated refusal across many issues alerts once and the body carries the FIRST one's number; the per-event `Log::warning` is where you enumerate the rest. Putting the number in `reason` instead was rejected for exactly that: it would grow the marker set by one entry per issue, forever.
+
+**Which failures signal.** **The tables below are the authority — there is no shorter rule that is true.** Since DL-285 the coverage is near-total: every permanent-refusal branch in all **six** writeback handlers signals, with the **two** accounted-for exceptions named in *Still log-only* below (plus the inherent `writeback_not_configured` degradation, which routes through the same primitive but has no channel to reach). A test — `tests/Feature/Writeback/WritebackRefusalSignalCoverageTest.php` — re-derives that population from the handler sources on every run and reds on a `Log::warning`/`Log::error` that is neither routed nor listed, so a new arm in those files cannot re-mint the omission. **Stated bound on that guard:** its population is the `app/Bridge/Handlers/Kanban*Handler.php` glob, so a future writeback handler named outside that pattern is not covered until the glob is widened. The `Log::info` "not tracked" branches stay **quiet** — they're the normal case for an event the operator simply hasn't mapped, not a failure.
 
 Every signalling arm emits its durable `Log::warning` **first** and then the additive push, through a single paired primitive (`WritebackAlertNotifier::warnAndNotify`) — an arm cannot log a refusal without alerting on it. Before DL-274 the notifier was opt-in *per call site* and 11 of the 12 permanent-refusal arms had simply never opted in.
 
@@ -506,6 +508,9 @@ Every signalling arm emits its durable `Log::warning` **first** and then the add
 
 | Branch | `reason` | Signals? |
 |---|---|---|
+| `payload.repo` missing / not a string (DL-285 — the tuple degrades to an empty repo) | `promote_repo_invalid` | ✅ |
+| writeback not configured (no `writeback.json`) (DL-285) | `writeback_not_configured` | ⚠ degrades to log-only (see below) |
+| mapping is missing its Shipped/Released stage | — | ❌ **log-only** — unreachable type-narrowing (see *Still log-only*) |
 | no GitHub read token resolves for the repo (the leg is inert) | `promote_no_github_token` | ✅ |
 | board read hit the page ceiling — cards beyond it never self-heal | `promote_board_truncated` | ✅ |
 | Shipped candidates exceed the per-event cap (the remainder defer) | `promote_candidate_cap` | ✅ |
@@ -519,13 +524,46 @@ Every signalling arm emits its durable `Log::warning` **first** and then the add
 
 | Branch | `reason` | Signals? |
 |---|---|---|
+| `target_id` is not a card id (DL-285 — `card_id` is null; the payload's repo still keys the tuple) | `target_id_not_card_id` | ✅ |
+| `payload.repo`/`action` invalid (DL-285) | `repo_or_action_invalid` | ✅ |
+| writeback not configured (no `writeback.json`) (DL-285) | `writeback_not_configured` | ⚠ degrades to log-only (see below) |
+| no mapping for repo / `draft_overlay` off (`Log::info`) | — | ❌ (expected "not tracked") |
 | **`getCard` refused by kanban — 404 / 403 / other 4xx** (DL-274) | `getcard_404_no_such_card` · `getcard_403_not_visible_to_this_token` · `getcard_4xx` | ✅ |
+| card not on the mapped board (security refusal, DL-009 — **DL-285**; its `kanban_move_card` twin always signalled, and the gap was an asymmetry inside one guard) | `card_not_on_mapped_board` | ✅ |
 | **`setBlockReason` refused by kanban — 403 / 404 / other 4xx** (DL-274) | `blockreason_403_not_writable_by_this_token` · `blockreason_404_no_such_card` · `blockreason_4xx` | ✅ |
 | **SET** refused — an uncorroborated title-only `card#` names a card that tracks a **different** PR (security refusal, card#5953) | `card_token_uncorroborated` | ✅ |
 
 **Stated bound on both `card_token_uncorroborated` rows (move + overlay).** Their dedup tuple `(repo, outcome, reason)` is constant per repo per surface, so the **first** refused hijack on a surface pushes and every later one there is log-only until the marker is cleared — the `Log::warning` (per card) is where you enumerate what was refused; the push is the wake. Same intended shape as the promote-arm bound above.
 
-**Still log-only (a known gap, not a design).** These `Log::warning` branches refuse permanently and emit **no** signal: `kanban_promote_released`'s three pre-scan gaps (`payload.repo` missing, no `writeback.json`, the mapping is missing its Shipped/Released stage) and `kanban_block_reason`'s four (`target_id` is not a card id, a malformed payload, no `writeback.json`, the card is not on the mapped board). They are the remainder of the DL-274 class, together with the four **issue/PR-keyed** permanent-refusal arms in `kanban_coord_card`, `kanban_coord_card_move` and `kanban_dependabot_card`, which have no notifier wiring at all and no card id to key an alert on. Do not read this section's ✅ rows as install-wide coverage.
+**The three ISSUE/PR-keyed handlers** (DL-285; `card_id` is null on every row below except the per-card coord-move arm, and `issue_number` carries the GitHub issue or PR number instead):
+
+| Handler / `outcome` | Branch | `reason` | Signals? |
+|---|---|---|---|
+| `kanban_coord_card` · `coord_card_create` | malformed payload (repo/issue_number/itype/title) | `coord_card_payload_invalid` | ✅ |
+| | writeback not configured (no `writeback.json`) | `writeback_not_configured` | ⚠ degrades to log-only (see below) |
+| | repo not mapped / `create_coord_cards` off (`Log::info`) | — | ❌ (expected "not tracked") |
+| | empty `sid` under `population: prefixed` — no correlation key | `coord_card_no_correlation_key` | ✅ |
+| | kanban refused (4xx) — correlate or create | `coord_card_create_4xx` | ✅ |
+| `kanban_coord_card_move` · `coord_card_move` | malformed payload (repo/issue_number/disposition) | `coord_card_move_payload_invalid` | ✅ |
+| | writeback not configured (no `writeback.json`) | `writeback_not_configured` | ⚠ degrades to log-only (see below) |
+| | repo not mapped / `move_coord_cards` off (`Log::info`) | — | ❌ (expected "not tracked") |
+| | empty `sid` under `population: prefixed` — no correlation key | `coord_card_move_no_correlation_key` | ✅ |
+| | kanban refused (4xx) **on one card** in the loop (carries that `card_id`) | `coord_card_move_card_4xx` | ✅ |
+| | kanban refused (4xx) on the **correlation read** | `coord_card_move_lookup_4xx` | ✅ |
+| `kanban_dependabot_card` · `dependabot_card` | malformed payload (repo/outcome/pr_number) | `dependabot_card_payload_invalid` | ✅ |
+| | writeback not configured (no `writeback.json`) | `writeback_not_configured` | ⚠ degrades to log-only (see below) |
+| | repo not mapped / `create_dependabot_cards` off (`Log::info`) | — | ❌ (expected "not tracked") |
+| | kanban refused (4xx) — correlate, archive, move or create | `dependabot_card_4xx` | ✅ |
+| | archive returned 200 but the card is not archived (`Log::error`) | — | ❌ **log-only** — accounted for (see *Still log-only*) |
+
+**Why these three carry a synthetic `outcome` and FLAT `_4xx` reasons.** None has a PR outcome of its own that is safe to key on — `kanban_dependabot_card` does see one (`opened`/`merged`/`closed_unmerged`), and using it would split the dedup marker per PR state and re-alert a single misconfiguration once per state, so a constant naming the reaction is used instead. The 4xx reasons are deliberately **not** status-split the way `kanban_move_card`'s are: one `catch` in each of these handlers spans correlation **reads** and create/move/archive **writes**, so a `403_not_writable_by_this_token` would be wrong-but-specific on a refused read (the same reasoning that keeps the GitHub reads flat). The status and kanban's own words are in the log line's `body`. The coord-move handler's two 4xx arms carry **different** reasons because they share `(repo, outcome)` — one reason would give them one marker and whichever fired second would alert zero times.
+
+**Still log-only — two branches inside the guarded handlers, both accounted for.** Both are on the coverage test's allow-list with the reason below, so they are exemptions on the record rather than omissions:
+
+- `kanban_promote_released`'s *"mapping is missing the Shipped and/or Released stage"* — **type-narrowing, not a refusal an operator can hit**: `WritebackConfig::load` rejects a `promote_on_release` mapping missing either stage and validates every stage value as numeric, so no config that reaches the handler can leave either null. An alert there could never be seen to fail, and a check that cannot fail is a decoration. `KanbanPromoteReleasedHandlerTest` pins the fail-closed load that makes it unreachable, so if that guard is ever relaxed the branch becomes a real refusal and the test reds.
+- `kanban_dependabot_card`'s **`Log::error`** *"archive returned 200 but the card is not archived"* — a 200 that did not archive is a kanban contract change, deterministic and therefore permanent. It is not routed because its **verbatim twin lives in the shared `CardCollapse` primitive**, which has no `(repo, outcome)` tuple to dedup on: routing one copy and not the other would mint a fresh asymmetry of exactly the kind DL-285 closed.
+
+**Outside the guard's population**, and recorded here so they are not mistaken for coverage: `CardCollapse`'s twin of the archive-contract error above, and `KanbanClient`'s three correlation diagnostics (0-card read, page ceiling, no-card-collection body) — the same shape one layer down, at a shared client with no per-event tuple. **All four** are tracked on card#5968 rather than left implicit.
 
 **Why the write refusals split 403 from 404.** A `403` on a **write** is the one shape a read probe can never reveal: the token READS the card fine (so `getcard_*` stays quiet) and is refused on the PATCH — the scope-narrowed-token case, where read scopes are commonly broader than write scopes. It is a different operator hypothesis from the `getCard` 403 below, which is why the two carry different reason strings.
 

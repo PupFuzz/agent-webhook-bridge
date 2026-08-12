@@ -10,6 +10,7 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Http\Client\RequestException;
@@ -31,15 +32,26 @@ use Illuminate\Support\Facades\Log;
  *  - card exists, other outcome → move it to the outcome's stage (no-op if there).
  *  - no card, outcome opened / merged / merged_to_main → create it at that stage.
  *
- * DURABLE, with the same transient(5xx → retry) / permanent(4xx → log + no-op)
- * split as the move handler (DL-020). New cards are tagged `dependencies` +
+ * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
+ * split as the move handler (DL-020/DL-285). New cards are tagged `dependencies` +
  * `triaged` so the routine churn doesn't flood the untriaged sweep, plus an
  * opt-in rendered `id:` provenance tag (#75) when the mapping sets
  * `card_id_tag_template`, so a tag-keyed Shipped→Released promoter can find
  * them — absent ⇒ no tag (back-compat).
+ *
+ * Its permanent refusals are keyed by the PULL REQUEST, not by a card, so the alert
+ * carries the PR number in the body's `issue_number` — GitHub numbers issues and PRs in
+ * one space, so DL-285 gave the body one field rather than two.
  */
 final class KanbanDependabotCardHandler implements DurableReaction, Handler
 {
+    /**
+     * The synthetic `outcome` this handler's alerts carry. The event's own `outcome`
+     * (opened / merged / closed_unmerged) is deliberately NOT used: it would split one
+     * repo's dedup marker per PR state and re-alert the same misconfiguration on each.
+     */
+    private const ALERT_OUTCOME = 'dependabot_card';
+
     /**
      * The board custom-field keys this handler's create payload sets. Single
      * source of truth: the create call below builds exactly these keys, and
@@ -50,6 +62,13 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
      */
     public const CREATE_PAYLOAD_KEYS = ['pr_number', 'pr_url', 'origin'];
 
+    private WritebackAlertNotifier $alerts;
+
+    public function __construct(?WritebackAlertNotifier $alerts = null)
+    {
+        $this->alerts = $alerts ?? new WritebackAlertNotifier;
+    }
+
     public function handle(ReactionTarget $target, AgentConfig $agent): void
     {
         $p = $target->payload;
@@ -57,7 +76,15 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
         $outcome = $p['outcome'] ?? null;
         $prNumber = $p['pr_number'] ?? null;
         if (! is_string($repo) || $repo === '' || ! is_string($outcome) || $outcome === '' || ! is_numeric($prNumber)) {
-            Log::warning('kanban_dependabot_card: malformed payload (repo/outcome/pr_number); ignoring', ['payload' => $p]);
+            // Deterministic classifier bug — permanent. The repo/PR that would key the
+            // alert are part of what is malformed, so each degrades rather than
+            // suppressing the signal.
+            $this->alerts->warnAndNotify(
+                'kanban_dependabot_card: malformed payload (repo/outcome/pr_number); ignoring',
+                ['payload' => $p],
+                is_string($repo) ? $repo : '', self::ALERT_OUTCOME, null, 'dependabot_card_payload_invalid',
+                is_numeric($prNumber) ? (int) $prNumber : null,
+            );
 
             return;
         }
@@ -67,7 +94,13 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
 
         $writeback = WritebackConfig::loadDefault();
         if ($writeback === null) {
-            Log::warning('kanban_dependabot_card: writeback not configured; ignoring', ['repo' => $repo, 'pr' => $prNumber]);
+            // Degrades to log-only (docs/writeback.md, *Branch-#3 degradation*); the call
+            // is kept so this arm cannot drift out of the paired primitive.
+            $this->alerts->warnAndNotify(
+                'kanban_dependabot_card: writeback not configured; ignoring',
+                ['repo' => $repo, 'pr' => $prNumber],
+                $repo, self::ALERT_OUTCOME, null, 'writeback_not_configured', $prNumber,
+            );
 
             return;
         }
@@ -151,9 +184,16 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 $this->collapseDuplicates($client, $live, $repo, $prNumber);
             }
         } catch (RequestException $e) {
-            // A kanban 4xx is permanent (log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
+            // A kanban 4xx is permanent (alert + log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
             if (RefusalContext::isPermanent($e)) {
-                Log::warning('kanban_dependabot_card: kanban refused (4xx) — ignoring (see `body` for the reason kanban gave)', ['repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e));
+                // FLAT reason: this one catch spans the correlation READS, the archive /
+                // move / create WRITES and the collapse, so a status-split write reason
+                // would be wrong-but-specific on a refused read.
+                $this->alerts->warnAndNotify(
+                    'kanban_dependabot_card: kanban refused (4xx) — ignoring (see `body` for the reason kanban gave)',
+                    ['repo' => $repo, 'pr' => $prNumber] + RefusalContext::from($e),
+                    $repo, self::ALERT_OUTCOME, null, 'dependabot_card_4xx', $prNumber,
+                );
 
                 return;
             }

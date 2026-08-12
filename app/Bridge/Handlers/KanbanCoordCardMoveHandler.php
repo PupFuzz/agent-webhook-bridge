@@ -8,6 +8,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
@@ -42,12 +43,30 @@ use Illuminate\Support\Facades\Log;
  * priority placement YIELDS to closure ("close→Done IS the terminal case, both movers
  * agree"), so there is no PinGuard side to pick.
  *
- * DURABLE, with the writeback's standard transient(5xx → retry) / permanent(4xx → log
- * + no-op) split (DL-020). Idempotent under at-least-once redelivery: a card already
- * in the destination is skipped, so a re-PATCH never fires.
+ * DURABLE, with the writeback's standard transient(5xx → retry) / permanent(4xx → alert
+ * + log + no-op) split (DL-020/DL-285). Idempotent under at-least-once redelivery: a card
+ * already in the destination is skipped, so a re-PATCH never fires.
+ *
+ * Its refusals are keyed by the coordination ISSUE, so the alert carries `issue_number`
+ * (DL-285); the per-card arm inside the loop additionally carries that card's id.
  */
 final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
 {
+    /**
+     * The synthetic `outcome` this handler's alerts carry — see the create leg's twin.
+     * The dedup tuple is `(repo, outcome, reason)`, so this separates its signals from
+     * the create leg's on a shared repo, and its two 4xx arms carry DIFFERENT reasons so
+     * they cannot share one marker and silence each other (DL-274(3)).
+     */
+    private const ALERT_OUTCOME = 'coord_card_move';
+
+    private WritebackAlertNotifier $alerts;
+
+    public function __construct(?WritebackAlertNotifier $alerts = null)
+    {
+        $this->alerts = $alerts ?? new WritebackAlertNotifier;
+    }
+
     public function handle(ReactionTarget $target, AgentConfig $agent): void
     {
         $p = $target->payload;
@@ -62,7 +81,15 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         if (! is_string($repo) || $repo === ''
             || ! is_numeric($issueNumber)
             || ($disposition !== 'terminal' && $disposition !== 'revive')) {
-            Log::warning('kanban_coord_card_move: malformed payload (repo/issue_number/disposition); ignoring', ['payload' => $p]);
+            // Deterministic classifier bug — permanent. The repo/issue that would key the
+            // alert are part of what is malformed, so each degrades rather than
+            // suppressing the signal.
+            $this->alerts->warnAndNotify(
+                'kanban_coord_card_move: malformed payload (repo/issue_number/disposition); ignoring',
+                ['payload' => $p],
+                is_string($repo) ? $repo : '', self::ALERT_OUTCOME, null, 'coord_card_move_payload_invalid',
+                is_numeric($issueNumber) ? (int) $issueNumber : null,
+            );
 
             return;
         }
@@ -71,7 +98,13 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
 
         $writeback = WritebackConfig::loadDefault();
         if ($writeback === null) {
-            Log::warning('kanban_coord_card_move: writeback not configured; ignoring', ['repo' => $repo, 'issue' => $issueNumber]);
+            // Degrades to log-only (docs/writeback.md, *Branch-#3 degradation*); the call
+            // is kept so this arm cannot drift out of the paired primitive.
+            $this->alerts->warnAndNotify(
+                'kanban_coord_card_move: writeback not configured; ignoring',
+                ['repo' => $repo, 'issue' => $issueNumber],
+                $repo, self::ALERT_OUTCOME, null, 'writeback_not_configured', $issueNumber,
+            );
 
             return;
         }
@@ -95,7 +128,11 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         if (! $isPrefixed && ! $byRef) {
             // No derivable correlation key: a null-sid target under population=prefixed. The
             // classifier never emits this; nothing to move.
-            Log::warning('kanban_coord_card_move: malformed payload (empty sid with population=prefixed — no correlation key); ignoring', ['payload' => $p]);
+            $this->alerts->warnAndNotify(
+                'kanban_coord_card_move: malformed payload (empty sid with population=prefixed — no correlation key); ignoring',
+                ['payload' => $p],
+                $repo, self::ALERT_OUTCOME, null, 'coord_card_move_no_correlation_key', $issueNumber,
+            );
 
             return;
         }
@@ -128,7 +165,15 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
                     $this->moveOne($client, $mapping, $id, $disposition, $sid, $repo, $issueNumber);
                 } catch (RequestException $e) {
                     if (RefusalContext::isPermanent($e)) {
-                        Log::warning('kanban_coord_card_move: kanban refused (4xx) for this card — skipping it (see `body` for the reason kanban gave)', ['card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e));
+                        // FLAT reason: this catch spans moveOne's getCard READ and its
+                        // moveCard WRITE, so a status-split write reason would be
+                        // wrong-but-specific on a refused read. Distinct from the
+                        // correlation-read arm below so the two cannot share a marker.
+                        $this->alerts->warnAndNotify(
+                            'kanban_coord_card_move: kanban refused (4xx) for this card — skipping it (see `body` for the reason kanban gave)',
+                            ['card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e),
+                            $repo, self::ALERT_OUTCOME, $id, 'coord_card_move_card_4xx', $issueNumber,
+                        );
 
                         continue;
                     }
@@ -136,9 +181,13 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
                 }
             }
         } catch (RequestException $e) {
-            // The cardsByTag read itself: 4xx permanent (log + no-op), 5xx transient (throw → retry).
+            // The cardsByTag read itself: 4xx permanent (alert + log + no-op), 5xx transient (throw → retry).
             if (RefusalContext::isPermanent($e)) {
-                Log::warning('kanban_coord_card_move: kanban refused (4xx) — ignoring (see `body` for the reason kanban gave)', ['repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e));
+                $this->alerts->warnAndNotify(
+                    'kanban_coord_card_move: kanban refused (4xx) — ignoring (see `body` for the reason kanban gave)',
+                    ['repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e),
+                    $repo, self::ALERT_OUTCOME, null, 'coord_card_move_lookup_4xx', $issueNumber,
+                );
 
                 return;
             }
