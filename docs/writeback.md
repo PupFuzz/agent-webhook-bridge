@@ -213,7 +213,7 @@ If you run the bridge on a **coordination repo** (the Agent Board Framework's `[
 - **`identity_id` is REQUIRED (echo-gate).** A created card fires a kanban `task.created` webhook that comes back to the bridge; if any agent runs the `kanban-triage` family on that board, that echo reads as an untriaged card and could **self-wake**. The **only** guard is the global-echo gate keyed on `writeback.json` `identity_id`. `bridge:check` **warns** when `create_coord_cards` is set but `identity_id` is null.
 - **`bridge:check`.** Validates `coord_card_stage_id` (and any `swimlane_id`, and every `coord_card_lane_stage_ids` id) exists on the board — a typo'd id makes every create 422 and silently no-op. Missing `coord_card_stage_id` while `create_coord_cards` is on **fails the config closed at load** (a create with no stage can't POST).
 
-### Priority lanes: `coord_card_lane_stage_ids` (card#6348)
+### Priority lanes: `coord_card_lane_stage_ids` (card#6371)
 
 **Set this whenever the coordination board has a priority-lane model** (`user_lanes` in
 `coordination.config.json` — Now / Next / Later / Maybe). Without it every coord card is created at
@@ -248,39 +248,54 @@ Measured on the reference install: 9 issues flipped to `stage:now`, one within 7
   title `task` as well, so an itype gate would sweep the whole un-prefixed population — and
   `[PROPOSAL]`, which the bridge's `itype` also reads as `task` — into lane derivation, where the
   consumer's reconcile sends them to **Now**. A `[BRIEF]`/`[ANNOUNCE]`/`[QUERY]`/`[REVIEW]`/
-  `[PROPOSAL]`/un-prefixed issue keeps landing at `coord_card_stage_id`, so the two movers still
-  agree on where a fresh thread goes.
+  `[PROPOSAL]`/un-prefixed issue keeps landing at `coord_card_stage_id` — the **pre-existing
+  fixed-stage behaviour, unchanged by this key, and not a claim that the two movers agree there**:
+  the consumer's `classify_coord` sends a non-`[TASK]` open issue to *Awaiting ACK* when it is an
+  announce and to *Now* otherwise, so the bridge agrees with it only where `coord_card_stage_id`
+  IS the board's Now column, and never for `[ANNOUNCE]`. That bridge-vs-reconcile create
+  disagreement predates this key and is recorded in DL-286's sibling audit; narrowing the lane
+  model to the consumer's own `[TASK]` set is what keeps this change from widening it.
 - **The label must be present when the issue OPENS.** The create path fires on `issues.opened` /
   `issues.reopened` only, and derives the lane from the labels that delivery carried. A `[TASK]`
   opened unlabelled and labelled a moment later is carded in `later` — and the board→issue writeback
   then converges the issue's newly-added `stage:*` label back to `later` to match the card. Filing
   through `coord-post create --label stage:<lane>` (or the `coord-task --now|--next|--later|--maybe`
   wrapper over it) satisfies this — the label is in the create call; an issue filed in the GitHub UI
-  and labelled afterwards does not. **Known gap** — tracked as a follow-up class item alongside the
-  move-handler revive arm.
+  and labelled afterwards does not. **Known gap** — filed with the move-handler revive arm below as
+  one class item, **card#6393**.
 - **No label, or an unrecognized one ⇒ `later`** — `_task_lane`'s own default. Several `stage:*`
   labels resolve in the order **now → next → later → maybe**, again mirroring `_task_lane`, so both
   movers pick the same one.
 - **A declared lane your map does not carry is SKIPPED and the scan continues** to the issue's next
   `stage:*` label in that same order, landing in `later` only when none of its declared lanes is
   mapped — mirroring `_task_lane`, whose column-availability test sits *inside* its loop (so an
-  issue labelled `stage:now` + `stage:next` on a board with no Now column lands in **Next** on both
-  movers). Either way a `WARN` names the unmapped lane(s), the lane used, and the lanes you did map.
+  issue labelled `stage:now` + `stage:next` lands in **Next** on both movers: here because your map
+  omits `now`, there because the board has no Now column — the two agree exactly insofar as your map
+  mirrors the board's lane columns, which nothing checks for you). Either way a `WARN` names the unmapped lane(s), the lane used, and the lanes you did map.
   Deliberate: refusing the create would leave a thread untracked over a priority hint, and using the
   fixed stage would re-impose the lane this key exists to stop imposing.
 - **Fail-closed at load** (so a half-configured lane model never silently no-ops): the value must be a
   **non-empty object**, every key must be one of `now`/`next`/`later`/`maybe` (an unknown key throws —
   a typo would otherwise match no label forever), every value must be numeric, it must carry
-  **`later`** (the target of both fallbacks above), and the mapping must also set
-  `create_coord_cards` (nothing else reads these ids).
+  **`later`** (the target of both fallbacks above), the lanes must map to **distinct** stage ids
+  (two lanes on one stage cannot express the priority the label declares — the create resolves to a
+  stage that no longer says which lane it meant, and the board→issue writeback then relabels the
+  issue with whichever lane owns it), **no lane may equal `coord_card_terminal_stage_id`** (the same
+  disjointness the terminal already has with `coord_card_stage_id`: a card created into the
+  concluded stage is one the move leg then reads as already-terminal, so its close no-ops), and the
+  mapping must also set `create_coord_cards` (nothing else reads these ids). Overlapping the fixed
+  `coord_card_stage_id` is fine — a board whose Now column IS the fixed create stage is a
+  legitimate config.
 - **Re-laning an existing card is still a human/reconcile action.** This key sets the **create-time**
   lane only, exactly as `stage:*` does for the reconcile — no bridge path reads it after the create,
   and nothing here moves a card between lanes. **One exception, and it is not lane-derived:** with
   `move_coord_cards` on, the **revive** arm returns a reopened card to the fixed
   `coord_card_stage_id` (never to `coord_card_lane_stage_ids`), so reopening a `[TASK]` re-imposes
-  that stage. That is the open sibling recorded in DL-286's sibling audit — it needs a ruling
-  (reviving to the label's lane would override a lane a human may have curated before the close),
-  not a reflex.
+  that stage. That is the open sibling recorded in DL-286's sibling audit, filed as **card#6393**:
+  the revive fires only on a card still sitting in `coord_card_terminal_stage_id` whose last move
+  was made by a *service* actor, so there is no human-curated lane at that moment — what it needs
+  first is the classifier wire, since the move family's target payload carries no title and no
+  labels to derive a lane from.
 
 ## Optional: card non-prefixed issues too (`issue_population`, #4553)
 

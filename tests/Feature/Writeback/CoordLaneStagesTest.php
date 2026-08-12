@@ -6,7 +6,7 @@ use App\Bridge\Writeback\CoordLaneStages;
 use Tests\TestCase;
 
 /**
- * card#6348 / DL-286 — the PHP mirror of the consumer's `kanban-issues-sync`
+ * card#6371 / DL-286 — the PHP mirror of the consumer's `kanban-issues-sync`
  * `_STAGE_LANE` / `_task_lane` / `classify_coord` lane model (Python), which the
  * coord-card CREATE path needs to place a card in the lane its issue already
  * declares instead of rewriting it.

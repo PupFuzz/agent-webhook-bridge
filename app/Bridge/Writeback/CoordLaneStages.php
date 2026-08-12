@@ -14,8 +14,9 @@ namespace App\Bridge\Writeback;
  * lane back onto the issue's `stage:*` label, so the label the bridge's create stage
  * implies is written onto the issue and the sync then agrees with it. Measured on the
  * reference install: 9 issues flipped to `stage:now`, one within 7 minutes of filing
- * (card#6348). The create stage must therefore be DERIVED from the label the issue
- * already carries, not fixed.
+ * (card#6348 — the reporter's install, sola; not resolvable on this repo's board). The
+ * create stage must therefore be DERIVED from the label the issue already carries, not
+ * fixed.
  *
  * WHY A SECOND IMPLEMENTATION. The rule's home is Python — the consumer's
  * `kanban-issues-sync` `_STAGE_LANE` / `_task_lane` / `classify_coord` — and the

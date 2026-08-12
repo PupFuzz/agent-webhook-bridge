@@ -188,7 +188,7 @@ final class WritebackBoardStateCheck implements Check
                 if ($mapping->coordCardTerminalStageId !== null) {
                     $targets[] = $mapping->coordCardTerminalStageId;
                 }
-                // card#6348: the priority-lane create stages — same class once more,
+                // card#6371: the priority-lane create stages — same class once more,
                 // and worse to miss: a typo'd lane id 422s the create for exactly the
                 // issues whose priority the label states, which is the population this
                 // leg exists to place correctly.

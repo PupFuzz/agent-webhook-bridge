@@ -34,7 +34,7 @@ use Illuminate\Support\Facades\Log;
  * redelivery, opened+reopened, AND the bridge-vs-reconcile race (both movers key on
  * the same tag). Otherwise create at the stage {@see CoordLaneStages} resolves (the
  * mapping's `coord_card_stage_id` unless a lane model is configured and governs this
- * issue — an anchored `[TASK]` title, card#6348), then re-read + collapse a raced
+ * issue — an anchored `[TASK]` title, card#6371), then re-read + collapse a raced
  * duplicate via the shared {@see CardCollapse}.
  *
  * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
@@ -218,7 +218,7 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
     }
 
     /**
-     * The stage a new coord card is created in (card#6348): the lane the issue's
+     * The stage a new coord card is created in (card#6371): the lane the issue's
      * `stage:*` label DECLARES, when this mapping configures the board's lane model
      * and the lane model governs this issue — else the mapping's fixed
      * `coord_card_stage_id`, which is byte-identical DL-198.
@@ -227,7 +227,8 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
      * it is a REWRITE. The consumer's `kanban-writeback` pass runs before its
      * issues-sync and maps the card's lane back onto the issue's `stage:*` label, so
      * pinning every card here silently overwrites the priority the issue already
-     * states (measured: 9 issues flipped to `stage:now`, card#6348).
+     * states (measured on the reference install: 9 issues flipped to `stage:now` —
+     * card#6348 (reporter's install, sola), not a card on this repo's board).
      *
      * The unresolvable arm is a DECISION, not a fail-quiet: a `stage:*` label naming a
      * lane the operator's map does not carry is SKIPPED (the scan continues to the
@@ -238,8 +239,9 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
      * imposing.
      *
      * @param  array<mixed>  $p  the reaction-target payload (its `labels` key is the
-     *                           issue's labels; a target staged before this change
-     *                           carries none, which resolves like an unlabelled issue)
+     *                           issue's labels; a target that carries none resolves like
+     *                           an unlabelled issue — see {@see labels()} for why that is
+     *                           a boundary read and not back-compat)
      */
     private function createStage(WritebackMapping $mapping, string $title, array $p, string $repo, int $issueNumber): int
     {
@@ -264,9 +266,15 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
 
     /**
      * The issue's labels as carried on the reaction-target payload. Narrowed at the
-     * read: the payload is a wire shape that survives staging + redelivery, so a
-     * missing / non-list `labels` key reads as "no labels declared" (the DEFAULT_LANE
-     * arm) rather than throwing on a durable event the receiver already 200'd.
+     * read — a missing / non-list `labels` key reads as "no labels declared" (the
+     * DEFAULT_LANE arm) rather than throwing — because this handler does not author the
+     * targets it is handed: `kanban_coord_card` is registered unconditionally in
+     * `HandlerRegistry`, so any classifier an operator wires (docs/customization.md) can
+     * emit one with a payload of its own shape and no `labels` key at all. This is a
+     * BOUNDARY read of a foreign payload, not back-compat for a stored wire shape:
+     * reaction targets are never persisted (no targets table; `bridge:replay`
+     * re-classifies the stored raw webhook body, so a replayed target is always minted
+     * by today's classifier).
      *
      * @param  array<mixed>  $p
      * @return list<string>

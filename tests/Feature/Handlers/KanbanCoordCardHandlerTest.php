@@ -275,7 +275,7 @@ class KanbanCoordCardHandlerTest extends TestCase
     }
 
     // =====================================================================
-    // The lane-derived create stage (card#6348 / DL-286)
+    // The lane-derived create stage (card#6371 / DL-286)
     // =====================================================================
     //
     // With `coord_card_lane_stage_ids` configured, a lane-model-governed issue (one
@@ -353,8 +353,10 @@ class KanbanCoordCardHandlerTest extends TestCase
 
     public function test_absent_labels_key_creates_the_card_in_the_later_stage(): void
     {
-        // A target staged before this change carries no `labels` key at all; a redelivery
-        // must resolve like an unlabelled issue, not crash or fall back to the fixed stage.
+        // `kanban_coord_card` is always registered, so a custom classifier can emit this
+        // target with no `labels` key at all; that must resolve like an unlabelled issue,
+        // not crash and not fall back to the fixed stage. (NOT a staged-target/redelivery
+        // case — reaction targets are never persisted; replay re-classifies the raw body.)
         $this->writeLaneMapping();
         $this->fakeCreate();
 
@@ -398,7 +400,13 @@ class KanbanCoordCardHandlerTest extends TestCase
         $this->handleTask(['stage:maybe']);
 
         $this->assertCreatedInStage(42);
-        Log::shouldHaveReceived('warning')->withArgs(fn (string $m) => str_contains($m, 'lane') && str_contains($m, 'not mapped'))->once();
+        // The CONTEXT is the operator-facing half of the claim (docs/writeback.md: "a WARN
+        // names the unmapped lane(s), the lane used, and the lanes you did map") — asserted
+        // key by key, since the message literal is deliberately un-interpolated (DL-285).
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $c) => str_contains($m, 'lane') && str_contains($m, 'not mapped')
+            && $c['unmapped_lanes'] === ['maybe']
+            && $c['created_in_lane'] === 'later'
+            && $c['mapped_lanes'] === ['now', 'next', 'later'])->once();
     }
 
     public function test_an_unmapped_lane_does_not_end_the_scan_the_next_declared_lane_wins(): void
@@ -414,7 +422,12 @@ class KanbanCoordCardHandlerTest extends TestCase
         $this->handleTask(['stage:now', 'stage:next']);
 
         $this->assertCreatedInStage(41);
-        Log::shouldHaveReceived('warning')->withArgs(fn (string $m) => str_contains($m, 'lane') && str_contains($m, 'not mapped'))->once();
+        // `created_in_lane` is the lane the scan actually landed on, NOT the default — the
+        // half of the warn that would silently go wrong if the fallback were reintroduced.
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $c) => str_contains($m, 'lane') && str_contains($m, 'not mapped')
+            && $c['unmapped_lanes'] === ['now']
+            && $c['created_in_lane'] === 'next'
+            && $c['mapped_lanes'] === ['next', 'later', 'maybe'])->once();
     }
 
     public function test_a_non_task_title_keeps_the_fixed_create_stage(): void
@@ -624,5 +637,49 @@ class KanbanCoordCardHandlerTest extends TestCase
             && ! isset($r['task'])
             && $r['workflow_stage_id'] === 21
             && $r['tags'] === ['id:QUERY-4', 'type:query']);
+    }
+
+    public function test_full_dispatch_lane_derivation_from_the_webhook_labels(): void
+    {
+        // The residual risk the per-side legs leave open: every lane leg above hands the
+        // handler a `labels` list the TEST wrote, and the classifier legs assert the
+        // payload key in isolation — neither exercises the WIRE between them. Here the
+        // only input is a real `issues.opened` body (GitHub's `labels: [{name: …}]`
+        // shape), so a classifier that stopped stamping `labels`, or renamed the key,
+        // reds here even though both sides' own legs stay green.
+        //
+        // The vector is deliberately `stage:now` and NOT `stage:later`: `later` is the
+        // no-labels default, so a broken wire would land the card in the same stage as a
+        // working one and this leg could not fail (measured — renaming the classifier's
+        // `labels` key left a `stage:later` version of it green).
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+        $agent = AgentConfig::fromArray('me', [
+            'identity' => ['github_user_id' => 99],
+            'subscriptions' => [],
+            'classifier' => ['class' => CoordinationClassifier::class, 'config' => ['families' => ['coord-card-create']]],
+        ]);
+
+        $result = (new CoordinationClassifier)->classify(new ClassifyContext(
+            'issues.opened',
+            ['issue' => [
+                'number' => 4,
+                'title' => '[TASK] do the thing',
+                'html_url' => 'https://github.com/org/coord/issues/4',
+                'labels' => [['name' => 'from:pm'], ['name' => 'stage:now']],
+            ]],
+            new Actor(id: '99', name: null, isKnownAgent: false),
+            'github',
+            'org/coord',
+            $agent,
+        ));
+
+        $this->assertCount(1, $result->targets);
+        $target = $result->targets[0];
+        $handler = (new HandlerRegistry)->resolve($target->handler);
+        $this->assertNotNull($handler);
+        $handler->handle($target, $agent);
+
+        $this->assertCreatedInStage(40);   // the `now` lane's id — not the fixed 21, and not the `later` default
     }
 }

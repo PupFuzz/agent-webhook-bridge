@@ -797,7 +797,7 @@ class WritebackConfigTest extends TestCase
         $this->assertSame(8, $cfg->mappingFor('owner/repo')->boardId);
     }
 
-    // ---- card#6348 / DL-286: coord_card_lane_stage_ids ----
+    // ---- card#6371 / DL-286: coord_card_lane_stage_ids ----
 
     public function test_absent_coord_card_lane_stage_ids_is_null_byte_identical(): void
     {
@@ -899,6 +899,51 @@ class WritebackConfigTest extends TestCase
         $this->expectException(ConfigException::class);
         $this->expectExceptionMessage('must be a non-empty object keyed by lane');
         WritebackConfig::load($this->dir);
+    }
+
+    public function test_a_lane_equal_to_the_terminal_stage_throws(): void
+    {
+        // Same disjointness class as coord_card_stage_id-vs-terminal: an issue declaring
+        // this lane would be CREATED into the concluded stage, and the move leg's close
+        // would then read it as already-terminal and no-op.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
+                'move_coord_cards' => true, 'coord_card_terminal_stage_id' => 99,
+                'coord_card_lane_stage_ids' => ['now' => 40, 'later' => 42, 'maybe' => 99]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("lane 'maybe' must differ from coord_card_terminal_stage_id");
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_two_lanes_sharing_one_stage_id_throws(): void
+    {
+        // A lane map whose lanes collide cannot express the priority the label declares:
+        // the create resolves to a stage that no longer says which lane it meant, and the
+        // consumer's board→issue writeback relabels the issue with whichever lane owns it.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
+                'coord_card_lane_stage_ids' => ['now' => 40, 'next' => 40, 'later' => 42]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("maps lanes 'now' and 'next' to the same stage id 40");
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_a_lane_may_equal_the_fixed_create_stage(): void
+    {
+        // The negative control for both guards above: overlapping the FIXED create stage
+        // is legitimate (an operator whose Now column IS coord_card_stage_id), and distinct
+        // lane ids with a terminal that matches none of them load clean.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
+                'move_coord_cards' => true, 'coord_card_terminal_stage_id' => 99,
+                'coord_card_lane_stage_ids' => ['now' => 21, 'next' => 41, 'later' => 42]],
+        ]]));
+
+        $this->assertSame(['now' => 21, 'next' => 41, 'later' => 42], WritebackConfig::load($this->dir)->mappingFor('o/r')->coordCardLaneStageIds);
     }
 
     public function test_lane_map_without_create_coord_cards_throws(): void

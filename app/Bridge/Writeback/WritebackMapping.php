@@ -108,7 +108,7 @@ final class WritebackMapping
      *                                      number, {repo} = the repo NAME (last path segment). Per-tenant
      *                                      grammar, e.g. `id:DEV-pr-{n}` or `id:dep:{repo}#{n}`. null ⇒
      *                                      no tag is added (back-compat, byte-identical).
-     * @param  ?array<string, int>  $coordCardLaneStageIds  opt-in (card#6348 / DL-286): the board's
+     * @param  ?array<string, int>  $coordCardLaneStageIds  opt-in (card#6371 / DL-286): the board's
      *                                                      PRIORITY-LANE stage ids, keyed by the lane
      *                                                      the issue's `stage:*` label declares
      *                                                      ({@see CoordLaneStages::LANES}). Present ⇒ a

@@ -994,7 +994,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'itype' => $itype,
                 'title' => $title,
                 'issue_url' => $url,
-                // The issue's own labels (card#6348), carried so the handler can derive the
+                // The issue's own labels (card#6371), carried so the handler can derive the
                 // create stage from the `stage:*` priority the webhook ALREADY delivered.
                 // Passed through rather than re-read from the API: the label set is part of
                 // the very event being classified, so a re-read would answer a later question
@@ -1117,7 +1117,9 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * there and `task` here. Unreachable under the default `issue_population: prefixed`
      * (a `[PROPOSAL]` has no sid and is not carded at all); under `all` it is reachable
      * and the two movers would write different `type:` values for that one prefix. Do not
-     * restate this port as byte-exact — card#6371 found that claim in two places.
+     * restate this port as byte-exact — card#6371 found the claim restated in two other
+     * places, DL-198 in `CLAUDE_DECISIONS.md` and the v0.55.0 `docs/CHANGELOG.md` entry
+     * for #281; both now carry a bracketed correction in place (history is not rewritten).
      */
     private function coordItype(string $title): string
     {

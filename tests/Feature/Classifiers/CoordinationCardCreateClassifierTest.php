@@ -87,7 +87,7 @@ class CoordinationCardCreateClassifierTest extends TestCase
 
     public function test_the_issues_labels_reach_the_handler_lowercased(): void
     {
-        // card#6348: the create stage is derived from the issue's `stage:*` label, so the
+        // card#6371: the create stage is derived from the issue's `stage:*` label, so the
         // label set is part of the target payload — the handler must not have to re-fetch
         // the issue to learn the priority the webhook already carried.
         $t = $this->classify('[TASK] do the thing', labels: ['Stage:Later', 'from:pm'])->targets[0];
