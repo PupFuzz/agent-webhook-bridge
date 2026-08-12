@@ -9,6 +9,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\HandlerRegistry;
+use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -47,6 +48,26 @@ class KanbanCoordCardHandlerTest extends TestCase
             'identity_id' => 4242,
             'mappings' => [$repo => $mapping],
         ]));
+    }
+
+    private const ALERT_URL = 'http://127.0.0.1:9934/';
+
+    /**
+     * The default mapping WITH an alert channel. This handler had no notifier wiring of
+     * any kind before card#5968, so none of its refusal arms could signal.
+     */
+    private function writeMappingWithAlert(): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'alert_channel' => ['url' => self::ALERT_URL],
+            'mappings' => ['org/coord' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21]],
+        ]));
+    }
+
+    private function isAlertPush(Request $r): bool
+    {
+        return $r->method() === 'POST' && str_starts_with($r->url(), self::ALERT_URL);
     }
 
     /** @param array<string, mixed> $overrides */
@@ -285,6 +306,95 @@ class KanbanCoordCardHandlerTest extends TestCase
 
         $this->expectException(RequestException::class);
         $this->handle();
+    }
+
+    // --- card#5968 / DL-285: this handler's refusals are keyed by the coordination ISSUE,
+    //     not by a card — the alert body carries `issue_number` with a null `card_id`. ---
+
+    public function test_kanban_4xx_alerts_with_the_issue_number_and_a_null_card_id(): void
+    {
+        $this->writeMappingWithAlert();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['error' => 'bad'], 422),
+        ]);
+
+        $this->handle();
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'coord_card_create_4xx'
+            && $r['repo'] === 'org/coord'
+            && $r['outcome'] === 'coord_card_create'
+            && $r['card_id'] === null
+            && $r['issue_number'] === 4);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m, array $ctx) => str_contains($m, 'kanban refused (4xx)')
+            && $ctx['status'] === 422);
+    }
+
+    public function test_malformed_payload_alerts_on_the_empty_repo_key(): void
+    {
+        // repo/itype/title are what is malformed, so the tuple degrades to '' rather than
+        // suppressing the signal; the issue number is still readable and is carried.
+        $this->writeMappingWithAlert();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle(['repo' => null]);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'coord_card_payload_invalid'
+            && $r['repo'] === ''
+            && $r['card_id'] === null
+            && $r['issue_number'] === 4);
+    }
+
+    public function test_empty_sid_under_prefixed_population_alerts(): void
+    {
+        $this->writeMappingWithAlert();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle(['sid' => '']);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'coord_card_no_correlation_key'
+            && $r['repo'] === 'org/coord'
+            && $r['issue_number'] === 4);
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
+    }
+
+    public function test_absent_writeback_json_still_logs_and_cannot_push(): void
+    {
+        // The Branch-#3 degradation: the arm routes through the paired primitive, but the
+        // notifier loads its channel from the very file that is absent.
+        File::delete($this->dir.'/writeback.json');
+        Log::spy();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle();
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m) => str_contains($m, 'writeback not configured'));
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    public function test_a_5xx_still_throws_and_never_alerts(): void
+    {
+        // The transient/permanent split is untouched: only a permanent refusal signals.
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['error' => 'boom'], 503),
+        ]);
+
+        try {
+            $this->handle();
+            $this->fail('a 5xx must propagate for redelivery');
+        } catch (RequestException) {
+            // expected
+        }
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
     public function test_full_dispatch_family_emit_registry_resolve_handler_create(): void

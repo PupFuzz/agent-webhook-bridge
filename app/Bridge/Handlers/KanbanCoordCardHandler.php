@@ -8,6 +8,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardCollapse;
+use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
@@ -33,13 +34,32 @@ use Illuminate\Support\Facades\Log;
  * the same tag). Otherwise create at the mapping's `coord_card_stage_id`, then
  * re-read + collapse a raced duplicate via the shared {@see CardCollapse}.
  *
- * DURABLE, with the same transient(5xx → retry) / permanent(4xx → log + no-op)
- * split as the other writeback create handler (DL-020). Tags at create are
+ * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
+ * split as the other writeback create handler (DL-020/DL-285). Tags at create are
  * `["id:<sid>", "type:<itype>"]` ONLY — `repo:` is omitted (non-critical; the
  * reconcile folds it on its next run).
+ *
+ * Its permanent refusals are keyed by the coordination ISSUE, not by a card — they fire
+ * while *creating* the card — so the alert carries `issue_number` with a null `card_id`
+ * (DL-285). See docs/writeback.md's *Which failures signal*.
  */
 final class KanbanCoordCardHandler implements DurableReaction, Handler
 {
+    /**
+     * The synthetic `outcome` this handler's alerts carry. It has no PR outcome of its
+     * own, and the alert dedup tuple is `(repo, outcome, reason)` — so a constant naming
+     * the reaction keeps its signals from colliding with the other handlers' on a shared
+     * repo (DL-274(3)).
+     */
+    private const ALERT_OUTCOME = 'coord_card_create';
+
+    private WritebackAlertNotifier $alerts;
+
+    public function __construct(?WritebackAlertNotifier $alerts = null)
+    {
+        $this->alerts = $alerts ?? new WritebackAlertNotifier;
+    }
+
     public function handle(ReactionTarget $target, AgentConfig $agent): void
     {
         $p = $target->payload;
@@ -55,7 +75,16 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
             || ! is_numeric($issueNumber)
             || ! is_string($itype) || $itype === ''
             || ! is_string($title) || $title === '') {
-            Log::warning('kanban_coord_card: malformed payload (repo/issue_number/itype/title); ignoring', ['payload' => $p]);
+            // A malformed payload is a deterministic CLASSIFIER bug — permanent, so it
+            // must not throw. The repo/issue that would key the alert are part of what
+            // is malformed, so each degrades to the empty/null form rather than
+            // suppressing the signal.
+            $this->alerts->warnAndNotify(
+                'kanban_coord_card: malformed payload (repo/issue_number/itype/title); ignoring',
+                ['payload' => $p],
+                is_string($repo) ? $repo : '', self::ALERT_OUTCOME, null, 'coord_card_payload_invalid',
+                is_numeric($issueNumber) ? (int) $issueNumber : null,
+            );
 
             return;
         }
@@ -64,7 +93,14 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
 
         $writeback = WritebackConfig::loadDefault();
         if ($writeback === null) {
-            Log::warning('kanban_coord_card: writeback not configured; ignoring', ['repo' => $repo, 'issue' => $issueNumber]);
+            // Degrades to log-only: with no writeback.json the notifier has no
+            // alert_channel to load (docs/writeback.md, *Branch-#3 degradation*). The
+            // call is kept so this arm cannot drift out of the paired primitive.
+            $this->alerts->warnAndNotify(
+                'kanban_coord_card: writeback not configured; ignoring',
+                ['repo' => $repo, 'issue' => $issueNumber],
+                $repo, self::ALERT_OUTCOME, null, 'writeback_not_configured', $issueNumber,
+            );
 
             return;
         }
@@ -87,7 +123,11 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
             // No derivable correlation key: a null-sid target under population=prefixed. The
             // classifier never emits this; refuse defensively rather than mint an
             // uncorrelatable card that would re-create on every redelivery.
-            Log::warning('kanban_coord_card: malformed payload (empty sid with population=prefixed — no correlation key); ignoring', ['payload' => $p]);
+            $this->alerts->warnAndNotify(
+                'kanban_coord_card: malformed payload (empty sid with population=prefixed — no correlation key); ignoring',
+                ['payload' => $p],
+                $repo, self::ALERT_OUTCOME, null, 'coord_card_no_correlation_key', $issueNumber,
+            );
 
             return;
         }
@@ -155,9 +195,17 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
                 }
             }
         } catch (RequestException $e) {
-            // A kanban 4xx is permanent (log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
+            // A kanban 4xx is permanent (alert + log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
             if (RefusalContext::isPermanent($e)) {
-                Log::warning('kanban_coord_card: kanban refused (4xx) — ignoring (see `body` for the reason kanban gave)', ['repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e));
+                // FLAT reason, unlike the card-keyed handlers': this one catch spans the
+                // correlation READS and the create WRITE, so a status-split
+                // `403_not_writable_by_this_token` would be wrong-but-specific on a
+                // refused read. The status and kanban's own words are in `body`.
+                $this->alerts->warnAndNotify(
+                    'kanban_coord_card: kanban refused (4xx) — ignoring (see `body` for the reason kanban gave)',
+                    ['repo' => $repo, 'issue' => $issueNumber] + RefusalContext::from($e),
+                    $repo, self::ALERT_OUTCOME, null, 'coord_card_create_4xx', $issueNumber,
+                );
 
                 return;
             }
