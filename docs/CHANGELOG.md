@@ -10,8 +10,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Added
 - **card#5968** (**DL-285**) — **The writeback alert body gains an `issue_number`, and the DL-274
-  refusal-signal class closes: 18 more permanent-refusal arms now emit a live signal, leaving one
-  accounted-for log-only branch.** `writeback_move_failed` becomes
+  refusal-signal class closes: 18 more permanent-refusal arms now emit a live signal, leaving two
+  accounted-for log-only branches.** `writeback_move_failed` becomes
   `{type, repo, outcome, card_id, issue_number, reason}` — one body shape, with `issue_number` null on
   every card-keyed arm and `card_id` null wherever it is set. The three **issue/PR-keyed** handlers
   (`kanban_coord_card`, `kanban_coord_card_move`, `kanban_dependabot_card`) refuse while *creating* or
@@ -26,23 +26,28 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   `kanban_move_card` has always signalled, so the gap was an asymmetry inside one guard — two of
   `kanban_promote_released`'s pre-scan gaps, and the eight coord/dependabot non-4xx refusals that no
   prior count had listed (step 1 of this work was classifying those 12 `Log::warning` lines
-  refusal-vs-diagnostic rather than trusting the number: all 12 are refusals). **One branch stays
-  log-only and is disposed of rather than routed:** `kanban_promote_released`'s missing-Shipped/Released-stage
+  refusal-vs-diagnostic rather than trusting the number: all 12 are refusals). **Two branches stay
+  log-only and are disposed of rather than routed:** `kanban_promote_released`'s missing-Shipped/Released-stage
   arm is type-narrowing for a config `WritebackConfig::load` already refuses, so an alert there could
-  never be seen to fail; a test pins the fail-closed load that makes it unreachable. New
+  never be seen to fail (a test pins the fail-closed load that makes it unreachable); and
+  `kanban_dependabot_card`'s archive-contract `Log::error`, whose verbatim twin lives in the shared
+  `CardCollapse` primitive, where there is no `(repo, outcome)` tuple to dedup on — routing one copy
+  and not the other would mint a fresh asymmetry. New
   `tests/Feature/Writeback/WritebackRefusalSignalCoverageTest.php` re-derives the population from the
   handler sources every run and asserts set equality against an accounted-for list, so a future arm
-  cannot re-mint the omission — `Log::error` is in that population deliberately, since a guard scoped
+  **in those files** cannot re-mint the omission — stated bound: the population is the
+  `app/Bridge/Handlers/Kanban*Handler.php` glob, so a handler named outside it escapes until the glob
+  widens. `Log::error` is in that population deliberately, since a guard scoped
   to the word `warning` would report clean over a population narrowed to exclude its own sibling.
   `promote_candidate_cap` — the DL-274 leftover with no coverage, needing >40 Shipped candidates to
   reach — is now covered, asserting that the cap **truncates** the candidate list rather than merely
   warning about it, with a negative control at exactly the cap. **Strictly louder: no accept/reject
   change, no status-code change, no migration, no token-scope change; an install with no
   `alert_channel` is byte-identical**, and the body change is additive for any consumer reading the
-  documented fields. Named remainders, tracked rather than implied: two `Log::error`
-  archive-contract sites (one in `kanban_dependabot_card`, its twin in the shared `CardCollapse`
-  primitive, which has no `(repo, outcome)` tuple to dedup on) and `KanbanClient`'s three correlation
-  diagnostics.
+  documented fields. Named remainders OUTSIDE the guard's population, tracked on card#5968 rather
+  than implied: **four** sites — the `CardCollapse` twin of the archive-contract error above, and
+  `KanbanClient`'s three correlation diagnostics (0-card read, page ceiling, no-card-collection
+  body), the same shape one layer down at a shared client with no per-event tuple.
 - **card#6152** (**DL-284**) — **A test guard: no `run:` body in any workflow or composite action may
   contain a literal `${{`.** DL-182's rule — values reach a run body through the step's `env:` block and are
   used quoted, never as inline interpolation — had no mechanical check, and the failure it catches is
