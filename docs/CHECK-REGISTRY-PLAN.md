@@ -127,8 +127,8 @@ reached twice and applied locally both times, and the migration was never finish
 an earlier revision of this paragraph asserted, in `WritebackAlertNotifier` itself (those line
 references were the notifier's own internal push/dedup failure logs, a different instance of the
 shape). That address is now **CLOSED (DL-274, then DL-285)**: every permanent refusal arm in the
-writeback handlers pairs its log with an alert through one primitive, and a coverage test
-re-derives that population each run. What remains log-only there is `docs/writeback.md`'s *Still
+writeback handlers pairs its log with an alert through one primitive — with the exceptions
+that doc names — and a coverage test re-derives that population each run. What remains log-only there is `docs/writeback.md`'s *Still
 log-only* to state — **that doc owns it and this one does not restate it**, so there is no second
 copy here to drift. What is still open at THIS address is the notifier's own three internal
 `Log::warning`s (push failure, dedup-dir, dedup-marker), a separate instance of the same shape.
