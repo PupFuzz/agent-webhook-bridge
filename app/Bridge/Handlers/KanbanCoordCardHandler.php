@@ -8,6 +8,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardCollapse;
+use App\Bridge\Writeback\CoordLaneStages;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -31,8 +32,10 @@ use Illuminate\Support\Facades\Log;
  * Correlation + idempotency key on the `id:<sid>` TAG (the
  * locked contract adoption key): if a card already carries it, skip — which covers
  * redelivery, opened+reopened, AND the bridge-vs-reconcile race (both movers key on
- * the same tag). Otherwise create at the mapping's `coord_card_stage_id`, then
- * re-read + collapse a raced duplicate via the shared {@see CardCollapse}.
+ * the same tag). Otherwise create at the stage {@see CoordLaneStages} resolves (the
+ * mapping's `coord_card_stage_id` unless a lane model is configured and governs this
+ * issue — an anchored `[TASK]` title, card#6371), then re-read + collapse a raced
+ * duplicate via the shared {@see CardCollapse}.
  *
  * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
  * split as the other writeback create handler (DL-020/DL-285). Tags at create are
@@ -165,10 +168,11 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
                 array_unshift($tags, "id:{$sid}");
             }
             $payload = $byRef ? ['issue_number' => $issueNumber] : [];
+            $stageId = $this->createStage($mapping, $title, $p, $repo, $issueNumber);
 
             $newId = $client->createCard(
                 $mapping->boardId,
-                $mapping->coordCardStageId,
+                $stageId,
                 $title,
                 $payload,
                 $tags,
@@ -177,7 +181,7 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
                 $itype === 'brief' ? 1 : 0,
                 "https://github.com/{$repo}/issues/{$issueNumber}",
             );
-            Log::info('kanban_coord_card: created', ['card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $mapping->coordCardStageId, 'swimlane' => $mapping->swimlaneId, 'sid' => $sid, 'issue' => $issueNumber, 'population' => $mapping->issuePopulation]);
+            Log::info('kanban_coord_card: created', ['card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $stageId, 'swimlane' => $mapping->swimlaneId, 'sid' => $sid, 'issue' => $issueNumber, 'population' => $mapping->issuePopulation]);
 
             // Close the check-then-create race (like the dependabot path): re-read by each
             // eligible key and collapse a duplicate a concurrent delivery (or the reconcile)
@@ -211,5 +215,79 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
             }
             throw $e;
         }
+    }
+
+    /**
+     * The stage a new coord card is created in (card#6371): the lane the issue's
+     * `stage:*` label DECLARES, when this mapping configures the board's lane model
+     * and the lane model governs this issue — else the mapping's fixed
+     * `coord_card_stage_id`, which is byte-identical DL-198.
+     *
+     * Why derive it at all: the fixed stage is not a placement on a lane-model board,
+     * it is a REWRITE. The consumer's `kanban-writeback` pass runs before its
+     * issues-sync and maps the card's lane back onto the issue's `stage:*` label, so
+     * pinning every card here silently overwrites the priority the issue already
+     * states (measured on the reference install: 9 issues flipped to `stage:now` —
+     * card#6348 (reporter's install, sola), not a card on this repo's board).
+     *
+     * The unresolvable arm is a DECISION, not a fail-quiet: a `stage:*` label naming a
+     * lane the operator's map does not carry is SKIPPED (the scan continues to the
+     * issue's next declared lane, then to the default) and WARNs naming it, so the
+     * config gap is visible in the log of the very create it affected. Refusing the
+     * create would leave the thread untracked over a priority hint; creating at the
+     * fixed stage would put the card back in exactly the lane this path exists to stop
+     * imposing.
+     *
+     * @param  array<mixed>  $p  the reaction-target payload (its `labels` key is the
+     *                           issue's labels; a target that carries none resolves like
+     *                           an unlabelled issue — see {@see labels()} for why that is
+     *                           a boundary read and not back-compat)
+     */
+    private function createStage(WritebackMapping $mapping, string $title, array $p, string $repo, int $issueNumber): int
+    {
+        // coordCardStageId is non-null here — handle() refuses the target otherwise.
+        $fixed = $mapping->coordCardStageId;
+        if ($mapping->coordCardLaneStageIds === null || ! CoordLaneStages::governs($title)) {
+            return $fixed;
+        }
+        $resolved = CoordLaneStages::resolveLane($this->labels($p), array_keys($mapping->coordCardLaneStageIds));
+        if ($resolved['unmapped'] !== []) {
+            // The skipped lanes and the mapped set are CONTEXT, not interpolation: the
+            // DL-285 refusal-signal guard keys its accounted-for list on the message
+            // literal, and an interpolated message degrades that key to a line number.
+            Log::warning('kanban_coord_card: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — creating in the next mapped lane it declares, else the default lane; add the lane to the mapping if this board has that column', ['repo' => $repo, 'issue' => $issueNumber, 'unmapped_lanes' => $resolved['unmapped'], 'created_in_lane' => $resolved['lane'] ?? CoordLaneStages::DEFAULT_LANE, 'mapped_lanes' => array_keys($mapping->coordCardLaneStageIds)]);
+        }
+
+        // WritebackConfig fails the load closed unless the map carries DEFAULT_LANE, so
+        // the null arm resolves; a non-null lane is mapped by construction (resolveLane
+        // only ever returns one of $mappedLanes).
+        return $mapping->coordCardLaneStageIds[$resolved['lane'] ?? CoordLaneStages::DEFAULT_LANE];
+    }
+
+    /**
+     * The issue's labels as carried on the reaction-target payload. Narrowed at the
+     * read — a missing / non-list `labels` key reads as "no labels declared" (the
+     * DEFAULT_LANE arm) rather than throwing — because this handler does not author the
+     * targets it is handed: `kanban_coord_card` is registered unconditionally in
+     * `HandlerRegistry`, so any classifier an operator wires (docs/customization.md) can
+     * emit one with a payload of its own shape and no `labels` key at all. This is a
+     * BOUNDARY read of a foreign payload, not back-compat for a stored wire shape:
+     * reaction targets are never persisted (no targets table; `bridge:replay`
+     * re-classifies the stored raw webhook body, so a replayed target is always minted
+     * by today's classifier).
+     *
+     * @param  array<mixed>  $p
+     * @return list<string>
+     */
+    private function labels(array $p): array
+    {
+        $out = [];
+        foreach (is_array($p['labels'] ?? null) ? $p['labels'] : [] as $label) {
+            if (is_string($label) && $label !== '') {
+                $out[] = $label;
+            }
+        }
+
+        return $out;
     }
 }

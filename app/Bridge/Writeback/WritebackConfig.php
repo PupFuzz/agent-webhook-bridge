@@ -32,6 +32,11 @@ use App\Bridge\Support\PathHelper;
  *         "card_id_tag_template": "id:DEV-pr-{n}",  // optional (#75) — id: tag stamped on created dependabot cards; {n}/{pr_number}, {repo}
  *         "create_coord_cards": false,             // optional (DL-198) — real-time coord-issue → card create
  *         "coord_card_stage_id": 21,               // required-when-create_coord_cards/move_coord_cards — stage a new coord card lands in, and the revive target
+ *         "coord_card_lane_stage_ids": {"now": 13, "next": 14, "later": 15, "maybe": 16},
+ *                                                  // optional (card#6371) — the board's priority-lane stage ids; a lane-model-governed
+ *                                                  // coord card is created in the stage its `stage:*` label declares, `later` when it
+ *                                                  // declares none. Must carry `later`; each id distinct and none equal to
+ *                                                  // coord_card_terminal_stage_id. Absent ⇒ every coord card lands in coord_card_stage_id
  *         "move_coord_cards": false,               // DL-200; guarded fleet default (DL-204): absent ⇒ on where coord_card_terminal_stage_id present, inert where absent
  *         "coord_card_terminal_stage_id": 99,      // required-when-move_coord_cards — terminal a closed coord card moves to (MUST differ from coord_card_stage_id)
  *         "swimlane_id": 31,                        // optional — lane for CREATED cards (DL-027)
@@ -303,6 +308,60 @@ final class WritebackConfig
             if ($coordCardTerminalStageId !== null && $coordCardTerminalStageId === $coordCardStageId) {
                 throw new ConfigException("writeback.json: mapping for {$repo} coord_card_terminal_stage_id must differ from coord_card_stage_id — a coord card cannot conclude into the same stage it is created/revived in");
             }
+            // The board's PRIORITY-LANE stage ids (card#6371 / DL-286), keyed by the lane an
+            // issue's `stage:*` label declares. Present ⇒ the create path derives the stage
+            // from the label instead of pinning every coord card to coord_card_stage_id (which
+            // the reconcile then preserves and the consumer's writeback propagates back onto
+            // the label — the rewrite this closes). Absent ⇒ null ⇒ byte-identical DL-198.
+            //
+            // Fail-closed on every partial shape, the DL-160/198 precedent: an unknown lane key
+            // is a typo that would silently never match (the operator would believe a lane is
+            // mapped when nothing reads it), and a map without the DEFAULT_LANE has no target
+            // for either fallback — the undeclared issue AND the declared-but-unmapped lane.
+            // An empty map is the same fail-quiet as an empty started_from_stages: it disables
+            // the feature while looking configured, so omit the key instead.
+            $coordCardLaneStageIds = null;
+            if (array_key_exists('coord_card_lane_stage_ids', $m) && $m['coord_card_lane_stage_ids'] !== null) {
+                $rawLanes = $m['coord_card_lane_stage_ids'];
+                // `array_is_list` also rejects the EMPTY map `{}` (which decodes to `[]`, a
+                // list) — deliberately not a separate guard: an empty map silently disables
+                // lane-derived create stages while looking configured, and it is caught here.
+                if (! is_array($rawLanes) || array_is_list($rawLanes)) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids must be a non-empty object keyed by lane (".implode(', ', CoordLaneStages::LANES).') — omit the key to disable lane-derived create stages');
+                }
+                $coordCardLaneStageIds = [];
+                foreach ($rawLanes as $lane => $stageId) {
+                    if (! is_string($lane) || ! in_array($lane, CoordLaneStages::LANES, true)) {
+                        throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids has an unknown lane '".(is_string($lane) ? $lane : gettype($lane))."' (allowed: ".implode(', ', CoordLaneStages::LANES).')');
+                    }
+                    if (! is_numeric($stageId)) {
+                        throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids lane '{$lane}' must be a numeric workflow_stage_id");
+                    }
+                    // Disjointness, same class as the terminal-vs-create guard above and
+                    // fail-closed for the same reason: a lane pointed at the TERMINAL creates
+                    // every issue declaring that lane into the concluded stage, where the move
+                    // leg then reads it as already-terminal and its close is a no-op.
+                    if ($coordCardTerminalStageId !== null && (int) $stageId === $coordCardTerminalStageId) {
+                        throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids lane '{$lane}' must differ from coord_card_terminal_stage_id — a coord card cannot be created into the stage it concludes in");
+                    }
+                    // Two lanes on one stage is not a partial lane model, it is a WRONG one: the
+                    // create resolves to a stage that no longer says which lane it meant, and the
+                    // consumer's board→issue writeback then relabels the issue with whichever
+                    // lane that stage maps to — the same silent priority rewrite this key exists
+                    // to stop. Reported with both lane names, since either one may be the typo.
+                    $collision = array_search((int) $stageId, $coordCardLaneStageIds, true);
+                    if (is_string($collision)) {
+                        throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids maps lanes '{$collision}' and '{$lane}' to the same stage id ".(int) $stageId.' — each lane needs its own stage, or the create cannot express the priority the label declares');
+                    }
+                    $coordCardLaneStageIds[$lane] = (int) $stageId;
+                }
+                if (! isset($coordCardLaneStageIds[CoordLaneStages::DEFAULT_LANE])) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids must carry the '".CoordLaneStages::DEFAULT_LANE."' lane — it is the stage an issue declaring no stage:* label lands in, and the fallback for a declared lane this map does not carry");
+                }
+                if (! $createCoordCards) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} sets coord_card_lane_stage_ids but not create_coord_cards — the lane stage ids are read only by the coord-card create path, so nothing would use them; set create_coord_cards (or remove coord_card_lane_stage_ids)");
+                }
+            }
             // Which coordination issues get carded (#4553). Absent ⇒ 'prefixed' (byte-identical
             // DL-198: only recognized-prefix issues, tag-keyed). 'all' also cards non-prefixed
             // issues by the github_issue by-ref key. Fail-closed on an unrecognized value: a typo'd
@@ -318,7 +377,7 @@ final class WritebackConfig
                 }
                 $issuePopulation = $m['issue_population'];
             }
-            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId, $cardIdTagTemplate, $promoteOnRelease, $issuePopulation);
+            $mappings[$repo] = new WritebackMapping((int) $m['board_id'], $stages, $createDependabotCards, $swimlaneId, $startedFromStages, $draftOverlay, $unparkFromStages, $holdMarkerTags, $draftBlockReason, $reviveOnReopen, $createCoordCards, $coordCardStageId, $moveCoordCards, $coordCardTerminalStageId, $cardIdTagTemplate, $promoteOnRelease, $issuePopulation, $coordCardLaneStageIds);
         }
 
         return new self($identityId, $mappings, self::parseAlertChannel($raw));
