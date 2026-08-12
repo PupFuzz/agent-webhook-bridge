@@ -994,6 +994,15 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'itype' => $itype,
                 'title' => $title,
                 'issue_url' => $url,
+                // The issue's own labels (card#6348), carried so the handler can derive the
+                // create stage from the `stage:*` priority the webhook ALREADY delivered.
+                // Passed through rather than re-read from the API: the label set is part of
+                // the very event being classified, so a re-read would answer a later question
+                // than the one this delivery asks — and would put an API call, its failure
+                // modes and its token on the create path for a datum already in hand. Shares
+                // the family-wide {@see labels()} reader, so the `stage:*` names are lowercased
+                // by the same rule the addressing labels are.
+                'labels' => $this->labels($ctx->eventType, $ctx->payload),
             ]),
         ]);
     }

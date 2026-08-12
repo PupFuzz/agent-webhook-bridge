@@ -211,7 +211,55 @@ If you run the bridge on a **coordination repo** (the Agent Board Framework's `[
 - **The card.** Named the issue title verbatim; tagged **`id:<sid>`** + **`type:<itype>`** only (`sid = "<PREFIX>-<num>"` from the **anchored** first prefix, e.g. `QUERY-42`; `itype` mirrors the reconcile's `_itype` — an **unanchored** priority-substring scan `[BRIEF]`>`[ANNOUNCE]`>`[QUERY]`>`[REVIEW]`, else `task`, so a multi-bracket title's `type:` matches the reconcile even where it differs from the anchored `sid` prefix). `repo:` is **omitted** at create (non-critical — the reconcile folds it). It also sets `description = "Coordination thread <repo>#<num>"`, `priority = 1` for a `[BRIEF]` else `0`, and `external_link = https://github.com/<repo>/issues/<num>` — mirroring the reconcile's create so its next pass doesn't update-churn them. `external_id` is **not** set (the reconcile's `build_create` omits it, and kanban's `(board_id, external_id)` uniqueness would 422 a colliding issue number on a multi-repo coord board — `external_link` carries the correlation).
 - **Create-only + idempotent.** This create path never moves or archives a card. (The bridge as a whole is no longer create-only for coord cards: its sibling **`move_coord_cards`** (DL-200, a guarded fleet default since DL-204 — below) carries close→terminal / reopen→revive. The reconcile still owns column/lifecycle wherever the move leg is **off**, and **archival remains the reconcile's alone**.) It correlates by the **`id:<sid>` tag**: if a card already carries it, it **skips** — which covers redelivery, opened+reopened, **and** the bridge-vs-reconcile race (both movers key on the same tag). After a create it re-reads by tag and collapses a raced duplicate (keep lowest id, archive the rest — the shared deterministic tie-break). Durable, transient(5xx→retry)/permanent(4xx→log+no-op).
 - **`identity_id` is REQUIRED (echo-gate).** A created card fires a kanban `task.created` webhook that comes back to the bridge; if any agent runs the `kanban-triage` family on that board, that echo reads as an untriaged card and could **self-wake**. The **only** guard is the global-echo gate keyed on `writeback.json` `identity_id`. `bridge:check` **warns** when `create_coord_cards` is set but `identity_id` is null.
-- **`bridge:check`.** Validates `coord_card_stage_id` (and any `swimlane_id`) exists on the board — a typo'd id makes every create 422 and silently no-op. Missing `coord_card_stage_id` while `create_coord_cards` is on **fails the config closed at load** (a create with no stage can't POST).
+- **`bridge:check`.** Validates `coord_card_stage_id` (and any `swimlane_id`, and every `coord_card_lane_stage_ids` id) exists on the board — a typo'd id makes every create 422 and silently no-op. Missing `coord_card_stage_id` while `create_coord_cards` is on **fails the config closed at load** (a create with no stage can't POST).
+
+### Priority lanes: `coord_card_lane_stage_ids` (card#6348)
+
+**Set this whenever the coordination board has a priority-lane model** (`user_lanes` in
+`coordination.config.json` — Now / Next / Later / Maybe). Without it every coord card is created at
+the single `coord_card_stage_id`, and on a lane-model board that is **not a placement, it is a
+rewrite**: the reconcile adopts the bridge's card by its tag and then *preserves* whatever lane it is
+in (`user_lanes`), and the consumer's board→issue writeback propagates lane→label — so a `[TASK]`
+filed `stage:later` is carded in the create stage, kept there, and its `stage:*` label rewritten to
+match. Measured on the reference install: 9 issues flipped to `stage:now`, one within 7 minutes of
+filing.
+
+```jsonc
+"mappings": {
+  "org/coord": {
+    "board_id": 8,
+    "create_coord_cards": true,
+    "coord_card_stage_id": 21,                 // still required — the non-lane-model itypes' stage, and the revive target
+    "coord_card_lane_stage_ids": {             // optional — the board's priority-lane stage ids
+      "now": 13, "next": 14, "later": 15, "maybe": 16
+    }
+  }
+}
+```
+
+- **What it changes.** A card whose issue the lane model governs is created in the stage its
+  **`stage:*` label declares** (`stage:now` → the `now` id, and so on) instead of at
+  `coord_card_stage_id`. Absent from the key ⇒ **byte-identical** DL-198 (every card at the fixed
+  stage).
+- **Which issues.** Only itype **`task`** — mirroring the consumer's `classify_b2`, which routes only
+  `_itype == "task"` through `_task_lane` and sends every other open itype to a fixed column. A
+  `[BRIEF]`/`[ANNOUNCE]`/`[QUERY]`/`[REVIEW]` keeps landing at `coord_card_stage_id`, so the two
+  movers still agree on where a fresh thread goes. (`itype` is the unanchored priority scan described
+  above, so its `task` arm is also the fallback for a title none of the four prefixes match.)
+- **No label, or an unrecognized one ⇒ `later`** — `_task_lane`'s own default. Several `stage:*`
+  labels resolve in the order **now → next → later → maybe**, again mirroring `_task_lane`, so both
+  movers pick the same one.
+- **A declared lane your map does not carry ⇒ `later`, with a `WARN` in the log** naming the lane and
+  the lanes you did map. Deliberate: refusing the create would leave a thread untracked over a
+  priority hint, and using the fixed stage would re-impose the lane this key exists to stop imposing.
+- **Fail-closed at load** (so a half-configured lane model never silently no-ops): the value must be a
+  **non-empty object**, every key must be one of `now`/`next`/`later`/`maybe` (an unknown key throws —
+  a typo would otherwise match no label forever), every value must be numeric, it must carry
+  **`later`** (the target of both fallbacks above), and the mapping must also set
+  `create_coord_cards` (nothing else reads these ids).
+- **Re-laning an existing card is still a human/reconcile action.** This key sets the **create-time**
+  lane only, exactly as `stage:*` does for the reconcile; the bridge never moves a coord card into a
+  lane afterwards.
 
 ## Optional: card non-prefixed issues too (`issue_population`, #4553)
 

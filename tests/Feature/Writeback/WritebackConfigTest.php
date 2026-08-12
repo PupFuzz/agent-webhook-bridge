@@ -797,6 +797,126 @@ class WritebackConfigTest extends TestCase
         $this->assertSame(8, $cfg->mappingFor('owner/repo')->boardId);
     }
 
+    // ---- card#6348 / DL-286: coord_card_lane_stage_ids ----
+
+    public function test_absent_coord_card_lane_stage_ids_is_null_byte_identical(): void
+    {
+        // The back-compat property: an install that configured no lane model keeps the
+        // fixed create stage, so DL-198 behaviour is untouched.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21],
+        ]]));
+
+        $this->assertNull(WritebackConfig::load($this->dir)->mappingFor('o/r')->coordCardLaneStageIds);
+    }
+
+    public function test_coord_card_lane_stage_ids_parse_to_ints_per_lane(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
+                'coord_card_lane_stage_ids' => ['now' => 40, 'next' => '41', 'later' => 42, 'maybe' => 43]],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
+        $this->assertSame(['now' => 40, 'next' => 41, 'later' => 42, 'maybe' => 43], $mapping->coordCardLaneStageIds);
+        $this->assertSame(42, $mapping->coordCardStageForLane('later'));
+        $this->assertNull($mapping->coordCardStageForLane('someday'));
+    }
+
+    public function test_a_partial_lane_map_is_allowed_when_it_carries_later(): void
+    {
+        // An install whose lane model has three columns is legitimate — the unmapped
+        // lane is the handler's warn-and-fall-back arm, not a config error.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
+                'coord_card_lane_stage_ids' => ['now' => 40, 'later' => 42]],
+        ]]));
+
+        $this->assertSame(['now' => 40, 'later' => 42], WritebackConfig::load($this->dir)->mappingFor('o/r')->coordCardLaneStageIds);
+    }
+
+    public function test_lane_map_without_later_throws(): void
+    {
+        // `later` is the target of BOTH fallbacks (undeclared, and declared-but-unmapped) —
+        // without it neither has a stage, so the create would have nowhere to land.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
+                'coord_card_lane_stage_ids' => ['now' => 40, 'next' => 41]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("must carry the 'later' lane");
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_unknown_lane_key_throws(): void
+    {
+        // A typo'd lane would silently never match any `stage:*` label while looking
+        // configured — the fail-quiet class every other stage key is strict about.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
+                'coord_card_lane_stage_ids' => ['later' => 42, 'sonn' => 40]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("unknown lane 'sonn'");
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_non_numeric_lane_stage_id_throws(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
+                'coord_card_lane_stage_ids' => ['later' => 'Later']],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("lane 'later' must be a numeric workflow_stage_id");
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_list_shaped_lane_map_throws(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
+                'coord_card_lane_stage_ids' => [40, 41, 42]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('must be a non-empty object keyed by lane');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_empty_lane_map_throws(): void
+    {
+        // Same fail-quiet as an empty started_from_stages: it disables the feature while
+        // looking configured. Omit the key instead. `{}` decodes to `[]` — a LIST — so the
+        // shape guard is what catches it; there is deliberately no second empty-map guard
+        // (it would be unreachable).
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
+                'coord_card_lane_stage_ids' => new \stdClass],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('must be a non-empty object keyed by lane');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_lane_map_without_create_coord_cards_throws(): void
+    {
+        // Nothing but the create path reads these ids, so a lane map on a mapping that
+        // creates no coord cards is a misconfiguration that would look active forever.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'coord_card_stage_id' => 21,
+                'coord_card_lane_stage_ids' => ['later' => 42]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('coord_card_lane_stage_ids but not create_coord_cards');
+        WritebackConfig::load($this->dir);
+    }
+
     public function test_load_default_propagates_config_exception_on_malformed_file(): void
     {
         // The fail branch every caller relies on: a malformed writeback.json still

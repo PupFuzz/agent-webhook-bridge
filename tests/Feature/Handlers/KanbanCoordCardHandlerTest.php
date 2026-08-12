@@ -274,6 +274,150 @@ class KanbanCoordCardHandlerTest extends TestCase
         Http::assertNotSent(fn ($r) => $r->method() === 'POST');
     }
 
+    // =====================================================================
+    // The lane-derived create stage (card#6348 / DL-286)
+    // =====================================================================
+    //
+    // With `coord_card_lane_stage_ids` configured, a lane-model-governed issue
+    // (itype `task`) is created in the stage its `stage:*` label declares, instead
+    // of the fixed `coord_card_stage_id`. Absent/unrecognized ⇒ Later, mirroring
+    // the reconcile's `_task_lane`.
+
+    /** @param array<string, mixed> $overrides */
+    private function writeLaneMapping(array $overrides = []): void
+    {
+        $this->writeMapping(array_merge([
+            'board_id' => 8,
+            'stages' => ['opened' => 50],
+            'create_coord_cards' => true,
+            'coord_card_stage_id' => 21,
+            'coord_card_lane_stage_ids' => ['now' => 40, 'next' => 41, 'later' => 42, 'maybe' => 43],
+        ], $overrides));
+    }
+
+    private function fakeCreate(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+    }
+
+    /** @param list<string> $labels */
+    private function handleTask(array $labels): void
+    {
+        $this->handle(['sid' => 'TASK-4', 'itype' => 'task', 'title' => '[TASK] do the thing', 'labels' => $labels]);
+    }
+
+    private function assertCreatedInStage(int $stageId): void
+    {
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && $r['workflow_stage_id'] === $stageId);
+    }
+
+    public function test_stage_now_label_creates_the_card_in_the_now_stage(): void
+    {
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handleTask(['stage:now']);
+
+        $this->assertCreatedInStage(40);
+    }
+
+    public function test_stage_later_label_creates_the_card_in_the_later_stage(): void
+    {
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handleTask(['stage:later']);
+
+        $this->assertCreatedInStage(42);
+    }
+
+    public function test_no_stage_label_creates_the_card_in_the_later_stage(): void
+    {
+        // `_task_lane`'s default: an undeclared issue is Later, NOT the fixed create stage.
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handleTask(['from:pm', 'to:all']);
+
+        $this->assertCreatedInStage(42);
+    }
+
+    public function test_absent_labels_key_creates_the_card_in_the_later_stage(): void
+    {
+        // A target staged before this change carries no `labels` key at all; a redelivery
+        // must resolve like an unlabelled issue, not crash or fall back to the fixed stage.
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handle(['sid' => 'TASK-4', 'itype' => 'task', 'title' => '[TASK] do the thing']);
+
+        $this->assertCreatedInStage(42);
+    }
+
+    public function test_unrecognized_stage_label_creates_the_card_in_the_later_stage(): void
+    {
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handleTask(['stage:someday']);
+
+        $this->assertCreatedInStage(42);
+    }
+
+    public function test_multiple_stage_labels_resolve_in_lane_order(): void
+    {
+        // `_task_lane` iterates now→next→later→maybe, so a doubly-labelled issue lands in
+        // the same lane on both movers regardless of the label list's own order.
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handleTask(['stage:later', 'stage:now']);
+
+        $this->assertCreatedInStage(40);
+    }
+
+    public function test_declared_lane_missing_from_the_map_falls_back_to_later_and_warns(): void
+    {
+        // Requirement: a `stage:*` label that resolves to no stage id on the mapped board
+        // is a DELIBERATE fallback, never a fail-quiet — an install whose lane model has
+        // no Maybe column still gets a card, and the operator gets told which lane went
+        // unmapped.
+        Log::spy();
+        $this->writeLaneMapping(['coord_card_lane_stage_ids' => ['now' => 40, 'next' => 41, 'later' => 42]]);
+        $this->fakeCreate();
+
+        $this->handleTask(['stage:maybe']);
+
+        $this->assertCreatedInStage(42);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m) => str_contains($m, 'lane') && str_contains($m, 'not mapped'))->once();
+    }
+
+    public function test_non_task_itype_keeps_the_fixed_create_stage(): void
+    {
+        // `classify_b2` routes only itype `task` through the lane model; a brief/query/
+        // review keeps the mapping's fixed stage, so the two movers agree at create.
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handle(['labels' => ['stage:later']]);   // default payload is itype=query
+
+        $this->assertCreatedInStage(21);
+    }
+
+    public function test_without_the_lane_map_a_labelled_task_keeps_the_fixed_create_stage(): void
+    {
+        // Opt-in: an install that configured no lane stage ids is byte-identical to DL-198.
+        $this->fakeCreate();   // setUp's mapping has no coord_card_lane_stage_ids
+
+        $this->handleTask(['stage:later']);
+
+        $this->assertCreatedInStage(21);
+    }
+
     public function test_unmapped_or_optout_noops(): void
     {
         $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50]]);   // no create_coord_cards

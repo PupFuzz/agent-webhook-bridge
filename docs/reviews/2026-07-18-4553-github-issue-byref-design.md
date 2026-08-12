@@ -141,6 +141,12 @@ complement and the `issue_number` stamp.
   (backstop for *placement*). Existence is real-time; lane placement lags to the reconcile (acceptable —
   {Next,Later,Maybe} are human-curated anyway). Whether any consumer needs **real-time** lane-at-create (the
   full `stage_by_label` config) is roundtable Q2; recommend deferring to a fast-follow.
+  **[The fast-follow LANDED — card#6348 / DL-286, `coord_card_lane_stage_ids`. The deferral's premise was
+  wrong in one direction this review could not see: the reconcile does NOT refine the lane on its next pass —
+  `user_lanes` makes it PRESERVE the bridge's create lane, and the consumer's board→issue writeback then
+  rewrites the issue's `stage:*` label to match it. So "lane placement lags to the reconcile" was in fact
+  "the bridge's fixed stage overwrites the issue's declared priority." Keyed by LANE (`now`/`next`/…)
+  rather than by the full label, so the `stage:` grammar stays in one place.]**
 - `title` = issue title verbatim; `priority` per-config; fail-closed at load (create with no stage can't POST).
 
 ### 3.3 The overlap is the RECONCILE, not the bridge (R1 finding 1 / R2 finding 1)
@@ -227,7 +233,7 @@ that must be pinned in the roundtable before `population: all` go-live (§6 Q1).
 | 1 | The by-ref idempotency switch re-opens the DL-198 reconcile double-card race for the prefixed set (bridge key diverged from the tag-keyed reconcile); the dual-key stamp closes only one direction | **BLOCKER** | **Accepted — redesigned.** Key is now derived PER ISSUE: prefixed → the shared `id:<sid>` tag (never diverges from the reconcile); non-prefixed → by-ref (bridge sole mover). Unified pre-check tests **both** derivable keys. Closes the race AND (my addition) the title-prefix-change-between-events edge R2 didn't raise (§3 head). |
 | 2 | `{by-ref, prefixed}` is the un-audited incoherent mirror of `{tag, all}` | MAJOR | **Accepted — dissolved.** No `correlation_mode` axis exists anymore; a prefixed issue always uses the tag. The incoherent corner cannot be configured. |
 | 3 | `isAlreadyClassified(github_issue)` is a fleet-wide triage regression that silently drops human triage cards | MAJOR | **Accepted.** DROPPED the content-sniff; rely on `identity_id` (root cause) (§3.4). |
-| 4 | label→column has no config surface; one `coord_card_stage_id` can't express 4 columns; "absent→Later" presumes an unconfigured stage | MAJOR | **Accepted.** v1 defers label→lane to the reconcile; bridge creates at the fixed `coord_card_stage_id` (§3.2). Full `stage_by_label` is a fast-follow (Q2). |
+| 4 | label→column has no config surface; one `coord_card_stage_id` can't express 4 columns; "absent→Later" presumes an unconfigured stage | MAJOR | **Accepted.** v1 defers label→lane to the reconcile; bridge creates at the fixed `coord_card_stage_id` (§3.2). Full `stage_by_label` is a fast-follow (Q2). **[LANDED: card#6348 / DL-286 — `coord_card_lane_stage_ids`. This finding was right on both halves: the deferral cost 9 rewritten `stage:*` labels, and "absent→Later presumes an unconfigured stage" is answered by requiring the `later` key at load.]** |
 | 5 | "one family, two handlers" is nominal; the by-ref path forks idempotency/sid/payload/collapse and the handler REJECTS the non-prefixed population | MAJOR | **Accepted.** Each forked step enumerated explicitly with a RED-on-revert test (§3.1): conditional sid-guard, `issue_number` payload, per-issue key, by-ref move leg. |
 | 6 | `issue_number` preflight must be fail-closed or every by-ref create 422s as a permanent no-op | MAJOR | **Accepted.** `bridge:check` **exits non-zero** when `population: all` + `issue_number` unregistered (§3.4). |
 | 7 | DL-200 terminal compare returns a vacuous "agree" for the non-prefixed population | MINOR | **Accepted.** A distinct `bridge:check` warn states the non-prefixed set has no reconcile backstop under `all` (§3.3). |

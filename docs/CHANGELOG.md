@@ -150,6 +150,25 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   the release-PR assertions are untouched.
 
 ### Fixed
+- **card#6348** (**DL-286**) — **The real-time coord-card create stops rewriting the priority its issue
+  declares: the create stage is derived from the issue's `stage:*` label via the new opt-in
+  `coord_card_lane_stage_ids` mapping key.** The bridge created every coordination card at the single
+  `coord_card_stage_id`; on a board with a `user_lanes` priority model that is not a placement but a
+  **rewrite**, because the reconcile then *preserves* that lane (by design) and the consumer's board→issue
+  writeback propagates lane→label back onto the issue. Measured on the reference install: **9 issues flipped
+  to `stage:now`**, one within 7 minutes of filing. With the key set, an itype-`task` card is created in the
+  stage its label declares; no label or an unrecognized one ⇒ `later`, and several `stage:*` labels resolve
+  now→next→later→maybe — both mirroring the consumer's `_task_lane`. A declared lane the map omits ⇒ `later`
+  **plus a warn** naming it (no fail-quiet path). Only itype `task` is lane-derived, mirroring the reconcile's
+  `classify_b2`: lane-deriving a `[BRIEF]` would place it where the reconcile does not, and `user_lanes` would
+  then preserve the disagreement. The labels reach the handler by **pass-through on the classifier's target
+  payload** (the webhook body already carried them) rather than an API re-read. Fail-closed at load on a
+  non-object/empty map, an unknown lane key, a non-numeric id, a missing `later` entry, or the key without
+  `create_coord_cards`; every id joins `bridge:check`'s stage-exists comparison. **Absent ⇒ byte-identical
+  DL-198** — activating it on an install is an operator config change, and the mis-laned cards already on a
+  board are a separate one-time repair. Lands the fast-follow the DL-198 design review deferred as
+  `stage_by_label` (R2 finding 4), whose premise — *"the reconcile refines the lane on its next pass"* — this
+  entry falsifies.
 - **card#5977** (**DL-283**) — **`provision-tools-python.yml` stops naming the `bin/` python tool set
   three times: the filesystem becomes the enumeration, and the one copy that cannot follow becomes
   detectable.** The workflow enumerated the eight tool + test files in both `paths:` filters and again
