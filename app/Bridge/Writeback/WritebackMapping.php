@@ -157,15 +157,4 @@ final class WritebackMapping
     {
         return $this->stages[$outcome] ?? null;
     }
-
-    /**
-     * The configured stage id for a priority lane (card#6348), or null when this
-     * mapping declares no lane model, or declares one that does not carry the lane.
-     * Null for a lane the map omits is the DELIBERATE "declared but unmappable" arm
-     * the caller reports and falls back on — never a reason to skip the create.
-     */
-    public function coordCardStageForLane(string $lane): ?int
-    {
-        return $this->coordCardLaneStageIds[$lane] ?? null;
-    }
 }

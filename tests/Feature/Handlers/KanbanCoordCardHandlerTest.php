@@ -278,10 +278,11 @@ class KanbanCoordCardHandlerTest extends TestCase
     // The lane-derived create stage (card#6348 / DL-286)
     // =====================================================================
     //
-    // With `coord_card_lane_stage_ids` configured, a lane-model-governed issue
-    // (itype `task`) is created in the stage its `stage:*` label declares, instead
-    // of the fixed `coord_card_stage_id`. Absent/unrecognized ⇒ Later, mirroring
-    // the reconcile's `_task_lane`.
+    // With `coord_card_lane_stage_ids` configured, a lane-model-governed issue (one
+    // whose TITLE starts with `[TASK]` — `classify_coord`'s own gate) is created in
+    // the stage its `stage:*` label declares, instead of the fixed
+    // `coord_card_stage_id`. Absent/unrecognized ⇒ Later, mirroring the reconcile's
+    // `_task_lane`.
 
     /** @param array<string, mixed> $overrides */
     private function writeLaneMapping(array $overrides = []): void
@@ -299,6 +300,10 @@ class KanbanCoordCardHandlerTest extends TestCase
     {
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => []]),
+            // The by-ref pre-check, for the legs that run under `issue_population: all`
+            // (an un-prefixed / `[PROPOSAL]` title has no tag key). Unused by the
+            // tag-keyed legs — an unmatched pattern sends nothing.
+            '*/boards/8/tasks/by-ref.json*' => Http::response(['data' => []]),
             '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
         ]);
     }
@@ -396,14 +401,59 @@ class KanbanCoordCardHandlerTest extends TestCase
         Log::shouldHaveReceived('warning')->withArgs(fn (string $m) => str_contains($m, 'lane') && str_contains($m, 'not mapped'))->once();
     }
 
-    public function test_non_task_itype_keeps_the_fixed_create_stage(): void
+    public function test_an_unmapped_lane_does_not_end_the_scan_the_next_declared_lane_wins(): void
     {
-        // `classify_b2` routes only itype `task` through the lane model; a brief/query/
-        // review keeps the mapping's fixed stage, so the two movers agree at create.
+        // `_task_lane` tests availability INSIDE its loop: on a board with no Now column
+        // an issue labelled stage:now + stage:next lands in NEXT, not in the Later
+        // default. The warn still fires — the unmapped Now is a real config gap — but it
+        // reports a create that went to the next lane the issue itself declared.
+        Log::spy();
+        $this->writeLaneMapping(['coord_card_lane_stage_ids' => ['next' => 41, 'later' => 42, 'maybe' => 43]]);
+        $this->fakeCreate();
+
+        $this->handleTask(['stage:now', 'stage:next']);
+
+        $this->assertCreatedInStage(41);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m) => str_contains($m, 'lane') && str_contains($m, 'not mapped'))->once();
+    }
+
+    public function test_a_non_task_title_keeps_the_fixed_create_stage(): void
+    {
+        // `classify_coord` gates the lane model on the TITLE (`startswith("[TASK]")`); a
+        // brief/query/review keeps the mapping's fixed stage, so the two movers agree at
+        // create.
         $this->writeLaneMapping();
         $this->fakeCreate();
 
-        $this->handle(['labels' => ['stage:later']]);   // default payload is itype=query
+        $this->handle(['labels' => ['stage:later']]);   // default payload is a [QUERY] title
+
+        $this->assertCreatedInStage(21);
+    }
+
+    public function test_an_unprefixed_title_keeps_the_fixed_create_stage_even_though_its_itype_is_task(): void
+    {
+        // The reason the gate is the TITLE and not `itype`: `coordItype()` (like the
+        // consumer's `_itype`) calls an un-prefixed title `task` too. Under
+        // `issue_population: all` those issues ARE carded — and the consumer's
+        // `classify_coord` sends them to Now, not through `_task_lane`. Lane-deriving
+        // them here would create them in Later, and `preserve_stage` would freeze that
+        // disagreement.
+        $this->writeLaneMapping(['issue_population' => 'all']);
+        $this->fakeCreate();
+
+        $this->handle(['sid' => null, 'itype' => 'task', 'title' => 'a plain untitled-prefix issue', 'labels' => ['stage:later']]);
+
+        $this->assertCreatedInStage(21);
+    }
+
+    public function test_a_proposal_title_keeps_the_fixed_create_stage_even_though_its_itype_is_task(): void
+    {
+        // Same blind spot, second member: `coordItype()` has no `[PROPOSAL]` arm, so a
+        // proposal reads as itype `task` while `classify_coord` does not lane-derive it.
+        $this->writeLaneMapping(['issue_population' => 'all']);
+        $this->fakeCreate();
+
+        $this->handle(['sid' => null, 'itype' => 'task', 'title' => '[PROPOSAL] adopt the thing', 'labels' => ['stage:now']]);
 
         $this->assertCreatedInStage(21);
     }

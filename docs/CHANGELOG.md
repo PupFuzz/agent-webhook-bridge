@@ -154,14 +154,21 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   declares: the create stage is derived from the issue's `stage:*` label via the new opt-in
   `coord_card_lane_stage_ids` mapping key.** The bridge created every coordination card at the single
   `coord_card_stage_id`; on a board with a `user_lanes` priority model that is not a placement but a
-  **rewrite**, because the reconcile then *preserves* that lane (by design) and the consumer's board→issue
-  writeback propagates lane→label back onto the issue. Measured on the reference install: **9 issues flipped
-  to `stage:now`**, one within 7 minutes of filing. With the key set, an itype-`task` card is created in the
-  stage its label declares; no label or an unrecognized one ⇒ `later`, and several `stage:*` labels resolve
-  now→next→later→maybe — both mirroring the consumer's `_task_lane`. A declared lane the map omits ⇒ `later`
-  **plus a warn** naming it (no fail-quiet path). Only itype `task` is lane-derived, mirroring the reconcile's
-  `classify_b2`: lane-deriving a `[BRIEF]` would place it where the reconcile does not, and `user_lanes` would
-  then preserve the disagreement. The labels reach the handler by **pass-through on the classifier's target
+  **rewrite**, because the consumer's board→issue writeback pass runs *before* its issues-sync and maps the
+  card's lane back onto the issue's `stage:*` label (over all four lanes by default), so the issue is
+  relabelled to whatever stage the bridge created the card in and the sync then agrees. Measured on the
+  reference install: **9 issues flipped to `stage:now`**, one within 7 minutes of filing. With the key set, a
+  card whose issue title is anchored `[TASK]` is created in the stage its label declares; no label or an
+  unrecognized one ⇒ `later`, and several `stage:*` labels resolve now→next→later→maybe — both mirroring the
+  consumer's `_task_lane`. A declared lane the map omits is **skipped and the scan continues** to the issue's
+  next declared lane (`_task_lane` tests column availability inside its loop), reaching `later` only when
+  none is mapped — **plus a warn** naming it either way (no fail-quiet path). The gate is the anchored
+  `[TASK]` **title**, mirroring the consumer's `classify_coord`, which deliberately does not gate on itype
+  (`_itype` defaults un-prefixed issues to `task`, and the bridge's reads `[PROPOSAL]` that way too, so an
+  itype gate would lane-derive issues the reconcile sends to `Now` and `user_lanes` would freeze the
+  disagreement). The label must be present **at open** — the create fires on `issues.opened`/`reopened` only,
+  so a `[TASK]` labelled after filing is carded in `later` and its label converged to match (known gap,
+  tracked as a follow-up). The labels reach the handler by **pass-through on the classifier's target
   payload** (the webhook body already carried them) rather than an API re-read. Fail-closed at load on a
   non-object/empty map, an unknown lane key, a non-numeric id, a missing `later` entry, or the key without
   `create_coord_cards`; every id joins `bridge:check`'s stage-exists comparison. **Absent ⇒ byte-identical

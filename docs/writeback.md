@@ -218,11 +218,12 @@ If you run the bridge on a **coordination repo** (the Agent Board Framework's `[
 **Set this whenever the coordination board has a priority-lane model** (`user_lanes` in
 `coordination.config.json` — Now / Next / Later / Maybe). Without it every coord card is created at
 the single `coord_card_stage_id`, and on a lane-model board that is **not a placement, it is a
-rewrite**: the reconcile adopts the bridge's card by its tag and then *preserves* whatever lane it is
-in (`user_lanes`), and the consumer's board→issue writeback propagates lane→label — so a `[TASK]`
-filed `stage:later` is carded in the create stage, kept there, and its `stage:*` label rewritten to
-match. Measured on the reference install: 9 issues flipped to `stage:now`, one within 7 minutes of
-filing.
+rewrite**: the consumer's `kanban-writeback` pass runs **before** its `kanban-issues-sync` and maps
+each card's lane back onto the issue's `stage:*` label (over the board's `user_lanes`, which default
+to all four lanes including Now), so the ISSUE's label is rewritten to whatever lane the bridge
+created the card in — and issues-sync, reading the label the writeback just wrote, agrees. So a
+`[TASK]` filed `stage:later` is carded in the create stage and its `stage:*` label edited to match.
+Measured on the reference install: 9 issues flipped to `stage:now`, one within 7 minutes of filing.
 
 ```jsonc
 "mappings": {
@@ -241,25 +242,45 @@ filing.
   **`stage:*` label declares** (`stage:now` → the `now` id, and so on) instead of at
   `coord_card_stage_id`. Absent from the key ⇒ **byte-identical** DL-198 (every card at the fixed
   stage).
-- **Which issues.** Only itype **`task`** — mirroring the consumer's `classify_b2`, which routes only
-  `_itype == "task"` through `_task_lane` and sends every other open itype to a fixed column. A
-  `[BRIEF]`/`[ANNOUNCE]`/`[QUERY]`/`[REVIEW]` keeps landing at `coord_card_stage_id`, so the two
-  movers still agree on where a fresh thread goes. (`itype` is the unanchored priority scan described
-  above, so its `task` arm is also the fallback for a title none of the four prefixes match.)
+- **Which issues.** Only an issue whose **title starts with `[TASK]`** (case-insensitive, anchored,
+  untrimmed) — mirroring the consumer's `classify_coord`, which gates the lane model on exactly that
+  and *deliberately not* on the itype: `_itype` (like the bridge's own `itype`) calls an un-prefixed
+  title `task` as well, so an itype gate would sweep the whole un-prefixed population — and
+  `[PROPOSAL]`, which the bridge's `itype` also reads as `task` — into lane derivation, where the
+  consumer's reconcile sends them to **Now**. A `[BRIEF]`/`[ANNOUNCE]`/`[QUERY]`/`[REVIEW]`/
+  `[PROPOSAL]`/un-prefixed issue keeps landing at `coord_card_stage_id`, so the two movers still
+  agree on where a fresh thread goes.
+- **The label must be present when the issue OPENS.** The create path fires on `issues.opened` /
+  `issues.reopened` only, and derives the lane from the labels that delivery carried. A `[TASK]`
+  opened unlabelled and labelled a moment later is carded in `later` — and the board→issue writeback
+  then converges the issue's newly-added `stage:*` label back to `later` to match the card. Filing
+  through `coord-post create --label stage:<lane>` (or the `coord-task --now|--next|--later|--maybe`
+  wrapper over it) satisfies this — the label is in the create call; an issue filed in the GitHub UI
+  and labelled afterwards does not. **Known gap** — tracked as a follow-up class item alongside the
+  move-handler revive arm.
 - **No label, or an unrecognized one ⇒ `later`** — `_task_lane`'s own default. Several `stage:*`
   labels resolve in the order **now → next → later → maybe**, again mirroring `_task_lane`, so both
   movers pick the same one.
-- **A declared lane your map does not carry ⇒ `later`, with a `WARN` in the log** naming the lane and
-  the lanes you did map. Deliberate: refusing the create would leave a thread untracked over a
-  priority hint, and using the fixed stage would re-impose the lane this key exists to stop imposing.
+- **A declared lane your map does not carry is SKIPPED and the scan continues** to the issue's next
+  `stage:*` label in that same order, landing in `later` only when none of its declared lanes is
+  mapped — mirroring `_task_lane`, whose column-availability test sits *inside* its loop (so an
+  issue labelled `stage:now` + `stage:next` on a board with no Now column lands in **Next** on both
+  movers). Either way a `WARN` names the unmapped lane(s), the lane used, and the lanes you did map.
+  Deliberate: refusing the create would leave a thread untracked over a priority hint, and using the
+  fixed stage would re-impose the lane this key exists to stop imposing.
 - **Fail-closed at load** (so a half-configured lane model never silently no-ops): the value must be a
   **non-empty object**, every key must be one of `now`/`next`/`later`/`maybe` (an unknown key throws —
   a typo would otherwise match no label forever), every value must be numeric, it must carry
   **`later`** (the target of both fallbacks above), and the mapping must also set
   `create_coord_cards` (nothing else reads these ids).
 - **Re-laning an existing card is still a human/reconcile action.** This key sets the **create-time**
-  lane only, exactly as `stage:*` does for the reconcile; the bridge never moves a coord card into a
-  lane afterwards.
+  lane only, exactly as `stage:*` does for the reconcile — no bridge path reads it after the create,
+  and nothing here moves a card between lanes. **One exception, and it is not lane-derived:** with
+  `move_coord_cards` on, the **revive** arm returns a reopened card to the fixed
+  `coord_card_stage_id` (never to `coord_card_lane_stage_ids`), so reopening a `[TASK]` re-imposes
+  that stage. That is the open sibling recorded in DL-286's sibling audit — it needs a ruling
+  (reviving to the label's lane would override a lane a human may have curated before the close),
+  not a reflex.
 
 ## Optional: card non-prefixed issues too (`issue_population`, #4553)
 

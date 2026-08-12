@@ -34,8 +34,8 @@ use Illuminate\Support\Facades\Log;
  * redelivery, opened+reopened, AND the bridge-vs-reconcile race (both movers key on
  * the same tag). Otherwise create at the stage {@see CoordLaneStages} resolves (the
  * mapping's `coord_card_stage_id` unless a lane model is configured and governs this
- * issue's itype — card#6348), then re-read + collapse a raced duplicate via the
- * shared {@see CardCollapse}.
+ * issue — an anchored `[TASK]` title, card#6348), then re-read + collapse a raced
+ * duplicate via the shared {@see CardCollapse}.
  *
  * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
  * split as the other writeback create handler (DL-020/DL-285). Tags at create are
@@ -168,7 +168,7 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
                 array_unshift($tags, "id:{$sid}");
             }
             $payload = $byRef ? ['issue_number' => $issueNumber] : [];
-            $stageId = $this->createStage($mapping, $itype, $p, $repo, $issueNumber);
+            $stageId = $this->createStage($mapping, $title, $p, $repo, $issueNumber);
 
             $newId = $client->createCard(
                 $mapping->boardId,
@@ -220,48 +220,46 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
     /**
      * The stage a new coord card is created in (card#6348): the lane the issue's
      * `stage:*` label DECLARES, when this mapping configures the board's lane model
-     * and the lane model governs this itype — else the mapping's fixed
+     * and the lane model governs this issue — else the mapping's fixed
      * `coord_card_stage_id`, which is byte-identical DL-198.
      *
      * Why derive it at all: the fixed stage is not a placement on a lane-model board,
-     * it is a REWRITE. The reconcile adopts this card by its tag and then preserves
-     * its lane, and the consumer's board→issue writeback propagates lane→label — so
+     * it is a REWRITE. The consumer's `kanban-writeback` pass runs before its
+     * issues-sync and maps the card's lane back onto the issue's `stage:*` label, so
      * pinning every card here silently overwrites the priority the issue already
      * states (measured: 9 issues flipped to `stage:now`, card#6348).
      *
-     * The unresolvable arm is a DECISION, not a fail-quiet: a label declaring a lane
-     * the operator's map does not carry falls back to the default lane and WARNs,
-     * naming the lane, so the config gap is visible in the log of the very create it
-     * affected. Refusing the create would leave the thread untracked over a priority
-     * hint; creating at the fixed stage would put the card back in exactly the lane
-     * this path exists to stop imposing.
+     * The unresolvable arm is a DECISION, not a fail-quiet: a `stage:*` label naming a
+     * lane the operator's map does not carry is SKIPPED (the scan continues to the
+     * issue's next declared lane, then to the default) and WARNs naming it, so the
+     * config gap is visible in the log of the very create it affected. Refusing the
+     * create would leave the thread untracked over a priority hint; creating at the
+     * fixed stage would put the card back in exactly the lane this path exists to stop
+     * imposing.
      *
      * @param  array<mixed>  $p  the reaction-target payload (its `labels` key is the
      *                           issue's labels; a target staged before this change
      *                           carries none, which resolves like an unlabelled issue)
      */
-    private function createStage(WritebackMapping $mapping, string $itype, array $p, string $repo, int $issueNumber): int
+    private function createStage(WritebackMapping $mapping, string $title, array $p, string $repo, int $issueNumber): int
     {
         // coordCardStageId is non-null here — handle() refuses the target otherwise.
         $fixed = $mapping->coordCardStageId;
-        if ($mapping->coordCardLaneStageIds === null || ! CoordLaneStages::governs($itype)) {
+        if ($mapping->coordCardLaneStageIds === null || ! CoordLaneStages::governs($title)) {
             return $fixed;
         }
-        $declared = CoordLaneStages::laneFromLabels($this->labels($p));
-        if ($declared !== null) {
-            $stageId = $mapping->coordCardStageForLane($declared);
-            if ($stageId !== null) {
-                return $stageId;
-            }
-            // The declared lane and the mapped set are CONTEXT, not interpolation: the
+        $resolved = CoordLaneStages::resolveLane($this->labels($p), array_keys($mapping->coordCardLaneStageIds));
+        if ($resolved['unmapped'] !== []) {
+            // The skipped lanes and the mapped set are CONTEXT, not interpolation: the
             // DL-285 refusal-signal guard keys its accounted-for list on the message
             // literal, and an interpolated message degrades that key to a line number.
-            Log::warning('kanban_coord_card: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — creating in the default lane instead; add the lane to the mapping if this board has that column', ['repo' => $repo, 'issue' => $issueNumber, 'lane' => $declared, 'default_lane' => CoordLaneStages::DEFAULT_LANE, 'mapped_lanes' => array_keys($mapping->coordCardLaneStageIds)]);
+            Log::warning('kanban_coord_card: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — creating in the next mapped lane it declares, else the default lane; add the lane to the mapping if this board has that column', ['repo' => $repo, 'issue' => $issueNumber, 'unmapped_lanes' => $resolved['unmapped'], 'created_in_lane' => $resolved['lane'] ?? CoordLaneStages::DEFAULT_LANE, 'mapped_lanes' => array_keys($mapping->coordCardLaneStageIds)]);
         }
 
         // WritebackConfig fails the load closed unless the map carries DEFAULT_LANE, so
-        // this resolves — it is the one lane both fallbacks land on.
-        return $mapping->coordCardLaneStageIds[CoordLaneStages::DEFAULT_LANE];
+        // the null arm resolves; a non-null lane is mapped by construction (resolveLane
+        // only ever returns one of $mappedLanes).
+        return $mapping->coordCardLaneStageIds[$resolved['lane'] ?? CoordLaneStages::DEFAULT_LANE];
     }
 
     /**

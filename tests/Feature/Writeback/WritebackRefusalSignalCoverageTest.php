@@ -51,9 +51,10 @@ class WritebackRefusalSignalCoverageTest extends TestCase
         // stage value as numeric). An alert here could never be seen to fail (canon #9).
         'kanban_promote_released: mapping is missing the Shipped and/or Released stage; ignoring' => 'unreachable type-narrowing — load fails closed first (KanbanPromoteReleasedHandlerTest pins that)',
         // A config-gap diagnostic on a create that SUCCEEDS: the card is created in the
-        // default lane, so nothing was refused and there is no failure to signal. Routing
-        // it would emit a writeback_move_failed alert for a completed create (DL-286).
-        'kanban_coord_card: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — creating in the default lane instead; add the lane to the mapping if this board has that column' => 'config-gap diagnostic — the create proceeds in the default lane, no refusal to signal',
+        // next lane the issue declares that the map does carry, else the default lane —
+        // so nothing was refused and there is no failure to signal. Routing it would emit
+        // a writeback_move_failed alert for a completed create (DL-286).
+        'kanban_coord_card: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — creating in the next mapped lane it declares, else the default lane; add the lane to the mapping if this board has that column' => 'config-gap diagnostic — the create proceeds in a mapped lane, no refusal to signal',
         // Log::error, and its twin lives in the shared CardCollapse primitive where there
         // is no (repo, outcome) dedup tuple. Recorded as a remainder on card#5968; routing
         // one copy and not the other would be a fresh asymmetry.

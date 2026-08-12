@@ -142,11 +142,12 @@ complement and the `issue_number` stamp.
   {Next,Later,Maybe} are human-curated anyway). Whether any consumer needs **real-time** lane-at-create (the
   full `stage_by_label` config) is roundtable Q2; recommend deferring to a fast-follow.
   **[The fast-follow LANDED — card#6348 / DL-286, `coord_card_lane_stage_ids`. The deferral's premise was
-  wrong in one direction this review could not see: the reconcile does NOT refine the lane on its next pass —
-  `user_lanes` makes it PRESERVE the bridge's create lane, and the consumer's board→issue writeback then
-  rewrites the issue's `stage:*` label to match it. So "lane placement lags to the reconcile" was in fact
-  "the bridge's fixed stage overwrites the issue's declared priority." Keyed by LANE (`now`/`next`/…)
-  rather than by the full label, so the `stage:` grammar stays in one place.]**
+  wrong in one direction this review could not see: the reconcile does NOT refine the lane on its next pass.
+  The consumer's board→issue writeback runs BEFORE issues-sync and maps the card's lane onto the issue's
+  `stage:*` label, so the label is rewritten to agree with the bridge's create stage and the sync then reads
+  that rewritten label. So "lane placement lags to the reconcile" was in fact "the bridge's fixed stage
+  overwrites the issue's declared priority." Keyed by LANE (`now`/`next`/…) rather than by the full label, so
+  the `stage:` grammar stays in one place.]**
 - `title` = issue title verbatim; `priority` per-config; fail-closed at load (create with no stage can't POST).
 
 ### 3.3 The overlap is the RECONCILE, not the bridge (R1 finding 1 / R2 finding 1)

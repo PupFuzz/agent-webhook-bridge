@@ -5,23 +5,22 @@ namespace App\Bridge\Writeback;
 /**
  * The coordination board's PRIORITY-LANE model as the coord-card CREATE path needs
  * it: which `stage:*` label declares which lane, which lane an undeclared issue
- * defaults to, and which coordination itype the lane model governs at all.
+ * defaults to, and which coordination issues the lane model governs at all.
  *
  * WHY THIS EXISTS. The bridge creates a coord card in real time (DL-198) at the
  * mapping's fixed `coord_card_stage_id`, ignoring the issue's `stage:*` label. On a
  * board whose lane model is live that is not a placement, it is a REWRITE: the
- * consumer's periodic reconcile adopts the bridge's card by its `id:<sid>` tag and
- * then PRESERVES its lane (config `user_lanes`), and the consumer's board→issue
- * writeback propagates lane→label — so a `[TASK]` filed `stage:later` is carded in
- * the create stage, preserved there, and its label rewritten to match. Measured on
- * the reference install: 9 issues flipped to `stage:now`, one within 7 minutes of
- * filing (card#6348). The create stage must therefore be DERIVED from the label the
- * issue already carries, not fixed.
+ * consumer's `kanban-writeback` pass runs BEFORE its issues-sync and maps the card's
+ * lane back onto the issue's `stage:*` label, so the label the bridge's create stage
+ * implies is written onto the issue and the sync then agrees with it. Measured on the
+ * reference install: 9 issues flipped to `stage:now`, one within 7 minutes of filing
+ * (card#6348). The create stage must therefore be DERIVED from the label the issue
+ * already carries, not fixed.
  *
  * WHY A SECOND IMPLEMENTATION. The rule's home is Python — the consumer's
- * `kanban-issues-sync` `_STAGE_LANE` / `_task_lane` / `classify_b2` — and the bridge
- * is PHP and cannot import it. This is a deliberate mirror of a rule the bridge does
- * not own, the same shape (and the same obligation to re-port on a rule change) as
+ * `kanban-issues-sync` `_STAGE_LANE` / `_task_lane` / `classify_coord` — and the
+ * bridge is PHP and cannot import it. This is a deliberate mirror of a rule the bridge
+ * does not own, the same shape (and the same obligation to re-port on a rule change) as
  * {@see CoordConfigTerminals}. The `coordination.config.json` read that would let the
  * bridge derive the lane NAMES itself is deliberately CLI-only — see that class — so
  * the lane→stage-id half is operator config (`coord_card_lane_stage_ids`), exactly
@@ -32,20 +31,20 @@ namespace App\Bridge\Writeback;
  *     what makes a multi-labelled issue resolve to the same lane on both movers;
  *   - the `later` default for an issue that declares no recognized lane — `_task_lane`'s
  *     `return "Later"`;
- *   - the itype the lane model governs. `classify_b2` routes ONLY `_itype == "task"`
- *     through `_task_lane`; every other open itype goes to a fixed column. So the lane
- *     derivation is scoped to {@see LANE_MODEL_ITYPE} and a `[BRIEF]`/`[QUERY]`/
- *     `[REVIEW]` card keeps landing in the mapping's fixed `coord_card_stage_id`. A
- *     bridge that lane-derived every itype would place a fresh brief in `Later` where
- *     the reconcile places it in the create stage — two movers disagreeing at create,
- *     which is the failure {@see CoordConfigTerminals} exists to prevent, in a
- *     direction nothing would repair (the lane is then preserved).
- *
- * `itype` is the bridge's own `CoordinationClassifier::coordItype()` (named in prose,
- * not an `@see`: the FQCN makes the formatter import a classifier into this namespace
- * for a docblock), already a byte-exact mirror of the same Python `_itype` — so "task"
- * here means what it means there, including its fallback breadth (any title the
- * BRIEF/ANNOUNCE/QUERY/REVIEW scan misses).
+ *   - the availability test's POSITION — inside the resolution loop, so a lane this
+ *     board does not map is skipped and the scan continues (see {@see resolveLane});
+ *   - which issues the lane model governs. `classify_coord` routes an issue through
+ *     `_task_lane` iff `title.upper().startswith("[TASK]")` — an ANCHORED TITLE test,
+ *     deliberately not an itype test, and its own comment says why: `_itype` defaults
+ *     un-prefixed issues to `task` too, so keying on itype would sweep the whole
+ *     un-prefixed population into the lane model. So the gate here is
+ *     {@see LANE_MODEL_TITLE_PREFIX} on the raw title ({@see governs}), and a
+ *     `[BRIEF]`/`[QUERY]`/`[REVIEW]`/`[PROPOSAL]`/un-prefixed card keeps landing in the
+ *     mapping's fixed `coord_card_stage_id`. A bridge that lane-derived more than the
+ *     consumer's set would place those cards in `later` where the reconcile places them
+ *     in the create stage — two movers disagreeing at create, which is the failure
+ *     {@see CoordConfigTerminals} exists to prevent, in a direction nothing would repair
+ *     (`user_lanes` then preserves whichever won).
  */
 final class CoordLaneStages
 {
@@ -58,53 +57,80 @@ final class CoordLaneStages
     public const LANES = ['now', 'next', 'later', 'maybe'];
 
     /**
-     * The lane an issue declaring no recognized `stage:*` label lands in
-     * (`_task_lane`'s `return "Later"`), and the fallback for a declared lane the
-     * operator's map does not carry. Its presence in the map is REQUIRED at load —
-     * without it neither fallback has a target.
+     * The lane an issue declaring no MAPPED `stage:*` label lands in (`_task_lane`'s
+     * `return "Later"`, reached the same way: after the scan finds nothing). Its
+     * presence in the map is REQUIRED at load — without it the fallback has no target.
      */
     public const DEFAULT_LANE = 'later';
 
     /**
-     * The one coordination itype `classify_b2` routes through the lane model. Every
-     * other itype keeps the mapping's fixed create stage (see the class docblock).
+     * The anchored title prefix `classify_coord` gates the lane model on
+     * (`title.upper().startswith("[TASK]")`). Everything else keeps the mapping's
+     * fixed create stage (see the class docblock).
      */
-    public const LANE_MODEL_ITYPE = 'task';
+    public const LANE_MODEL_TITLE_PREFIX = '[TASK]';
 
     private const LABEL_PREFIX = 'stage:';
 
-    /** Whether the lane model governs this coordination itype at all. */
-    public static function governs(string $itype): bool
+    /**
+     * Whether the lane model governs this issue at all — the consumer's gate, mirrored
+     * expression-for-expression: `title.upper().startswith("[TASK]")` on the title as
+     * delivered.
+     *
+     * The title is deliberately NOT trimmed, where the bridge's own
+     * `CoordinationClassifier::stableId()` does trim before its own anchored match
+     * (named in prose, not an `@see`: the FQCN makes the formatter import a classifier
+     * into this namespace for a docblock). That divergence is the point: this gate's
+     * contract is *the set of issues the consumer lane-derives*, not *the set the bridge
+     * cards*, so a leading-whitespace title the consumer would send to `Now` must not be
+     * lane-derived here just because the bridge's adoption key tolerates it.
+     */
+    public static function governs(string $title): bool
     {
-        return $itype === self::LANE_MODEL_ITYPE;
+        return str_starts_with(strtoupper($title), self::LANE_MODEL_TITLE_PREFIX);
     }
 
     /**
-     * The lane key an issue's labels DECLARE, or null when they declare none the
-     * lane model recognizes (no `stage:*` label at all, or only unrecognized ones
-     * like `stage:someday`). Null is the caller's cue to use {@see DEFAULT_LANE} —
-     * kept distinct from a declared-but-unmappable lane, which the caller reports.
+     * The lane an issue's labels resolve to on a board mapping $mappedLanes, together
+     * with the lanes it DECLARED that the map does not carry (the caller's warn
+     * material — a config gap the operator must see).
      *
-     * Resolution order is {@see LANES}, mirroring `_task_lane`'s iteration over
-     * `_STAGE_LANE`: an issue carrying BOTH `stage:now` and `stage:later` resolves
-     * to `now` on both movers rather than to whichever the label list happens to
-     * list first. Labels are lowercased here (the Python read-site lowercases too),
-     * so a `Stage:Now` label from a hand-edit still resolves.
+     * Mirrors `_task_lane` including WHERE the availability test sits: INSIDE the loop
+     * (`if label in names and LANE_TO_COLUMN[lane] in columns`). A declared lane the
+     * board does not carry is SKIPPED and the scan continues to the next `stage:*`
+     * label in {@see LANES} order; the default is reached only when the scan is
+     * exhausted. Testing availability after the loop instead — resolve first, then fall
+     * back — would put an issue labelled `stage:now` + `stage:next` on a board with no
+     * Now column in `later` here and in `Next` there: a create-time disagreement the
+     * consumer's `user_lanes` then preserves, which is the whole failure this mirror
+     * exists to prevent.
+     *
+     * `lane` is null when no MAPPED lane is declared (no `stage:*` label, only
+     * unrecognized ones like `stage:someday`, or only unmapped ones) — the caller's
+     * {@see DEFAULT_LANE} cue. Labels are lowercased here (the Python read-site
+     * lowercases too), so a `Stage:Now` label from a hand-edit still resolves.
      *
      * @param  list<string>  $labels
+     * @param  list<string>  $mappedLanes  the lanes `coord_card_lane_stage_ids` carries for this board
+     * @return array{lane: ?string, unmapped: list<string>}
      */
-    public static function laneFromLabels(array $labels): ?string
+    public static function resolveLane(array $labels, array $mappedLanes): array
     {
         $names = [];
         foreach ($labels as $label) {
             $names[strtolower($label)] = true;
         }
+        $unmapped = [];
         foreach (self::LANES as $lane) {
-            if (isset($names[self::LABEL_PREFIX.$lane])) {
-                return $lane;
+            if (! isset($names[self::LABEL_PREFIX.$lane])) {
+                continue;
             }
+            if (in_array($lane, $mappedLanes, true)) {
+                return ['lane' => $lane, 'unmapped' => $unmapped];
+            }
+            $unmapped[] = $lane;
         }
 
-        return null;
+        return ['lane' => null, 'unmapped' => $unmapped];
     }
 }

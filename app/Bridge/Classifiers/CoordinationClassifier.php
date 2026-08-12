@@ -1104,13 +1104,20 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     }
 
     /**
-     * The `type:` tag value — a byte-for-byte port of the reconcile's `_itype`
-     * (coord.kanban_common reference): an UNANCHORED, priority-ordered substring scan
-     * (`[BRIEF]` > `[ANNOUNCE]` > `[QUERY]` > `[REVIEW]`, else `task`), deliberately
-     * distinct from the ANCHORED first-prefix {@see stableId} uses for the adoption key.
-     * They diverge on a multi-bracket title (`[REVIEW] of [BRIEF]` → sid `REVIEW-N`,
-     * itype `brief`) — matching the reconcile's own divergence so its next pass does not
-     * update-churn the `type:` tag / `priority`. (The adoption key stays exact either way.)
+     * The `type:` tag value — a port of the reconcile's `_itype` (coord.kanban_common
+     * reference): an UNANCHORED, priority-ordered substring scan (`[BRIEF]` >
+     * `[ANNOUNCE]` > `[QUERY]` > `[REVIEW]`, else `task`), deliberately distinct from the
+     * ANCHORED first-prefix {@see stableId} uses for the adoption key. They diverge on a
+     * multi-bracket title (`[REVIEW] of [BRIEF]` → sid `REVIEW-N`, itype `brief`) —
+     * matching the reconcile's own divergence so its next pass does not update-churn the
+     * `type:` tag / `priority`. (The adoption key stays exact either way.)
+     *
+     * NOT byte-exact, and the gap is one member: the reconcile derives its map from
+     * `COORD_PREFIXES`, which also carries `PROPOSAL`, so `[PROPOSAL] …` is `proposal`
+     * there and `task` here. Unreachable under the default `issue_population: prefixed`
+     * (a `[PROPOSAL]` has no sid and is not carded at all); under `all` it is reachable
+     * and the two movers would write different `type:` values for that one prefix. Do not
+     * restate this port as byte-exact — card#6371 found that claim in two places.
      */
     private function coordItype(string $title): string
     {

@@ -819,8 +819,6 @@ class WritebackConfigTest extends TestCase
 
         $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
         $this->assertSame(['now' => 40, 'next' => 41, 'later' => 42, 'maybe' => 43], $mapping->coordCardLaneStageIds);
-        $this->assertSame(42, $mapping->coordCardStageForLane('later'));
-        $this->assertNull($mapping->coordCardStageForLane('someday'));
     }
 
     public function test_a_partial_lane_map_is_allowed_when_it_carries_later(): void
