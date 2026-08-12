@@ -9,8 +9,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 ## [Unreleased]
 
 ### Added
-- **card#6152** — **A test guard: no `run:` body in any workflow or composite action may contain a
-  literal `${{`.** DL-182's rule — values reach a run body through the step's `env:` block and are
+- **card#6152** (**DL-284**) — **A test guard: no `run:` body in any workflow or composite action may
+  contain a literal `${{`.** DL-182's rule — values reach a run body through the step's `env:` block and are
   used quoted, never as inline interpolation — had no mechanical check, and the failure it catches is
   silent in both directions. Beyond the script-injection class the rule was written for, GitHub's
   template reader scans **every string scalar** for the token regardless of shell comments, so a
@@ -18,12 +18,15 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   template layer and disabled the gate with nothing red anywhere. The existing workflow tests are
   structurally unable to see that: they extract a `run:` string and execute it under `bash`, where the
   token is inert inside a comment. `tests/Feature/Workflows/RunBodyInterpolationTest.php` parses every
-  `.github/workflows/*.yml` and every `.github/actions/**/action.yml`, walks the parsed structure for
-  every `run:` string — no job or step name is hardcoded, so a job or step added tomorrow is covered by
-  existing — and names the file plus a job/step locator on a hit. Its denominator is asserted in three
-  independent legs (workflow files found, action files found, run bodies extracted) because each can
-  empty on its own and an empty population passes silently, and the extractor carries its own
-  discrimination control. **Bound, stated rather than implied:** this checks `run:` bodies only. A
+  `.github/workflows/*.yml|*.yaml` and every `.github/actions/**/action.yml|action.yaml`, walks the
+  parsed structure for every `run:` string — no job or step name is hardcoded, so a job or step added
+  tomorrow is covered with no edit to the test — and names the file plus a job/step locator on a hit.
+  Its denominator is asserted in **five** independent legs — workflow files found, action files found,
+  run bodies extracted, and one body from **each** of the two file shapes — because each can empty on
+  its own and an empty population passes silently. The last two are the load-bearing pair: a walk that
+  stops at `jobs.*.steps` leaves the action side empty while the first three legs stay green, and a
+  walk that stops at `runs.steps` does the reverse. The extractor carries its own discrimination
+  control. **Bound, stated rather than implied:** this checks `run:` bodies only. A
   `${{` in any other string scalar (`if:`, `name:`, a `with:` value) is equally capable of making a
   file unloadable and is **not** covered — validating a whole file as an Actions template would need
   the template engine, which this repo does not run.

@@ -153,10 +153,17 @@ class RunBodyInterpolationTest extends TestCase
 
         // An empty population passes the assertion below without measuring
         // anything, and each leg can empty independently: a moved directory, a
-        // renamed action file, or a walk that stops reaching composite steps.
+        // renamed action file, or a walk that reaches one file shape and not the
+        // other. The two per-shape floors are a PAIR on purpose — a walk that
+        // stops at `jobs.*.steps` leaves the workflow side whole and the action
+        // side empty, and a walk that stops at `runs.steps` does the reverse, so
+        // one floor alone still greens over most of the population unmeasured.
         $this->assertNotEmpty($workflows, 'found no .github/workflows/*.yml at all, so this test measured nothing');
         $this->assertNotEmpty($actions, 'found no .github/actions/**/action.yml at all, so composite steps were not measured');
         $this->assertNotEmpty($bodies, 'extracted no run: bodies at all, so this test measured nothing');
+
+        $fromWorkflows = array_filter($bodies, fn (array $b): bool => str_starts_with($b['file'], '.github/workflows/'));
+        $this->assertNotEmpty($fromWorkflows, 'no run: body came from a workflow — the walk does not reach jobs.*.steps');
 
         $fromActions = array_filter($bodies, fn (array $b): bool => str_starts_with($b['file'], '.github/actions/'));
         $this->assertNotEmpty($fromActions, 'no run: body came from a composite action — the walk does not reach runs.steps');
