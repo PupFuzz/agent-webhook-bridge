@@ -169,15 +169,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   disagreement). The label must be present **at open** — the create fires on `issues.opened`/`reopened` only,
   so a `[TASK]` labelled after filing is carded in `later` and its label converged to match (known gap,
   filed with the move-handler revive arm as one class item, **card#6393**). The labels reach the handler by
-  **pass-through on the classifier's target
-  payload** (the webhook body already carried them) rather than an API re-read. Fail-closed at load on a
-  non-object/empty map, an unknown lane key, a non-numeric id, a missing `later` entry, two lanes sharing one
-  stage id, a lane equal to `coord_card_terminal_stage_id`, or the key without
-  `create_coord_cards`; every id joins `bridge:check`'s stage-exists comparison. **Absent ⇒ byte-identical
-  DL-198** — activating it on an install is an operator config change, and the mis-laned cards already on a
-  board are a separate one-time repair. Lands the fast-follow the DL-198 design review deferred as
-  `stage_by_label` (R2 finding 4), whose premise — *"the reconcile refines the lane on its next pass"* — this
-  entry falsifies.
+  **pass-through on the classifier's target payload** (the webhook body already carried them) rather than
+  an API re-read. Fail-closed at load on a non-object/empty map, an unknown lane key, a non-numeric id, a
+  missing `later` entry, two lanes sharing one stage id, a lane equal to `coord_card_terminal_stage_id`, or
+  the key without `create_coord_cards`; every id joins `bridge:check`'s stage-exists comparison. **Absent ⇒
+  byte-identical DL-198** — activating it on an install is an operator config change, and the mis-laned
+  cards already on a board are a separate one-time repair. Lands the fast-follow the DL-198 design review
+  deferred as `stage_by_label` (R2 finding 4), whose premise — *"the reconcile refines the lane on its next
+  pass"* — this entry falsifies.
 - **card#5977** (**DL-283**) — **`provision-tools-python.yml` stops naming the `bin/` python tool set
   three times: the filesystem becomes the enumeration, and the one copy that cannot follow becomes
   detectable.** The workflow enumerated the eight tool + test files in both `paths:` filters and again

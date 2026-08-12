@@ -430,6 +430,21 @@ class KanbanCoordCardHandlerTest extends TestCase
             && $c['mapped_lanes'] === ['next', 'later', 'maybe'])->once();
     }
 
+    public function test_a_fully_mapped_lane_derived_create_does_not_warn(): void
+    {
+        // The two skip legs assert the warn FIRES; both are equally satisfied by a handler
+        // that warns on EVERY create. This pins the other direction — the gate is the
+        // declared-but-unmapped set, so a fully-mapped create is silent.
+        Log::spy();
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handleTask(['stage:now']);
+
+        $this->assertCreatedInStage(40);
+        Log::shouldNotHaveReceived('warning');
+    }
+
     public function test_a_non_task_title_keeps_the_fixed_create_stage(): void
     {
         // `classify_coord` gates the lane model on the TITLE (`startswith("[TASK]")`); a

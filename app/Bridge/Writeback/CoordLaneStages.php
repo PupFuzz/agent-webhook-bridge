@@ -40,12 +40,17 @@ namespace App\Bridge\Writeback;
  *     un-prefixed issues to `task` too, so keying on itype would sweep the whole
  *     un-prefixed population into the lane model. So the gate here is
  *     {@see LANE_MODEL_TITLE_PREFIX} on the raw title ({@see governs}), and a
- *     `[BRIEF]`/`[QUERY]`/`[REVIEW]`/`[PROPOSAL]`/un-prefixed card keeps landing in the
- *     mapping's fixed `coord_card_stage_id`. A bridge that lane-derived more than the
- *     consumer's set would place those cards in `later` where the reconcile places them
- *     in the create stage — two movers disagreeing at create, which is the failure
- *     {@see CoordConfigTerminals} exists to prevent, in a direction nothing would repair
- *     (`user_lanes` then preserves whichever won).
+ *     `[BRIEF]`/`[ANNOUNCE]`/`[QUERY]`/`[REVIEW]`/`[PROPOSAL]`/un-prefixed card keeps
+ *     landing in the mapping's fixed `coord_card_stage_id` — the PRE-EXISTING
+ *     fixed-stage behaviour, and not a claim that the two movers agree there:
+ *     `classify_coord` sends a non-`[TASK]` open issue to *Awaiting ACK* when it is an
+ *     announce and to *Now* otherwise, so the bridge agrees with it only where
+ *     `coord_card_stage_id` IS the board's Now column, and never for `[ANNOUNCE]`. That
+ *     create disagreement predates the lane model and is recorded in DL-286's sibling
+ *     audit; lane-deriving more than the consumer's set would ADD a second one — those
+ *     cards would land in `later` while the reconcile still wants Now / Awaiting ACK —
+ *     which is the failure {@see CoordConfigTerminals} exists to prevent, in a direction
+ *     nothing would repair (`user_lanes` then preserves whichever won).
  */
 final class CoordLaneStages
 {
