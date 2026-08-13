@@ -150,6 +150,32 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   the release-PR assertions are untouched.
 
 ### Fixed
+- **card#6027** (**DL-287**) — **A card-shaped token the grammar rejects stops reading as "no card token"
+  at the DL-win sites: the DL-218 conflict guard no longer switches itself off for the subject it exists
+  to protect, and such a move is now REFUSED.** ⚠ **Changes what the bridge accepts** (operator-gated,
+  approved 2026-08-13). A PR titled `Guard against DL-9 (card_4811)` parsed no card token (`card_4811` is a
+  near-miss spelling), so the conflict predicate saw `null`, read it as *absent*, and let `DL-9` win: a card
+  this PR never touched **moved and was stamped with its `pr_number`/`pr_url`** — which then feeds the
+  DL-270 corroboration gate and release-promote — with **zero warnings**. The card token is now
+  three-state (absent / parsed / **unreadable**) at all **three** consumers of the one shared predicate
+  (the move path, the branch-create `started` push, and the draft overlay — one predicate, so none can
+  drift). An unreadable token is read for the id it appears to name, via the existing `NearMissProbe`
+  (a capturing sibling of the probe already there — **not** a fourth pattern, DL-239(h)/DL-250(1)): if that
+  id is one of the cards the DL resolved to it is **redundant** (DL wins, nothing dropped, one `info` line —
+  the leg that keeps ordinary prose citations working); otherwise the move is **refused** and **alerted**
+  (`card_token_near_miss`, through the same `warnAndNotify` primitive as every other permanent refusal,
+  DL-274/DL-285 — never a third log-only branch). **Hard bound, in the code:** the recovered id may
+  **refuse or warn, never select** a card. **Blast radius measured before the gate ask, through the shipped
+  grammars: 0 of 1,118 historical PRs** (this repo 520 + the kanban repo 598) carry a card-shaped-unparsed
+  token, so this refuses nothing that has ever happened — with a positive control (3 synthetic rows,
+  including the repro, all caught) proving the instrument could see one. Also fixed, adjacent: the FR-7
+  **no-move** arms (a DL that resolves to nothing with no `card#` fallback) now run the near-miss probe,
+  which they always could have — nothing moves there, so the line's own "no move" clause is true about
+  them — and the probe now asks each grammar's `parse()` before probing its stem, so an arm reached with a
+  *parsing* DL can never draw a line claiming it does not parse. **Stated bounds, not oversights:** a
+  malformed **title** token beside a **parsing branch** token stays invisible (the branch is authoritative,
+  DL-270); a pure-overlay event inherits the refusal through the shared predicate with **no** diagnostic
+  (the DL-218 no-double-log split); and the digit class stays ASCII (DL-231 is not reopened).
 - **card#6371** (**DL-286**) — **The real-time coord-card create stops rewriting the priority its issue
   declares: the create stage is derived from the issue's `stage:*` label via the new opt-in
   `coord_card_lane_stage_ids` mapping key.** The bridge created every coordination card at the single
