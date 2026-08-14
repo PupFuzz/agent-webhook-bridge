@@ -1,18 +1,38 @@
 name: bin/ python unit tests
 
-# The standalone stdlib-Python operator tools under bin/ — the provisioning program
-# bin/provision-board-tools.py (FR #5010), its same-box one-shot wrapper
-# bin/provision-board-tools-samebox.py (card 5090), the seat-side channel-server
-# launch-assert bin/check-channel-snapshot.py (card 5143, DL-237), and the shared
-# CHANGELOG extractor bin/changelog-section.py (DL-276) that auto-tag-version.yml
-# and changelog-gate.yml both call — carry red-when-reverted unit tests. This job
-# runs them in CI so the "CI-tested" guarantee the designs rest on is real, not
-# decorative.
+# The standalone stdlib-Python operator tools under bin/ carry red-when-reverted
+# unit tests. This job runs them in CI so the "CI-tested" guarantee their designs
+# rest on is real, not decorative.
 #
-# ⚠ THE MODULE LIST IN THE FINAL STEP IS A THIRD COPY of the two path filters
-# below, and adding a bin/ tool means editing all three. That enumeration drifts
-# by construction (card#5977) — a tool added to only two of the three either
-# never runs or runs on the wrong events.
+# THE TOOL SET IS DELIBERATELY NOT ENUMERATED ANYWHERE IN THIS FILE — the
+# filesystem is the enumeration. `unittest discover` collects every bin/test_*.py,
+# and the path filters glob the directory, so a new tool is wired into CI by
+# existing. Until card#5977 the set was written out THREE times (both path filters
+# plus a module list in the run step) and each omission failed differently and
+# silently: absent from the module list, a tool's tests existed and never ran, and
+# the job was green; absent from a path filter, the job could not fire at all —
+# the gate went missing rather than red. An empty discovery is loud, so the
+# obvious way for the replacement to fail quietly is closed: `python3 -m unittest`
+# exits 5 (`NO TESTS RAN`) when it collects nothing, from Python 3.12 onward, and
+# the step prints the interpreter version so that premise is auditable per run.
+#
+# ⚠ THE PATH FILTERS BELOW ARE STILL A COPY, and structurally must be: `paths:` is
+# static YAML that GitHub evaluates before any job exists, so nothing this
+# workflow runs can check it — a filter that stops covering the tools makes this
+# gate ABSENT, which no run reports. That copy is made DETECTABLE instead:
+# tests/Feature/Workflows/PythonToolsPathFilterTest.php asserts both filters cover
+# every bin/ python file on disk and agree with each other, and it runs under
+# laravel-tests.yml, which carries no path filter of its own.
+#
+# `bin/**`, and the pattern FORM was chosen for verifiability, not for tightness.
+# `bin/**.py` would fire on strictly the files the deleted enumeration named — a
+# measured symmetric difference of zero — but nothing available here can prove
+# GitHub matches it that way, and a glob guessed wrong fails by making this gate
+# ABSENT, which is the defect this file was just repaired for. `docs/**` is a
+# verbatim row in GitHub's own filter-pattern table with worked examples, so
+# `bin/**` is read from the vendor rather than composed by analogy. The price is
+# that a PR touching only one of bin/'s `.php` tools now runs this job too —
+# measured at 2 commits over v0.70.0..dev, both green in seconds.
 #
 # ⚠ `app/**` IS IN THE FILTER, AND IT IS LOAD-BEARING — do not "tidy" it out as
 # unrelated to bin/. `bin/test_check_channel_snapshot.py` asserts about `app/` PHP
@@ -34,28 +54,14 @@ name: bin/ python unit tests
 on:
   pull_request:
     paths:
-      - 'bin/provision-board-tools.py'
-      - 'bin/test_provision_board_tools.py'
-      - 'bin/provision-board-tools-samebox.py'
-      - 'bin/test_provision_board_tools_samebox.py'
-      - 'bin/check-channel-snapshot.py'
-      - 'bin/test_check_channel_snapshot.py'
-      - 'bin/changelog-section.py'
-      - 'bin/test_changelog_section.py'
+      - 'bin/**'
       - 'app/**'
       - 'examples/channel-servers/**'
       - '.github/workflows/provision-tools-python.yml'
   push:
     branches: [dev, main]
     paths:
-      - 'bin/provision-board-tools.py'
-      - 'bin/test_provision_board_tools.py'
-      - 'bin/provision-board-tools-samebox.py'
-      - 'bin/test_provision_board_tools_samebox.py'
-      - 'bin/check-channel-snapshot.py'
-      - 'bin/test_check_channel_snapshot.py'
-      - 'bin/changelog-section.py'
-      - 'bin/test_changelog_section.py'
+      - 'bin/**'
       - 'app/**'
       - 'examples/channel-servers/**'
       - '.github/workflows/provision-tools-python.yml'
@@ -81,5 +87,14 @@ jobs:
       - name: Install channel-server dependencies (so the shipped-entry case is real)
         run: npm ci --ignore-scripts
         working-directory: examples/channel-servers
+      # Discovery IS the enumeration — see the header. `-s bin` doubles as the
+      # top-level dir on purpose: the test modules load their subject through
+      # `spec_from_file_location` off `__file__` and never import a `bin.` package,
+      # so making bin/ importable (an `__init__.py`) would buy nothing. `-VV` pins
+      # the interpreter the "empty discovery exits 5" claim above rests on.
       - name: Run bin/ unit tests
-        run: python3 -m unittest bin.test_provision_board_tools bin.test_provision_board_tools_samebox bin.test_check_channel_snapshot bin.test_changelog_section -v
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -VV
+          python3 -m unittest discover -s bin -p 'test_*.py' -v

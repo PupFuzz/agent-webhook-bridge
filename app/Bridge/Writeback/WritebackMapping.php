@@ -108,6 +108,20 @@ final class WritebackMapping
      *                                      number, {repo} = the repo NAME (last path segment). Per-tenant
      *                                      grammar, e.g. `id:DEV-pr-{n}` or `id:dep:{repo}#{n}`. null ⇒
      *                                      no tag is added (back-compat, byte-identical).
+     * @param  ?array<string, int>  $coordCardLaneStageIds  opt-in (card#6371 / DL-286): the board's
+     *                                                      PRIORITY-LANE stage ids, keyed by the lane
+     *                                                      the issue's `stage:*` label declares
+     *                                                      ({@see CoordLaneStages::LANES}). Present ⇒ a
+     *                                                      lane-model-governed coord card is created in
+     *                                                      the stage its label declares instead of the
+     *                                                      fixed $coordCardStageId, so the bridge stops
+     *                                                      rewriting the priority the issue already
+     *                                                      states. MUST carry
+     *                                                      {@see CoordLaneStages::DEFAULT_LANE} (the
+     *                                                      undeclared/unmappable fallback target) and no
+     *                                                      key outside LANES — both enforced at load.
+     *                                                      null ⇒ every coord card lands in
+     *                                                      $coordCardStageId (byte-identical DL-198).
      * @param  string  $issuePopulation  which coordination issues get a tracking card (#4553):
      *                                   {@see POPULATION_PREFIXED} (default) — only recognized-prefix
      *                                   issues, correlated by the `id:<sid>` tag (byte-identical DL-198);
@@ -135,6 +149,7 @@ final class WritebackMapping
         public readonly ?string $cardIdTagTemplate = null,
         public readonly bool $promoteOnRelease = false,
         public readonly string $issuePopulation = self::POPULATION_PREFIXED,
+        public readonly ?array $coordCardLaneStageIds = null,
     ) {}
 
     /** The configured stage id for a GitHub-PR outcome, or null when unmapped. */

@@ -994,6 +994,15 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'itype' => $itype,
                 'title' => $title,
                 'issue_url' => $url,
+                // The issue's own labels (card#6371), carried so the handler can derive the
+                // create stage from the `stage:*` priority the webhook ALREADY delivered.
+                // Passed through rather than re-read from the API: the label set is part of
+                // the very event being classified, so a re-read would answer a later question
+                // than the one this delivery asks — and would put an API call, its failure
+                // modes and its token on the create path for a datum already in hand. Shares
+                // the family-wide {@see labels()} reader, so the `stage:*` names are lowercased
+                // by the same rule the addressing labels are.
+                'labels' => $this->labels($ctx->eventType, $ctx->payload),
             ]),
         ]);
     }
@@ -1095,13 +1104,22 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     }
 
     /**
-     * The `type:` tag value — a byte-for-byte port of the reconcile's `_itype`
-     * (coord.kanban_common reference): an UNANCHORED, priority-ordered substring scan
-     * (`[BRIEF]` > `[ANNOUNCE]` > `[QUERY]` > `[REVIEW]`, else `task`), deliberately
-     * distinct from the ANCHORED first-prefix {@see stableId} uses for the adoption key.
-     * They diverge on a multi-bracket title (`[REVIEW] of [BRIEF]` → sid `REVIEW-N`,
-     * itype `brief`) — matching the reconcile's own divergence so its next pass does not
-     * update-churn the `type:` tag / `priority`. (The adoption key stays exact either way.)
+     * The `type:` tag value — a port of the reconcile's `_itype` (coord.kanban_common
+     * reference): an UNANCHORED, priority-ordered substring scan (`[BRIEF]` >
+     * `[ANNOUNCE]` > `[QUERY]` > `[REVIEW]`, else `task`), deliberately distinct from the
+     * ANCHORED first-prefix {@see stableId} uses for the adoption key. They diverge on a
+     * multi-bracket title (`[REVIEW] of [BRIEF]` → sid `REVIEW-N`, itype `brief`) —
+     * matching the reconcile's own divergence so its next pass does not update-churn the
+     * `type:` tag / `priority`. (The adoption key stays exact either way.)
+     *
+     * NOT byte-exact, and the gap is one member: the reconcile derives its map from
+     * `COORD_PREFIXES`, which also carries `PROPOSAL`, so `[PROPOSAL] …` is `proposal`
+     * there and `task` here. Unreachable under the default `issue_population: prefixed`
+     * (a `[PROPOSAL]` has no sid and is not carded at all); under `all` it is reachable
+     * and the two movers would write different `type:` values for that one prefix. Do not
+     * restate this port as byte-exact — card#6371 found the claim restated in two other
+     * places, DL-198 in `CLAUDE_DECISIONS.md` and the v0.55.0 `docs/CHANGELOG.md` entry
+     * for #281; both now carry a bracketed correction in place (history is not rewritten).
      */
     private function coordItype(string $title): string
     {

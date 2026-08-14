@@ -32,7 +32,15 @@ use Illuminate\Support\Facades\Log;
  */
 final class WritebackAlertNotifier
 {
-    public function notify(string $repo, string $outcome, ?int $cardId, string $reason): void
+    /**
+     * $issueNumber carries the GitHub issue OR pull-request number a refusal is keyed
+     * by when there is no card to key it on — the issue/PR-keyed arms refuse while
+     * *creating* or *finding* the card (DL-285). One field, because GitHub numbers
+     * issues and PRs in a single space. It is CONTEXT, deliberately NOT part of the
+     * dedup tuple: keying on it would grow the marker set by one entry per issue,
+     * forever, which is the cost that ruled out putting it in `reason`.
+     */
+    public function notify(string $repo, string $outcome, ?int $cardId, string $reason, ?int $issueNumber = null): void
     {
         // Deduped per (repo, outcome, reason) so one recurring permanent move-failure
         // wakes the operator once, not per redelivery. The raw signature tuple (NOT a
@@ -42,6 +50,7 @@ final class WritebackAlertNotifier
             'repo' => $repo,
             'outcome' => $outcome,
             'card_id' => $cardId,
+            'issue_number' => $issueNumber,
             'reason' => $reason,
         ]);
     }
@@ -55,10 +64,10 @@ final class WritebackAlertNotifier
      *
      * @param  array<string, mixed>  $logContext
      */
-    public function warnAndNotify(string $message, array $logContext, string $repo, string $outcome, ?int $cardId, string $reason): void
+    public function warnAndNotify(string $message, array $logContext, string $repo, string $outcome, ?int $cardId, string $reason, ?int $issueNumber = null): void
     {
         Log::warning($message, $logContext);
-        $this->notify($repo, $outcome, $cardId, $reason);
+        $this->notify($repo, $outcome, $cardId, $reason, $issueNumber);
     }
 
     /**

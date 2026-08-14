@@ -125,6 +125,23 @@ final class CardTokenGrammar
     }
 
     /**
+     * WHICH card a near-miss names — `4811` for `card_4811` — or null when
+     * {@see looksLikeCardToken} is false. Asked, like the probe itself, only
+     * where {@see parse} already returned null.
+     *
+     * HARD BOUND (DL-287): the id this returns may REFUSE or WARN about a move,
+     * never SELECT the card that moves. It exists so a caller can tell a
+     * near-miss that names the card already being moved (redundant — nothing is
+     * dropped) from one that names a different card (a hijack in progress).
+     * Selecting on it would make every rejected spelling a correlation channel,
+     * which is exactly what {@see PATTERN} decides against.
+     */
+    public static function nearMissCardId(string $text): ?int
+    {
+        return self::probe()->id($text);
+    }
+
+    /**
      * The probe's derived corpus for this stem — {@see NearMissProbe::vectors()}.
      * Which cells WARN is {@see parse()}'s answer, not this list's: the cells
      * that correlate must stay silent.

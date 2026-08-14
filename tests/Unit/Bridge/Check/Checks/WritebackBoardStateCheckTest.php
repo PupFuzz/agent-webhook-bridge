@@ -325,7 +325,7 @@ class WritebackBoardStateCheckTest extends TestCase
     // ---- #2652 / DL-194 / DL-198 / DL-200: every targeted stage id must exist ----
 
     /**
-     * The four id SOURCES the golden suite never exercises together. Each contributes an
+     * The id SOURCES the golden suite never exercises together. Each contributes an
      * unknown id, so a dropped source would shrink this list rather than fail loudly.
      */
     public function test_every_source_of_a_targeted_stage_id_is_checked_against_the_board(): void
@@ -337,12 +337,14 @@ class WritebackBoardStateCheckTest extends TestCase
             stages: ['opened' => 50, 'merged' => 61],
             startedFromStages: [62],
             unparkFromStages: [63],
+            createCoordCards: true,
             coordCardStageId: 64,
             coordCardTerminalStageId: 65,
+            coordCardLaneStageIds: ['now' => 66, 'later' => 67],
         ));
 
         $this->assertSame(Severity::Warn, $findings[1]['severity']);
-        $this->assertStringContainsString('references workflow stage id(s) 61, 62, 63, 64, 65 not on board 8', $findings[1]['message']);
+        $this->assertStringContainsString('references workflow stage id(s) 61, 62, 63, 64, 65, 66, 67 not on board 8', $findings[1]['message']);
     }
 
     /**

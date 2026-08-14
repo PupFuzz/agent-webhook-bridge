@@ -44,7 +44,8 @@ class CoordinationCardCreateClassifierTest extends TestCase
         ]));
     }
 
-    private function classify(string $title, string $eventType = 'issues.opened', int $number = 4, string $repo = 'org/coord', string $provider = 'github'): ClassifyResult
+    /** @param list<string> $labels */
+    private function classify(string $title, string $eventType = 'issues.opened', int $number = 4, string $repo = 'org/coord', string $provider = 'github', array $labels = []): ClassifyResult
     {
         $agent = AgentConfig::fromArray('me', [
             'identity' => ['github_user_id' => 99],
@@ -54,7 +55,12 @@ class CoordinationCardCreateClassifierTest extends TestCase
 
         return (new CoordinationClassifier)->classify(new ClassifyContext(
             $eventType,
-            ['issue' => ['number' => $number, 'title' => $title, 'html_url' => 'https://github.com/'.$repo.'/issues/'.$number]],
+            ['issue' => [
+                'number' => $number,
+                'title' => $title,
+                'html_url' => 'https://github.com/'.$repo.'/issues/'.$number,
+                'labels' => array_map(fn (string $l) => ['name' => $l], $labels),
+            ]],
             new Actor(id: '99', name: null, isKnownAgent: false),
             $provider,
             $repo,
@@ -77,6 +83,23 @@ class CoordinationCardCreateClassifierTest extends TestCase
         $this->assertSame('query', $t->payload['itype']);
         $this->assertSame('[QUERY] can we ship?', $t->payload['title']);
         $this->assertSame('https://github.com/org/coord/issues/4', $t->payload['issue_url']);
+    }
+
+    public function test_the_issues_labels_reach_the_handler_lowercased(): void
+    {
+        // card#6371: the create stage is derived from the issue's `stage:*` label, so the
+        // label set is part of the target payload — the handler must not have to re-fetch
+        // the issue to learn the priority the webhook already carried.
+        $t = $this->classify('[TASK] do the thing', labels: ['Stage:Later', 'from:pm'])->targets[0];
+
+        $this->assertSame(['stage:later', 'from:pm'], $t->payload['labels']);
+    }
+
+    public function test_an_unlabelled_issue_carries_an_empty_label_list(): void
+    {
+        $t = $this->classify('[TASK] do the thing')->targets[0];
+
+        $this->assertSame([], $t->payload['labels']);
     }
 
     public function test_each_recognized_prefix_maps_to_its_itype(): void

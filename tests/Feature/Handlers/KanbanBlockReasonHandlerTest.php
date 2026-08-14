@@ -557,4 +557,81 @@ class KanbanBlockReasonHandlerTest extends TestCase
 
         Http::assertNothingSent();
     }
+
+    // --- card#5968 / DL-285: the overlay's four NON-4xx permanent refusals join the
+    //     signalling set. The board guard is the load-bearing one — its twin in
+    //     KanbanMoveCardHandler has always alerted, so the gap was an asymmetry inside
+    //     one DL-009 guard rather than a missing feature. ---
+
+    public function test_card_not_on_the_mapped_board_alerts_like_its_move_handler_twin(): void
+    {
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 999, 'block_reason' => null]]),
+        ]);
+
+        $this->handle('set');
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'card_not_on_mapped_board'
+            && $r['outcome'] === 'draft_overlay'
+            && $r['card_id'] === 5
+            && $r['issue_number'] === null);
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');   // still refuses to write
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m) => str_contains($m, 'not on the mapped board'));
+    }
+
+    public function test_non_numeric_target_id_alerts(): void
+    {
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        (new KanbanBlockReasonHandler)->handle(
+            ReactionTarget::make('kanban_block_reason', 'not-a-number', payload: ['repo' => 'owner/repo', 'action' => 'set']),
+            AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
+        );
+
+        // The card id is what is malformed, so it is null; the repo still keys the tuple.
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'target_id_not_card_id'
+            && $r['repo'] === 'owner/repo'
+            && $r['card_id'] === null);
+    }
+
+    public function test_bad_action_alerts_with_the_card_id_it_does_know(): void
+    {
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        (new KanbanBlockReasonHandler)->handle(
+            ReactionTarget::make('kanban_block_reason', '5', payload: ['repo' => 'owner/repo', 'action' => 'bogus']),
+            AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
+        );
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'repo_or_action_invalid'
+            && $r['card_id'] === 5);
+    }
+
+    public function test_absent_writeback_json_still_logs_and_cannot_push(): void
+    {
+        // The Branch-#3 degradation, asserted rather than assumed: this arm routes through
+        // the paired primitive like every other, but the notifier loads its channel from
+        // the very file that is absent — so no push is structurally possible here and the
+        // durable log is the whole record.
+        $this->writeToken();
+        Log::spy();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle('set');
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m) => str_contains($m, 'writeback is not configured'));
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
 }

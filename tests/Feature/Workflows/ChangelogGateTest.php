@@ -34,6 +34,20 @@ class ChangelogGateTest extends TestCase
 
     private const PUBLISH_STEP = 'Create GitHub Release from the CHANGELOG section';
 
+    /**
+     * The gate's operator-facing member list — ONE copy here, matching the one
+     * `SCOPE` shell variable the workflow interpolates into all three messages.
+     * A guard's remediation text is a doc surface, so the enumeration is
+     * asserted rather than a substring of it. Pinned by the message-content
+     * assertions below, which compare it against `${SCOPE}`'s rendered output —
+     * not by the derivation leg, which never reads it.
+     */
+    private const SCOPE_ENUMERATION = '(app/, bin/, .github/workflows/, .github/actions/, .release-pr.json, phpstan-laravel.neon, pint.json, phpunit.xml)';
+
+    private const OUT_OF_SCOPE_MESSAGE = 'no in-scope file '.self::SCOPE_ENUMERATION;
+
+    private const IN_SCOPE_MESSAGE = 'an in-scope file '.self::SCOPE_ENUMERATION;
+
     /** @var list<string> */
     private array $trees = [];
 
@@ -278,7 +292,7 @@ class ChangelogGateTest extends TestCase
         $this->assertStringContainsString('is exempt', $out);
     }
 
-    public function test_a_pr_touching_neither_app_nor_bin_needs_no_entry(): void
+    public function test_a_pr_touching_no_in_scope_path_needs_no_entry(): void
     {
         [$rc, $out] = $this->runFeatureStep(
             ['docs/CHANGELOG.md' => $this->changelog('- old'), 'docs/other.md' => 'a'],
@@ -288,7 +302,7 @@ class ChangelogGateTest extends TestCase
         );
 
         $this->assertSame(0, $rc, $out);
-        $this->assertStringContainsString('no app/ or bin/ file', $out);
+        $this->assertStringContainsString(self::OUT_OF_SCOPE_MESSAGE, $out);
     }
 
     public function test_an_app_change_whose_token_is_named_in_unreleased_passes(): void
@@ -319,6 +333,7 @@ class ChangelogGateTest extends TestCase
 
         $this->assertSame(1, $rc, $out);
         $this->assertStringContainsString('does not name card 1234', $out);
+        $this->assertStringContainsString(self::IN_SCOPE_MESSAGE, $out);
     }
 
     public function test_an_entry_in_a_released_section_does_not_satisfy_the_gate(): void
@@ -439,6 +454,7 @@ class ChangelogGateTest extends TestCase
 
         $this->assertSame(1, $rc, $out);
         $this->assertStringContainsString('leaves docs/CHANGELOG.md\'s [Unreleased] section untouched', $out);
+        $this->assertStringContainsString(self::IN_SCOPE_MESSAGE, $out);
     }
 
     public function test_a_bin_change_is_in_scope_exactly_like_an_app_change(): void
@@ -452,6 +468,186 @@ class ChangelogGateTest extends TestCase
 
         $this->assertSame(1, $rc, $out);
         $this->assertStringContainsString('does not name card 1234', $out);
+    }
+
+    public function test_a_workflow_change_is_in_scope_exactly_like_an_app_change(): void
+    {
+        // card#6056: what CI accepts or rejects is shipped behaviour for a
+        // contributor. The DL-279 gate adoption changed what CI accepts on
+        // every release PR and owed no entry under the app/-and-bin/ scope.
+        [$rc, $out] = $this->runFeatureStep(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), '.github/workflows/some-gate.yml' => 'a'],
+            ['.github/workflows/some-gate.yml' => 'b'],
+            'fix(ci): tighten the gate (card#1234)',
+            'fix/1234-gate',
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString('does not name card 1234', $out);
+    }
+
+    /**
+     * The five members card#6100 (DL-282) added, one leg each. Each is a file a
+     * CI step actually reads, so each changes what CI accepts or rejects — the
+     * criterion the scope had been a proper subset of.
+     *
+     * @return iterable<string,array{0:string}>
+     */
+    public static function dl282InScopeMemberProvider(): iterable
+    {
+        // Pins PHP 8.5, the extension set and composer install for both
+        // laravel-tests.yml jobs.
+        yield 'composite action' => ['.github/actions/setup-app/action.yml'];
+        // VERSIONING.md calls its `artifacts` array the authority for the
+        // member list release-artifacts-gate.yml enforces.
+        yield 'declared release artifacts' => ['.release-pr.json'];
+        // The analyser's own level and paths.
+        yield 'phpstan config' => ['phpstan-laravel.neon'];
+        // The style preset and excludes.
+        yield 'pint config' => ['pint.json'];
+        // <testsuites> decides which tests run at all: deleting an entry drops
+        // a whole directory from CI without touching app/ or bin/.
+        yield 'phpunit config' => ['phpunit.xml'];
+    }
+
+    #[DataProvider('dl282InScopeMemberProvider')]
+    public function test_a_ci_config_member_is_in_scope_exactly_like_an_app_change(string $path): void
+    {
+        [$rc, $out] = $this->runFeatureStep(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), $path => 'a'],
+            [$path => 'b'],
+            'fix(ci): retune it (card#1234)',
+            'fix/1234-ci',
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString('does not name card 1234', $out);
+    }
+
+    /**
+     * The four root-file members are whole paths, not prefixes. Without these
+     * three legs a naive prefix predicate passes every positive leg above and
+     * the anchoring is decoration. Each anchor is pinned by a different leg:
+     * the trailing `$` excludes the suffixed case, the leading `^` the nested
+     * ones.
+     *
+     * @return iterable<string,array{0:string}>
+     */
+    public static function dl282RootFileLookalikeProvider(): iterable
+    {
+        // Nested same-named files: no CI step reads either one.
+        yield 'nested pint config' => ['config/pint.json'];
+        yield 'nested phpunit config' => ['docs/phpunit.xml'];
+        // Suffixed: the distributed template, not the file phpunit reads.
+        yield 'suffixed phpunit config' => ['phpunit.xml.dist'];
+    }
+
+    #[DataProvider('dl282RootFileLookalikeProvider')]
+    public function test_a_root_file_lookalike_stays_out_of_scope(string $path): void
+    {
+        [$rc, $out] = $this->runFeatureStep(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), $path => 'a'],
+            [$path => 'b'],
+            'chore: adjust it (card#1234)',
+            'chore/1234-adjust',
+        );
+
+        $this->assertSame(0, $rc, $out);
+        $this->assertStringContainsString(self::OUT_OF_SCOPE_MESSAGE, $out);
+    }
+
+    /**
+     * Three of the four hand-maintained copies are checked against the regex
+     * here: the two in this workflow by set equality, `VERSIONING.md`'s scope
+     * row by presence. The fourth, `SCOPE_ENUMERATION`, is pinned instead by
+     * the message-content assertions. Members are parsed from the predicate as
+     * extracted from the YAML — never typed here.
+     */
+    public function test_every_scope_enumeration_is_derived_from_the_predicate(): void
+    {
+        $script = $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP);
+
+        // Assumes the FIRST single-quoted `grep -qE` is the scope predicate; a
+        // hoisted or double-quoted one reds the group count below rather than
+        // silently asserting about a different regex.
+        $this->assertSame(1, preg_match("/grep -qE '([^']+)'/", $script, $m), 'the scope predicate must be extractable from the step');
+        $this->assertSame(2, preg_match_all('/\(([^)]*)\)/', $m[1], $groups), 'this PARSER expects two anchored alternations — if the predicate was deliberately collapsed to the equally-valid single-group form (DL-282 Decision 3), update this parser, not the predicate');
+
+        $members = [];
+        foreach ($groups[1] as $group) {
+            foreach (explode('|', $group) as $alternative) {
+                $members[] = str_replace('\\', '', $alternative);
+            }
+        }
+        // Positive control on the parser: a mangled parse must not make the
+        // comparisons below vacuous.
+        $this->assertContains('app/', $members);
+        $this->assertContains('bin/', $members);
+
+        $this->assertSame(1, preg_match("/^\s*SCOPE='([^']+)'/m", $script, $s), 'the operator-facing member list must be ONE shell variable, not a per-message copy');
+        $scopeString = $s[1];
+        // Exactly once in the whole step — its own assignment. Re-inlining a
+        // copy into any message restores the N-copies drift this removed.
+        $this->assertSame(1, substr_count($script, $scopeString), 'the member list must appear exactly once in the step: interpolate ${SCOPE} rather than re-inlining it');
+        $this->assertSame($members, explode(', ', trim($scopeString, '()')), 'the SCOPE string and the predicate must name the same members, in the same order');
+
+        // The enumeration alone, not the whole PATH SCOPE block: bounding it at
+        // `CHANGED=` swept in the `SCOPE='…'` assignment, which made this a
+        // restatement of the assertion above and left the comment unguarded.
+        $this->assertSame(1, preg_match('/# The members:\n(.*?)\n\s*#\s*\n/s', $script, $b), 'the PATH SCOPE block must carry a member enumeration');
+        // `^#   ` is the row column; continuation lines are indented further.
+        preg_match_all('/^#   (\S+)/m', $b[1], $rows);
+        $this->assertSame($members, $rows[1], 'the PATH SCOPE table and the predicate must name the same members, in the same order');
+
+        // VERSIONING.md's scope table row — presence only: its condition cell
+        // deliberately also names the lookalikes the anchors exclude.
+        $condition = '';
+        foreach (file(base_path('VERSIONING.md')) as $line) {
+            if (str_contains($line, 'DL-282')) {
+                $condition = explode(' | ', $line)[0];
+            }
+        }
+        $this->assertNotSame('', $condition, 'VERSIONING.md must carry the scope table row');
+        foreach ($members as $member) {
+            $this->assertStringContainsString('`'.$member.'`', $condition, "VERSIONING.md's scope row does not name '{$member}'");
+        }
+    }
+
+    public function test_a_non_ascii_in_scope_path_is_seen_by_the_scope_predicate(): void
+    {
+        // card#6101: `core.quotepath` defaults on, so git prints a path holding
+        // a non-ASCII byte as a C-quoted string with a LEADING `"` — which
+        // defeats the `^` anchor, silently exempting a PR whose in-scope paths
+        // are ALL non-ASCII-named. The fixture is that PR: one in-scope file,
+        // non-ASCII name, and a token the section does not carry, so the gate
+        // must reach its verdict rather than skip.
+        [$rc, $out] = $this->runFeatureStep(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), 'app/café.php' => 'a'],
+            ['docs/CHANGELOG.md' => $this->changelog('- old
+- an entry for some OTHER work (card#9999)'), 'app/café.php' => 'b'],
+            'fix(x): repair the accented one (card#1234)',
+            'fix/1234-x',
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString('does not name card 1234', $out);
+    }
+
+    public function test_a_github_path_outside_workflows_and_actions_stays_out_of_scope(): void
+    {
+        // The scope inside `.github/` is `workflows/` + `actions/`, not
+        // `.github/`. Pinned because `^\.github/` is the easy over-reach.
+        // `.github/dependabot.yml` configures PR CREATION and runs as no
+        // check, so it changes nothing CI accepts or rejects.
+        [$rc, $out] = $this->runFeatureStep(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), '.github/dependabot.yml' => 'a'],
+            ['.github/dependabot.yml' => 'b'],
+            'chore(deps): widen the ecosystem list (card#1234)',
+            'chore/1234-deps',
+        );
+
+        $this->assertSame(0, $rc, $out);
+        $this->assertStringContainsString(self::OUT_OF_SCOPE_MESSAGE, $out);
     }
 
     // ---------------------------------------------------------------- publish step

@@ -951,6 +951,164 @@ class GitHubPrCardMoveClassifierTest extends TestCase
             && str_contains((string) $msg, 'authoritative'))->once();
     }
 
+    // --- card#6027 / DL-287: a card-SHAPED token that does not parse stops being
+    //     read as "no card token" at the DL-win sites ---
+
+    public function test_a_near_miss_card_token_beside_a_resolving_dl_refuses_the_move(): void
+    {
+        // THE card#6027 repro, measured end-to-end through the real classifier.
+        // `card_4811` does not parse (underscore separator), so before DL-287 the
+        // conflict predicate saw a null token, read it as "no card token", and the
+        // DL-218 arm never ran: DL-9's card 7 MOVED and was stamped with this PR's
+        // number — a card this PR never touched — with ZERO warnings.
+        // (Revert the predicate to its two-state form — token present or not — ⇒ card 7 moves
+        // clean and unflagged ⇒ RED.)
+        $this->fakeBoardCards();   // DL-9 → card 7
+        Log::spy();
+
+        $result = $this->classify('pull_request.closed', [
+            'number' => 148, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'Guard against DL-9 (card_4811)', 'head' => ['ref' => 'fix/4811-guard'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertCount(1, $move);
+        // The DL's card is the only card named — the recovered near-miss id may
+        // REFUSE, never SELECT (the DL-287 hard bound).
+        $this->assertSame(7, $move[0]->payload['card_id']);
+        $this->assertTrue($move[0]->payload['card_token_near_miss']);
+        // A refused move writes nothing at all, so it carries no stamp hints either.
+        $this->assertArrayNotHasKey('stamp_pr', $move[0]->payload);
+        $this->assertArrayNotHasKey('stamp_pr_url', $move[0]->payload);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'card(s) 7')
+            && str_contains((string) $msg, 'card#4811')
+            && str_contains((string) $msg, 'REFUSED'))->once();
+        Log::shouldHaveReceived('warning')->once();   // TOTAL — one line, nothing else warned
+    }
+
+    public function test_the_near_miss_refusal_reaches_the_branch_create_push_too(): void
+    {
+        // The predicate has three consumers (canon #5): this push path is one of
+        // them, and a fix at the move site alone would leave it blind to the same
+        // shape with the same harm — a card this branch never named promoted to In
+        // Progress. (Fix only the move consumer ⇒ card 7 gets a clean started move
+        // ⇒ RED.)
+        $this->fakeBoardCards();   // DL-9 → card 7
+        Log::spy();
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/card_4811-guard-DL-9']);
+
+        $this->assertCount(1, $r->targets);
+        $this->assertSame(7, $r->targets[0]->payload['card_id']);
+        $this->assertSame('started', $r->targets[0]->payload['outcome']);
+        $this->assertTrue($r->targets[0]->payload['card_token_near_miss']);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'card(s) 7')
+            && str_contains((string) $msg, 'card#4811')
+            && str_contains((string) $msg, 'REFUSED'))->once();
+        Log::shouldHaveReceived('warning')->once();   // TOTAL
+    }
+
+    public function test_a_near_miss_naming_the_dls_own_card_is_redundant_not_refused(): void
+    {
+        // THE leg that distinguishes the shipped rule from refuse-on-the-bare-SHAPE:
+        // a card-shaped token that does not parse but names the SAME card the DL
+        // resolved to drops nothing, so it is REDUNDANT — info, DL wins, no warning
+        // and no refusal, mirroring the agreeing arm the parsed token already had.
+        // (Refuse on the shape alone ⇒ this move is flagged + warned ⇒ RED.)
+        $this->fakeBoardCards();   // DL-9 → card 7
+        Log::spy();
+
+        $result = $this->classify('pull_request.opened', [
+            'number' => 149, 'title' => 'Fix DL-9 thing (card_7)', 'head' => ['ref' => 'f'],
+        ]);
+
+        $move = $this->targetsNamed($result, 'kanban_move_card');
+        $this->assertCount(1, $move);
+        $this->assertSame(7, $move[0]->payload['card_id']);
+        $this->assertArrayNotHasKey('card_token_near_miss', $move[0]->payload);
+        $this->assertSame(149, $move[0]->payload['stamp_pr']);   // an ordinary DL move — it still stamps
+        Log::shouldHaveReceived('info')->withArgs(fn ($msg) => str_contains((string) $msg, 'card#7')
+            && str_contains((string) $msg, 'SAME card the DL resolved to'))->once();
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    public function test_the_redundant_arm_exists_on_the_push_surface_too(): void
+    {
+        // Both surfaces have both arms — a push whose ref misspells the DL's own card
+        // still starts it, and says so once. Without this leg the push redundancy
+        // branch is a decoration: nothing would red if it vanished.
+        $this->fakeBoardCards();   // DL-9 → card 7
+        Log::spy();
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/card_7-guard-DL-9']);
+
+        $this->assertCount(1, $r->targets);
+        $this->assertSame(7, $r->targets[0]->payload['card_id']);
+        $this->assertSame('started', $r->targets[0]->payload['outcome']);
+        $this->assertArrayNotHasKey('card_token_near_miss', $r->targets[0]->payload);
+        Log::shouldHaveReceived('info')->withArgs(fn ($msg) => str_contains((string) $msg, 'card#7')
+            && str_contains((string) $msg, 'SAME card the DL resolved to'))->once();
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    public function test_a_pure_overlay_event_inherits_the_refusal_with_no_diagnostic(): void
+    {
+        // The third consumer. A pure-overlay action carries no move outcome, so it
+        // returns before every FR-7 diagnostic — it inherits the RULING through the
+        // shared predicate (no `block_reason` lands on the DL's card) and stays
+        // silent, the same no-double-log split DL-218 made for its own conflict.
+        // (Fix only the two move consumers ⇒ card 7 gets the marker ⇒ RED.)
+        $this->enableDraftOverlay();
+        $this->fakeBoardCards();   // DL-9 → card 7
+        Log::spy();
+
+        $r = $this->classify('pull_request.converted_to_draft', [
+            'number' => 150, 'title' => 'Guard against DL-9 (card_4811)', 'head' => ['ref' => 'f'],
+        ]);
+
+        $this->assertSame([], $r->targets);
+        Log::shouldNotHaveReceived('warning');
+        Log::shouldNotHaveReceived('info');
+    }
+
+    public function test_the_no_move_arm_names_an_unreadable_card_token(): void
+    {
+        // The adjacent honesty fix: when a DL resolves to NOTHING and there is no
+        // card# fallback, nothing moves — so the near-miss line's own "no move"
+        // clause is true about this subject and the probe can run there. Before, it
+        // sat behind the both-null guard, and this arm reported the missed DL while
+        // saying nothing about the card-shaped token sitting beside it.
+        $this->fakeBoardCards();   // the board carries DL-9/DL-42; DL-77 resolves to nothing
+        Log::spy();
+
+        $r = $this->classify('pull_request.opened', ['title' => 'DL-77 rework (card_4811)', 'head' => ['ref' => 'f']]);
+
+        $this->assertSame([], $r->targets);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'DL-77')
+            && str_contains((string) $msg, 'high-value miss'))->once();
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'name a card')
+            && str_contains((string) $msg, 'near-miss'))->once();
+        // TOTAL — and no "name a DL" line: the DL in this subject PARSED, so the
+        // probe must not claim otherwise (the both-null guard used to make that
+        // impossible; the per-stem parse check is what keeps it impossible now).
+        Log::shouldHaveReceived('warning')->twice();
+    }
+
+    public function test_the_push_no_move_arm_names_an_unreadable_card_token_too(): void
+    {
+        // The same arm on the push surface — both were edited, so both are pinned.
+        $this->fakeBoardCards();
+        Log::spy();
+
+        $r = $this->classifyPush(['created' => true, 'ref' => 'refs/heads/DL-77-card_4811-guard']);
+
+        $this->assertSame([], $r->targets);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'high-value miss'))->once();
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'branch ref')
+            && str_contains((string) $msg, 'near-miss'))->once();
+        Log::shouldHaveReceived('warning')->twice();
+    }
+
     // --- DL-201 / roundtable #48: dash alias + DL-shaped boundary + near-miss warn.
     // The regex decisions are the guard (hostile-input matrix, mutation-checked):
     // reintroducing the trailing \b REDs the underscore tests; dropping the dash

@@ -8,6 +8,294 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.74.0] - 2026-08-14
+
+### Added
+- **card#5968** (**DL-285**) — **The writeback alert body gains an `issue_number`, and the DL-274
+  refusal-signal class closes: 18 more permanent-refusal arms now emit a live signal, leaving two
+  accounted-for log-only branches.** `writeback_move_failed` becomes
+  `{type, repo, outcome, card_id, issue_number, reason}` — one body shape, with `issue_number` null on
+  every card-keyed arm and `card_id` null wherever it is set. The three **issue/PR-keyed** handlers
+  (`kanban_coord_card`, `kanban_coord_card_move`, `kanban_dependabot_card`) refuse while *creating* or
+  *finding* a card, so they had no card id to key an alert on and **no notifier wiring of any kind**;
+  each now carries the optional-notifier constructor and a synthetic `outcome`
+  (`coord_card_create` / `coord_card_move` / `dependabot_card`). One field covers issues and PRs
+  because GitHub numbers them in a single space. `issue_number` is **context, not a dedup key** —
+  dedup stays `(repo, outcome, reason)`, so N issues failing one way alert once and the body carries
+  the first one's number; putting the number in `reason` instead was rejected precisely because it
+  would grow the marker set by one entry per issue, forever. Also routed: `kanban_block_reason`'s four
+  non-4xx refusals — including the **DL-009 card-not-on-mapped-board** security refusal, whose twin in
+  `kanban_move_card` has always signalled, so the gap was an asymmetry inside one guard — two of
+  `kanban_promote_released`'s pre-scan gaps, and the eight coord/dependabot non-4xx refusals that no
+  prior count had listed (step 1 of this work was classifying those 12 `Log::warning` lines
+  refusal-vs-diagnostic rather than trusting the number: all 12 are refusals). **Two branches stay
+  log-only and are disposed of rather than routed:** `kanban_promote_released`'s missing-Shipped/Released-stage
+  arm is type-narrowing for a config `WritebackConfig::load` already refuses, so an alert there could
+  never be seen to fail (a test pins the fail-closed load that makes it unreachable); and
+  `kanban_dependabot_card`'s archive-contract `Log::error`, whose verbatim twin lives in the shared
+  `CardCollapse` primitive, where there is no `(repo, outcome)` tuple to dedup on — routing one copy
+  and not the other would mint a fresh asymmetry. New
+  `tests/Feature/Writeback/WritebackRefusalSignalCoverageTest.php` re-derives the population from the
+  handler sources every run and asserts set equality against an accounted-for list, so a future arm
+  **in those files** cannot re-mint the omission — stated bound: the population is the
+  `app/Bridge/Handlers/Kanban*Handler.php` glob, so a handler named outside it escapes until the glob
+  widens. `Log::error` is in that population deliberately, since a guard scoped
+  to the word `warning` would report clean over a population narrowed to exclude its own sibling.
+  `promote_candidate_cap` — the DL-274 leftover with no coverage, needing >40 Shipped candidates to
+  reach — is now covered, asserting that the cap **truncates** the candidate list rather than merely
+  warning about it, with a negative control at exactly the cap. **Strictly louder: no accept/reject
+  change, no status-code change, no migration, no token-scope change; an install with no
+  `alert_channel` is byte-identical**, and the body change is additive for any consumer reading the
+  documented fields. Named remainders OUTSIDE the guard's population, tracked on card#5968 rather
+  than implied: **four** sites — the `CardCollapse` twin of the archive-contract error above, and
+  `KanbanClient`'s three correlation diagnostics (0-card read, page ceiling, no-card-collection
+  body), the same shape one layer down at a shared client with no per-event tuple.
+- **card#6152** (**DL-284**) — **A test guard: no `run:` body in any workflow or composite action may
+  contain a literal `${{`.** DL-182's rule — values reach a run body through the step's `env:` block and are
+  used quoted, never as inline interpolation — had no mechanical check, and the failure it catches is
+  silent in both directions. Beyond the script-injection class the rule was written for, GitHub's
+  template reader scans **every string scalar** for the token regardless of shell comments, so a
+  `${{ }}` written inside a `#` comment in a run body made `changelog-gate.yml` unloadable at the
+  template layer and disabled the gate with nothing red anywhere. The existing workflow tests are
+  structurally unable to see that: they extract a `run:` string and execute it under `bash`, where the
+  token is inert inside a comment. `tests/Feature/Workflows/RunBodyInterpolationTest.php` parses every
+  `.github/workflows/*.yml|*.yaml` and every `.github/actions/**/action.yml|action.yaml`, walks the
+  parsed structure for every `run:` string — no job or step name is hardcoded, so a job or step added
+  tomorrow is covered with no edit to the test — and names the file plus a job/step locator on a hit.
+  Its denominator is asserted in **five** independent legs — workflow files found, action files found,
+  run bodies extracted, and one body from **each** of the two file shapes — because each can empty on
+  its own and an empty population passes silently. The last two are the load-bearing pair: a walk that
+  stops at `jobs.*.steps` leaves the action side empty while the first three legs stay green, and a
+  walk that stops at `runs.steps` does the reverse. The extractor carries its own discrimination
+  control. **Bound, stated rather than implied:** this checks `run:` bodies only. A
+  `${{` in any other string scalar (`if:`, `name:`, a `with:` value) is equally capable of making a
+  file unloadable and is **not** covered — validating a whole file as an Actions template would need
+  the template engine, which this repo does not run.
+
+### Changed
+- **card#6155** (**DL-040**) — **The SQLite CI job's required-status-check context no longer embeds a
+  PHP version: `PHPUnit + Pint + PHPStan (PHP 8.3, SQLite)` → `PHPUnit + Pint + PHPStan (SQLite)`.**
+  ⚠ **This is a branch-protection change on both `dev` and `main`, executed as one coordinated op.**
+  The old name carried a stale `8.3` while the job runs 8.5, but it could not simply be corrected:
+  the string is a required context, so a bare rename leaves protection waiting on a check that never
+  reports and blocks every PR on both branches — including the renaming one. Renaming to "PHP 8.5"
+  would have been accurate today and re-armed the identical gated op at the next bump, so the version
+  was **removed** instead: the context is an identifier, and it is now stable across future runtime
+  upgrades. The PHP version remains pinned in `.github/actions/setup-app`, its single source of
+  truth. Ordering (the two halves cannot change atomically): CI green on the renamed job → remove the
+  stale context from both branches → merge → add the new context to both. The job-key comment now
+  forbids any version in this name, not merely a stale one. **Residual, unchanged:** the two
+  `PHPUnit (MariaDB N)` contexts interpolate the matrix and are not stale, but carry the same
+  coupling — changing that matrix is the same gated op.
+- **card#6056** (**DL-280**) — **`changelog-gate.yml`'s feature-PR path scope widens to `.github/workflows/`.**
+  **⚠ THIS CHANGES WHAT CI REQUIRES ON PRs TOUCHING `.github/workflows/`:** such a PR must now be
+  named in the `[Unreleased]` section — by its title's `card#`/`DL-` token, or, for a title carrying
+  no token, by having changed the section at all — exactly as an `app/` or `bin/` PR must. The scope
+  was `app/`-and-`bin/` on the reasoning that the gate covers shipped behaviour; what CI accepts or
+  rejects IS shipped behaviour for a contributor, and the gap was measured on the gate program's own
+  work — the DL-279 `release-artifacts-gate.yml` adoption changed what CI accepts on every release
+  PR and was itself structurally exempt from the gate that exists to make a change announce itself.
+  `.github/` outside `workflows/` stays out of scope. The criterion is *does this change what CI
+  accepts or rejects* — which `.github/pull_request_template.md` does not, but
+  `.github/actions/setup-app/action.yml` (a composite action both `laravel-tests.yml` jobs run) and
+  `.release-pr.json` (the declared artifact set `release-artifacts-gate.yml` reads as its authority)
+  both DO. Those two are a **known accepted gap, not a claim that they announce nothing** — widening
+  to reach them is itself a change to what CI rejects and so needs its own ruling; filed as
+  card#6100. The exempt branch set (`dependabot/*`, `release/*`, `sync/*`, `revert-*`) is unchanged,
+  and the release-PR assertions — the `## [<VERSION>]` section and its release-body size limit — are
+  untouched. **[Gap closed in this same release — see the card#6100 / DL-282 entry below: the scope
+  now reaches both files this entry named, and three more it missed, so the accepted gap this entry
+  declared is narrowed rather than still open at ship time. It is not eliminated — that entry
+  discloses what remains.]**
+- **card#6100** (**DL-282**) — **`changelog-gate.yml`'s feature-PR path scope widens: `.github/actions/`
+  and four root CI-config files join the `[Unreleased]` scope.**
+  **⚠ THIS CHANGES WHAT CI REQUIRES:** the scope goes from three members to eight — `app/`, `bin/`,
+  `.github/workflows/`, plus `.github/actions/`, `.release-pr.json`, `phpstan-laravel.neon`,
+  `pint.json` and `phpunit.xml` — so a PR touching any of them must now be named in `[Unreleased]`.
+  Each new member is read by a CI step and therefore changes what CI accepts or rejects:
+  `.github/actions/setup-app/action.yml` pins PHP 8.5, the extension set and composer install for
+  both `laravel-tests.yml` jobs; `.release-pr.json` carries the `artifacts` array `VERSIONING.md`
+  calls *the authority for the member list*; `phpstan-laravel.neon` and `pint.json` define the
+  analyser's and formatter's own rules; and `phpunit.xml`'s `<testsuites>` decides which tests RUN
+  AT ALL, so deleting an entry silently drops a directory from CI with zero touch to `app/` or
+  `bin/`. **Widening to all five rather than the two DL-280 named was the decisive call:** fixing 2
+  of 5 IS the *guard reads a proper subset* defect shape class card#5910 named and card#6056 was
+  filed to close, re-minted one directory down. **The scope is NOT claimed to exhaust the criterion**
+  — `composer.json`, `composer.lock` (`composer audit --locked` reads it as that gate's rule input)
+  and `.env.example` (copied to `.env` for both test jobs) are disclosed CI-half gaps gated on
+  **card#6137**, and `config/`, `routes/` and `database/migrations/` sit outside the software half as
+  a bound inherited from DL-276, stated but not fixed here. **Measured over-reach is zero** — over
+  `v0.70.0..dev` the per-path commit counts are `app/` 58, `bin/` 10, `.github/workflows/` 19
+  against **2** for all five new members combined, and both of those (`phpstan-laravel.neon`) rode
+  commits that also touch `app/` and so already owed an entry, so the widening would have caused
+  **no** additional gate firing over the whole window. The four root files match as **whole paths**,
+  not prefixes: the trailing `$` excludes `phpunit.xml.dist` and the leading `^` excludes
+  `config/pint.json` — different anchors for different lookalikes, pinned by separate tests.
+  **Accepted bound, stated rather than hidden:** `phpunit.xml` also carries a `<php><env>` block that
+  is test *fixture* config rather than policy, and a file-level predicate cannot split those regions
+  — the identical coarse-predicate tradeoff DL-280 already took for `.github/workflows/`. Verified
+  exclusions, deliberately NOT added: `.github/dependabot.yml` (configures PR creation, never runs as
+  a check), `.github/pull_request_template.md`, `.editorconfig`, `.gitattributes`, root
+  `package.json`, `.npmrc`, `vite.config.js` — none has a CI consumer (both `npm ci` steps run
+  against `examples/channel-servers`' own manifest). **`composer.json` is a disclosed accepted gap,
+  not a verified exclusion:** `composer install` runs with scripts enabled in both test jobs and the
+  psr-4 map drives the autoloader every job loads, so the reason first recorded for excluding it was
+  false. The surviving argument — a dependency change alters the subject under test rather than the
+  gate's own rule — is an argument, not a verification; its disposition is gated on **card#6137**,
+  which owns it. The scope ruling itself is unchanged at five new members. Also in this change: the
+  three operator-facing scope messages collapse onto one shell variable, and the `PATH SCOPE` comment
+  table is pinned by a test that DERIVES the members from the predicate — so no surviving copy of the
+  list is unguarded (three against the regex, the test constant against the gate's own output). The first
+  version of that test was **inert** (its haystack included the string it was comparing against);
+  that was found by measurement and is recorded in DL-282 with the eight per-member controls that
+  now isolate it. User-gated before any code. The exempt branch set is unchanged and
+  the release-PR assertions are untouched.
+
+### Fixed
+- **card#6027** (**DL-287**) — **A card-shaped token the grammar rejects stops reading as "no card token"
+  at the DL-win sites: the DL-218 conflict guard no longer switches itself off for the subject it exists
+  to protect, and such a move is now REFUSED.** ⚠ **Changes what the bridge accepts** (operator-gated,
+  approved 2026-08-13). A PR titled `Guard against DL-9 (card_4811)` parsed no card token (`card_4811` is a
+  near-miss spelling), so the conflict predicate saw `null`, read it as *absent*, and let `DL-9` win: a card
+  this PR never touched **moved and was stamped with its `pr_number`/`pr_url`** — which then feeds the
+  DL-270 corroboration gate and release-promote — with **zero warnings**. The card token is now
+  three-state (absent / parsed / **unreadable**) at all **three** consumers of the one shared predicate
+  (the move path, the branch-create `started` push, and the draft overlay — one predicate, so none can
+  drift). An unreadable token is read for the id it appears to name, via the existing `NearMissProbe`
+  (a capturing sibling of the probe already there — **not** a fourth pattern, DL-239(h)/DL-250(1)): if that
+  id is one of the cards the DL resolved to it is **redundant** (DL wins, nothing dropped, one `info` line —
+  the leg that keeps a prose citation of **the DL's own card** working; a near-miss-spelled citation of a
+  *different* card is refused like any other, `bridge:replay` to recover); otherwise the move is **refused** and **alerted**
+  (`card_token_near_miss`, through the same `warnAndNotify` primitive as every other permanent refusal,
+  DL-274/DL-285 — never a third log-only branch). **Hard bound, in the code:** the recovered id may
+  **refuse or warn, never select** a card. **Blast radius measured before the gate ask, through the shipped
+  grammars: 0 of 1,118 historical PRs** (this repo 520 + the kanban repo 598) carry a card-shaped-unparsed
+  token, so this refuses nothing that has ever happened — with a positive control (3 synthetic rows,
+  including the repro, all caught) proving the instrument could see one. Also fixed, adjacent: the FR-7
+  **no-move** arms (a DL that resolves to nothing with no `card#` fallback) now run the near-miss probe,
+  which they always could have — nothing moves there, so the line's own "no move" clause is true about
+  them — and the probe now asks each grammar's `parse()` before probing its stem, so an arm reached with a
+  *parsing* DL can never draw a line claiming it does not parse. **Stated bounds, not oversights — DL-287
+  carries the full list:** a malformed **title** token beside a **parsing branch** token stays invisible
+  (the branch is authoritative, DL-270); a pure-overlay event inherits the refusal through the shared
+  predicate with **no** diagnostic, in the CLEAR direction as well as the SET one (the DL-218
+  no-double-log split); the digit class stays ASCII (DL-231 is not reopened); and a **bare-space**
+  near-miss (`card 4811`) sits outside the probe's separator set per DL-201, so it neither warns nor
+  refuses.
+- **card#6371** (**DL-286**) — **The real-time coord-card create stops rewriting the priority its issue
+  declares: the create stage is derived from the issue's `stage:*` label via the new opt-in
+  `coord_card_lane_stage_ids` mapping key.** The bridge created every coordination card at the single
+  `coord_card_stage_id`; on a board with a `user_lanes` priority model that is not a placement but a
+  **rewrite**, because the consumer's board→issue writeback pass runs *before* its issues-sync and maps the
+  card's lane back onto the issue's `stage:*` label (over all four lanes by default), so the issue is
+  relabelled to whatever stage the bridge created the card in and the sync then agrees. Measured on the
+  reference install: **9 issues flipped to `stage:now`**, one within 7 minutes of filing. With the key set, a
+  card whose issue title is anchored `[TASK]` is created in the stage its label declares; no label or an
+  unrecognized one ⇒ `later`, and several `stage:*` labels resolve now→next→later→maybe — both mirroring the
+  consumer's `_task_lane`. A declared lane the map omits is **skipped and the scan continues** to the issue's
+  next declared lane (`_task_lane` tests column availability inside its loop), reaching `later` only when
+  none is mapped — **plus a warn** naming it either way (no fail-quiet path). The gate is the anchored
+  `[TASK]` **title**, mirroring the consumer's `classify_coord`, which deliberately does not gate on itype
+  (`_itype` defaults un-prefixed issues to `task`, and the bridge's reads `[PROPOSAL]` that way too, so an
+  itype gate would lane-derive issues the reconcile sends to `Now` and `user_lanes` would freeze the
+  disagreement). The label must be present **at open** — the create fires on `issues.opened`/`reopened` only,
+  so a `[TASK]` labelled after filing is carded in `later` and its label converged to match (known gap,
+  filed with the move-handler revive arm as one class item, **card#6393**). The labels reach the handler by
+  **pass-through on the classifier's target payload** (the webhook body already carried them) rather than
+  an API re-read. Fail-closed at load on a non-object/empty map, an unknown lane key, a non-numeric id, a
+  missing `later` entry, two lanes sharing one stage id, a lane equal to `coord_card_terminal_stage_id`, or
+  the key without `create_coord_cards`; every id joins `bridge:check`'s stage-exists comparison. **Absent ⇒
+  byte-identical DL-198** — activating it on an install is an operator config change, and the mis-laned
+  cards already on a board are a separate one-time repair. Lands the fast-follow the DL-198 design review
+  deferred as `stage_by_label` (R2 finding 4), whose premise — *"the reconcile refines the lane on its next
+  pass"* — this entry falsifies.
+- **card#5977** (**DL-283**) — **`provision-tools-python.yml` stops naming the `bin/` python tool set
+  three times: the filesystem becomes the enumeration, and the one copy that cannot follow becomes
+  detectable.** The workflow enumerated the eight tool + test files in both `paths:` filters and again
+  as a `python3 -m unittest <modules>` argument list, so adding a tool meant editing three lists and
+  each omission failed differently and **silently**: absent from the module list, a tool's tests
+  existed, never ran, and the job stayed green; absent from a path filter, the job could not fire at
+  all — the gate went **absent**, not red, which is how the DL-242 regression merged and then sat red
+  on `dev` unseen. The run step now uses `unittest discover -s bin -p 'test_*.py'`, so the module list
+  is gone; both filters become `bin/**`. **The pattern FORM was chosen for verifiability, not for
+  tightness:** `bin/**.py` would have fired on strictly the files the enumeration named — symmetric
+  difference zero over every tracked file under `bin/` — but nothing available here can prove GitHub
+  matches that composed form, and a glob guessed wrong fails by making the gate **absent**, which is
+  the defect being repaired. `docs/**` is a verbatim row in GitHub's own filter-pattern table with
+  worked examples, so `bin/**` is read from the vendor rather than reasoned by analogy. **The
+  resulting over-reach is measured, not waved at:** a PR touching only one of `bin/`'s three `.php`
+  tools now runs this job too — **2** commits over `v0.70.0..dev` (`966b536`, `9566ed1`), both of
+  which the python suite passes in seconds. A python file added to `bin/` tomorrow is now wired into
+  CI by existing. **A `paths:` filter is static YAML GitHub evaluates
+  before the job exists, so nothing inside that workflow can ever check it** — that third copy is not
+  consolidated away, it is made loud: `tests/Feature/Workflows/PythonToolsPathFilterTest.php` asserts
+  both filters cover every python file under `bin/`, that the two filters agree, that the run step
+  still discovers rather than naming modules, and that no python file hides in a `bin/` subdirectory
+  where discovery would skip it. It runs under `laravel-tests.yml`, the workflow that deliberately
+  carries no path filter, so a gap in the python job's filter is red on **every** PR — including the
+  PRs that job cannot see. Each leg was watched red against its own mutation, and the matcher itself
+  has a discrimination control. An empty discovery is loud rather than green: `python3 -m unittest`
+  exits 5 (`NO TESTS RAN`) when it collects nothing, and the step prints `python3 -VV` so that premise
+  is auditable per run. **Sibling audit over all 10 YAML files under `.github/` (9 workflows + the
+  composite action), derived by script rather than recalled:** two carry a `paths:` filter at all, and
+  `channel-server-supply-chain.yml`'s is a directory glob plus its own filename with no membership
+  restated anywhere — **one instance, not a class.** No job, step or check name changes.
+- **card#6155** — **`laravel-tests.yml`'s header comment stops claiming a PHPUnit major the repo has
+  not pinned for two majors; the stale-by-design job label gains a pointer where the edit would be
+  made.** No CI behaviour change — the workflow's steps, jobs, triggers and check names are
+  byte-identical, so nothing about what CI accepts or rejects moves. The card was filed against the
+  SQLite job's `PHP 8.3` label; the label is **left alone deliberately** and the card's premise is
+  the second independent discovery of a documented deferral. That exact string is a required-status-
+  check context in **both** `dev` and `main` branch protection (re-verified live via `gh api`, not
+  recalled), so a bare rename leaves protection waiting on a check that never reports and blocks
+  every PR — DL-040 ruled it a coordinated, gated branch-protection op and that ruling stands. What
+  changes: the job key now carries a DO-NOT-RENAME pointer to DL-040, because a hazard documented
+  only in the decision log and `CLAUDE_TESTING.md` was demonstrably re-found by someone reading the
+  workflow. **Sibling audit run over every version literal in `.github/workflows/` and
+  `.github/actions/`, one further instance:** this workflow's header comment restated *"Laravel 13 /
+  PHPUnit 12 / PHP 8.5"* while `composer.json` requires `phpunit/phpunit: ^13.2.1` and the lock
+  carries **13.2.6**. Fixed by **deleting the version triple rather than re-syncing it** — the
+  restatement is the defect (a comment that re-states a pin drifts from it), so the comment now
+  names where each version is actually pinned. Everything else in that population verified clean and
+  is recorded rather than left implied: all six SHA-pin `# vX.Y.Z` tag comments resolve to exactly
+  the pinned SHA against the GitHub API (control: a deliberately wrong tag returns a different SHA,
+  so the check discriminates); `Set up Node 20` matches `node-version: '20'` and the channel server's
+  `engines: ">=20"`; `Set up PHP 8.5` and the `setup-app` description match its own `php-version`
+  pin; the `changelog-gate.yml` comment's PHP 8.5 is current; and `PHPUnit (MariaDB ${{
+  matrix.mariadb }})` interpolates the matrix, which is the shape that cannot drift. Version strings
+  in historical or measurement prose (`v0.12`, `v0.72.0`, the `0.7.1`/`0.8.3` lock measurement) are
+  frozen-original records, not restatements of a live pin, and are untouched. **A second, different
+  stale claim in the same two comment blocks, found by re-reading rather than by the version grep:**
+  both the workflow header and `CLAUDE_TESTING.md` described the `Laravel Tests` workflow as running
+  *"three checks"* and enumerated Pint / PHPStan / PHPUnit — omitting the `bin/check-doc-refs.php`
+  doc-sync step, which has been a fourth check in the SQLite job since it was added. Both now say
+  four and name it. Corrected in the same change because a comment being rewritten should not ship
+  still miscounting the steps directly beneath it. **Still open, still gated:** the coordinated
+  rename. DL-040's annotation carries the recommendation that it drop the
+  version from the check name entirely rather than move it to `8.5`, so the branch-protection op is
+  paid once instead of at every PHP upgrade — a recommendation, not a decision.
+- **card#6101** (**DL-281**) — **`changelog-gate.yml` stops silently exempting a PR whose in-scope
+  paths are all non-ASCII-named.** `core.quotepath` defaults ON, so `git diff --name-only` prints any
+  path carrying a non-ASCII byte as a C-quoted string with a **leading `"`** — which defeats the `^`
+  in the feature-PR step's scope predicate. Measured: a commit touching only `app/café.php` matched
+  the predicate **0** times; the same diff read under `git -c core.quotepath=false` matched **1**
+  (control: `app/plain.php` matched under both). The gate did not error — it printed *"OK: this PR
+  changes no app/, bin/, or .github/workflows/ file"* and exited 0, a false claim about the diff.
+  **⚠ THIS CHANGES WHAT CI REQUIRES:** the gate now fires on PRs it previously let through. It was
+  user-gated before any code. **The reach was narrow, and this entry does not oversell the fix** —
+  the miss needed *every* in-scope path in the PR to be non-ASCII-named; one ASCII `app/`, `bin/`, or
+  `.github/workflows/` file anywhere in the diff always fired the gate. The flag is set at the
+  **capture** in both steps rather than at either predicate, so a future predicate change *in this
+  workflow* is safe by construction; the release step's `grep -qxF VERSION` was never exposed (an
+  ASCII literal is never quoted) and its half of the change is deliberately untestable. **Sibling
+  audit run, one instance:** three `git diff --name-only` call sites exist in this repo's automation
+  and only the one is exposed — the release step's fixed-string `-x` match and
+  `channel-server-supply-chain.yml`'s unanchored `grep -v '/node_modules/'` exclusion are both
+  provably unaffected by quoting. Residual, stated rather than claimed closed: a path containing
+  `"`, `\`, or a control byte is C-quoted regardless of this flag. `-z` closes that residual too and
+  was rejected on cost — **DL-281 § Alternatives considered (a) owns that reasoning and what the
+  rejected option would have bought; deliberately not restated here.**
+
 ## [0.73.0] - 2026-08-07
 
 ### Fixed
@@ -639,7 +927,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Added
 - **#280** — **`impl-ci-wake` optional `ci_failure_workflow_patterns` CI-failure workflow-name filter (DL-197).** The CI-failure wake can be narrowed to a workflow-NAME allow-list (`ci_failure_workflow_patterns`, case-insensitive substring). Empty (default) ⇒ any workflow's failure wakes — **byte-identical**; non-empty ⇒ only a name-matched workflow's failure wakes. It narrows **which workflows**, never **which conclusions** — the fail-LOUD gate (wake on any non-`benign_conclusions` terminal conclusion) is untouched for a matched workflow, so a new/unknown conclusion type is still surfaced. A run with **no name** is never filtered (wakes fail-loud, preserving pre-filter behavior on a malformed payload); a filtered-out failure becomes a non-wake run (drop / inbox_stage per `impl_non_wake_disposition`). `bridge:check` warns when the filter is set (config-visibility) and guards a malformed pattern list. Roundtable #24 (fleet-converged on scoping the wake to the coordination protocol-integrity workflow). 738/738 phpunit, phpstan L7 0, pint clean; fresh design + impl review.
-- **#281** — **Real-time coordination issue → kanban card create (DL-198).** A new opt-in `coord-card-create` family on `CoordinationClassifier` creates a tracking card the moment a recognized-prefix (`[BRIEF|ANNOUNCE|QUERY|REVIEW|TASK]`) coordination issue opens, instead of waiting for the consumer's periodic reconcile. Gated per-mapping (`create_coord_cards` + `coord_card_stage_id`) in `writeback.json`; absent-config ⇒ **byte-identical**. The bridge is the real-time PRIMARY mover and stays **registry-free**; the consumer's periodic `reconcile_simple_board` remains the backstop (its orphan-adoption pass adopts the card by the `id:<sid>` tag). Create-only (never moves/archives a coord card), idempotent by the `id:<sid>` tag (covers redelivery, opened+reopened, and the primary-vs-backstop race — both movers key on the same tag), with a post-create collapse via a shared `CardCollapse` primitive. Byte-exact to the reconcile: anchored `sid` (`^\[(…)\]` on `trim(title)`, no trailing boundary), `type:` mirrors the reconcile's unanchored `_itype` priority-substring scan, `external_id` deliberately omitted (kanban `(board_id, external_id)` uniqueness would 422 a colliding issue number). New `KanbanCoordCardHandler` + `CardCollapse`; `createCard` gains 3 additive nullable params (dependabot caller byte-identical); `bridge:check` warns on a missing coord-card stage / a `create_coord_cards` with no `identity_id`. Roundtable #18(b) (contract locked 3-way in #18/#23). 776/776 phpunit, phpstan L7 0, pint clean; fresh design-review (6 findings resolved) + impl-review APPROVE (3 LOW findings fixed).
+- **#281** — **Real-time coordination issue → kanban card create (DL-198).** A new opt-in `coord-card-create` family on `CoordinationClassifier` creates a tracking card the moment a recognized-prefix (`[BRIEF|ANNOUNCE|QUERY|REVIEW|TASK]`) coordination issue opens, instead of waiting for the consumer's periodic reconcile. Gated per-mapping (`create_coord_cards` + `coord_card_stage_id`) in `writeback.json`; absent-config ⇒ **byte-identical**. The bridge is the real-time PRIMARY mover and stays **registry-free**; the consumer's periodic `reconcile_simple_board` remains the backstop (its orphan-adoption pass adopts the card by the `id:<sid>` tag). Create-only (never moves/archives a coord card), idempotent by the `id:<sid>` tag (covers redelivery, opened+reopened, and the primary-vs-backstop race — both movers key on the same tag), with a post-create collapse via a shared `CardCollapse` primitive. Byte-exact to the reconcile: anchored `sid` (`^\[(…)\]` on `trim(title)`, no trailing boundary), `type:` mirrors the reconcile's unanchored `_itype` priority-substring scan **[DL-286 correction: the `type:`/`_itype` port is NOT byte-exact — the reconcile's map carries `PROPOSAL`, so `[PROPOSAL]` is `proposal` there and `task` here; reachable only under `issue_population: all`. The `sid` claim stands.]**, `external_id` deliberately omitted (kanban `(board_id, external_id)` uniqueness would 422 a colliding issue number). New `KanbanCoordCardHandler` + `CardCollapse`; `createCard` gains 3 additive nullable params (dependabot caller byte-identical); `bridge:check` warns on a missing coord-card stage / a `create_coord_cards` with no `identity_id`. Roundtable #18(b) (contract locked 3-way in #18/#23). 776/776 phpunit, phpstan L7 0, pint clean; fresh design-review (6 findings resolved) + impl-review APPROVE (3 LOW findings fixed).
 
 ### Changed
 - **#279** — docs(customization): a custom classifier extending `InboxOnlyClassifier` must implement `DeclaresConsumedEvents` (or the DL-196 event-follows-consumer check false-WARNs its scope). Documentation only; no code change.

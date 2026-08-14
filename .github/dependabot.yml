@@ -1,10 +1,71 @@
+# ⛔ Dependabot SECURITY updates are DISABLED on this repository — deliberately,
+# and permanently. Vulnerability ALERTS stay ENABLED: detection is unchanged,
+# only the automatic security-PR channel (`automated-security-fixes`) is off.
+#
+# Why: a security update ignores `target-branch:` and opens against the DEFAULT
+# branch, `main` — which carries the version/tag invariant (`VERSION` +
+# `auto-tag-version.yml`; see VERSIONING.md). A dependency PR never bumps
+# `VERSION`, so merging one on `main` leaves the branch at a version an older tag
+# already claims, auto-tag refuses to re-mint it, and the release goes untagged.
+# The mechanism is structural and identical here; it was measured on the
+# kanban-board repo, which shares this branch model — deploy fail-closed for
+# 16 h 27 m across every tenant (2026-08-08T14:41:57Z → 2026-08-09T07:09:15Z,
+# measured on `main`'s first-parent chain; a plain commit listing over-counts by
+# interleaving integration-branch ancestry). Full analysis: card#6169.
+#
+# This is a PERMANENT posture, not scaffolding awaiting cleanup — it does not
+# lift. Re-enabling `automated-security-fixes` re-arms that incident: do not do
+# it as tidy-up, and do not read this block as a TODO.
+#
+# How remediation still reaches us:
+#   * alerts fire exactly as before — nothing about detection changed;
+#   * the VERSION updates configured below DO honour `target-branch: dev`, so
+#     dependency PRs keep opening against `dev` on the weekly cadence — and that
+#     sentence is only true while EVERY ecosystem present on `main` appears
+#     below. It did not hold when this posture was first written: `npm` was
+#     absent from this file while 17 of the repo's 19 lifetime alerts (89%) were
+#     npm, all on `examples/channel-servers/package-lock.json`, and every npm PR
+#     it had ever received arrived via the security channel this block disables.
+#     Turning that channel off would have left npm with no remediation path at
+#     all. The npm block below closes it. ⇒ Re-derive coverage from the manifest
+#     tree — never from this list — whenever a manifest is added or moved;
+#   * anything urgent is hand-cut as a PR to `dev` and reaches `main` through the
+#     normal release, which bumps `VERSION` — never auto-patched onto the release
+#     branch.
+#
+# PRECONDITION, stated so a later reader can RE-CHECK it instead of trusting it:
+# this is safe only while the alert channel on the default branch is
+# non-vacuous — i.e. `main` actually carries the manifests being scanned.
+# Verified 2026-08-09 on `origin/main`: 5 dependency manifests (`composer.json`,
+# `composer.lock`, `package.json`, plus the reference channel server's
+# `examples/channel-servers/package.json` and `package-lock.json`) and 9 workflow
+# files. If a manifest later moves off `main`, alerts go quiet for it and this
+# decision must be re-derived on that evidence rather than assumed to still hold.
+#
 # Dependabot config for agent-webhook-bridge.
 #
-# Two ecosystems (the pip ecosystem was removed with the v0.12 Laravel
+# Three ecosystems (the pip ecosystem was removed with the v0.12 Laravel
 # rewrite — DL-001):
 #   * github-actions — pinned actions in .github/workflows/*.yml AND in
 #     composite actions under .github/actions/<name>/action.yml
 #   * composer       — Laravel + bridge PHP deps (composer.json)
+#   * npm            — the root build toolchain (package.json) AND the reference
+#     channel server (examples/channel-servers/), which has its own manifest pair
+#
+# npm scanning covers TWO directories, and the second is the load-bearing one:
+# every npm alert this repo has ever had (17/17) came from
+# `examples/channel-servers/package-lock.json`, not the root. A single
+# `directory: "/"` would cover the root manifest, report healthy, and silently
+# miss the nested pair where the entire real alert surface lives — the
+# guard-reads-a-proper-subset shape (card#5910's class), one directory down.
+# Both entries are enumerated from a full recursive tree read of `main`
+# (`truncated=false`, 649 entries), not from recall.
+#   ⚠ OPEN, stated rather than assumed: the root `package.json` has NO lockfile,
+#   and 0 of the 17 alerts came from it. That is consistent with either "nothing
+#   vulnerable in the root toolchain" or "the alert channel cannot resolve
+#   versions without a lockfile" — an absence of alerts cannot distinguish the
+#   two. Version updates below work on `package.json` alone regardless; the
+#   DETECTION question for the root is tracked on card#6169, not answered here.
 #
 # github-actions scanning: `directory: "/"` covers only .github/workflows +
 # a ROOT action.yml — NOT composite actions in subdirectories, so a pin inside
@@ -55,3 +116,18 @@ updates:
     labels:
       - dependencies
       - php
+
+  - package-ecosystem: npm
+    directories:
+      - "/"
+      - "/examples/channel-servers"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "America/New_York"
+    target-branch: dev
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - javascript

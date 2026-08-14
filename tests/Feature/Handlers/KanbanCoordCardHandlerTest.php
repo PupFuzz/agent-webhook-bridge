@@ -9,6 +9,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\HandlerRegistry;
+use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -47,6 +48,26 @@ class KanbanCoordCardHandlerTest extends TestCase
             'identity_id' => 4242,
             'mappings' => [$repo => $mapping],
         ]));
+    }
+
+    private const ALERT_URL = 'http://127.0.0.1:9934/';
+
+    /**
+     * The default mapping WITH an alert channel. This handler had no notifier wiring of
+     * any kind before card#5968, so none of its refusal arms could signal.
+     */
+    private function writeMappingWithAlert(): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'alert_channel' => ['url' => self::ALERT_URL],
+            'mappings' => ['org/coord' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21]],
+        ]));
+    }
+
+    private function isAlertPush(Request $r): bool
+    {
+        return $r->method() === 'POST' && str_starts_with($r->url(), self::ALERT_URL);
     }
 
     /** @param array<string, mixed> $overrides */
@@ -253,6 +274,228 @@ class KanbanCoordCardHandlerTest extends TestCase
         Http::assertNotSent(fn ($r) => $r->method() === 'POST');
     }
 
+    // =====================================================================
+    // The lane-derived create stage (card#6371 / DL-286)
+    // =====================================================================
+    //
+    // With `coord_card_lane_stage_ids` configured, a lane-model-governed issue (one
+    // whose TITLE starts with `[TASK]` — `classify_coord`'s own gate) is created in
+    // the stage its `stage:*` label declares, instead of the fixed
+    // `coord_card_stage_id`. Absent/unrecognized ⇒ Later, mirroring the reconcile's
+    // `_task_lane`.
+
+    /** @param array<string, mixed> $overrides */
+    private function writeLaneMapping(array $overrides = []): void
+    {
+        $this->writeMapping(array_merge([
+            'board_id' => 8,
+            'stages' => ['opened' => 50],
+            'create_coord_cards' => true,
+            'coord_card_stage_id' => 21,
+            'coord_card_lane_stage_ids' => ['now' => 40, 'next' => 41, 'later' => 42, 'maybe' => 43],
+        ], $overrides));
+    }
+
+    private function fakeCreate(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            // The by-ref pre-check, for the legs that run under `issue_population: all`
+            // (an un-prefixed / `[PROPOSAL]` title has no tag key). Unused by the
+            // tag-keyed legs — an unmatched pattern sends nothing.
+            '*/boards/8/tasks/by-ref.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+    }
+
+    /** @param list<string> $labels */
+    private function handleTask(array $labels): void
+    {
+        $this->handle(['sid' => 'TASK-4', 'itype' => 'task', 'title' => '[TASK] do the thing', 'labels' => $labels]);
+    }
+
+    private function assertCreatedInStage(int $stageId): void
+    {
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && $r['workflow_stage_id'] === $stageId);
+    }
+
+    public function test_stage_now_label_creates_the_card_in_the_now_stage(): void
+    {
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handleTask(['stage:now']);
+
+        $this->assertCreatedInStage(40);
+    }
+
+    public function test_stage_later_label_creates_the_card_in_the_later_stage(): void
+    {
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handleTask(['stage:later']);
+
+        $this->assertCreatedInStage(42);
+    }
+
+    public function test_no_stage_label_creates_the_card_in_the_later_stage(): void
+    {
+        // `_task_lane`'s default: an undeclared issue is Later, NOT the fixed create stage.
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handleTask(['from:pm', 'to:all']);
+
+        $this->assertCreatedInStage(42);
+    }
+
+    public function test_absent_labels_key_creates_the_card_in_the_later_stage(): void
+    {
+        // `kanban_coord_card` is always registered, so a custom classifier can emit this
+        // target with no `labels` key at all; that must resolve like an unlabelled issue,
+        // not crash and not fall back to the fixed stage. (NOT a staged-target/redelivery
+        // case — reaction targets are never persisted; replay re-classifies the raw body.)
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handle(['sid' => 'TASK-4', 'itype' => 'task', 'title' => '[TASK] do the thing']);
+
+        $this->assertCreatedInStage(42);
+    }
+
+    public function test_unrecognized_stage_label_creates_the_card_in_the_later_stage(): void
+    {
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handleTask(['stage:someday']);
+
+        $this->assertCreatedInStage(42);
+    }
+
+    public function test_multiple_stage_labels_resolve_in_lane_order(): void
+    {
+        // `_task_lane` iterates now→next→later→maybe, so a doubly-labelled issue lands in
+        // the same lane on both movers regardless of the label list's own order.
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handleTask(['stage:later', 'stage:now']);
+
+        $this->assertCreatedInStage(40);
+    }
+
+    public function test_declared_lane_missing_from_the_map_falls_back_to_later_and_warns(): void
+    {
+        // Requirement: a `stage:*` label that resolves to no stage id on the mapped board
+        // is a DELIBERATE fallback, never a fail-quiet — an install whose lane model has
+        // no Maybe column still gets a card, and the operator gets told which lane went
+        // unmapped.
+        Log::spy();
+        $this->writeLaneMapping(['coord_card_lane_stage_ids' => ['now' => 40, 'next' => 41, 'later' => 42]]);
+        $this->fakeCreate();
+
+        $this->handleTask(['stage:maybe']);
+
+        $this->assertCreatedInStage(42);
+        // The CONTEXT is the operator-facing half of the claim (docs/writeback.md: "a WARN
+        // names the unmapped lane(s), the lane used, and the lanes you did map") — asserted
+        // key by key, since the message literal is deliberately un-interpolated (DL-285).
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $c) => str_contains($m, 'lane') && str_contains($m, 'not mapped')
+            && $c['unmapped_lanes'] === ['maybe']
+            && $c['created_in_lane'] === 'later'
+            && $c['mapped_lanes'] === ['now', 'next', 'later'])->once();
+    }
+
+    public function test_an_unmapped_lane_does_not_end_the_scan_the_next_declared_lane_wins(): void
+    {
+        // `_task_lane` tests availability INSIDE its loop: on a board with no Now column
+        // an issue labelled stage:now + stage:next lands in NEXT, not in the Later
+        // default. The warn still fires — the unmapped Now is a real config gap — but it
+        // reports a create that went to the next lane the issue itself declared.
+        Log::spy();
+        $this->writeLaneMapping(['coord_card_lane_stage_ids' => ['next' => 41, 'later' => 42, 'maybe' => 43]]);
+        $this->fakeCreate();
+
+        $this->handleTask(['stage:now', 'stage:next']);
+
+        $this->assertCreatedInStage(41);
+        // `created_in_lane` is the lane the scan actually landed on, NOT the default — the
+        // half of the warn that would silently go wrong if the fallback were reintroduced.
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $c) => str_contains($m, 'lane') && str_contains($m, 'not mapped')
+            && $c['unmapped_lanes'] === ['now']
+            && $c['created_in_lane'] === 'next'
+            && $c['mapped_lanes'] === ['next', 'later', 'maybe'])->once();
+    }
+
+    public function test_a_fully_mapped_lane_derived_create_does_not_warn(): void
+    {
+        // The two skip legs assert the warn FIRES; both are equally satisfied by a handler
+        // that warns on EVERY create. This pins the other direction — the gate is the
+        // declared-but-unmapped set, so a fully-mapped create is silent.
+        Log::spy();
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handleTask(['stage:now']);
+
+        $this->assertCreatedInStage(40);
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    public function test_a_non_task_title_keeps_the_fixed_create_stage(): void
+    {
+        // `classify_coord` gates the lane model on the TITLE (`startswith("[TASK]")`); a
+        // brief/query/review keeps the mapping's fixed stage, so the two movers agree at
+        // create.
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+
+        $this->handle(['labels' => ['stage:later']]);   // default payload is a [QUERY] title
+
+        $this->assertCreatedInStage(21);
+    }
+
+    public function test_an_unprefixed_title_keeps_the_fixed_create_stage_even_though_its_itype_is_task(): void
+    {
+        // The reason the gate is the TITLE and not `itype`: `coordItype()` (like the
+        // consumer's `_itype`) calls an un-prefixed title `task` too. Under
+        // `issue_population: all` those issues ARE carded — and the consumer's
+        // `classify_coord` sends them to Now, not through `_task_lane`. Lane-deriving
+        // them here would create them in Later, and `preserve_stage` would freeze that
+        // disagreement.
+        $this->writeLaneMapping(['issue_population' => 'all']);
+        $this->fakeCreate();
+
+        $this->handle(['sid' => null, 'itype' => 'task', 'title' => 'a plain untitled-prefix issue', 'labels' => ['stage:later']]);
+
+        $this->assertCreatedInStage(21);
+    }
+
+    public function test_a_proposal_title_keeps_the_fixed_create_stage_even_though_its_itype_is_task(): void
+    {
+        // Same blind spot, second member: `coordItype()` has no `[PROPOSAL]` arm, so a
+        // proposal reads as itype `task` while `classify_coord` does not lane-derive it.
+        $this->writeLaneMapping(['issue_population' => 'all']);
+        $this->fakeCreate();
+
+        $this->handle(['sid' => null, 'itype' => 'task', 'title' => '[PROPOSAL] adopt the thing', 'labels' => ['stage:now']]);
+
+        $this->assertCreatedInStage(21);
+    }
+
+    public function test_without_the_lane_map_a_labelled_task_keeps_the_fixed_create_stage(): void
+    {
+        // Opt-in: an install that configured no lane stage ids is byte-identical to DL-198.
+        $this->fakeCreate();   // setUp's mapping has no coord_card_lane_stage_ids
+
+        $this->handleTask(['stage:later']);
+
+        $this->assertCreatedInStage(21);
+    }
+
     public function test_unmapped_or_optout_noops(): void
     {
         $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50]]);   // no create_coord_cards
@@ -285,6 +528,95 @@ class KanbanCoordCardHandlerTest extends TestCase
 
         $this->expectException(RequestException::class);
         $this->handle();
+    }
+
+    // --- card#5968 / DL-285: this handler's refusals are keyed by the coordination ISSUE,
+    //     not by a card — the alert body carries `issue_number` with a null `card_id`. ---
+
+    public function test_kanban_4xx_alerts_with_the_issue_number_and_a_null_card_id(): void
+    {
+        $this->writeMappingWithAlert();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['error' => 'bad'], 422),
+        ]);
+
+        $this->handle();
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'coord_card_create_4xx'
+            && $r['repo'] === 'org/coord'
+            && $r['outcome'] === 'coord_card_create'
+            && $r['card_id'] === null
+            && $r['issue_number'] === 4);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m, array $ctx) => str_contains($m, 'kanban refused (4xx)')
+            && $ctx['status'] === 422);
+    }
+
+    public function test_malformed_payload_alerts_on_the_empty_repo_key(): void
+    {
+        // repo/itype/title are what is malformed, so the tuple degrades to '' rather than
+        // suppressing the signal; the issue number is still readable and is carried.
+        $this->writeMappingWithAlert();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle(['repo' => null]);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'coord_card_payload_invalid'
+            && $r['repo'] === ''
+            && $r['card_id'] === null
+            && $r['issue_number'] === 4);
+    }
+
+    public function test_empty_sid_under_prefixed_population_alerts(): void
+    {
+        $this->writeMappingWithAlert();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle(['sid' => '']);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'coord_card_no_correlation_key'
+            && $r['repo'] === 'org/coord'
+            && $r['issue_number'] === 4);
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
+    }
+
+    public function test_absent_writeback_json_still_logs_and_cannot_push(): void
+    {
+        // The Branch-#3 degradation: the arm routes through the paired primitive, but the
+        // notifier loads its channel from the very file that is absent.
+        File::delete($this->dir.'/writeback.json');
+        Log::spy();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle();
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m) => str_contains($m, 'writeback not configured'));
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    public function test_a_5xx_still_throws_and_never_alerts(): void
+    {
+        // The transient/permanent split is untouched: only a permanent refusal signals.
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['error' => 'boom'], 503),
+        ]);
+
+        try {
+            $this->handle();
+            $this->fail('a 5xx must propagate for redelivery');
+        } catch (RequestException) {
+            // expected
+        }
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
     public function test_full_dispatch_family_emit_registry_resolve_handler_create(): void
@@ -320,5 +652,49 @@ class KanbanCoordCardHandlerTest extends TestCase
             && ! isset($r['task'])
             && $r['workflow_stage_id'] === 21
             && $r['tags'] === ['id:QUERY-4', 'type:query']);
+    }
+
+    public function test_full_dispatch_lane_derivation_from_the_webhook_labels(): void
+    {
+        // The residual risk the per-side legs leave open: every lane leg above hands the
+        // handler a `labels` list the TEST wrote, and the classifier legs assert the
+        // payload key in isolation — neither exercises the WIRE between them. Here the
+        // only input is a real `issues.opened` body (GitHub's `labels: [{name: …}]`
+        // shape), so a classifier that stopped stamping `labels`, or renamed the key,
+        // reds here even though both sides' own legs stay green.
+        //
+        // The vector is deliberately `stage:now` and NOT `stage:later`: `later` is the
+        // no-labels default, so a broken wire would land the card in the same stage as a
+        // working one and this leg could not fail (measured — renaming the classifier's
+        // `labels` key left a `stage:later` version of it green).
+        $this->writeLaneMapping();
+        $this->fakeCreate();
+        $agent = AgentConfig::fromArray('me', [
+            'identity' => ['github_user_id' => 99],
+            'subscriptions' => [],
+            'classifier' => ['class' => CoordinationClassifier::class, 'config' => ['families' => ['coord-card-create']]],
+        ]);
+
+        $result = (new CoordinationClassifier)->classify(new ClassifyContext(
+            'issues.opened',
+            ['issue' => [
+                'number' => 4,
+                'title' => '[TASK] do the thing',
+                'html_url' => 'https://github.com/org/coord/issues/4',
+                'labels' => [['name' => 'from:pm'], ['name' => 'stage:now']],
+            ]],
+            new Actor(id: '99', name: null, isKnownAgent: false),
+            'github',
+            'org/coord',
+            $agent,
+        ));
+
+        $this->assertCount(1, $result->targets);
+        $target = $result->targets[0];
+        $handler = (new HandlerRegistry)->resolve($target->handler);
+        $this->assertNotNull($handler);
+        $handler->handle($target, $agent);
+
+        $this->assertCreatedInStage(40);   // the `now` lane's id — not the fixed 21, and not the `later` default
     }
 }

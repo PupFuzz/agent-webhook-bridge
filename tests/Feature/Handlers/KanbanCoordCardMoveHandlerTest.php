@@ -6,9 +6,11 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Handlers\KanbanCoordCardMoveHandler;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\HandlerRegistry;
+use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 /**
@@ -52,6 +54,27 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
             'identity_id' => 4242,
             'mappings' => [$repo => $mapping],
         ]));
+    }
+
+    private const ALERT_URL = 'http://127.0.0.1:9935/';
+
+    /**
+     * The default mapping WITH an alert channel. This handler had no notifier wiring of
+     * any kind before card#5968, so none of its refusal arms could signal.
+     */
+    private function writeMappingWithAlert(): void
+    {
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'alert_channel' => ['url' => self::ALERT_URL],
+            'mappings' => ['org/coord' => ['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
+                'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99]],
+        ]));
+    }
+
+    private function isAlertPush(Request $r): bool
+    {
+        return $r->method() === 'POST' && str_starts_with($r->url(), self::ALERT_URL);
     }
 
     /** @param array<string, mixed> $overrides */
@@ -392,6 +415,112 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
 
         $this->expectException(RequestException::class);
         $this->handle();
+    }
+
+    // --- card#5968 / DL-285: issue-keyed alerts. The two 4xx arms carry DIFFERENT
+    //     reasons on purpose — they share `(repo, outcome)`, so one reason would give
+    //     them one dedup marker and whichever fired second would alert zero times. ---
+
+    public function test_a_per_card_4xx_alerts_with_that_cards_id_and_the_issue_number(): void
+    {
+        $this->writeMappingWithAlert();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['message' => 'gone'], 404),
+        ]);
+
+        $this->handle();
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'coord_card_move_card_4xx'
+            && $r['outcome'] === 'coord_card_move'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 4);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m, array $ctx) => str_contains($m, 'refused (4xx) for this card')
+            && $ctx['status'] === 404);
+    }
+
+    public function test_a_correlation_read_4xx_alerts_under_a_distinct_reason(): void
+    {
+        // Both arms fire on ONE repo+outcome across two deliveries. A single Http::fake
+        // with a sequence, not two calls — a second Http::fake() APPENDS stubs and the
+        // first match wins, so the later stub would never be reached (G-020).
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::sequence()
+                ->push(['data' => [['id' => 7]]])            // delivery 1: correlates, then the card 404s
+                ->push(['message' => 'bad query'], 422),      // delivery 2: the read itself refuses
+            '*/tasks/7.json' => Http::response(['message' => 'gone'], 404),
+        ]);
+
+        $this->handle();
+        $this->handle();
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'coord_card_move_card_4xx');
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'coord_card_move_lookup_4xx'
+            && $r['card_id'] === null
+            && $r['issue_number'] === 4);
+    }
+
+    public function test_malformed_payload_alerts_on_the_empty_repo_key(): void
+    {
+        $this->writeMappingWithAlert();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle(['repo' => null]);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'coord_card_move_payload_invalid'
+            && $r['repo'] === ''
+            && $r['issue_number'] === 4);
+    }
+
+    public function test_empty_sid_under_prefixed_population_alerts(): void
+    {
+        $this->writeMappingWithAlert();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle(['sid' => '']);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'coord_card_move_no_correlation_key'
+            && $r['repo'] === 'org/coord');
+        $this->assertNoMove();
+    }
+
+    public function test_absent_writeback_json_still_logs_and_cannot_push(): void
+    {
+        File::delete($this->dir.'/writeback.json');
+        Log::spy();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle();
+
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m) => str_contains($m, 'writeback not configured'));
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    public function test_a_5xx_still_throws_and_never_alerts(): void
+    {
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['message' => 'boom'], 503),
+        ]);
+
+        try {
+            $this->handle();
+            $this->fail('a 5xx must propagate for redelivery');
+        } catch (RequestException) {
+            // expected
+        }
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
     public function test_handler_is_registered_under_its_reaction_name(): void
