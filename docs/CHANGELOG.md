@@ -173,10 +173,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   **no-move** arms (a DL that resolves to nothing with no `card#` fallback) now run the near-miss probe,
   which they always could have — nothing moves there, so the line's own "no move" clause is true about
   them — and the probe now asks each grammar's `parse()` before probing its stem, so an arm reached with a
-  *parsing* DL can never draw a line claiming it does not parse. **Stated bounds, not oversights:** a
-  malformed **title** token beside a **parsing branch** token stays invisible (the branch is authoritative,
-  DL-270); a pure-overlay event inherits the refusal through the shared predicate with **no** diagnostic
-  (the DL-218 no-double-log split); and the digit class stays ASCII (DL-231 is not reopened).
+  *parsing* DL can never draw a line claiming it does not parse. **Stated bounds, not oversights — DL-287
+  carries the full list:** a malformed **title** token beside a **parsing branch** token stays invisible
+  (the branch is authoritative, DL-270); a pure-overlay event inherits the refusal through the shared
+  predicate with **no** diagnostic, in the CLEAR direction as well as the SET one (the DL-218
+  no-double-log split); the digit class stays ASCII (DL-231 is not reopened); and a **bare-space**
+  near-miss (`card 4811`) sits outside the probe's separator set per DL-201, so it neither warns nor
+  refuses.
 - **card#6371** (**DL-286**) — **The real-time coord-card create stops rewriting the priority its issue
   declares: the create stage is derived from the issue's `stage:*` label via the new opt-in
   `coord_card_lane_stage_ids` mapping key.** The bridge created every coordination card at the single
