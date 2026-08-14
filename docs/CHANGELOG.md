@@ -162,7 +162,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   drift). An unreadable token is read for the id it appears to name, via the existing `NearMissProbe`
   (a capturing sibling of the probe already there — **not** a fourth pattern, DL-239(h)/DL-250(1)): if that
   id is one of the cards the DL resolved to it is **redundant** (DL wins, nothing dropped, one `info` line —
-  the leg that keeps ordinary prose citations working); otherwise the move is **refused** and **alerted**
+  the leg that keeps a prose citation of **the DL's own card** working; a near-miss-spelled citation of a
+  *different* card is refused like any other, `bridge:replay` to recover); otherwise the move is **refused** and **alerted**
   (`card_token_near_miss`, through the same `warnAndNotify` primitive as every other permanent refusal,
   DL-274/DL-285 — never a third log-only branch). **Hard bound, in the code:** the recovered id may
   **refuse or warn, never select** a card. **Blast radius measured before the gate ask, through the shipped
