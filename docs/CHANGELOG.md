@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.74.0] - 2026-08-14
+
 ### Added
 - **card#5968** (**DL-285**) — **The writeback alert body gains an `issue_number`, and the DL-274
   refusal-signal class closes: 18 more permanent-refusal arms now emit a live signal, leaving two
