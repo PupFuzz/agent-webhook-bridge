@@ -20,7 +20,9 @@ namespace App\Bridge\Support;
  *
  * The probe is deliberately NOT derivable from any grammar's pattern — the
  * near-miss set is a different set (DL-239(h), upheld by DL-250(1)). It is
- * looser on purpose: `\b<stem>s?(<separator>)?\d`. The `s?` is the whole silent
+ * looser on purpose: `\b<stem>s?(<separator>)?(\d+)`. The digit run is CAPTURED
+ * so {@see id} can name the id the near-miss meant without a second pattern
+ * existing to disagree with this one. The `s?` is the whole silent
  * plural family DL-250 found — `\b<stem>` matches inside `<stem>s`, the optional
  * separator group cannot consume the `s`, and `\d` then fails against it with no
  * second word boundary to retry from.
@@ -63,7 +65,26 @@ final class NearMissProbe
      */
     public function matches(string $text): bool
     {
-        return preg_match($this->pattern(), $text) === 1;
+        return $this->id($text) !== null;
+    }
+
+    /**
+     * WHICH id the near-miss names — `4811` for `card_4811` — or null when the
+     * text is not a near-miss at all. The SAME pattern {@see matches} answers
+     * from, with the digit run it already had to match now captured, so the two
+     * cannot disagree about what is a near-miss: this is not a fourth pattern
+     * and the near-miss SET is unchanged by capturing it (DL-239(h), upheld by
+     * DL-250(1)).
+     *
+     * HARD BOUND, and it lives at the CALL SITE, not here (DL-287): a recovered
+     * id may REFUSE or WARN about a move, never SELECT the card it moves — the
+     * same confirm-side-only rule a bare id in a head ref lives under
+     * (DL-270(b')). A spelling the owning grammar rejects must not become a
+     * correlation channel through this door; that is why this class only reads.
+     */
+    public function id(string $text): ?int
+    {
+        return preg_match($this->pattern(), $text, $m) === 1 ? (int) $m[1] : null;
     }
 
     /**
@@ -93,6 +114,6 @@ final class NearMissProbe
             self::SEPARATORS,
         ));
 
-        return '/\b'.preg_quote($this->stem, '/').'s?(?:'.$separators.')?\d/i';
+        return '/\b'.preg_quote($this->stem, '/').'s?(?:'.$separators.')?(\d+)/i';
     }
 }

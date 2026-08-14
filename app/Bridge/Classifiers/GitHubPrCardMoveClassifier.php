@@ -11,6 +11,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\DlTokenGrammar;
+use App\Bridge\Writeback\CardTokenVerdict;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -39,6 +40,14 @@ use Illuminate\Support\Facades\Log;
  * wins, nothing dropped). A `DL-NNN` that resolves to no card falls through to a
  * present `card#`; a token present but resolving to nothing is warned loudly (a
  * decision-logged-but-unstamped card — never a silent no-op).
+ *
+ * A card token that is PRESENT BUT UNREADABLE — a card-shaped spelling this grammar
+ * rejects, `card_4811` — is its own state and not "absent" (card#6027 / DL-287): read
+ * as absent it switched the conflict guard off for exactly the subject it was written
+ * for. Unless it recovers to one of the cards the DL already resolved to (redundant,
+ * nothing dropped), the move is REFUSED — the flag rides the target and
+ * {@see KanbanMoveCardHandler} refuses it, so the refusal alerts like every other
+ * permanent one. The recovered id may refuse or warn, never SELECT.
  *
  * The card# token itself has TWO surfaces with different authority — the head branch
  * (this install's own artifact) outranks the PR title (prose), and a title-only token
@@ -267,14 +276,42 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 // the intended card#. The explicit card# is the specific, intentional
                 // token, so on a conflict it is authoritative: warn LOUDLY and fall
                 // through to the card# path below (which builds the move AND stamps
-                // refs). When the card# agrees with the DL (or is absent) the DL wins,
-                // byte-identically to before.
-                $conflict = $this->cardConflicts($cardToken, $cardIds);
-                if (! $conflict) {
+                // refs). When the card# agrees with the DL (or no card token is present
+                // in any spelling) the DL wins, byte-identically to before; the third
+                // state — present but UNREADABLE — is DL-287's, immediately below.
+                $verdict = $this->cardTokenVerdict($cardResolution, $cardIds);
+                if ($verdict === CardTokenVerdict::NearMissRefusal) {
+                    // DL-287: a card-SHAPED token that does not parse, naming a card
+                    // the DL did not resolve to. We cannot fall through to it (it is
+                    // not a token — selecting on it would make every rejected spelling
+                    // a correlation channel), and we must not let the DL win either:
+                    // that is the card#4811 hijack with the guard switched off. So the
+                    // move is REFUSED — carried to the durable handler as a flag rather
+                    // than dropped here, because a permanent refusal has to emit a live
+                    // signal (DL-274/DL-285) and that primitive is the handler's. No
+                    // stamp refs ride it: a refused move writes nothing at all.
+                    Log::warning('kanban_move_card: PR carries '.$dl.' (resolves to card(s) '.implode(',', $cardIds).') AND a card-SHAPED token that does not parse ('
+                        .CardTokenGrammar::describe()."), which appears to name card#{$cardResolution['nearMissId']} — a DIFFERENT card. The {$dl} move onto card(s) "
+                        .implode(',', $cardIds).' is REFUSED so a near-miss spelling cannot hijack it (near-miss card token, DL-287): '.$this->titleAndHead($payload));
+
+                    return new ClassifyResult(targets: array_merge(
+                        $this->moveTargets($cardIds, $repo, $moveOutcome, cardTokenNearMiss: true),
+                        $overlayTargets,
+                    ));
+                }
+                if ($verdict !== CardTokenVerdict::CardTokenAuthoritative) {
                     // (1)/(3) DL resolved → it wins. A co-present card# that names the
                     // SAME card is redundant, logged for the ledger (nothing dropped).
                     if ($cardToken !== null) {
                         Log::info("kanban_move_card: PR carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# names the same card, so nothing is dropped");
+                    } elseif ($verdict === CardTokenVerdict::NearMissRedundant) {
+                        // The same ledger line for the unreadable spelling of it: it
+                        // recovers to a card the DL already resolved to, so nothing is
+                        // dropped and there is nothing to refuse. This is the leg that
+                        // separates "the guard can see the shape" from "the guard
+                        // refuses the shape" — the latter would reject ordinary prose.
+                        Log::info("kanban_move_card: PR carries {$dl} and a card-SHAPED token that does not parse ("
+                            .CardTokenGrammar::describe()."), but it appears to name card#{$cardResolution['nearMissId']} — the SAME card the DL resolved to, so nothing is dropped and the DL wins (near-miss card token, DL-287)");
                     }
 
                     // The DL-resolved card(s) also carry the PR provenance refs, with
@@ -301,6 +338,13 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 // high-value miss (a decision-logged-but-unstamped card is the live
                 // footgun this fallback exists for). Warn loudly; never silent no-op.
                 Log::warning("kanban_move_card: PR carries {$dl} but no card tracks it and no card# fallback token is present — no move (FR-7 high-value miss)");
+                // …and if the "no card# fallback token" was actually an UNREADABLE one,
+                // say so (DL-287). The near-miss line's own "no move" clause is TRUE
+                // about this subject — nothing moves here — which is precisely the
+                // DL-234(e) condition that keeps the probe behind the both-null guard
+                // elsewhere. The probe is per-stem, so the DL that just parsed above
+                // cannot draw a line claiming it did not.
+                $this->warnTokenNearMiss($this->titleAndHead($payload), 'PR title/head');
 
                 return new ClassifyResult(targets: $overlayTargets);
             } else {
@@ -350,19 +394,66 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     }
 
     /**
-     * The DL-218 conflict predicate, shared by all three token-resolution sites (the
-     * move path, the branch-create `started` push, and the draft overlay — canon #5):
-     * a resolving DL and a co-present explicit `card#` CONFLICT when the `card#` names
-     * a card the DL did NOT resolve to. A descriptive/foreign DL mention in a title or
-     * branch ref must not silently hijack the move/overlay to the DL's card and drop
-     * the intended `card#`; on a conflict the explicit `card#` is authoritative. False
-     * when there is no `card#` or the `card#` is one of the DL-resolved ids.
+     * The card-token predicate, shared by all three token-resolution sites (the move
+     * path, the branch-create `started` push, and the draft overlay — canon #5): what
+     * a co-present `card#` says about a DL that has RESOLVED.
      *
+     * THE DL-218 HALF. A resolving DL and a co-present explicit `card#` CONFLICT when
+     * the `card#` names a card the DL did NOT resolve to. A descriptive/foreign DL
+     * mention in a title or branch ref must not silently hijack the move/overlay to the
+     * DL's card and drop the intended `card#`; on a conflict the explicit `card#` is
+     * authoritative.
+     *
+     * THE DL-287 HALF, and why the token is THREE-state. This predicate used to take a
+     * `?int` token, so a card-SHAPED token the grammar rejects (`card_4811`) arrived as
+     * null and was read as "no card token" — the guard switched itself off for exactly
+     * the subject that needed it, and the DL's card moved and was stamped with a PR
+     * that never touched it (card#6027). An UNREADABLE token is now its own state,
+     * carrying the id {@see CardTokenGrammar::nearMissCardId} recovers: naming one of
+     * the DL's own cards is REDUNDANT (nothing is dropped — the DL still wins, exactly
+     * as an agreeing parsed token does), and anything else is REFUSED.
+     *
+     * HARD BOUND: the recovered id may REFUSE or WARN, never SELECT. It is read here
+     * ONLY as a member test against ids the DL resolved on its own; no branch returns
+     * it, and no caller may move a card by it. The redundancy arm is deliberately the
+     * narrow POSITIVE test, so anything the probe cannot pin to a resolved card lands
+     * on the refusing side rather than the permissive one.
+     *
+     * @param  array{token: ?int, nearMissId: ?int}  $cardState
      * @param  list<int>  $cardIds
      */
-    private function cardConflicts(?int $cardToken, array $cardIds): bool
+    private function cardTokenVerdict(array $cardState, array $cardIds): CardTokenVerdict
     {
-        return $cardToken !== null && ! in_array($cardToken, $cardIds, true);
+        if ($cardState['token'] !== null) {
+            return in_array($cardState['token'], $cardIds, true)
+                ? CardTokenVerdict::DlWins
+                : CardTokenVerdict::CardTokenAuthoritative;
+        }
+        if ($cardState['nearMissId'] === null) {
+            return CardTokenVerdict::DlWins;   // no card token, readable or not — the ordinary DL-only subject
+        }
+
+        return in_array($cardState['nearMissId'], $cardIds, true)
+            ? CardTokenVerdict::NearMissRedundant
+            : CardTokenVerdict::NearMissRefusal;
+    }
+
+    /**
+     * The card-token STATE of one surface: the id the token names when it parses, else
+     * the id a card-SHAPED spelling the grammar rejects appears to name (DL-287). The
+     * near-miss id is read only where `parse()` returned null, which is what makes a
+     * match a near-miss at all.
+     *
+     * @return array{token: ?int, nearMissId: ?int}
+     */
+    private function cardTokenState(string $text): array
+    {
+        $token = CardTokenGrammar::parse($text);
+
+        return [
+            'token' => $token,
+            'nearMissId' => $token === null ? CardTokenGrammar::nearMissCardId($text) : null,
+        ];
     }
 
     /**
@@ -372,11 +463,18 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * provenance refs (`stamp_pr`/`stamp_pr_url`, never `stamp_dl`); the `started` push
      * path passes none, so `[]` keeps it byte-identical.
      *
+     * `$cardTokenNearMiss` flags the target for the handler's DL-287 refusal — the move
+     * this classifier will not authorize but must not silently drop, because the
+     * refusal has to ALERT and that primitive is the handler's (DL-274/DL-285). It rides
+     * every target of the event, since the DL resolved them as one set. A flagged target
+     * is refused before anything is read or written, which is why it carries no stamp
+     * refs and why no caller passes both.
+     *
      * @param  list<int>  $cardIds
      * @param  array{stamp_dl?: string, stamp_pr?: int, stamp_pr_url?: string}  $stampRefs
      * @return list<ReactionTarget>
      */
-    private function moveTargets(array $cardIds, string $repo, string $outcome, array $stampRefs = []): array
+    private function moveTargets(array $cardIds, string $repo, string $outcome, array $stampRefs = [], bool $cardTokenNearMiss = false): array
     {
         $targets = [];
         foreach ($cardIds as $cardId) {
@@ -384,7 +482,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 'card_id' => $cardId,
                 'repo' => $repo,
                 'outcome' => $outcome,
-            ], $stampRefs));
+            ], $stampRefs, $cardTokenNearMiss ? ['card_token_near_miss' => true] : []));
         }
 
         return $targets;
@@ -460,7 +558,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     /**
      * The card ids a PR correlates to, for the draft overlay — the SAME DL→card /
      * card#-fallback resolution the move path uses (FR-7 try-in-order, incl. the
-     * DL-218 conflict rule via {@see cardConflicts}): a DL that resolves wins (all
+     * DL-218 conflict rule via {@see self::cardTokenVerdict()}): a DL that resolves wins (all
      * matching cards, one-to-many DL-148) UNLESS a co-present `card#` names a
      * DIFFERENT card — a conflict, where the explicit `card#` wins (the intended card
      * gets the overlay, not the foreign-DL card); an unresolved DL falls through to a
@@ -468,6 +566,13 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * (precedence / conflict / high-value-miss / fallthrough) — on an opened-as-draft
      * PR the move path already emits them for the same tokens, so repeating them here
      * would double-log the identical event.
+     *
+     * A DL-287 near-miss REFUSAL is inherited here through the same predicate and with
+     * the same silence: the overlay simply does not land on the DL's card (there is no
+     * `card#` to fall through to — the token did not parse), and a pure-overlay action
+     * carries no move outcome, so the move path never ran to say why. Naming it here
+     * would be the double-log DL-218 split off, and the overlay is the lower-harm
+     * surface (a marker, not a stage move) that ruling was made about.
      *
      * It shares {@see cardTokenResolution}, so the title-vs-branch rule (card#5287)
      * applies here too: an overlay never lands on a title's card when the branch names
@@ -499,7 +604,8 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         if ($dl !== null) {
             $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
             $cardIds = WritebackClientFactory::make()->correlateDl($mapping->boardId, $dl, $sourceRepo);
-            if ($cardIds !== [] && ! $this->cardConflicts($cardToken, $cardIds)) {
+            $verdict = $cardIds !== [] ? $this->cardTokenVerdict($cardResolution, $cardIds) : null;
+            if ($verdict === CardTokenVerdict::DlWins || $verdict === CardTokenVerdict::NearMissRedundant) {
                 return ['ids' => $cardIds, 'uncorroborated' => false];
             }
         }
@@ -521,11 +627,14 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * re-fire on every push). The handler's promote-from guard
      * (`started_from_stages`) makes a re-create / force-push of an old branch a
      * no-op too. Correlates tokens→card exactly as the PR path (FR-7 try-in-order,
-     * incl. the DL-218 conflict rule via {@see cardConflicts}): a branch ref that
+     * incl. the DL-218 conflict rule via {@see self::cardTokenVerdict()}): a branch ref that
      * carries a resolving `DL-NNN` AND an explicit `card#` for a DIFFERENT card is a
      * conflict — the explicit `card#` wins (warn loudly, move + stamp the `card#`, and
-     * do NOT stamp the foreign DL). No target when: not a created-branch push, a
-     * dependabot branch, no token in the ref, the repo is unmapped, or nothing resolves.
+     * do NOT stamp the foreign DL); a ref whose card token is present but UNREADABLE
+     * beside a resolving DL refuses the `started` move instead (DL-287), since nothing
+     * here can say which card the branch meant. No target when: not a created-branch
+     * push, a dependabot branch, no token in the ref, the repo is unmapped, or nothing
+     * resolves.
      *
      * @param  array<mixed>  $payload
      */
@@ -551,7 +660,8 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         }
 
         $dl = DlTokenGrammar::parse($branch);
-        $cardToken = CardTokenGrammar::parse($branch);
+        $cardState = $this->cardTokenState($branch);
+        $cardToken = $cardState['token'];
         if ($dl === null && $cardToken === null) {
             $this->warnTokenNearMiss($branch, 'branch ref');
 
@@ -575,9 +685,24 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 // hijack the `started` move to the DL's card. On a conflict the
                 // explicit card# is authoritative — warn LOUDLY and fall through to the
                 // card# path below. When the card# agrees (or is absent) the DL wins.
-                if (! $this->cardConflicts($cardToken, $cardIds)) {
+                $verdict = $this->cardTokenVerdict($cardState, $cardIds);
+                if ($verdict === CardTokenVerdict::NearMissRefusal) {
+                    // DL-287 on this surface: a branch like `card_4811-guard-DL-9`.
+                    // Same rule, same harm class (a `started` promotion of a card this
+                    // branch never named), same plumbing — the handler owns the refusal
+                    // so it alerts.
+                    Log::warning('kanban_move_card: branch carries '.$dl.' (resolves to card(s) '.implode(',', $cardIds).') AND a card-SHAPED token that does not parse ('
+                        .CardTokenGrammar::describe()."), which appears to name card#{$cardState['nearMissId']} — a DIFFERENT card. The {$dl} move onto card(s) "
+                        .implode(',', $cardIds).' is REFUSED so a near-miss spelling cannot hijack it (near-miss card token, DL-287): '.$branch);
+
+                    return new ClassifyResult(targets: $this->moveTargets($cardIds, $repo, 'started', cardTokenNearMiss: true));
+                }
+                if ($verdict !== CardTokenVerdict::CardTokenAuthoritative) {
                     if ($cardToken !== null) {
                         Log::info("kanban_move_card: branch carries both {$dl} and card#{$cardToken} — DL wins (FR-7 precedence); the card# names the same card, so nothing is dropped");
+                    } elseif ($verdict === CardTokenVerdict::NearMissRedundant) {
+                        Log::info("kanban_move_card: branch carries {$dl} and a card-SHAPED token that does not parse ("
+                            .CardTokenGrammar::describe()."), but it appears to name card#{$cardState['nearMissId']} — the SAME card the DL resolved to, so nothing is dropped and the DL wins (near-miss card token, DL-287)");
                     }
 
                     return new ClassifyResult(targets: $this->moveTargets($cardIds, $repo, 'started'));
@@ -587,6 +712,10 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 // fall through to the card# path below (do NOT return the DL targets)
             } elseif ($cardToken === null) {
                 Log::warning("kanban_move_card: branch carries {$dl} but no card tracks it and no card# fallback token is present — no move (FR-7 high-value miss)");
+                // Nothing moves on this arm, so the near-miss line's "no move" clause
+                // is true about this ref and the probe can honestly run (DL-287) —
+                // the same honesty fix as the move path's arm.
+                $this->warnTokenNearMiss($branch, 'branch ref');
 
                 return new ClassifyResult;
             } else {
@@ -711,13 +840,24 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * accept-if-the-card-tracks-no-other-PR was the approved residual answer rather
      * than refuse-every-title-only-token.
      *
+     * `nearMissId` is the THIRD state (card#6027 / DL-287): no surface produced a
+     * token, but one of them carries a card-SHAPED spelling this grammar rejects, and
+     * this is the id it appears to name. It is reported ONLY from the both-null arm —
+     * a token that parses on either surface settles the question, so a malformed
+     * spelling sitting beside it changes nothing about WHICH card is named. The branch
+     * is read first for the same reason it outranks the title everywhere else here.
+     * What a caller may do with the id is bounded at
+     * {@see self::cardTokenVerdict()}: refuse or warn, never select.
+     *
      * @param  array<mixed>  $payload
-     * @return array{token: ?int, uncorroborated: bool, foreignTitleToken: ?int}
+     * @return array{token: ?int, uncorroborated: bool, foreignTitleToken: ?int, nearMissId: ?int}
      */
     private function cardTokenResolution(array $payload): array
     {
-        $titleToken = CardTokenGrammar::parse($this->prTitle($payload));
-        $headToken = CardTokenGrammar::parse($this->prHead($payload));
+        $title = $this->cardTokenState($this->prTitle($payload));
+        $head = $this->cardTokenState($this->prHead($payload));
+        $titleToken = $title['token'];
+        $headToken = $head['token'];
 
         if ($headToken !== null) {
             return [
@@ -726,17 +866,24 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                 // Null when the title agrees or names nothing — only a DISAGREEING
                 // title token is foreign.
                 'foreignTitleToken' => $titleToken !== $headToken ? $titleToken : null,
+                'nearMissId' => null,
             ];
         }
 
         if ($titleToken === null) {
-            return ['token' => null, 'uncorroborated' => false, 'foreignTitleToken' => null];
+            return [
+                'token' => null,
+                'uncorroborated' => false,
+                'foreignTitleToken' => null,
+                'nearMissId' => $head['nearMissId'] ?? $title['nearMissId'],
+            ];
         }
 
         return [
             'token' => $titleToken,
             'uncorroborated' => ! $this->refCorroborates($this->prHead($payload), $titleToken),
             'foreignTitleToken' => null,
+            'nearMissId' => null,
         ];
     }
 
@@ -798,23 +945,35 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * made it (card#5267); a hand-written probe here was silent on every plural
      * spelling.
      *
-     * THE WHOLE-SUBJECT LIMIT (DL-234(e)) is why this sits behind the both-null
-     * guard and not behind `$dl === null` alone: a subject carrying a parsing
-     * `card#` beside a malformed `DL_239` moves its card, so it is not in the
-     * silent-failure class this exists to catch — and "no move" below would be
-     * a false statement about it. That limit STANDS; what changed (card#5961) is
-     * that the cost it leaves — such a subject losing its `dl_number` stamp — is
-     * no longer silent either. Naming a lost STAMP is a different signal from
-     * naming a lost MOVE, so it is emitted where the stamp is built
-     * ({@see stampRefs}) rather than by widening this guard.
+     * THE WHOLE-SUBJECT LIMIT (DL-234(e)) is the real gate, and it is a limit on
+     * the CALL SITES, not on the both-null guard that used to be its only one: a
+     * subject carrying a parsing `card#` beside a malformed `DL_239` moves its
+     * card, so it is not in the silent-failure class this exists to catch — and
+     * "no move" below would be a false statement about it. That limit STANDS;
+     * what changed (card#5961) is that the cost it leaves — such a subject losing
+     * its `dl_number` stamp — is no longer silent either. Naming a lost STAMP is a
+     * different signal from naming a lost MOVE, so it is emitted where the stamp
+     * is built ({@see stampRefs}) rather than by widening this guard.
+     *
+     * SINCE DL-287 the FR-7 no-move arms call this too — a DL that resolved to
+     * nothing with no `card#` fallback moves nothing, so the limit is satisfied
+     * there and the arm can finally say that the missing fallback was sitting in
+     * the subject all along, misspelled. Those arms reach here with the DL PARSED,
+     * which is why the per-stem parse check above is what makes the claim true
+     * rather than the caller's guard.
      */
     private function warnTokenNearMiss(string $text, string $surface): void
     {
+        // Each stem is probed only where ITS OWN grammar found nothing. At the
+        // both-null call site that is implied by the guard, so this is the same
+        // answer it always gave there; what it buys is the DL-287 call sites, where
+        // ONE stem resolved to nothing and the other parsed — a probe that asked
+        // regardless would tell an operator a token that parsed does not parse.
         $nearMisses = [];
-        if (CardTokenGrammar::looksLikeCardToken($text)) {
+        if (CardTokenGrammar::parse($text) === null && CardTokenGrammar::looksLikeCardToken($text)) {
             $nearMisses['a card'] = CardTokenGrammar::describe();
         }
-        if (DlTokenGrammar::looksLikeDlToken($text)) {
+        if (DlTokenGrammar::parse($text) === null && DlTokenGrammar::looksLikeDlToken($text)) {
             $nearMisses['a DL'] = DlTokenGrammar::describe();
         }
 

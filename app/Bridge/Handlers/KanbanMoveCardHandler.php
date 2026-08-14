@@ -33,8 +33,9 @@ use Throwable;
  *  - TRANSIENT / operator-fixable (missing-or-insecure writeback token, a
  *    kanban API error) → THROW → 5xx → redelivery retries once it's fixed.
  *  - PERMANENT / refused (writeback off, no repo mapping, no stage for the
- *    outcome, the card is NOT on the mapped board, or an uncorroborated title-only
- *    `card#` names a card that already tracks a different PR) → alert + log + NO-OP.
+ *    outcome, the card is NOT on the mapped board, an uncorroborated title-only
+ *    `card#` names a card that already tracks a different PR, or the subject carried
+ *    an unreadable card-shaped token naming some other card — DL-287) → alert + log + NO-OP.
  *    These can never succeed, so 5xx-retrying would storm; the dispatch acks (a refused
  *    move is not a delivery failure). The card-not-on-mapped-board case is the
  *    security guard (belongs-to-mapped-board) and is logged as a refusal. Every
@@ -48,8 +49,10 @@ use Throwable;
  * `card#` in the PR TITLE only, with nothing agreeing in the head branch, so this
  * handler corroborates it against the card's own `pr_number` before writing
  * anything: {@see CardTokenCorroboration}, shared with the draft-overlay handler since
- * card#5953). Any payload board_id/stage_id is IGNORED — the config mapping is
- * authoritative.
+ * card#5953) and the optional `card_token_near_miss` flag (card#6027 / DL-287 — the
+ * classifier could not tell whether the subject's UNREADABLE card token named this
+ * card, so the move is refused here, where a permanent refusal alerts). Any payload
+ * board_id/stage_id is IGNORED — the config mapping is authoritative.
  *
  * The `started` outcome (branch-create push, DL-160) carries its own no-regression
  * guard: it only promotes a card whose current stage is in the mapping's
@@ -158,6 +161,24 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         $stageId = $mapping->stageFor($stageOutcome);
         if ($stageId === null) {
             Log::info('kanban_move_card: no stage mapped for outcome; ignoring', ['repo' => $repo, 'outcome' => $outcome, 'card_id' => $cardId]);
+
+            return;
+        }
+
+        // A NEAR-MISS card token (card#6027 / DL-287): the classifier resolved this
+        // move from a DL while the subject also carried a card-SHAPED token that does
+        // not parse and does not name any card the DL resolved to. It cannot select on
+        // that spelling (it is not a token) and must not let the DL win either — that
+        // is the card#4811 hijack with the conflict guard switched off — so the move is
+        // permanently REFUSED here, where the refusal pairs its log with a live signal.
+        // Refused before the client is built: this needs no card read, and a
+        // missing/insecure token must not 5xx-retry an event that is refused anyway.
+        if (($payload['card_token_near_miss'] ?? null) === true) {
+            $this->alerts->warnAndNotify(
+                'kanban_move_card: REFUSED — the subject carries a card-shaped token that does not parse and names a card the DL did not resolve to, so which card this event is about is unknown (near-miss card token)',
+                ['card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome],
+                $repo, $outcome, $cardId, 'card_token_near_miss',
+            );
 
             return;
         }

@@ -210,6 +210,66 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 
+    // --- card#6027 / DL-287: the near-miss card-token refusal ---
+
+    public function test_a_near_miss_flagged_target_is_refused_before_any_read(): void
+    {
+        // The classifier found a card-SHAPED token that does not parse beside a
+        // resolving DL, and cannot tell whether it named this card. The move is
+        // refused HERE rather than dropped at classify time, so the refusal alerts
+        // through the one primitive every permanent refusal uses (DL-274/DL-285)
+        // instead of becoming a third log-only branch. Refused BEFORE the client is
+        // built: nothing is read, nothing is written, and a missing token cannot
+        // 5xx-retry an event that is permanently refused.
+        // (Ignore the flag ⇒ a GET + PATCH are sent ⇒ RED.)
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake();
+        Log::spy();
+
+        $this->handle($this->payload(['card_token_near_miss' => true]));
+
+        Http::assertNothingSent();
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'REFUSED')
+            && str_contains((string) $msg, 'card-shaped'))->once();
+    }
+
+    public function test_the_near_miss_refusal_alerts(): void
+    {
+        // The reason the refusal lives in the handler at all: a permanent refusal
+        // must emit a LIVE signal, not just a log line.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle($this->payload(['card_token_near_miss' => true]));
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'card_token_near_miss'
+            && $r['repo'] === 'owner/repo'
+            && $r['outcome'] === 'merged'
+            && $r['card_id'] === 5);
+    }
+
+    public function test_an_unflagged_target_is_unaffected_by_the_near_miss_gate(): void
+    {
+        // The gate is scoped to the flag — the negative control. Without it the
+        // refusal could be unconditional and every leg above would still pass.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle($this->payload());   // no card_token_near_miss flag
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
     public function test_card_on_wrong_board_is_refused_no_move(): void
     {
         $this->writeWriteback();
