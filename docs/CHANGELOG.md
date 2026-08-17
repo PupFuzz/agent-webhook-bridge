@@ -8,6 +8,44 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Changed
+- **card#6137** (**DL-288**) — **`changelog-gate.yml`'s feature-PR path scope reaches `composer.json`,
+  `composer.lock` and `.env.example`, discharging the three CI-half gaps DL-282 disclosed.**
+  **⚠ THIS CHANGES WHAT CI REQUIRES:** the scope goes from eight members to eleven, so a PR
+  touching any of the three must now be named in `[Unreleased]` (or, with no `card#`/`DL-` token in
+  its title, must change the section at all). Operator-approved before any code. Each of the three
+  meets DL-280's CI-half criterion — *does this file change what CI accepts or rejects* — on a
+  mechanism DL-282 already recorded: `composer.json`'s `require-dev` pins the pint / larastan /
+  phpunit binaries the `PHPUnit + Pint + PHPStan (SQLite)` job runs out of `vendor/bin` and its
+  `require` pins the platform php, so a bump there moves the analysers CI runs; `security.yml`'s
+  `composer audit --locked` reads `composer.lock` as that gate's **rule input**, so changing it
+  flips the gate red or green; and the `setup-app` composite copies `.env.example` to `.env`, making
+  it the environment both test jobs run under. **Measured cost, over the 125 first-parent commits
+  `v0.70.0..dev`:** `composer.json` **0** commits, `.env.example` **0**, `composer.lock` **12** — of
+  which **11** are dependabot's and already exempt by branch. Exactly **one** historical commit
+  would newly have been caught: `a864bd9`, a human-authored `league/commonmark` security bump
+  touching only the lockfile with no `[Unreleased]` entry — which is the case the widening exists
+  for. The branch exemption (`dependabot/*`, `release/*`, `sync/*`, `revert-*`) is **untouched** and
+  is what keeps the cost at one; a leg now pins that a dependabot lockfile bump still exits 0, so
+  narrowing that set cannot happen silently. **What this does NOT claim:** the CI half is still not
+  claimed to exhaust its criterion — this discharges the three gaps DL-282 NAMED, which is not the
+  same as closing the half — and the software-half bound inherited from DL-276 (`config/`,
+  `routes/`, `database/migrations/`) is neither introduced nor fixed here. **A CI-half gap is NEWLY
+  DISCLOSED here rather than inherited, on the identical mechanism that justifies `composer.lock`:**
+  the reference channel server's `examples/channel-servers/package.json` and `package-lock.json`.
+  `channel-server-supply-chain.yml` runs `npm ci --ignore-scripts` (which fails the PR on
+  manifest/lock drift) and `npm audit --audit-level=high`, reading the lockfile as that gate's own
+  rule input, and its version-bump job reads the manifest's `version` as a rule input too;
+  `provision-tools-python.yml` runs a second `npm ci` against the same lockfile. It is disclosed and
+  not closed: **card#6137** owns the disposition, and widening to reach the pair is a change to what
+  CI rejects, so it is a separate operator ruling rather than an oversight. Four legs added to
+  `ChangelogGateTest.php` (one in-scope leg per new member, mutation-pinned and observed red, plus
+  the dependabot-exemption negative control). The derivation test that holds the predicate, the
+  `SCOPE` message variable, the `PATH SCOPE` comment table and `VERSIONING.md`'s scope row in
+  agreement is what carried the widening across those surfaces — measured: dropping any one new
+  member from the predicate alone reds that member's leg plus the derivation leg, 37/39 three
+  times. The release-PR assertions and the `--enforce-limit` publish path are byte-untouched.
+
 ## [0.74.0] - 2026-08-14
 
 ### Added
@@ -150,6 +188,16 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   that was found by measurement and is recorded in DL-282 with the eight per-member controls that
   now isolate it. User-gated before any code. The exempt branch set is unchanged and
   the release-PR assertions are untouched.
+  **[Correction to two present-tense claims in this entry — see the card#6137 / DL-288 entry in
+  `[Unreleased]`: `composer.json`, `composer.lock` and `.env.example` are no longer disclosed
+  accepted gaps, they are scope MEMBERS. That falsifies both the "⚠ THIS CHANGES WHAT CI REQUIRES"
+  paragraph's disclosed-gaps sentence above and the `composer.json` accepted-gap paragraph. The
+  member count this entry states for v0.74.0 stands — it records what shipped then; the CI half is
+  still not claimed exhausted, and the `config/` / `routes/` / `database/migrations/` software-half
+  bound is untouched. The verified-exclusions sentence above also stands as written — root
+  `package.json` still has no CI consumer — but read it narrowly: it settles the ROOT manifest only,
+  and DL-288 discloses `examples/channel-servers/`' own manifest pair, which those same two `npm ci`
+  steps do read, as an open CI-half gap.]**
 
 ### Fixed
 - **card#6027** (**DL-287**) — **A card-shaped token the grammar rejects stops reading as "no card token"
