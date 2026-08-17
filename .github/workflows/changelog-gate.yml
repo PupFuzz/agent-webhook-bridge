@@ -141,26 +141,46 @@ jobs:
               ;;
           esac
 
-          # PATH SCOPE, as approved on card#5971, widened on card#6056, and
-          # widened again on card#6100 (DL-282). It has TWO halves, from two
+          # PATH SCOPE, as approved on card#5971 and widened on card#6056,
+          # card#6100 (DL-282) and card#6137. It has TWO halves, from two
           # separate rulings:
           #
           #   SOFTWARE half (DL-276) — the shipped code.
-          #   CI half (DL-280, widened by DL-282) — what CI ACCEPTS OR REJECTS,
-          #   which is shipped behaviour for a contributor: a tightened gate
-          #   changes what they must do to merge exactly as an app/ change
-          #   changes what the software does. Measured: the DL-279
+          #   CI half (DL-280, widened by DL-282 then by card#6137) — what CI
+          #   ACCEPTS OR REJECTS, which is shipped behaviour for a contributor:
+          #   a tightened gate changes what they must do to merge exactly as an
+          #   app/ change changes what the software does. Measured: the DL-279
           #   release-artifacts-gate adoption changed what CI accepts on every
           #   release PR and was structurally exempt from the gate that exists
           #   to make a change announce itself.
           #
           # NEITHER half is claimed complete, and this list is the MEMBERS, not
-          # the closure of either criterion. Known outside it: config/, routes/
-          # and database/migrations/ on the software half (a bound inherited
-          # from DL-276, not introduced by DL-282), and composer.json,
-          # composer.lock and .env.example on the CI half. All are disclosed in
-          # DL-282; card#6137 owns their disposition. Do not read this list as
-          # asserting anything else is out of reach of the criterion.
+          # the closure of either criterion. Known outside it:
+          #
+          #   * config/, routes/ and database/migrations/ on the SOFTWARE half —
+          #     a bound inherited from DL-276, disclosed in DL-282, and neither
+          #     introduced nor fixed by card#6137 (DL-288).
+          #   * examples/channel-servers/package.json and its package-lock.json
+          #     on the CI half. NEWLY disclosed by DL-288 rather than inherited,
+          #     and on the same mechanism that puts composer.lock in this list:
+          #     channel-server-supply-chain.yml runs `npm ci --ignore-scripts`
+          #     (which fails the PR on manifest/lock drift) and
+          #     `npm audit --audit-level=high`, reading the lockfile as that
+          #     gate's own RULE INPUT, and its version-bump job reads BOTH
+          #     files' `version` fields as rule inputs (it fails the PR when
+          #     they disagree, or when a shipped change leaves them unbumped);
+          #     provision-tools-python.yml runs a second `npm ci` against the
+          #     same lockfile. card#6137 owns the disposition. Widening to reach
+          #     the pair is itself a change to what CI rejects, so it needs its
+          #     own operator ruling — this is a disclosure, not an oversight.
+          #
+          # DL-282's three disclosed CI-half gaps (composer.json, composer.lock,
+          # .env.example) are members as of DL-288, so THAT disclosure is
+          # discharged — which closes the gaps DL-282 NAMED and is NOT the same
+          # as closing the CI half: this list is not claimed to exhaust that
+          # criterion, and the npm pair above is a live instance of the
+          # difference. Do not read this list as asserting anything else is out
+          # of reach of the criterion.
           #
           # The members:
           #   app/                 the shipped code
@@ -177,9 +197,26 @@ jobs:
           #   phpunit.xml          <testsuites> decides which tests RUN AT ALL,
           #                        so deleting an entry drops a whole directory
           #                        from CI with nothing else in the diff
+          #   composer.json        its require-dev pins the analysers the
+          #                        PHPUnit+Pint+PHPStan job RUNS out of
+          #                        vendor/bin (pint, larastan, phpunit) and
+          #                        require pins the platform php, so a bump
+          #                        here changes what CI accepts directly; the
+          #                        setup-app composite also runs composer
+          #                        install with scripts ENABLED, and the psr-4
+          #                        map drives the autoloader both test jobs load
+          #   composer.lock        security.yml runs composer audit --locked, so
+          #                        the lockfile is that gate's RULE INPUT:
+          #                        changing it flips the gate red or green
+          #   .env.example         the setup-app composite copies it to .env, so
+          #                        it is the environment both test jobs run
+          #                        under
           #
-          # The four ROOT FILES match as WHOLE paths (`^…$`) while the directory
-          # members match as prefixes. Two regimes, and each anchor stops a
+          # The ROOT FILES — every member above with no trailing `/` — match as
+          # WHOLE paths (`^…$`) while the directory members match as prefixes.
+          # (Stated as a rule rather than a count: a count is a scope fact the
+          # derivation leg does not cover, so a later widening would leave it
+          # false at green.) Two regimes, and each anchor stops a
           # DIFFERENT lookalike: without the trailing `$`, `phpunit.xml.dist`
           # matches; without the leading `^`, `config/pint.json` matches. Both
           # are pinned, by two separate mutations — neither anchor covers the
@@ -209,7 +246,7 @@ jobs:
           # drifting from the regex — the defect class this scope exists to
           # close. Shell variable only; the file-header SECURITY block owns the
           # interpolation rule.
-          SCOPE='(app/, bin/, .github/workflows/, .github/actions/, .release-pr.json, phpstan-laravel.neon, pint.json, phpunit.xml)'
+          SCOPE='(app/, bin/, .github/workflows/, .github/actions/, .release-pr.json, phpstan-laravel.neon, pint.json, phpunit.xml, composer.json, composer.lock, .env.example)'
 
           # Captured, not piped — see the release step for the measured reason a
           # `writer | grep -q` under pipefail can report the writer's SIGPIPE.
@@ -222,7 +259,7 @@ jobs:
           # closed: a path containing `"`, `\`, or a control byte is quoted
           # regardless of this flag.
           CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" "$HEAD")
-          if ! grep -qE '^(app/|bin/|\.github/workflows/|\.github/actions/)|^(\.release-pr\.json|phpstan-laravel\.neon|pint\.json|phpunit\.xml)$' <<<"$CHANGED"; then
+          if ! grep -qE '^(app/|bin/|\.github/workflows/|\.github/actions/)|^(\.release-pr\.json|phpstan-laravel\.neon|pint\.json|phpunit\.xml|composer\.json|composer\.lock|\.env\.example)$' <<<"$CHANGED"; then
             echo "OK: this PR changes no in-scope file ${SCOPE} — no [Unreleased] entry required."
             exit 0
           fi

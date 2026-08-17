@@ -42,7 +42,7 @@ class ChangelogGateTest extends TestCase
      * assertions below, which compare it against `${SCOPE}`'s rendered output —
      * not by the derivation leg, which never reads it.
      */
-    private const SCOPE_ENUMERATION = '(app/, bin/, .github/workflows/, .github/actions/, .release-pr.json, phpstan-laravel.neon, pint.json, phpunit.xml)';
+    private const SCOPE_ENUMERATION = '(app/, bin/, .github/workflows/, .github/actions/, .release-pr.json, phpstan-laravel.neon, pint.json, phpunit.xml, composer.json, composer.lock, .env.example)';
 
     private const OUT_OF_SCOPE_MESSAGE = 'no in-scope file '.self::SCOPE_ENUMERATION;
 
@@ -487,13 +487,20 @@ class ChangelogGateTest extends TestCase
     }
 
     /**
-     * The five members card#6100 (DL-282) added, one leg each. Each is a file a
-     * CI step actually reads, so each changes what CI accepts or rejects — the
-     * criterion the scope had been a proper subset of.
+     * The root CI-config members, one leg each: the five card#6100 (DL-282)
+     * added, then the three card#6137 moved across from DL-282's disclosed
+     * accepted gaps. Each is a file a CI step actually reads, so each changes
+     * what CI accepts or rejects — the criterion the scope IS a proper subset
+     * of, still: the members below are the ones ruled on, not the closure of
+     * that criterion, and `changelog-gate.yml`'s PATH SCOPE block names what is
+     * known to be outside them. One provider and one leg body for both rulings
+     * on purpose: the
+     * legs differ only in the path, and a second copy of the method would be
+     * the enumeration drifting again.
      *
      * @return iterable<string,array{0:string}>
      */
-    public static function dl282InScopeMemberProvider(): iterable
+    public static function rootCiConfigMemberProvider(): iterable
     {
         // Pins PHP 8.5, the extension set and composer install for both
         // laravel-tests.yml jobs.
@@ -508,9 +515,19 @@ class ChangelogGateTest extends TestCase
         // <testsuites> decides which tests run at all: deleting an entry drops
         // a whole directory from CI without touching app/ or bin/.
         yield 'phpunit config' => ['phpunit.xml'];
+        // card#6137, discharging DL-282's three disclosed CI-half gaps.
+        // require-dev pins the pint/larastan/phpunit binaries the SQLite job
+        // runs out of vendor/bin, and require pins the platform php.
+        yield 'composer manifest' => ['composer.json'];
+        // security.yml's `composer audit --locked` reads it as that gate's
+        // rule input: changing it flips the gate red or green.
+        yield 'composer lockfile' => ['composer.lock'];
+        // The setup-app composite copies it to .env, so it is the environment
+        // both test jobs run under.
+        yield 'env template' => ['.env.example'];
     }
 
-    #[DataProvider('dl282InScopeMemberProvider')]
+    #[DataProvider('rootCiConfigMemberProvider')]
     public function test_a_ci_config_member_is_in_scope_exactly_like_an_app_change(string $path): void
     {
         [$rc, $out] = $this->runFeatureStep(
@@ -525,15 +542,17 @@ class ChangelogGateTest extends TestCase
     }
 
     /**
-     * The four root-file members are whole paths, not prefixes. Without these
-     * three legs a naive prefix predicate passes every positive leg above and
-     * the anchoring is decoration. Each anchor is pinned by a different leg:
-     * the trailing `$` excludes the suffixed case, the leading `^` the nested
-     * ones.
+     * The root-file members are whole paths, not prefixes. Without these three
+     * legs a naive prefix predicate passes every positive leg above and the
+     * anchoring is decoration. Each anchor is pinned by a different leg: the
+     * trailing `$` excludes the suffixed case, the leading `^` the nested ones.
+     * Three legs cover all of them because the root files share ONE anchored
+     * alternation, so a mutation to either anchor moves every member of it —
+     * these are legs about the two anchors, not one per member.
      *
      * @return iterable<string,array{0:string}>
      */
-    public static function dl282RootFileLookalikeProvider(): iterable
+    public static function rootFileLookalikeProvider(): iterable
     {
         // Nested same-named files: no CI step reads either one.
         yield 'nested pint config' => ['config/pint.json'];
@@ -542,7 +561,7 @@ class ChangelogGateTest extends TestCase
         yield 'suffixed phpunit config' => ['phpunit.xml.dist'];
     }
 
-    #[DataProvider('dl282RootFileLookalikeProvider')]
+    #[DataProvider('rootFileLookalikeProvider')]
     public function test_a_root_file_lookalike_stays_out_of_scope(string $path): void
     {
         [$rc, $out] = $this->runFeatureStep(
@@ -554,6 +573,24 @@ class ChangelogGateTest extends TestCase
 
         $this->assertSame(0, $rc, $out);
         $this->assertStringContainsString(self::OUT_OF_SCOPE_MESSAGE, $out);
+    }
+
+    public function test_a_dependabot_lockfile_bump_stays_exempt_after_the_lockfile_joined_the_scope(): void
+    {
+        // card#6137's cost argument, pinned rather than asserted in prose: over
+        // v0.70.0..dev 12 first-parent commits touched composer.lock and 11 are
+        // dependabot's, so the widening is cheap only while the branch
+        // exemption keeps covering them. Narrowing that set would make each of
+        // those bumps owe an entry — none of the 11 touches docs/CHANGELOG.md.
+        [$rc, $out] = $this->runFeatureStep(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), 'composer.lock' => 'a'],
+            ['composer.lock' => 'b'],
+            'build(deps): Bump laravel/framework from 13.24.0 to 13.25.0',
+            'dependabot/composer/laravel/framework-13.25.0',
+        );
+
+        $this->assertSame(0, $rc, $out);
+        $this->assertStringContainsString('is exempt', $out);
     }
 
     /**
@@ -583,6 +620,18 @@ class ChangelogGateTest extends TestCase
         // comparisons below vacuous.
         $this->assertContains('app/', $members);
         $this->assertContains('bin/', $members);
+
+        // The two regimes are stated in prose on three surfaces as a RULE —
+        // "the members with no trailing `/` are the whole-path ones" — where a
+        // COUNT used to stand. A count goes false on any widening and no leg
+        // covered it; this derives the rule instead, so the prose cannot drift
+        // from the predicate the way the numerals silently could.
+        foreach (explode('|', $groups[1][0]) as $prefix) {
+            $this->assertStringEndsWith('/', str_replace('\\', '', $prefix), 'a member of the PREFIX alternation must end in `/` — the scope prose on three surfaces identifies the anchored root files by that one property');
+        }
+        foreach (explode('|', $groups[1][1]) as $rootFile) {
+            $this->assertStringEndsNotWith('/', str_replace('\\', '', $rootFile), 'a member of the anchored ROOT-FILE alternation must not end in `/` — the scope prose on three surfaces identifies it by that one property');
+        }
 
         $this->assertSame(1, preg_match("/^\s*SCOPE='([^']+)'/m", $script, $s), 'the operator-facing member list must be ONE shell variable, not a per-message copy');
         $scopeString = $s[1];
