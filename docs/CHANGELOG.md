@@ -9,6 +9,48 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 ## [Unreleased]
 
 ### Changed
+- **card#6822 (DL-289)** — **`pr-title-lint.yml`'s require step inspects every branch that NAMES a card
+  id, not only `<type>/<card-id>-slug`.** **⚠ THIS CHANGES WHAT CI ACCEPTS:** two branch spellings
+  that previously skipped the gate green are enforced now, so a PR on one of them whose title
+  carries no `card#`/`DL-` token reds where it used to pass. The classifier had drifted out from
+  under the house convention. **Derivation** (re-run at build time rather than quoted): take the
+  merged PRs of the newest 100 closed, drop `dependabot/*`, `release/*`, `sync/*`, `revert-*`, and
+  match each head branch against the old `^[a-z-]+/[0-9]+-` and the new predicate. Over the **newest
+  60 merged** PRs that leaves **35** branches — **16** the old accept-set reached, **6** on the
+  segment-less `card-5538-…` / `card6027-…` shape, **7** on the prefixed `fix/card6371-…` /
+  `chore/card-5913-…` shape, and **6** genuinely card-less: **13 of 29 card-bearing PRs (45%) merged
+  with nothing enforcing the one key the card-movement writeback has.** Over the full **96 merged**
+  refs the window returns, **33** branches move from skipped to enforced. *(card#6822 recorded
+  18/7/7/6; this derivation returns 16/6/7/6. **Not window drift — a different denominator, and the
+  difference was measured rather than assumed.** The card's figures come from `gh pr list --state
+  merged --limit 60`, i.e. the newest 60 by MERGE recency, oldest merge `2026-08-04`; this one takes
+  the merged subset of the newest 100 CLOSED, which is ordered by PR number and reaches back to a
+  merge of `2026-07-29`. Both are reproducible over the population each names — re-running the card's
+  command returns its figures exactly. The shapes and the conclusion are identical either way; state
+  which window any future re-count uses.)* The prefixed shape is the surprising half:
+  those branches do follow the convention and read as compliant; only the literal `card` between the
+  slash and the digits put them outside the regex. The **guard** is what moved, not the branch names
+  — renaming would leave the next `fix/card<NNNN>-` branch free to re-mint the silence.
+- **The predicate and the id EXTRACTION now come from one regex** (`BASH_REMATCH`), replacing the
+  second parse (`${branch_lc#*/}` then a `%%-*` chop) that agreed with the predicate on exactly the
+  one shape the predicate accepted. Widening the predicate alone would have yielded `card6371` for
+  the prefixed shape and the whole branch name for the segment-less one — a gate that fires and then
+  demands a token spelled after an id that names nothing, which is worse than the skip it replaced.
+  A mutation leg pins the coupling in both directions.
+- **DISCLOSED, not overlooked:** with both the type segment and the `card` prefix absent the accepted
+  shape is a bare leading `<digits>-`, so a date- or version-named branch (`2026-08-18-notes`) is now
+  enforced against id 2026. No such branch exists in the measured corpus and neither does a bare
+  `5538-slug`, so both arms are hypothetical; the widening leans to the **loud** failure, because a
+  wrong skip is the silence this gate exists to remove. Characterized in `PrTitleLintTest`.
+- **Deliberately unchanged:** this copy still folds `BRANCH`/`TITLE` to lower case before matching
+  (#4384) — a real divergence from the kanban-board copy that must not be "converged" away, now
+  pinned by a leg that removes the fold and watches an upper-case card branch go unreachable. The
+  branch predicate also keeps its `[0-9]` **range** where the token arms enumerate their digits: that
+  site is collation-sensitive in the false-**red** direction, so enumerating it would make the gate
+  more permissive — a hard gate, still pinned under **card#5300**, whose locale characterization
+  stayed green throughout. The `dependabot/*`, `release/*`, `sync/*`, `revert-*` exemptions are
+  untouched, and a leg now removes the `case` block to prove they are what skips a card-id-shaped
+  exempt branch.
 - **card#6137** (**DL-288**) — **`changelog-gate.yml`'s feature-PR path scope reaches `composer.json`,
   `composer.lock` and `.env.example`, discharging the three CI-half gaps DL-282 disclosed.**
   **⚠ THIS CHANGES WHAT CI REQUIRES:** the scope goes from eight members to eleven, so a PR
