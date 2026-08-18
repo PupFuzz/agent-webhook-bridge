@@ -280,9 +280,15 @@ jobs:
           fi
 
           # The correlation token comes from the PR TITLE, which pr-title-lint
-          # already requires for a <type>/<card-id>-slug branch — so the two
-          # gates compose: that one proves the token is present, this one proves
-          # the token is documented.
+          # requires for any branch that NAMES a card id — so the two gates
+          # compose: that one proves the token is present, this one proves the
+          # token is documented.
+          #
+          # WHICH branches name one is owned by that file's own predicate and is
+          # deliberately not restated here. The spelling this comment used to
+          # carry (`<type>/<card-id>-slug`) was exactly the accept-set the house
+          # convention then drifted away from, and this copy of it would have gone
+          # stale in lockstep with the gate it described (card#6822).
           #
           # Digit classes are ENUMERATED, never written as [0-9]: inside bash's
           # [[ =~ ]] a bracket RANGE is resolved by COLLATION, and under an
