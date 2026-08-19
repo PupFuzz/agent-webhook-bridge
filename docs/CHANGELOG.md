@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.74.1] - 2026-08-19
+
 ### Changed
 - **card#6822 (DL-289)** — **`pr-title-lint.yml`'s require step inspects every branch that NAMES a card
   id, not only `<type>/<card-id>-slug`.** **⚠ THIS CHANGES WHAT CI ACCEPTS:** two branch spellings
