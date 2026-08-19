@@ -1,4 +1,4 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.35.0) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.37.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **What this is.** The solo-agent orientation generated from the Agent Board Framework
@@ -113,6 +113,17 @@ item regardless of which repo it lives in. Work it. Then move to the next.
 6. **The bridge moves that repo's card** on PR events — Backlog → In Review → Shipped →
    Released — automatically. You confirm card state is accurate after each bridge-driven
    transition.
+
+**You are your own mint gate — the triage doctrine's bar.** Nobody else triages what reaches your
+boards, so every clause of the doctrine binds you directly — and the caps bind you hardest, because
+you are also your own reviewer, on the pass where no second seat will say *enough*. Your install's
+regulated or safety-critical surface set, which the floor-pin above the bar protects, is the one
+named in § Ask-first gates. The doctrine is stated once in **`process-framework.md § Triage
+doctrine`** — read it in the plugin's own `docs/` directory; that file is otherwise
+multi-agent-only and `coord:init-solo` does not deploy it, but that one section is written for
+every seat including yours. Nothing here restates it, with one exception, self-firing and needing
+no cadence: **any incident or blocker-grade finding traced to a finding the bar declined to mint
+reopens the bar at this install.**
 
 **`[TASK]` tracking, if used, is plain GitHub issues on the relevant repo.** There is no
 coordination repo for cross-agent issue tracking. Open a GitHub issue on the repo the task
