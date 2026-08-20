@@ -7,18 +7,30 @@ use App\Bridge\Dispatch\DispatchService;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\HandlerRegistry;
+use Illuminate\Support\Facades\File;
 use ReflectionProperty;
 use Tests\TestCase;
 
 class BridgeServiceProviderTest extends TestCase
 {
+    private string $dir;
+
     protected function setUp(): void
     {
         parent::setUp();
         // DispatchService's bind closure builds config-derived registries from
-        // this dir; point it at an existing one so resolution never depends on
-        // a real install being present.
-        config(['bridge.config_dir' => sys_get_temp_dir()]);
+        // this dir and parses every *.yml it finds, so the dir must be one this
+        // test owns: the shared temp root is world-writable and a co-tenant's
+        // stray YAML would be parsed as an agent config.
+        $this->dir = sys_get_temp_dir().'/bridgesp-'.uniqid();
+        File::ensureDirectoryExists($this->dir);
+        config(['bridge.config_dir' => $this->dir]);
+    }
+
+    protected function tearDown(): void
+    {
+        File::deleteDirectory($this->dir);
+        parent::tearDown();
     }
 
     public function test_handler_registry_is_a_container_singleton(): void
