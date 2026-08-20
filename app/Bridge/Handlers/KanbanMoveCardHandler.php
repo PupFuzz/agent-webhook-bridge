@@ -6,11 +6,13 @@ use App\Bridge\Contracts\DurableReaction;
 use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
+use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardNote;
 use App\Bridge\Writeback\CardTokenCorroboration;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\PinGuard;
+use App\Bridge\Writeback\PrUrlRef;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -452,11 +454,21 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * silence, because a well-formed PR (head branch carrying the card token, so the DL-270
      * corroboration gate never fires) landed straight in the nothing-left-to-write return
      * below. It is now RECORDED: a log + alert for the operator, a note on the card for
-     * whoever later wonders why that PR never correlated (card#7064). Nothing about which
-     * PR ends up stamped changed. The distinction that matters is DIFFERS, not
+     * whoever later wonders why that PR never correlated (card#7064). Which PR ends up
+     * stamped changes in exactly ONE case, below: a `pr_url` holding the `.../pull/0`
+     * source-only qualifier FOR THIS PR'S OWN REPO is now written over, because it names
+     * no pull request to preserve. The distinction that matters is DIFFERS, not
      * nothing-to-write: an idempotent replay of the card's OWN pull request offers exactly
      * what the card stores and stays silent, which is why the comparison is
      * {@see CardTokenCorroboration::tracksPr} rather than an empty-$refs test.
+     *
+     * DIFFERS is asked per ref through that ref's own notion of equality, never on bytes:
+     * `dl_number` on digits ({@see dlNumberOf}), `pr_number` through `tracksPr`, and
+     * `pr_url` through PR IDENTITY ({@see samePrUrl} / {@see PrUrlRef}) — one pull request
+     * has many URL spellings, and the `.../pull/0` source-only qualifier is not one of them
+     * but the absence of a pull request, so this PR's own repo stamps over it rather than
+     * being reported as the second PR it collides with. Only its own repo:
+     * {@see placeholderThisPrMayReplace} (card#7064).
      *
      * $repo / $outcome are threaded in for the alert's dedup tuple only — the stamp itself
      * is keyed on the card.
@@ -470,6 +482,9 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         $refs = [];
         /** @var array<string, array{card: mixed, offered: mixed}> $dropped */
         $dropped = [];
+        // Set true only inside the pr_url drop arm below, and only for a foreign-repo
+        // placeholder — the one case where the card's kept ref names no pull request.
+        $keptPrUrlIsPlaceholder = false;
 
         $stampDl = $payload['stamp_dl'] ?? null;
         if (is_string($stampDl) && $stampDl !== '') {
@@ -498,14 +513,22 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         }
 
         // pr_url (card#4852) — a registered payload key that drives kanban's multi-repo
-        // by-ref `source` derivation. Add-if-missing, exactly like pr_number above.
+        // by-ref `source` derivation. Add-if-missing, exactly like pr_number above, and
+        // compared through PR IDENTITY rather than bytes (card#7064): see samePrUrl.
         $stampPrUrl = $payload['stamp_pr_url'] ?? null;
         if (is_string($stampPrUrl) && $stampPrUrl !== '') {
+            $normalizer = new ExternalReferenceNormalizer;
             $stored = $current['pr_url'] ?? null;
-            if (($stored ?? '') === '') {
+            $storedUrl = PrUrlRef::parse($stored, $normalizer);
+            $offeredUrl = PrUrlRef::parse($stampPrUrl, $normalizer);
+            if (($stored ?? '') === '' || self::placeholderThisPrMayReplace($storedUrl, $offeredUrl)) {
                 $refs['pr_url'] = $stampPrUrl;
-            } elseif ($stored !== $stampPrUrl) {
+            } elseif (! self::samePrUrl($storedUrl, $stored, $offeredUrl, $stampPrUrl, $current)) {
                 $dropped['pr_url'] = ['card' => $stored, 'offered' => $stampPrUrl];
+                // A dropped pr_url that reaches here and is a placeholder is necessarily a
+                // FOREIGN-repo one (a same-repo placeholder took the $refs branch above),
+                // so this is the sole reachable "kept ref names no pull request" case.
+                $keptPrUrlIsPlaceholder = $storedUrl?->isSourceOnlyPlaceholder() === true;
             }
         }
 
@@ -515,7 +538,8 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 ['card_id' => $cardId, 'repo' => $repo, 'dropped' => $dropped],
                 $repo, $outcome, $cardId, 'correlation_ref_not_stamped',
             );
-            $this->recordCardNote(CardNote::droppedCorrelationRef($cardId, $repo, $dropped), $card, $cardId, $client, $repo, $outcome);
+            $keptNamesNoPullRequest = $keptPrUrlIsPlaceholder && ! isset($dropped['pr_number']);
+            $this->recordCardNote(CardNote::droppedCorrelationRef($cardId, $repo, $dropped, $keptNamesNoPullRequest), $card, $cardId, $client, $repo, $outcome);
         }
 
         if ($refs === []) {
@@ -553,6 +577,72 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
     }
 
     /**
+     * May this pull request's url REPLACE the `.../pull/0` the card stores?
+     *
+     * Only when the placeholder names the SAME repo. `.../pull/0` is not a null value: it
+     * is a by-ref SOURCE an operator stamped on purpose, so that a repo-qualified lookup
+     * resolves the card before any pull request exists. The `0` is the part carrying no
+     * information; the REPO is the load-bearing half. Writing a pull request from another
+     * repo over it would silently re-point a field a human set deliberately — the same
+     * quiet write this whole class exists to stop — so a foreign-repo placeholder is left
+     * alone and the drop is RECORDED instead. That note is true as written: the card
+     * really does name a different repo than the pull request that correlated to it.
+     *
+     * (This was the fork in the fix, ruled this way for the reason above. A placeholder
+     * whose repo does not parse cannot reach here at all — {@see PrUrlRef::parse} only
+     * recognizes the placeholder BECAUSE the repo parsed — so there is no third arm to
+     * write; an unparseable stored value is free text and keeps recording its drop.)
+     */
+    private static function placeholderThisPrMayReplace(?PrUrlRef $storedUrl, ?PrUrlRef $offeredUrl): bool
+    {
+        return $storedUrl !== null
+            && $storedUrl->isSourceOnlyPlaceholder()
+            && $offeredUrl !== null
+            && $storedUrl->canonRepo === $offeredUrl->canonRepo;
+    }
+
+    /**
+     * Does the offered `pr_url` name the pull request this card is ALREADY correlated to?
+     * `pr_url` is the one ref whose value has many spellings for one pull request, so the
+     * question it has to answer is PR identity and not byte equality (card#7064) — a raw
+     * compare reports "a second pull request correlates to this card" for a card that has
+     * only ever had one. Two ways the card already answers with this PR:
+     *
+     *  - its stored `pr_url` names the same {@see PrUrlRef} — a re-spelling (repo case,
+     *    a `/files` suffix) of the URL it already holds;
+     *  - its stored `pr_number` names this PR, through the writeback's one definition of
+     *    "same PR" ({@see CardTokenCorroboration::tracksPr}). That is a real card state,
+     *    not a hypothetical: the stamp is per-ref add-if-missing, so a card whose
+     *    `pr_number` was written by PR 261 and whose `pr_url` was later filled in by PR
+     *    262 answers 261 for one ref and 262 for the other, and PR 261's next outcome
+     *    would otherwise be recorded as a second PR under a heading asserting the card
+     *    stays correlated to 261 — the PR being reported.
+     *
+     * A stored `pr_number` carries no repo — which is why a bare one is AMBIGUOUS on a
+     * shared board (`TrackedRefKind::Ambiguous`) — so that second test is repo-qualified
+     * wherever the card gives us a repo to qualify with: its own `pr_url`'s. Same number,
+     * DIFFERENT repo is two pull requests, and on a board mapped by >1 repo that collision
+     * is the one this note must not swallow.
+     *
+     * When the offered value does not parse as a pull-request URL there is no identity to
+     * compare and the byte test stands, as before. A stored value that does not parse
+     * (an operator's free text) names no pull request the offer could BE, so it keeps
+     * recording the drop — and it is never overwritten.
+     *
+     * @param  array<string, mixed>  $current  the card's payload as kanban returned it
+     */
+    private static function samePrUrl(?PrUrlRef $storedUrl, mixed $stored, ?PrUrlRef $offeredUrl, string $offered, array $current): bool
+    {
+        if ($offeredUrl === null || ! $offeredUrl->namesPr()) {
+            return $stored === $offered;
+        }
+
+        return $offeredUrl->sameAs($storedUrl)
+            || (CardTokenCorroboration::tracksPr($current['pr_number'] ?? null, $offeredUrl->number)
+                && ($storedUrl === null || $storedUrl->canonRepo === $offeredUrl->canonRepo));
+    }
+
+    /**
      * Record a {@see CardNote} on the card — the card-VISIBLE half of a refusal or a
      * dropped stamp (card#7064). The log line and the alert push are the OPERATOR's
      * surfaces; somebody wondering why a pull request never correlated is reading the
@@ -563,6 +653,13 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * the same drop — a second PR outcome, or a redelivery of the first — re-derives the
      * same marker and finds it already on the card. The check reads the `comments` the
      * card's own getCard aggregate already returned, so it costs no extra read.
+     *
+     * At-most-once is bounded by a note that LANDED: {@see CardNote::alreadyOn} can only
+     * match a comment kanban stored, so a send that failed is re-attempted by the next
+     * event asserting the same drop (with its own alert). Within one delivery nothing is
+     * retried — but an install whose token lacks comment-create re-POSTs and re-alerts on
+     * every such event rather than falling silent after the first, which is the direction
+     * this whole class is for.
      *
      * BEST-EFFORT, and structurally so: nothing here may throw. A throw would 5xx a move
      * that has already happened (or a refusal that is permanent), turning an observability

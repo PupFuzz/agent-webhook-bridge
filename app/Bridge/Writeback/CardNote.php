@@ -22,13 +22,17 @@ namespace App\Bridge\Writeback;
  *
  * The MARKER LINE is the first line of the comment and identifies the note by its
  * FACTS (which card, which refs, which values), never by the event that produced it:
- * one card + one dropped pull request is one note however many times a `pull_request`
- * event re-asserts it, so the same drop seen on `opened`, then `merged`, then a
- * redelivery of either, re-derives a byte-identical marker and is written once. That
- * holds because the dropped SET is stable per (card, pull request): add-if-missing can
- * only ever fill a ref with THIS event's own value, which then compares equal and never
- * enters the set, while a ref that already differs keeps differing. A genuinely
- * different second pull request is a different marker, and gets its own note.
+ * one note per card per dropped SET of values, so the same drop re-asserted with the
+ * same values — `opened`, then `merged`, then a redelivery of either — re-derives a
+ * byte-identical marker and is written once. The unit is the SET, not the pull request,
+ * and the difference is reachable: the offered refs are re-derived from the event every
+ * time (`stamp_dl` from the title+branch text via `DlTokenGrammar::sole`), so a title
+ * EDITED between two events can offer a DL the earlier one did not, growing the dropped
+ * set into a different marker and a second note about the same pull request. That is the
+ * honest outcome — the second note records a drop the first one could not have named —
+ * but it is not one-note-per-PR, and reading it as that would make a real second record
+ * look like a dedup failure. A genuinely different second pull request is likewise a
+ * different marker, and gets its own note.
  */
 final class CardNote
 {
@@ -57,9 +61,20 @@ final class CardNote
      * Both are rendered, because "which PR won" is the first question a reader has and
      * neither value alone answers it.
      *
+     * $keptNamesNoPullRequest is true for exactly one shape: the only PR-shaped ref
+     * dropped is `pr_url`, no `pr_number` was also dropped, and the card's kept `pr_url`
+     * is the `.../pull/0` source-only placeholder — a repo, not a pull request. The
+     * default heading claims "this card stays correlated to the pull request it already
+     * names", which is false for that card: it names a REPO it was deliberately qualified
+     * to, and no pull request at all. Asserting a PR that does not exist inside the note
+     * that exists to stop this handler asserting PRs that do not exist would re-mint the
+     * defect the note is for, so that shape gets its own heading instead of the shared
+     * one. Every other shape — including a placeholder alongside a dropped `pr_number`
+     * that DOES name a real PR — keeps the byte-identical default heading.
+     *
      * @param  array<string, array{card: mixed, offered: mixed}>  $dropped
      */
-    public static function droppedCorrelationRef(int $cardId, string $repo, array $dropped): self
+    public static function droppedCorrelationRef(int $cardId, string $repo, array $dropped, bool $keptNamesNoPullRequest = false): self
     {
         ksort($dropped);
 
@@ -73,6 +88,20 @@ final class CardNote
         foreach ($dropped as $key => $pair) {
             $lines .= '- `'.$key.'` — the card keeps `'.self::render($pair['card'])
                 .'`; this pull request offered `'.self::render($pair['offered'])."`\n";
+        }
+
+        if ($keptNamesNoPullRequest) {
+            return new self($marker, <<<BODY
+                A pull request in `{$repo}` names this card, but the card already carries a
+                different correlation ref — a repo-only placeholder set before any pull
+                request existed, and a card carries one of each, first write wins. So the
+                ref below was **not** written, and this card stays correlated to the REPO
+                it already names, not to this pull request:
+
+                {$lines}
+                Nothing else about the card was changed. This pull request is not
+                reachable by a by-ref lookup on this card; record the link by hand if you need it.
+                BODY);
         }
 
         return new self($marker, <<<BODY
