@@ -54,9 +54,14 @@ receiver/config.php
 .pytest_cache/
 
 # Laravel (v0.12 rewrite)
-.env
-.env.backup
-.env.production
+# The `.env` FAMILY, not the name — see the editor/backup block below for why an
+# enumeration is the wrong shape here.
+# NOTE: `!.env.example` is correct to keep, but it is NOT what keeps that file in
+# the repo — the file is TRACKED, and .gitignore has no effect on tracked files.
+# Do not "simplify" the negation away on the theory that it is load-bearing, and
+# do not shy off the family form believing it would drop the example file.
+.env*
+!.env.example
 /node_modules
 /public/build
 /public/hot
@@ -66,3 +71,17 @@ receiver/config.php
 .phpunit.result.cache
 _ide_helper.php
 /auth.json
+
+# Editor and backup siblings of ANY file, secret-bearing ones included. A backup
+# carries the same secret as the file it copies, and a per-file enumeration is
+# permanently one editor behind: `.env` was ignored here while `.env~`, `auth.json~`
+# and `storage/*.key~` were all stageable (roundtable #316, found live on a peer
+# install as a 4,339-byte `.env~`). The rules above name WHICH files are secret;
+# these cover HOW an editor spells a copy of one, so a new secret file added above
+# inherits the coverage instead of needing its own siblings enumerated.
+*~
+*.bak
+*.orig
+*.save
+*.swo
+*.tmp
