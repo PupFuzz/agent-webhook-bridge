@@ -8,6 +8,25 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+- **card#7118** — **Three tests handed the shared temp root to code that enumerates it, so the suite's
+  result was a function of the box's `/tmp` rather than of the branch.** `BridgeServiceProviderTest`
+  pointed `bridge.config_dir` at `sys_get_temp_dir()`, `InstallGuardTest` constructed a
+  `SubscriptionRegistry` over it, and `AgentConfigTest::test_load_missing_file_throws` asserted a
+  config was absent from it — but `/tmp` is world-writable, and `SubscriptionRegistry::agentConfigs()`
+  parses every `*.yml` it finds there. A 38-byte stray YAML left by an unrelated OS user reds
+  `BridgeServiceProviderTest` on any branch, `dev` included. The two failure modes differ: instance 1
+  reds outright, while instance 2 was a false GREEN — its `expectException(ConfigException::class)`
+  is satisfied by a co-tenant's malformed YAML, so the crosstalk guard it exists to pin could be
+  broken without the test noticing. All three now use the isolation idiom the other 82
+  `sys_get_temp_dir()` sites in `tests/` already use (`sys_get_temp_dir().'/<prefix>-'.uniqid()`,
+  created in `setUp()`, removed in `tearDown()`), and the two exception assertions now assert on the
+  message rather than on the class alone. **Control** (the deliverable, not the green suite): with a
+  deliberately-invalid YAML planted in the real `/tmp` and no `TMPDIR` override, the three classes
+  went 48/50 with 1 error + 1 failure before and 50/50 after. `CLAUDE_TESTING.md` gains the rule
+  under *Anti-patterns to avoid* — it was a convention 82 sites followed and nothing wrote down,
+  which is why the four exceptions were invisible.
+
 ## [0.74.1] - 2026-08-19
 
 ### Changed

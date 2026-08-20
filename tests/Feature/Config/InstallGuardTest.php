@@ -10,10 +10,26 @@ use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\HandlerRegistry;
 use App\Bridge\Support\InstallGuard;
 use App\Bridge\Support\SubscriptionRegistry;
+use Illuminate\Support\Facades\File;
 use Tests\TestCase;
 
 class InstallGuardTest extends TestCase
 {
+    private string $dir;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->dir = sys_get_temp_dir().'/installguard-'.uniqid();
+        File::ensureDirectoryExists($this->dir);
+    }
+
+    protected function tearDown(): void
+    {
+        File::deleteDirectory($this->dir);
+        parent::tearDown();
+    }
+
     private function setDb(string $name): void
     {
         config(['database.default' => 'guardtest', 'database.connections.guardtest.database' => $name]);
@@ -60,7 +76,11 @@ class InstallGuardTest extends TestCase
         config(['bridge.install_suffix' => '-prod']);   // :memory: lacks _prod → crosstalk
 
         $dispatcher = new DispatchService(
-            new SubscriptionRegistry(sys_get_temp_dir()),
+            // SubscriptionRegistry parses every *.yml under this dir, so it must
+            // be one this test owns: a stray YAML in the shared temp root throws
+            // the same ConfigException the crosstalk guard does, which would
+            // satisfy the assertion below without the guard having fired.
+            new SubscriptionRegistry($this->dir),
             new AgentRegistry([]),
             new HandlerRegistry,
             new IntentLog,
@@ -68,6 +88,7 @@ class InstallGuardTest extends TestCase
 
         // The guard throws BEFORE any DB write → propagates → 5xx (fail-closed).
         $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('crosstalk');
         $dispatcher->dispatch('kanban', '5', new EventDto('d1', '5', 'task.created', null), []);
     }
 }
