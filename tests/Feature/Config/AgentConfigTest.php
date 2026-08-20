@@ -377,8 +377,18 @@ class AgentConfigTest extends TestCase
 
     public function test_load_missing_file_throws(): void
     {
-        $this->expectException(ConfigException::class);
-        AgentConfig::load('nope', sys_get_temp_dir());
+        // Absent by construction, not by luck: the shared temp root is
+        // world-writable, so a co-tenant's nope.yml would be found and parsed.
+        $dir = sys_get_temp_dir().'/agentcfg-'.uniqid();
+        File::ensureDirectoryExists($dir);
+
+        try {
+            $this->expectException(ConfigException::class);
+            $this->expectExceptionMessage('config file not found');
+            AgentConfig::load('nope', $dir);
+        } finally {
+            File::deleteDirectory($dir);
+        }
     }
 
     public function test_load_invalid_yaml_throws(): void
