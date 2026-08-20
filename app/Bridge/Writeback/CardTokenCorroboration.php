@@ -56,7 +56,25 @@ final class CardTokenCorroboration
             return false;   // tracks no PR → this PR may be its first
         }
 
-        return ! (is_numeric($cardPr) && is_numeric($eventPr) && (int) $cardPr === (int) $eventPr);
+        return ! self::tracksPr($cardPr, $eventPr);
+    }
+
+    /**
+     * Does this card's stored `pr_number` name the SAME pull request as $eventPr? The one
+     * definition of "same PR" the writeback has: a numeric string compares equal to its int
+     * (kanban's payload and the durable inbox JSON round-trip each produce either), and
+     * anything non-numeric on either side compares equal to nothing — fail-closed, so a
+     * caller can never read "unknown" as "same".
+     *
+     * Public because {@see refuses} is not the only consumer: the move handler's stamp
+     * decides whether an offered `pr_number` is a REPLAY of the card's own PR (stay silent)
+     * or a SECOND, dropped PR (record it), which is the same question asked for a different
+     * purpose. A second copy of the comparison would let the two disagree about one card and
+     * one PR.
+     */
+    public static function tracksPr(mixed $cardPr, mixed $eventPr): bool
+    {
+        return is_numeric($cardPr) && is_numeric($eventPr) && (int) $cardPr === (int) $eventPr;
     }
 
     /**

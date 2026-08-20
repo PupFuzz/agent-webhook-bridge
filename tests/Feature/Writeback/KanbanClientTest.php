@@ -40,6 +40,30 @@ class KanbanClientTest extends TestCase
             && ! isset($r['task']));            // column-only, no other fields
     }
 
+    public function test_add_comment_posts_the_nested_comments_endpoint_with_a_content_body(): void
+    {
+        // card#7064: the card-VISIBLE record channel. It is a POST to a NESTED resource
+        // (`/tasks/{id}/comments.json`), not a field write on the task — a PATCH here would
+        // be a strict-key 422 and, worse, a write to the card itself.
+        Http::fake(['*' => Http::response(['data' => ['id' => 9]], 201)]);
+
+        $this->client()->addComment(5, "marker\n\nprose");
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST'
+            && str_contains($r->url(), '/tasks/5/comments.json')
+            && $r->data() === ['content' => "marker\n\nprose"]
+            && $r->hasHeader('Authorization', 'Bearer wb-token'));
+    }
+
+    public function test_add_comment_throws_on_non_2xx(): void
+    {
+        // The caller owns the fail-soft; the client stays a thin throwing verb like the rest.
+        Http::fake(['*' => Http::response(['message' => 'this token cannot comment'], 403)]);
+
+        $this->expectException(RequestException::class);
+        $this->client()->addComment(5, 'x');
+    }
+
     public function test_non_2xx_throws(): void
     {
         Http::fake(['*' => Http::response(['error' => 'forbidden'], 403)]);

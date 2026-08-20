@@ -8,6 +8,71 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+- **card#7064** — **A SECOND pull request correlating to one card had its correlation leg dropped in
+  silence; the drop is now RECORDED — a log line, an alert, and a comment on the card itself.**
+  **⚠ NEW OPERATOR-FACING SURFACE, and one token permission to grant:** the writeback now posts
+  kanban **card comments** (`POST /api/v3/tasks/{id}/comments.json`), so the least-privilege
+  writeback token needs **comment-create** on the mapped boards. Missing it is **fail-soft, never
+  fatal** — the note 403s, the drop still reaches the log and the alert channel
+  (`cardnote_403_not_writable_by_this_token`), nothing is retried, and no move outcome changes — but
+  the card shows nothing until the grant is made. **No migration, no new `.env`, and no change to
+  what the receiver accepts or rejects.**
+- **What was silent.** A card carries **one** `pr_number` / `pr_url` / `dl_number`, stamped
+  add-if-missing, first write wins. A second PR naming the same card therefore has its ref dropped —
+  correctly, since overwriting would re-point an already-merged leg's correlation — but the drop had
+  **two** exits and only one of them said anything. An **uncorroborated** title-only `card#`
+  (DL-270) is refused with a log + alert. A **corroborated** token — the head branch carrying
+  `card-NNNN`, i.e. the house convention, i.e. the common case — sails past that gate, reaches the
+  stamp, finds nothing left to write and returns on a bare `if ($refs === []) return;`: no log, no
+  alert, no trace anywhere. **The better-behaved the contributor, the less evidence the lost leg
+  left.** Reproduced on the reference install: card#6645 stamps `pr_number=261` while PR #262 —
+  **same repo**, same card token — is invisible to any by-ref lookup. Ordering-dependent, not a
+  flake.
+- **The predicate is DIFFERS, not nothing-to-write, and that distinction is the whole job.**
+  `$refs === []` is also exactly what an **idempotent replay of the card's own PR** looks like, so
+  keying the record on it would mint a comment for every webhook redelivery. The condition is *a ref
+  was offered whose value differs from the stored one*, per ref: `pr_number` compares through the
+  shared `CardTokenCorroboration::tracksPr` (hoisted out of `refuses()`, so "same PR" has one
+  definition and a numeric string equals its int); `dl_number` compares on digits, the way every
+  correlation reader reads it; `pr_url` compares exactly. A same-PR replay stays **silent**, pinned
+  by a test, with the naive predicate mutated in and watched go red.
+- **The guard is UNTOUCHED — which PR ends up stamped does not change**, and a test asserts not one
+  byte of the card's payload is written on the dropped-leg path. **Not** a `pr_refs` list: that is a
+  kanban payload-schema change with its own blast radius (by-ref index, release-promote-cards,
+  `kbcard` projections) and is deliberately out of scope.
+- **The record, at both sites.** The stamp path gains `Log::warning` + a live alert
+  (`correlation_ref_not_stamped`, routed through `WritebackAlertNotifier::warnAndNotify` like every
+  other permanent-refusal arm — DL-274) **and** a card comment naming the ref the card keeps and the
+  one this PR offered. The already-logged `card_token_uncorroborated` refusal keeps its log and its
+  push unchanged and gains the same card comment beside them. The card is where the note goes
+  because a log line and an alert push are the *operator's* surfaces, and the person hunting a
+  missing correlation is reading the **card**.
+- **Written at most once per card per dropped SET of values** — one dropped pull request is one
+  note, not one per ref. The note's marker line is derived from the
+  FACTS (which card, which refs, which values) and never from the event, so the same drop seen on
+  `opened`, then `merged`, then a redelivery of either re-derives a byte-identical marker and is
+  matched against the `comments` the card's own `getCard` aggregate already returned — **no extra
+  read**. That check **degrades toward writing**: a kanban whose task aggregate carries no
+  `comments` key yields a duplicate note, never a suppressed one, because a duplicated record is
+  visible and correctable while a suppressed one is the silence being removed.
+- **Nothing here may throw.** A 4xx, a 5xx, or any other failure of the note is caught and routed to
+  the paired alert primitive (`cardnote_403_not_writable_by_this_token` · `cardnote_404_no_such_card`
+  · `cardnote_4xx` · `cardnote_send_failed`) — a 5xx deliberately does **not** borrow the 4xx
+  vocabulary and name a permission problem the server never reported. Throwing would 5xx a move that
+  already happened, over an observability write: the redelivery storm every refusal arm in this
+  handler exists to avoid.
+- **Doc-sync.** `docs/writeback.md` (token scope, the stamping blockquote, four new refusal-reason
+  rows, the card-note bound), `docs/config-schema.md` (the `writeback-token` row's stated scope —
+  the sibling of the writeback.md token paragraph, and false the moment the writeback posts a
+  comment) and `docs/kanban-integration-contract.md` (the new comment-create endpoint row,
+  `comments[].content` added to what `GET /tasks/{id}.json` is read for). While there:
+  that contract's `PATCH /api/v3/tasks/{id}.json` row still documented the `{task:{workflow_stage_id}}`
+  request wrapper **kanban DL-219 removed and now strict-rejects** — false since v0.64.0 and
+  corrected to the flat body `KanbanClient::moveCard` actually sends. Its siblings were swept: the
+  `CLAUDE_DECISIONS.md` occurrences are dated log entries superseded in-file by DL-219 (append-only,
+  left as history), and the `docs/CHANGELOG.md` ones are accurate for their versions.
+
 ## [0.74.1] - 2026-08-19
 
 ### Changed

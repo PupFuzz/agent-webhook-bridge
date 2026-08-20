@@ -87,6 +87,22 @@ final class KanbanClient
     }
 
     /**
+     * Post a comment on a card — the card-VISIBLE record channel (kanban
+     * `POST /tasks/{id}/comments.json`, strict-keyed on `content`, max 65535 chars).
+     * The one write verb here that adds a ROW instead of setting a field: it records
+     * something about a card without touching a value any correlation reader keys on,
+     * which is what makes it usable to report a write the writeback deliberately did
+     * NOT make. APPEND-ONLY — the caller owns idempotency (the card's own `comments`
+     * come back on {@see getCard}, so a re-record check costs no extra read). Throws
+     * on non-2xx; a 403 here is the narrower comment-create permission, not the card
+     * write scope, so it must not be read as "the token cannot write this card".
+     */
+    public function addComment(int $cardId, string $content): void
+    {
+        $this->http()->post("/tasks/{$cardId}/comments.json", ['content' => $content])->throw();
+    }
+
+    /**
      * Archive (retire) a card via the kanban lifecycle verb (DL-161). Archiving
      * is a TOP-LEVEL `_action`, NOT a field write: a flat `{"archived_at":…}` PATCH
      * returns 200 but silently no-ops, so we send `{"_action":"archive"}`. (`_action`

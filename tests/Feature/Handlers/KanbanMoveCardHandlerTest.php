@@ -102,9 +102,12 @@ class KanbanMoveCardHandlerTest extends TestCase
         // (Revert the gate ⇒ a PATCH is sent ⇒ RED.)
         $this->writeWriteback();
         $this->writeToken();
-        Http::fake(['*/tasks/5.json' => Http::response(['data' => [
-            'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 900],
-        ]])]);
+        Http::fake([
+            '*/tasks/5/comments.json' => Http::response(['data' => ['id' => 9]], 201),   // card#7064 card note
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 900],
+            ]]),
+        ]);
         Log::spy();
 
         $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
@@ -167,9 +170,12 @@ class KanbanMoveCardHandlerTest extends TestCase
         // decoration, and the mutation run is what said so.
         $this->writeWriteback();
         $this->writeToken();
-        Http::fake(['*/tasks/5.json' => Http::response(['data' => [
-            'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 900],
-        ]])]);
+        Http::fake([
+            '*/tasks/5/comments.json' => Http::response(['data' => ['id' => 9]], 201),   // card#7064 card note
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 900],
+            ]]),
+        ]);
 
         $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148, 'stamp_dl' => 'DL-77']));
 
@@ -184,6 +190,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->writeWriteback();
         $this->writeToken();
         Http::fake([
+            '*/tasks/5/comments.json' => Http::response(['data' => ['id' => 9]], 201),   // card#7064 card note
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 900]]])
                 ->push(['data' => ['id' => 5]]),
@@ -201,13 +208,22 @@ class KanbanMoveCardHandlerTest extends TestCase
         // tracks a PR is not moved on the title's word alone.
         $this->writeWriteback();
         $this->writeToken();
-        Http::fake(['*/tasks/5.json' => Http::response(['data' => [
-            'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 900],
-        ]])]);
+        Http::fake([
+            '*/tasks/5/comments.json' => Http::response(['data' => ['id' => 9]], 201),   // card#7064 card note
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 900],
+            ]]),
+        ]);
 
         $this->handle($this->payload(['card_token_uncorroborated' => true]));   // no stamp_pr
 
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        // card#7064: the note must not report a `pr_number` of `null` as if it were a
+        // value — the event carrying none IS this arm's reason for refusing.
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST'
+            && str_contains($r->url(), '/tasks/5/comments.json')
+            && str_contains((string) $r['content'], 'pr_number=none')
+            && str_contains((string) $r['content'], 'carrying no pull-request number'));
     }
 
     // --- card#6027 / DL-287: the near-miss card-token refusal ---
@@ -1142,6 +1158,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->writeWriteback();
         $this->writeToken();
         Http::fake([
+            '*/tasks/5/comments.json' => Http::response(['data' => ['id' => 9]], 201),   // card#7064 card note
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['dl_number' => 'DL-0099']]])  // GET: dl already set
                 ->push(['data' => ['id' => 5]])   // move
@@ -1215,6 +1232,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->writeWriteback();
         $this->writeToken();
         Http::fake([
+            '*/tasks/5/comments.json' => Http::response(['data' => ['id' => 9]], 201),   // card#7064 card note
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_url' => 'https://github.com/owner/repo/pull/1']]])  // GET: pr_url already set
                 ->push(['data' => ['id' => 5]]),  // move only — nothing to stamp
@@ -1709,5 +1727,325 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH');
         $this->assertSame(0, $this->alertPushCount());
+    }
+    // --- card#7064: a DROPPED correlation leg becomes a RECORDED one, on the card ---
+
+    /** The kanban comment-create endpoint for card 5 (`POST /tasks/5/comments.json`). */
+    private const NOTE_URL = '*/tasks/5/comments.json';
+
+    /** The card-note POSTs this event produced, newest last. */
+    private function noteContents(): array
+    {
+        return collect(Http::recorded())
+            ->filter(fn ($pair) => $pair[0]->method() === 'POST' && str_contains($pair[0]->url(), '/tasks/5/comments.json'))
+            ->map(fn ($pair) => (string) $pair[0]['content'])
+            ->values()->all();
+    }
+
+    public function test_a_second_pr_correlating_to_this_card_is_recorded_on_the_card(): void
+    {
+        // THE card#7064 case, and the one that left no trace anywhere: the token IS
+        // corroborated (the head branch names the card), so the DL-270 gate never fires;
+        // the card already answers pr_number/pr_url for a FIRST pull request; and the
+        // add-if-missing stamp therefore had nothing to write and returned in silence.
+        // The guard is right — overwriting would re-point an already-merged leg — so what
+        // changes is that the drop is now recorded, not that anything is stamped.
+        $this->writeWriteback();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => [
+                'pr_number' => 261, 'pr_url' => 'https://github.com/owner/repo/pull/261',
+            ]]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 262, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/262']));
+
+        // The guard is UNTOUCHED: not one byte of the card's payload was written.
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString('[bridge:correlation-note correlation-ref-not-stamped · card=5', $notes[0]);
+        $this->assertStringContainsString('pr_number=262', $notes[0]);
+        $this->assertStringContainsString('the card keeps `261`; this pull request offered `262`', $notes[0]);
+        $this->assertStringContainsString('the card keeps `https://github.com/owner/repo/pull/261`', $notes[0]);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'was NOT stamped')
+            && $ctx['dropped']['pr_number'] === ['card' => 261, 'offered' => 262]);
+    }
+
+    public function test_an_idempotent_replay_of_the_cards_own_pr_records_nothing(): void
+    {
+        // The predicate that has to be exactly right: `nothing left to write` is ALSO what
+        // a redelivery of the card's OWN pull request looks like, and that must stay
+        // silent — otherwise every webhook retry mints a comment. The card's pr_number
+        // comes back from kanban as a STRING here and the event carries an int (the JSON
+        // round-trip through the durable inbox produces either), so this also pins that
+        // the comparison is numeric and not `===`.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => [
+                'dl_number' => 'DL-0042', 'pr_number' => '261', 'pr_url' => 'https://github.com/owner/repo/pull/261',
+            ]]]),
+        ]);
+
+        $this->handle($this->payload([
+            'stamp_dl' => 'DL-42', 'stamp_pr' => 261, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/261',
+        ]));
+
+        $this->assertSame([], $this->noteContents());
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_a_differing_dl_is_recorded_too(): void
+    {
+        // The same shape on the dl_number leg — one predicate over all three refs, not a
+        // pr-only special case. `DL-42` vs a card holding `DL-0099` differs; the canonical
+        // widths (`DL-42` / `dl-0042` / `42`) do NOT, which the replay test above pins.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['dl_number' => 'DL-0099']]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_dl' => 'DL-42']));
+
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString('dl_number=DL-0042', $notes[0]);
+        $this->assertStringContainsString('the card keeps `DL-0099`', $notes[0]);
+    }
+
+    public function test_a_dl_the_card_stores_unpadded_is_not_a_dropped_leg(): void
+    {
+        // The zero-padding is cosmetic: this handler writes the canonical `DL-%04d`, but a
+        // card can carry `DL-42`, `dl-0042` or a bare numeric custom field `42` and every
+        // correlation reader strips non-digits. Comparing the digit STRINGS would call
+        // `42` and `0042` a conflict and mint a note about one DL disagreeing with itself.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['dl_number' => 42]]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_dl' => 'DL-42']));
+
+        $this->assertSame([], $this->noteContents());
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_a_note_already_on_the_card_is_not_written_again(): void
+    {
+        // Idempotency without a marker file: the note's marker is derived from the FACTS
+        // (this card, this dropped ref) and never from the event, so the same drop seen on
+        // `opened`, then `merged`, then a redelivery of either re-derives one marker. The
+        // check reads the `comments` the card's own getCard aggregate already returned.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52,
+                'payload' => ['pr_number' => 261],
+                'comments' => [
+                    ['id' => 1, 'content' => 'unrelated human comment'],
+                    ['id' => 2, 'content' => "[bridge:correlation-note correlation-ref-not-stamped · card=5 · pr_number=262]\n\n…recorded on the `opened` event…"],
+                ],
+            ]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 262]));
+
+        $this->assertSame([], $this->noteContents());
+    }
+
+    public function test_a_note_for_a_different_dropped_pr_is_still_written(): void
+    {
+        // The control for the dedup above: it must suppress the SAME note, not every note.
+        // A card already carrying the note for PR 262 still records a third PR.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52,
+                'payload' => ['pr_number' => 261],
+                'comments' => [['id' => 2, 'content' => '[bridge:correlation-note correlation-ref-not-stamped · card=5 · pr_number=262]']],
+            ]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 263]));
+
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString('pr_number=263', $notes[0]);
+    }
+
+    public function test_a_pr_url_that_prefixes_an_existing_notes_url_is_still_recorded(): void
+    {
+        // The marker is CLOSED with a `]` for this case: with an open-ended marker ending in
+        // a URL, the note for PR 262 has the note for PR 26 as a literal PREFIX, so the
+        // substring check would read 262's note as already covering 26's drop and suppress
+        // it — the idempotency check minting the very silence this class removes.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52,
+                'payload' => ['pr_url' => 'https://github.com/owner/repo/pull/1'],
+                'comments' => [['id' => 2, 'content' => '[bridge:correlation-note correlation-ref-not-stamped · card=5 · pr_url=https://github.com/owner/repo/pull/262]']],
+            ]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr_url' => 'https://github.com/owner/repo/pull/26']));
+
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString('pr_url=https://github.com/owner/repo/pull/26]', $notes[0]);
+    }
+
+    public function test_the_uncorroborated_refusal_is_recorded_on_the_card(): void
+    {
+        // The already-logged path (DL-270). The log and the alert are the OPERATOR's
+        // surfaces; the card said nothing at all, and the card is where somebody looking
+        // for the missing correlation looks. The existing log + notify are untouched.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 900],
+            ]]),
+        ]);
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');   // still refused, still writes no field
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString('[bridge:correlation-note move-refused-uncorroborated-card-token · card=5 · pr_number=148]', $notes[0]);
+        $this->assertStringContainsString('different pull request (`pr_number` `900`)', $notes[0]);
+        // The pre-existing signal is ADDED TO, never replaced.
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'card_token_uncorroborated');
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'only in the PR title'))->once();
+    }
+
+    public function test_a_refused_card_note_alerts_with_its_own_reason_and_never_throws(): void
+    {
+        // The writeback token's comment-create permission is NARROWER than the card writes
+        // it already makes, so a 403 here is its own operator hypothesis and must not read
+        // as `the token cannot write this card`. And it must not throw: 5xx-ing a move that
+        // already happened, over an observability write, is the redelivery storm every
+        // refusal arm in this handler exists to avoid.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            self::NOTE_URL => Http::response(['message' => 'this token cannot comment'], 403),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 261]]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 262]));
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'cardnote_403_not_writable_by_this_token');
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'card note was refused')
+            && $ctx['status'] === 403)->once();
+    }
+
+    public function test_a_transient_card_note_failure_neither_throws_nor_claims_a_refusal(): void
+    {
+        // A 5xx is not a refusal and must not borrow `writeReason`'s 4xx vocabulary — it
+        // would name a permission problem the server never reported. Still swallowed: the
+        // move is done, and the note is additive.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            self::NOTE_URL => Http::response(['message' => 'upstream down'], 503),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 261]]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 262]));
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'cardnote_send_failed');
+    }
+
+    public function test_a_dropped_leg_beside_a_missing_one_records_and_stamps(): void
+    {
+        // Mixed case, and a pre-existing asymmetry this change deliberately does NOT touch
+        // (it would alter which ref ends up on the card): pr_number differs and is dropped,
+        // while pr_url is absent and is still stamped add-if-missing — from the SECOND
+        // pull request. The note is what makes that combination visible.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 261]]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 262, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/262']));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['payload' => ['pr_url' => 'https://github.com/owner/repo/pull/262']]);
+        $this->assertCount(1, $this->noteContents());
+    }
+
+    public function test_the_ordinary_first_stamp_of_a_bare_card_records_nothing(): void
+    {
+        // The other half of the silence control: the replay test pins that offering what
+        // the card ALREADY stores is quiet, this one pins that the everyday path — a card
+        // carrying no refs at all, every offered ref written — is quiet too. Both arms of
+        // "nothing was dropped" must stay noteless, or the note stops meaning a drop.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])   // GET: a bare card
+                ->push(['data' => ['id' => 5]])    // move
+                ->push(['data' => ['id' => 5]]),   // stamp
+        ]);
+
+        $this->handle($this->payload([
+            'stamp_dl' => 'DL-42', 'stamp_pr' => 261, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/261',
+        ]));
+
+        // The stamp really ran (so the silence is the predicate's, not a path that never executed).
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['payload' => [
+            'dl_number' => 'DL-0042', 'pr_number' => 261, 'pr_url' => 'https://github.com/owner/repo/pull/261',
+        ]]);
+        $this->assertSame([], $this->noteContents());
+    }
+
+    public function test_a_dropped_leg_is_recorded_on_the_path_that_moves_the_card_first(): void
+    {
+        // The other call site. Every drop test above enters through the already-in-stage
+        // self-heal (the card is at the mapped stage); a second PR that finds its card
+        // EARLIER in the board moves it first and stamps after — a different line, and the
+        // one that runs on a `merged` event for a card still In-Review. The drop must be
+        // recorded there too, and the move itself must be untouched by it.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            self::NOTE_URL => Http::response(['data' => ['id' => 9]], 201),
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 261]]])   // GET: earlier stage
+                ->push(['data' => ['id' => 5]]),   // move
+        ]);
+
+        $this->handle($this->payload(['stamp_pr' => 262]));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 52]);
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && array_key_exists('payload', $r->data()));
+        $notes = $this->noteContents();
+        $this->assertCount(1, $notes);
+        $this->assertStringContainsString('pr_number=262', $notes[0]);
     }
 }
