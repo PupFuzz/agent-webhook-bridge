@@ -1,9 +1,16 @@
 name: PR title correlation-key lint
 
-# A PR whose head branch follows the <type>/<card-id>-slug convention MUST carry
-# a card token or a `DL-<number>` token in its title. That token is the ONLY key the
-# card-movement writeback has to correlate a merged PR back to its tracking card;
-# without it the card silently never moves.
+# A PR whose head branch NAMES a card id MUST carry a card token or a
+# `DL-<number>` token in its title. That token is the ONLY key the card-movement
+# writeback has to correlate a merged PR back to its tracking card; without it the
+# card silently never moves.
+#
+# WHICH branch spellings name a card id is owned by the require step's own
+# predicate and is deliberately NOT restated here — for the same reason the token
+# grammar is not (below), and now with the same measured history: the set this
+# header used to name (`<type>/<card-id>-slug`) was the accept-set the house
+# convention then drifted away from, and the gate ran green over the difference
+# for months (card#6822).
 #
 # WHICH spellings correlate is deliberately NOT restated here (card#5267, card#5308):
 # `app/Bridge/Support/CardTokenGrammar.php` and `app/Bridge/Support/DlTokenGrammar.php`
@@ -57,10 +64,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Warn on a card or DL token that names nothing (DL-234)
-        # UNCONDITIONAL — deliberately outside the <type>/<card-id>-slug branch gate
-        # that the step below uses. That gate is precisely why this residue exists:
-        # it skips `card-<id>-...`, `fix/...` and every other shape, so a token that
-        # correlates to NOTHING sails through with no signal anywhere. The bridge's
+        # UNCONDITIONAL — deliberately outside the card-id branch gate the step
+        # below uses. That gate is precisely why this residue exists: it skips every
+        # branch it can read no card id out of (`chore/docs`,
+        # `fix/decouple-check-name-from-runtime`), so a token that correlates to
+        # NOTHING sails through with no signal anywhere. card#6822 NARROWED that
+        # skipped set — `card-<id>-...` and `fix/card<id>-...` are enforced now — it
+        # did not empty it, so the residue is smaller and still real. The bridge's
         # FR-7 near-miss probe does warn, but into the bridge log, post-merge, on a
         # surface the PR author never reads.
         shell: bash
@@ -155,17 +165,47 @@ jobs:
           branch_lc=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]')
           title_lc=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]')
 
-          # The <type>/<card-id>-slug convention: a type segment, a numeric card
-          # id, then a hyphen. Anything else has no card id to enforce.
-          if [[ ! "$branch_lc" =~ ^[a-z-]+/[0-9]+- ]]; then
-            echo "Branch '$BRANCH' does not follow <type>/<card-id>-slug — no card id to enforce, skipping."
+          # A branch NAMES a card id when, after an optional `<type>/` segment and
+          # an optional `card`/`card-` prefix, it opens with digits then a hyphen.
+          # Both optionals are measured house shapes, not speculation (card#6822):
+          # `card-5538-...` and `fix/card6371-...` are spellings this repo merges,
+          # and the type-segment-only set this gate used to require skipped both. The
+          # second READS as compliant, which is why the drift went unnoticed. The
+          # measured population lives in the card#6822 CHANGELOG entry rather than
+          # here — a count in a comment is the copy nothing holds, which this file
+          # already says about the token grammar and had just been proven about the
+          # branch shape.
+          #
+          # ONE regex both DECIDES and EXTRACTS. The id used to be re-derived by
+          # `${branch_lc#*/}` then `${card_id%%-*}` — a second parse that agreed
+          # with the predicate only on the single shape the predicate accepted.
+          # Widening the predicate alone would have yielded `card6371` for the
+          # prefixed shape and the whole branch name for the segment-less one, so
+          # the gate would fire and then compare the title against an id that names
+          # nothing: a red PR with an unactionable message, strictly worse than the
+          # skip it replaced.
+          #
+          # `[0-9]` stays a RANGE here where the token arms below enumerate their
+          # digits. This site is collation-sensitive in the FALSE-RED direction (a
+          # Unicode-digit branch gets enforced against, never silently skipped), so
+          # enumerating it would make the gate MORE permissive — a hard gate,
+          # measured and pinned in PrTitleLintTest under card#5300, not fixed here.
+          #
+          # DISCLOSED, not overlooked: with both optionals empty the accepted shape
+          # is a bare leading `<digits>-`, so a date- or version-named branch
+          # (`2026-08-18-notes`) is now enforced against id 2026. No such branch
+          # exists in the measured corpus and neither does a bare `5538-slug`, so
+          # both arms of the choice are hypothetical — it is taken toward the LOUD
+          # failure, because a wrong skip is the silence this whole gate exists to
+          # remove. Characterized in PrTitleLintTest.
+          if [[ ! "$branch_lc" =~ ^([a-z-]+/)?(card-?)?([0-9]+)- ]]; then
+            echo "Branch '$BRANCH' names no card id — nothing to enforce, skipping."
+            echo "A card-id branch is: an optional '<type>/' segment, an optional 'card'/'card-' prefix, the id, then a hyphen (fix/6100-slug, card-5538-slug, fix/card6371-slug)."
             exit 0
           fi
 
-          # Extract the card id: drop the leading "type/", then keep the digits
-          # up to the first hyphen.
-          card_id="${branch_lc#*/}"
-          card_id="${card_id%%-*}"
+          # Set by the `=~` above — the `!` negates the TEST, not the capture.
+          card_id="${BASH_REMATCH[3]}"
 
           # Accept a genuine "card-<exact-id>"/"card#<exact-id>"/glued
           # "card<exact-id>" (the separator is optional since DL-233 — the lint must

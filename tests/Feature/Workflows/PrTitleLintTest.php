@@ -86,6 +86,94 @@ class PrTitleLintTest extends TestCase
      */
     private const REQUIRE_STEP_DL_UNICODE_DIGIT = ["DL-\u{0663}"];
 
+    /**
+     * WHICH BRANCHES THE REQUIRE STEP INSPECTS AT ALL — the population card#6822
+     * measured, plus the shapes that bound it. Every row carries the id the step
+     * must EXTRACT, not merely the fact that it fired: a predicate widened without
+     * its extraction reds the PR and then names an id that exists nowhere
+     * (`card6371`, or the whole branch name), which is a worse gate than the skip
+     * it replaced, and a row asserting only "it fired" cannot see that.
+     *
+     * The enforced and evade rows below are real head branches of MERGED PRs of this
+     * repo, not invented spellings — which is the property that makes them evidence,
+     * and it is the only claim about the population made HERE. The measured split
+     * (how many PRs each shape covered) lives in the card#6822 CHANGELOG entry: a
+     * figure restated in a comment no assertion re-derives is the copy nothing
+     * holds, and this file already says exactly that about the token grammar.
+     *
+     * The `skip:no-id` rows split into two kinds, and the difference is stated
+     * because it was MEASURED rather than assumed. `fix/2fa-enrollment`,
+     * `feat/oauth2-login` and `fix/cards-123-thing` carry ASCII digits, so a widening
+     * of the predicate reaches them and they are genuine negative controls — the
+     * axis leg below drives each against the mutation that actually flips it.
+     * `chore/docs`, `wip/no-id`, `fix/decouple-check-name-from-runtime`,
+     * `fix/card-token-grammar` and `docs-changelog-card-token-relocation-upgrading`
+     * carry no digits at all and therefore cannot flip under any of those mutations:
+     * they are population coverage here and are NOT claimed as controls anywhere.
+     * `docs/orientation-v0.35.0` is the near-miss of that split — it has digits, but
+     * none followed by a hyphen, so neither axis reaches it either.
+     *
+     * The `skip:exempt` rows are SYNTHETIC on purpose. Every real exempt branch in
+     * the corpus (`dependabot/composer/dev/...`, `release/v0.74.0`,
+     * `sync/main-to-dev-post-v0.74.0`) fails the card-id predicate anyway, so it
+     * would pass this leg with the `case` block deleted and prove nothing about the
+     * exemption. These three are built to satisfy the predicate, so only the `case`
+     * block can skip them.
+     *
+     * @var list<array{0:string,1:string,2:string}>
+     */
+    private const BRANCH_VERDICTS = [
+        // ENFORCED BEFORE AND AFTER — card#6822's stated control that the arm fires.
+        ['fix/6100-changelog-gate-scope', '6100', 'the type-segment shape the gate always reached'],
+        ['fix/6101-changelog-gate-quotepath', '6101', 'ditto'],
+        ['fix/6056-changelog-gate-workflows-scope', '6056', 'ditto'],
+        ['ci/5910-release-artifacts-gate', '5910', 'a two-letter type segment'],
+        ['docsync/5952-audit-rewords', '5952', 'a type segment carrying no hyphen'],
+
+        // EVADE-A — no type segment. Skipped green before card#6822.
+        ['card-5538-drop-redundant-is-link', '5538', 'separated `card-` prefix, no type segment'],
+        ['card6027-nearmiss-card-token-guard', '6027', 'glued `card` prefix, no type segment'],
+        ['card5698-channel-token-fault', '5698', 'glued, and the slug repeats no id'],
+        ['card-5721-bodyless-actor-attribution', '5721', 'separated'],
+
+        // EVADE-B — a type segment IS present; only the literal `card` before the
+        // digits put these outside the old regex. The surprising half: they read as
+        // compliant, which is why the drift went unnoticed for as long as it did.
+        ['fix/card6371-stage-aware-coord-card-create', '6371', 'type segment + glued prefix'],
+        ['chore/card-5913-hard-gate-de-enumeration', '5913', 'type segment + separated prefix'],
+        ['docs/card5584-http-fake-stacking-gotcha', '5584', 'type segment + glued prefix'],
+        ['fix/card-6034-commonmark-bump', '6034', 'type segment + separated prefix'],
+
+        // CASE. The step folds its inputs (#4384) and the pattern is lowercase, so a
+        // shouted branch must extract the same id. Without the fold this row skips.
+        ['FIX/CARD6371-Stage-Aware-Coord-Card-Create', '6371', 'the fold is what makes an upper-case branch reachable'],
+        ['Card-5538-Drop-Redundant-Is-Link', '5538', 'and on the segment-less shape too'],
+
+        // GENUINELY CARD-LESS — must still skip. Negative controls; see the docblock.
+        ['chore/docs', 'skip:no-id', 'a type segment and no digits anywhere'],
+        ['wip/no-id', 'skip:no-id', 'ditto'],
+        ['fix/decouple-check-name-from-runtime', 'skip:no-id', 'a real card-less merged branch'],
+        ['docs-changelog-card-token-relocation-upgrading', 'skip:no-id', 'real, carries `card`, carries no id'],
+        ['fix/card-token-grammar', 'skip:no-id', 'the `card-` prefix with a WORD after it, not an id'],
+        ['fix/cards-123-thing', 'skip:no-id', 'the plural names no card in any spelling'],
+        ['feat/oauth2-login', 'skip:no-id', 'digits glued into a word, no hyphen after'],
+        ['fix/2fa-enrollment', 'skip:no-id', 'a segment OPENING with digits, no hyphen after'],
+        ['docs/orientation-v0.35.0', 'skip:no-id', 'a version, and the digits do not open the segment'],
+
+        // DISCLOSED FALSE RED, characterized so it is observed rather than found.
+        // With both prefixes absent the accepted shape is a bare leading `<digits>-`,
+        // which a date-named branch satisfies. Loud, never silent; no such branch
+        // exists in the measured corpus, and neither does the bare `5538-slug` the
+        // same cell admits, so this is a deliberate lean toward the loud failure.
+        ['2026-08-18-release-notes', '2026', 'DISCLOSED: a date-named branch reads as card 2026'],
+        ['5538-bare-id-slug', '5538', 'the other side of the same cell — a bare id IS enforced'],
+
+        // EXEMPT — synthetic, and built to satisfy the predicate. See the docblock.
+        ['release/6822-hotfix-slug', 'skip:exempt', 'release PRs consume the log, they do not name a card'],
+        ['sync/6822-backport-slug', 'skip:exempt', 'ditto'],
+        ['dependabot/6822-bump-slug', 'skip:exempt', 'automation carries no card'],
+    ];
+
     /** Extract one step's `run:` script from the workflow by name prefix. */
     private function stepScript(string $namePrefix): string
     {
@@ -261,7 +349,7 @@ class PrTitleLintTest extends TestCase
     /**
      * The branch card-id a vector would be filed under: its own ASCII digits, or an
      * arbitrary id when it has none (`card#٣`) — the branch only has to reach the
-     * step's `<type>/<card-id>-slug` gate, it is not part of the grammar under test.
+     * step's card-id gate, it is not part of the grammar under test.
      */
     private static function branchIdFor(string $vector): int
     {
@@ -282,6 +370,59 @@ class PrTitleLintTest extends TestCase
         preg_match_all('/\bDL-[a-z0-9]+/i', $text, $m);
 
         return $m[0];
+    }
+
+    /**
+     * WHAT THE REQUIRE STEP DID WITH A BRANCH, read out of the step's OWN output:
+     * the id it extracted, or which of its two skip arms it took. The id is never
+     * re-derived here — a second parse in the test is the same duplication that
+     * produced card#6822's trap, where the predicate and the extraction agreed on
+     * exactly one shape and a widening of one silently desynchronized them.
+     *
+     * The title is deliberately token-free, so an enforced branch REDS and prints
+     * the id it targeted. That is what makes the extracted value observable at all:
+     * on a passing title the step prints the id too, but a wrong id could still
+     * pass by matching a token that happens to be there.
+     */
+    private function requireStepVerdict(string $branch, ?string $script = null): string
+    {
+        $script ??= $this->stepScript('Require card#/DL token');
+        [$rc, $out] = $this->runScriptText($script, 'a title with no token at all', $branch);
+
+        if ($rc === 0) {
+            if (str_contains($out, 'is exempt (automation/release/revert)')) {
+                return 'skip:exempt';
+            }
+            if (str_contains($out, 'names no card id')) {
+                return 'skip:no-id';
+            }
+            $this->fail("the step passed '{$branch}' on a token-free title without saying which arm skipped it:\n{$out}");
+        }
+        if (preg_match('/\btargets card (\S+),/', $out, $m) !== 1) {
+            $this->fail("the step failed on '{$branch}' without naming the id it targeted — the id is unobservable:\n{$out}");
+        }
+
+        return $m[1];
+    }
+
+    /**
+     * Apply one mutation to the REAL require-step script and assert it landed. A
+     * no-op `str_replace` would leave a control that cannot fail, which is the
+     * shape this file already guards against on the DL-272 locale leg.
+     */
+    private function mutatedRequireStep(string $from, string $to): string
+    {
+        $script = str_replace($from, $to, $this->stepScript('Require card#/DL token'), $applied);
+        $this->assertSame(1, $applied,
+            "the require step no longer contains '{$from}' — this control is measuring nothing");
+
+        return $script;
+    }
+
+    /** The corpus rows whose expectation is the literal string `$verdict`. */
+    private function branchRowsExpecting(string $verdict): array
+    {
+        return array_values(array_filter(self::BRANCH_VERDICTS, fn (array $r) => $r[1] === $verdict));
     }
 
     // ---------------------------------------------------------------------
@@ -485,9 +626,11 @@ class PrTitleLintTest extends TestCase
 
     public function test_the_leg_is_unconditional_not_behind_the_branch_gate(): void
     {
-        // The branch gate is WHY the residue exists — it skips `card-<id>-...` and every
-        // non `<type>/<id>-slug` shape. A branch the gated step skips must still warn here.
-        // `chore/docs` and `card-5150-...` are both branches that step exits early on.
+        // The branch gate is WHY the residue exists — it skips every branch it can read
+        // no card id out of. A branch the gated step skips must still warn here.
+        // `chore/docs` and `wip/no-id` are both branches that step exits early on.
+        // (`card-5150-...` used to be named here as a third; card#6822 made that
+        // spelling ENFORCED, so it is no longer an example of what the gate skips.)
         $this->assertTrue($this->warned('Fix a thing card_3054', 'chore/docs'));
         $this->assertTrue($this->warned('Fix a thing card_3054', 'wip/no-id'));
     }
@@ -907,10 +1050,15 @@ class PrTitleLintTest extends TestCase
                 "'{$title}' is the pinned locale-dependent FALSE RED under en_US.UTF-8");
         }
 
-        // The branch-shape test `^[a-z-]+/[0-9]+-` is the fourth site and differs in
-        // KIND: it decides whether the step enforces at all, so under a collation
-        // locale a Unicode-digit branch is enforced against (and reds) where a
-        // C-family locale skips it entirely.
+        // The branch-shape test is the fourth site and differs in KIND: it decides
+        // whether the step enforces at all, so under a collation locale a
+        // Unicode-digit branch is enforced against (and reds) where a C-family
+        // locale skips it entirely. card#6822 widened that test's SPELLING and this
+        // row is unmoved, which is the point — the widening deliberately kept the
+        // `[0-9]` RANGE, because enumerating it here would skip the branch under
+        // every locale and make the gate more permissive (card#5300, still pinned).
+        // The regex is not quoted here: a copy of it is the restatement this file
+        // exists to catch, and it would have gone stale on exactly that widening.
         $this->assertSame(0, $this->runRequireStep('a title with no token at all', 'fix/'."\u{0663}".'-slug', 'C.UTF-8'),
             'under C.UTF-8 the branch carries no card id and the step skips');
         $this->assertSame(1, $this->runRequireStep('a title with no token at all', 'fix/'."\u{0663}".'-slug', 'en_US.UTF-8'),
@@ -945,9 +1093,205 @@ class PrTitleLintTest extends TestCase
     {
         // The gate is why the warn leg exists: it exits 0 on every shape it cannot
         // read a card id out of, so a token that correlates to nothing sails through.
-        foreach (['dependabot/composer/x-2.0', 'release/v0.71.0', 'card-5150-slug', 'chore/docs'] as $branch) {
+        foreach (['dependabot/composer/x-2.0', 'release/v0.71.0', 'chore/docs'] as $branch) {
             $this->assertSame(0, $this->runRequireStep('a title with no token at all', $branch),
                 "branch '{$branch}' must be skipped, not failed");
+        }
+
+        // `card-5150-slug` was a fourth row of that list until card#6822, and is
+        // asserted here rather than deleted: the row did not become uninteresting,
+        // it CHANGED SIDES. That spelling sits on 7 merged PRs of this repo and the
+        // gate skipped every one of them green. Deleting the row would have left
+        // the accept/reject change recorded nowhere in the file that owns this step.
+        $this->assertSame(1, $this->runRequireStep('a title with no token at all', 'card-5150-slug'),
+            'the segment-less `card-<id>-slug` spelling is ENFORCED now, not skipped');
+    }
+
+    // ---------------------------------------------------------------------
+    // WHICH BRANCHES ARE INSPECTED AT ALL (card#6822)
+    // ---------------------------------------------------------------------
+
+    /**
+     * The whole classifier, over the whole corpus, asserting the EXTRACTED VALUE.
+     * One leg rather than five, because the rows are one population: a shape moved
+     * between buckets is a row edit here, and a bucket that quietly emptied is
+     * visible as an absent expectation rather than as a leg nobody ran.
+     */
+    public function test_the_require_step_classifies_and_extracts_over_the_branch_corpus(): void
+    {
+        // Each bucket must be non-empty, or a corpus edit could silently reduce this
+        // leg to asserting only the half that still had rows.
+        foreach (['skip:no-id', 'skip:exempt'] as $verdict) {
+            $this->assertNotEmpty($this->branchRowsExpecting($verdict),
+                "the corpus has no {$verdict} rows left — the leg would assert only the enforced half");
+        }
+        $this->assertNotEmpty(array_filter(self::BRANCH_VERDICTS, fn (array $r) => ctype_digit($r[1])),
+            'the corpus has no enforced rows left');
+
+        foreach (self::BRANCH_VERDICTS as [$branch, $expected, $why]) {
+            $this->assertSame($expected, $this->requireStepVerdict($branch),
+                "branch '{$branch}' — {$why}");
+        }
+    }
+
+    /**
+     * THE FIX, pinned to the failure it guards: the pre-card#6822 predicate reverted
+     * into the real script must SKIP every shape the widening exists to reach, under
+     * the same runner in the same process. Without this, the corpus leg above would
+     * pass on a predicate that had been wide all along and prove nothing about the
+     * change — the two evade groups are only evidence if the old spelling misses them.
+     *
+     * The enforced rows are asserted UNCHANGED under the same mutation, which is what
+     * makes the widening additive rather than a re-partition.
+     */
+    public function test_the_pre_fix_predicate_skips_the_two_measured_evasion_shapes(): void
+    {
+        // The pre-fix state is the PAIR, and it has to be reverted as one: the old
+        // predicate captures nothing, so leaving the shipped `${BASH_REMATCH[3]}`
+        // extraction beside it kills the step on `set -u` instead of skipping, and
+        // this leg would then be measuring an unbound-variable abort rather than the
+        // silence card#6822 measured. That coupling is the card's whole point,
+        // reproduced here by having to honour it.
+        $reverted = str_replace(
+            ['^([a-z-]+/)?(card-?)?([0-9]+)-', 'card_id="${BASH_REMATCH[3]}"'],
+            ['^[a-z-]+/[0-9]+-', 'card_id="${branch_lc#*/}"'."\n".'card_id="${card_id%%-*}"'],
+            $this->stepScript('Require card#/DL token'), $applied);
+        $this->assertSame(2, $applied, 'the pre-fix predicate/extraction pair is gone or renamed — this control measures nothing');
+
+        $evaders = ['card-5538-drop-redundant-is-link', 'card6027-nearmiss-card-token-guard',
+            'card5698-channel-token-fault', 'card-5721-bodyless-actor-attribution',
+            'fix/card6371-stage-aware-coord-card-create', 'chore/card-5913-hard-gate-de-enumeration',
+            'docs/card5584-http-fake-stacking-gotcha', 'fix/card-6034-commonmark-bump'];
+
+        foreach ($evaders as $branch) {
+            $this->assertSame('skip:no-id', $this->requireStepVerdict($branch, $reverted),
+                "'{$branch}' must be SKIPPED by the old predicate — that silence is what card#6822 measured");
+            $this->assertNotSame('skip:no-id', $this->requireStepVerdict($branch),
+                "'{$branch}' must be ENFORCED by the shipped predicate");
+        }
+
+        foreach (['fix/6100-changelog-gate-scope', 'ci/5910-release-artifacts-gate'] as $branch) {
+            $this->assertSame($this->requireStepVerdict($branch, $reverted), $this->requireStepVerdict($branch),
+                "control: '{$branch}' was already enforced and must extract the same id under both predicates");
+        }
+    }
+
+    /**
+     * THE TRAP THE CARD NAMES, pinned: a predicate widened while the extraction stays
+     * the old two-step string chop fires and then compares the title against an id
+     * that names nothing — `card6371` for the prefixed shape, and the WHOLE BRANCH
+     * NAME for the segment-less one, because the old first step stripped up to the
+     * first slash and a segment-less branch has none. That gate is strictly worse
+     * than the skip it replaced: it reds
+     * the PR and tells the author to add a token spelled after a non-existent id.
+     *
+     * Asserted by mutation rather than by argument, so it stays true if either half
+     * is edited again.
+     */
+    public function test_extraction_is_tied_to_the_predicate_not_re_derived(): void
+    {
+        $desynced = $this->mutatedRequireStep(
+            'card_id="${BASH_REMATCH[3]}"',
+            'card_id="${branch_lc#*/}"'."\n".'          card_id="${card_id%%-*}"',
+        );
+
+        // The malformed ids the old extraction yields, named exactly — "it differs"
+        // would pass on any garbage and would not show the failure is UNACTIONABLE.
+        $this->assertSame('card6371', $this->requireStepVerdict('fix/card6371-stage-aware-coord-card-create', $desynced));
+        $this->assertSame('card', $this->requireStepVerdict('chore/card-5913-hard-gate-de-enumeration', $desynced));
+        $this->assertSame('card6027', $this->requireStepVerdict('card6027-nearmiss-card-token-guard', $desynced));
+        $this->assertSame('card', $this->requireStepVerdict('card-5538-drop-redundant-is-link', $desynced));
+
+        // And the shipped extraction answers the digits on the same four.
+        $this->assertSame('6371', $this->requireStepVerdict('fix/card6371-stage-aware-coord-card-create'));
+        $this->assertSame('5913', $this->requireStepVerdict('chore/card-5913-hard-gate-de-enumeration'));
+        $this->assertSame('6027', $this->requireStepVerdict('card6027-nearmiss-card-token-guard'));
+        $this->assertSame('5538', $this->requireStepVerdict('card-5538-drop-redundant-is-link'));
+    }
+
+    /**
+     * THE NEGATIVE CONTROLS DISCRIMINATE — one mutation per axis that could widen
+     * the predicate, each paired with the rows it ACTUALLY flips. The pairing is
+     * measured, not reasoned: the first draft of this leg claimed the trailing `-`
+     * was what kept `feat/oauth2-login` out, and driving it proved that wrong — the
+     * `^` anchor is. Both axes are now separated, which is the only reason either
+     * row is evidence of anything.
+     *
+     * DISPOSED EXPLICITLY: the corpus's other card-less rows — `chore/docs`,
+     * `wip/no-id`, `fix/decouple-check-name-from-runtime`, `fix/card-token-grammar`
+     * and `docs-changelog-card-token-relocation-upgrading` — carry NO ASCII digits
+     * at all, so no widening along either axis can reach them. They are population
+     * coverage in the corpus leg above, and they are deliberately NOT claimed here
+     * as controls: a row that cannot flip proves nothing about the predicate's width.
+     */
+    public function test_each_predicate_axis_is_what_keeps_a_card_less_branch_out(): void
+    {
+        // AXIS 1 — the trailing `-`, which separates "an id then a slug" from
+        // "digits opening a segment and running into a word".
+        $noHyphen = $this->mutatedRequireStep('^([a-z-]+/)?(card-?)?([0-9]+)-', '^([a-z-]+/)?(card-?)?([0-9]+)');
+        $this->assertSame('skip:no-id', $this->requireStepVerdict('fix/2fa-enrollment'));
+        $this->assertSame('2', $this->requireStepVerdict('fix/2fa-enrollment', $noHyphen),
+            'without the trailing hyphen `2fa` reads as card 2 — that is what the hyphen excludes');
+
+        // AXIS 2 — the `^`. Unanchored, any digits-then-hyphen ANYWHERE in the name
+        // qualifies, which is what actually swallows a digit-bearing slug.
+        $noAnchor = $this->mutatedRequireStep('^([a-z-]+/)?(card-?)?([0-9]+)-', '([a-z-]+/)?(card-?)?([0-9]+)-');
+        foreach (['feat/oauth2-login' => '2', 'fix/cards-123-thing' => '123'] as $branch => $wrongId) {
+            $this->assertSame('skip:no-id', $this->requireStepVerdict($branch));
+            $this->assertSame($wrongId, $this->requireStepVerdict($branch, $noAnchor),
+                "unanchored, '{$branch}' reads as card {$wrongId} — the anchor is what excludes it");
+        }
+
+        // And the enforced rows must be indifferent to both mutations, or the axes
+        // are re-partitioning the population rather than bounding it.
+        foreach (['fix/6100-changelog-gate-scope', 'card-5538-drop-redundant-is-link',
+            'fix/card6371-stage-aware-coord-card-create'] as $branch) {
+            $expected = $this->requireStepVerdict($branch);
+            $this->assertSame($expected, $this->requireStepVerdict($branch, $noHyphen), "'{$branch}' under axis 1");
+            $this->assertSame($expected, $this->requireStepVerdict($branch, $noAnchor), "'{$branch}' under axis 2");
+        }
+    }
+
+    /**
+     * THE EXEMPTION ARM is load-bearing only for a branch the predicate WOULD accept,
+     * which no real exempt branch in this repo is. Deleting the `case` block must
+     * therefore flip the three synthetic rows and nothing else — that is what makes
+     * them controls rather than decoration.
+     */
+    public function test_the_automation_exemption_is_what_skips_a_card_id_shaped_exempt_branch(): void
+    {
+        $script = $this->stepScript('Require card#/DL token');
+        // Column 0: `stepScript()` returns the YAML literal block AFTER parsing, which
+        // has already stripped the 10-space block indentation the file shows.
+        $noExemption = preg_replace('/^case "\$BRANCH" in\n.*?\nesac\n/ms', '', $script, 1, $count);
+        $this->assertSame(1, $count, 'the exemption `case` block is gone or reshaped — this control measures nothing');
+
+        foreach ($this->branchRowsExpecting('skip:exempt') as [$branch, , $why]) {
+            $this->assertSame('skip:exempt', $this->requireStepVerdict($branch), "'{$branch}' — {$why}");
+            $this->assertSame('6822', $this->requireStepVerdict($branch, $noExemption),
+                "'{$branch}' must satisfy the card-id predicate once the exemption is removed, or it is not a control for it");
+        }
+    }
+
+    /**
+     * CASE FOLDING (#4384) survives the widened predicate. The pattern is lowercase
+     * and the inputs are folded once with `tr`; removing the fold must make the
+     * shouted rows unreachable, on BOTH the type-segment and the segment-less shape.
+     * The kanban-board copy of this workflow does not fold — this leg is why the two
+     * must not be "converged" by dropping it.
+     */
+    public function test_the_branch_fold_is_what_reaches_an_upper_case_card_branch(): void
+    {
+        $unfolded = $this->mutatedRequireStep(
+            'branch_lc=$(printf \'%s\' "$BRANCH" | tr \'[:upper:]\' \'[:lower:]\')',
+            'branch_lc="$BRANCH"');
+
+        foreach (['FIX/CARD6371-Stage-Aware-Coord-Card-Create' => '6371',
+            'Card-5538-Drop-Redundant-Is-Link' => '5538'] as $branch => $id) {
+            $this->assertSame($id, $this->requireStepVerdict($branch),
+                "'{$branch}' must extract {$id} — the step folds its inputs");
+            $this->assertSame('skip:no-id', $this->requireStepVerdict($branch, $unfolded),
+                "'{$branch}' must go unreachable without the fold, or the fold is not what carries the answer");
         }
     }
 }
