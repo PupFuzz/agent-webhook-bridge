@@ -42,6 +42,11 @@ Policy (per `CLAUDE.md` rule #5 — the ask-before-opening checkpoint is retired
 10. Open the release PR `release/v<version>` → `main` (no ask to open; the user-merge gate in step 12 is the control point). **CRITICAL: the PR head must be the `release/v<version>` branch, NOT `dev` directly.** GitHub's "Automatically delete head branches" repo setting auto-deletes whichever branch is the merged PR's head — if you set head=`dev`, `dev` gets deleted when the user merges. Repo settings can't reliably exclude `dev` on the free plan (branch protection rules require Pro for private repos), so the discipline lives in the branch-naming convention.
 11. Wait for ALL CI checks on the release → main PR.
 12. **Notify user it's ready to merge.** Claude does NOT run `gh pr merge` against a `main`-targeted PR regardless of CI state.
+    **Merge method: "Create a merge commit" — NEVER squash, never rebase.** `dev` and `main` must
+    share history, or the post-release back-merge (step 15) replays the whole release as fresh
+    commits and every subsequent release diff is wrong. This doc owns that rule: the PR-body
+    standard (`coord:release-pr` § PR body) puts process warnings OUT of the body and into the
+    repo's own release doc, so a reader looking for it comes HERE. Do not restate it in a PR body.
 13. **After user merges to `main` and confirms the merge to Claude:** that confirmation is the standing authorization for the back-merge sync PR — Claude does NOT ask again. (The tag + GitHub Release are minted automatically by `auto-tag-version.yml`; Claude does not hand-tag.)
 14. `auto-tag-version.yml` (on the push to `main`) tags the merge commit `v<VERSION>` and publishes the GitHub Release from the `docs/CHANGELOG.md` section — automatically, no Claude action. (Fallback only: if the workflow is ever absent, the user's merge confirmation is the standing authorization to tag manually.)
 15. Claude opens the back-merge sync PR `main` → `dev` (named `sync/main-to-dev-post-v<version>`) so any commits the user added directly on `main` (e.g., release-PR metadata) get back into `dev`. **No additional ask** — the user's main-merge confirmation covered it.
