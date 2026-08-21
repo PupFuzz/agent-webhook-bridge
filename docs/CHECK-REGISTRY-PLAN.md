@@ -563,7 +563,13 @@ fixtures reach the mapping-count line, the no-identity and missing-token warns, 
 reconcile arm, orphan, the DL-160 pair, the DL-195 revive, the DL-198 echo, DL-204 in both directions,
 and the outer load `catch`. **Four legs no fixture reaches at all:** the whole `alert_channel` check,
 `issuePopulationAgreement()`, the #4553 `population=all` warn itself, and the reconcile probe's `Http`
-arm. Three more are disclosed as UNOBSERVED by condition text (the `correlation !== 'ref'` leg, the
+arm. **[card#7124 (DL-293) correction: FIVE as it ships. `WritebackMappingConfigCheck` gained a
+`SPELLING SPLIT` leg — a mapping key and an agent `scope_id` that canonicalize equal but differ in
+spelling — and no golden fixture reaches it, because every fixture spells the two the same way,
+which is the state the leg exists to distinguish FROM. It is covered by three
+`WritebackMappingConfigCheckTest` cases (split reported / spellings agree ⇒ silent / no agent ⇒
+ORPHANED-not-split) plus one end-to-end `bridge:check` case, all mutation-proven against the
+pre-DL-293 tree. The enumerated count above is the stage-9 measurement, not the shipped one.]** Three more are disclosed as UNOBSERVED by condition text (the `correlation !== 'ref'` leg, the
 promote same-stage no-op, and the promote file-token requirement). **All seven are covered by three
 new unit tests** — `WritebackMappingConfigCheckTest`, `WritebackAlertChannelCheckTest`,
 `ReconcileRepoTokensCheckTest` — deliberately scoped to the residue: golden-covered legs are *absent*

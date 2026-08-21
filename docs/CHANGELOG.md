@@ -62,6 +62,21 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   index and can only be one after it; keeping the last silently is how a board gets written by the
   wrong mapping. A **blank** key fails closed the same way — it can match no payload repo, so it
   is a dead mapping, which is the silent misconfiguration this change exists to end.
+- **card#7124 (DL-293)** — **`bridge:check` gains a `SPELLING SPLIT` warn, and it is the reason the
+  line above is safe.** The writeback now matches a repo by identity; **the DISPATCHER does not** —
+  `SubscriptionRegistry::subscribedTo` still compares an agent's `scope_id` to the delivery's scope
+  by EXACT spelling, and widening it is a separate, hard-gated change. So on an install whose agent
+  YAML and `writeback.json` spell one repo two ways, **every GitHub delivery is dispatched to
+  nobody** — no log, no finding, no alert — and canonicalizing the check's compare without this
+  leg would have turned that install's (wrongly-reasoned) ORPHANED warn into **silence and exit 0**.
+  The new warn names **both** spellings and the mechanism, which is strictly more than either state
+  it replaces. Config-surface warn only; nothing about what the receiver accepts.
+- **card#7124 (DL-293)** — **the promote leg and the dependabot `id:` tag now use the CONFIGURED
+  repo spelling.** `KanbanPromoteReleasedHandler` fed the payload spelling to the case-SENSITIVE
+  credential store (DL-185), and `KanbanDependabotCardHandler` rendered `{repo}` into a persisted
+  provenance tag from it. Both were safe **by construction** until this change — reaching them
+  required a byte-for-byte mapping match — so widening the match without re-keying them would have
+  left `bridge:check` and the runtime probing different credentials.
 - **card#7124 (DL-293)** — **`bridge:check` stops calling a working mapping ORPHANED.** The three
   github scope maps (`writebackEmittingScopes` / `coordCardMoveScopes` / `coordCardRelaneScopes`)
   are keyed by an agent YAML's `scope_id` and read with a `writeback.json` mapping key — the same

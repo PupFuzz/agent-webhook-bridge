@@ -77,6 +77,37 @@ final class WritebackMappingConfigCheck implements Check
                     yield Finding::warn("writeback: mapping for {$repo} is ORPHANED — no agent runs a writeback-emitting classifier (App\\Bridge\\Contracts\\EmitsWritebackReactions) subscribed to github:{$repo}; the mapping is inert (no card will ever move) until an agent subscribes to it with that classifier");
                 }
             }
+            // ⛔ card#7124 review — THE SPELLING SPLIT, and the reason canonicalizing the
+            // compare above is not the whole answer. The writeback matches a repo by
+            // IDENTITY since DL-293; the DISPATCHER does not. `SubscriptionRegistry::
+            // subscribedTo` compares `$sub->scopeId === $scopeId` raw against the
+            // delivery's scope, so an agent subscribed as `pupfuzz/x` receives NOTHING for
+            // a delivery spelled `PupFuzz/x` — no dispatch, no log, no alert. Left
+            // unreported, the canonicalization above would have turned that install's
+            // ORPHANED warn into SILENCE: every delivery reaching no agent at all, and
+            // `bridge:check` exiting 0 (the DL-265 shape — a leg that examined nothing
+            // stops reporting `ok`, re-minted by the fix meant to close a silent-failure
+            // class).
+            //
+            // Strictly MORE informative than the ORPHANED warn it replaces here: that one
+            // said "add an agent" for an install that HAS one. This names both spellings
+            // and the layer that still splits them. It is scoped to a genuine divergence —
+            // same repo, different spelling — so an install whose two files agree stays
+            // quiet, which is every install that has not hit this.
+            $divergent = array_values(array_unique(array_filter(
+                $ctx->githubScopeSpellings[$scope] ?? [],
+                fn (string $spelling): bool => $spelling !== (string) $repo,
+            )));
+            if ($divergent !== []) {
+                yield Finding::warn(
+                    "writeback: github scope SPELLING SPLIT for {$repo} — writeback.json keys it \"{$repo}\" while an agent subscribes to \""
+                    .implode('", "', $divergent).'" (same repo; GitHub owner/repo is case-insensitive). The WRITEBACK matches these as one repo '
+                    .'(DL-293), but the DISPATCHER does not: it matches a subscription by EXACT spelling, so a delivery is dispatched only when '
+                    .'its `repository.full_name` matches the SUBSCRIPTION byte-for-byte — and every other spelling reaches NO agent at all, with '
+                    .'no log, no finding and no alert. Spell the agent YAML `scopes:` entry and the writeback.json mapping key the same way GitHub '
+                    .'sends them, or this install is one webhook away from silently dispatching nothing.'
+                );
+            }
             // #2652: the DL-160 branch-create `started` trigger is fail-closed — it needs
             // BOTH `stages.started` AND `started_from_stages`. With exactly one set the
             // move is silently INERT (the `stages.started`-only half is refused for lack
@@ -219,7 +250,7 @@ final class WritebackMappingConfigCheck implements Check
             }
         }
 
-        yield Silence::because('every mapping has a subscribed writeback-emitting classifier and no half-configured optional leg — each of the legs above speaks only when a key is set without the key it needs');
+        yield Silence::because('every mapping has a subscribed writeback-emitting classifier spelled as the mapping spells it, and no half-configured optional leg — each of the legs above speaks only when a key is set without the key it needs, or when two files spell one repo two ways');
     }
 
     /**

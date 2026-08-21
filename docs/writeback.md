@@ -64,8 +64,17 @@ Absent ⇒ writeback off. Malformed ⇒ fail-closed (`bridge:check` reports it).
 > be one, and picking one silently is how a board gets written by the wrong mapping.
 >
 > The spelling you write is **kept**: it is what `bridge:reconcile` resolves a per-repo token with
-> (the credential store's `[git-credential-map]` IS case-sensitive — DL-185), and it is what every
-> `bridge:check` line prints back to you, so you can find the line in your own file.
+> (the credential store's `[git-credential-map]` IS case-sensitive — DL-185), what the
+> `promote_on_release` leg's runtime token probe uses, what `{repo}` renders into a dependabot
+> `id:` tag, and what every `bridge:check` line prints back to you, so you can find the line in
+> your own file.
+>
+> ⛔ **The DISPATCHER does not share this — spell the agent YAML `scopes:` entry and the mapping key
+> the same way.** `SubscriptionRegistry` matches a subscription to a delivery by **exact** spelling,
+> so a delivery whose `repository.full_name` differs from the `scopes:` entry reaches **no agent at
+> all** — no dispatch, no log, no alert, and `mappingFor()` never even runs. `bridge:check` warns
+> **`SPELLING SPLIT`** naming both spellings when it sees the two files disagree; the writeback
+> matching them as one repo is not, on its own, evidence that anything is being delivered.
 
 > **`closed_unmerged` — In Progress vs a "Won't Do" terminal (operator choice).** The example maps `closed_unmerged → In Progress` because a closed-unmerged **DL-tracked** PR usually means *work continues* (rework, not abandonment). If your board has a **terminal "Won't Do" / "Cancelled" column** (`lane_type: done`, positioned far-right) and you'd rather treat a closed-unmerged PR as an *abandon-disposition* (dependabot dismissals, `[DO NOT MERGE]` diagnostics, superseded/rejected PRs), map `closed_unmerged → <that stage id>` instead. The no-regression guard (DL-163) **allows this terminal move** — it special-cases `closed_unmerged` and never applies the forward-only check to it, so a card in In-Review moving to a far-right Won't-Do terminal is permitted (it's a disposition, not a regression), and once there the card is sticky (no stale PR event can drag it back out) — **unless you opt into `revive_on_reopen` (DL-195), which revives such a card from that stage when its PR is reopened (see below).** The **dependabot** path is unaffected either way — a closed-unmerged dependabot card always **archives** (DL-161), ignoring this mapping.
 

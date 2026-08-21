@@ -348,6 +348,67 @@ class WritebackMappingConfigCheckTest extends TestCase
         chmod($path, 0o600);
     }
 
+    // ---- card#7124 review: the github scope SPELLING SPLIT (the dispatcher does not
+    // ---- share the writeback's DL-293 canonicalization).
+
+    public function test_a_scope_spelled_differently_from_the_mapping_key_is_reported_not_silently_matched(): void
+    {
+        // ⛔ THE REGRESSION THIS LEG EXISTS FOR. DL-293 made the writeback match this pair
+        // as one repo, which correctly stopped the ORPHANED accusation — and would have
+        // left NOTHING in its place, on an install where `SubscriptionRegistry` still
+        // matches a subscription by exact spelling, so every delivery is dispatched to
+        // nobody. Silence there is strictly worse than the wrong warn it replaced.
+        $ctx = new CheckContext;
+        $ctx->writeback = new WritebackConfig(7, ['PupFuzz/kanban-board' => $this->mapping()]);
+        $ctx->writebackEmittingScopes = ['pupfuzz/kanban-board' => true];
+        $ctx->githubScopeSpellings = ['pupfuzz/kanban-board' => ['pupfuzz/kanban-board']];
+
+        $findings = array_map(
+            fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
+            $this->findingsOf((new WritebackMappingConfigCheck), $ctx),
+        );
+
+        $this->assertCount(1, $findings, 'the split must be REPORTED, never silently matched');
+        $this->assertSame(Severity::Warn, $findings[0]['severity']);
+        // Both spellings, so the operator can find both lines in both files.
+        $this->assertStringContainsString('"PupFuzz/kanban-board"', $findings[0]['message']);
+        $this->assertStringContainsString('"pupfuzz/kanban-board"', $findings[0]['message']);
+        // And the mechanism, which is the half the ORPHANED warn never carried.
+        $this->assertStringContainsString('EXACT spelling', $findings[0]['message']);
+        $this->assertStringNotContainsString('ORPHANED', $findings[0]['message']);
+    }
+
+    public function test_a_scope_spelled_exactly_as_the_mapping_key_reports_nothing(): void
+    {
+        // The negative: this leg speaks only for a genuine divergence, which is every
+        // install that has not hit it.
+        $ctx = new CheckContext;
+        $ctx->writeback = new WritebackConfig(7, [self::REPO => $this->mapping()]);
+        $ctx->writebackEmittingScopes = [self::REPO => true];
+        $ctx->githubScopeSpellings = [self::REPO => [self::REPO, self::REPO]];
+
+        $this->assertSame([], $this->findingsOf((new WritebackMappingConfigCheck), $ctx));
+    }
+
+    public function test_an_unsubscribed_mapping_is_orphaned_not_a_spelling_split(): void
+    {
+        // The two legs answer different questions and must not be confused: no agent at
+        // all is ORPHANED, and there is no spelling to name.
+        $ctx = new CheckContext;
+        $ctx->writeback = new WritebackConfig(7, [self::REPO => $this->mapping()]);
+
+        $messages = array_map(fn (Finding $f) => $f->message, $this->findingsOf((new WritebackMappingConfigCheck), $ctx));
+
+        $this->assertCount(1, $messages);
+        $this->assertStringContainsString('is ORPHANED', $messages[0]);
+        $this->assertStringNotContainsString('SPELLING SPLIT', $messages[0]);
+    }
+
+    private function mapping(): WritebackMapping
+    {
+        return new WritebackMapping(8, ['merged' => 52]);
+    }
+
     /** @return list<array{severity: Severity, message: string}> */
     private function findings(WritebackMapping $mapping, bool $emitting = true): array
     {

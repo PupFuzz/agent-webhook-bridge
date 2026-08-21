@@ -178,6 +178,33 @@ final class CheckContext
     public array $coordCardRelaneScopes = [];
 
     /**
+     * Every SPELLING each github scope was subscribed with, keyed by its canonical form
+     * (card#7124 review). The three maps above are keyed by identity so they cannot report
+     * a working install as ORPHANED; this is what keeps that canonicalization from
+     * ANSWERING FOR the dispatcher, which does not share it.
+     *
+     * ⛔ THE DISPATCHER MATCHES A SUBSCRIPTION BY EXACT SPELLING.
+     * `SubscriptionRegistry::subscribedTo` (NAMED, not `{@see}`-linked — pint's docblock
+     * fixer turns a fully-qualified `{@see}` into a real import, and this class does not
+     * otherwise use it) compares
+     * `$sub->scopeId === $scopeId` raw against the delivery's scope, so an agent
+     * subscribed as `pupfuzz/x` receives NOTHING for a delivery spelled `PupFuzz/x`. An
+     * identity-match at this layer therefore does NOT imply a dispatch-layer match, and a
+     * check that silently canonicalized both sides would certify that install healthy
+     * while every delivery on it reaches no agent at all — the DL-265 shape (a leg that
+     * examined nothing stops reporting `ok`), re-minted by the fix meant to close a
+     * silent-failure class.
+     *
+     * ACCUMULATED UNCONDITIONALLY for every github subscription of every agent that
+     * parsed — the dispatch consequence is classifier-independent, so it must not inherit
+     * the writeback-emitting / family gates the three maps above carry. It carries the
+     * same abort trap as they do: an agent that never parsed contributes no spelling.
+     *
+     * @var array<string, list<string>>
+     */
+    public array $githubScopeSpellings = [];
+
+    /**
      * The key form of the three github scope maps above, and the form to look one up
      * with (DL-293).
      *

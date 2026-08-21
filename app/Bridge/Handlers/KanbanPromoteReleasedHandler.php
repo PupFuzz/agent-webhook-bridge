@@ -136,7 +136,17 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         // store helper is CLI-only (DL-184), so in practice a placed <secret_dir>/github/token
         // (or a providers.github.token_path) is required. Unresolved ⇒ permanent config gap:
         // durable alert + loud log + no-op (never 5xx-storm an unfixable event).
-        $resolution = (new GitHubTokenResolver)->resolveFor($repo);
+        // ⛔ THE CONFIGURED SPELLING, NOT THE PAYLOAD'S (card#7124 review). The resolver
+        // keys the credential store's `[git-credential-map]`, which is case-SENSITIVE
+        // (DL-185's "raw repo key, not canonical" ruling), while `$repo` is whatever the
+        // payload spelled. Until DL-293 those were the same string BY CONSTRUCTION —
+        // reaching this line required `mappingFor()` to have matched byte-for-byte — and
+        // DL-293 removed that guarantee without restoring it here, so `bridge:check` (which
+        // iterates the configured keys) and this leg would probe DIFFERENT keys and
+        // GitHubTokenResolver's "can never diverge" contract would be false for this
+        // consumer. `?? $repo` is the unmapped case, which the guard above already excludes.
+        $configuredRepo = $writeback->configuredRepoFor($repo) ?? $repo;
+        $resolution = (new GitHubTokenResolver)->resolveFor($configuredRepo);
         if (! $resolution->ok()) {
             $this->alerts->warnAndNotify(
                 'kanban_promote_released: no GitHub read token for repo — cannot verify commit reachability; skipping (place <secret_dir>/github/token, or set providers.github.token_path)',

@@ -895,10 +895,17 @@ class BridgeCommandsTest extends TestCase
 
     public function test_check_no_orphan_warning_when_the_agent_scope_and_the_mapping_differ_only_in_case(): void
     {
-        // DL-293, end to end (the agent YAML's scope AND the writeback.json key, through
-        // the real CheckCommand derivation): one repo spelled two ways is one repo. The
-        // writeback resolves the mapping, so a raw compare here would print a config
-        // accusation — ORPHANED, "the mapping is inert" — about an install that works.
+        // DL-293 + the card#7124 review, end to end (the agent YAML's scope AND the
+        // writeback.json key, through the real CheckCommand derivation). TWO assertions,
+        // and the second is the load-bearing one:
+        //   (a) the ORPHANED accusation is GONE — the writeback resolves this mapping, so
+        //       "no agent drives it" was a config accusation against an install that works;
+        //   (b) ⛔ and it is replaced by the SPELLING SPLIT warn, never by SILENCE. The
+        //       dispatcher still matches a subscription by exact spelling
+        //       (SubscriptionRegistry::subscribedTo), so on this very install every
+        //       delivery reaches NO agent. An exit-0 run with nothing said would certify
+        //       that healthy — strictly worse than the wrong warn it replaced, and the
+        //       DL-265 shape re-minted by the fix meant to close a silent-failure class.
         File::put($this->dir.'/wb-agent.yml',
             "identity:\n  github_user_id: 41000\n"
             ."subscriptions:\n  - provider: github\n    scopes: [\"Owner/Repo\"]\n"
@@ -918,6 +925,7 @@ class BridgeCommandsTest extends TestCase
 
         $this->artisan('bridge:check')
             ->doesntExpectOutputToContain('ORPHANED')
+            ->expectsOutputToContain('SPELLING SPLIT for owner/repo')
             ->assertExitCode(0);
     }
 

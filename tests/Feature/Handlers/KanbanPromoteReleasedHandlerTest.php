@@ -45,9 +45,15 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
     /** @param array<string,mixed> $extra */
     private function writeWriteback(array $extra): void
     {
+        $this->writeWritebackKeyed('owner/repo', $extra);
+    }
+
+    /** @param array<string,mixed> $extra */
+    private function writeWritebackKeyed(string $key, array $extra): void
+    {
         File::put($this->dir.'/writeback.json', (string) json_encode([
             'identity_id' => 4242,
-            'mappings' => ['owner/repo' => array_merge([
+            'mappings' => [$key => array_merge([
                 'board_id' => 8, 'stages' => ['merged' => 52, 'merged_to_main' => 53],
             ], $extra)],
         ]));
@@ -118,6 +124,35 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
     private function assertNotMoved(int $cardId): void
     {
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), "/tasks/{$cardId}.json"));
+    }
+
+    public function test_the_github_token_is_resolved_with_the_configured_repo_spelling(): void
+    {
+        // ⛔ card#7124 review — MAJOR 1. Until DL-293, reaching the resolver required
+        // mappingFor() to have matched BYTE-FOR-BYTE, so the payload spelling WAS the
+        // configured key and passing `$repo` was safe by construction. DL-293 removed that
+        // guarantee: this leg now runs for a payload spelled differently from the key, and
+        // the store's `[git-credential-map]` is case-SENSITIVE (DL-185), so probing the
+        // payload spelling resolves a DIFFERENT credential (in practice: none) from the one
+        // `bridge:check` verifies, which iterates the configured keys.
+        //
+        // Proven on the REAL exec surface, not a mock: a stub helper echoes the requested
+        // `path=` back as the token, so the Bearer the GitHub read carries IS the string
+        // handed to the case-sensitive store.
+        $this->writeWritebackKeyed('owner/Repo', ['promote_on_release' => true]);
+        File::delete($this->dir.'/github/token');   // drop leg 2 so the store leg is reached
+        $stub = $this->dir.'/stub-credential-helper';
+        File::put($stub, "#!/bin/sh\npath=\$(sed -n 's/^path=//p')\n"
+            ."printf 'protocol=https\\nhost=github.com\\nusername=x-access-token\\npassword=tok:%s\\n' \"\$path\"\n");
+        chmod($stub, 0o755);
+        config(['bridge.providers.github.credential_helper' => $stub]);
+        $this->fakeBoard([['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]]);
+
+        $this->handle('Owner/repo');   // the PAYLOAD spelling, which is not the key
+
+        Http::assertSent(fn (Request $r) => str_starts_with($r->url(), 'https://api.github.com/')
+            && $r->hasHeader('Authorization', 'Bearer tok:owner/Repo'));
+        Http::assertNotSent(fn (Request $r) => $r->hasHeader('Authorization', 'Bearer tok:Owner/repo'));
     }
 
     public function test_promotes_only_shipped_cards_whose_merge_is_on_main(): void
