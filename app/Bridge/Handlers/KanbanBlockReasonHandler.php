@@ -8,6 +8,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardTokenCorroboration;
+use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -141,17 +142,12 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             throw $e;   // transient → 5xx → retry
         }
 
-        if (($card['board_id'] ?? null) !== $mapping->boardId) {
-            // SECURITY (belongs-to-mapped-board, DL-009): refuse to touch a card that
-            // isn't on the operator-mapped board for this repo. Permanent — alert + log
-            // + no-op. Same reason string as the move handler's twin, kept distinct in the
-            // dedup tuple by the synthetic outcome (DL-274(3)).
-            $this->alerts->warnAndNotify(
-                'kanban_block_reason: REFUSED — card is not on the mapped board',
-                ['card_id' => $cardId, 'repo' => $repo, 'card_board' => $card['board_id'] ?? null, 'mapped_board' => $mapping->boardId],
-                $repo, self::ALERT_OUTCOME, $cardId, 'card_not_on_mapped_board',
-            );
-
+        // SECURITY (belongs-to-mapped-board, DL-009): refuse to touch a card that isn't
+        // on the operator-mapped board for this repo. Permanent — alert + log + no-op.
+        // Same reason string as the move handler's twin, kept distinct in the dedup
+        // tuple by the synthetic outcome (DL-274(3)); one shared primitive owns the
+        // compare and the report for all three arms (DL-292, card#7138).
+        if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_block_reason', $cardId, $repo, self::ALERT_OUTCOME)) {
             return;
         }
 

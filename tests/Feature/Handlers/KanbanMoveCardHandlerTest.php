@@ -297,6 +297,69 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 
+    // --- card#7138 / DL-292: the twins ADOPT the coord-move copy's predicate
+    //     (`is_numeric` + `(int)`), which WIDENS what this arm accepts. The old
+    //     `$boardId !== $mapping->boardId` compared against a `readonly int` and did no
+    //     type juggling, so it refused ANY non-int `board_id` — including a numeric
+    //     string or a JSON float naming the mapped board ITSELF. That was a false
+    //     refusal on correct work, alerting `card_not_on_mapped_board` for a card that
+    //     is on the mapped board. Latent, not live: kanban returns `board_id` as a JSON
+    //     integer today, so these pin the NEW accepted set rather than fixing a live
+    //     symptom. Revert the predicate ⇒ no PATCH ⇒ RED. ---
+
+    public function test_a_numeric_string_board_id_naming_the_mapped_board_moves(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => '8', 'workflow_stage_id' => 49]])   // GET
+                ->push(['data' => ['id' => 5]]),                                                 // PATCH
+        ]);
+
+        $this->handle($this->payload());
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
+    public function test_a_float_board_id_naming_the_mapped_board_moves(): void
+    {
+        // The body is a RAW JSON string, deliberately: `json_encode(8.0)` emits `8`, so
+        // an array fixture would round-trip to an int and this method would silently
+        // test the case above again. `8.0` on the wire decodes to float(8) — a vector
+        // the old `!==` refused, and the only way to actually put one in front of the
+        // handler.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push('{"data":{"id":5,"board_id":8.0,"workflow_stage_id":49}}')   // GET
+                ->push(['data' => ['id' => 5]]),                                     // PATCH
+        ]);
+
+        $this->handle($this->payload());
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
+    public function test_a_board_id_that_casts_onto_the_mapped_board_but_is_not_numeric_is_refused(): void
+    {
+        // The `is_numeric` disjunct's vector, on THIS arm now that it shares the
+        // predicate: `'8abc'` is not numeric, and `(int) '8abc' === 8` — so without the
+        // disjunct the cast compare would AGREE with the mapped board and move a card
+        // that is not on it. Widening the accepted set to numeric strings is exactly
+        // what makes this leg load-bearing here.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => '8abc', 'workflow_stage_id' => 49]])]);
+
+        $this->handle($this->payload());
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
     public function test_no_mapping_for_repo_is_noop(): void
     {
         $this->writeWriteback();

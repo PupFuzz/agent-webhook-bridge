@@ -9,6 +9,7 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CoordCardLanePlacement;
 use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -235,14 +236,10 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         // this path does: a cross-board write that SUCCEEDS emits no event, so the
         // refusal is the only surface that can tell an operator this class of citation is
         // occurring — and as an untagged `Log::info` it was indistinguishable from the
-        // path never having been invoked at all.
-        if (! is_numeric($card['board_id'] ?? null) || (int) $card['board_id'] !== $mapping->boardId) {
-            $this->alerts->warnAndNotify(
-                'kanban_coord_card_move: REFUSED — card is not on the mapped board',
-                ['card_id' => $id, 'repo' => $repo, 'card_board' => $card['board_id'] ?? null, 'mapped_board' => $mapping->boardId, 'issue' => $issueNumber],
-                $repo, self::ALERT_OUTCOME, $id, 'card_not_on_mapped_board', $issueNumber,
-            );
-
+        // path never having been invoked at all. The compare and the report are now one
+        // shared primitive (DL-292, card#7138) — that severity split was possible only
+        // because this rule was written out three times.
+        if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_coord_card_move', $id, $repo, self::ALERT_OUTCOME, $issueNumber)) {
             return;
         }
         $stage = is_numeric($card['workflow_stage_id'] ?? null) ? (int) $card['workflow_stage_id'] : null;

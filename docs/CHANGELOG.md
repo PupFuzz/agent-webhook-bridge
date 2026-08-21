@@ -44,11 +44,17 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   one that did not signal: the `kanban_move_card` twin has pushed `card_not_on_mapped_board` since the
   alert channel existed (FR-4), and the `kanban_block_reason` twin joined it at DL-285 — the sweep that
   gave this handler its notifier and routed its other arms, but read only the `Log::warning` sites and
-  so never saw this one. The refusal itself is unchanged and correct — **the predicate is untouched**,
+  so never saw this one. **[card#7138 correction: the present-tense "It is the third copy" was true when this landed
+  and is false as it ships — there are now NO copies. DL-292, below in this same section, hoists the
+  compare and the report into one `MappedBoardGuard` that all three arms call. Read this sentence as
+  the state card#7133 found and fixed, not as the state being released.]** The refusal itself is unchanged and correct — **the predicate is untouched**,
   nothing moves — but on this path a cross-board write that
   *succeeds* emits no event either, so this arm is the only surface that can tell an operator the
   collision is occurring at all; as an info line with no reason code it was indistinguishable from the
-  handler never having been invoked. Same reason string as the twins, kept off their dedup markers by
+  handler never having been invoked. **[card#7138 correction: "the predicate is untouched" is an
+  accurate claim about THIS change and must not be read as a standing one — DL-292 below changes the
+  predicate on the two twin arms, deliberately and under the same gate. This entry raised reporting
+  only; that one moves the compare.]** Same reason string as the twins, kept off their dedup markers by
   the synthetic `coord_card_move` outcome, and carrying `card_board` + `mapped_board` so all three
   refusals read as one class. **What that buys, stated rather than implied:** the alert dedups on
   `(repo, outcome, reason)` like every other, so the operator is woken on the FIRST cross-board
@@ -64,7 +70,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   `Log::info` is by LEVEL, not by kind — a refusal written at info level is invisible to it. The guard
   is unchanged (widening it to `Log::info` would sweep in every "not tracked" and success line); the
   bound is now stated in its docblock and in `docs/writeback.md` so a green run is not read as "no
-  refusal is silent".
+  refusal is silent". **[card#7138 correction: the guard is no longer unchanged — DL-292 (below,
+  under *Changed*) adds a second, level-independent leg that closes this one refusal KIND
+  structurally. The reasoning above stands: the fix was NOT to widen the population by level. The
+  `Log::info` bound itself still holds for every other refusal kind.]**
 - **card#6393 (DL-290)** — **the `move_coord_cards` REVIVE arm is lane-aware.** A reopened `[TASK]`'s
   card returns to the lane its `stage:*` label declares instead of to the fixed
   `coord_card_stage_id`, which used to re-impose that stage — and its label — on every reopen (the
@@ -197,6 +206,52 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   fresh `git worktree` with no `.env` failing as `No application encryption key has been specified`.
   It carries no list of the gates on purpose — that list is a cache of `.github/workflows/` and
   drifts identically, the class agent-board-toolkit **card#7122** tracks.
+- **card#7138 (DL-292)** — **the belongs-to-mapped-board security guard (DL-009) is ONE primitive
+  owning the compare AND its refusal report, and the canonical predicate is the `is_numeric` +
+  `(int)` form.** It was written out three times, in three non-equivalent spellings, across
+  `kanban_move_card`, `kanban_block_reason` and `kanban_coord_card_move` — one behaviour, three
+  implementations, so a change to the rule had to land three times and correctly each time. It
+  demonstrably did not: card#7133 found the same guard carrying two different report severities.
+  `MappedBoardGuard::refuses()` now runs the predicate and emits the `warnAndNotify` itself; the
+  three call sites are one line each. Hoisting only the predicate would have left the severity half
+  of the class exactly where it was.
+  - **⚠ UPGRADING — this WIDENS what `kanban_move_card` and `kanban_block_reason` accept. It is a
+    behaviour change to a security guard, gated and approved as one, not a refactor.** Both twins
+    compared with `!==` against a `readonly int`, which does no type juggling, so they refused **any**
+    non-int `board_id` — including the numeric string `"8"` and the JSON float `8.0`, which name the
+    very board that is mapped. That is a **false refusal**: a legitimate move silently no-ops and a
+    `card_not_on_mapped_board` alert wakes the operator over correct work. The coord copy's refusal set
+    was already a strict SUBSET of the twins' — **the most permissive of the three, and the most
+    correct** — and is now the shared one. The accepted set only grows: everything those arms accepted
+    before is still accepted, and `"8abc"` (which `(int)` would coerce onto the mapped id) is still
+    refused by the `is_numeric` leg, now load-bearing on all three arms instead of one.
+  - **The widened set is an INTERVAL, stated plainly rather than by example, because `(int)`
+    TRUNCATES.** For a mapped board of 8 the guard accepts every numeric spelling of a value in
+    `[8, 9)` — so `"8"`, `8.0`, `"08"`, `" 8"` and also `8.9` and `"8.0000001"`; `7.9` (→ `7`) is
+    refused, so truncation can only reach the mapped board from above. There is no form of
+    `is_numeric` + `(int)` that takes `"8"` and refuses `8.9`, so this is inherent to the approved
+    predicate rather than a second decision, and it is **ruled deliberate and left as-is** — a
+    lossless compare would be another behaviour change to the same guard to refuse a value no
+    install emits, and no new reason code is added for a case that is a kanban contract change
+    rather than a tenancy event. **Nothing changes in practice on a current install:** kanban
+    returns `board_id` as a JSON integer today — verified live against a board-8 card — so the
+    widened set is reachable only if that stops being true. `docs/writeback.md` states the accepted
+    set per value; DL-292 carries the full vector table.
+  - **⭐ The finding that outranks the fix: `WritebackRefusalSignalCoverageTest` is re-pointed at the
+    primitive, closing the class by KIND rather than by log level.** That guard exists to catch a
+    refusal that does not alert, and it was **green over card#7133's defect for the defect's entire
+    life** — its population is the `Log::warning`/`Log::error` sites, so a security refusal written at
+    `Log::info` sat structurally outside it. Widening it by level is not the fix (`Log::info` is also
+    ~34 not-tracked, success and policy lines; the signal would drown). A second, level-independent
+    leg instead re-derives every non-comment line in the handler glob naming the card field
+    `board_id` or the reason `card_not_on_mapped_board` and requires that set to be **empty** — a
+    membership decision cannot be written without reading the card's board. A fourth copy reds at any
+    log level, or at none. Proven by firing it: a copy planted in a handler at `Log::info` reds the new
+    leg while the level-keyed leg stays green, which is the original defect reproduced and caught. The
+    empty expectation is a measurement, not a decoration: a scanner control pins that it finds a
+    planted site, and a positive assertion pins that the primitive still holds the rule, so a deleted
+    guard cannot read as a clean repo. **It closes exactly one refusal kind** — every other kind is
+    still covered only by the level-keyed leg and its stated bound.
 
 ### Fixed
 

@@ -11,6 +11,7 @@ use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardNote;
 use App\Bridge\Writeback\CardTokenCorroboration;
 use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrUrlRef;
 use App\Bridge\Writeback\WritebackAlertNotifier;
@@ -217,17 +218,12 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             throw $e;   // transient → 5xx → retry
         }
 
-        $boardId = $card['board_id'] ?? null;
-        if ($boardId !== $mapping->boardId) {
-            // SECURITY (belongs-to-mapped-board, DL-009): refuse to move a card
-            // that isn't on the operator-mapped board for this repo. Permanent
-            // refusal — log + no-op, never retry.
-            $this->alerts->warnAndNotify(
-                'kanban_move_card: REFUSED — card is not on the mapped board',
-                ['card_id' => $cardId, 'repo' => $repo, 'card_board' => $boardId, 'mapped_board' => $mapping->boardId],
-                $repo, $outcome, $cardId, 'card_not_on_mapped_board',
-            );
-
+        // SECURITY (belongs-to-mapped-board, DL-009): refuse to move a card that isn't
+        // on the operator-mapped board for this repo. Permanent refusal — alert + log +
+        // no-op, never retry. The compare AND its report live in one primitive shared
+        // with the block-reason and coord-move arms (DL-292, card#7138), so the rule
+        // cannot diverge across the three the way its severity once did (card#7133).
+        if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_move_card', $cardId, $repo, $outcome)) {
             return;
         }
 

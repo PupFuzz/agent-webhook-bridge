@@ -26,7 +26,16 @@ use Tests\TestCase;
  * is not hypothetical: `kanban_coord_card_move`'s belongs-to-mapped-board refusal was exactly
  * that — it sat at info level through DL-285's sweep and stayed there until card#7133, with this
  * guard green over it the whole time. A green run says "no bare warning/error is unaccounted
- * for", never "no refusal is silent". Neither is anything
+ * for", never "no refusal is silent".
+ *
+ * ⭐ THAT BOUND STILL HOLDS, and it is why this class carries a SECOND, level-independent leg
+ * (card#7138 / DL-292). Widening the population by LEVEL is not the closure — `Log::info` is
+ * also the ~34 not-tracked / success / policy sites, and pulling them in would drown the
+ * signal. The closure is by KIND, and it is structural: the belongs-to-mapped-board refusal
+ * now lives in ONE primitive that owns the compare AND the report, and
+ * {@see test_the_belongs_to_mapped_board_guard_lives_in_exactly_one_place} reds on a handler
+ * that reads a card's `board_id` at all — at any log level, or at none. It closes exactly one
+ * refusal KIND; every other kind is still covered only by the level-keyed leg above. Neither is anything
  * outside these six handlers — `KanbanClient`'s three correlation diagnostics and
  * `CardCollapse`'s archive-contract error are a real sibling shape at the shared-client
  * layer, where there is no `(repo, outcome)` tuple to dedup on; they are recorded as a
@@ -96,6 +105,136 @@ class WritebackRefusalSignalCoverageTest extends TestCase
             'a Log::warning/Log::error in a writeback handler is not routed through WritebackAlertNotifier::warnAndNotify and is not on the accounted-for list. '
             .'Either route it (a permanent refusal must emit a live signal — DL-274/DL-285) or add it to ALLOWED with the reason it is deliberately quiet.',
         );
+    }
+
+    /**
+     * The KIND-keyed leg (card#7138 / DL-292) — the one the level-keyed leg above cannot be.
+     *
+     * The belongs-to-mapped-board (DL-009) security rule was written out three times, in three
+     * non-equivalent spellings, which is how it came to carry two different report severities
+     * (card#7133) — and the level-keyed leg was green over that for the defect's whole life,
+     * because the third copy reported at `Log::info`. Both defects have ONE cause: the rule was
+     * duplicated. `MappedBoardGuard` now owns the compare and the refusal report together, so a
+     * fourth copy cannot be minted with a different predicate, a different reason code, or a
+     * different log level — and this method is what makes that structural rather than a
+     * convention.
+     *
+     * POPULATION, re-derived every run: every non-comment line in
+     * `app/Bridge/Handlers/Kanban*Handler.php` naming the card field `'board_id'` or the reason
+     * literal `'card_not_on_mapped_board'`. A membership decision cannot be written without one
+     * of the two — the card's board comes back under that key and nowhere else — so a fourth
+     * copy lands in the population whatever level it reports at. The expected set is EMPTY:
+     * after the hoist no handler reads a card's board at all.
+     *
+     * An empty expectation is a measurement only because two other assertions make failure
+     * possible: {@see test_the_board_scanner_discriminates_a_real_read_from_a_comment} proves
+     * the scanner finds a planted site, and the primitive-side assertion below reds if the
+     * guard is deleted or renamed rather than reporting a clean repo over a rule that has
+     * vanished.
+     *
+     * STATED BOUND: the same glob as the leg above — a membership compare minted OUTSIDE those
+     * six handler files (a new handler named off-pattern, or a fresh `Writeback/` collaborator)
+     * is not covered until the glob is widened.
+     */
+    public function test_the_belongs_to_mapped_board_guard_lives_in_exactly_one_place(): void
+    {
+        $files = glob(base_path('app/Bridge/Handlers/Kanban*Handler.php')) ?: [];
+        $this->assertGreaterThanOrEqual(6, count($files), 'the handler population came back short — the glob, not the code, is what changed');
+
+        $found = [];
+        foreach ($files as $file) {
+            foreach (self::boardMembershipSites((string) file_get_contents($file), basename($file)) as $site) {
+                $found[] = $site;
+            }
+        }
+
+        $this->assertSame(
+            [],
+            $found,
+            'a writeback handler reads a card\'s `board_id` or names `card_not_on_mapped_board` directly. '
+            .'The DL-009 belongs-to-mapped-board rule and its refusal report belong to MappedBoardGuard::refuses() '
+            .'(DL-292) — a second copy is how one guard came to carry two severities and three predicates (card#7133). '
+            .'Route it through the primitive, or extend the primitive if the new arm needs something it does not offer.',
+        );
+
+        // The other direction: the rule still EXISTS, and exists THERE. Without this, an empty
+        // set over the handlers would be reporting that NOBODY owns the belongs-to-mapped-board
+        // rule — indistinguishable from one owner owning it — and the assertion above would be
+        // trivially green over a guard that had simply been deleted.
+        //
+        // Asserted on CONTENT, never on line offsets. An offset pin reds on an unrelated
+        // docblock edit, and its only remediation — "re-derive the line numbers" — is the same
+        // action that absorbs a real deletion without a second thought; this repo already treats
+        // that shape as a defect, which is why `bin/check-doc-refs.php` forbids line-number
+        // citations in the `CLAUDE_*.md` set. It also pins what it claims: the old offset form
+        // stayed green with `is_numeric` deleted, because the line still contained `board_id`.
+        $primitive = (string) file_get_contents(base_path('app/Bridge/Writeback/MappedBoardGuard.php'));
+
+        // ⛔ The predicate is pinned VERBATIM, and that coupling is deliberate: this is a
+        // security guard whose accepted set is minuted in DL-292 with a vector table. Changing
+        // the compare without moving the minute is exactly how the recorded approved set and
+        // the shipped set drift apart. Reds if `is_numeric` is deleted — which the offset form
+        // did not.
+        $this->assertStringContainsString(
+            'is_numeric($card[\'board_id\'] ?? null) && (int) $card[\'board_id\'] === $mapping->boardId',
+            $primitive,
+            'MappedBoardGuard::belongs() no longer spells the DL-292 predicate verbatim. If the compare was '
+            .'CHANGED, that is a gated behaviour change to a security guard: update DL-292\'s vector table and '
+            .'docs/writeback.md in the same commit, then this string. If the guard was REMOVED, the empty-set '
+            .'assertion above is now vacuous and this class has stopped guarding anything.',
+        );
+        $this->assertStringContainsString(
+            "public const REASON = 'card_not_on_mapped_board';",
+            $primitive,
+            'MappedBoardGuard no longer owns the refusal reason code — if it moved, the empty-set assertion '
+            .'above is scanning for a literal that nothing in the tree mints any more.',
+        );
+    }
+
+    public function test_the_board_scanner_discriminates_a_real_read_from_a_comment(): void
+    {
+        // The KIND scanner's own control: its expectation is an EMPTY set over the handlers,
+        // so without a fixture whose answer is known, a scanner that had stopped matching
+        // would report the repo clean. Both directions on one fixture — prose mentions are
+        // skipped, real reads are found, at every log level and at none.
+        $source = <<<'PHP'
+        <?php
+        // A comment mentioning $card['board_id'] and 'card_not_on_mapped_board'.
+        /** A docblock naming `board_id` too. */
+        Log::info('quiet refusal', ['card_board' => $card['board_id'] ?? null]);
+        if (($card['board_id'] ?? null) !== $mapping->boardId) {
+        $this->alerts->warnAndNotify('x', [], 'r', 'o', null, 'card_not_on_mapped_board');
+        $stage = $card['workflow_stage_id'] ?? null;
+        PHP;
+
+        $this->assertSame(
+            ['Fixture.php:4', 'Fixture.php:5', 'Fixture.php:6'],
+            self::boardMembershipSites($source, 'Fixture.php'),
+        );
+    }
+
+    /**
+     * Every non-comment line in $source naming the card's `board_id` field or the
+     * `card_not_on_mapped_board` reason code, as `<file>:<line>`. Line-keyed rather than
+     * message-keyed: this population is expected to be empty, so there is no message to key
+     * on — what a red needs to say is WHERE the second copy was written.
+     *
+     * @return list<string>
+     */
+    private static function boardMembershipSites(string $source, string $file): array
+    {
+        $sites = [];
+        foreach (explode("\n", $source) as $i => $line) {
+            $trimmed = ltrim($line);
+            if (str_starts_with($trimmed, '//') || str_starts_with($trimmed, '*') || str_starts_with($trimmed, '/*')) {
+                continue;
+            }
+            if (preg_match('/[\'"]board_id[\'"]|[\'"]card_not_on_mapped_board[\'"]/', $line) === 1) {
+                $sites[] = $file.':'.($i + 1);
+            }
+        }
+
+        return $sites;
     }
 
     public function test_the_scanner_discriminates_a_real_call_from_a_comment(): void
