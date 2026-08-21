@@ -138,6 +138,8 @@ Worked example of a good comment, from `DispatchService`:
 ```
 The why (fail-closed, redelivery contract, crosstalk risk) is impossible to derive from the code; the DL citation is load-bearing.
 
+**A backticked `Class::member` citation is a claim, and CI reads it.** `bin/check-doc-refs.php` resolves the MEMBER, not just the class, across every source it scans — `app/`, `tests/`, `docs/`, `bin/` and the root `*.md`, the append-only decision log and CHANGELOG included, where a frozen entry discharges a citation the tree no longer answers for by carrying a removed-marker in an annotation appended beside the original sentence (an alternative the entry says it *rejected* needs nothing). Cite the construct you mean; the script's own docblock owns the token shapes and the bounds, and `--census` prints what a run examined against what it declined to answer.
+
 Class-level docblocks are used for shapes where the field semantics aren't obvious from names alone (`Actor`, `ReactionTarget`, `EventDto`). Method-level docblocks are used when the behaviour has a non-obvious invariant not captured by the PHPDoc type annotations. Trivially-named one-liners don't get docblocks.
 
 ## Logging
@@ -192,7 +194,7 @@ See [`CLAUDE_TESTING.md`](CLAUDE_TESTING.md) for the full testing guide. Naming-
 - **Never commit secrets.** Webhook signing keys, DB passwords, API tokens stay in `~/.config/agent-webhook-bridge/<agent>.yml` (chmod 600) or the Laravel `.env` (`DB_PASSWORD`). Both are gitignored.
 - **Templates ship; populated files don't.** `.env.example` and `examples/sample-config/agent.yml.example` go in the repo with placeholders.
 - **HMAC compares use `hash_equals`** — never `==`. Constant-time compare on signatures. See `VerifyHmacSignature.php`.
-- **HTTPS-only.** Webhook receiver URLs are `https://`; validated in `AgentConfig::validateUrl`.
+- **HTTPS on the secret-bearing endpoints.** A provider API base URL carries the writeback bearer and, at provision time, the freshly-minted webhook HMAC secret, so it is validated with `UrlValidator::secureHttpUrl` — cleartext `http` is refused unless the host is loopback. The receiver base URL goes through `UrlValidator::httpUrl`, which enforces the URL shape and an http(s) scheme but **no** https floor. Those two endpoints are `UrlValidator`'s only callers — a URL-shaped value elsewhere is validated by whoever owns it: `channel.url` is shape-checked at its parse site in `AgentConfig` (non-empty, no whitespace; the loopback/SSRF gate is the `channel_push` handler's), and `alert_channel.url` defers to the sender's own `LocalhostUrl::assertValid`.
 - **SHA-pin every third-party GitHub Action.** Format: `uses: <owner>/<repo>@<full-40-char-SHA>  # vX.Y.Z`. The `# vX.Y.Z` comment is load-bearing — dependabot parses it. Reject mutable tag references (`@v4`) at PR review.
 
 ## Scope discipline

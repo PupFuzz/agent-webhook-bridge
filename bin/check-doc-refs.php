@@ -15,20 +15,79 @@
  * Exit 0 = every rule clean; exit 1 = at least one finding, reported per rule with the file and
  * line it fired on. An exit code alone cannot say WHICH rule fired, so each block names itself.
  *
- * RULE 1 (DL-013): assert that every PHP file path / FQCN named in the
- * non-historical CLAUDE_*.md docs resolves to an extant file. The doc system is
+ * RULE 1 (DL-013): assert that every PHP file path, FQCN and class MEMBER named in this repo's
+ * prose resolves to something that exists. The doc system is
  * the onboarding map (for the next maintainer AND the next AI session), so a
  * doc that names a since-deleted class (e.g. ProviderApiConfig after DL-007) is
  * worse than no doc — it sends you to a file that isn't there. This converts
  * "remember to update the docs" into "CI fails if you didn't."
  *
- * Checked, per backtick-quoted token on a line:
+ * Checked, per backtick-quoted token on a line — the first two over the non-historical
+ * CLAUDE_*.md docs, the third over the whole source surface (see THE MEMBER LEG below):
  *   - a repo file path ending in .php that contains a '/', with optional brace
  *     expansion: `app/Bridge/Support/{AgentConfig,SubscriptionConfig}.php`
  *   - an `App\...` FQCN: `App\Bridge\Support\SecretFile` → app/Bridge/Support/SecretFile.php
- * A line carrying an explicit removed-marker — "(removed in …)", "deleted",
+ *   - a MEMBER citation — `App\Bridge\Support\Finding::warn()`, `CheckSlot::BoardToolsSshAdvisory`,
+ *     `DlTokenGrammar::sole()` — resolved to the declaring file, then to the member itself
+ * A line carrying an explicit removed-marker — "removed", "renamed", "deleted",
  * "no longer exists", "there is no" — is skipped (history may name dead classes
- * deliberately). CLAUDE_DECISIONS.md is excluded outright (append-only history).
+ * deliberately); the vocabulary is satisfiable by an annotation appended beside a frozen
+ * sentence, never only by an edit to it. {@see $skip} for the bound on those words.
+ *
+ * THE MEMBER LEG (card#6025). The FQCN leg STRIPPED a `::member` suffix before asking whether
+ * anything existed, so the class resolved and the half of the citation that names BEHAVIOUR was
+ * never read — `DlTokenGrammar::sole()` and a phantom spelled exactly like it were equally
+ * invisible. A phantom member is the same defect as a phantom class one level down — it sends a
+ * maintainer to a method that is not there — and it is minted by CURRENT drafting, not only by
+ * deletion.
+ *
+ * WHAT THIS LEG DOES NOT CLOSE, stated because card#6025's third instance is exactly it. That
+ * instance was a bare `correlationRefs()` in a merged decision-log entry: it carries NO class
+ * and no `::`, so it never was a token this script reads and it still is not — the `::member`
+ * strip was not the mechanism that hid it, and this leg would not have caught it. It is closed
+ * by the correction to that sentence, not by a gate, and the same shape can recur tomorrow.
+ * Bare `func()` in prose stays deliberately out of the token set: the overwhelming majority of
+ * them here are external vocabulary or historical narration rather than claims about this tree,
+ * and admitting them would red on every one. No count of them is quoted here — a figure in a
+ * comment is a quoted authority no later pass recomputes; the population re-derives with
+ *   grep -rohE '`[a-z][A-Za-z0-9_]*\(\)`' CLAUDE_*.md README.md docs app tests bin | sort -u | wc -l
+ *
+ * IT ANSWERS ONLY WHERE IT CAN. A member is a finding when the class file is under `app/`
+ * AND its whole ancestry (parents, traits) is resolvable there and declares nothing by that
+ * name. A class whose ancestry leaves `app/` — a framework base, a vendor trait — is
+ * UNVERIFIABLE by a filesystem scan and passes: the alternative is a gate that reds on
+ * inherited members it cannot see, which is the cry-wolf trade this script's other rules
+ * refuse. Same for the name itself: a bare `Command` is resolved only when ONE construct in
+ * this tree carries it, counting both files under `app/` and the non-`App\` classes the tree
+ * imports under that name — an `app/…/Command.php` beside `Illuminate\Console\Command` makes
+ * the citation unattributable, and guessing between them would invent the finding.
+ *
+ * IT READS THE WHOLE SOURCE SURFACE — {@see scannedSources()}, the `app/` + `tests/` + `docs/` +
+ * `bin/` + root `*.md` set rules 2 and 3 already walk — and NOT the six-doc current-state list
+ * the path/FQCN leg reads. A member citation makes the same claim wherever it is written, and
+ * those six docs are a minority of the places this repo writes them: of the eight false prose
+ * claims card#6025 fixed, six sat outside that list. THIS FILE IS IN THAT SURFACE, and the test
+ * harness copies it into every fixture tree it builds — so a `Class::member` quoted in here must
+ * name a class no fixture declares, or the script reds on its own comments.
+ *
+ * CLAUDE_DECISIONS.md IS SCANNED FOR MEMBERS, AND FOR NOTHING ELSE. It is append-only
+ * history, and its FILE-PATH prose is time-stamped rather than current: the path leg over it
+ * measures 25 findings and 0 defects — anticipated-file lists from a design DL, specimen
+ * paths in an argument about non-ASCII (`app/café.php`), shell command lines, glob patterns.
+ * Greening those would mean editing frozen entries to suit a live rule. A member citation is
+ * different in kind: it names a construct that either exists in this tree or does not, and
+ * the escape hatch does not require rewriting the sentence — the removed-marker vocabulary
+ * matches an ANNOTATION appended beside the original, which is what the freeze rule already
+ * prescribes (see the DL-273 `correlationRefs()` annotation). The log's OTHER structural
+ * exemption is {@see citedAsRejected()}: an alternative the entry says it rejected is absent
+ * on purpose.
+ *
+ * THE COVERAGE IS MEASURED, NOT ASSUMED, AND THE MEASUREMENT SHIPS. `--census` prints every
+ * bucket — resolved, reported, class not under `app/`, ambiguous class name, unverifiable
+ * ancestry, removed-marker line, rejected alternative — re-derived over the tree it is run on,
+ * and every run prints the unexamined tally on its own line. Deliberately no figures in this
+ * comment: a figure here is a quoted authority, and the census that stood here could not be
+ * recomputed by anything shipped — the defect this rule exists to catch, one level up.
  */
 $root = dirname(__DIR__);
 
@@ -142,18 +201,488 @@ function repoPhpBasenames(string $root): array
     return $cache;
 }
 
+/**
+ * Every bucket this run's member leg put a citation in, counted by the scan itself.
+ *
+ * A CENSUS THAT IS NOT DERIVED BY THE SHIPPED CODE IS A QUOTED AUTHORITY: the figures that
+ * used to sit in this file's docblock were reproducible only by an instrumented variant of
+ * it, so no later pass could move them. Passing a bucket records one citation; passing
+ * nothing reads the counts back. `--census` prints them; every run prints the unexamined
+ * ones, because a clean line that speaks for citations the leg never answered for is the
+ * same defect one level up (DL-251).
+ *
+ * @return array<string, int>
+ */
+function tally(?string $bucket = null): array
+{
+    static $counts = [
+        'resolved' => 0,
+        'reported' => 0,
+        'class_not_under_app' => 0,
+        'ambiguous_class_name' => 0,
+        'unverifiable_ancestry' => 0,
+        'removed_marker_line' => 0,
+        'rejected_alternative' => 0,
+        'depth_bail' => 0,
+    ];
+    if ($bucket !== null) {
+        $counts[$bucket]++;
+    }
+
+    return $counts;
+}
+
+/**
+ * The class file a `Class::member` citation names, and — when it names none — WHICH population
+ * it fell into, so the run can disclose what it declined to answer instead of dropping it.
+ *
+ * An `App\…` prefix is resolved by namespace. A namespace-less name is resolved by basename,
+ * and ONLY when exactly one construct in this tree carries it: a second file under `app/`, or a
+ * non-`App\` class the tree IMPORTS under that name, makes the citation unattributable.
+ * Guessing between candidates would invent the finding — `Command::argument()` beside an
+ * unrelated `app/Command.php` is the shape that convicts where this scan can see nothing.
+ *
+ * Restricted to `app/` on purpose. The prose here cites test classes, external product
+ * vocabulary and cross-repo constructs in the same `Foo::bar()` shape, and a scan that
+ * reached them would answer about whichever file happened to share a basename.
+ *
+ * @return array{file: ?string, reason: string}
+ */
+function classFileForCitation(string $root, string $class): array
+{
+    if (str_starts_with($class, 'App\\')) {
+        $rel = 'app/'.str_replace('\\', '/', substr($class, strlen('App\\'))).'.php';
+
+        return is_file($root.'/'.$rel)
+            ? ['file' => $rel, 'reason' => 'resolved']
+            : ['file' => null, 'reason' => 'class_not_under_app'];
+    }
+    if (str_contains($class, '\\')) {
+        return ['file' => null, 'reason' => 'class_not_under_app'];
+    }
+    $matches = [];
+    foreach (appClassFiles($root) as $rel) {
+        if (basename($rel, '.php') === $class) {
+            $matches[] = $rel;
+        }
+    }
+    if ($matches === []) {
+        return ['file' => null, 'reason' => 'class_not_under_app'];
+    }
+    if (count($matches) > 1 || in_array($class, importedNonAppNames($root), true)) {
+        return ['file' => null, 'reason' => 'ambiguous_class_name'];
+    }
+
+    return ['file' => $matches[0], 'reason' => 'resolved'];
+}
+
+/**
+ * The class file an ANCESTOR resolves to — FQCN only, never a basename. An ancestry that
+ * leaves `App\` is unverifiable by a filesystem scan, and the whole point of qualifying the
+ * ancestor first is that `extends Command` under `use Illuminate\Console\Command;` must not be
+ * answered by whatever `app/` file happens to share the basename.
+ */
+function classFileForAncestor(string $root, string $fqcn): ?string
+{
+    if (! str_starts_with($fqcn, 'App\\')) {
+        return null;
+    }
+    $rel = 'app/'.str_replace('\\', '/', substr($fqcn, strlen('App\\'))).'.php';
+
+    return is_file($root.'/'.$rel) ? $rel : null;
+}
+
+/**
+ * Every name under which this tree imports a class from OUTSIDE `App\` — the alias when the
+ * import carries one, the basename otherwise. Column-0 `use` only: an indented one is a trait
+ * use inside a class body, which names no import.
+ *
+ * @return list<string>
+ */
+function importedNonAppNames(string $root): array
+{
+    static $cache = null;
+    if ($cache !== null) {
+        return $cache;
+    }
+    $names = [];
+    foreach (appClassFiles($root) as $rel) {
+        foreach (importsOf((string) @file_get_contents($root.'/'.$rel)) as $alias => $fqcn) {
+            if (! str_starts_with($fqcn, 'App\\')) {
+                $names[$alias] = true;
+            }
+        }
+    }
+    $cache = array_keys($names);
+
+    return $cache;
+}
+
+/**
+ * Every repo-relative *.php path under app/, computed once.
+ *
+ * @return list<string>
+ */
+function appClassFiles(string $root): array
+{
+    static $cache = null;
+    if ($cache !== null) {
+        return $cache;
+    }
+    $cache = [];
+    if (is_dir($root.'/app')) {
+        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root.'/app', FilesystemIterator::SKIP_DOTS));
+        foreach ($it as $file) {
+            if ($file->isFile() && $file->getExtension() === 'php') {
+                $cache[] = substr($file->getPathname(), strlen($root) + 1);
+            }
+        }
+    }
+
+    return $cache;
+}
+
+/**
+ * Is `$member` declared by `$class` (as declared in `$rel`) or by an ancestor of it?
+ *
+ * THREE-VALUED, and that is the whole design. `true` = found; `false` = the class and its
+ * whole ancestry are readable under `app/` and none of them declares it; `null` = the
+ * ancestry LEAVES `app/` (a framework base class, a vendor trait), so the question was not
+ * answered. Only `false` is reported. A two-valued version of this function reds every
+ * citation of an inherited member — the failure mode that makes a gate get switched off.
+ *
+ * SCOPED TO THE CITED CLASS'S BODY, not the file: a second class in one file would otherwise
+ * vouch for the first, since a whole-file scan cannot tell whose body a declaration sits in.
+ *
+ * The member forms are the ones PHP actually declares: a method, a class constant, an enum
+ * case, and a property (promoted or not). They are matched as declarations, never as uses,
+ * so a call to `sole()` inside a class does not vouch for `sole()` existing on it.
+ */
+function memberDeclared(string $root, string $rel, string $class, string $member, int $depth = 0): ?bool
+{
+    if ($depth > 4) {
+        tally('depth_bail');
+
+        return null;
+    }
+    $src = @file_get_contents($root.'/'.$rel);
+    if ($src === false) {
+        return null;
+    }
+    $shape = classShape($src, $class);
+    if ($shape === null) {
+        return null;
+    }
+    // The three methods PHP synthesises onto every backed/pure enum. They are declared in no
+    // file, so a scan for declarations reads `Severity::cases()` as a phantom.
+    if ($shape['kind'] === 'enum' && in_array($member, ['cases', 'from', 'tryFrom'], true)) {
+        return true;
+    }
+
+    $name = preg_quote(ltrim($member, '$'), '/');
+    $declarations = str_starts_with($member, '$')
+        ? ['/(?:public|protected|private|readonly|var)\s+(?:[^;{()]*\s)?\$'.$name.'\b/']
+        : [
+            '/\bfunction\s+'.$name.'\s*\(/i',
+            '/\bconst\s+(?:[A-Za-z_][A-Za-z0-9_]*\s+)?'.$name.'\b/',
+            '/\bcase\s+'.$name.'\b/',
+            '/(?:public|protected|private|readonly)\s+(?:[^;{()]*\s)?\$'.$name.'\b/',
+        ];
+    foreach ($declarations as $pattern) {
+        if (preg_match($pattern, $shape['body']) === 1) {
+            return true;
+        }
+    }
+
+    $answered = true;
+    foreach (ancestorsOf($src, $shape) as $ancestor) {
+        $ancestorFile = classFileForAncestor($root, $ancestor);
+        if ($ancestorFile === null) {
+            $answered = false;
+
+            continue;
+        }
+        $inherited = memberDeclared($root, $ancestorFile, shortName($ancestor), $member, $depth + 1);
+        if ($inherited === true) {
+            return true;
+        }
+        if ($inherited === null) {
+            $answered = false;
+        }
+    }
+
+    return $answered ? false : null;
+}
+
+/**
+ * The declaration `$class` makes in `$src`: its kind, the header between the name and the
+ * opening brace, and the body inside it.
+ *
+ * TOKENIZED rather than pattern-matched, because the two things a regex gets wrong here are
+ * the two this function exists for. A whole-file match lets a sibling class in the same file
+ * declare the member — so the body is delimited by real brace depth, counting the `{` that
+ * opens an interpolated string as well. And `enum` is a WORD as well as a keyword: a docblock
+ * saying "mentions an enum Severity in passing" made a plain class answer `cases()`/`from()`,
+ * where `T_ENUM` is emitted for the declaration and never for the prose.
+ *
+ * @return array{kind: string, header: string, body: string}|null
+ */
+function classShape(string $src, string $class): ?array
+{
+    $tokens = @token_get_all($src);
+    $count = count($tokens);
+    for ($i = 0; $i < $count; $i++) {
+        $tok = $tokens[$i];
+        if (! is_array($tok) || ! in_array($tok[0], [T_CLASS, T_INTERFACE, T_TRAIT, T_ENUM], true)) {
+            continue;
+        }
+        // `Foo::class` carries the same token id as a declaration keyword, and an anonymous
+        // `new class extends Base` would otherwise read as a declaration OF `Base` — the first
+        // T_STRING after the keyword is the parent's name when the class has none of its own.
+        $before = previousSignificant($tokens, $i);
+        if ($before === T_DOUBLE_COLON || $before === T_NEW) {
+            continue;
+        }
+        $kind = strtolower($tok[1]);
+        $name = null;
+        $header = '';
+        $j = $i + 1;
+        for (; $j < $count && $tokens[$j] !== '{'; $j++) {
+            $t = $tokens[$j];
+            if (is_array($t) && in_array($t[0], [T_COMMENT, T_DOC_COMMENT], true)) {
+                continue;
+            }
+            if ($name === null && is_array($t) && $t[0] === T_STRING) {
+                $name = $t[1];
+            }
+            $header .= is_array($t) ? $t[1] : $t;
+        }
+        if ($name !== $class || $j >= $count) {
+            continue;
+        }
+        $body = '';
+        $depth = 0;
+        for (; $j < $count; $j++) {
+            $t = $tokens[$j];
+            $text = is_array($t) ? $t[1] : $t;
+            if ($text === '{' || (is_array($t) && in_array($t[0], [T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES], true))) {
+                $depth++;
+            } elseif ($text === '}') {
+                $depth--;
+                if ($depth === 0) {
+                    break;
+                }
+            }
+            $body .= $text;
+        }
+
+        return ['kind' => $kind, 'header' => $header, 'body' => $body];
+    }
+
+    return null;
+}
+
+/** The id of the last token before `$i` that is not whitespace or a comment, or null. */
+function previousSignificant(array $tokens, int $i): int|string|null
+{
+    for ($k = $i - 1; $k >= 0; $k--) {
+        $t = $tokens[$k];
+        if (is_array($t) && in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+            continue;
+        }
+
+        return is_array($t) ? $t[0] : $t;
+    }
+
+    return null;
+}
+
+/**
+ * The FULLY QUALIFIED names a class body inherits from: `extends`/`implements` targets from
+ * the header, and the traits its body `use`s.
+ *
+ * QUALIFIED THROUGH THE FILE'S IMPORT BLOCK, which is the whole point. An unqualified
+ * `extends Command` in a file carrying `use Illuminate\Console\Command;` is definitively not
+ * an `app/` class, but as a bare basename it resolves against `app/` and lets any same-named
+ * neighbour answer for a framework base — a FALSE finding, on a class this scan cannot see
+ * into, of exactly the cry-wolf kind that gets a gate switched off. An unimported bare name is
+ * qualified with the file's own namespace, which is what PHP itself does.
+ *
+ * The body is already delimited to the cited class, so a trait `use` is unambiguous there,
+ * while a closure's `use (` cannot match. (A `use A, B { … }` conflict block contributes its
+ * names; there is none in this tree.)
+ *
+ * @param  array{kind: string, header: string, body: string}  $shape
+ * @return list<string>
+ */
+function ancestorsOf(string $src, array $shape): array
+{
+    $imports = importsOf($src);
+    $namespace = namespaceOf($src);
+
+    $header = (string) preg_replace('/^\s*[A-Za-z0-9_]+\s*(?::\s*[A-Za-z_\\\\]+)?/', '', $shape['header']);
+    $header = (string) preg_replace('/\b(?:extends|implements)\b/', ',', $header);
+
+    $names = preg_split('/[\s,]+/', trim($header)) ?: [];
+    if (preg_match_all('/(?:^|[;{}\s])use\s+([A-Za-z_\\\\][A-Za-z0-9_\\\\,\s]*?)\s*[;{]/', $shape['body'], $m) !== false) {
+        foreach ($m[1] as $group) {
+            foreach (preg_split('/[\s,]+/', trim($group)) ?: [] as $name) {
+                $names[] = $name;
+            }
+        }
+    }
+
+    $out = [];
+    foreach ($names as $name) {
+        if (preg_match('/^\\\\?[A-Za-z_][A-Za-z0-9_\\\\]*$/', $name) !== 1) {
+            continue;
+        }
+        $out[] = qualifyName($name, $namespace, $imports);
+    }
+
+    return $out;
+}
+
+/** The namespace `$src` declares, or '' for the global one. */
+function namespaceOf(string $src): string
+{
+    return preg_match('/^namespace\s+([A-Za-z_][A-Za-z0-9_\\\\]*)\s*;/m', $src, $m) === 1 ? $m[1] : '';
+}
+
+/**
+ * The file's import block as alias => FQCN. Column-0 `use` only: an indented one sits inside a
+ * class body and is a trait use, not an import. A grouped `use App\{A, B};` is not matched —
+ * there is none in this tree, and an unmatched import leaves its ancestor unqualified and so
+ * unresolvable, which is an unanswered question rather than a wrong answer.
+ *
+ * @return array<string, string>
+ */
+function importsOf(string $src): array
+{
+    $out = [];
+    if (preg_match_all('/^use\s+(?!function\b|const\b)([A-Za-z_][A-Za-z0-9_\\\\]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;/m', $src, $m, PREG_SET_ORDER) === false) {
+        return $out;
+    }
+    foreach ($m as $use) {
+        $fqcn = $use[1];
+        $alias = ($use[2] ?? '') !== '' ? $use[2] : (str_contains($fqcn, '\\') ? substr($fqcn, strrpos($fqcn, '\\') + 1) : $fqcn);
+        $out[$alias] = $fqcn;
+    }
+
+    return $out;
+}
+
+/** The class name without its namespace — the name the declaration itself carries. */
+function shortName(string $fqcn): string
+{
+    return str_contains($fqcn, '\\') ? substr($fqcn, strrpos($fqcn, '\\') + 1) : $fqcn;
+}
+
+/**
+ * PHP's own name resolution, narrowed to what this scan needs: a leading `\` is already
+ * absolute, a first segment matching an import takes that import's FQCN, and anything else is
+ * relative to the file's namespace.
+ *
+ * @param  array<string, string>  $imports
+ */
+function qualifyName(string $name, string $namespace, array $imports): string
+{
+    if (str_starts_with($name, '\\')) {
+        return ltrim($name, '\\');
+    }
+    $first = explode('\\', $name)[0];
+    if (isset($imports[$first])) {
+        return $imports[$first].substr($name, strlen($first));
+    }
+
+    return $namespace === '' ? $name : $namespace.'\\'.$name;
+}
+
+/**
+ * Is this citation inside a sentence that says the construct was REJECTED?
+ *
+ * Every decision-log entry carries an "Alternatives considered" section, and an alternative is
+ * named in the same `Class::member` shape as the built thing. The member leg reads this file
+ * too, so its examples must be quotable: there is no `ReactionTarget::survivesEcho` / `Severity::NotRequested`,
+ * by decision — and a gate that reds on them demands that a log of choices name only the choice
+ * that was made.
+ *
+ * SENTENCE-SCOPED, not line-scoped, and that is the whole precision of it: a decision-log
+ * entry is one enormous line whose alternatives sit beside the consequences, so a line-scoped
+ * read of "rejected" would exempt the built constructs cited two clauses away. Measured over
+ * `CLAUDE_DECISIONS.md`: 11 citations exempted, of which 2 were findings.
+ */
+function citedAsRejected(string $line, string $tok): bool
+{
+    foreach (preg_split('/(?<=[.!?])\s+/', $line) ?: [] as $sentence) {
+        if (str_contains($sentence, '`'.$tok.'`') && preg_match('/\brejected\b|\bnot built\b|\bnot chosen\b|\bnot adopted\b/i', $sentence) === 1) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * The `Class::member` citation a token makes, or null if it makes none.
+ *
+ * `::class` is excluded (it is a language construct, not a member), as are the pseudo-classes
+ * `self`/`static`/`parent`, which name no file.
+ *
+ * READ UP TO THE FIRST `(`, so a citation that carries ARGUMENTS is the same citation. The
+ * anchored form matched `Foo::bar()` and dropped `Foo::bar(string $x, …)` before the census
+ * ever counted it — 96 `::`-bearing tokens in the scanned docs alone, 36 of them genuine
+ * citations resolving under `app/`. The argument list is prose about the signature; the
+ * referent is the member, and it is the referent this leg answers for.
+ *
+ * @return array{0: string, 1: string}|null [class, member]
+ */
+function memberCitation(string $tok): ?array
+{
+    $tok = trim($tok);
+    $args = strpos($tok, '(');
+    if ($args !== false) {
+        $tok = substr($tok, 0, $args);
+    }
+    if (preg_match('/^\\\\?([A-Za-z_][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)*)::(\$?[A-Za-z_][A-Za-z0-9_]*)$/', $tok, $m) !== 1) {
+        return null;
+    }
+    if ($m[2] === 'class' || in_array(strtolower($m[1]), ['self', 'static', 'parent', 'this'], true)) {
+        return null;
+    }
+
+    return [$m[1], $m[2]];
+}
+
 // Skip a line that deliberately names dead code: an explicit removed-marker, or
-// a struck-through (~~…~~) historical heading.
-$skip = '/\(removed\b|\bdeleted\b|no longer exists|there is no\b|replaced by\b|~~/i';
+// a struck-through (~~…~~) historical heading. `ever existed` is the marker the freeze rule
+// forces on the decision log — a frozen sentence cannot be corrected in place, so the
+// correction is an annotation appended beside it saying the referent never existed (DL-273).
+//
+// EVERY WORD HERE IS SATISFIABLE BY AN ANNOTATION APPENDED BESIDE THE ORIGINAL, which is why
+// the vocabulary is spelled as statements rather than as a directive: the freeze rule forbids
+// editing a merged entry, so the only discharge a frozen sentence can offer is a clause added
+// after it. A rule whose escape hatch required rewriting the sentence would have no escape
+// hatch on the two documents that need one most.
+//
+// `removed` AND `renamed` ARE WORD-BOUNDED, not parenthesised, and that is a widening this
+// change owed. `\(removed\b` matched only "(removed in vX)", so "`X` removed (dead)" — a
+// perfect removal marker — did not discharge, and a rename ("`X` is renamed `Y`") had no
+// vocabulary at all. Both are the speech act this list exists for, and both are what a
+// CHANGELOG entry says by construction: the surface widening that brought release notes and
+// living plan docs into scope is what turned that narrowness into a gate reddening on correct
+// prose. Word-bounded is the bound that keeps it honest — an identifier that merely STARTS
+// with the word (`removedAt`, `renamedTo`) discharges nothing.
+$skip = '/\bremoved\b|\brenamed\b|\bdeleted\b|no longer exists|there is no\b|replaced by\b|ever existed\b|~~/i';
 $errors = [];
 
+// RULE 1a — the path / FQCN leg, over the CURRENT-STATE docs only.
 foreach ($docs as $doc) {
     $path = $root.'/'.$doc;
     if (! is_file($path)) {
         continue;
     }
-    $lines = file($path, FILE_IGNORE_NEW_LINES);
-    foreach ($lines as $i => $line) {
+    foreach (file($path, FILE_IGNORE_NEW_LINES) ?: [] as $i => $line) {
         if (preg_match($skip, $line) === 1) {
             continue;
         }
@@ -166,6 +695,54 @@ foreach ($docs as $doc) {
                     $errors[] = sprintf('%s:%d  names `%s` (missing)', $doc, $i + 1, $tok);
                 }
             }
+        }
+    }
+}
+
+// RULE 1b — the MEMBER leg, over every source rules 2 and 3 walk (see the rule docblock).
+foreach (scannedSources($root) as $rel) {
+    foreach (file($root.'/'.$rel, FILE_IGNORE_NEW_LINES) ?: [] as $i => $line) {
+        if (preg_match_all('/`([^`]+)`/', $line, $m) === false) {
+            continue;
+        }
+        $markerSkipped = preg_match($skip, $line) === 1;
+        foreach ($m[1] as $tok) {
+            $citation = memberCitation($tok);
+            if ($citation === null) {
+                continue;
+            }
+            if ($markerSkipped) {
+                tally('removed_marker_line');
+
+                continue;
+            }
+            if (citedAsRejected($line, $tok)) {
+                tally('rejected_alternative');
+
+                continue;
+            }
+            [$class, $member] = $citation;
+            $resolved = classFileForCitation($root, $class);
+            if ($resolved['file'] === null) {
+                tally($resolved['reason']);
+
+                continue;
+            }
+            // The DECLARED name is the short one — an FQCN citation and a bare one name the
+            // same declaration, and only one of the two spellings appears in the file.
+            $declared = memberDeclared($root, $resolved['file'], shortName($class), $member);
+            if ($declared === null) {
+                tally('unverifiable_ancestry');
+
+                continue;
+            }
+            if ($declared) {
+                tally('resolved');
+
+                continue;
+            }
+            tally('reported');
+            $errors[] = sprintf('%s:%d  names `%s` — %s declares no %s (missing)', $rel, $i + 1, $tok, $resolved['file'], $member);
         }
     }
 }
@@ -459,13 +1036,53 @@ foreach (scannedSources($root) as $rel) {
     }
 }
 
+/**
+ * What the member leg DECLINED to answer, on every run.
+ *
+ * Three populations `continue` in silence otherwise, and a closing line reading "all PHP
+ * references resolve" would then speak for citations this leg never examined — the exact shape
+ * DL-251 / stage 10 removed from `bridge:check`, where a leg that measured nothing had been
+ * reporting `ok`. The buckets sum to the population, so the disclosure is arithmetic rather
+ * than adjectival: `--census` prints the same numbers with the examined half beside them.
+ */
+$census = tally();
+$unexamined = $census['class_not_under_app'] + $census['ambiguous_class_name'] + $census['unverifiable_ancestry']
+    + $census['removed_marker_line'] + $census['rejected_alternative'];
+
+if (in_array('--census', $argv, true)) {
+    fwrite(STDOUT, "doc-refs member census (re-derived over this tree by this run):\n");
+    foreach ($census as $bucket => $n) {
+        fwrite(STDOUT, sprintf("  %-24s %d\n", $bucket, $n));
+    }
+    fwrite(STDOUT, sprintf(
+        "  %-24s %d\n",
+        'TOTAL citations',
+        $census['resolved'] + $census['reported'] + $unexamined
+    ));
+    fwrite(STDOUT, "`depth_bail` is not a bucket of the total — it counts ancestry walks abandoned at the depth bound, each of which lands its citation in `unverifiable_ancestry` unless another ancestor answered first.\n");
+}
+
+fwrite(STDOUT, sprintf(
+    "doc-refs: member citations — %d examined (%d resolved, %d reported), %d NOT examined: %d class not under app/, %d ambiguous class name, %d unverifiable ancestry, %d on a removed-marker line, %d a rejected alternative; %d ancestry walk(s) hit the depth bound. This run says nothing about the members in that second half.\n",
+    $census['resolved'] + $census['reported'],
+    $census['resolved'],
+    $census['reported'],
+    $unexamined,
+    $census['class_not_under_app'],
+    $census['ambiguous_class_name'],
+    $census['unverifiable_ancestry'],
+    $census['removed_marker_line'],
+    $census['rejected_alternative'],
+    $census['depth_bail'],
+));
+
 if ($errors !== [] || $citeErrors !== [] || $claimErrors !== []) {
     if ($errors !== []) {
-        fwrite(STDERR, "Dangling doc references (a CLAUDE_*.md names a PHP file that does not exist):\n");
+        fwrite(STDERR, "Dangling doc references (a CLAUDE_*.md names a PHP file, class or class member that does not exist):\n");
         foreach ($errors as $e) {
             fwrite(STDERR, "  - {$e}\n");
         }
-        fwrite(STDERR, "\nFix the reference, or — if the class was deliberately removed — note it on the\nsame line with a marker like \"(removed in vX)\". See DL-013.\n");
+        fwrite(STDERR, "\nFix the reference, or — if the construct was deliberately removed or renamed — say so on\nthe same line (\"removed\", \"renamed\", \"there is no …\"). CLAUDE_DECISIONS.md\nentries are frozen, so that marker goes in an ANNOTATION appended beside the original\nsentence; an alternative the entry says it REJECTED needs nothing. See DL-013.\n");
     }
     if ($citeErrors !== []) {
         fwrite(STDERR, "Line-number citations (an offset goes stale the next time anything above it moves):\n");

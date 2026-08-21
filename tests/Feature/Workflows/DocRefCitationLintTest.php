@@ -8,7 +8,7 @@ use Tests\TestCase;
 /**
  * Drives the REAL `bin/check-doc-refs.php` — the copy CI runs — over synthetic repo
  * trees, one vector per tree. The script resolves its scan root as `dirname(__DIR__)`,
- * so copying it into `<tmp>/bin/` makes `<tmp>` the repo it examines. Deliberately NO
+ * so copying it one level below `<tmp>` makes `<tmp>` the repo it examines. Deliberately NO
  * root argument was added to the script for this: a path argument that overrides the
  * scanned set is precisely how a run fakes coverage, and the citation gate exists to
  * catch what a targeted pass misses.
@@ -115,10 +115,12 @@ class DocRefCitationLintTest extends TestCase
      * nothing if the empty tree does not pass (a red control once made four negatives
      * read as failures).
      *
-     * It doubles as the proof of the script's self-exemption: the tree holds the script
-     * and nothing else, and the script's own docblock quotes the citation forms it
-     * rejects. That second claim is only worth anything while the quoting is still
-     * there, so it is asserted rather than assumed.
+     * It doubles as the proof of the script's self-exemption: the script's own docblock quotes
+     * the citation forms it rejects, and `$citeExcluded` is what keeps that legal. The script is
+     * WRITTEN INTO THE TREE as a fixture here rather than being there incidentally — the harness
+     * parks the copy it runs outside every scanned root, so nothing exercises that exemption
+     * unless a vector says so. The quoting claim is asserted rather than assumed, because the
+     * exemption proves nothing once the quote it covers is gone.
      */
     public function test_the_empty_tree_control_passes_and_the_script_exempts_itself(): void
     {
@@ -128,6 +130,9 @@ class DocRefCitationLintTest extends TestCase
 
         [$rc, $out] = $this->runGate([]);
         $this->assertSame(0, $rc, "the empty-tree control must pass — every vector in this file is read against it:\n{$out}");
+
+        [$rc, $out] = $this->runGate(['bin/check-doc-refs.php' => $body]);
+        $this->assertSame(0, $rc, "the script at its real path must stay exempt from the rule it enforces:\n{$out}");
     }
 
     /**
