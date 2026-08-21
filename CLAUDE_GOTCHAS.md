@@ -134,9 +134,9 @@ If the guard fires unexpectedly in a test: verify `phpunit.xml` has this stanza 
 
 **Cause:** `webhook_events.delivery_id` is `VARCHAR(64)`. MariaDB in strict mode rejects values that exceed the column width, but in non-strict mode it silently truncates. Two `delivery_id` values that differ only past position 64 — a real possibility for UUID-like ids with a shared prefix format — would hash to the same 64-char prefix and collide on the UNIQUE constraint, causing the dedup gate to fire when it shouldn't.
 
-**Fix:** `AbstractWebhookAdapter::assertDeliveryIdLength()` (line 38–42) rejects any `delivery_id` longer than 64 chars with `InvalidEnvelopeException('delivery_id_too_long')`, which maps to a deterministic 400 at the controller level. This fires before the DB write, making the over-length case an explicit parse error rather than a silent data-corruption.
+**Fix:** `AbstractWebhookAdapter::assertFieldLengths()` rejects any `delivery_id` longer than 64 chars with `InvalidEnvelopeException('delivery_id_too_long')`, which the controller maps to a deterministic `invalid_envelope` 400. It applies the same rule to the siblings that flow through the same INSERT (`scope_id`, `event_type`, `actor_id`), each at its own column width. This fires before the DB write, making the over-length case an explicit parse error rather than a silent data-corruption.
 
-**Related:** `app/Bridge/Adapters/AbstractWebhookAdapter.php` `assertDeliveryIdLength()`, `database/migrations/..._create_webhook_events_table.php` (the column comment explains the rationale).
+**Related:** `app/Bridge/Adapters/AbstractWebhookAdapter.php` `assertFieldLengths()`, `database/migrations/..._create_webhook_events_table.php` (the column comment explains the rationale).
 
 ---
 

@@ -1141,7 +1141,7 @@ argument for the other.**]**
 **`warnIfDirInsecure()` was extracted, not copied, because this is the stage its second caller
 arrives in.** It was a private method on `CheckCommand` with exactly two call sites — units 2 and 4
 of this very stage — so migrating them meant either one shared primitive or two copies of a
-permission verdict. It became `DirectoryPermissions::warnIfInsecure()` (renamed `verdictFor()` in DL-265, when it
+permission verdict. It became `DirectoryPermissions::warnIfInsecure()`, a name that no longer exists (renamed `verdictFor()` in DL-265, when it
 gained a `fail` arm the old name denied), returning `?Finding` rather
 than yielding, because each caller decides where the warn sits in ITS output: the config-dir check
 emits it straight after its own ok line; the secret-dir check emits it only on a split layout. This
@@ -2145,7 +2145,7 @@ ask what each one CONCLUDED — and that is a static-analysis job nobody has bui
 the filing; it is not claimed as done.
 
 **A FOURTH CANDIDATE WAS FILED AGAINST THIS SET AND WAS NOT A MEMBER — the misfiling is the more
-useful finding (DL-264, card#5774).** The DL-259 audit found `DirectoryPermissions::warnIfInsecure()` (now `verdictFor()`, DL-265)
+useful finding (DL-264, card#5774).** The DL-259 audit found `DirectoryPermissions::warnIfInsecure()`, a name that no longer exists (now `verdictFor()`, DL-265)
 returning `null` on a failed `fileperms()`, filed it here as the silent-leg shape, and wrote the
 mechanism down: a green `secret dir: …` line followed by silence, "both halves read as certified."
 Every reader of that card — including the one who implemented it — found the reading obvious, because

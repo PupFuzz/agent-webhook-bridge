@@ -1,0 +1,474 @@
+<?php
+
+namespace Tests\Feature\Workflows;
+
+use Tests\Support\DocRefGateHarness;
+use Tests\TestCase;
+
+/**
+ * Drives the REAL `bin/check-doc-refs.php` over synthetic repo trees for RULE 1's MEMBER leg —
+ * the half of a `Class::member` citation that the FQCN rule used to strip and throw away.
+ *
+ * WHY THIS FILE EXISTS. A guard that answers about the class and not the member reports on the
+ * easy half of the citation: `DlTokenGrammar::sole()` and a citation naming a method that does
+ * not exist were the same verdict, because only the class was ever read.
+ *
+ * NOT card#6025's instance 3, which this leg does NOT close. That one was a bare
+ * `correlationRefs()` carrying no class and no `::` — never a token this script reads, before
+ * the change or after it. The strip was not what hid it, and no vector here can pretend
+ * otherwise.
+ *
+ * ITS SHAPE IS THE ONE THE CITATION LINT ADOPTED — every ACCEPTANCE is paired with a mutated
+ * vector that must be REJECTED. An acceptance on its own is indistinguishable from an inert
+ * harness, and this rule's exemptions (a rejected alternative, an ancestry that leaves `app/`,
+ * an ambiguous basename, an enum's synthesised methods) are all acceptances, which is exactly
+ * where the citation rule's first evidence was found to have holes. The pairing is not free: the
+ * `app/` scope bound shipped here as a lone acceptance, and it passed with the member leg deleted
+ * outright. `Widget::class` is the one acceptance with no twin, and deliberately — it names no
+ * member for a mutation to make phantom.
+ */
+class DocRefMemberLintTest extends TestCase
+{
+    use DocRefGateHarness;
+
+    /** A class with one real method, used as the resolvable target of a citation. */
+    private const SUBJECT = <<<'PHP'
+<?php
+
+namespace App\Bridge\Support;
+
+final class Widget
+{
+    public const ID = 'widget';
+
+    public function __construct(public readonly string $label) {}
+
+    public function stamp(): void {}
+}
+PHP;
+
+    protected function tearDown(): void
+    {
+        $this->removeGateTrees();
+
+        parent::tearDown();
+    }
+
+    /**
+     * @param  array<string, string>  $files
+     */
+    private function assertMemberRejected(array $files, string $expectedAt, string $why): void
+    {
+        [$rc, $out] = $this->runGate($files);
+
+        $this->assertSame(1, $rc, "{$why}\nexpected a rejection; the gate said:\n{$out}");
+        $this->assertStringContainsString('declares no', $out,
+            "{$why}\nthe failure must come from the MEMBER leg, not the file/FQCN leg or a sibling rule:\n{$out}");
+        $this->assertStringContainsString($expectedAt, $out,
+            "{$why}\nthe report must name the offending doc and line:\n{$out}");
+    }
+
+    /**
+     * @param  array<string, string>  $files
+     */
+    private function assertAccepted(array $files, string $why): void
+    {
+        [$rc, $out] = $this->runGate($files);
+
+        $this->assertSame(0, $rc, "{$why}\nexpected acceptance; the gate said:\n{$out}");
+    }
+
+    /**
+     * THE CONTROL every acceptance below is read against: a tree holding the subject class and
+     * a citation of its REAL method must pass, or an acceptance proves only that the harness
+     * is inert.
+     */
+    public function test_a_citation_of_a_declared_member_is_accepted_and_a_phantom_beside_it_is_not(): void
+    {
+        $this->assertAccepted([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE.md' => "The stamp is written by `Widget::stamp()`.\n",
+        ], 'a citation of a method the class really declares must pass');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE.md' => "The stamp is written by `Widget::brand()`.\n",
+        ], 'CLAUDE.md:1', 'the same shape naming a method the class does not declare must fail');
+    }
+
+    /**
+     * The FQCN spelling is the one Rule 1 already read — and threw the member away on. Driven
+     * separately from the bare spelling because they take different resolution paths.
+     */
+    public function test_the_member_of_an_app_fqcn_is_checked_rather_than_stripped(): void
+    {
+        $this->assertAccepted([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE_ARCHITECTURE.md' => "See `App\\Bridge\\Support\\Widget::stamp()`.\n",
+        ], 'the FQCN spelling of a real method must pass');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE_ARCHITECTURE.md' => "See `App\\Bridge\\Support\\Widget::brand()`.\n",
+        ], 'CLAUDE_ARCHITECTURE.md:1', 'a phantom member under a resolving FQCN is the exact shape the strip hid');
+    }
+
+    /**
+     * Constants, promoted properties and enum cases are members too — a leg that only knew
+     * `function` would have reported three quarters of the citations in these docs as phantoms.
+     */
+    public function test_constants_properties_and_enum_cases_resolve_and_their_phantoms_do_not(): void
+    {
+        $enum = "<?php\n\nnamespace App\\Bridge\\Support;\n\nenum Grade: string\n{\n    case High = 'high';\n}\n";
+
+        foreach (['Widget::ID', 'Widget::$label', 'Grade::High', 'Grade::cases()', 'Widget::class'] as $real) {
+            $this->assertAccepted([
+                'app/Bridge/Support/Widget.php' => self::SUBJECT,
+                'app/Bridge/Support/Grade.php' => $enum,
+                'CLAUDE.md' => "Reads `{$real}`.\n",
+            ], "`{$real}` names a real member (or a language construct) and must pass");
+        }
+
+        foreach (['Widget::NOPE', 'Widget::$missing', 'Grade::Low'] as $phantom) {
+            $this->assertMemberRejected([
+                'app/Bridge/Support/Widget.php' => self::SUBJECT,
+                'app/Bridge/Support/Grade.php' => $enum,
+                'CLAUDE.md' => "Reads `{$phantom}`.\n",
+            ], 'CLAUDE.md:1', "`{$phantom}` names nothing and must fail");
+        }
+    }
+
+    /**
+     * The whole point of the extension: the append-only log stops being exempt outright.
+     * Paired with the path leg, which stays exempt there ON PURPOSE — its prose is
+     * time-stamped, so the same dangling path is a finding in a current-state doc and not in
+     * the log.
+     */
+    public function test_the_decision_log_is_covered_for_members_and_still_exempt_for_paths(): void
+    {
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE_DECISIONS.md' => "**Consequences:** `Widget::brand()` stamps the card.\n",
+        ], 'CLAUDE_DECISIONS.md:1', 'a phantom member in the decision log must now fail — this is the coverage the card asked for');
+
+        $this->assertAccepted([
+            'CLAUDE_DECISIONS.md' => "Anticipated files: `app/Bridge/Support/Gone.php`.\n",
+        ], 'the path leg is deliberately not applied to the frozen log');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE.md' => "Named in `app/Bridge/Support/Gone.php` and `Widget::brand()`.\n",
+        ], 'CLAUDE.md:1', 'the witness: the same tokens in a current-state doc are both examined');
+    }
+
+    /**
+     * The discharge a frozen entry can actually use. The marker is line-scoped, as it is for
+     * the file/FQCN leg — an annotation appended beside the original sentence, never an edit
+     * to it.
+     */
+    public function test_a_removed_marker_discharges_a_frozen_citation_and_its_absence_does_not(): void
+    {
+        $this->assertAccepted([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE_DECISIONS.md' => "`Widget::brand()` stamped the card. **[card#6025:** there is no `Widget::brand()` in the tree today.**]**\n",
+        ], 'an annotation carrying a removed-marker discharges the citation');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE_DECISIONS.md' => "`Widget::brand()` stamped the card. **[card#6025:** this entry is historical.**]**\n",
+        ], 'CLAUDE_DECISIONS.md:1', 'the witness: an annotation with no marker phrase discharges nothing');
+    }
+
+    /**
+     * A rejected alternative is absent BY DECISION. The exemption is SENTENCE-scoped, and the
+     * second vector is what proves that: one decision-log line carries the rejected
+     * alternative and the built consequence side by side, and only the alternative is exempt.
+     */
+    public function test_a_rejected_alternative_is_exempt_and_a_sibling_citation_on_the_same_line_is_not(): void
+    {
+        $this->assertAccepted([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE_DECISIONS.md' => "**Alternatives:** a per-target flag (`Widget::brand()`) — rejected: the call sites must remember to set it.\n",
+        ], 'an alternative the entry says it rejected names a construct that must not exist');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE_DECISIONS.md' => "**Alternatives:** a per-target flag (`Widget::brand()`) — rejected: the call sites must remember to set it. **Consequences:** `Widget::emboss()` stamps the card.\n",
+        ], 'CLAUDE_DECISIONS.md:1', 'the witness: the built consequence two clauses away is still examined');
+    }
+
+    /**
+     * The three-valued answer, both ways. An inherited member is real; an ancestry that leaves
+     * `app/` is a question this scan cannot answer and must not convict on.
+     */
+    public function test_inheritance_resolves_within_app_and_an_ancestry_that_leaves_it_is_unverifiable(): void
+    {
+        $parent = "<?php\n\nnamespace App\\Bridge\\Support;\n\nabstract class Base\n{\n    protected function inherited(): void {}\n}\n";
+        $child = "<?php\n\nnamespace App\\Bridge\\Support;\n\nfinal class Child extends Base\n{\n}\n";
+        $foreign = "<?php\n\nnamespace App\\Bridge\\Support;\n\nuse Illuminate\\Database\\Eloquent\\Model;\n\nfinal class Row extends Model\n{\n}\n";
+
+        $this->assertAccepted([
+            'app/Bridge/Support/Base.php' => $parent,
+            'app/Bridge/Support/Child.php' => $child,
+            'CLAUDE.md' => "Calls `Child::inherited()`.\n",
+        ], 'a member declared by an in-app parent is declared');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Base.php' => $parent,
+            'app/Bridge/Support/Child.php' => $child,
+            'CLAUDE.md' => "Calls `Child::absent()`.\n",
+        ], 'CLAUDE.md:1', 'the witness: with the same ancestry fully readable, an absent member IS convictable');
+
+        $this->assertAccepted([
+            'app/Bridge/Support/Row.php' => $foreign,
+            'CLAUDE.md' => "Calls `Row::firstOrFail()`.\n",
+        ], 'a class extending a framework base inherits members this scan cannot see — reporting it would be a false finding');
+    }
+
+    /**
+     * A basename carried by two files answers for neither. Guessing between them would invent
+     * the finding; the paired vector is the same citation with one candidate removed.
+     */
+    public function test_an_ambiguous_bare_class_name_is_skipped_and_a_unique_one_is_not(): void
+    {
+        $twin = "<?php\n\nnamespace App\\Bridge\\Other;\n\nfinal class Widget\n{\n    public function brand(): void {}\n}\n";
+
+        $this->assertAccepted([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'app/Bridge/Other/Widget.php' => $twin,
+            'CLAUDE.md' => "Calls `Widget::brand()`.\n",
+        ], 'two files carry the basename, so the citation names neither of them in particular');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE.md' => "Calls `Widget::brand()`.\n",
+        ], 'CLAUDE.md:1', 'the witness: with one candidate the same citation is attributable and fails');
+    }
+
+    /**
+     * Scope bound, stated as a test rather than a comment: a citation whose class lives outside
+     * `app/` is not examined at all. The prose here cites test classes, external product
+     * vocabulary and cross-repo constructs in this same shape.
+     *
+     * The twin is the vector this file shipped without, and it was the only acceptance here with
+     * no paired rejection: it survived TOTAL REMOVAL of the member leg, so it measured nothing
+     * but the harness. Moving the same class under `app/` is the one-variable change that turns
+     * the citation from unanswerable into a finding.
+     */
+    public function test_a_class_outside_app_is_not_examined_and_the_same_class_inside_it_is(): void
+    {
+        $outside = "<?php\n\nnamespace Tests\\Support;\n\nfinal class Widget\n{\n}\n";
+
+        $this->assertAccepted([
+            'tests/Support/Widget.php' => $outside,
+            'CLAUDE_TESTING.md' => "Calls `Widget::brand()`.\n",
+        ], 'a test-tree class is outside the scanned population, so its members are not answered for');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE_TESTING.md' => "Calls `Widget::brand()`.\n",
+        ], 'CLAUDE_TESTING.md:1', 'the witness: the same citation over a class under `app/` IS answered for');
+    }
+
+    /**
+     * The MEMBER leg reads every source rules 2 and 3 walk, not the six current-state docs the
+     * path leg reads. Six of the eight false claims card#6025 fixed were written outside that
+     * list — in `README.md`, in `docs/`, and in `app/` comments — so a leg bounded to it would
+     * have caught two.
+     */
+    public function test_the_member_leg_reads_the_whole_source_surface(): void
+    {
+        $note = "<?php\n\nnamespace App\\Bridge\\Support;\n\n/** Stamped by `Widget::%s`. */\nfinal class Note\n{\n}\n";
+
+        foreach (['README.md', 'docs/writeback.md', 'app/Bridge/Support/Note.php', 'tests/Support/Note.php'] as $surface) {
+            $real = str_ends_with($surface, '.php')
+                ? sprintf($note, 'stamp()')
+                : "Stamped by `Widget::stamp()`.\n";
+            $phantom = str_ends_with($surface, '.php')
+                ? sprintf($note, 'brand()')
+                : "Stamped by `Widget::brand()`.\n";
+
+            $this->assertAccepted([
+                'app/Bridge/Support/Widget.php' => self::SUBJECT,
+                $surface => $real,
+            ], "a real citation in {$surface} must pass");
+
+            $this->assertMemberRejected([
+                'app/Bridge/Support/Widget.php' => self::SUBJECT,
+                $surface => $phantom,
+            ], $surface.':', "the witness: a phantom in {$surface} is examined there too");
+        }
+    }
+
+    /**
+     * An unqualified ancestor is resolved through the file's IMPORT block, never by basename.
+     * The two trees differ in ONE line — which namespace the import names — and that line is
+     * the whole question: `extends Command` under `use Illuminate\Console\Command;` is a class
+     * this scan cannot see into, and answering it with whatever `app/` file shares the basename
+     * convicts where the three-valued design has to say nothing.
+     */
+    public function test_an_ancestor_is_resolved_through_the_import_block_and_not_by_basename(): void
+    {
+        $collision = "<?php\n\nnamespace App\\Bridge\\Support;\n\nfinal class Command\n{\n    public function label(): string\n    {\n        return 'x';\n    }\n}\n";
+        $subject = "<?php\n\nnamespace App\\Console;\n\nuse %s;\n\nfinal class PruneCommand extends Command\n{\n}\n";
+
+        $this->assertAccepted([
+            'app/Bridge/Support/Command.php' => $collision,
+            'app/Console/PruneCommand.php' => sprintf($subject, 'Illuminate\\Console\\Command'),
+            'CLAUDE.md' => "The cutoff comes from `PruneCommand::argument()`.\n",
+        ], 'the base is a framework class, so the member is unverifiable — the colliding basename must not answer for it');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Command.php' => $collision,
+            'app/Console/PruneCommand.php' => sprintf($subject, 'App\\Bridge\\Support\\Command'),
+            'CLAUDE.md' => "The cutoff comes from `PruneCommand::argument()`.\n",
+        ], 'CLAUDE.md:1', 'the witness: with the import naming the app class, the same ancestry IS readable and declares no argument');
+    }
+
+    /**
+     * A bare class name is resolved only when ONE construct in the tree carries it. A second
+     * file under `app/` is one way to be ambiguous; a non-`App\` class the tree imports under
+     * that name is the other, and it is the one a basename scan cannot see.
+     */
+    public function test_a_name_the_tree_imports_from_outside_app_is_ambiguous(): void
+    {
+        $importer = "<?php\n\nnamespace App\\Console;\n\nuse Illuminate\\Console\\Command;\n\nfinal class Runner\n{\n    public function make(): Command\n    {\n        return new Command;\n    }\n}\n";
+        $collision = "<?php\n\nnamespace App\\Bridge\\Support;\n\nfinal class Command\n{\n}\n";
+
+        $this->assertAccepted([
+            'app/Bridge/Support/Command.php' => $collision,
+            'app/Console/Runner.php' => $importer,
+            'CLAUDE.md' => "Reads `Command::argument()`.\n",
+        ], 'the tree knows two `Command`s, so a bare citation of one names neither in particular');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Command.php' => $collision,
+            'CLAUDE.md' => "Reads `Command::argument()`.\n",
+        ], 'CLAUDE.md:1', 'the witness: with the external import gone the name is unique and the citation is attributable');
+    }
+
+    /**
+     * A citation that carries ARGUMENTS names the same member as its bare spelling. The
+     * anchored form dropped it before the census counted it — silently, which is the half of
+     * the trade that made the exclusion invisible.
+     */
+    public function test_a_citation_carrying_arguments_is_read_as_the_member_it_names(): void
+    {
+        $this->assertAccepted([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE.md' => "Call `Widget::stamp(string \$label, ?int \$at = null)` to stamp.\n",
+        ], 'a real member cited with its signature must pass');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE.md' => "Call `Widget::brand(string \$label, ?int \$at = null)` to stamp.\n",
+        ], 'CLAUDE.md:1', 'the witness: the same spelling over a phantom is a finding, not a token the shape drops');
+    }
+
+    /**
+     * `enum` is a WORD as well as a keyword. Matching it as a word let any class whose prose
+     * mentions one answer for `cases()`/`from()`/`tryFrom()` — the synthesised-method exemption
+     * granted to a class that synthesises nothing.
+     */
+    public function test_the_enum_exemption_needs_a_declaration_not_the_word(): void
+    {
+        $prose = "<?php\n\nnamespace App\\Bridge\\Support;\n\n/** Mentions an enum Severity in passing. */\nfinal class Widget\n{\n}\n";
+
+        $this->assertAccepted([
+            'app/Bridge/Support/Grade.php' => "<?php\n\nnamespace App\\Bridge\\Support;\n\nenum Grade: string\n{\n    case High = 'high';\n}\n",
+            'CLAUDE.md' => "Reads `Grade::cases()`.\n",
+        ], 'a real enum declares nothing but PHP synthesises the three, so they must pass');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => $prose,
+            'CLAUDE.md' => "Reads `Widget::cases()`.\n",
+        ], 'CLAUDE.md:1', 'the witness: a class that merely says the word `enum` synthesises nothing');
+    }
+
+    /**
+     * The harness parks the script under test OUTSIDE every scanned root, and this is what that
+     * buys. The script's own comments cite real constructs by name; parked in `bin/`, it was read
+     * by the very leg it implements, so a fixture declaring a class of that name turned a comment
+     * in the SCRIPT into a finding against the FIXTURE. It fired once, on a comment, while
+     * something else was being debugged — the shape that gets a gate called flaky.
+     */
+    public function test_a_fixture_may_declare_a_class_the_scripts_own_comments_cite(): void
+    {
+        $cited = "<?php\n\nnamespace App\\Bridge\\Support;\n\nfinal class DlTokenGrammar\n{\n}\n";
+
+        $this->assertAccepted([
+            'app/Bridge/Support/DlTokenGrammar.php' => $cited,
+            'CLAUDE.md' => "Nothing here cites it.\n",
+        ], 'the script cites `DlTokenGrammar::sole()` in its own docblock, and it is not part of the tree it examines');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/DlTokenGrammar.php' => $cited,
+            'CLAUDE.md' => "The sole token comes from `DlTokenGrammar::sole()`.\n",
+        ], 'CLAUDE.md:1', 'the witness: the same citation made by the FIXTURE is examined, so the acceptance is not inertness');
+    }
+
+    /**
+     * The marker vocabulary reads the two speech acts a CHANGELOG entry makes by construction.
+     * `\(removed\b` matched only a parenthesised "(removed in vX)", so a release note saying a
+     * construct was removed did not discharge and a rename had no vocabulary at all — a gate
+     * reddening on correct prose, which is how a gate gets switched off. The third vector is the
+     * teeth: widening the words does not weaken the rule, it only names more of the ways an
+     * author says the referent is gone.
+     */
+    public function test_a_removed_or_renamed_marker_discharges_a_citation_and_its_absence_does_not(): void
+    {
+        foreach ([
+            'removed' => '**[card#6025:** removed in v0.60.**]**',
+            'renamed' => '**[card#6025:** renamed `stamp()`.**]**',
+        ] as $word => $annotation) {
+            $this->assertAccepted([
+                'app/Bridge/Support/Widget.php' => self::SUBJECT,
+                'CLAUDE_DECISIONS.md' => "`Widget::brand()` stamped the card. {$annotation}\n",
+            ], "an annotation saying the referent was {$word} discharges the citation");
+        }
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE_DECISIONS.md' => "`Widget::brand()` stamped the card. **[card#6025:** this entry is historical.**]**\n",
+        ], 'CLAUDE_DECISIONS.md:1', 'the witness: a line carrying no marker word at all still reds');
+    }
+
+    /**
+     * The bound on that widening, and the sharpest one available: both words are matched as
+     * WORDS. An identifier that merely starts with one — the `removedAt` column, a `renamedTo`
+     * payload key — is prose about a field, not a statement that the cited member is gone, and a
+     * substring match would have handed every line mentioning either a silent exemption.
+     */
+    public function test_the_marker_words_are_not_prefix_matched(): void
+    {
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'docs/writeback.md' => "`Widget::brand()` writes removedAt and renamedTo.\n",
+        ], 'docs/writeback.md:1', 'identifiers that begin with a marker word discharge nothing');
+
+        $this->assertAccepted([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'docs/writeback.md' => "`Widget::brand()` was removed; it wrote removedAt and renamedTo.\n",
+        ], 'the witness: the same line with the word used as the statement it is does discharge');
+    }
+
+    /**
+     * The declaration search is scoped to the CITED class's body. A whole-file scan lets a
+     * sibling class in the same file vouch for it — the same defect as the ancestry basename
+     * guess, one scope down.
+     */
+    public function test_a_sibling_class_in_the_same_file_does_not_vouch_for_the_cited_one(): void
+    {
+        $pair = "<?php\n\nnamespace App\\Bridge\\Support;\n\nfinal class Two\n{\n%s}\n\nfinal class Helper\n{\n    public function beta(): void {}\n}\n";
+
+        $this->assertAccepted([
+            'app/Bridge/Support/Two.php' => sprintf($pair, "    public function beta(): void {}\n"),
+            'CLAUDE.md' => "Calls `Two::beta()`.\n",
+        ], 'the cited class declares the member itself');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Two.php' => sprintf($pair, ''),
+            'CLAUDE.md' => "Calls `Two::beta()`.\n",
+        ], 'CLAUDE.md:1', 'the witness: only the sibling declares it, and a sibling is not an ancestor');
+    }
+}

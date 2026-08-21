@@ -9,6 +9,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 ## [Unreleased]
 
 ### Added
+
 - **card#6393 (DL-290)** — **`coord-card-relane`, an opt-in classifier family that moves a coord
   `[TASK]`'s card to the lane a `stage:*` label added AFTER the card exists declares.** Closes the
   label-after-open half of the class DL-286 filed: the create leg fires on `issues.opened` only, so
@@ -37,6 +38,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   `unlabeled` is deliberately NOT consumed, for the same reason: removing a label states no lane.
 
 ### Changed
+
 - **card#6393 (DL-290)** — **the `move_coord_cards` REVIVE arm is lane-aware.** A reopened `[TASK]`'s
   card returns to the lane its `stage:*` label declares instead of to the fixed
   `coord_card_stage_id`, which used to re-impose that stage — and its label — on every reopen (the
@@ -60,7 +62,95 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   would override a human's deliberate board re-lane, which is this card's own defect pointing the
   other way.
 
+- **card#6025** — **`bin/check-doc-refs.php` resolves the MEMBER of a `Class::member` citation, over
+  every source rules 2 and 3 already read.** **⚠ THIS CHANGES WHAT CI ACCEPTS** for a contributor;
+  nothing about an installed bridge (the only `app/` edits in this change are COMMENTS — no
+  statement moves, no migration, no `.env` change, no receiver accept/reject change, no exit-code
+  change). Rule 1 STRIPPED the `::member` suffix before asking whether anything existed, so a
+  citation's easy half was checked and the half that names BEHAVIOUR was thrown away.
+  **What it does NOT close, stated because card#6025's third instance is exactly that:** a bare
+  `correlationRefs()` in a merged decision-log entry carries no class and no `::`, so it never was a
+  token this script reads and it still is not — the strip was not the mechanism that hid it, and
+  this leg would not have caught it. That instance is closed by the correction to the sentence, not
+  by a gate, and the shape can recur tomorrow. Bare `func()` stays out of the token set because the
+  overwhelming majority here are external vocabulary or historical narration; no count of them is
+  quoted anywhere, and the population re-derives with the `grep` recipe in the script's own docblock.
+  **Three-valued, and it answers only where it can.** A member is a finding when the class file is
+  under `app/` **and** its whole ancestry is resolvable there and declares nothing by that name; an
+  ancestry that leaves `app/` is unverifiable by a filesystem scan and passes. Load-bearing for that
+  bound: an ancestor is qualified through the file's **import block** and matched as an FQCN, never
+  as a basename — an `extends` naming a framework base is not an `app/` class, and resolving it by
+  basename lets any same-named neighbour answer for it, convicting exactly where the design must say
+  nothing. The same reasoning binds the citation side: a bare class name resolves only when ONE
+  construct in the tree carries it, counting files under `app/` **and** the non-`App\` classes the
+  tree imports under that name. Two further scope bounds: the declaration search is delimited to the
+  cited class's own body (a sibling class in the same file is not an ancestor), and the
+  enum-synthesised `cases()` / `from()` / `tryFrom()` exemption needs a real `enum` **declaration** —
+  matching it as a word let any class whose prose mentions one answer for all three. A citation
+  carrying ARGUMENTS is now read as the member it names (up to the first `(`): re-derived over the
+  seven docs the old surface read, the anchored form drops **91** backticked `::`-bearing tokens, of
+  which **41** are genuine citations naming a class under `app/` — and none of them is a finding
+  today, so this is coverage gained at no cry-wolf cost.
+  **Two structural exemptions, both measured rather than assumed:** the decision log's FILE-PATH
+  prose stays exempt (the path leg over it returns **25 findings and 0 defects** — anticipated-file
+  lists, specimen paths in an argument about non-ASCII, shell command lines, glob patterns — and
+  greening those would mean editing frozen entries to suit a live rule), and an alternative an entry
+  says it **rejected** is skipped **sentence-scoped**, not line-scoped, because a decision-log entry
+  is one enormous line whose rejected alternatives sit beside the consequences that were built. A
+  frozen entry discharges a citation the tree no longer answers for by carrying a removed-marker in
+  an ANNOTATION appended beside the original sentence — never an edit to it.
+  **The marker vocabulary widened with the surface, because the surface is what made it wrong.**
+  It matched only a parenthesised *(removed in vX)*, and had no word for a RENAME at all — so a
+  release note saying a construct was taken out, and a plan doc narrating a rename, both red on
+  correct prose the moment `docs/` came into scope. Widening the surface without widening the
+  vocabulary ships a gate that punishes truthful writing, which is how a gate gets switched off —
+  the same failure the three-valued design exists to avoid, one level up. `removed` and `renamed`
+  now both discharge, and both are matched as WORDS: an identifier that merely begins with one — a
+  `removedAt` column, a `renamedTo` key — is prose about a field, not a statement that the cited
+  member is gone, and a substring match would have handed every line mentioning either a silent
+  exemption. **Measured cost, named rather than asserted:** **28** citations move into the
+  marker-skipped bucket — 19 that were being examined and resolving, 7 already exempt as rejected
+  alternatives, 1 naming a class not under `app/`, 1 unverifiable — and **0 that were reported**, so
+  the widening masks no finding. The bucket arithmetic closes over an unchanged population, and the
+  moved set is re-derivable by diffing `--census` across the one-line change.
+  **The run now discloses what it declined to answer.** Three populations used to `continue` in
+  silence beneath a closing line reading "all PHP references resolve" — the shape DL-251 / stage 10
+  removed from `bridge:check`, where a leg that measured nothing still reported `ok`. Every run
+  prints a one-line unexamined tally (class not under `app/`, ambiguous class name, unverifiable
+  ancestry, removed-marker line, rejected alternative, plus ancestry walks that hit the depth bound),
+  and **`--census`** re-derives every bucket over the tree it is run on. **No census figure lives in
+  the script's comments any more:** the six that did were reproducible only by an instrumented
+  variant of it — one of them only with an exemption disabled — so no later pass could move them.
+  **Census at this commit** (`php bin/check-doc-refs.php --census`): **1020** member citations — 645 resolved against a
+  declaration, **0 reported**, 203 naming a class not under `app/`, 0 an ambiguous class name, 19 an
+  unverifiable ancestry, 139 on marker-skipped lines, 14 rejected alternatives, 0 depth-bound bails.
+  **The test harness no longer parks the script under test inside the tree it examines.** `bin/` is
+  in the member leg's surface, so the copy the harness ran was read by the leg it implements: a
+  `Class::member` quoted in the script's own comments became a finding against any FIXTURE that
+  declared a class of that name — a defect reported in the wrong file, which is how a gate gets
+  called flaky. The copy moves to a `harness/` directory no rule scans, and the vector that wants
+  the `bin/check-doc-refs.php` path exemption now writes that path itself, where the intent is
+  legible rather than incidental.
+  **Evidence:** 18 vectors in `DocRefMemberLintTest`, every acceptance carrying a paired vector that
+  must be REJECTED — bar one, a `::class` citation, which names no member for a mutation to make
+  phantom. That pairing was not free: the file shipped one acceptance without a twin (a class
+  outside `app/`), and it survived total removal of the member leg — it measured the harness, not
+  the rule. Eleven single-arm mutations of the shipped script, each `php -l`-checked so a broken arm
+  cannot pass for a measurement, each restored between runs and each re-run against all 18:
+  the member leg disabled reds **18 of 18** — with the missing
+  twin added, no vector survives it; the surface narrowed back to the six current-state docs reds 6;
+  the decision log dropped from the surface reds 4; the marker vocabulary narrowed back reds 2; and
+  one each for the rejected-alternative exemption removed, an ancestor resolved by basename instead
+  of through the import block, the member search unscoped to the whole file, `enum` matched as a
+  word, the token shape re-anchored to the bare `()` spelling, the marker words matched as
+  substrings rather than words, and the external-import ambiguity dropped. Pristine and restored both green. Plus a real-surface plant of a phantom citation in
+  three scanned surfaces — a root doc, a `docs/` page and an `app/` comment — each rc 1 naming the
+  right file and line, each restored byte-identical.
+  **Neither pint nor phpstan covers `bin/`, so that test file and the script's own run are this
+  rule's only gates.**
+
 ### Fixed
+
 - **card#7118** — **Three tests handed the shared temp root to code that enumerates it, so the suite's
   result was a function of the box's `/tmp` rather than of the branch.** `BridgeServiceProviderTest`
   pointed `bridge.config_dir` at `sys_get_temp_dir()`, `InstallGuardTest` constructed a
@@ -171,6 +261,50 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   corrected to the flat body `KanbanClient::moveCard` actually sends. Its siblings were swept: the
   `CLAUDE_DECISIONS.md` occurrences are dated log entries superseded in-file by DL-219 (append-only,
   left as history), and the `docs/CHANGELOG.md` ones are accurate for their versions.
+
+- **card#6025** — **Six false prose claims, each verified at source rather than through the comment
+  that made it.** A claim whose referent does not exist is worse than no claim: it sends a maintainer
+  to a construct that is not there. `README.md` pointed at `examples/claude-code/settings.json` (the
+  file ships as `settings.json.example`); `docs/customization.md` pointed classifier authors at
+  `tests/Feature/Classifiers/InboxOnlyClassifierTest.php`, which lives under `tests/Unit/`;
+  `SshPinnedLineCheck` and `tests/Support/CheckGolden/PinnedHost.php` cited `CheckCommand` methods the
+  DL-242 migration removed, in the present tense and with no removal marker (the advisory is
+  `BoardToolsSshDefaultAdvisoryCheck` in its own slot; the `$COORD_CONFIG` reader is
+  `WritebackBoardStateCheck::coordTerminalAgreement()`); `ChannelSnapshotProbe` named
+  `visibleOrUnverified`, private to it until DL-254 hoisted the guard to
+  `PathVisibility::unverifiedUnlessVisible()`; and `ReactionTarget`'s docblock said `debounceSeconds`
+  is carried to the handler **and the handler-log** — the handler half is true, the log half is not
+  (`LogIntentHandler` writes `debounce_key`, never `debounce_seconds`, and no shipped handler reads
+  the field). **The comment was corrected rather than the code taught to match it:** adding a writer
+  to make a false sentence true is backwards.
+- **card#6025** — **Two stale citations in the current-state docs, found by the new member leg on its
+  first real-surface run, and a third the widened surface caught in this change's own CHANGELOG
+  entry.** `CLAUDE_CONVENTIONS.md` claimed webhook receiver URLs are validated as https in an
+  `AgentConfig::validateUrl` that no longer exists — **both halves false**: the https floor belongs
+  to `UrlValidator::secureHttpUrl` on the SECRET-BEARING provider API base URL, while the receiver
+  base URL goes through `UrlValidator::httpUrl`, which enforces no https floor at all.
+  `CLAUDE_GOTCHAS.md` cited `AbstractWebhookAdapter::assertDeliveryIdLength()`, which no longer exists,
+  **with a line offset**; the method is `assertFieldLengths()` and it now covers `scope_id`,
+  `event_type` and `actor_id` at their own widths (the offset is dropped rather than re-pinned —
+  name the construct). **Both statements had siblings, and the sibling audit is the reason this is
+  not one fix:** the corrected `CLAUDE_CONVENTIONS.md` sentence carried a new absolute — *every
+  other URL-shaped config value goes through `UrlValidator::httpUrl`* — that is itself false, and so
+  was `UrlValidator`'s own docblock, which had listed "a channel URL" among callers it does not have
+  since the class was written. `channel.url` is shape-checked at its parse site in `AgentConfig`
+  (non-empty, no whitespace; the loopback gate is the `channel_push` handler's) and `alert_channel.url`
+  defers to `LocalhostUrl`; both surfaces now say so. Swept with
+  `grep -rnE 'UrlValidator|validateUrl'` over `*.md` / `*.php` / `*.yml` outside `vendor/`: 24 hits,
+  2 false (both fixed), 22 accurate — the DL-175 / DL-209 decision-log and CHANGELOG entries describe
+  what was true when written and are left frozen.
+- **card#6025** — **Eighteen frozen-history citations discharged by annotation, never by an edit to
+  the sentence.** Eleven in `CLAUDE_DECISIONS.md` were surfaced by the member leg's first run; three
+  more appeared once ancestors were qualified through the import block (a classifier whose whole
+  ancestry turned out to be readable, so citations of two grammar constants and a near-miss probe it
+  no longer declares stopped being unverifiable); four are `docs/CHANGELOG.md` entries the widened
+  surface reached, each recording a rename or removal in a release that shipped it. Two living
+  `docs/CHECK-REGISTRY-PLAN.md` lines and one `tests/Support/FindingFactories.php` docblock already
+  carried their correction inline and were reworded to state it in the vocabulary the gate reads —
+  a construct that was renamed, and one deliberately not built.
 
 ## [0.74.1] - 2026-08-19
 
@@ -838,7 +972,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 - **DL-269** — **The node channel-server suite could write a false deafness marker beside a perfectly healthy socket, because it inherited the seat's LIVE addressing environment.** The suite spawns the real channel server, whose `markerPath()` falls back to the ambient environment. A seat exports `BRIDGE_CHANNEL_SOCKET` pointing at its **live** socket, so a child spawned with a plain `{...process.env}` binds it, gets `EADDRINUSE`, and writes a `.FAILED` deafness marker next to a socket that is working. **Both existing suites already scrubbed their child env — one by allowlist, one by denylist — and both measured clean; neither could tell you when it STOPPED being clean.** `live-state-guard.mjs` neutralises all four addressing inputs at import and **fails the run if the seat's real runtime dir moved**. DL-269 records the audit across all three languages and why PHP is accepted without a guard. Test-only — no runtime code, no behaviour change.
 - **card#5232, DL-268** — **The channel-server snapshot version drifted across roughly a dozen green CI runs, because the guard that enforces it reads one of the two files that carry it.** **⚠ CHANGES WHAT CI ACCEPTS: a PR whose `examples/channel-servers/package-lock.json` version disagrees with `package.json` now fails.** No app code, no migration, no new required `.env`, no receiver accept/reject change, no token-scope change. DL-038 made `package.json` `version` the staleness signal a copied snapshot compares against canonical and guarded it with `version-bump-guard` — which reads the manifest only. Measured on `dev`: the lockfile's root `version` sat at **`0.7.1`** while the manifest went `0.7.2 → 0.8.3`, every run green, because a guard cannot fail on a field it never reads. **The drift is not live and was never fixed** — it closed at `6c4f504` when an `npm` run resynced the lock as a side effect, so its agreement had been luck. **Not an outage at any point:** `npm ci` validates the dependency tree, not the root `version`. A new step asserts the lockfile's `.version` **and** `.packages[""].version` both equal the manifest's — both, because the defect class is precisely a guard reading one of N fields that must agree, and covering only the root re-mints it one level down. It is **not diff-gated** the way the bump step is (agreement is a property of the tree, so no shape of diff earns an exemption) — though not unconditional either: the workflow's `paths:` filter means a PR touching neither the directory nor the workflow never runs the job at all, which is still complete coverage of the entry path, since drift can only be introduced by a PR that edits those files. An **absent** manifest `version` FAILS rather than comparing jq's `null` to `null`. **The trigger set is deliberately NOT weakened:** a lockfile change keeps demanding a bump, because a transitive dependency bump changes what `npm ci` installs and so genuinely moves the deployed artifact. A lockfile-only dependency PR is therefore red by construction (dependabot cannot bump the manifest) and takes a **one-command maintainer commit**, documented in the guard's own error output — the surface the maintainer actually reaches — rather than in a runbook that has to be found first. The new assertion is driven by a test that extracts the step's real `run:` block from the YAML and executes it under `bash`, so it cannot drift from what CI runs; its positive control is **real history rather than invented JSON** (the pair as it stood at `4abe8e3`, the last commit at which the defect was live), and it is mutation-proven 4/4 against a 5-test baseline with both control axes asserted. **Deleted in passing:** the bump step's comment claimed the filter excludes *"the CI workflow itself"*, which it never did — the workflow was never inside the pathspec, so the clause described a protection that was not performed and read as an invitation to add the lockfile to that same exclusion list. **Sibling audit → card#5910 (one confirmed, one refuted):** `VERSION` vs `docs/CHANGELOG.md` has the same shape — `auto-tag-version.yml` is the only automation reading both and merely WARNs on a missing section while publishing a placeholder release note; left unfixed deliberately, as adding a PR-rejecting check is a hard gate. `composer.json`+`composer.lock` **looked** identical in shape in both this repo and kanban-board (no `composer validate` in either CI) and is **refuted** — `composer install` in the shared `setup-app` composite refuses an out-of-sync pair itself (measured two-sided: rc 4 mismatched, rc 0 restored).
 - **card#5548, DL-267** — **A destroyed run is not a measurement: `bin/check-golden-mutate.php` laundered a FAILED WRITE into the strongest verdict the program can produce.** When `file_put_contents` could not apply the mutant, the golden run aborted for that unrelated reason and every predicate scored **observed-via-abort at exit 0** — the best-looking outcome available, from a run that measured nothing. All writes now route through one `$writeOrThrow()`, which **throws rather than exits, because `exit()` does not run `finally`** — exiting from the mutation loop would leave a mutant on disk, the poisoning the file's own header warns about. The restore-failure path **reads the file back instead of inferring**, so *"a mutant is live"* is printed only when one is. Degenerate whole-run result sets (all observed-via-abort, all UNOBSERVED) and empty ones are **refused rather than rendered**; all-observed is deliberately not refused, being a legitimate strong result. A narrowed `--only`/`--limit` run no longer overwrites the artifacts, whose header claims to cover every predicate in `handle()`. Test-tooling only — no `app/` change, no runtime change.
-- **card#5796, DL-265** — **`bridge:check` reported a NON-DIRECTORY's file mode as the secret dir's, and told the operator to `chmod 700` it.** **⚠ OPERATOR-VISIBLE on a split layout** (`secret_dir` ≠ `config_dir`); a single-dir install is unaffected (the config-dir check gates on `is_dir()` first). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change;** `--format=json` `schema` stays **1**. DL-264 (above) gated the shared permission verdict's stat on `file_exists()`, which is true for a regular file, a socket, a fifo — anything that stats. So `BRIDGE_SECRET_DIR=/etc/passwd` reached `fileperms()`, succeeded, and printed *"secret dir /etc/passwd is group/world-accessible (mode 0644) — chmod 700 (it holds secrets)"*: a **real mode for the wrong subject**, whose remedy would be actively harmful if followed, while the operator's actual fault — *this setting does not point at a directory* — was never named. Now a **nested** `! is_dir()` arm INSIDE the existence gate names that fault directly. **Nested, because a single `is_dir()` gate is what DL-264 already rejected:** it answers false for an absent path AND for a present non-directory, so it would report a regular file as *"does not exist"* — trading one false claim for another in the class DL-262/263/264 exist to close. **⚠ It is this primitive's first `fail`, so it flips the exit code where the run previously exited 0.** DL-014's warn-not-fail rationale covers a loose **mode**, where the bridge still works and is merely less safe; it does not reach a path that is not a directory, because every secret and token resolves *underneath* it (`<dir>/<provider>/…`), so not one can be opened and no inbound webhook can be verified — a fault proven about that install, which is `Severity` limb 1 and the same ground the sibling config-dir leg stands on. **No healthy install newly reds:** the only state that flips already rejects every webhook. `DirectoryPermissions::warnIfInsecure()` is renamed **`verdictFor()`** — the old name had already stopped being true when DL-264 gave it an `unvalidated` arm, and a `fail` behind a name promising a warn is a trap for the third caller the primitive exists to protect.
+- **card#5796, DL-265** — **`bridge:check` reported a NON-DIRECTORY's file mode as the secret dir's, and told the operator to `chmod 700` it.** **⚠ OPERATOR-VISIBLE on a split layout** (`secret_dir` ≠ `config_dir`); a single-dir install is unaffected (the config-dir check gates on `is_dir()` first). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change;** `--format=json` `schema` stays **1**. DL-264 (above) gated the shared permission verdict's stat on `file_exists()`, which is true for a regular file, a socket, a fifo — anything that stats. So `BRIDGE_SECRET_DIR=/etc/passwd` reached `fileperms()`, succeeded, and printed *"secret dir /etc/passwd is group/world-accessible (mode 0644) — chmod 700 (it holds secrets)"*: a **real mode for the wrong subject**, whose remedy would be actively harmful if followed, while the operator's actual fault — *this setting does not point at a directory* — was never named. Now a **nested** `! is_dir()` arm INSIDE the existence gate names that fault directly. **Nested, because a single `is_dir()` gate is what DL-264 already rejected:** it answers false for an absent path AND for a present non-directory, so it would report a regular file as *"does not exist"* — trading one false claim for another in the class DL-262/263/264 exist to close. **⚠ It is this primitive's first `fail`, so it flips the exit code where the run previously exited 0.** DL-014's warn-not-fail rationale covers a loose **mode**, where the bridge still works and is merely less safe; it does not reach a path that is not a directory, because every secret and token resolves *underneath* it (`<dir>/<provider>/…`), so not one can be opened and no inbound webhook can be verified — a fault proven about that install, which is `Severity` limb 1 and the same ground the sibling config-dir leg stands on. **No healthy install newly reds:** the only state that flips already rejects every webhook. `DirectoryPermissions::warnIfInsecure()` is renamed **`verdictFor()`** — the old name had already stopped being true when DL-264 gave it an `unvalidated` arm, and a `fail` behind a name promising a warn is a trap for the third caller the primitive exists to protect. **[card#6025:** there is no `DirectoryPermissions::warnIfInsecure()` in the tree today — this entry is the release that renamed it.**]**
 
 - **card#5774, DL-264** — **`bridge:check` ABORTED — stack trace, exit 1, no report for any subsystem — when `BRIDGE_SECRET_DIR` pointed at a directory it could not stat.** **⚠ OPERATOR-VISIBLE on a split layout** (`secret_dir` ≠ `config_dir`); a single-dir install is unaffected (the config-dir check gates first). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change;** `--format=json` `schema` stays **1**. The shared DL-014 permission verdict ran `$perms = fileperms($dir)` ungated: `fileperms()` on an unstattable path **RAISES** rather than returning `false`, and under Laravel's error handler that warning is an uncaught `ErrorException` — so the whole preflight died on a directory it merely could not measure. **The card filed against this predicted the opposite mechanism** (a silent green line + a silent perms leg) and specified a fix on `$perms === false` that is **unreachable**; it was caught by running the command against the state before writing the fix, not by review. Now gated with `file_exists()` and split by cause: an absent directory is a **`warn`** naming it, one behind an untraversable ancestor is **`unvalidated`** via the shared `PathVisibility` guard (the checking process commonly runs as a different OS user, so *"absent"* is not a conclusion it is entitled to draw). Neither arm flips an exit code — the exit only changes in that a run which previously died with no output now exits on the merits of its findings. **`file_exists()` rather than `is_dir()` is deliberate:** a `secret_dir` pointing at a regular file keeps its pre-existing (wrong-subject but loud) mode warn instead of being quietly reclassified as *"does not exist"*, which would be a new false claim in the very class this fixes. **That wrong-subject report is closed by DL-265 below, which ships in this same release** — it is a nested second gate, not the `is_dir()` swap rejected here. **Sibling audit by reading, not grepping:** every stat-family call in `app/` (`fileperms`, `filetype`, `readlink`) was checked for a pre-gate — `DirectoryPermissions` was the only unguarded one.
 - **card#5789, DL-263** — **Five `is_file()`-gated reads threw an undocumented `ErrorException` on a present-but-unreadable file — the inbox reader among them, where the degraded answer is *"no intents staged"* for a file the process simply cannot see into.** **⚠ OPERATOR-VISIBLE on the same ordinary topology as DL-262** (the bridge runs as a different OS user than the agent, DL-227). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change;** `--format=json` `schema` stays **1**. **No exit code moves in the fixed direction** — four of the five paths already aborted, and the fifth can only turn a 5xx into a served request. DL-262 fixed one member of this class and filed the rest; this lands the consolidation. **The audit found FIVE, not the four on the card, and how matters:** `BridgePaths::readJsonl` uses `file()` rather than `file_get_contents()`, so the grep that produced the card's list could not have surfaced it — it came from re-reading the subsystem (canon #7). Its `?: []` fallback was **already dead code** under the console and HTTP kernels. **Hoisted, not re-derived:** new `FileContents::read($path, $subject)` returns the bytes / `null` when absent / throws `UnreadableFileException` when present-but-unreadable, and `TokenFile::readTrimmed` — which held the only correct copy — now layers trimming and the secret subtype ON it. **`UnreadableSecretException` is retained as a SUBCLASS** so the six callers that catch it do not silently widen to non-secret faults. **Per-site disposition turns on what the benign answer CLAIMS:** `BridgePaths::readSeen` + `readJsonl` **propagate** (fail-soft is strictly worse — `bridge:inbox` filters on both, so `[]` re-surfaces every seen intent or hides the inbox, and `updateSeenLocked` then opens the same file `c+` and throws anyway: a duplicate inbox followed by a crash); `WritebackConfig::load` raises **`ConfigException`** (`null` means *"writeback is off"*, so answering it for a permissions fault would silently disable every card move on the dispatch path); `AgentRegistry::loadSharedIdentities` **degrades to `[]` with a warning** — the one exception, because its other caller is the receiver, which must not 5xx over an optional policy file. **That last one makes existing docs TRUE rather than needing a doc edit:** `SharedIdentitiesCheck`'s docblock, DL-259 and `UnvalidatedCallSiteTest`'s comment all already claimed the loader answers `[]` for a file it could not read. It did not. **A pre-existing defect fixed in passing:** `ProvisionResult::cannotReconcile` hardcoded *"secret **missing** at …"*, but one of its two existing callers already passed a perms message — so a present, `0644` secret was reported as missing; the parameter is now a reason rendered verbatim. **An `@`-suppression sweep was the rejected fix** (it converts every one of these into the "absent" answer — card#5698's defect minted five more times). **Every new assertion was watched go RED** against a pre-fix tree reconstructed by stashing only the tracked `app/` changes — 5 reds, four raw `ErrorException`s and the provisioner's literal `API error: file_get_contents(…)` — each unreadable-state test carries a **skip-if-still-readable** guard, and each propagating site asserts the outcome directly rather than only the exception type. **Test-harness trap recorded in DL-263:** `expectsOutputToContain` registers one Mockery `doWrite` matcher per substring and Mockery dispatches to the FIRST match, so two substrings of one line cannot both be satisfied and a following `doesntExpectOutputToContain` silently cannot fail.
@@ -1062,7 +1196,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 - **#319** — **`coord_non_addressed_disposition` (DL-215, card #4650, roundtable #90):** the `coord-message` family gains the durable-inbox sibling the `impl-ci-wake` family already had (`impl_non_wake_disposition`). A coordination event that fails the recipient gate was unconditionally gate-dropped; the new key (`drop` default | `inbox_stage`) lets it be staged to the durable inbox instead. Under `inbox_stage` the normal coord `Intent` (`coord_issue`/`coord_pr`/`coord_comment`) is built with **no** `channel_push` — a durable record, never a live wake. It softens **only** the recipient gate (`$forMe`): the `subject === null` (unhandled action) and `drop_title_all_of` (noise-title) drops still fire, an addressed event still live-wakes, and `route_intents:true` routes the staged intent with no hand-emit (no wake widening). Any value other than `inbox_stage` falls back to `drop`. Absent key ⇒ `drop` ⇒ byte-identical to pre-DL-215.
 
 ### Fixed
-- **#320** — **seen-cursor locked read-modify-write closes the #4630 clobber race (DL-216, card #4630):** the DL-199 review deferred a race in the inbox seen-cursor. `BridgePaths::writeSeen` locked only the write, not the read→modify→write around it, and two callers open-coded an unlocked RMW on the same cursor file (`InboxCommand` advance; `RetentionService::pruneSeen`, the DL-212 sweep). A prune landing between inbox's read and its write could write an intersection computed from the pre-advance cursor, dropping a just-marked id back to unseen (consequence bounded — one re-delivered wake, never data loss). New `BridgePaths::updateSeenLocked(path, transform)` — the JSON-array sibling of `filterJsonlLocked` — holds one `flock(LOCK_EX)` across read→transform→write; both callers route through it. `writeSeen` is **retired** (the unlocked-write primitive that let the race exist is gone), leaving `updateSeenLocked` the sole cursor writer. Byte-identical on-disk format; the change is purely the concurrency guarantee.
+- **#320** — **seen-cursor locked read-modify-write closes the #4630 clobber race (DL-216, card #4630):** the DL-199 review deferred a race in the inbox seen-cursor. `BridgePaths::writeSeen` locked only the write, not the read→modify→write around it, and two callers open-coded an unlocked RMW on the same cursor file (`InboxCommand` advance; `RetentionService::pruneSeen`, the DL-212 sweep). A prune landing between inbox's read and its write could write an intersection computed from the pre-advance cursor, dropping a just-marked id back to unseen (consequence bounded — one re-delivered wake, never data loss). New `BridgePaths::updateSeenLocked(path, transform)` — the JSON-array sibling of `filterJsonlLocked` — holds one `flock(LOCK_EX)` across read→transform→write; both callers route through it. `writeSeen` is **retired** (the unlocked-write primitive that let the race exist is gone), leaving `updateSeenLocked` the sole cursor writer. Byte-identical on-disk format; the change is purely the concurrency guarantee. **[card#6025:** there is no `BridgePaths::writeSeen` in the tree today — the entry records the code as it stood.**]**
 
 ### Changed
 - **#321** — **fold the writeback config-load resolve into `WritebackConfig::loadDefault()`** (card #4500, dedup audit F7). The `config('bridge.config_dir')` → `WritebackConfig::load()` resolve was copied byte-for-byte across 13 sites (6 handlers, `GitHubPrCardMoveClassifier` ×3, `CoordinationClassifier` ×2, plus `ReconcileCommand` and `WritebackAlertNotifier` — the two the audit under-counted, surfaced by canon #7 + review). One shallow `loadDefault(): ?self` folds **only** the resolve; every caller keeps its own fail branch. Zero behavior change.
@@ -1832,7 +1966,7 @@ The tracked `CoordinationClassifier` with its **default families `[coord-message
 
 ### Changed
 
-- ⚠ **Inbox dedup moved off the synchronous hot path + `webhook_events.payload` is now nullable (DL-012).** `IntentLog` no longer scans the whole inbox file per intent (an O(file) cost that grew on calendar time and inflated webhook latency); idempotency is the upstream `agent_dispatches.processed_at` gate plus a read-side id-collapse in `bridge:inbox`. **Run `php artisan migrate` on deploy** (the payload-nullable migration). `BridgePaths::jsonlContainsId` removed (dead). (#32)
+- ⚠ **Inbox dedup moved off the synchronous hot path + `webhook_events.payload` is now nullable (DL-012).** `IntentLog` no longer scans the whole inbox file per intent (an O(file) cost that grew on calendar time and inflated webhook latency); idempotency is the upstream `agent_dispatches.processed_at` gate plus a read-side id-collapse in `bridge:inbox`. **Run `php artisan migrate` on deploy** (the payload-nullable migration). `BridgePaths::jsonlContainsId` removed (dead). (#32) **[card#6025:** there is no `BridgePaths::jsonlContainsId` in the tree today — this entry is the release that removed it.**]**
 
 ### Removed
 
@@ -1940,7 +2074,7 @@ The tracked `CoordinationClassifier` with its **default families `[coord-message
 
 ### Breaking
 
-- **`agents.json` must be migrated to `schema_version: 2`.** A v1 file is not parsed — `AgentRegistry::load` warns with a migration note and degrades to an empty registry. Replace any `github_login` matching key with the immutable `github_user_id`; declare shared accounts under `shared_identities`. Kanban-only registries migrate by bumping the version number alone. No in-code compatibility shim (single-operator project).
+- **`agents.json` must be migrated to `schema_version: 2`.** A v1 file is not parsed — `AgentRegistry::load` warns with a migration note and degrades to an empty registry. Replace any `github_login` matching key with the immutable `github_user_id`; declare shared accounts under `shared_identities`. Kanban-only registries migrate by bumping the version number alone. No in-code compatibility shim (single-operator project). **[card#6025:** there is no `AgentRegistry::load` in the tree today — the roster is built by `AgentRegistry::fromAgentConfigs()`.**]**
 
 ### Verification
 

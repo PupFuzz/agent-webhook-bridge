@@ -460,7 +460,7 @@ Same-event dedup is by `debounceKey` (last-wins): targets in one `ClassifyResult
 
 ### Testing your classifier
 
-Mirror `tests/Feature/Classifiers/InboxOnlyClassifierTest.php`:
+Mirror `tests/Unit/Classifiers/InboxOnlyClassifierTest.php`:
 
 ```php
 <?php
