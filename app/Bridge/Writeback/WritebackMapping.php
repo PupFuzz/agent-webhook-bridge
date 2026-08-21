@@ -116,7 +116,11 @@ final class WritebackMapping
      *                                                      the stage its label declares instead of the
      *                                                      fixed $coordCardStageId, so the bridge stops
      *                                                      rewriting the priority the issue already
-     *                                                      states. MUST carry
+     *                                                      states — and, since card#6393, is REVIVED to
+     *                                                      that stage on reopen and RE-LANED to it when
+     *                                                      the issue gains a lane label later (all three
+     *                                                      through {@see CoordCardLanePlacement}, so they
+     *                                                      cannot disagree). MUST carry
      *                                                      {@see CoordLaneStages::DEFAULT_LANE} (the
      *                                                      undeclared/unmappable fallback target) and no
      *                                                      key outside LANES — both enforced at load.

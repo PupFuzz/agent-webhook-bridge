@@ -78,9 +78,10 @@ final class CheckContext
      * (the bridge dispatches to all of them), so this is a list per scope and the
      * consumed set is their union (card#4183 / DL-196).
      *
-     * ACCUMULATED *DURING* THE PER-AGENT LOOP, NOT AFTER IT — one of the THREE fields
-     * here whose trap is PARTIAL rather than EMPTY ({@see self::$writebackEmittingScopes}
-     * and {@see self::$coordCardMoveScopes} are the others; the two groups are separated
+     * ACCUMULATED *DURING* THE PER-AGENT LOOP, NOT AFTER IT — one of the FOUR fields
+     * here whose trap is PARTIAL rather than EMPTY ({@see self::$writebackEmittingScopes},
+     * {@see self::$coordCardMoveScopes} and {@see self::$coordCardRelaneScopes} are the
+     * others; the two groups are separated
      * below). {@see self::$configs} is assigned once the loop has finished, so a check
      * reading it too early sees nothing at all; this one grows an entry per agent, so a
      * check reading it from a slot INSIDE the loop would see the agents processed so far
@@ -155,6 +156,25 @@ final class CheckContext
      * @var array<string, true>
      */
     public array $coordCardMoveScopes = [];
+
+    /**
+     * github scopes where an agent enables the coord-card-relane family (card#6393) —
+     * gate 1 of the label-driven lane move, exactly as {@see self::$coordCardMoveScopes}
+     * is for the DL-204 close/reopen move. Gate 2 is the mapping's `move_coord_cards`
+     * PLUS a configured `coord_card_lane_stage_ids`; with either missing the classifier
+     * emits nothing at all, which is a silence no other leg reports.
+     *
+     * SEPARATE FROM the move map rather than folded into it, because the two families are
+     * independently enabled: an install can run either without the other, and one map
+     * would make each family's advisory speak for the other's absence.
+     *
+     * Same accumulation timing and the same two traps as the sibling above (PARTIAL, not
+     * empty, inside the per-agent loop; short by any aborted agent — consult
+     * {@see self::$agentScopeCoverage}).
+     *
+     * @var array<string, true>
+     */
+    public array $coordCardRelaneScopes = [];
 
     /**
      * Every `<name>.yml` the config-dir scan SAW, whether or not it parsed.

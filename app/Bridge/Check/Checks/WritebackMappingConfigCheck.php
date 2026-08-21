@@ -155,6 +155,41 @@ final class WritebackMappingConfigCheck implements Check
             } elseif ($mapping->moveCoordCards && ! isset($ctx->coordCardMoveScopes[$repo])) {
                 yield Finding::warn("writeback: github:{$repo} has coord_card_terminal_stage_id set (the move leg is on — explicitly or by the DL-204 default) but no agent enables the coord-card-move family on that scope — the leg cannot fire (nothing classifies issues.closed/reopened into a move). Add coord-card-move to the serving agent's classifier.config.families, or remove coord_card_terminal_stage_id to disable the move leg.");
             }
+            // card#6393: the coord-card-relane family's silent-inert shape, the DL-204 pair
+            // above one family over. The relane leg needs gate 1 (the family) AND BOTH keys
+            // of gate 2 — `move_coord_cards` (a relane IS the bridge moving a coord card)
+            // and a `coord_card_lane_stage_ids` lane model to move it INTO. With either
+            // missing the classifier emits nothing at all, so this install is silent in a
+            // way none of the legs above reports: no config error (a lane-less mapping is
+            // valid for every other leg), no board write, and nothing even classified.
+            // Missing keys are collected rather than reported one per run (the DL-195 shape)
+            // — an operator who set neither should be told so once.
+            if (isset($ctx->coordCardRelaneScopes[$repo])) {
+                $missingRelane = [];
+                if (! $mapping->moveCoordCards) {
+                    $missingRelane[] = 'move_coord_cards';
+                }
+                if ($mapping->coordCardLaneStageIds === null) {
+                    $missingRelane[] = 'coord_card_lane_stage_ids';
+                }
+                if ($missingRelane !== []) {
+                    yield Finding::warn("writeback: github:{$repo} enables the coord-card-relane family but its writeback mapping has no ".implode(' / ', $missingRelane).' — the label-driven coord-card re-lane (card#6393) is INERT: issues.labeled arrives, nothing is classified and no card moves. Set '.implode(' and ', $missingRelane).' (a relane needs both the permission to move a coord card and a lane model to move it into), or remove coord-card-relane from classifier.config.families if the relane leg is not wanted.');
+                }
+            }
+            // NO card#5698 DISCLOSURE, and NO MIRROR ARM, for the leg above — both omissions
+            // are rulings. The disclosure: it is family-scoped exactly like the DL-204 arm it
+            // mirrors, so an absent scope asserts nothing and an unread agent costs it no
+            // false claim — the DL-204 arm's own no-disclosure ruling above owns that
+            // reasoning and this arm inherits it unchanged. The mirror:
+            // the DL-204 pair has a second direction because `coord_card_terminal_stage_id`
+            // means the move leg and nothing else, so setting it declares an intent the
+            // missing family contradicts. Nothing here carries that meaning —
+            // `coord_card_lane_stage_ids` is the CREATE leg's key (required with
+            // `create_coord_cards`, and read by the revive leg since card#6393), so a lane
+            // model without the relane family is the normal, intended shape of every
+            // lane-model install. A "lane ids set but no relane family" warn would fire on
+            // all of them, including the reference install, for a family that is opt-in by
+            // design.
             // DL-207: promote-on-release health. WritebackConfig::load already fails
             // closed on a missing shipped/released stage, so this catches the two
             // silent-inert shapes load cannot: both stages mapped to ONE column (the

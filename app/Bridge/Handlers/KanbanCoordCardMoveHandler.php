@@ -7,6 +7,7 @@ use App\Bridge\Contracts\Handler;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RefusalContext;
+use App\Bridge\Writeback\CoordCardLanePlacement;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -19,7 +20,16 @@ use Illuminate\Support\Facades\Log;
  * Move a coordination issue's tracking card in real time (DL-200) — the sibling of
  * {@see KanbanCoordCardHandler}'s create leg (roundtable #18(b)). A closed issue's
  * card concludes into `coord_card_terminal_stage_id`; a reopened issue's card
- * revives to `coord_card_stage_id`.
+ * revives; an issue that gains a `stage:*` label is re-laned (card#6393, opt-in).
+ *
+ * THE LANE (card#6393). Where a lane model is configured, revive and relane both
+ * resolve their destination through {@see CoordCardLanePlacement} — the SAME
+ * primitive the create leg uses — instead of writing a fixed stage. On a lane-model
+ * board the consumer's `kanban-writeback` pass maps a card's lane back onto the
+ * issue's `stage:*` label BEFORE its issues-sync runs, so a bridge move that ignores
+ * the lane does not merely place the card, it rewrites a written sequencing ruling on
+ * the issue. With no `coord_card_lane_stage_ids` the primitive returns the fixed
+ * stage and both legs are byte-identical DL-200.
  *
  * THE PARTITION (roundtable #18): this is the real-time PRIMARY, so each consumer's
  * periodic reconcile DEFERS to it and backstops. That makes the bridge a coord-card
@@ -29,15 +39,18 @@ use Illuminate\Support\Facades\Log;
  * no registry. Absent tag ⇒ nothing to move (never create — create-if-absent is the
  * create family's half of the reopen composition, so exactly one leg ever acts).
  *
- * THE ACTOR-GATE (revive only, #18 Q5): revive IFF the terminal was SERVICE-set —
+ * THE ACTOR-GATE (#18 Q5 — revive, and reused by relane): act IFF the card's current
+ * stage was SERVICE-set —
  * `last_stage_move.actor_type === "service"`, an ALLOW-LIST rather than a deny-list of
  * the human value. (kanban's ChangeSource emits exactly `human` for a UI move, `service`
  * for api/system, and `null` on a pre-feature row — so a deny-list would silently revive
  * on null.) Absent / null / malformed / unknown / human ⇒ fail CLOSED. A human who drags a card to the
  * terminal has expressed a closure intent the bridge must never reverse. Revive also
  * requires the card to currently BE in that terminal: a card someone has since moved
- * on is live work, and dragging it back to the create stage is exactly the backward
- * regression DL-163 forbids.
+ * on is live work, and dragging it back to the revive target is exactly the backward
+ * regression DL-163 forbids. Relane reuses the same allow-list against the LANE the
+ * card sits in, and additionally refuses any card not currently in a mapped lane —
+ * see {@see relaneOne()} for the three gates.
  *
  * A close, by contrast, is unconditional over `user_lanes` — ruled on #18: a human's
  * priority placement YIELDS to closure ("close→Done IS the terminal case, both movers
@@ -60,6 +73,16 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
      */
     private const ALERT_OUTCOME = 'coord_card_move';
 
+    /**
+     * What the classifier may ask this handler to do — an ALLOW-LIST, so an
+     * unrecognized disposition can never fall through to a move. `terminal` and
+     * `revive` are DL-200's lifecycle pair; `relane` (card#6393) is the label-driven
+     * lane correction, emitted only by the opt-in `coord-card-relane` family.
+     *
+     * @var list<string>
+     */
+    private const DISPOSITIONS = ['terminal', 'revive', 'relane'];
+
     private WritebackAlertNotifier $alerts;
 
     public function __construct(?WritebackAlertNotifier $alerts = null)
@@ -80,7 +103,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         // sid legitimately and is correlated by github_issue by-ref.
         if (! is_string($repo) || $repo === ''
             || ! is_numeric($issueNumber)
-            || ($disposition !== 'terminal' && $disposition !== 'revive')) {
+            || ! in_array($disposition, self::DISPOSITIONS, true)) {
             // Deterministic classifier bug — permanent. The repo/issue that would key the
             // alert are part of what is malformed, so each degrades rather than
             // suppressing the signal.
@@ -162,7 +185,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             // are skipped as idempotent.
             foreach ($ids as $id) {
                 try {
-                    $this->moveOne($client, $mapping, $id, $disposition, $sid, $repo, $issueNumber);
+                    $this->moveOne($client, $mapping, $id, $disposition, $sid, $repo, $issueNumber, $p);
                 } catch (RequestException $e) {
                     if (RefusalContext::isPermanent($e)) {
                         // FLAT reason: this catch spans moveOne's getCard READ and its
@@ -195,8 +218,13 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         }
     }
 
-    /** Apply one card's disposition. Throws RequestException; the caller isolates per-card. */
-    private function moveOne(KanbanClient $client, WritebackMapping $mapping, int $id, string $disposition, ?string $sid, string $repo, int $issueNumber): void
+    /**
+     * Apply one card's disposition. Throws RequestException; the caller isolates per-card.
+     *
+     * @param  array<mixed>  $p  the reaction-target payload — `title` and `labels` are the
+     *                           lane inputs the revive and relane legs derive from (card#6393)
+     */
+    private function moveOne(KanbanClient $client, WritebackMapping $mapping, int $id, string $disposition, ?string $sid, string $repo, int $issueNumber, array $p): void
     {
         $card = $client->getCard($id);
         // Tag-collision guard: only ever act on the mapped board.
@@ -217,6 +245,19 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             return;
         }
 
+        // Both remaining legs write a LANE, so both resolve through the same primitive the
+        // create leg uses (card#6393). A payload carrying no title — a foreign classifier's
+        // target, since this handler is registered unconditionally — reads as an
+        // un-governed issue and lands on the fixed stage, which is the pre-card#6393 answer.
+        $title = is_string($p['title'] ?? null) ? $p['title'] : '';
+        $placement = CoordCardLanePlacement::resolve($mapping, (int) $mapping->coordCardStageId, $title, CoordCardLanePlacement::labelsFrom($p));
+
+        if ($disposition === 'relane') {
+            $this->relaneOne($client, $mapping, $card, $id, $stage, $placement, $sid, $repo, $issueNumber);
+
+            return;
+        }
+
         // revive
         if ($stage !== $mapping->coordCardTerminalStageId) {
             // Not parked in OUR terminal: either already live, or moved on by someone.
@@ -227,13 +268,116 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         // `human` for a UI move, `service` for api/system, and `null` on a pre-feature
         // row). Anything else — human, null, malformed, or an actor_type this bridge has
         // never heard of — fails CLOSED. A human's closure intent is never reversed.
-        $lastMove = is_array($card['last_stage_move'] ?? null) ? $card['last_stage_move'] : [];
-        if (($lastMove['actor_type'] ?? null) !== 'service') {
+        if (! self::serviceSet($card)) {
+            $lastMove = is_array($card['last_stage_move'] ?? null) ? $card['last_stage_move'] : [];
             Log::info('kanban_coord_card_move: terminal was not service-set; refusing to revive', ['card_id' => $id, 'actor_type' => $lastMove['actor_type'] ?? null, 'sid' => $sid, 'issue' => $issueNumber]);
 
             return;
         }
-        $client->moveCard($id, (int) $mapping->coordCardStageId);
-        Log::info('kanban_coord_card_move: revived', ['card_id' => $id, 'stage' => $mapping->coordCardStageId, 'sid' => $sid, 'issue' => $issueNumber]);
+        $this->warnUnmappedLanes($placement, $mapping, $id, $repo, $issueNumber);
+        $client->moveCard($id, $placement['stage']);
+        Log::info('kanban_coord_card_move: revived', ['card_id' => $id, 'stage' => $placement['stage'], 'lane' => $placement['lane'], 'sid' => $sid, 'issue' => $issueNumber]);
+    }
+
+    /**
+     * The `relane` leg (card#6393 instance 2): an issue that gained a `stage:*` label
+     * AFTER it was carded has its card moved to the lane that label declares, so the
+     * consumer's lane→label writeback stops converging the new label back to the lane
+     * the card was created in.
+     *
+     * THREE gates, each closing a way this leg could become a third mover fighting the
+     * other two:
+     *   1. the answer must be LANE-DERIVED (`lane` non-null) — no lane map configured, or
+     *      a non-`[TASK]` issue the lane model does not govern, and there is no lane to
+     *      write. This is what makes an install without `coord_card_lane_stage_ids`
+     *      byte-identical;
+     *   2. the card must currently BE in one of the mapped lanes. Relane is a lane→lane
+     *      move: a card someone has advanced to In-Progress, or one the close leg parked
+     *      in the terminal, must not be yanked back into a lane by a label edit (the
+     *      terminal is disjoint from the lanes by config, so this subsumes it);
+     *   3. the terminal-provenance ALLOW-LIST the revive leg already carries — the card's
+     *      current stage must be SERVICE-set. A human who dragged this card to a lane
+     *      expressed a placement, and overriding it from a label would re-mint card#6393's
+     *      own defect pointing the other way: instead of the writeback overwriting a
+     *      label, the label would overwrite a board move.
+     *
+     * @param  array<mixed>  $card
+     * @param  array{stage: int, lane: ?string, unmapped: list<string>}  $placement
+     */
+    private function relaneOne(KanbanClient $client, WritebackMapping $mapping, array $card, int $id, ?int $stage, array $placement, ?string $sid, string $repo, int $issueNumber): void
+    {
+        if ($placement['lane'] === null) {
+            // Gate 1 has TWO causes and they need two different operator actions — the
+            // docblock above distinguishes them, so the line an operator actually reads
+            // must too. A missing lane model is a CONFIG gap (add
+            // `coord_card_lane_stage_ids`, or drop the family); a title the lane model does
+            // not govern is the design working (only an anchored `[TASK]` is lane-derived,
+            // mirroring the consumer's own gate) and needs nothing done.
+            if ($mapping->coordCardLaneStageIds === null) {
+                Log::info('kanban_coord_card_move: no lane model is configured for this repo; nothing to re-lane', ['card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber]);
+            } else {
+                Log::info('kanban_coord_card_move: the lane model does not govern this issue (its title is not an anchored [TASK]); nothing to re-lane', ['card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber]);
+            }
+
+            return;
+        }
+        if ($stage === $placement['stage']) {
+            return;   // already in the declared lane — redelivery-safe no-op
+        }
+        $lanes = $mapping->coordCardLaneStageIds ?? [];
+        if ($stage === null || ! in_array($stage, $lanes, true)) {
+            Log::info('kanban_coord_card_move: card is not in a mapped lane; refusing to re-lane', ['card_id' => $id, 'stage' => $stage, 'sid' => $sid, 'issue' => $issueNumber]);
+
+            return;
+        }
+        if (! self::serviceSet($card)) {
+            $lastMove = is_array($card['last_stage_move'] ?? null) ? $card['last_stage_move'] : [];
+            Log::info('kanban_coord_card_move: lane was not service-set; refusing to re-lane', ['card_id' => $id, 'actor_type' => $lastMove['actor_type'] ?? null, 'sid' => $sid, 'issue' => $issueNumber]);
+
+            return;
+        }
+        $this->warnUnmappedLanes($placement, $mapping, $id, $repo, $issueNumber);
+        $client->moveCard($id, $placement['stage']);
+        Log::info('kanban_coord_card_move: re-laned', ['card_id' => $id, 'stage' => $placement['stage'], 'lane' => $placement['lane'], 'from_stage' => $stage, 'sid' => $sid, 'issue' => $issueNumber]);
+    }
+
+    /**
+     * The provenance ALLOW-LIST both lane-writing legs share: exactly `"service"`.
+     * kanban's ChangeSource emits `human` for a UI move, `service` for api/system, and
+     * `null` on a pre-feature row — so a deny-list of the human value would silently act
+     * on null. Anything that is not literally `service` fails CLOSED.
+     *
+     * @param  array<mixed>  $card
+     */
+    private static function serviceSet(array $card): bool
+    {
+        $lastMove = is_array($card['last_stage_move'] ?? null) ? $card['last_stage_move'] : [];
+
+        return ($lastMove['actor_type'] ?? null) === 'service';
+    }
+
+    /**
+     * The ONE lane-config-gap diagnostic for this handler, shared by both lane-writing
+     * legs. A `stage:*` label naming a lane the operator's map does not carry is SKIPPED
+     * (the scan continues to the issue's next declared lane, then to the default), and the
+     * operator is told which lane went unused — the same decision, and the same reasoning,
+     * as the create leg's twin.
+     *
+     * It stays HERE rather than inside {@see CoordCardLanePlacement} deliberately:
+     * `WritebackRefusalSignalCoverageTest` holds set-equality over the bare log calls in
+     * the `Kanban*Handler.php` population, so hoisting it into the primitive would move it
+     * out from under that guard.
+     *
+     * @param  array{stage: int, lane: ?string, unmapped: list<string>}  $placement
+     */
+    private function warnUnmappedLanes(array $placement, WritebackMapping $mapping, int $id, string $repo, int $issueNumber): void
+    {
+        if ($placement['unmapped'] === []) {
+            return;
+        }
+        // The skipped lanes and the mapped set are CONTEXT, not interpolation: the DL-285
+        // refusal-signal guard keys its accounted-for list on the message literal, and an
+        // interpolated message degrades that key to a line number.
+        Log::warning('kanban_coord_card_move: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — moving to the next mapped lane it declares, else the default lane; add the lane to the mapping if this board has that column', ['card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber, 'unmapped_lanes' => $placement['unmapped'], 'moved_to_lane' => $placement['lane'], 'mapped_lanes' => array_keys($mapping->coordCardLaneStageIds ?? [])]);
     }
 }

@@ -31,12 +31,13 @@ use App\Bridge\Support\PathHelper;
  *         "create_dependabot_cards": false,        // optional (DL-024)
  *         "card_id_tag_template": "id:DEV-pr-{n}",  // optional (#75) — id: tag stamped on created dependabot cards; {n}/{pr_number}, {repo}
  *         "create_coord_cards": false,             // optional (DL-198) — real-time coord-issue → card create
- *         "coord_card_stage_id": 21,               // required-when-create_coord_cards/move_coord_cards — stage a new coord card lands in, and the revive target
+ *         "coord_card_stage_id": 21,               // required-when-create_coord_cards/move_coord_cards — stage a new coord card lands in, and the revive target (both lane-derived where coord_card_lane_stage_ids is set — card#6393)
  *         "coord_card_lane_stage_ids": {"now": 13, "next": 14, "later": 15, "maybe": 16},
  *                                                  // optional (card#6371) — the board's priority-lane stage ids; a lane-model-governed
- *                                                  // coord card is created in the stage its `stage:*` label declares, `later` when it
- *                                                  // declares none. Must carry `later`; each id distinct and none equal to
- *                                                  // coord_card_terminal_stage_id. Absent ⇒ every coord card lands in coord_card_stage_id
+ *                                                  // coord card is created — and, since card#6393, revived and re-laned — in the stage
+ *                                                  // its `stage:*` label declares, `later` when it declares none. Must carry `later`; each
+ *                                                  // id distinct and none equal to coord_card_terminal_stage_id. Absent ⇒ every coord card
+ *                                                  // lands in coord_card_stage_id
  *         "move_coord_cards": false,               // DL-200; guarded fleet default (DL-204): absent ⇒ on where coord_card_terminal_stage_id present, inert where absent
  *         "coord_card_terminal_stage_id": 99,      // required-when-move_coord_cards — terminal a closed coord card moves to (MUST differ from coord_card_stage_id)
  *         "swimlane_id": 31,                        // optional — lane for CREATED cards (DL-027)
@@ -358,8 +359,16 @@ final class WritebackConfig
                 if (! isset($coordCardLaneStageIds[CoordLaneStages::DEFAULT_LANE])) {
                     throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids must carry the '".CoordLaneStages::DEFAULT_LANE."' lane — it is the stage an issue declaring no stage:* label lands in, and the fallback for a declared lane this map does not carry");
                 }
+                // The lane model is anchored on the CREATE leg by design (DL-286), and that
+                // — not an impossibility — is what this refuses. The create is the write
+                // that PLACES a coord card in a lane; the revive and relane legs only
+                // re-place a card some create already placed, and they can reach a card
+                // this mapping did not create (both correlate by the `id:<sid>` tag the
+                // consumer's reconcile writes too). So a lane map here would not be inert
+                // — it would be a lane model configured on a mapping that never expresses
+                // one, which is the shape the model does not define.
                 if (! $createCoordCards) {
-                    throw new ConfigException("writeback.json: mapping for {$repo} sets coord_card_lane_stage_ids but not create_coord_cards — the lane stage ids are read only by the coord-card create path, so nothing would use them; set create_coord_cards (or remove coord_card_lane_stage_ids)");
+                    throw new ConfigException("writeback.json: mapping for {$repo} sets coord_card_lane_stage_ids but not create_coord_cards — the lane model is anchored on the create leg, the write that PLACES a coord card in a lane; the revive and relane legs only re-place an already-placed card. A mapping that creates none states no lane model, and this fails closed rather than half-defining one; set create_coord_cards (or remove coord_card_lane_stage_ids)");
                 }
             }
             // Which coordination issues get carded (#4553). Absent ⇒ 'prefixed' (byte-identical

@@ -1730,6 +1730,78 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    // ---- card#6393: the coord-card-relane family's silent-inert shape ----
+
+    public function test_check_warns_when_the_coord_card_relane_family_is_enabled_but_the_lane_model_is_missing(): void
+    {
+        // Gate 1 (the coord-card-relane family) on, gate 2 half-configured: `move_coord_cards`
+        // is on but no `coord_card_lane_stage_ids`, so there is no lane to move a card into
+        // and the classifier emits nothing at all. No other leg reports that silence — a
+        // lane-less mapping is valid for every one of them.
+        $this->writeGithubAgent('prod-agent', 'App\Bridge\Classifiers\CoordinationClassifier', 'coord-message, coord-card-move, coord-card-relane');
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'coord_card_stage_id' => 50, 'coord_card_terminal_stage_id' => 53]],
+        ]));
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('enables the coord-card-relane family but its writeback mapping has no coord_card_lane_stage_ids')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_names_both_missing_keys_when_the_relane_family_has_neither(): void
+    {
+        // A mapping with neither key: the operator is told both once, not one per run.
+        // `move_coord_cards` resolves FALSE here through the DL-204 default (no terminal).
+        $this->writeGithubAgent('prod-agent', 'App\Bridge\Classifiers\CoordinationClassifier', 'coord-message, coord-card-relane');
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50]]],
+        ]));
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('has no move_coord_cards / coord_card_lane_stage_ids')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_does_not_nudge_the_relane_leg_when_the_family_is_not_enabled(): void
+    {
+        // The negative the warn above needs to mean anything: the SAME lane-less mapping,
+        // with only the move family enabled. The relane advisory is family-scoped, so an
+        // install that never opted in gets no relane noise — while the DL-204 arm still
+        // speaks, which is the witness that the check reached this mapping at all.
+        $this->writeGithubAgent('prod-agent', 'App\Bridge\Classifiers\CoordinationClassifier', 'coord-message, coord-card-move');
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'coord_card_stage_id' => 50]],
+        ]));
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('enables the coord-card-move family but its writeback mapping has no coord_card_terminal_stage_id')
+            ->doesntExpectOutputToContain('coord-card-relane family')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_is_silent_about_the_relane_leg_when_both_of_its_keys_are_set(): void
+    {
+        // The other direction of the same gate: a fully configured relane install draws no
+        // advisory. Without this leg a check that warned unconditionally would satisfy the
+        // two above.
+        $this->writeGithubAgent('prod-agent', 'App\Bridge\Classifiers\CoordinationClassifier', 'coord-message, coord-card-move, coord-card-relane');
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'create_coord_cards' => true, 'coord_card_stage_id' => 50, 'coord_card_terminal_stage_id' => 53,
+                'coord_card_lane_stage_ids' => ['now' => 40, 'next' => 41, 'later' => 42, 'maybe' => 43]]],
+        ]));
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('coord-card-relane family')
+            ->assertExitCode(0);
+    }
+
     public function test_check_skips_the_terminal_compare_when_the_move_family_is_not_enabled(): void
     {
         // Finding-1 gate: after the DL-204 flip move_coord_cards can resolve true from

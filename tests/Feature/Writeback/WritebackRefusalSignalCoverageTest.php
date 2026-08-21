@@ -55,6 +55,11 @@ class WritebackRefusalSignalCoverageTest extends TestCase
         // so nothing was refused and there is no failure to signal. Routing it would emit
         // a writeback_move_failed alert for a completed create (DL-286).
         'kanban_coord_card: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — creating in the next mapped lane it declares, else the default lane; add the lane to the mapping if this board has that column' => 'config-gap diagnostic — the create proceeds in a mapped lane, no refusal to signal',
+        // The move handler's twin of the line above (card#6393): the same config-gap
+        // diagnostic on a revive/relane that SUCCEEDS — the card lands in the next lane
+        // the issue declares that the map does carry, else the default lane. Nothing was
+        // refused, so there is no failure to signal.
+        'kanban_coord_card_move: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — moving to the next mapped lane it declares, else the default lane; add the lane to the mapping if this board has that column' => 'config-gap diagnostic — the move proceeds to a mapped lane, no refusal to signal',
         // Log::error, and its twin lives in the shared CardCollapse primitive where there
         // is no (repo, outcome) dedup tuple. Recorded as a remainder on card#5968; routing
         // one copy and not the other would be a fresh asymmetry.

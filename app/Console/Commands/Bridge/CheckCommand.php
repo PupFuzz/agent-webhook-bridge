@@ -244,6 +244,18 @@ class CheckCommand extends BridgeCommand
                     }
                 }
 
+                // card#6393: the same record for the coord-card-relane family, and the same
+                // raw-config membership test is the resolved answer for the same reason (it
+                // is never a default either). Kept separate from the map above because the
+                // two families are independently enabled.
+                if (in_array('coord-card-relane', $cfg->classifierConfig->strings('families'), true)) {
+                    foreach ($cfg->subscriptions as $sub) {
+                        if ($sub->provider === 'github') {
+                            $ctx->coordCardRelaneScopes[$sub->scopeId] = true;
+                        }
+                    }
+                }
+
                 // card#4183 (DL-196): record the top-level github event types this
                 // agent's classifier CONSUMES per subscribed github scope, for the
                 // event-follows-consumer check after the loop. DL-025-safe, mirroring
