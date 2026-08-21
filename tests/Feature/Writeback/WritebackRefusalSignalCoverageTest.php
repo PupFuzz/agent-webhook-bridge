@@ -20,8 +20,13 @@ use Tests\TestCase;
  * same defect at a different level, and excluding it would report clean over a population
  * that had been narrowed to exclude the sibling.
  *
- * STATED BOUND: `Log::info` is NOT in the population. Those are the "not tracked" / normal
- * branches, which docs/writeback.md records as deliberately quiet. Neither is anything
+ * STATED BOUND: `Log::info` is NOT in the population. Those are MOSTLY the "not tracked" /
+ * normal branches, which docs/writeback.md records as deliberately quiet — but the exclusion
+ * is by LEVEL, not by kind, so a real refusal written at info level is invisible here. That
+ * is not hypothetical: `kanban_coord_card_move`'s belongs-to-mapped-board refusal was exactly
+ * that — it sat at info level through DL-285's sweep and stayed there until card#7133, with this
+ * guard green over it the whole time. A green run says "no bare warning/error is unaccounted
+ * for", never "no refusal is silent". Neither is anything
  * outside these six handlers — `KanbanClient`'s three correlation diagnostics and
  * `CardCollapse`'s archive-contract error are a real sibling shape at the shared-client
  * layer, where there is no `(repo, outcome)` tuple to dedup on; they are recorded as a

@@ -470,6 +470,84 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
             && $r['issue_number'] === 4);
     }
 
+    public function test_a_card_on_another_board_alerts_like_its_move_handler_twin(): void
+    {
+        // card#7133. The refusal itself is correct — nothing moves — but a cross-board
+        // write that SUCCEEDS emits no event on this path, so this arm is the only
+        // surface that can tell an operator the collision is happening at all. As a bare
+        // Log::info it was indistinguishable from the handler never having been invoked.
+        $this->writeMappingWithAlert();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 12, 'workflow_stage_id' => 50]]),
+        ]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'card_not_on_mapped_board'
+            && $r['outcome'] === 'coord_card_move'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 4);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m, array $ctx) => str_contains($m, 'not on the mapped board')
+            && $ctx['card_board'] === 12 && $ctx['mapped_board'] === 8);
+        $this->assertNoMove();
+    }
+
+    public function test_a_non_numeric_board_id_that_casts_onto_the_mapped_board_refuses(): void
+    {
+        // THE VECTOR FOR THE `is_numeric` DISJUNCT, and the only one that is: `'8abc'`
+        // is not numeric, but `(int) '8abc' === 8` — so with `is_numeric` deleted the
+        // `(int)` compare would AGREE with the mapped board and this handler would move a
+        // card that is not on it. Deleting the disjunct reds this method; deleting it
+        // with a `null`/`'abc'` fixture instead reds nothing, because those cast to 0 and
+        // the second disjunct refuses them on its own.
+        //
+        // ⛔ Direction, because the twins' spelling is NOT the same predicate and the
+        // hoist (card#7138) has to pick one: `is_numeric` does not make this copy
+        // stricter. `!==` against a readonly int refuses ANY non-int, so the twins also
+        // refuse `"8"` and `8.0` — legitimate cards, mis-refused. This copy's refusal set
+        // is a strict SUBSET of theirs: it is the most PERMISSIVE of the three, and the
+        // most correct. `is_numeric` is here to stop `(int)` coercing a non-numeric value
+        // INTO the mapped id, which is the one thing tolerating numeric strings opens up.
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => '8abc', 'workflow_stage_id' => 50]]),
+        ]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'card_not_on_mapped_board'
+            && $r['card_id'] === 7);
+        $this->assertNoMove();
+    }
+
+    public function test_an_absent_board_id_refuses(): void
+    {
+        // Kept as its own leg, and honestly labelled: a null `board_id` is refused by the
+        // `(int)` compare alone (0 !== 8), so this method pins the ARM's behaviour on a
+        // card whose board is unreadable — it is NOT a vector for the disjunct above.
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => null, 'workflow_stage_id' => 50]]),
+        ]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'card_not_on_mapped_board'
+            && $r['card_id'] === 7);
+        $this->assertNoMove();
+    }
+
     public function test_malformed_payload_alerts_on_the_empty_repo_key(): void
     {
         $this->writeMappingWithAlert();

@@ -39,6 +39,32 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7133** — **`kanban_coord_card_move`'s belongs-to-mapped-board refusal now ALERTS** instead of
+  writing an untagged `Log::info`. It is the third copy of the DL-009 tag-collision guard, and the only
+  one that did not signal: the `kanban_move_card` twin has pushed `card_not_on_mapped_board` since the
+  alert channel existed (FR-4), and the `kanban_block_reason` twin joined it at DL-285 — the sweep that
+  gave this handler its notifier and routed its other arms, but read only the `Log::warning` sites and
+  so never saw this one. The refusal itself is unchanged and correct — **the predicate is untouched**,
+  nothing moves — but on this path a cross-board write that
+  *succeeds* emits no event either, so this arm is the only surface that can tell an operator the
+  collision is occurring at all; as an info line with no reason code it was indistinguishable from the
+  handler never having been invoked. Same reason string as the twins, kept off their dedup markers by
+  the synthetic `coord_card_move` outcome, and carrying `card_board` + `mapped_board` so all three
+  refusals read as one class. **What that buys, stated rather than implied:** the alert dedups on
+  `(repo, outcome, reason)` like every other, so the operator is woken on the FIRST cross-board
+  collision on a repo and every later one is log-only until the marker is cleared — this converts
+  *silent* into *told once*, not into *told each time*. The per-card, per-delivery `Log::warning`
+  is where the rest are enumerated (`docs/writeback.md` carries the bound). **Cheap now, and deliberately landed before it is not:** the repo carries
+  no configured *value* for `coord_card_terminal_stage_id` — a mapping lives in the install's own
+  `writeback.json`, outside version control — so this says nothing about any particular install, but
+  the leg is unexercised wherever `move_coord_cards` has not been turned on, and turning it on is what
+  makes the refusal reachable in anger.
+- **Why `WritebackRefusalSignalCoverageTest` was green over that gap, recorded rather than assumed
+  closed:** its population is the `Log::warning`/`Log::error` call sites, so the exclusion of
+  `Log::info` is by LEVEL, not by kind — a refusal written at info level is invisible to it. The guard
+  is unchanged (widening it to `Log::info` would sweep in every "not tracked" and success line); the
+  bound is now stated in its docblock and in `docs/writeback.md` so a green run is not read as "no
+  refusal is silent".
 - **card#6393 (DL-290)** — **the `move_coord_cards` REVIVE arm is lane-aware.** A reopened `[TASK]`'s
   card returns to the lane its `stage:*` label declares instead of to the fixed
   `coord_card_stage_id`, which used to re-impose that stage — and its label — on every reopen (the
@@ -418,7 +444,12 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   refusal-signal class closes: 18 more permanent-refusal arms now emit a live signal, leaving two
   accounted-for log-only branches.** `writeback_move_failed` becomes
   `{type, repo, outcome, card_id, issue_number, reason}` — one body shape, with `issue_number` null on
-  every card-keyed arm and `card_id` null wherever it is set. The three **issue/PR-keyed** handlers
+  every card-keyed arm and `card_id` null wherever it is set **[card#7133 correction: the second half
+  never held. `kanban_coord_card_move`'s per-card arms run inside a loop over cards the correlation
+  read already returned and carry BOTH ids — `coord_card_move_card_4xx` did so in this very release.
+  What holds is only that both fields are always sent, populated or null. `docs/writeback.md`'s
+  `issue_number` paragraph is the per-arm authority; the `issue_number`-null-on-card-keyed-arms half
+  stands.]**. The three **issue/PR-keyed** handlers
   (`kanban_coord_card`, `kanban_coord_card_move`, `kanban_dependabot_card`) refuse while *creating* or
   *finding* a card, so they had no card id to key an alert on and **no notifier wiring of any kind**;
   each now carries the optional-notifier constructor and a synthetic `outcome`

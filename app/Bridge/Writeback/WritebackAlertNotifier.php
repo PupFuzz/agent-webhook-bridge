@@ -33,12 +33,19 @@ use Illuminate\Support\Facades\Log;
 final class WritebackAlertNotifier
 {
     /**
-     * $issueNumber carries the GitHub issue OR pull-request number a refusal is keyed
-     * by when there is no card to key it on — the issue/PR-keyed arms refuse while
-     * *creating* or *finding* the card (DL-285). One field, because GitHub numbers
-     * issues and PRs in a single space. It is CONTEXT, deliberately NOT part of the
-     * dedup tuple: keying on it would grow the marker set by one entry per issue,
-     * forever, which is the cost that ruled out putting it in `reason`.
+     * $issueNumber carries the GitHub issue OR pull-request number a refusal is keyed by
+     * on the three issue/PR-keyed handlers, whose refusals happen while *creating* or
+     * *finding* a card (DL-285). One field, because GitHub numbers issues and PRs in a
+     * single space. It is CONTEXT, deliberately NOT part of the dedup tuple: keying on it
+     * would grow the marker set by one entry per issue, forever, which is the cost that
+     * ruled out putting it in `reason`.
+     *
+     * The two ids are NOT mutually exclusive, and reading them that way is the error this
+     * wording exists to stop: `kanban_coord_card_move`'s two per-card arms run inside a
+     * loop over cards the correlation read ALREADY returned, so they pass both a
+     * $cardId and an $issueNumber. What holds for every arm is only that both fields are
+     * always SENT — populated where the arm has them, null where it does not.
+     * `docs/writeback.md`'s `issue_number` paragraph is the per-arm authority.
      */
     public function notify(string $repo, string $outcome, ?int $cardId, string $reason, ?int $issueNumber = null): void
     {
