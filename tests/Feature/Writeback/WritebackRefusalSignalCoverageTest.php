@@ -157,14 +157,37 @@ class WritebackRefusalSignalCoverageTest extends TestCase
             .'Route it through the primitive, or extend the primitive if the new arm needs something it does not offer.',
         );
 
-        // The other direction: the rule still EXISTS, and exists there. Without this a deleted
-        // or renamed guard would leave the assertion above trivially green.
+        // The other direction: the rule still EXISTS, and exists THERE. Without this, an empty
+        // set over the handlers would be reporting that NOBODY owns the belongs-to-mapped-board
+        // rule — indistinguishable from one owner owning it — and the assertion above would be
+        // trivially green over a guard that had simply been deleted.
+        //
+        // Asserted on CONTENT, never on line offsets. An offset pin reds on an unrelated
+        // docblock edit, and its only remediation — "re-derive the line numbers" — is the same
+        // action that absorbs a real deletion without a second thought; this repo already treats
+        // that shape as a defect, which is why `bin/check-doc-refs.php` forbids line-number
+        // citations in the `CLAUDE_*.md` set. It also pins what it claims: the old offset form
+        // stayed green with `is_numeric` deleted, because the line still contained `board_id`.
         $primitive = (string) file_get_contents(base_path('app/Bridge/Writeback/MappedBoardGuard.php'));
-        $this->assertSame(
-            ['MappedBoardGuard.php:37', 'MappedBoardGuard.php:47', 'MappedBoardGuard.php:83'],
-            self::boardMembershipSites($primitive, 'MappedBoardGuard.php'),
-            'MappedBoardGuard no longer holds the reason code, the compare and the reported card_board in the places this guard expects — '
-            .'if the primitive was legitimately reshaped, re-derive these line numbers; if it lost the rule, the assertion above is now vacuous.',
+
+        // ⛔ The predicate is pinned VERBATIM, and that coupling is deliberate: this is a
+        // security guard whose accepted set is minuted in DL-292 with a vector table. Changing
+        // the compare without moving the minute is exactly how the recorded approved set and
+        // the shipped set drift apart. Reds if `is_numeric` is deleted — which the offset form
+        // did not.
+        $this->assertStringContainsString(
+            'is_numeric($card[\'board_id\'] ?? null) && (int) $card[\'board_id\'] === $mapping->boardId',
+            $primitive,
+            'MappedBoardGuard::belongs() no longer spells the DL-292 predicate verbatim. If the compare was '
+            .'CHANGED, that is a gated behaviour change to a security guard: update DL-292\'s vector table and '
+            .'docs/writeback.md in the same commit, then this string. If the guard was REMOVED, the empty-set '
+            .'assertion above is now vacuous and this class has stopped guarding anything.',
+        );
+        $this->assertStringContainsString(
+            "public const REASON = 'card_not_on_mapped_board';",
+            $primitive,
+            'MappedBoardGuard no longer owns the refusal reason code — if it moved, the empty-set assertion '
+            .'above is scanning for a literal that nothing in the tree mints any more.',
         );
     }
 

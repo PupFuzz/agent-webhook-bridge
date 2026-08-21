@@ -24,6 +24,16 @@ namespace App\Bridge\Writeback;
  * `(int)` coercing a NON-numeric value (`'8abc'` casts to `8`) onto the mapped id,
  * which is the one hole that tolerating numeric strings would otherwise open.
  *
+ * ⚑ The accepted set is an INTERVAL, not a value: `(int)` TRUNCATES, so for a mapped
+ * board of 8 this takes every numeric spelling of a value in `[8, 9)` — `8.9` and
+ * `'8.0000001'` included, `7.9` not (truncation only reaches the board from above).
+ * That is inherent to this form rather than a separate choice, and it is RULED
+ * deliberate: unreachable while kanban returns `board_id` as a JSON integer, and it
+ * opens no hole, since every accepted value still truncates onto the mapped board.
+ * ⛔ Do not make the compare lossless without re-opening the gate — DL-292 minutes the
+ * approved set as a vector table, and `WritebackRefusalSignalCoverageTest` pins this
+ * predicate verbatim so the minute cannot drift from the code.
+ *
  * The report is inside the primitive, not left to the caller, and that is the point:
  * a refusal cannot be minted at some other log level, or with some other reason code,
  * without minting a fourth copy of the compare — and
