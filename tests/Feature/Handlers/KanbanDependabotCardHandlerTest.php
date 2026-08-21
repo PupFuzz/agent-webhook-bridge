@@ -434,6 +434,41 @@ class KanbanDependabotCardHandlerTest extends TestCase
             && in_array('id:dep:magento#166', $r['tags'], true));
     }
 
+    public function test_the_repo_placeholder_renders_the_configured_spelling_not_the_payloads(): void
+    {
+        // card#7124 review, the sibling of the promote leg's token probe found in the same
+        // audit pass. `{repo}` renders into a PERSISTED `id:` tag an external tag-keyed
+        // reader correlates on. Until DL-293 this line was reachable only when the payload
+        // spelling equalled the key, so the tag's casing was never a choice; now it is, and
+        // the operator's own spelling is the one that belongs in text they declared.
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['AIMLA/Magento' => [
+                'board_id' => 8,
+                'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49],
+                'create_dependabot_cards' => true,
+                'card_id_tag_template' => 'id:dep:{repo}#{n}',
+            ]],
+        ]));
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        (new KanbanDependabotCardHandler)->handle(
+            ReactionTarget::make('kanban_dependabot_card', 'pr-166', payload: [
+                'repo' => 'aimla/magento', 'outcome' => 'opened', 'pr_number' => 166,
+                'pr_title' => 'chore(deps): Bump x from 1 to 2', 'pr_url' => 'https://github.com/aimla/magento/pull/166',
+            ]),
+            AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
+        );
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && in_array('id:dep:Magento#166', $r['tags'], true));
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && in_array('id:dep:magento#166', $r['tags'], true));
+    }
+
     public function test_no_card_id_tag_template_leaves_tags_back_compat(): void
     {
         // setUp's mapping carries no card_id_tag_template — the tags must be

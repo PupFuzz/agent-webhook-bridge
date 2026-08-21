@@ -166,7 +166,14 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             $payload = array_combine(self::CREATE_PAYLOAD_KEYS, [$prNumber, $url, 'dependabot']);
             $tags = ['dependencies', 'triaged'];
             if ($mapping->cardIdTagTemplate !== null) {
-                array_unshift($tags, $this->renderIdTag($mapping->cardIdTagTemplate, $prNumber, $repo));
+                // The CONFIGURED spelling (card#7124 review), for the same reason the
+                // promote leg's token probe uses it: `{repo}` renders into a persisted
+                // `id:` tag an external tag-keyed reader correlates on, and a tag is text
+                // the operator declared — not a spelling the payload happened to carry.
+                // Until DL-293 the two were equal on every reachable path, so this keeps
+                // the tag byte-identical wherever the two files agree and uses the
+                // operator's own spelling where they do not.
+                array_unshift($tags, $this->renderIdTag($mapping->cardIdTagTemplate, $prNumber, $writeback->configuredRepoFor($repo) ?? $repo));
             }
             $newId = $client->createCard($mapping->boardId, $stageId, $title, $payload, $tags, $mapping->swimlaneId);
             Log::info('kanban_dependabot_card: created', ['card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $stageId, 'swimlane' => $mapping->swimlaneId, 'outcome' => $outcome, 'pr' => $prNumber]);

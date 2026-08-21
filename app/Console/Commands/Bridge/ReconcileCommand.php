@@ -99,12 +99,16 @@ class ReconcileCommand extends BridgeCommand
         $mappings = $writeback->mappings;
         $repoFilter = $this->strOption('repo');
         if ($repoFilter !== null) {
-            if (! isset($mappings[$repoFilter])) {
+            // Matched the way the writeback matches a payload repo — case-insensitively
+            // (DL-293). Then re-keyed to the CONFIGURED spelling, because that is what the
+            // per-repo token probe below needs.
+            $configuredRepo = $writeback->configuredRepoFor($repoFilter);
+            if ($configuredRepo === null) {
                 $this->error("--repo {$repoFilter} is not a writeback.json mapping (have: ".implode(', ', array_keys($mappings)).')');
 
                 return self::FAILURE;
             }
-            $mappings = [$repoFilter => $mappings[$repoFilter]];
+            $mappings = [$configuredRepo => $mappings[$configuredRepo]];
         }
 
         try {

@@ -893,6 +893,42 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_no_orphan_warning_when_the_agent_scope_and_the_mapping_differ_only_in_case(): void
+    {
+        // DL-293 + the card#7124 review, end to end (the agent YAML's scope AND the
+        // writeback.json key, through the real CheckCommand derivation). TWO assertions,
+        // and the second is the load-bearing one:
+        //   (a) the ORPHANED accusation is GONE — the writeback resolves this mapping, so
+        //       "no agent drives it" was a config accusation against an install that works;
+        //   (b) ⛔ and it is replaced by the SPELLING SPLIT warn, never by SILENCE. The
+        //       dispatcher still matches a subscription by exact spelling
+        //       (SubscriptionRegistry::subscribedTo), so on this very install every
+        //       delivery reaches NO agent. An exit-0 run with nothing said would certify
+        //       that healthy — strictly worse than the wrong warn it replaced, and the
+        //       DL-265 shape re-minted by the fix meant to close a silent-failure class.
+        File::put($this->dir.'/wb-agent.yml',
+            "identity:\n  github_user_id: 41000\n"
+            ."subscriptions:\n  - provider: github\n    scopes: [\"Owner/Repo\"]\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier\n");
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+        ]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])]);
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('ORPHANED')
+            ->expectsOutputToContain('SPELLING SPLIT for owner/repo')
+            ->assertExitCode(0);
+    }
+
     // --- card#4183 (DL-196): event-follows-consumer ---
 
     private function writeGithubAgent(string $name, string $classifierClass, ?string $familiesLine = null): void
