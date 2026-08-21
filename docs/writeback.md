@@ -625,6 +625,8 @@ By default a **permanent** move-failure (a refused/un-actionable move — see *F
 
 **Which failures signal.** **The tables below are the authority — there is no shorter rule that is true.** Since DL-285 the coverage is near-total: every permanent-refusal branch in all **six** writeback handlers signals, with the **two** accounted-for exceptions named in *Still log-only* below (plus the inherent `writeback_not_configured` degradation, which routes through the same primitive but has no channel to reach). A test — `tests/Feature/Writeback/WritebackRefusalSignalCoverageTest.php` — re-derives that population from the handler sources on every run and reds on a `Log::warning`/`Log::error` that is neither routed nor listed, so a new arm in those files cannot re-mint the omission. **Stated bound on that guard:** its population is the `app/Bridge/Handlers/Kanban*Handler.php` glob, so a future writeback handler named outside that pattern is not covered until the glob is widened. The `Log::info` "not tracked" branches stay **quiet** — they're the normal case for an event the operator simply hasn't mapped, not a failure. **Second stated bound, and the sharper one:** that guard's population is the `Log::warning`/`Log::error` call sites, so a refusal *written at `Log::info`* is invisible to it. That is how `kanban_coord_card_move`'s belongs-to-mapped-board refusal stayed silent through DL-285's sweep and after it, until **card#7133**, while this section read as total coverage — it was found by reading the three copies of that guard side by side, not by the guard. A green run therefore says "no bare warning/error is unaccounted for", not "no refusal is silent".
 
+**That bound still holds — and one refusal KIND is now closed underneath it (card#7138, DL-292).** The fix for the blind spot above is not to widen the population by level: `Log::info` is also every "not tracked", success and policy line in these handlers, and sweeping them in would drown the signal it exists to carry. It is to make the refusal that was missed *unwritable* anywhere else. The belongs-to-mapped-board rule and its refusal report now live in **one primitive** (`MappedBoardGuard::refuses()`) that all three arms call, and the same test carries a **second, level-independent leg**: it re-derives, every run, every non-comment line in the handler glob naming the card field `board_id` or the reason `card_not_on_mapped_board`, and requires that set to be **empty**. A membership decision cannot be written without reading the card's board, so a fourth copy reds — at `Log::info`, at `Log::warning`, or with no log line at all. **It closes exactly that one kind**; every other refusal kind is still covered only by the level-keyed leg and its bound above.
+
 Every signalling arm emits its durable `Log::warning` **first** and then the additive push, through a single paired primitive (`WritebackAlertNotifier::warnAndNotify`) — an arm cannot log a refusal without alerting on it. Before DL-274 the notifier was opt-in *per call site* and 11 of the 12 permanent-refusal arms had simply never opted in.
 
 **`kanban_move_card`** (`outcome` = the PR outcome that drove the event):
@@ -639,7 +641,7 @@ Every signalling arm emits its durable `Log::warning` **first** and then the add
 | `getCard` refused by kanban — **404** | `getcard_404_no_such_card` | ✅ |
 | `getCard` refused by kanban — **403** | `getcard_403_not_visible_to_this_token` | ✅ |
 | `getCard` refused by kanban — any other 4xx | `getcard_4xx` | ✅ |
-| card not on the mapped board (security refusal) | `card_not_on_mapped_board` | ✅ |
+| card not on the mapped board (security refusal, DL-009 — one shared `MappedBoardGuard` predicate + report across all three arms since **DL-292**) | `card_not_on_mapped_board` | ✅ |
 | uncorroborated title-only `card#` naming a card that tracks a **different** PR (security refusal, DL-270) | `card_token_uncorroborated` | ✅ + a card note (card#7064) |
 | `started` move refused — the card is pinned (`block_reason` / `no-automove`, DL-178) | `pinned_no_automove` | ✅ |
 | **`moveCard` PATCH refused — 403** (DL-274) | `movecard_403_not_writable_by_this_token` | ✅ |
@@ -676,7 +678,7 @@ Every signalling arm emits its durable `Log::warning` **first** and then the add
 | writeback not configured (no `writeback.json`) (DL-285) | `writeback_not_configured` | ⚠ degrades to log-only (see below) |
 | no mapping for repo / `draft_overlay` off (`Log::info`) | — | ❌ (expected "not tracked") |
 | **`getCard` refused by kanban — 404 / 403 / other 4xx** (DL-274) | `getcard_404_no_such_card` · `getcard_403_not_visible_to_this_token` · `getcard_4xx` | ✅ |
-| card not on the mapped board (security refusal, DL-009 — **DL-285**; its `kanban_move_card` twin always signalled, and the gap was an asymmetry inside one guard) | `card_not_on_mapped_board` | ✅ |
+| card not on the mapped board (security refusal, DL-009 — **DL-285**; its `kanban_move_card` twin always signalled, and the gap was an asymmetry inside one guard, closed structurally at **DL-292**) | `card_not_on_mapped_board` | ✅ |
 | **`setBlockReason` refused by kanban — 403 / 404 / other 4xx** (DL-274) | `blockreason_403_not_writable_by_this_token` · `blockreason_404_no_such_card` · `blockreason_4xx` | ✅ |
 | **SET** refused — an uncorroborated title-only `card#` names a card that tracks a **different** PR (security refusal, card#5953) | `card_token_uncorroborated` | ✅ (log + push only — the card#7064 note is on the MOVE handler's twin of this row, not this one) |
 
@@ -698,7 +700,7 @@ Every signalling arm emits its durable `Log::warning` **first** and then the add
 | | repo not mapped / `move_coord_cards` off (`Log::info`) | — | ❌ (expected "not tracked") |
 | | empty `sid` under `population: prefixed` — no correlation key | `coord_card_move_no_correlation_key` | ✅ |
 | | kanban refused (4xx) **on one card** in the loop (carries that `card_id`) | `coord_card_move_card_4xx` | ✅ |
-| | card not on the mapped board — the tag-collision refusal (security refusal, DL-009 — **card#7133**; carries that `card_id`) | `card_not_on_mapped_board` | ✅ |
+| | card not on the mapped board — the tag-collision refusal (security refusal, DL-009 — **card#7133**; carries that `card_id`; shared predicate + report since **DL-292**) | `card_not_on_mapped_board` | ✅ |
 | | kanban refused (4xx) on the **correlation read** | `coord_card_move_lookup_4xx` | ✅ |
 | `kanban_dependabot_card` · `dependabot_card` | malformed payload (repo/outcome/pr_number) | `dependabot_card_payload_invalid` | ✅ |
 | | writeback not configured (no `writeback.json`) | `writeback_not_configured` | ⚠ degrades to log-only (see below) |
@@ -720,6 +722,10 @@ Every signalling arm emits its durable `Log::warning` **first** and then the add
 **Why the write refusals split 403 from 404.** A `403` on a **write** is the one shape a read probe can never reveal: the token READS the card fine (so `getcard_*` stays quiet) and is refused on the PATCH — the scope-narrowed-token case, where read scopes are commonly broader than write scopes. It is a different operator hypothesis from the `getCard` 403 below, which is why the two carry different reason strings.
 
 **Why the GitHub reads stay flat.** `promote_getpull_4xx` / `promote_compare_4xx` are deliberately **not** status-split: GitHub answers **404 for a private repo the token cannot see**, so a named `403 = forbidden` / `404 = absent` split would be wrong-but-specific. The status and the server's own words are in the log line's `body`.
+
+**What the belongs-to-mapped-board guard ACCEPTS, and what changed at DL-292.** One predicate now answers it for all three arms (`MappedBoardGuard::belongs()`): the card's `board_id` must be **numeric** and must **equal the mapped `board_id` when cast to an int**. So `8`, `"8"` and `8.0` all name board 8 and are accepted; `null`, `"abc"`, `9` and `"8abc"` are refused. The `is_numeric` half is load-bearing on that last one — `(int) "8abc"` is `8`, so a bare cast compare would wave a card from another board straight through.
+
+⚠ **DL-292 WIDENED this on `kanban_move_card` and `kanban_block_reason`.** Both previously compared with `!==` against a `readonly int`, which does no type juggling and so refused *any* non-int `board_id` — including a numeric string or float naming the mapped board itself. That was a false refusal: a legitimate move silently no-opped and a `card_not_on_mapped_board` alert pushed on correct work. **The accepted set only grew** — every value those two arms accepted before is still accepted, and every value that does not name the mapped board is still refused. **In practice nothing changes on a current install:** kanban returns `board_id` as a JSON integer today, so the widened set is reachable only if that ever stops being true.
 
 **Why the `getCard` refusal splits 404 from 403.** The belongs-to-mapped-board security refusal below it (`card_not_on_mapped_board`) reads `board_id` **out of the card**, so it can only fire for a card this token was able to READ. A card on a board the token *cannot* see returns at the `getCard` refusal instead — which makes that reason string the operator's only signal for exactly the case the security guard exists to refuse. So the two hypotheses are named separately:
 

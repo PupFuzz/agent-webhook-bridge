@@ -506,13 +506,16 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
         // with a `null`/`'abc'` fixture instead reds nothing, because those cast to 0 and
         // the second disjunct refuses them on its own.
         //
-        // ⛔ Direction, because the twins' spelling is NOT the same predicate and the
-        // hoist (card#7138) has to pick one: `is_numeric` does not make this copy
-        // stricter. `!==` against a readonly int refuses ANY non-int, so the twins also
-        // refuse `"8"` and `8.0` — legitimate cards, mis-refused. This copy's refusal set
-        // is a strict SUBSET of theirs: it is the most PERMISSIVE of the three, and the
-        // most correct. `is_numeric` is here to stop `(int)` coercing a non-numeric value
-        // INTO the mapped id, which is the one thing tolerating numeric strings opens up.
+        // ⛔ Direction, because it was reported backwards once: `is_numeric` does not make
+        // this predicate stricter. `!==` against a readonly int refused ANY non-int, so
+        // the twins ALSO refused `"8"` and `8.0` — legitimate cards, mis-refused. This
+        // predicate's refusal set is a strict SUBSET of theirs: the most PERMISSIVE of
+        // the three spellings, and the most correct. `is_numeric` is here to stop `(int)`
+        // coercing a non-numeric value INTO the mapped id, which is the one thing
+        // tolerating numeric strings opens up. card#7138 / DL-292 picked it as the
+        // canonical form and hoisted it into `MappedBoardGuard`, so this method now
+        // exercises the SHARED predicate — the twins carry the same leg (their tests say
+        // so) and the mutation that deletes `is_numeric` reds all three.
         $this->writeMappingWithAlert();
         Http::fake([
             self::ALERT_URL.'*' => Http::response(['ok' => true]),

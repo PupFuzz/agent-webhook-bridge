@@ -217,6 +217,60 @@ class KanbanBlockReasonHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 
+    // --- card#7138 / DL-292: same widening as the move handler's twin — this arm now
+    //     shares one predicate with it and with `kanban_coord_card_move`. See that
+    //     handler's test for the direction: `!==` against a `readonly int` refused a
+    //     numeric-string / float `board_id` naming the mapped board itself. ---
+
+    public function test_a_numeric_string_board_id_naming_the_mapped_board_writes(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => '8', 'block_reason' => null]])   // GET
+                ->push(['data' => ['id' => 5]]),                                             // PATCH
+        ]);
+
+        $this->handle('set');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r['block_reason'] === KanbanBlockReasonHandler::MARKER);
+    }
+
+    public function test_a_float_board_id_naming_the_mapped_board_writes(): void
+    {
+        // RAW JSON body: `json_encode(8.0)` emits `8`, so an array fixture would
+        // round-trip to an int and re-test the case above. `8.0` on the wire decodes to
+        // float(8) — refused by the old `!==` spelling.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push('{"data":{"id":5,"board_id":8.0,"block_reason":null}}')   // GET
+                ->push(['data' => ['id' => 5]]),                                 // PATCH
+        ]);
+
+        $this->handle('set');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r['block_reason'] === KanbanBlockReasonHandler::MARKER);
+    }
+
+    public function test_a_board_id_that_casts_onto_the_mapped_board_but_is_not_numeric_is_refused(): void
+    {
+        // The `is_numeric` disjunct's vector on this arm: `(int) '8abc' === 8`, so
+        // without it the cast compare would agree with the mapped board and write to a
+        // card that is not on it.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => '8abc', 'block_reason' => null]])]);
+
+        $this->handle('set');
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
     public function test_writeback_disabled_is_a_noop(): void
     {
         // No writeback.json written.
