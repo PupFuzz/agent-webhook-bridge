@@ -61,7 +61,7 @@ use Illuminate\Support\Facades\Log;
  * already in the destination is skipped, so a re-PATCH never fires.
  *
  * Its refusals are keyed by the coordination ISSUE, so the alert carries `issue_number`
- * (DL-285); the per-card arm inside the loop additionally carries that card's id.
+ * (DL-285); the per-card arms reached from inside the loop additionally carry that card's id.
  */
 final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
 {
@@ -227,9 +227,21 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
     private function moveOne(KanbanClient $client, WritebackMapping $mapping, int $id, string $disposition, ?string $sid, string $repo, int $issueNumber, array $p): void
     {
         $card = $client->getCard($id);
-        // Tag-collision guard: only ever act on the mapped board.
+        // SECURITY (belongs-to-mapped-board, DL-009): a tag can legitimately collide
+        // across boards, so only ever act on the mapped one. Permanent refusal — alert +
+        // log + no-op. SIGNALS (card#7133), same reason string and channel as the
+        // `kanban_move_card` / `kanban_block_reason` twins, kept distinct in the dedup
+        // tuple by the synthetic outcome (DL-274(3)). It signals because nothing else on
+        // this path does: a cross-board write that SUCCEEDS emits no event, so the
+        // refusal is the only surface that can tell an operator this class of citation is
+        // occurring — and as an untagged `Log::info` it was indistinguishable from the
+        // path never having been invoked at all.
         if (! is_numeric($card['board_id'] ?? null) || (int) $card['board_id'] !== $mapping->boardId) {
-            Log::info('kanban_coord_card_move: card is on another board; skipping', ['card_id' => $id, 'repo' => $repo, 'issue' => $issueNumber]);
+            $this->alerts->warnAndNotify(
+                'kanban_coord_card_move: REFUSED — card is not on the mapped board',
+                ['card_id' => $id, 'repo' => $repo, 'card_board' => $card['board_id'] ?? null, 'mapped_board' => $mapping->boardId, 'issue' => $issueNumber],
+                $repo, self::ALERT_OUTCOME, $id, 'card_not_on_mapped_board', $issueNumber,
+            );
 
             return;
         }

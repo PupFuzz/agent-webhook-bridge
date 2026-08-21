@@ -470,6 +470,53 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
             && $r['issue_number'] === 4);
     }
 
+    public function test_a_card_on_another_board_alerts_like_its_move_handler_twin(): void
+    {
+        // card#7133. The refusal itself is correct — nothing moves — but a cross-board
+        // write that SUCCEEDS emits no event on this path, so this arm is the only
+        // surface that can tell an operator the collision is happening at all. As a bare
+        // Log::info it was indistinguishable from the handler never having been invoked.
+        $this->writeMappingWithAlert();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 12, 'workflow_stage_id' => 50]]),
+        ]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'card_not_on_mapped_board'
+            && $r['outcome'] === 'coord_card_move'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 4);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m, array $ctx) => str_contains($m, 'not on the mapped board')
+            && $ctx['card_board'] === 12 && $ctx['mapped_board'] === 8);
+        $this->assertNoMove();
+    }
+
+    public function test_a_non_numeric_board_id_refuses_under_the_same_reason(): void
+    {
+        // The strictest leg of this guard — the twins' `!==` compare only rejects a
+        // non-numeric board_id by type-juggling luck. It reports as the same class:
+        // an unreadable board_id is not a board membership this bridge can assert.
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => null, 'workflow_stage_id' => 50]]),
+        ]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'card_not_on_mapped_board'
+            && $r['card_id'] === 7);
+        $this->assertNoMove();
+    }
+
     public function test_malformed_payload_alerts_on_the_empty_repo_key(): void
     {
         $this->writeMappingWithAlert();

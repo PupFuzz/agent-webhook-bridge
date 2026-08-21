@@ -39,6 +39,28 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7133** — **`kanban_coord_card_move`'s belongs-to-mapped-board refusal now ALERTS** instead of
+  writing an untagged `Log::info`. It is the third copy of the DL-009 tag-collision guard, and the only
+  one that did not signal: the `kanban_move_card` twin has pushed `card_not_on_mapped_board` since the
+  alert channel existed (FR-4), and the `kanban_block_reason` twin joined it at DL-285 — the sweep that
+  gave this handler its notifier and routed its other arms, but read only the `Log::warning` sites and
+  so never saw this one. The refusal itself is unchanged and correct — **the predicate is untouched**,
+  nothing moves — but on this path a cross-board write that
+  *succeeds* emits no event either, so this arm is the only surface that can tell an operator the
+  collision is occurring at all; as an info line with no reason code it was indistinguishable from the
+  handler never having been invoked. Same reason string as the twins, kept off their dedup markers by
+  the synthetic `coord_card_move` outcome, and carrying `card_board` + `mapped_board` so all three
+  refusals read as one class. **Cheap now, and deliberately landed before it is not:** in this repo
+  `coord_card_terminal_stage_id` occurs only in config prose, docs and tests — an install's mapping
+  lives in its own `writeback.json`, so this says nothing about any particular install, but the leg is
+  unexercised wherever `move_coord_cards` has not been turned on, and turning it on is what makes the
+  refusal reachable in anger.
+- **Why `WritebackRefusalSignalCoverageTest` was green over that gap, recorded rather than assumed
+  closed:** its population is the `Log::warning`/`Log::error` call sites, so the exclusion of
+  `Log::info` is by LEVEL, not by kind — a refusal written at info level is invisible to it. The guard
+  is unchanged (widening it to `Log::info` would sweep in every "not tracked" and success line); the
+  bound is now stated in its docblock and in `docs/writeback.md` so a green run is not read as "no
+  refusal is silent".
 - **card#6393 (DL-290)** — **the `move_coord_cards` REVIVE arm is lane-aware.** A reopened `[TASK]`'s
   card returns to the lane its `stage:*` label declares instead of to the fixed
   `coord_card_stage_id`, which used to re-impose that stage — and its label — on every reopen (the
