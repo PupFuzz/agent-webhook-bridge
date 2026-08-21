@@ -32,7 +32,12 @@ use Illuminate\Support\Facades\Log;
  * Correlation + idempotency key on the `id:<sid>` TAG (the
  * locked contract adoption key): if a card already carries it, skip — which covers
  * redelivery, opened+reopened, AND the bridge-vs-reconcile race (both movers key on
- * the same tag). Otherwise create at the stage {@see CoordCardLanePlacement} resolves (the
+ * the same tag). That read is LIVE-only, so a fourth duplicate source needs its own
+ * branch: a thread whose only card was ARCHIVED reads as un-carded, and a reopen would
+ * mint a second card over the retire (DL-296). One `archivedOnly` tag search answers
+ * it, and {@see retiredTwins} decides on the consumer's partition — a human retire
+ * suppresses the create and signals; a reroute-archived twin does not.
+ * Otherwise create at the stage {@see CoordCardLanePlacement} resolves (the
  * mapping's `coord_card_stage_id` unless a lane model is configured and governs this
  * issue — an anchored `[TASK]` title, card#6371), then re-read + collapse a raced
  * duplicate via the shared {@see CardCollapse}.
@@ -55,6 +60,19 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
      * repo (DL-274(3)).
      */
     private const ALERT_OUTCOME = 'coord_card_create';
+
+    /**
+     * The consumer's `REROUTE_ARCHIVED_TAG` (`kanban_common.REROUTE_ARCHIVED_TAG`),
+     * carried here because the two movers must partition the archived population the
+     * SAME way or the bridge would honour a retire the reconcile is about to undo
+     * (DL-296). It is stamped by the consumer's reclass pass when it archives a coord
+     * twin whose source re-routed to another board — FRAMEWORK bookkeeping, not a human
+     * decision — which is why an archived card carrying it does NOT suppress a create:
+     * a source that routes BACK must get its card again. The literal is a shared
+     * CONTRACT with the consumer (like the `id:<sid>` adoption key), so it is pinned
+     * here rather than derived; a consumer that renames it renames it on both sides.
+     */
+    private const REROUTE_ARCHIVED_TAG = 'coord:reroute-archived';
 
     private WritebackAlertNotifier $alerts;
 
@@ -153,6 +171,23 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
 
                 return;
             }
+            // Both reads above are LIVE-only (kanban excludes archived rows), so a thread
+            // whose ONLY card was RETIRED reads as un-carded and a reopen would mint a
+            // second card over the retire (DL-296). Ask the archive side explicitly, and
+            // only here — this is the last branch before the create, so the extra search
+            // is paid once per card the handler was about to mint, never on a skip.
+            if ($tag !== null) {
+                $retired = self::retiredTwins($client->cardRowsByTag($mapping->boardId, $tag, true));
+                if ($retired !== []) {
+                    $this->alerts->warnAndNotify(
+                        'kanban_coord_card: the only card for this thread is ARCHIVED (a deliberate retire, and archival is not the bridge\'s to undo) — NOT creating a replacement; unarchive that card if the thread is live again',
+                        ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag, 'archived_card_ids' => $retired],
+                        $repo, self::ALERT_OUTCOME, null, 'coord_card_archived_twin', $issueNumber,
+                    );
+
+                    return;
+                }
+            }
 
             // Churn-avoidance fields mirror the reconcile's build_create so its next pass
             // doesn't update-churn them: description, priority (brief⇒1), and the issue
@@ -215,6 +250,42 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
             }
             throw $e;
         }
+    }
+
+    /**
+     * The archived cards that represent a DELIBERATE RETIRE, out of the rows an
+     * `archived=1` tag search returned (DL-296) — the bridge's copy of the consumer's
+     * `archived_stable_ids(...) - reroute_archived_stable_ids(...)` partition, so one
+     * hazard keeps one rule across both movers.
+     *
+     * A retire is the DEFAULT reading of an archived card: only the consumer's own
+     * reroute tag exempts one, and the exemption is per CARD, not per thread — a thread
+     * whose archived set holds one reroute-tagged card and one human-retired card is
+     * still retired, because the human decision is the one that would be overturned.
+     * That asymmetry is deliberate and is why this returns the retired ids rather than a
+     * bool: the caller names them in the signal, so an operator can see which card to
+     * unarchive.
+     *
+     * Every row here is archived by construction (the caller passes `archivedOnly`), so
+     * this re-tests only the tag. A row kanban answered without an `id` is still a
+     * retire — dropping it would silently un-suppress the create — and reports as `0`.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<int>
+     */
+    private static function retiredTwins(array $rows): array
+    {
+        $ids = [];
+        foreach ($rows as $row) {
+            $tags = $row['tags'] ?? null;
+            if (is_array($tags) && in_array(self::REROUTE_ARCHIVED_TAG, $tags, true)) {
+                continue;
+            }
+            $id = $row['id'] ?? null;
+            $ids[] = is_numeric($id) ? (int) $id : 0;
+        }
+
+        return $ids;
     }
 
     /**

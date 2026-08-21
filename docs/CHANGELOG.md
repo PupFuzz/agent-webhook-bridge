@@ -39,6 +39,27 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7169 (DL-296)** — **an ARCHIVED coord card is a RETIRE the real-time create leg now
+  honours, instead of minting a second card over it.** `KanbanClient::cardsByTag()` sends no
+  `archived` parameter and kanban's search applies `whereNull('archived_at')` unless one is passed,
+  so the create leg's tag pre-check **structurally could not see an archived card**: a thread whose
+  only card had been retired read as un-carded, and since `issues.reopened` is on the create path,
+  every reopen minted a duplicate. **Reproduced on a live board before any code was written** —
+  card archived, the reopen replayed through the real classifier and handler against the real API,
+  a second card observed on the board. **⚠ This changes what the bridge accepts:** a reopen that
+  creates today stops creating when the thread's only card is archived, and the refusal now
+  **signals** (`coord_card_archived_twin`, log + alert push naming the archived card ids) rather
+  than passing in silence — the remedy is to unarchive that card. Operator-approved before any
+  code. **The consumer's fork is inherited, not collapsed:** a card the reclass pass archived
+  because its source re-routed away carries `coord:reroute-archived` and does **NOT** suppress — a
+  source that routes back is carded again — while a hand-retired card does, and a mixed archived
+  set counts as retired. Refusing on *"any archived card exists"* was rejected explicitly: it would
+  silently stop carding legitimately-reopened work. Kanban's `archived` is a **switch**, not a
+  widening (`archived=1` returns archived ONLY), so this is a second read on the last branch before
+  the create — no existing read changes, no caller of `cardsByTag` sees a new row, and a delivery
+  that skips pays nothing. **Stated gap:** the non-prefixed (`issue_population: all`) path has no
+  tag and kanban's `by-ref.json` takes no `archived` parameter, so a retired by-ref card is still
+  re-created; pinned by a test and tracked on card#7169.
 - **card#7124 (DL-293)** — **a `writeback.json` mapping key now names a REPO, not a spelling.**
   `WritebackConfig::mappingFor()` was a raw array-key lookup with neither side canonicalized, so a
   mapping keyed `pupfuzz/kanban-board` against a payload spelling `PupFuzz/kanban-board` matched
