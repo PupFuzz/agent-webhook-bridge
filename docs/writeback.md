@@ -51,6 +51,22 @@ The writeback acts as this token's kanban user — note that user's `user_id`. *
 ```
 Absent ⇒ writeback off. Malformed ⇒ fail-closed (`bridge:check` reports it). Every stage id must be a real stage **on that board** (a cross-board id is refused by kanban and logged, not retried).
 
+> **The mapping key names a repo, and repo names are case-insensitive (DL-293).** GitHub treats
+> `owner/repo` case-insensitively, so `PupFuzz/kanban-board` and `pupfuzz/kanban-board` are one
+> repo and the bridge matches them as one — the key is canonicalized for the compare exactly as
+> the kanban server canonicalizes a card's `source`. Before DL-293 the lookup was a raw key match
+> against the payload's `repository.full_name`, so a key spelled any other way than the owner's
+> registered display casing matched **nothing, silently, forever**: every writeback leg reads "no
+> mapping" as "this repo is not tracked" and returns — the handlers on an info log nobody reads,
+> the classifiers with no log at all — so a misconfigured install and a deliberately untracked
+> repo produced identical output. **Two keys that name the same repo fail
+> the config closed at load**, naming both spellings — they used to be two mappings, they can only
+> be one, and picking one silently is how a board gets written by the wrong mapping.
+>
+> The spelling you write is **kept**: it is what `bridge:reconcile` resolves a per-repo token with
+> (the credential store's `[git-credential-map]` IS case-sensitive — DL-185), and it is what every
+> `bridge:check` line prints back to you, so you can find the line in your own file.
+
 > **`closed_unmerged` — In Progress vs a "Won't Do" terminal (operator choice).** The example maps `closed_unmerged → In Progress` because a closed-unmerged **DL-tracked** PR usually means *work continues* (rework, not abandonment). If your board has a **terminal "Won't Do" / "Cancelled" column** (`lane_type: done`, positioned far-right) and you'd rather treat a closed-unmerged PR as an *abandon-disposition* (dependabot dismissals, `[DO NOT MERGE]` diagnostics, superseded/rejected PRs), map `closed_unmerged → <that stage id>` instead. The no-regression guard (DL-163) **allows this terminal move** — it special-cases `closed_unmerged` and never applies the forward-only check to it, so a card in In-Review moving to a far-right Won't-Do terminal is permitted (it's a disposition, not a regression), and once there the card is sticky (no stale PR event can drag it back out) — **unless you opt into `revive_on_reopen` (DL-195), which revives such a card from that stage when its PR is reopened (see below).** The **dependabot** path is unaffected either way — a closed-unmerged dependabot card always **archives** (DL-161), ignoring this mapping.
 
 ### Branch-create → In Progress (DL-160)
@@ -765,7 +781,7 @@ The writeback is **event-driven**, and GitHub delivers each webhook **exactly on
 ```bash
 php artisan bridge:reconcile                     # REPORT-ONLY: one line per drifted card + summary counts (exit 0)
 php artisan bridge:reconcile --fix               # apply the forward moves
-php artisan bridge:reconcile --repo owner/repo   # reconcile only one writeback.json mapping
+php artisan bridge:reconcile --repo owner/repo   # reconcile only one writeback.json mapping (matched case-insensitively, DL-293)
 php artisan bridge:reconcile --fix --max-moves=20   # safety cap (default 20)
 ```
 

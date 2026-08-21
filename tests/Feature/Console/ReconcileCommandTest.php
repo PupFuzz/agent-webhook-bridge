@@ -273,6 +273,24 @@ class ReconcileCommandTest extends TestCase
         Http::assertNotSent(fn (Request $r) => str_contains($r->url(), 'board_id=9'));
     }
 
+    public function test_repo_filter_matches_a_differently_cased_spelling(): void
+    {
+        // DL-293: `--repo` names the same repo the writeback does, so it matches the way
+        // the writeback matches — case-insensitively. The operator types the spelling
+        // every GitHub URL accepts; the mapping may be keyed the other way.
+        $this->writeWriteback([
+            'Owner/Repo' => ['board_id' => 8, 'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49]],
+            'owner/other' => ['board_id' => 9, 'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49]],
+        ]);
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => $this->openPr()]);
+
+        $this->artisan('bridge:reconcile', ['--repo' => 'owner/repo'])
+            ->doesntExpectOutputToContain('is not a writeback.json mapping')
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), 'board_id=9'));
+    }
+
     public function test_unknown_repo_filter_fails(): void
     {
         $this->writeWriteback();

@@ -69,9 +69,17 @@ final class AgentScopeCoverage
      */
     public function unreadCovering(string $scope): array
     {
+        // Compared by repo IDENTITY (DL-293): the recorded scopes are agent-YAML spellings
+        // and the caller asks with a writeback.json spelling, which for one repo may
+        // differ. A raw compare answers "no unread agent covers this scope" for an agent
+        // that subscribes to exactly it — and that answer is what promotes a CANNOT-VERIFY
+        // back into a confident config accusation, the one direction card#5698 exists to
+        // stop. The RECORDED spelling stays raw: it is rendered verbatim in the
+        // `--format=json` document's `unread_agents[].scopes`.
+        $canonical = CheckContext::canonicalScope($scope);
         $names = [];
         foreach ($this->unread as $entry) {
-            if ($entry['scopes'] === null || in_array($scope, $entry['scopes'], true)) {
+            if ($entry['scopes'] === null || in_array($canonical, array_map(CheckContext::canonicalScope(...), $entry['scopes']), true)) {
                 $names[] = $entry['agent'];
             }
         }

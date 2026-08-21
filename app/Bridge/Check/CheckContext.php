@@ -5,6 +5,7 @@ namespace App\Bridge\Check;
 use App\Bridge\Check\EventConsumers\EventConsumerReconciliation;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
+use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\SharedIdentitiesFile;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Writeback\KanbanClient;
@@ -175,6 +176,27 @@ final class CheckContext
      * @var array<string, true>
      */
     public array $coordCardRelaneScopes = [];
+
+    /**
+     * The key form of the three github scope maps above, and the form to look one up
+     * with (DL-293).
+     *
+     * BOTH SIDES OF THAT COMPARE ARE OPERATOR-WRITTEN AND NAME THE SAME THING: the key is
+     * an agent YAML's `subscriptions[].scope_id`, and every consumer asks with a
+     * `writeback.json` mapping key. GitHub `owner/repo` is case-insensitive, so two
+     * spellings of one repo are one repo — and a raw compare here does not report a
+     * mismatch, it reports the mapping as ORPHANED (inert), which is a config accusation
+     * against an install that is working.
+     *
+     * The canonicalization is {@see WritebackConfig::mappingFor}'s, so a scope map and the
+     * writeback config cannot disagree about which repo a string names. A value that
+     * canonicalizes to nothing keeps its raw form — it is no scope's id, so it matches
+     * nothing either way, and the map key stays a string.
+     */
+    public static function canonicalScope(string $scopeId): string
+    {
+        return (new ExternalReferenceNormalizer)->canonicalizeSource($scopeId) ?? $scopeId;
+    }
 
     /**
      * Every `<name>.yml` the config-dir scan SAW, whether or not it parsed.

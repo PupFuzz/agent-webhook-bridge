@@ -39,6 +39,40 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7124 (DL-293)** — **a `writeback.json` mapping key now names a REPO, not a spelling.**
+  `WritebackConfig::mappingFor()` was a raw array-key lookup with neither side canonicalized, so a
+  mapping keyed `pupfuzz/kanban-board` against a payload spelling `PupFuzz/kanban-board` matched
+  **nothing, silently, forever** — every one of the 12 call sites reads "no mapping" as "this repo
+  is not tracked" and returns (six handlers on a `Log::info` nobody reads, six classifier sites
+  with no log at all), so a misconfigured install and a deliberately untracked repo produced
+  identical output: no error, no alert, no `bridge:check` finding, no card
+  moved. GitHub `owner/repo` is case-insensitive; the lookup now canonicalizes both sides through
+  the same vendored `ExternalReferenceNormalizer` the writeback already used for this exact
+  question one file over. **⚠ This widens what the writeback accepts** — a mapping that matched
+  nothing starts matching, and starts moving cards. **The key's spelling is KEPT**: it is what
+  `bridge:reconcile` resolves a per-repo token with (`[git-credential-map]` is case-SENSITIVE,
+  DL-185, re-verified against the installed helper) and what every operator-facing line prints
+  back. **⛔ The order was the whole risk:** on the reference fleet all 4 live mapping keys AND
+  every payload are non-canonical in the same way, so canonicalizing only the lookup would have
+  killed writeback on three production repos at once, through that same silent path — the
+  regression leg that catches it (keys spelled exactly as the live ones, and they must STILL
+  resolve) reds against precisely that mutant.
+- **card#7124 (DL-293)** — **two mapping keys naming ONE repo now fail the config CLOSED at load**,
+  naming both spellings and the repo they collide on. They were two mappings before the canonical
+  index and can only be one after it; keeping the last silently is how a board gets written by the
+  wrong mapping. A **blank** key fails closed the same way — it can match no payload repo, so it
+  is a dead mapping, which is the silent misconfiguration this change exists to end.
+- **card#7124 (DL-293)** — **`bridge:check` stops calling a working mapping ORPHANED.** The three
+  github scope maps (`writebackEmittingScopes` / `coordCardMoveScopes` / `coordCardRelaneScopes`)
+  are keyed by an agent YAML's `scope_id` and read with a `writeback.json` mapping key — the same
+  repo-identity compare, and once the writeback matches by identity a case-differing pair yields a
+  live writeback the check accuses of being inert. One primitive (`CheckContext::canonicalScope()`)
+  now owns that key form for both the build and its readers, and `AgentScopeCoverage` compares
+  canonically too, while the spelling it RECORDS stays raw — that one is rendered verbatim in the
+  `--format=json` document (DL-249), which is untouched.
+- **card#7124 (DL-293)** — **`bridge:reconcile --repo` matches case-insensitively**, then re-keys
+  to the configured spelling for the per-repo token probe. Typing the spelling GitHub accepts used
+  to report "is not a writeback.json mapping" for a repo that was mapped.
 - **card#7133** — **`kanban_coord_card_move`'s belongs-to-mapped-board refusal now ALERTS** instead of
   writing an untagged `Log::info`. It is the third copy of the DL-009 tag-collision guard, and the only
   one that did not signal: the `kanban_move_card` twin has pushed `card_not_on_mapped_board` since the

@@ -971,4 +971,101 @@ class WritebackConfigTest extends TestCase
         $this->expectException(ConfigException::class);
         WritebackConfig::loadDefault();
     }
+
+    // ---- DL-293: a mapping key names a repo, and GitHub repo names are case-insensitive.
+
+    public function test_mapping_key_matches_a_differently_cased_payload_repo(): void
+    {
+        // The armed shape: the operator wrote the key the way every GitHub URL accepts and
+        // every `gh` command echoes, and the payload arrives in the owner's registered
+        // display casing. A raw key lookup made that a permanent silent no-match.
+        $this->write(json_encode(['mappings' => [
+            'owner/Repo' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+        ]]));
+
+        $cfg = WritebackConfig::load($this->dir);
+        $this->assertSame(8, $cfg->mappingFor('Owner/repo')?->boardId);
+        $this->assertSame(8, $cfg->mappingFor('OWNER/REPO')?->boardId);
+        $this->assertSame(8, $cfg->mappingFor('owner/Repo')?->boardId);
+    }
+
+    public function test_a_mapping_key_spelled_exactly_as_the_payload_still_resolves(): void
+    {
+        // THE REGRESSION LEG, and the one that would have caught the outage: every live
+        // mapping key on the reference fleet is non-canonical (`PupFuzz/...`) and so is the
+        // `repository.full_name` it is matched against. Canonicalizing only ONE side would
+        // have redded every production mapping at once, silently, through each call site's
+        // "repo not tracked" return.
+        $this->write(json_encode(['mappings' => [
+            'PupFuzz/agent-webhook-bridge' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+            'PupFuzz/kanban-board' => ['board_id' => 5, 'stages' => ['opened' => 30]],
+        ]]));
+
+        $cfg = WritebackConfig::load($this->dir);
+        $this->assertSame(8, $cfg->mappingFor('PupFuzz/agent-webhook-bridge')?->boardId);
+        $this->assertSame(5, $cfg->mappingFor('PupFuzz/kanban-board')?->boardId);
+    }
+
+    public function test_an_unmapped_repo_still_resolves_to_null(): void
+    {
+        // The negative the widening must not swallow: matching case-insensitively is not
+        // matching everything.
+        $this->write(json_encode(['mappings' => [
+            'owner/Repo' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+        ]]));
+
+        $cfg = WritebackConfig::load($this->dir);
+        $this->assertNull($cfg->mappingFor('owner/other-repo'));
+        $this->assertNull($cfg->mappingFor('other-owner/repo'));
+        $this->assertNull($cfg->mappingFor('owner/repo2'));
+        $this->assertNull($cfg->mappingFor(''));
+    }
+
+    public function test_two_keys_naming_the_same_repo_fail_closed_naming_both_spellings(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'Owner/Repo' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+            'owner/repo' => ['board_id' => 9, 'stages' => ['opened' => 60]],
+        ]]));
+
+        try {
+            WritebackConfig::load($this->dir);
+            $this->fail('expected a ConfigException for two mapping keys naming one repo');
+        } catch (ConfigException $e) {
+            // Both ORIGINAL spellings, so the operator can find the two lines in their file.
+            $this->assertStringContainsString('"Owner/Repo"', $e->getMessage());
+            $this->assertStringContainsString('"owner/repo"', $e->getMessage());
+            $this->assertStringContainsString('same repo (owner/repo)', $e->getMessage());
+        }
+    }
+
+    public function test_a_blank_mapping_key_fails_closed(): void
+    {
+        // A key that canonicalizes to nothing can match no payload repo: it is a dead
+        // mapping, and a dead mapping is exactly the silent misconfiguration this fails
+        // closed on.
+        $this->write(json_encode(['mappings' => [
+            '   ' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('mapping key is blank');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_configured_repo_for_returns_the_spelling_the_operator_wrote(): void
+    {
+        // The raw key is NOT interchangeable with the canonical one: it is what resolves a
+        // per-repo token from the store's case-sensitive [git-credential-map], so anything
+        // that matched a repo case-insensitively has to come back for it.
+        $this->write(json_encode(['mappings' => [
+            'PupFuzz/agent-webhook-bridge' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+        ]]));
+
+        $cfg = WritebackConfig::load($this->dir);
+        $this->assertSame('PupFuzz/agent-webhook-bridge', $cfg->configuredRepoFor('pupfuzz/agent-webhook-bridge'));
+        $this->assertSame('PupFuzz/agent-webhook-bridge', $cfg->configuredRepoFor('PupFuzz/agent-webhook-bridge'));
+        $this->assertNull($cfg->configuredRepoFor('pupfuzz/not-mapped'));
+        $this->assertSame(['PupFuzz/agent-webhook-bridge'], array_keys($cfg->mappings));
+    }
 }

@@ -4,6 +4,7 @@ namespace App\Bridge\Writeback;
 
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\UnreadableFileException;
+use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\FileContents;
 use App\Bridge\Support\PathHelper;
 
@@ -47,6 +48,12 @@ use App\Bridge\Support\PathHelper;
  *     }
  *   }
  *
+ * A mapping key is matched CASE-INSENSITIVELY (DL-293): GitHub `owner/repo` is, so
+ * `mappingFor()` canonicalizes both sides through the same
+ * {@see ExternalReferenceNormalizer} the kanban server uses for a
+ * card's `source`. Two keys that name the SAME repo in different spellings are a config
+ * error and FAIL CLOSED at load — one would otherwise shadow the other silently.
+ *
  * identity_id is unioned into the global echo set so the resulting card_updated
  * webhook doesn't loop back (DL-018).
  */
@@ -55,13 +62,56 @@ final class WritebackConfig
     public const OUTCOMES = ['started', 'opened', 'merged', 'merged_to_main', 'closed_unmerged'];
 
     /**
-     * @param  array<string, WritebackMapping>  $mappings  keyed by "owner/repo"
+     * The canonical repo => mapping index every lookup reads, built once here so
+     * `mappingFor()` cannot answer "is this the same repo?" differently from the
+     * kanban server (DL-293).
+     *
+     * @var array<string, WritebackMapping>
+     */
+    private readonly array $byCanonicalRepo;
+
+    /** @var array<string, string> canonical repo => the spelling writeback.json used */
+    private readonly array $configuredRepos;
+
+    /**
+     * @param  array<string, WritebackMapping>  $mappings  keyed by "owner/repo" AS SPELLED in
+     *                                                     writeback.json. The key stays verbatim because the credential store's
+     *                                                     `[git-credential-map]` IS case-sensitive ({@see GitHubTokenResolver::resolveFor}),
+     *                                                     so a canonicalized key would resolve no per-repo token. Repo IDENTITY lives in
+     *                                                     the canonical index instead — never index `$mappings` to answer "which mapping
+     *                                                     is this repo's?", call {@see self::mappingFor} (DL-293).
+     *
+     * @throws ConfigException on a blank key, or on two keys that name the same repo
      */
     public function __construct(
         public readonly ?int $identityId,
         public readonly array $mappings,
         public readonly ?AlertChannel $alertChannel = null,
-    ) {}
+    ) {
+        $refs = new ExternalReferenceNormalizer;
+        $byCanonicalRepo = [];
+        $configuredRepos = [];
+        foreach ($mappings as $repo => $mapping) {
+            $canonical = $refs->canonicalizeSource((string) $repo);
+            if ($canonical === null) {
+                throw new ConfigException('writeback.json: a mapping key is blank — every mapping must be keyed by its "owner/repo"');
+            }
+            // FAIL CLOSED (DL-293). Two spellings of one repo were two mappings before the
+            // canonical index and would now collapse to whichever came last — and the loser
+            // is invisible: the board it names simply never gets written. An operator who
+            // wrote two must say which one they meant.
+            if (isset($configuredRepos[$canonical])) {
+                throw new ConfigException(
+                    "writeback.json: mappings \"{$configuredRepos[$canonical]}\" and \"{$repo}\" are the same repo ({$canonical}) — "
+                    .'GitHub owner/repo is case-insensitive, so one mapping would silently shadow the other; keep exactly one'
+                );
+            }
+            $byCanonicalRepo[$canonical] = $mapping;
+            $configuredRepos[$canonical] = (string) $repo;
+        }
+        $this->byCanonicalRepo = $byCanonicalRepo;
+        $this->configuredRepos = $configuredRepos;
+    }
 
     /**
      * Load the policy, or null when `writeback.json` is absent (writeback off).
@@ -447,9 +497,39 @@ final class WritebackConfig
         return new AlertChannel($socket, $url, $tokenPath);
     }
 
+    /**
+     * The mapping for a repo, matched CASE-INSENSITIVELY through the same
+     * canonicalization the kanban server applies to a card's `source` (DL-293).
+     *
+     * GitHub `owner/repo` is case-insensitive, and both sides of this compare are
+     * operator-written: the writeback.json key, and — via the payload's
+     * `repository.full_name` → `scope_id` — the owner's registered display casing.
+     * A raw key lookup made those two spellings a silent no-match: every caller reads
+     * null as "this repo is not tracked" and returns — the handlers on a `Log::info`, the
+     * classifiers with no log at all — so a misconfigured install and a deliberately
+     * untracked repo were the same output.
+     */
     public function mappingFor(string $repo): ?WritebackMapping
     {
-        return $this->mappings[$repo] ?? null;
+        $canonical = (new ExternalReferenceNormalizer)->canonicalizeSource($repo);
+
+        return $canonical === null ? null : ($this->byCanonicalRepo[$canonical] ?? null);
+    }
+
+    /**
+     * The spelling writeback.json used for a repo, whatever spelling you ask with, or
+     * null when the repo is not mapped.
+     *
+     * The raw key is not interchangeable with the canonical one: it is what resolves a
+     * per-repo credential from the store's case-sensitive `[git-credential-map]`, and it
+     * is what an operator can find in their own config file. So a consumer that matched
+     * a repo case-insensitively must come back through here before probing or printing.
+     */
+    public function configuredRepoFor(string $repo): ?string
+    {
+        $canonical = (new ExternalReferenceNormalizer)->canonicalizeSource($repo);
+
+        return $canonical === null ? null : ($this->configuredRepos[$canonical] ?? null);
     }
 
     /**

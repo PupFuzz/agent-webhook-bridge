@@ -227,7 +227,7 @@ class CheckCommand extends BridgeCommand
                 if (ClassifierResolver::probeImplements($cfg->classifierClass, EmitsWritebackReactions::class)) {
                     foreach ($cfg->subscriptions as $sub) {
                         if ($sub->provider === 'github') {
-                            $ctx->writebackEmittingScopes[$sub->scopeId] = true;
+                            $ctx->writebackEmittingScopes[CheckContext::canonicalScope($sub->scopeId)] = true;
                         }
                     }
                 }
@@ -239,7 +239,7 @@ class CheckCommand extends BridgeCommand
                 if (in_array('coord-card-move', $cfg->classifierConfig->strings('families'), true)) {
                     foreach ($cfg->subscriptions as $sub) {
                         if ($sub->provider === 'github') {
-                            $ctx->coordCardMoveScopes[$sub->scopeId] = true;
+                            $ctx->coordCardMoveScopes[CheckContext::canonicalScope($sub->scopeId)] = true;
                         }
                     }
                 }
@@ -251,7 +251,7 @@ class CheckCommand extends BridgeCommand
                 if (in_array('coord-card-relane', $cfg->classifierConfig->strings('families'), true)) {
                     foreach ($cfg->subscriptions as $sub) {
                         if ($sub->provider === 'github') {
-                            $ctx->coordCardRelaneScopes[$sub->scopeId] = true;
+                            $ctx->coordCardRelaneScopes[CheckContext::canonicalScope($sub->scopeId)] = true;
                         }
                     }
                 }

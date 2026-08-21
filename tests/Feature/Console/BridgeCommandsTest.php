@@ -893,6 +893,34 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    public function test_check_no_orphan_warning_when_the_agent_scope_and_the_mapping_differ_only_in_case(): void
+    {
+        // DL-293, end to end (the agent YAML's scope AND the writeback.json key, through
+        // the real CheckCommand derivation): one repo spelled two ways is one repo. The
+        // writeback resolves the mapping, so a raw compare here would print a config
+        // accusation — ORPHANED, "the mapping is inert" — about an install that works.
+        File::put($this->dir.'/wb-agent.yml',
+            "identity:\n  github_user_id: 41000\n"
+            ."subscriptions:\n  - provider: github\n    scopes: [\"Owner/Repo\"]\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier\n");
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+        ]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])]);
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('ORPHANED')
+            ->assertExitCode(0);
+    }
+
     // --- card#4183 (DL-196): event-follows-consumer ---
 
     private function writeGithubAgent(string $name, string $classifierClass, ?string $familiesLine = null): void
