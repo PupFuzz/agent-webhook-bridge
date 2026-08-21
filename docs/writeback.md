@@ -311,17 +311,19 @@ Measured on the reference install: 9 issues flipped to `stage:now`, one within 7
   **non-empty object**, every key must be one of `now`/`next`/`later`/`maybe` (an unknown key throws —
   a typo would otherwise match no label forever), every value must be numeric, it must carry
   **`later`** (the target of both fallbacks above), the lanes must map to **distinct** stage ids
-  (two lanes on one stage cannot express the priority the label declares — the create resolves to a
-  stage that no longer says which lane it meant, and the board→issue writeback then relabels the
+  (two lanes on one stage cannot express the priority the label declares — the placement resolves to
+  a stage that no longer says which lane it meant, and the board→issue writeback then relabels the
   issue with whichever lane owns it), **no lane may equal `coord_card_terminal_stage_id`** (the same
-  disjointness the terminal already has with `coord_card_stage_id`: a card created into the
-  concluded stage is one the move leg then reads as already-terminal, so its close no-ops), and the
-  mapping must also set `create_coord_cards` (the create leg is where the lane model is anchored:
-  it is the write that PLACES a coord card in a lane, and the revive and relane legs — which read
-  these ids too — only ever re-place an already-placed card. A mapping that creates none states no
-  lane model, so the config fails closed rather than half-defining one; it is a design anchor, not
-  an inertness claim — both move legs correlate by the `id:<sid>` tag the consumer's reconcile
-  writes too, so they can reach a card this mapping did not create).
+  disjointness the terminal already has with `coord_card_stage_id`: a card PLACED into the
+  concluded stage — by a create, or by a revive on a create-off mapping — is one the move leg then
+  reads as already-terminal, so its close no-ops), and the mapping must set
+  **`create_coord_cards` and/or `move_coord_cards`** (DL-294) — every write that reads these ids belongs to one of the two families: the create leg places a NEW card in its
+  declared lane, and the move leg's **revive** (plus the opt-in `coord-card-relane` family)
+  RE-places an existing one, including a card the consumer's reconcile created and the shared
+  `id:<sid>` tag correlates. With neither family on nothing reads the map, so it fails closed as
+  configured scenery — the same inertness test, and the same either-family rule, that
+  `coord_card_stage_id` already carries. **A move-on / create-off mapping may configure a lane
+  model** (below).
   Overlapping the fixed
   `coord_card_stage_id` is fine — a board whose Now column IS the fixed create stage is a
   legitimate config.
@@ -375,8 +377,9 @@ delivery to discover it has nowhere to move anything.
   missing `move_coord_cards` or `coord_card_lane_stage_ids`, naming the missing key(s) — that
   install classifies nothing and moves nothing, and no other check leg reports it (a mapping with
   no lane model is perfectly valid for every other leg). The reverse is **not** warned: a lane
-  model without this family is the normal shape of every lane-model install, since the key is the
-  create leg's.
+  model without this family is the normal shape of every lane-model install — the key is read by
+  every coord-card write and accepted with either family, so it declares no intent this one
+  family contradicts.
 
 ## Optional: card non-prefixed issues too (`issue_population`, #4553)
 
@@ -462,6 +465,12 @@ fails **closed at load** — never a silent no-op.
   (card#6393) — the same derivation the create leg runs, for the same reason; `coord_card_stage_id`
   stays the revive target for every issue the lane model does not govern, and for every install that
   configures no lane model.
+- **A lane model is configurable on a move-on / create-off mapping** (DL-294) — the shape where the
+  consumer's reconcile creates the cards and the bridge only moves them, correlating on the same
+  `id:<sid>` tag. `coord_card_lane_stage_ids` needs **either** family, not the create leg
+  specifically, so such an install gets a lane-aware revive (and relane) **without** having to turn
+  on `create_coord_cards`, which would change which mover creates its cards and race the reconcile.
+  Set the lane ids beside `move_coord_cards`; the create-leg keys stay off.
 - **What moves.** Same set as the create leg (recognized `[PREFIX]`, correlated by the **`id:<sid>`
   tag**) on `issues.closed` → terminal and `issues.reopened` → revive. `issues.opened` belongs to the
   create leg; `issues.edited` is not a lifecycle transition. **Nothing carrying the tag ⇒ nothing

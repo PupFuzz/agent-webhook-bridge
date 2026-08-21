@@ -221,8 +221,9 @@ final class WritebackMappingConfigCheck implements Check
             // the DL-204 pair has a second direction because `coord_card_terminal_stage_id`
             // means the move leg and nothing else, so setting it declares an intent the
             // missing family contradicts. Nothing here carries that meaning —
-            // `coord_card_lane_stage_ids` is the CREATE leg's key (required with
-            // `create_coord_cards`, and read by the revive leg since card#6393), so a lane
+            // `coord_card_lane_stage_ids` is read by every coord-card write (create since
+            // card#6371, revive and relane since card#6393) and, since DL-294, is accepted
+            // by EITHER family, so it declares no family in particular — a lane
             // model without the relane family is the normal, intended shape of every
             // lane-model install. A "lane ids set but no relane family" warn would fire on
             // all of them, including the reference install, for a family that is opt-in by

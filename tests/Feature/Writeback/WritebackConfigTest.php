@@ -946,19 +946,72 @@ class WritebackConfigTest extends TestCase
         $this->assertSame(['now' => 21, 'next' => 41, 'later' => 42], WritebackConfig::load($this->dir)->mappingFor('o/r')->coordCardLaneStageIds);
     }
 
-    public function test_lane_map_without_create_coord_cards_throws(): void
+    public function test_lane_map_loads_with_the_move_family_alone_and_no_create_leg(): void
     {
-        // The lane model is anchored on the create leg (DL-286): a mapping that creates no
-        // coord cards expresses no lane model, so a lane map on it is refused. NOT because
-        // the ids would go unread — the revive and relane legs read them too, on cards the
-        // consumer's reconcile created and the shared `id:<sid>` tag correlates.
+        // DL-294 / card#7126 — THE WIDENING. A move-on/create-off mapping is a documented
+        // shape (docs/writeback.md: coord_card_stage_id "is required here too, even with
+        // create_coord_cards off"), its cards are created by the consumer's reconcile, and
+        // since card#6393 the revive and relane legs READ these lane ids. So the lane model
+        // is expressible on it, and the load must accept it. Before DL-294 this config threw.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'move_coord_cards' => true, 'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99,
+                'coord_card_lane_stage_ids' => ['now' => 40, 'later' => 42]],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
+        $this->assertSame(['now' => 40, 'later' => 42], $mapping->coordCardLaneStageIds);
+        $this->assertFalse($mapping->createCoordCards);
+        $this->assertTrue($mapping->moveCoordCards);
+    }
+
+    public function test_lane_map_loads_under_the_dl_204_move_default_with_no_explicit_flag(): void
+    {
+        // The same widening reached the way DL-204 says an install reaches the move leg —
+        // the terminal present, no `move_coord_cards` key. The guard reads the RESOLVED
+        // flag, not the raw key, so the default-on path is inside the widening rather than
+        // beside it.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99,
+                'coord_card_lane_stage_ids' => ['later' => 42]],
+        ]]));
+
+        $this->assertSame(['later' => 42], WritebackConfig::load($this->dir)->mappingFor('o/r')->coordCardLaneStageIds);
+    }
+
+    public function test_lane_map_with_neither_coord_card_family_throws(): void
+    {
+        // ⛔ THE NEGATIVE PIN for DL-294's widening: a loosening whose only test is the
+        // newly-allowed case cannot tell "accepts the right thing" from "accepts
+        // everything". A mapping that neither creates NOR moves coord cards runs no leg
+        // that reads these ids, so the lane model has nothing to place — still fail-closed.
+        // `move_coord_cards` is absent AND `coord_card_terminal_stage_id` is absent, so the
+        // DL-204 default resolves the move leg OFF too.
         $this->write(json_encode(['mappings' => [
             'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'coord_card_stage_id' => 21,
                 'coord_card_lane_stage_ids' => ['later' => 42]],
         ]]));
 
         $this->expectException(ConfigException::class);
-        $this->expectExceptionMessage('coord_card_lane_stage_ids but not create_coord_cards');
+        $this->expectExceptionMessage('sets coord_card_lane_stage_ids but neither create_coord_cards nor move_coord_cards');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_lane_map_with_an_explicit_move_opt_out_throws(): void
+    {
+        // The other spelling of "neither family": the terminal is present (so the DL-204
+        // default would turn the move leg on) but the operator explicitly opted OUT. The
+        // guard must read the resolved flag, not the terminal's presence — reading the
+        // terminal would accept a mapping whose every lane-reading leg is off.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'coord_card_stage_id' => 21,
+                'move_coord_cards' => false, 'coord_card_terminal_stage_id' => 99,
+                'coord_card_lane_stage_ids' => ['later' => 42]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('sets coord_card_lane_stage_ids but neither create_coord_cards nor move_coord_cards');
         WritebackConfig::load($this->dir);
     }
 

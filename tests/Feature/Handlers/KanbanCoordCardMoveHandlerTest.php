@@ -668,6 +668,29 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
         $this->assertMovedTo(40);
     }
 
+    public function test_revive_on_a_move_on_create_off_install_lands_in_the_declared_lane(): void
+    {
+        // ⛔ DL-294 / card#7126 — THE BEHAVIOUR THE WIDENING EXISTS TO ENABLE, and the
+        // reason "it loads now" is not the control. This mapping creates NO coord cards:
+        // its cards are the consumer reconcile's, correlated by the shared `id:<sid>` tag.
+        // Before DL-294 the config was unloadable, so this install's only route to a
+        // lane-aware revive was enabling `create_coord_cards` — which changes WHICH mover
+        // creates cards there and races the reconcile (docs/writeback.md).
+        //
+        // The vector is `stage:now` (40), never `later`: 42 is the no-label default, so a
+        // leg that stopped deriving would land in the same stage as a working one. 21 is
+        // the fixed revive target — the answer this leg gave before the lane ids were read.
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50],
+            'move_coord_cards' => true, 'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99,
+            'coord_card_lane_stage_ids' => ['now' => 40, 'next' => 41, 'later' => 42, 'maybe' => 43]]);
+        $this->fakeBoard($this->card(99));
+
+        $this->handleTask(['disposition' => 'revive', 'labels' => ['stage:now']]);
+
+        $this->assertMovedTo(40);
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && ($r->data()['workflow_stage_id'] ?? null) === 21);
+    }
+
     public function test_revive_of_an_unlabelled_task_uses_the_default_lane(): void
     {
         // `_task_lane`'s own default — Later, not the fixed create stage.
