@@ -252,6 +252,36 @@ Caller-first placement is the same knife's other edge, and it is why an override
 
 ---
 
+## G-021 — an all-green local pre-PR run is not the gate set: the gate set is the workflows, and a hand-assembled run silently omits whichever one you remembered wrong
+
+**Symptom:** every gate you ran before pushing was green, and CI reds anyway — or the gate that would have redded never ran locally at all, so the branch looks certified when nothing exercised the failing leg. Nothing about the local run announces that it was short; a run that omits a gate looks exactly like a run that passes it.
+
+**Cause:** this repo ships no runner for its own gate set (`composer test` runs the suite and nothing else), so any pre-PR run is hand-assembled — and a hand-assembled run is a **cache** of `.github/workflows/`, with a cache's failure mode: correct when it was written, wrong the first time a workflow moves. A list of the gate commands written out in a doc is the same cache one level up, which is why this entry does not carry one. **The gate set for a PR is whatever the `pull_request`-triggered workflows under `.github/workflows/` actually run on the paths that PR touches — derive it from that directory at PR time, every time, and never from a remembered list.** [`CLAUDE.md`](CLAUDE.md) standing rule 5 owns the post-push half of the same rule (what must be green before a self-merge, read live from the Actions API, deliberately not enumerated — card#5575); this entry is the pre-push half.
+
+Four traps make that derivation harder than reading the filenames:
+
+**Trap 1 — a workflow's `paths:` filter is not a reliable guide to whether it fires.** The `bin/` python-tools workflow's filter includes `app/**`, and that is load-bearing rather than untidy: one of its tests asserts about `app/` PHP *source shape*, so a filter naming only `bin/` would make the job structurally unable to run on the change that invalidates it (its own header records the incident where exactly that happened). A change that "obviously doesn't touch `bin/`" therefore still runs those tests, and they can red on it. Read each workflow's filter — including the ones whose *name* sounds unrelated to your diff.
+
+**Trap 2 — one workflow can run one gate command more than once, under different environments, and "the set of commands" loses the second run.** `laravel-tests.yml` runs the PHPUnit suite in an SQLite job **and** in a MariaDB matrix job; a local `vendor/bin/phpunit` covers the SQLite leg only, because `phpunit.xml` pins `DB_CONNECTION=sqlite`. **A locally-green suite is therefore not a certification of the matrix leg** — say so when reporting a local run, rather than reporting "suite green" unqualified. What the divergence costs and how to run the MariaDB leg locally are owned by [`CLAUDE_TESTING.md`](CLAUDE_TESTING.md) § CI and § Running MariaDB tests locally (G-002 is what that divergence costs, from the inside).
+
+**Trap 3 — capture each gate's rc directly; a piped `rc=$?` reads the wrong process.** After a pipeline, `$?` is the **last element's** status, so `vendor/bin/phpunit | tee run.log; rc=$?` reports `tee`'s success and a red suite disappears. This is not hypothetical — it hid a real red here. Run each gate as its own command and read `$?` on the next line (or gate on the command itself: `if ! cmd; then …`); if a pipeline is unavoidable, read `${PIPESTATUS[0]}` or set `pipefail` deliberately.
+
+**Trap 4 — a fresh `git worktree` has no `.env`, and PHPUnit's first failure reads like a code defect.** `.env` is gitignored (the whole `.env*` family is), so a worktree created for a branch starts without one and the suite dies with `No application encryption key has been specified`. Nothing in that message points at the worktree. Fix it the way the CI setup step does, before concluding anything about the branch:
+
+```bash
+cp .env.example .env && php artisan key:generate --force
+```
+
+**Fix:** derive the gate list from the `pull_request` triggers + `paths:` filters in `.github/workflows/` for the paths your PR touches, run each derived gate as a separate command with its own rc read, and report the rcs — plus the SQLite-only bound from trap 2 — rather than a bare "green".
+
+**Deliberately not "fixed":** the derivation is still done by hand here. Replacing hand-authored gate runners with one derived from the workflow files is tracked as agent-board-toolkit **card#7122** — read the disposition there; this entry deliberately does not restate it.
+
+**Discovery:** a hand-authored local gate runner was written against a reading of the workflows and shipped missing one of the gates a PR here can trigger — the `bin/` python `unittest discover` leg, because a casual read of the workflows does not surface that its `paths:` filter reaches `app/**` (trap 1). The omission is invisible from the runner's own output: it exits 0 over the gates it knows about.
+
+**Related:** `.github/workflows/` (the authority — derive, don't cache), [`CLAUDE.md`](CLAUDE.md) standing rule 5 (the post-push half), [`CLAUDE_TESTING.md`](CLAUDE_TESTING.md) § CI + § Running MariaDB tests locally (the SQLite-vs-MariaDB divergence and its local recipe), G-002 (a MariaDB-only defect a SQLite-only run cannot see), G-013 (a sibling override in the same `phpunit.xml` env block), G-017 (a sibling shape: an environment difference reddening locally while CI stays green).
+
+---
+
 ## How to add an entry
 
 1. New `G-NNN` (next available number).
