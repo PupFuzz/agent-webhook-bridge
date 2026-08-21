@@ -55,27 +55,19 @@ PHP;
     }
 
     /**
+     * The member leg's specialisation of the harness's `assertRejected()`: same verdict, plus the
+     * assertion that the rejection came from THIS leg rather than the file/FQCN leg or a sibling
+     * rule. It reads the output of the run the harness already made, so both assertions speak for
+     * one verdict.
+     *
      * @param  array<string, string>  $files
      */
     private function assertMemberRejected(array $files, string $expectedAt, string $why): void
     {
-        [$rc, $out] = $this->runGate($files);
+        $out = $this->assertRejected($files, $expectedAt, $why);
 
-        $this->assertSame(1, $rc, "{$why}\nexpected a rejection; the gate said:\n{$out}");
         $this->assertStringContainsString('declares no', $out,
             "{$why}\nthe failure must come from the MEMBER leg, not the file/FQCN leg or a sibling rule:\n{$out}");
-        $this->assertStringContainsString($expectedAt, $out,
-            "{$why}\nthe report must name the offending doc and line:\n{$out}");
-    }
-
-    /**
-     * @param  array<string, string>  $files
-     */
-    private function assertAccepted(array $files, string $why): void
-    {
-        [$rc, $out] = $this->runGate($files);
-
-        $this->assertSame(0, $rc, "{$why}\nexpected acceptance; the gate said:\n{$out}");
     }
 
     /**

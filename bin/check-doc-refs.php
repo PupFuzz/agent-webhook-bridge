@@ -610,7 +610,9 @@ function qualifyName(string $name, string $namespace, array $imports): string
  * same question: *does this annotation cover this citation?* They used to answer it at two
  * granularities in one file — the marker over the whole LINE, the rejection over the SENTENCE —
  * which is two formats for one thing, and left a third hatch free to arrive at a third. The
- * granularity is decided here, once; a caller supplies only the words it accepts.
+ * granularity is decided here, once; a caller supplies only the words it accepts. WHAT COUNTS AS
+ * A SENTENCE is {@see sentencesOf()}'s answer, and its terminator set is deliberately not the
+ * obvious one — read that docblock before assuming where a fragment ends.
  *
  * SENTENCE-SCOPED, AND THE ANNOTATION MUST NAME WHAT IT DISCHARGES. A line-scoped marker
  * discharges every citation on its line, and the lines carrying one are the longest prose in this
@@ -698,7 +700,12 @@ function memberCitation(string $tok): ?array
 }
 
 // The vocabulary that deliberately names dead code: an explicit removed-marker, or a
-// struck-through (~~…~~) historical heading. `ever existed` is the marker the freeze rule
+// struck-through (~~…~~) historical heading. ⚠ `~~` NARROWED WITH THE PROSE MARKERS
+// (card#7127): a struck block spanning several sentences on one line now discharges only the
+// fragment carrying the `~~`, not the whole line. Zero instances in this tree strike more than
+// one fragment, so this is disclosed rather than measured — and it is named here because every
+// other sentence describing the scope talks about prose markers, where a reader would not
+// infer it. `ever existed` is the marker the freeze rule
 // forces on the decision log — a frozen sentence cannot be corrected in place, so the
 // correction is an annotation appended beside it saying the referent never existed (DL-273).
 //
@@ -966,10 +973,32 @@ function boundNamedInSameSentence(string $text, string $trigger): bool
     return false;
 }
 
-/** @return list<string> */
+/**
+ * `$text` split into sentences.
+ *
+ * A TERMINATOR IS NOT ALWAYS FOLLOWED BY WHITESPACE, and in this repo it usually is not. The
+ * obvious pattern — `[.!?]\s+` — reads *"…was removed.** `Foo::bar()` is live"* as ONE sentence,
+ * because the bold close sits between the period and the space. `docs/CHANGELOG.md` and
+ * `CLAUDE_DECISIONS.md` are the two surfaces the sentence scope exists for and they carry hundreds
+ * of that terminator each, so under the naive pattern a marker sentence merges with everything
+ * after it and hands the whole line back to the marker — the line scope restored at green, one
+ * character from the case the tests do cover. Closing emphasis, quotes and brackets are therefore
+ * part of the terminator: `.**`, `.*`, `."`, `.)`, and the `.**]**` an appended annotation ends on.
+ *
+ * BYTE-ORIENTED, NOT `/u`, AND THAT IS MEASURED RATHER THAN ASSUMED. The class carries three
+ * multi-byte closers, so `/u` is the reflex; but `preg_split` with `/u` returns `false` on input
+ * that is not valid UTF-8, and this function's fallback is the WHOLE text — which would silently
+ * restore the widest possible scope on precisely the file nobody inspects. Without `/u` the same
+ * five inputs (`’`, `”`, `»`, `…`, an em-dash mid-prose) split identically and every fragment is
+ * valid UTF-8, because each closer's bytes are consumed whole or not at all. The fallback stays
+ * fail-open on purpose — a fragment this function cannot compute must never invent a finding — and
+ * this is the bound that keeps the fail-open path unreachable for real input.
+ *
+ * @return list<string>
+ */
 function sentencesOf(string $text): array
 {
-    return preg_split('/(?<=[.!?])\s+/', $text) ?: [$text];
+    return preg_split('/(?<=[.!?])[)\]"\'’”*_`»]*\s+/', $text) ?: [$text];
 }
 
 /**

@@ -50,28 +50,6 @@ PHP;
     }
 
     /**
-     * @param  array<string, string>  $files
-     */
-    private function assertAccepted(array $files, string $why): void
-    {
-        [$rc, $out] = $this->runGate($files);
-
-        $this->assertSame(0, $rc, "{$why}\nexpected acceptance; the gate said:\n{$out}");
-    }
-
-    /**
-     * @param  array<string, string>  $files
-     */
-    private function assertRejected(array $files, string $expectedAt, string $why): void
-    {
-        [$rc, $out] = $this->runGate($files);
-
-        $this->assertSame(1, $rc, "{$why}\nexpected a rejection; the gate said:\n{$out}");
-        $this->assertStringContainsString($expectedAt, $out,
-            "{$why}\nthe report must name the offending doc and line:\n{$out}");
-    }
-
-    /**
      * THE CONTROL THE CARD ASKED FOR, on the surface it was measured on. One CHANGELOG line
      * narrates a removal and goes on to cite a live member; the live citation must be EXAMINED.
      *
@@ -92,6 +70,37 @@ PHP;
             'app/Bridge/Support/Widget.php' => self::SUBJECT,
             'docs/CHANGELOG.md' => sprintf($line, 'emboss()'),
         ], 'docs/CHANGELOG.md:1', 'the witness: a phantom two clauses from the marker is a finding, not a discharge');
+    }
+
+    /**
+     * THE SENTENCE BOUNDARY THIS REPO ACTUALLY WRITES, and the one a `[.!?]\s` splitter does not
+     * see. A terminator here is routinely NOT followed by whitespace: these documents close a
+     * sentence with markdown emphasis, a quote or a paren — `.**`, `.*`, `."`, `.)` — and the two
+     * surfaces the sentence scope exists for carry hundreds of the bold form each.
+     *
+     * ⛔ WITHOUT THIS, THE WHOLE FIX IS ONE CHARACTER FROM INERT. A line whose marker sentence ends
+     * `removed.**` merges with everything after it, the merged fragment is handed back to the
+     * marker, and the gate goes silent over exactly the CHANGELOG shape this file exists to pin —
+     * the defect re-minted by the prose form the target documents actually use, at green.
+     *
+     * The vector is the plain case with ONE character added, so a moved verdict is attributable to
+     * the terminator and to nothing else.
+     */
+    public function test_a_sentence_closed_by_emphasis_or_a_bracket_still_terminates(): void
+    {
+        foreach (['.**' => 'bold', '.*' => 'italic', '."' => 'quote', '.)' => 'paren', '.**]**' => 'annotation'] as $closer => $form) {
+            $line = "- **v0.60** — `Widget::brand()` was removed{$closer} `Widget::%s` now writes the label.\n";
+
+            $this->assertAccepted([
+                'app/Bridge/Support/Widget.php' => self::SUBJECT,
+                'docs/CHANGELOG.md' => sprintf($line, 'stamp()'),
+            ], "a {$form}-closed removal sentence terminates, leaving the live citation beside it resolving");
+
+            $this->assertRejected([
+                'app/Bridge/Support/Widget.php' => self::SUBJECT,
+                'docs/CHANGELOG.md' => sprintf($line, 'emboss()'),
+            ], 'docs/CHANGELOG.md:1', "the witness: a phantom after a {$form}-closed terminator is examined, not swallowed by the marker");
+        }
     }
 
     /**
