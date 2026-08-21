@@ -354,6 +354,60 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   `docs/CHECK-REGISTRY-PLAN.md` lines and one `tests/Support/FindingFactories.php` docblock already
   carried their correction inline and were reworded to state it in the vocabulary the gate reads —
   a construct that was renamed, and one deliberately not built.
+- **card#7127 (DL-291)** — **`bin/check-doc-refs.php`'s two escape hatches now read an annotation at
+  ONE scope, and that scope is the SENTENCE.** The removed-marker was line-scoped while its sibling
+  `citedAsRejected()` in the same file was sentence-scoped — two answers to one question (*does this
+  annotation cover this citation?*) inside a single script — so a `docs/CHANGELOG.md` entry, which is
+  a single line that narrates a removal **and** cites the live members that replaced it, discharged
+  every citation on it. card#6025 measured that loss and filed it rather than folding it in, because
+  it was disclosed by the per-run unexamined tally rather than silent. **The scope is hoisted into
+  one helper both hatches consume** (`annotationCovers()`, over the `sentencesOf()` splitter rule 3
+  already shipped) rather than sentence-scoping copied into the marker leg, which would have kept
+  the two implementations that are the defect. **The file/FQCN leg moves with the member leg** — the
+  marker is one variable read by both, and moving one would have re-opened the same split one level
+  up.
+- **⚑ The sentence boundary is NOT `[.!?]\s`, and getting that wrong left the fix one character from
+  inert.** A terminator in these documents is usually not followed by whitespace — the sentence
+  closes with markdown emphasis, a quote or a bracket first (`.**`, `.*`, `."`, `.)`, and the
+  `.**]**` an appended annotation ends on). Under the naive pattern *"…was removed.** `Foo::bar()` is
+  live"* is one fragment, the whole line goes back to the marker, and the line scope is restored **at
+  green**. This is not an edge: `docs/CHANGELOG.md` and `CLAUDE_DECISIONS.md`, the two surfaces the
+  scope exists for, carry hundreds of the bold form each. Closing punctuation is now part of the
+  terminator, the bound is documented on the **splitter** rather than on one caller, and the vector
+  was watched red against the wrong boundary before it was fixed. The splitter is deliberately
+  byte-oriented rather than `/u`: `preg_split` with `/u` returns `false` on non-UTF-8 input and the
+  fallback is the whole text, which would silently restore the widest scope on exactly the file
+  nobody inspects.
+- **⚠ UPGRADING — this changes what CI accepts for a contributor and nothing about an installed
+  bridge:** a doc line whose removed-marker sits in a different sentence from a dangling citation now
+  reds where it passed. On a frozen entry, where the discharge must be an annotation appended after
+  the original sentence, that annotation must now REPEAT the citation it discharges in backticks —
+  "removed in v0.60" at the foot of a forty-sentence entry names none of that entry's citations,
+  which is why it is no longer taken to cover them.
+- **Measured as a reconciliation rather than a before/after table**, because a totals table is a
+  quoted authority read at whatever tree its author stood on. Re-derive by running the pre- and
+  post-change scripts with `--census` over the *same* tree from a directory no rule scans; at a fixed
+  corpus the bucket deltas must sum to zero. So run: **80 citations leave the removed-marker bucket;
+  50 become examined and all 50 resolve, with `reported` unmoved; the remaining 30 land in a
+  different NOT-examined bucket** (26 `class_not_under_app`, 2 `unverifiable_ancestry`, 2
+  `rejected_alternative`) — a dated reading, since this very entry is part of the corpus it measures. That last group is what a "coverage recovered" headline hides — releasing
+  a citation from the marker is not the same as answering it. On the path leg, 128 tokens stop being
+  line-skipped but only **4** are references it can resolve at all, and all four resolve: the reason
+  to move that leg is consistency, not the token count. `reported` went 0 → **1** → 0, re-derivably:
+  strip the `card#7127` annotation from DL-237's SUPERSEDED note and the gate reports a member
+  DL-237 removed, `ChannelSnapshotProbe::referenceFileSet()`. The fix was to the document — a further
+  appended annotation naming it in full, both frozen sentences untouched per DL-277 — never to the
+  scope.
+- **⚠ Disclosed narrowing:** the `~~` alternative narrowed with the prose markers, so a struck-through
+  block spanning several sentences on one line now discharges only the fragment carrying the `~~`.
+  Zero live instances in this tree; named because the rest of this entry describes the change purely
+  in terms of prose markers.
+- **Not closed, and deliberately:** a sentence that both names a marker word and carries a citation
+  still discharges that citation, so prose *about* the vocabulary can switch it off. Accepted on the
+  record on card#7127. ⚠ Its previously-recorded instance, `CLAUDE_CONVENTIONS.md:141`, turned out
+  **not** to be one — that line's citation and marker merged only under the broken sentence boundary
+  above, and with it fixed the citation is examined. The measured cost of this residue on this tree
+  is zero citations.
 
 ## [0.74.1] - 2026-08-19
 

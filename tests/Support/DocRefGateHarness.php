@@ -59,6 +59,46 @@ trait DocRefGateHarness
         return [$rc, implode("\n", $out)];
     }
 
+    /**
+     * The gate must ACCEPT this tree.
+     *
+     * HOISTED TO THE HARNESS AT THE SECOND REAL CALLER, not the Nth, and in the change whose whole
+     * thesis is that two implementations of one thing is the defect: `DocRefMemberLintTest` and
+     * `DocRefMarkerScopeTest` drive whole trees and read the same verdict the same way, so a second
+     * byte-identical copy of this pair would have been the shape being fixed, minted in its own fix.
+     * The two rules that pass a single path + line keep their own narrower helpers — a different
+     * signature is a different question, not a copy of this one.
+     *
+     * @param  array<string, string>  $files  repo-relative path => FULL file content
+     */
+    protected function assertAccepted(array $files, string $why): void
+    {
+        [$rc, $out] = $this->runGate($files);
+
+        $this->assertSame(0, $rc, "{$why}\nexpected acceptance; the gate said:\n{$out}");
+    }
+
+    /**
+     * The gate must REJECT this tree, naming `$expectedAt`.
+     *
+     * RETURNS THE OUTPUT so a caller can add the assertion that is specific to ITS leg — the member
+     * leg checks that the rejection came from the member leg and not a sibling rule. Re-running the
+     * gate for that second assertion would let the two verdicts come from two different runs.
+     *
+     * @param  array<string, string>  $files  repo-relative path => FULL file content
+     * @return string the gate's combined output
+     */
+    protected function assertRejected(array $files, string $expectedAt, string $why): string
+    {
+        [$rc, $out] = $this->runGate($files);
+
+        $this->assertSame(1, $rc, "{$why}\nexpected a rejection; the gate said:\n{$out}");
+        $this->assertStringContainsString($expectedAt, $out,
+            "{$why}\nthe report must name the offending doc and line:\n{$out}");
+
+        return $out;
+    }
+
     protected function removeGateTrees(): void
     {
         foreach ($this->gateTrees as $tree) {

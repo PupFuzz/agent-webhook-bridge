@@ -55,27 +55,19 @@ PHP;
     }
 
     /**
+     * The member leg's specialisation of the harness's `assertRejected()`: same verdict, plus the
+     * assertion that the rejection came from THIS leg rather than the file/FQCN leg or a sibling
+     * rule. It reads the output of the run the harness already made, so both assertions speak for
+     * one verdict.
+     *
      * @param  array<string, string>  $files
      */
     private function assertMemberRejected(array $files, string $expectedAt, string $why): void
     {
-        [$rc, $out] = $this->runGate($files);
+        $out = $this->assertRejected($files, $expectedAt, $why);
 
-        $this->assertSame(1, $rc, "{$why}\nexpected a rejection; the gate said:\n{$out}");
         $this->assertStringContainsString('declares no', $out,
             "{$why}\nthe failure must come from the MEMBER leg, not the file/FQCN leg or a sibling rule:\n{$out}");
-        $this->assertStringContainsString($expectedAt, $out,
-            "{$why}\nthe report must name the offending doc and line:\n{$out}");
-    }
-
-    /**
-     * @param  array<string, string>  $files
-     */
-    private function assertAccepted(array $files, string $why): void
-    {
-        [$rc, $out] = $this->runGate($files);
-
-        $this->assertSame(0, $rc, "{$why}\nexpected acceptance; the gate said:\n{$out}");
     }
 
     /**
@@ -162,9 +154,12 @@ PHP;
     }
 
     /**
-     * The discharge a frozen entry can actually use. The marker is line-scoped, as it is for
-     * the file/FQCN leg — an annotation appended beside the original sentence, never an edit
-     * to it.
+     * The discharge a frozen entry can actually use: an annotation appended beside the original
+     * sentence, never an edit to it. The annotation carries the citation as well as the marker,
+     * which is what makes it reach back past its own sentence — the scope is
+     * `annotationCovers()`'s, shared with the file/FQCN leg and with the rejected-alternative
+     * hatch (card#7127), and `DocRefMarkerScopeTest` is where that scope is pinned in both
+     * directions.
      */
     public function test_a_removed_marker_discharges_a_frozen_citation_and_its_absence_does_not(): void
     {
@@ -411,15 +406,20 @@ PHP;
      * The marker vocabulary reads the two speech acts a CHANGELOG entry makes by construction.
      * `\(removed\b` matched only a parenthesised "(removed in vX)", so a release note saying a
      * construct was removed did not discharge and a rename had no vocabulary at all — a gate
-     * reddening on correct prose, which is how a gate gets switched off. The third vector is the
-     * teeth: widening the words does not weaken the rule, it only names more of the ways an
+     * reddening on correct prose, which is how a gate gets switched off. The last two vectors are
+     * the teeth: widening the words does not weaken the rule, it only names more of the ways an
      * author says the referent is gone.
+     *
+     * Each annotation REPEATS the citation, because the marker is read at the scope of the
+     * sentence it is written in (card#7127). "removed in v0.60" appended to a forty-sentence
+     * frozen entry names none of its citations and now discharges none of them — the second
+     * rejection vector below is that case, and it is the one this file shipped as an acceptance.
      */
     public function test_a_removed_or_renamed_marker_discharges_a_citation_and_its_absence_does_not(): void
     {
         foreach ([
-            'removed' => '**[card#6025:** removed in v0.60.**]**',
-            'renamed' => '**[card#6025:** renamed `stamp()`.**]**',
+            'removed' => '**[card#6025:** `Widget::brand()` removed in v0.60.**]**',
+            'renamed' => '**[card#6025:** `Widget::brand()` renamed `stamp()`.**]**',
         ] as $word => $annotation) {
             $this->assertAccepted([
                 'app/Bridge/Support/Widget.php' => self::SUBJECT,
@@ -431,6 +431,11 @@ PHP;
             'app/Bridge/Support/Widget.php' => self::SUBJECT,
             'CLAUDE_DECISIONS.md' => "`Widget::brand()` stamped the card. **[card#6025:** this entry is historical.**]**\n",
         ], 'CLAUDE_DECISIONS.md:1', 'the witness: a line carrying no marker word at all still reds');
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'CLAUDE_DECISIONS.md' => "`Widget::brand()` stamped the card. **[card#6025:** removed in v0.60.**]**\n",
+        ], 'CLAUDE_DECISIONS.md:1', 'the second witness: a marker in an annotation that names no citation discharges none');
     }
 
     /**
