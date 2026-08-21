@@ -354,6 +354,36 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   `docs/CHECK-REGISTRY-PLAN.md` lines and one `tests/Support/FindingFactories.php` docblock already
   carried their correction inline and were reworded to state it in the vocabulary the gate reads —
   a construct that was renamed, and one deliberately not built.
+- **card#7127 (DL-291)** — **`bin/check-doc-refs.php`'s two escape hatches now read an annotation at
+  ONE scope, and that scope is the SENTENCE.** The removed-marker was line-scoped while its sibling
+  `citedAsRejected()` in the same file was sentence-scoped — two answers to one question (*does this
+  annotation cover this citation?*) inside a single script — so a `docs/CHANGELOG.md` entry, which is
+  a single line that narrates a removal **and** cites the live members that replaced it, discharged
+  every citation on it. card#6025 measured that loss at nineteen previously-resolving citations and
+  filed it rather than folding it in, because it was disclosed by the per-run unexamined tally rather
+  than silent. **The scope is hoisted into one helper both hatches consume** (`annotationCovers()`,
+  over the `sentencesOf()` splitter rule 3 already shipped) rather than sentence-scoping copied into
+  the marker leg, which would have kept the two implementations that are the defect. **The file/FQCN
+  leg moves with the member leg** — the marker is one variable read by both, and moving one would
+  have re-opened the same split one level up. **⚠ UPGRADING — this changes what CI accepts for a
+  contributor and nothing about an installed bridge:** a doc line whose removed-marker sits in a
+  different sentence from a dangling citation now reds where it passed. On a frozen entry, where the
+  discharge must be an annotation appended after the original sentence, that annotation must now
+  REPEAT the citation it discharges in backticks — "removed in v0.60" at the foot of a
+  forty-sentence entry names none of that entry's citations, which is why it is no longer taken to
+  cover them. **Measured on this tree with `--census`, and the figures move with every doc edit:**
+  `resolved` 660 → 704, `removed_marker_line` 145 → 73 under its corrected name
+  `removed_marker_sentence`, `rejected_alternative` 14 → 21, plus 127 backtick tokens returning to
+  the path leg's examination at zero new findings there. `reported` went 0 → **1** → 0: the single
+  finding was read at source, not batch-accepted — DL-237's SUPERSEDED note names the deleted member
+  bare, and it is discharged by a further appended annotation naming
+  `ChannelSnapshotProbe::referenceFileSet()` — removed by DL-237 — in full, leaving both frozen
+  sentences untouched. The
+  recovered coverage is witnessed by making the recovered citation a phantom and watching it red
+  against the unmodified script; the negative is pinned beside it (a citation genuinely inside the
+  removal sentence is still discharged). **Not closed, and deliberately:** prose ABOUT the marker
+  vocabulary still discharges itself, since a doc explaining the words must name them — accepted on
+  the record on card#7127, and sentence-scoping does not reach it.
 
 ## [0.74.1] - 2026-08-19
 

@@ -29,10 +29,12 @@
  *   - an `App\...` FQCN: `App\Bridge\Support\SecretFile` → app/Bridge/Support/SecretFile.php
  *   - a MEMBER citation — `App\Bridge\Support\Finding::warn()`, `CheckSlot::BoardToolsSshAdvisory`,
  *     `DlTokenGrammar::sole()` — resolved to the declaring file, then to the member itself
- * A line carrying an explicit removed-marker — "removed", "renamed", "deleted",
- * "no longer exists", "there is no" — is skipped (history may name dead classes
+ * A citation whose OWN SENTENCE carries an explicit removed-marker — "removed", "renamed",
+ * "deleted", "no longer exists", "there is no" — is skipped (history may name dead classes
  * deliberately); the vocabulary is satisfiable by an annotation appended beside a frozen
- * sentence, never only by an edit to it. {@see $skip} for the bound on those words.
+ * sentence, never only by an edit to it, and that annotation must NAME the citation it
+ * discharges. {@see $removedMarker} for the bound on those words and
+ * {@see annotationCovers()} for the scope, which both of rule 1's escape hatches share.
  *
  * THE MEMBER LEG (card#6025). The FQCN leg STRIPPED a `::member` suffix before asking whether
  * anything existed, so the class resolved and the half of the citation that names BEHAVIOUR was
@@ -78,13 +80,15 @@
  * different in kind: it names a construct that either exists in this tree or does not, and
  * the escape hatch does not require rewriting the sentence — the removed-marker vocabulary
  * matches an ANNOTATION appended beside the original, which is what the freeze rule already
- * prescribes (see the DL-273 `correlationRefs()` annotation). The log's OTHER structural
- * exemption is {@see citedAsRejected()}: an alternative the entry says it rejected is absent
- * on purpose.
+ * prescribes (see the DL-273 `correlationRefs()` annotation). What the annotation owes in
+ * return is the citation itself: the marker is scoped to the sentence it is written in, so an
+ * appended clause discharges the citations it REPEATS and no others (card#7127). The log's
+ * OTHER structural exemption is {@see citedAsRejected()}: an alternative the entry says it
+ * rejected is absent on purpose, and it has always been read at that same scope.
  *
  * THE COVERAGE IS MEASURED, NOT ASSUMED, AND THE MEASUREMENT SHIPS. `--census` prints every
  * bucket — resolved, reported, class not under `app/`, ambiguous class name, unverifiable
- * ancestry, removed-marker line, rejected alternative — re-derived over the tree it is run on,
+ * ancestry, removed-marker sentence, rejected alternative — re-derived over the tree it is run on,
  * and every run prints the unexamined tally on its own line. Deliberately no figures in this
  * comment: a figure here is a quoted authority, and the census that stood here could not be
  * recomputed by anything shipped — the defect this rule exists to catch, one level up.
@@ -221,7 +225,7 @@ function tally(?string $bucket = null): array
         'class_not_under_app' => 0,
         'ambiguous_class_name' => 0,
         'unverifiable_ancestry' => 0,
-        'removed_marker_line' => 0,
+        'removed_marker_sentence' => 0,
         'rejected_alternative' => 0,
         'depth_bail' => 0,
     ];
@@ -599,6 +603,50 @@ function qualifyName(string $name, string $namespace, array $imports): string
 }
 
 /**
+ * Does an annotation matching `$marker` DISCHARGE the citation `$tok` written on this line?
+ *
+ * ONE SCOPE, TWO VOCABULARIES — that is the whole reason this function exists (card#7127). Rule 1
+ * carries two escape hatches, a removed-marker and a rejected alternative, and both answer the
+ * same question: *does this annotation cover this citation?* They used to answer it at two
+ * granularities in one file — the marker over the whole LINE, the rejection over the SENTENCE —
+ * which is two formats for one thing, and left a third hatch free to arrive at a third. The
+ * granularity is decided here, once; a caller supplies only the words it accepts.
+ *
+ * SENTENCE-SCOPED, AND THE ANNOTATION MUST NAME WHAT IT DISCHARGES. A line-scoped marker
+ * discharges every citation on its line, and the lines carrying one are the longest prose in this
+ * repo: a `docs/CHANGELOG.md` entry is a single line that narrates a removal AND cites the live
+ * members that replaced it, so one truthful "X was removed" switched the gate off for all of them
+ * — silently, and growing with every release note. No figure is quoted for that loss on purpose;
+ * `--census` re-derives the buckets over the tree it is run on, and a number written here would be
+ * a quoted authority no later pass recomputes.
+ *
+ * WHAT IT COSTS THE FROZEN DOCS, stated because it is a real cost and not a free win. The freeze
+ * rule forbids editing a merged decision-log sentence (DL-277), so the discharge is an annotation
+ * appended AFTER it — and an appended annotation is a different sentence. It must therefore repeat
+ * the citation it discharges, which is one token more than "removed in v0.60" and is what makes an
+ * annotation legible at all on a forty-sentence entry: an unnamed marker at the end of such an
+ * entry says nothing about WHICH of its citations went. The reverse trade — keeping the wide scope
+ * so the shorter annotation keeps working — is what was measured and rejected.
+ *
+ * THE UNIT IS A SENTENCE WITHIN A LINE, stated because it is a real edge rather than an oversight:
+ * rule 1 reads one line at a time, so a marker written on the PREVIOUS wrapped line of the same
+ * markdown paragraph does not reach the citation. The report names a file and a line, so the scope
+ * an author is asked to satisfy is the one the report points at; reaching the paragraph instead
+ * would need a rule that knows where a paragraph ends across six different prose surfaces, and
+ * would re-admit exactly the distance this function exists to bound.
+ */
+function annotationCovers(string $line, string $tok, string $marker): bool
+{
+    foreach (sentencesOf($line) as $sentence) {
+        if (str_contains($sentence, '`'.$tok.'`') && preg_match($marker, $sentence) === 1) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
  * Is this citation inside a sentence that says the construct was REJECTED?
  *
  * Every decision-log entry carries an "Alternatives considered" section, and an alternative is
@@ -607,20 +655,15 @@ function qualifyName(string $name, string $namespace, array $imports): string
  * by decision — and a gate that reds on them demands that a log of choices name only the choice
  * that was made.
  *
- * SENTENCE-SCOPED, not line-scoped, and that is the whole precision of it: a decision-log
- * entry is one enormous line whose alternatives sit beside the consequences, so a line-scoped
- * read of "rejected" would exempt the built constructs cited two clauses away. Measured over
- * `CLAUDE_DECISIONS.md`: 11 citations exempted, of which 2 were findings.
+ * The scope is {@see annotationCovers()}'s, and this hatch is where that scope was first got
+ * right: a decision-log entry is one enormous line whose alternatives sit beside the
+ * consequences, so a line-scoped read of "rejected" would exempt the built constructs cited two
+ * clauses away. Measured over `CLAUDE_DECISIONS.md` when it landed: 11 citations exempted, of
+ * which 2 were findings.
  */
 function citedAsRejected(string $line, string $tok): bool
 {
-    foreach (preg_split('/(?<=[.!?])\s+/', $line) ?: [] as $sentence) {
-        if (str_contains($sentence, '`'.$tok.'`') && preg_match('/\brejected\b|\bnot built\b|\bnot chosen\b|\bnot adopted\b/i', $sentence) === 1) {
-            return true;
-        }
-    }
-
-    return false;
+    return annotationCovers($line, $tok, '/\brejected\b|\bnot built\b|\bnot chosen\b|\bnot adopted\b/i');
 }
 
 /**
@@ -654,8 +697,8 @@ function memberCitation(string $tok): ?array
     return [$m[1], $m[2]];
 }
 
-// Skip a line that deliberately names dead code: an explicit removed-marker, or
-// a struck-through (~~…~~) historical heading. `ever existed` is the marker the freeze rule
+// The vocabulary that deliberately names dead code: an explicit removed-marker, or a
+// struck-through (~~…~~) historical heading. `ever existed` is the marker the freeze rule
 // forces on the decision log — a frozen sentence cannot be corrected in place, so the
 // correction is an annotation appended beside it saying the referent never existed (DL-273).
 //
@@ -663,7 +706,8 @@ function memberCitation(string $tok): ?array
 // the vocabulary is spelled as statements rather than as a directive: the freeze rule forbids
 // editing a merged entry, so the only discharge a frozen sentence can offer is a clause added
 // after it. A rule whose escape hatch required rewriting the sentence would have no escape
-// hatch on the two documents that need one most.
+// hatch on the two documents that need one most. What the annotation may NOT omit is the
+// citation itself — {@see annotationCovers()} owns that scope, and owns it for both hatches.
 //
 // `removed` AND `renamed` ARE WORD-BOUNDED, not parenthesised, and that is a widening this
 // change owed. `\(removed\b` matched only "(removed in vX)", so "`X` removed (dead)" — a
@@ -673,7 +717,7 @@ function memberCitation(string $tok): ?array
 // living plan docs into scope is what turned that narrowness into a gate reddening on correct
 // prose. Word-bounded is the bound that keeps it honest — an identifier that merely STARTS
 // with the word (`removedAt`, `renamedTo`) discharges nothing.
-$skip = '/\bremoved\b|\brenamed\b|\bdeleted\b|no longer exists|there is no\b|replaced by\b|ever existed\b|~~/i';
+$removedMarker = '/\bremoved\b|\brenamed\b|\bdeleted\b|no longer exists|there is no\b|replaced by\b|ever existed\b|~~/i';
 $errors = [];
 
 // RULE 1a — the path / FQCN leg, over the CURRENT-STATE docs only.
@@ -683,13 +727,13 @@ foreach ($docs as $doc) {
         continue;
     }
     foreach (file($path, FILE_IGNORE_NEW_LINES) ?: [] as $i => $line) {
-        if (preg_match($skip, $line) === 1) {
-            continue;
-        }
         if (preg_match_all('/`([^`]+)`/', $line, $m) === false) {
             continue;
         }
         foreach ($m[1] as $tok) {
+            if (annotationCovers($line, $tok, $removedMarker)) {
+                continue;
+            }
             foreach (refsFromToken($tok) as $ref) {
                 if (! refResolves($root, $ref)) {
                     $errors[] = sprintf('%s:%d  names `%s` (missing)', $doc, $i + 1, $tok);
@@ -705,14 +749,13 @@ foreach (scannedSources($root) as $rel) {
         if (preg_match_all('/`([^`]+)`/', $line, $m) === false) {
             continue;
         }
-        $markerSkipped = preg_match($skip, $line) === 1;
         foreach ($m[1] as $tok) {
             $citation = memberCitation($tok);
             if ($citation === null) {
                 continue;
             }
-            if ($markerSkipped) {
-                tally('removed_marker_line');
+            if (annotationCovers($line, $tok, $removedMarker)) {
+                tally('removed_marker_sentence');
 
                 continue;
             }
@@ -1047,7 +1090,7 @@ foreach (scannedSources($root) as $rel) {
  */
 $census = tally();
 $unexamined = $census['class_not_under_app'] + $census['ambiguous_class_name'] + $census['unverifiable_ancestry']
-    + $census['removed_marker_line'] + $census['rejected_alternative'];
+    + $census['removed_marker_sentence'] + $census['rejected_alternative'];
 
 if (in_array('--census', $argv, true)) {
     fwrite(STDOUT, "doc-refs member census (re-derived over this tree by this run):\n");
@@ -1063,7 +1106,7 @@ if (in_array('--census', $argv, true)) {
 }
 
 fwrite(STDOUT, sprintf(
-    "doc-refs: member citations — %d examined (%d resolved, %d reported), %d NOT examined: %d class not under app/, %d ambiguous class name, %d unverifiable ancestry, %d on a removed-marker line, %d a rejected alternative; %d ancestry walk(s) hit the depth bound. This run says nothing about the members in that second half.\n",
+    "doc-refs: member citations — %d examined (%d resolved, %d reported), %d NOT examined: %d class not under app/, %d ambiguous class name, %d unverifiable ancestry, %d in a removed-marker sentence, %d a rejected alternative; %d ancestry walk(s) hit the depth bound. This run says nothing about the members in that second half.\n",
     $census['resolved'] + $census['reported'],
     $census['resolved'],
     $census['reported'],
@@ -1071,7 +1114,7 @@ fwrite(STDOUT, sprintf(
     $census['class_not_under_app'],
     $census['ambiguous_class_name'],
     $census['unverifiable_ancestry'],
-    $census['removed_marker_line'],
+    $census['removed_marker_sentence'],
     $census['rejected_alternative'],
     $census['depth_bail'],
 ));
@@ -1082,7 +1125,7 @@ if ($errors !== [] || $citeErrors !== [] || $claimErrors !== []) {
         foreach ($errors as $e) {
             fwrite(STDERR, "  - {$e}\n");
         }
-        fwrite(STDERR, "\nFix the reference, or — if the construct was deliberately removed or renamed — say so on\nthe same line (\"removed\", \"renamed\", \"there is no …\"). CLAUDE_DECISIONS.md\nentries are frozen, so that marker goes in an ANNOTATION appended beside the original\nsentence; an alternative the entry says it REJECTED needs nothing. See DL-013.\n");
+        fwrite(STDERR, "\nFix the reference, or — if the construct was deliberately removed or renamed — say so in the\nSAME SENTENCE as the citation (\"removed\", \"renamed\", \"there is no …\"). CLAUDE_DECISIONS.md\nand docs/CHANGELOG.md entries are frozen, so that marker goes in an ANNOTATION appended after\nthe original sentence — and the annotation must REPEAT the citation it discharges, in\nbackticks, or it covers nothing on that line. An alternative the entry says it REJECTED needs\nnothing. See DL-013 and its DL-291 annotation.\n");
     }
     if ($citeErrors !== []) {
         fwrite(STDERR, "Line-number citations (an offset goes stale the next time anything above it moves):\n");
