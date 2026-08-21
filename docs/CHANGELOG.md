@@ -149,6 +149,29 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   **Neither pint nor phpstan covers `bin/`, so that test file and the script's own run are this
   rule's only gates.**
 
+- **Release/CI documentation, and one inert release-config key removed.** No `app/`, no `bin/`, no
+  test, no behaviour — but `.release-pr.json` changes, so it is recorded here rather than left to a
+  release to discover. **`title_prefix` is dropped from [`.release-pr.json`](../.release-pr.json)**:
+  the shared `release-pr-body` generator deleted the key (agent-board-toolkit **card#7038**) because
+  it was read into a variable nothing interpolated — a knob declared to consumers while incapable of
+  changing any output, the observable proof being that every release PR title this repo has shipped
+  reads lowercase `release: vX.Y.Z` while the declared prefix said `Release`. It is now silently
+  ignored, so removing it changes nothing except what the file claims to configure.
+  **[`VERSIONING.md`](../VERSIONING.md) § Release flow gains the card-coverage obligation that move
+  left behind**: the generator now emits its `## Card coverage` section **only when it could
+  actually measure**, so a body with **no** such section means the check **did not run** — not that
+  it passed — and the step now spells out the four states a body can carry plus the standing
+  `promote-released-cards --dry-run`-before-merge discipline, which is the only thing between a
+  release and an unpromoted card when the section is absent.
+  **[`CLAUDE_GOTCHAS.md`](../CLAUDE_GOTCHAS.md) gains G-021**, on deriving this repo's pre-PR gate
+  set from `.github/workflows/` instead of a remembered list, with the four traps that make the
+  derivation non-obvious: a `paths:` filter that reaches further than its workflow's name suggests
+  (the `bin/` python tests fire on `app/**`), one workflow running the suite twice so a local run
+  certifies the SQLite leg only, a piped `rc=$?` reading the wrong process and hiding a red, and a
+  fresh `git worktree` with no `.env` failing as `No application encryption key has been specified`.
+  It carries no list of the gates on purpose — that list is a cache of `.github/workflows/` and
+  drifts identically, the class agent-board-toolkit **card#7122** tracks.
+
 ### Fixed
 
 - **card#7118** — **Three tests handed the shared temp root to code that enumerates it, so the suite's
