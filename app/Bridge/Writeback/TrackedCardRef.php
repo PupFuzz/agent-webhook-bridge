@@ -15,7 +15,8 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
  * own output (reconcile emits a skip line + increments its counter; the handler logs +
  * no-ops). Precedence (most-authoritative first), mirroring resolveTracked:
  *   1. `pr_url` — repo-qualified, yields BOTH repo + number ⇒ {@see TrackedRefKind::PrUrl}.
- *      A `.../pull/0` placeholder (the source-only qualifier `kbcard --pr-url` stamps) is
+ *      Parsed by {@see PrUrlRef}, the shared "which PR does this URL name" primitive. A
+ *      `.../pull/0` placeholder (the source-only qualifier `kbcard --pr-url` stamps) is
  *      NOT a real PR: it falls through to `pr_number`.
  *   2. bare `pr_number` — needs the repo. Unambiguous only on a 1:1 board
  *      ({@see TrackedRefKind::PrNumber}); on a board SHARED by >1 repo mapping the number
@@ -44,13 +45,11 @@ final class TrackedCardRef
      */
     public static function fromPayload(array $payload, bool $isShared, ExternalReferenceNormalizer $refs): self
     {
-        // (1) pr_url — repo + number. A `.../pull/0` placeholder falls through.
+        // (1) pr_url — repo + number. A `.../pull/0` placeholder names no PR, so it falls through.
         $pu = $payload['pr_url'] ?? null;
-        if (is_string($pu) && $pu !== '') {
-            $repo = $refs->repoFromGitHubUrl($pu);
-            if ($repo !== null && preg_match('#/pull/(\d+)#', $pu, $m) === 1 && (int) $m[1] > 0) {
-                return new self(TrackedRefKind::PrUrl, canonRepo: $repo, prNumber: (int) $m[1], prUrl: $pu);
-            }
+        $url = PrUrlRef::parse($pu, $refs);
+        if ($url !== null && $url->namesPr()) {
+            return new self(TrackedRefKind::PrUrl, canonRepo: $url->canonRepo, prNumber: $url->number, prUrl: $url->raw);
         }
 
         // (2) pr_number — repo-unqualified; usable only on a 1:1 board.
