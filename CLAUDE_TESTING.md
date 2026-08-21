@@ -159,6 +159,25 @@ re-implementation of the predicate in PHP would drift from what CI actually runs
   `git show 4abe8e3:` returns 128 in a shallow clone — a control read that way passes locally
   and reds in CI.
 
+## The DL collision gate's fixture — a real origin, not one repo (DL-295)
+
+`tests/Feature/Workflows/DlCollisionGateTest.php` extracts the real `run:` block out of
+`.github/workflows/dl-collision-gate.yml` and drives it under `bash`, the same shape as
+`ChangelogGateTest`. What is different is the fixture: the step's second assertion reads
+`CLAUDE_DECISIONS.md` at the **live tip of the target branch**, which it fetches, so the fixture is
+an upstream repository the work tree is *cloned* from and the "the target branch moved under this
+PR" cases advance that upstream for real. A single repo with no `origin` would not exercise the
+fetch at all, and a pre-computed file would assert the fixture.
+
+- **Every case plants a defect or pins a negative.** The gate is vacuous on this repo's actual
+  tree — no duplicate DL exists — so a case that merely ran it would witness nothing.
+- **Two cases pin the gate's stated BOUND, not its catch:** two concurrently-open PRs minting one
+  number both pass, and the second reds only after the first has merged *and* it re-runs. They
+  exist so the claim cannot quietly widen into "no duplicate DL can be minted".
+- The step calls the real `bin/decision-log.py`, copied into the work tree at the repo-relative
+  path the step names, so a change to the predicate reds here as well as in
+  `bin/test_decision_log.py`.
+
 ## The channel-server live-state sandbox (DL-269)
 
 `examples/channel-servers/tests/` spawns the REAL channel server, and the server's

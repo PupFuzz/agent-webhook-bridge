@@ -1,0 +1,104 @@
+name: DL collision gate
+
+# Refuses a PR that mints a `## DL-NNN` number already in use (card#7157).
+#
+# A duplicate DL number is silent, permanent and cross-cutting: nothing rejects
+# it, review cannot see it (each PR's log is internally consistent), and once
+# both entries land the decision log has two entries claiming one identifier —
+# an identifier cited across repos, in card titles and in the writeback's own
+# correlation grammar. Until this file existed the only in-repo way to pick a
+# number was `max(^## DL-NNN) + 1` over one checkout, which cannot see an
+# unpushed parallel mint. Measured near-miss 2026-08-21: two branches both read
+# 290; the collision was avoided by accident.
+#
+# THE PREDICATE AND ITS STATED BOUND ARE OWNED BY `bin/decision-log.py`, in the
+# `cmd_check` docstring, and are deliberately not restated here — a second copy
+# of a guard's scope is exactly how a guard comes to claim more than it checks.
+# Read it there before trusting this gate to have caught anything. The one line
+# worth repeating at the door, because it is the bound people assume away:
+# TWO OPEN PRs THAT EACH MINT THE SAME NEW NUMBER BOTH PASS. Neither number is
+# on the target branch yet.
+#
+# NO `paths:` FILTER, DELIBERATELY. A `paths:` key is static YAML evaluated
+# before any job exists, so nothing this workflow runs can observe it; a filter
+# that stops covering the decision log makes this gate ABSENT rather than red,
+# and an absent check reports nothing (measured on provision-tools-python.yml —
+# see DL-283). The job is seconds long and exits 0 on a PR that mints nothing,
+# so there is no cost worth buying that failure mode with.
+#
+# SECURITY: nothing author-controlled reaches a `run:` body by interpolation.
+# The base ref and SHA arrive through `env:` and are used quoted (DL-182/DL-284).
+
+on:
+  pull_request:
+    # `edited` is absent on purpose: this gate reads the decision log and the
+    # target branch, never the PR title, so a title edit changes none of its
+    # inputs. `synchronize` is load-bearing — a re-push is what re-reads the
+    # target branch tip, and re-reading it is the only way the second of two
+    # concurrently-minted numbers is ever caught.
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  dl-collision-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # REQUIRED: the step reads the decision log at the PR's merge base and
+          # at the live target-branch tip. A shallow clone has neither.
+          fetch-depth: 0
+
+      - name: A DL number this PR mints is not already in use
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+
+          LOG=CLAUDE_DECISIONS.md
+          work=$(mktemp -d)
+
+          # The log AT THE MERGE BASE — what this PR branched from. Numbers
+          # present here are not this PR's mints.
+          git show "$BASE:$LOG" > "$work/base.md"
+
+          # The log at the LIVE tip of the branch being merged into, fetched
+          # fresh rather than read from the merge base: the whole point of the
+          # second assertion is to see an entry the target branch gained AFTER
+          # this PR branched off.
+          git fetch --no-tags --quiet origin "+refs/heads/$BASE_REF:refs/remotes/dl-gate/$BASE_REF"
+          git show "refs/remotes/dl-gate/$BASE_REF:$LOG" > "$work/target.md"
+
+          rc=0
+          python3 bin/decision-log.py check \
+            --head "$LOG" --base "$work/base.md" --target "$work/target.md" || rc=$?
+
+          case "$rc" in
+            0)
+              ;;
+            5)
+              echo "::error::this PR's $LOG uses one DL number twice (the number is named above)."
+              echo "Two entries claiming one identifier is permanent once merged: every citation of"
+              echo "that number becomes ambiguous, in this repo and in every repo that cites it."
+              echo "Fix: allocate a fresh number with 'python3 bin/decision-log.py next' and renumber"
+              echo "the entry, its CHANGELOG line, its commit messages and the PR title together."
+              exit 1
+              ;;
+            6)
+              echo "::error::this PR mints a DL number that is already in use on $BASE_REF (named above)."
+              echo "The number was free when this branch was cut and has been taken since — the case a"
+              echo "'max + 1' scan of your own checkout structurally cannot see (card#7157)."
+              echo "Fix: allocate a fresh number with 'python3 bin/decision-log.py next' and renumber"
+              echo "the entry, its CHANGELOG line, its commit messages and the PR title together."
+              exit 1
+              ;;
+            *)
+              echo "::error::bin/decision-log.py exited $rc — unexpected; treat as a gate failure."
+              echo "An unreadable decision log must not be reported as a clean one."
+              exit 1
+              ;;
+          esac

@@ -36,6 +36,26 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   one owner (`CoordLaneStages::isLaneLabel`), and two legs — one at the classifier, one asserting
   the absence of the board write — red under exactly that mutation and green with it restored.
   `unlabeled` is deliberately NOT consumed, for the same reason: removing a label states no lane.
+- **card#7157 (DL-295)** — **a DL number is now ALLOCATED, not derived from the decision log, and CI
+  refuses one that is already in use.** ⚠ **This changes what CI accepts for a contributor** (a new
+  `DL collision gate` workflow runs on every PR); nothing about an installed bridge changes — no
+  `app/` file is touched, no migration, no `.env` key, no token scope. Until now the only in-repo way
+  to pick a number was the maximum `DL-` header plus one, and that **cannot see a mint that has not
+  been pushed**: two agents branching off one `dev` tip both read the same maximum and both write the
+  same number, silently and permanently (measured near-miss 2026-08-21 — two branches both read 290;
+  the collision was avoided by an unrelated test failure, not by any check). New
+  `bin/decision-log.py next` takes the number from the board's DL counter through the toolkit's
+  allocator and then **vetoes it against every worktree of this clone** plus
+  `BRIDGE_DL_CHECKOUT_GLOBS` — the leg the incident needed, since the toolkit's own offline glob
+  matches only the main checkout. With no allocator on PATH it **refuses** rather than falling back
+  to the scan it exists to retire. **The veto refused a live collision, not a planted one:** run
+  while three agents were minting in parallel, it reported the counter's next number as 294 and
+  refused it, naming the sibling checkout that already carried an unpushed `DL-294` entry. **⛔ The gate's bound is stated rather than implied: it does NOT
+  catch two OPEN PRs each minting the same new number** — neither number is on `dev` yet, so both are
+  green until one merges, and the second reds only on a re-run after that. Both halves of the bound
+  are pinned by tests. The gate is not a required status check until an operator adds it to branch
+  protection. **This hazard is created by parallel dispatch**; "do not run two DL-minting agents at
+  once" is recorded in DL-295 as a legitimate partial mitigation rather than left unstated.
 
 ### Changed
 
