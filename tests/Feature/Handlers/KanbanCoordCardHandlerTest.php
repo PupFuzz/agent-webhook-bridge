@@ -265,6 +265,7 @@ class KanbanCoordCardHandlerTest extends TestCase
         // Asserted because the naive spelling — "every archived card is reroute-tagged?" —
         // reads identically on the single-card cases above and differs only here.
         $this->writeMappingWithAlert();
+        Log::spy();
         Http::fake([
             '*/tasks/search.json?*archived=1*' => Http::response(['data' => [
                 ['id' => 524, 'tags' => ['id:QUERY-4', 'coord:reroute-archived'], 'archived_at' => '2026-08-21T21:24:24+00:00'],
@@ -278,9 +279,13 @@ class KanbanCoordCardHandlerTest extends TestCase
         $this->handle();
 
         Http::assertNotSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
-        // The signal names the retired card, not the reroute-archived one — that id is what
-        // an operator would unarchive.
         Http::assertSent(fn ($r) => $this->isAlertPush($r) && $r['reason'] === 'coord_card_archived_twin');
+        // The log names the RETIRED card only, not the reroute-archived one — 525 is the id
+        // an operator would unarchive, and naming 524 beside it would send them at a card
+        // the framework retired on purpose.
+        Log::shouldHaveReceived('warning')->withArgs(
+            fn (string $m, array $c) => str_contains($m, 'the only card for this thread is ARCHIVED') && $c['archived_card_ids'] === [525],
+        )->once();
     }
 
     public function test_the_archived_read_is_not_issued_on_the_by_ref_only_path(): void
