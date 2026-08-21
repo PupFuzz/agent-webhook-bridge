@@ -9,7 +9,8 @@ use Tests\TestCase;
  * card#6371 / DL-286 — the PHP mirror of the consumer's `kanban-issues-sync`
  * `_STAGE_LANE` / `_task_lane` / `classify_coord` lane model (Python), which the
  * coord-card CREATE path needs to place a card in the lane its issue already
- * declares instead of rewriting it.
+ * declares instead of rewriting it — and, since card#6393, the revive and relane writes
+ * that read the same model.
  *
  * Like {@see CoordConfigTerminalsTest}, this IS a second implementation of a rule
  * the bridge does not own — the bridge is PHP and cannot import the Python. The
@@ -20,6 +21,14 @@ use Tests\TestCase;
  * the gate (`classify_coord` routes an issue through `_task_lane` iff its TITLE
  * starts with `[TASK]`). If the consumer changes the rule, re-port these and this
  * test reds.
+ *
+ * {@see CoordLaneStages::isLaneLabel} is covered here too, and its status differs — say
+ * so rather than let it inherit the paragraph above. It is not a port of a Python
+ * function: the consumer has no "is this label a lane label" predicate, because it only
+ * ever resolves a whole label SET. What it is, is the same VOCABULARY read from the other
+ * end, so it belongs in the file that owns the agreement
+ * (`docs/kanban-integration-contract.md` names this test as where the lane agreement's
+ * vectors live). Its own vectors are therefore adversarial rather than ported.
  */
 class CoordLaneStagesTest extends TestCase
 {
@@ -107,6 +116,63 @@ class CoordLaneStagesTest extends TestCase
             ['lane' => 'now', 'unmapped' => []],
             CoordLaneStages::resolveLane(['stage:now', 'stage:maybe'], ['now', 'later']),
         );
+    }
+
+    public function test_every_lane_label_the_model_owns_is_recognized(): void
+    {
+        // The positive side, over the whole vocabulary rather than one example: a
+        // predicate that accepted nothing would satisfy every rejection leg below and
+        // ship a family that never fires.
+        foreach (CoordLaneStages::LANES as $lane) {
+            $this->assertTrue(CoordLaneStages::isLaneLabel('stage:'.$lane), $lane);
+        }
+    }
+
+    public function test_a_lane_label_is_recognized_case_insensitively(): void
+    {
+        // Same read-site folding as resolveLane: a hand-edited `Stage:Now` must not mean
+        // "not a lane label" to the trigger while meaning `now` to the resolution.
+        $this->assertTrue(CoordLaneStages::isLaneLabel('Stage:Now'));
+        $this->assertTrue(CoordLaneStages::isLaneLabel('STAGE:NOW'));
+    }
+
+    public function test_the_prefix_alone_is_not_a_lane_label(): void
+    {
+        // THE DISTINCTION THE PREDICATE EXISTS FOR (card#6393), and it is a behaviour
+        // difference: a `stage:`-prefixed label outside the vocabulary declares no lane,
+        // so resolveLane finds nothing and a caller that treated the PREFIX as the trigger
+        // would MOVE the card to the `later` default — a demotion on a label that
+        // expressed no sequencing. Anything an install invents in that namespace is here.
+        foreach (['stage:done', 'stage:blocked', 'stage:someday', 'stage:', 'stage:now-ish'] as $label) {
+            $this->assertFalse(CoordLaneStages::isLaneLabel($label), $label);
+        }
+    }
+
+    public function test_a_lane_name_that_merely_contains_a_lane_is_not_a_lane_label(): void
+    {
+        // The membership test is over the WHOLE suffix, not a prefix/substring match —
+        // `str_starts_with`/`str_contains` on the lane name would accept all three of
+        // these and re-open the demotion above through a narrower door.
+        foreach (['stage:no', 'stage:nowish', 'stage:nextish', 'stage:maybenot'] as $label) {
+            $this->assertFalse(CoordLaneStages::isLaneLabel($label), $label);
+        }
+    }
+
+    public function test_neither_the_prefix_nor_the_suffix_tolerates_stray_whitespace(): void
+    {
+        // GitHub label names can carry spaces, and nothing upstream trims them. Each of
+        // these is a DIFFERENT label from `stage:now` on the issue, so accepting it here
+        // would trigger a lane move from a label the consumer's own resolution ignores.
+        foreach ([' stage:now', 'stage:now ', 'stage: now', 'stage :now'] as $label) {
+            $this->assertFalse(CoordLaneStages::isLaneLabel($label), $label);
+        }
+    }
+
+    public function test_a_bare_lane_name_or_a_neighbouring_namespace_is_not_a_lane_label(): void
+    {
+        foreach (['now', 'later', 'staged:now', 'to:pm', ''] as $label) {
+            $this->assertFalse(CoordLaneStages::isLaneLabel($label), $label);
+        }
     }
 
     public function test_only_an_anchored_task_title_is_governed_by_the_lane_model(): void

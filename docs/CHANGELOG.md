@@ -8,6 +8,58 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Added
+- **card#6393 (DL-290)** — **`coord-card-relane`, an opt-in classifier family that moves a coord
+  `[TASK]`'s card to the lane a `stage:*` label added AFTER the card exists declares.** Closes the
+  label-after-open half of the class DL-286 filed: the create leg fires on `issues.opened` only, so
+  a `[TASK]` filed in the GitHub UI and labelled a moment later is carded in `later`, and the
+  consumer's board→issue writeback then converges that brand-new label back to `stage:later` — the
+  bridge silently overwriting a written sequencing ruling. **Opt-in and default-OFF**: add
+  `coord-card-relane` to the agent's `classifier.config.families`; it additionally requires
+  `move_coord_cards` (a relane *is* the bridge moving a coord card) and `coord_card_lane_stage_ids`
+  (with no lane model there is no lane to write). Both are checked at classify time — a
+  half-configured install emits nothing rather than paying a card search and a card read per
+  delivery to find that out — and **`bridge:check` warns** naming the missing key, since that
+  install is otherwise silent in a new way (no config error, nothing classified, no card moved). **No webhook-subscription
+  change is needed** — `issues.labeled` already arrives: **641** such deliveries had reached the
+  reference install and been dropped as action-undeclared (an operator measurement, last one
+  2026-08-20 15:31:53 UTC — no delivery corpus was reachable from this branch to re-derive it).
+- **The trigger filter is the LANE VOCABULARY, not the `stage:` namespace, and the difference is
+  measured.** A `str_starts_with($name, 'stage:')` trigger accepts any label an install invents in
+  that namespace; `CoordLaneStages::resolveLane` then recognizes none of them, the placement falls
+  back to the `later` default, and the handler MOVES the card there. Driven through
+  classify→handle with the prefix-only predicate in place, `stage:done` on a `[TASK]` sitting in
+  lane `now` (stage 40) PATCHes the card to stage 42 (`later`) — a demotion on a label that
+  expressed no sequencing, whose `stage:later` the consumer would then write onto the issue. Because
+  the family runs on a stream that already arrives, that is not one misfire. The vocabulary now has
+  one owner (`CoordLaneStages::isLaneLabel`), and two legs — one at the classifier, one asserting
+  the absence of the board write — red under exactly that mutation and green with it restored.
+  `unlabeled` is deliberately NOT consumed, for the same reason: removing a label states no lane.
+
+### Changed
+- **card#6393 (DL-290)** — **the `move_coord_cards` REVIVE arm is lane-aware.** A reopened `[TASK]`'s
+  card returns to the lane its `stage:*` label declares instead of to the fixed
+  `coord_card_stage_id`, which used to re-impose that stage — and its label — on every reopen (the
+  sibling DL-286's audit named and deferred, because the move family's target payload carried no
+  title and no labels to derive from; it now carries both, as the create family already did).
+  **Default-ON, but only for the population that already has BOTH `move_coord_cards` and
+  `coord_card_lane_stage_ids` live; byte-identical for every install with no lane map.**
+- **One shared `CoordCardLanePlacement` primitive now answers "which stage does this coord card
+  belong in" for all three writes** (create, revive, relane), extracted behaviour-preserving from
+  `KanbanCoordCardHandler::createStage()`. Three near-identical derivations of one rule is how the
+  three movers come to disagree about where a `[TASK]` belongs. The unmapped-lane `Log::warning`
+  deliberately stays at each handler CALL SITE and is **not** hoisted into the primitive:
+  `WritebackRefusalSignalCoverageTest` holds set-equality over the bare log calls in
+  `app/Bridge/Handlers/Kanban*Handler.php`, and a diagnostic moved into `app/Bridge/Writeback/`
+  would leave that guard reporting clean over a population it no longer covers.
+- **The relane leg cannot become a third mover, and the third gate is the one that matters.** It
+  refuses unless (1) the answer is lane-DERIVED, (2) the card is currently in a mapped lane — so a
+  card advanced to a working column, or parked in the terminal by a close, is never yanked back —
+  and (3) the card's current stage is **service-set** (`last_stage_move.actor_type === "service"`,
+  the same allow-list the revive arm already carried, not a parallel gate). Without (3) a label
+  would override a human's deliberate board re-lane, which is this card's own defect pointing the
+  other way.
+
 ### Fixed
 - **card#7118** — **Three tests handed the shared temp root to code that enumerates it, so the suite's
   result was a function of the box's `/tmp` rather than of the branch.** `BridgeServiceProviderTest`

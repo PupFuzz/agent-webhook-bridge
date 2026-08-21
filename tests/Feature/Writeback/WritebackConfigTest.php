@@ -948,8 +948,10 @@ class WritebackConfigTest extends TestCase
 
     public function test_lane_map_without_create_coord_cards_throws(): void
     {
-        // Nothing but the create path reads these ids, so a lane map on a mapping that
-        // creates no coord cards is a misconfiguration that would look active forever.
+        // The lane model is anchored on the create leg (DL-286): a mapping that creates no
+        // coord cards expresses no lane model, so a lane map on it is refused. NOT because
+        // the ids would go unread — the revive and relane legs read them too, on cards the
+        // consumer's reconcile created and the shared `id:<sid>` tag correlates.
         $this->write(json_encode(['mappings' => [
             'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'coord_card_stage_id' => 21,
                 'coord_card_lane_stage_ids' => ['later' => 42]],

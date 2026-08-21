@@ -188,10 +188,12 @@ final class WritebackBoardStateCheck implements Check
                 if ($mapping->coordCardTerminalStageId !== null) {
                     $targets[] = $mapping->coordCardTerminalStageId;
                 }
-                // card#6371: the priority-lane create stages — same class once more,
-                // and worse to miss: a typo'd lane id 422s the create for exactly the
-                // issues whose priority the label states, which is the population this
-                // leg exists to place correctly.
+                // card#6371: the priority-lane stage ids — same class once more, and
+                // worse to miss: a typo'd lane id 422s the write for exactly the issues
+                // whose priority the label states, which is the population this leg
+                // exists to place correctly. Since card#6393 that is three writes, not
+                // one (create, revive, relane), so the blast radius of a typo grew while
+                // this comparison did not have to.
                 foreach ($mapping->coordCardLaneStageIds ?? [] as $laneStageId) {
                     $targets[] = $laneStageId;
                 }
