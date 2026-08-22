@@ -148,6 +148,28 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7225 (DL-299)** — **⚠ `board_create_card`'s `board_id` / `swimlane_id` now say WHERE THE CARD
+  IS, read back from the card, instead of echoing the board and lane the calling agent is configured
+  to write to.** Both arms returned `$cfg` values on keys a calling agent consumes as a reading of
+  its card: `createCard()` hands back an id and nothing else, so a create never read its own result,
+  and the idempotency-hit arm answered for a card resolved out of a tag SEARCH — a card it had not
+  created and had not re-checked. ⇒ **The response was silently correct until the moment it
+  mattered**, because the two readings differ only when something has already gone wrong. Ranked
+  above the same shape's log-line siblings (still open on card#7225) for the reason the operator
+  gave: a log line is read by someone already hunting a problem; a tool response is consumed as
+  fact. **⚠ FOR A CALLER — the two keys can now disagree with your config, and there is a third:**
+  `placement_observed` is `true` when the ids are that card's own values (in which case
+  `swimlane_id: null` genuinely means *no lane*), and `false` when the read-back failed — then
+  **both ids are null and the response claims no placement at all**. It never falls back to the
+  configured board/lane; that fallback IS the defect. `created` / `idempotent_hit` / `card_id` are
+  untouched, so a read-back failure is not an error response — the card exists and its id is still
+  the answer. **Cost: one extra `GET /tasks/{id}.json` per SUCCESSFUL call** (nothing on any refusal
+  path), taken on the card the tool is about to name — after the duplicate collapse, so a survivor
+  another worker minted reports its own placement. A placement disagreeing with the configured scope
+  is a `Log::warning` naming both pairs; the tool still answers 200 with what it saw. **What a
+  divergence should make the tool DO (refuse? alert?) is deliberately NOT decided here** — that
+  changes what the surface accepts and is its own gate.
+
 - **card#7212 (rt#327 R4)** — **a successful writeback now records the board it LANDED on, not only
   the board it AIMED at.** The success path logged `$mapping->boardId` — the operator's configured
   board, straight from `writeback.json` — while only the REFUSAL path (`MappedBoardGuard::refuses()`)

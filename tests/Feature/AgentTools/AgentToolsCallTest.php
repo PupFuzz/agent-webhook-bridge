@@ -4,6 +4,7 @@ namespace Tests\Feature\AgentTools;
 
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -231,7 +232,11 @@ class AgentToolsCallTest extends TestCase
 
     public function test_create_forces_swimlane_from_config_ignoring_caller(): void
     {
-        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 42]], 201)]);
+        Log::spy();
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 42]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'board_id' => 10, 'swimlane_id' => 4]]),
+        ]);
 
         $res = $this->callTool(['tool' => 'board_create_card', 'args' => [
             'title' => 'capture me', 'description' => 'body', 'swimlane_id' => 999, 'board_id' => 999,
@@ -246,6 +251,11 @@ class AgentToolsCallTest extends TestCase
             && $r['description'] === 'body'
             && $r['payload'] === []             // {} in v1
             && in_array('created-by:me', $r['tags'], true));
+        // CONTROL for the placement warnings (card#7225): the card came back where
+        // this agent writes, so neither the divergence nor the unreadable warning
+        // fires. Keyed on those two messages, never on `warning` at large.
+        Log::shouldNotHaveReceived('warning', [\Mockery::pattern('/NOT where this agent is configured to write/'), \Mockery::any()]);
+        Log::shouldNotHaveReceived('warning', [\Mockery::pattern('/could not be read back/'), \Mockery::any()]);
     }
 
     /**
@@ -332,7 +342,10 @@ class AgentToolsCallTest extends TestCase
     #[DataProvider('legitimateTagCases')]
     public function test_legitimate_caller_tag_is_accepted(string $tag): void
     {
-        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 77]], 201)]);
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 77]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 77, 'board_id' => 10, 'swimlane_id' => 4]]),
+        ]);
 
         $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'tags' => [$tag]]]);
 
@@ -350,7 +363,10 @@ class AgentToolsCallTest extends TestCase
         // The stored/searched idem tag must be lowercased: a mixed-case key
         // `Report` produces the same `idem:me:report` needle as a lowercase call,
         // so the two correlate to the SAME card.
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]])]);
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 7, 'board_id' => 10, 'swimlane_id' => 4]]),
+        ]);
 
         $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'Report']]);
 
@@ -395,13 +411,20 @@ class AgentToolsCallTest extends TestCase
      * @param  list<array<string, mixed>>  $archived  rows the archive-side probe answers
      * @param  list<array<string, mixed>>|null  $postCreate  rows the post-create live re-read
      *                                                       answers (null ⇒ same as $live)
+     * @param  array<string, mixed>  $readBack  the CARD ROW `GET /tasks/<id>.json` answers —
+     *                                          the placement source since card#7225/DL-299.
+     *                                          Defaults to a realistic in-scope row; a test
+     *                                          about placement names its own.
      */
-    private function archiveAxisFake(array $live, array $archived, int $newId, ?array $postCreate = null): \Closure
+    private function archiveAxisFake(array $live, array $archived, int $newId, ?array $postCreate = null, array $readBack = ['board_id' => 10, 'swimlane_id' => 4]): \Closure
     {
         $liveReads = 0;
 
-        return function ($request) use ($live, $archived, $newId, $postCreate, &$liveReads) {
+        return function ($request) use ($live, $archived, $newId, $postCreate, $readBack, &$liveReads) {
             $url = urldecode($request->url());
+            if ($request->method() === 'GET' && preg_match('#/tasks/(\d+)\.json#', $url, $m) === 1) {
+                return Http::response(['data' => ['id' => (int) $m[1]] + $readBack]);
+            }
             if (str_contains($url, '/tasks/search.json')) {
                 if (str_contains($url, 'archived=1')) {
                     return Http::response(['data' => $archived]);
@@ -435,7 +458,10 @@ class AgentToolsCallTest extends TestCase
         $res->assertStatus(200)
             ->assertJsonPath('result.created', false)
             ->assertJsonPath('result.idempotent_hit', true)
-            ->assertJsonPath('result.card_id', 7);
+            ->assertJsonPath('result.card_id', 7)
+            ->assertJsonPath('result.board_id', 10)
+            ->assertJsonPath('result.swimlane_id', 4)
+            ->assertJsonPath('result.placement_observed', true);
         Http::assertNotSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json') && ! str_contains($r->url(), 'search'));
         // A LIVE hit answers first and pays NOTHING for the archive axis (DL-297
         // Decision 2) — the archived row staged above is never consulted, so an
@@ -514,8 +540,133 @@ class AgentToolsCallTest extends TestCase
         $res->assertStatus(200)
             ->assertJsonPath('result.created', true)
             ->assertJsonPath('result.idempotent_hit', false)
-            ->assertJsonPath('result.card_id', 88);
+            ->assertJsonPath('result.card_id', 88)
+            ->assertJsonPath('result.board_id', 10)
+            ->assertJsonPath('result.swimlane_id', 4)
+            ->assertJsonPath('result.placement_observed', true);
         Http::assertSent(fn ($r) => str_contains($r->url(), '/tasks/search.json') && str_contains($r->url(), 'archived=1'));
+    }
+
+    // ─── board_create_card: the placement it REPORTS (card#7225, DL-299) ─────
+
+    public function test_a_created_cards_placement_is_read_back_from_the_card_not_restated_from_config(): void
+    {
+        // ⛔ THE DEFECT. `board_id` / `swimlane_id` used to be $cfg values — where
+        // this agent is CONFIGURED to write — on keys a calling agent consumes as
+        // where its card IS. `createCard()` returns an id only, so the placement
+        // was never read back: a kanban that did not honour the posted
+        // `swimlane_id` answers 201 + an id exactly like one that did, and the
+        // tool reported the configured lane 4 for a card sitting in lane 99.
+        // The two readings differ ONLY when something has gone wrong, so the old
+        // answer was silently correct right up to the moment it mattered.
+        Log::spy();
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 42]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'board_id' => 10, 'swimlane_id' => 99]]),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.created', true)
+            ->assertJsonPath('result.card_id', 42)
+            ->assertJsonPath('result.board_id', 10)
+            ->assertJsonPath('result.swimlane_id', 99)          // the card's OWN lane, NOT the configured 4
+            ->assertJsonPath('result.placement_observed', true);
+        // The WRITE is unchanged — it still asks for the configured lane. Only the
+        // report moved from intent to observation.
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json') && $r['swimlane_id'] === 4);
+        // And the observation came off the wire, from the card itself.
+        Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/42.json'));
+        // The divergence is also RECORDED — the response tells the caller where the
+        // card is, the log tells the operator that it is not where we write.
+        Log::shouldHaveReceived('warning', [\Mockery::pattern('/NOT where this agent is configured to write/'), \Mockery::any()]);
+    }
+
+    public function test_an_idempotency_hit_reports_the_hit_cards_own_board_and_lane(): void
+    {
+        // ⛔ THE SHARPEST INSTANCE. This card id came out of a tag SEARCH, so the
+        // tool has resolved a card it did not create and never re-checked (a
+        // Group-B resolution, card#7211) — and it used to answer the configured
+        // board for it, on the one path where the card can be anywhere at all.
+        Log::spy();
+        Http::fake($this->archiveAxisFake(
+            live: [['id' => 7]], archived: [], newId: 88,
+            readBack: ['board_id' => 77, 'swimlane_id' => 5],   // the hit card is NOT on this agent's board
+        ));
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k5']]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.idempotent_hit', true)
+            ->assertJsonPath('result.card_id', 7)
+            ->assertJsonPath('result.board_id', 77)             // observed, not the configured 10
+            ->assertJsonPath('result.swimlane_id', 5)           // observed, not the configured 4
+            ->assertJsonPath('result.placement_observed', true);
+        Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
+        Log::shouldHaveReceived('warning', [\Mockery::pattern('/NOT where this agent is configured to write/'), \Mockery::any()]);
+    }
+
+    public function test_a_card_in_no_lane_reports_a_null_lane_as_an_observation(): void
+    {
+        // The PRESENCE half of the null pair below: a card legitimately in no
+        // swimlane is a real reading, and `placement_observed: true` is what says
+        // so. Without this the null in the next test would be indistinguishable
+        // from "the bridge could not look".
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 42]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'board_id' => 10, 'swimlane_id' => null]]),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.swimlane_id', null)
+            ->assertJsonPath('result.board_id', 10)
+            ->assertJsonPath('result.placement_observed', true);
+    }
+
+    public function test_an_unreadable_card_reports_no_placement_and_still_answers_the_card_id(): void
+    {
+        // FAIL-SOFT, and the pairing that makes the nulls mean something: the
+        // create has already landed, so the id is the answer worth keeping. What
+        // must NEVER happen is the config value filling the gap — that is the
+        // defect wearing a fallback.
+        Log::spy();
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 42]], 201),
+            '*/tasks/*.json' => Http::response('boom', 500),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.created', true)            // presence witness: the create still answers
+            ->assertJsonPath('result.card_id', 42)
+            ->assertJsonPath('result.board_id', null)
+            ->assertJsonPath('result.swimlane_id', null)
+            ->assertJsonPath('result.placement_observed', false);
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
+        Log::shouldHaveReceived('warning', [\Mockery::pattern('/could not be read back/'), \Mockery::any()]);
+    }
+
+    public function test_a_read_back_carrying_no_board_id_reports_no_placement(): void
+    {
+        // A 200 whose body answers nothing about placement is not an observation.
+        // `board_id` is the anchor kanban returns on every task row, so a row
+        // without one leaves BOTH ids unclaimed rather than reporting a null lane.
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 42]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'swimlane_id' => 4]]),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.card_id', 42)
+            ->assertJsonPath('result.board_id', null)
+            ->assertJsonPath('result.swimlane_id', null)        // NOT the 4 the row happens to carry
+            ->assertJsonPath('result.placement_observed', false);
     }
 
     // ─── board_my_cards: swimlane row filter ─────────────────────────────────

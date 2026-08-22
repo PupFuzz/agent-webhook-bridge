@@ -140,8 +140,34 @@ term is efficiency + defense-in-depth, not the boundary.
 
 ```jsonc
 { "created": true, "idempotent_hit": false, "card_id": 123,
-  "board_id": 10, "swimlane_id": 4 }
+  "board_id": 10, "swimlane_id": 4, "placement_observed": true }
 ```
+
+**⚠ `board_id` / `swimlane_id` are WHERE THE CARD IS, read back from the card
+itself — not where you are configured to write (card#7225, DL-299).** Before this
+they were the config values echoed back, on both arms: the create never read its
+own result (`POST /tasks.json` hands back an id, not a placement) and the
+idempotency hit answered for a card resolved out of a tag *search*. The two
+readings are equal until something has gone wrong, so the old answer was silently
+correct exactly until you needed it. Consequences for a caller:
+
+- A card kanban did not place where the bridge asked now reports **where it
+  actually is**, not the lane the POST requested.
+- `placement_observed` is the discrimination that makes the nulls readable.
+  **`true`** ⇒ `board_id`/`swimlane_id` are that card's own values (and
+  `swimlane_id: null` then means the card really is in no lane). **`false`** ⇒ the
+  read-back failed and **both ids are null — the response claims no placement**;
+  it never falls back to the configured board/lane, which is the defect this
+  closes. `created` / `idempotent_hit` / `card_id` are unaffected: the card exists
+  and its id is still the answer, so a read-back failure is **not** an error
+  response (losing the placement is cheaper than losing the id).
+- It costs **one extra `GET /tasks/{id}.json`** per successful call, and it is the
+  card the tool is about to name — after any duplicate collapse, so a survivor
+  minted by another worker reports its own placement.
+- A placement that disagrees with the agent's configured board/lane is a
+  `Log::warning` on the bridge; the tool still answers 200 and reports what it
+  saw. What a divergence should make the tool *do* is a separate question from
+  what it *reports*, and only the report changed here.
 
 ## Errors
 

@@ -96,7 +96,7 @@ class WebhookReceiveTest extends TestCase
 
 `$this->call()` is used rather than `$this->postJson()` when the raw body must be an exact byte string (the HMAC middleware signs the raw body, not a re-serialized array).
 
-**Outbound HTTP — `Http::fake()`.** The bridge makes outbound HTTP for provisioning (`KanbanProvisionClient`) and for `ChannelPushHandler` when a URL transport is used. Tests use Laravel's `Http::fake()` facade — no real network call is made:
+**Outbound HTTP — `Http::fake()`.** The bridge makes outbound HTTP for provisioning (`KanbanProvisionClient`) and for `ChannelPushHandler` when a URL transport is used. Tests use Laravel's `Http::fake()` facade — a stubbed request never leaves the process:
 
 ```php
 Http::fake(fn (Request $r) => $r->method() === 'GET'
@@ -109,6 +109,8 @@ Http::assertSent(fn (Request $r) => $r->method() === 'POST'
     && str_contains($r->url(), '/boards/5/webhooks.json')
     && $r['url'] === $this->receiverUrl);
 ```
+
+**⛔ An UNSTUBBED request is not blocked — it goes to the real network.** No test here calls `preventStrayRequests()`, and `PendingRequest::buildStubHandler()` falls through to the live handler when no registered callback answers (a bare `Http::fake()` or a `'*'` closure answers everything and hides this; the URL-pattern array form does not). ⚑ **What that costs, measured on card#7225:** adding one outbound read to `board_create_card` left every board-tools test that reaches a success arm issuing a real call to the fixture host, whose connection failure was swallowed by the caller's own fail-soft `catch` — **all 74 tests in the three board-tools suites passed while the new read was never once exercised as intended**. (The fall-through itself is measured, not inferred: an unmatched request under the array form raises `ConnectionException: cURL error 7` from the live handler.) So when a change adds an API call, extend the stub set of every test that reaches it and assert the new request on the wire (`Http::assertSent`); do not read a green suite as evidence the call was faked, and be especially wary where the caller degrades softly.
 
 **Register the whole stub set once.** A second `Http::fake()` does not replace the first — it appends to it, the *first* matching stub wins, and it resets the recorded log that `Http::assertSent()` reads. So calling a setup helper and then "overriding" one URL with a later `Http::fake()` silently leaves the helper's answer in place, and the test stays green. Read [`CLAUDE_GOTCHAS.md`](CLAUDE_GOTCHAS.md) G-020 **before** layering fakes.
 
