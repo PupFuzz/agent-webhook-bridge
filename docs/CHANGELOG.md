@@ -110,6 +110,34 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7222 (DL-297)** — **`board_create_card` now REFUSES an `idempotency_key` whose card was
+  ARCHIVED, instead of minting a second card over the retire.** ⚠ **This changes what the tool
+  accepts.** The correlate-before-create probe read `tasks/search.json` with no `archived`
+  parameter, and kanban's search applies `whereNull('archived_at')` unless one is passed — so a key
+  whose card had been retired read as un-carded. Demonstrated before it was fixed: with card 77
+  archived under the key, one call returned **200, a second card (88), `"created": true`**, and
+  never read the archive side at all. The probe now reads the archive side too, on the last branch
+  before the create, and an archived twin suppresses it: **422, no card created**, the message
+  naming the ids to unarchive. **What changes for a caller, in full:** the archived-twin board
+  state, and nothing else on the board axis. A LIVE twin is still an idempotent hit — including a
+  live twin sitting beside an archived one, since the live read answers first and the archive side
+  is never consulted; a key
+  with no card on either side still creates, at the cost of one extra search per card actually
+  minted; a call with no `idempotency_key` is byte-identical. If the archive-side read itself errors
+  upstream the call is **502 with nothing created** — fail-closed, because the alternative re-mints
+  over a retire. **The caller's remedies are in the refusal:** unarchive that card if the work is
+  live again, or pass a NEW `idempotency_key` if this is genuinely new work. Handing the archived
+  card back as `"idempotent_hit": true` was the other candidate and was **rejected** — it returns a
+  retired card as a success, one the same agent's own `board_my_cards` window (live-only, correctly)
+  does not show. **The consumer's `coord:reroute-archived` carve-out is deliberately NOT carried
+  over from DL-296:** that exemption exists because the consumer's reconcile is a second mover that
+  re-creates the exempted thread, making a refusal one the other mover undoes; nothing reconciles a
+  tool-minted card, so the refusal here is durable and its remedy accurate. This is the second of
+  the four create-deciding members on card#7222's class item. The reference channel server's
+  snapshot goes **0.9.5 → 0.9.6** for the `idempotency_key` tool description, which carried the now
+  false *"re-using a key whose card was ARCHIVED creates a second card"* (DL-038); no behavior
+  change in the server.
+
 - **card#7169 (DL-296)** — **an ARCHIVED coord card is a RETIRE the real-time create leg now
   honours, instead of minting a second card over it.** `KanbanClient::cardsByTag()` sends no
   `archived` parameter and kanban's search applies `whereNull('archived_at')` unless one is passed,
@@ -138,8 +166,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   on that card — `board_create_card`'s `idem:` pre-check (re-using a key whose card was archived
   mints a SECOND card and answers `"created": true`; **`docs/board-tools.md` and the MCP tool
   description now carry that bound, the code is unchanged**, because both candidate fixes change
-  what the tool accepts) and the dependabot leg (it archives its own card on `closed_unmerged`,
-  `reopened` collapses to `opened`, and by-ref excludes archived rows, so a reopened dependabot PR
+  what the tool accepts) **[DL-297 correction, same release: that member is now FIXED — the probe
+  reads the archive side and REFUSES; read this clause as the state DL-296 shipped in, and the
+  DL-297 entry above for what the tool does now]** and the dependabot leg (it archives its own card
+  on `closed_unmerged`, `reopened` collapses to `opened`, and by-ref excludes archived rows, so a
+  reopened dependabot PR
   re-creates over the bridge's own retire — possibly intended, but unrecorded either way). The
   reference channel server's snapshot goes **0.9.4 → 0.9.5** for that one-line description fix
   (DL-038); no behavior change in the server.
