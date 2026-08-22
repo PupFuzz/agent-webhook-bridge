@@ -268,10 +268,11 @@ final class KanbanClient
      * ⚠ Live-only is RIGHT for a post-create collapse (it reduces the LIVE set to one
      * survivor; seeing archived rows would re-archive an already-retired card) and for
      * a move correlation (it would RESURRECT a retired card into a stage). It is NOT
-     * right for a CREATE decision, and `BoardCreateCardTool`'s `idem:` pre-check is one:
-     * re-using a key whose card was archived reads as un-carded and mints a second card.
-     * That is open, with its siblings, on card#7222 — do not read this docblock as
-     * certifying every caller.
+     * right for a CREATE decision. `BoardCreateCardTool`'s `idem:` pre-check WAS such a
+     * caller — re-using a key whose card was archived read as un-carded and minted a
+     * second card — and DL-297 (card#7222 M2) closed it by reading the archive axis
+     * separately and REFUSING the create. Its siblings stay open on card#7222; do not
+     * read this docblock as certifying every caller.
      *
      * @return list<int>
      */
