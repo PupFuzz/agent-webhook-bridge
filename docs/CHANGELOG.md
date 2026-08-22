@@ -10,6 +10,25 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Added
 
+- **card#7211** — **a guard on the CALL CONSTRUCTION of every board-scoped kanban read: the
+  board term must sit inside the `q=` string, never as a top-level query parameter.** Measured
+  live: `q=board_id=<id>` is enforced server-side (a token planted only on board B returned
+  `total:1` scoped to B and `total:0` scoped to A — the control is what makes the zero mean
+  something), and it holds past page 1. **But an unrecognised TOP-LEVEL parameter is silently
+  dropped and the endpoint answers HTTP 200 with an UNFILTERED result set** spanning every board
+  the token can reach. **⛔ The trap: `board_id` ALSO works as a bare top-level parameter and
+  filters correctly there** — so hoisting `q=board_id=N` to `?board_id=N` tests clean, reviews
+  clean, and takes the next filter hoisted beside it (`tags`) silently out of the query. Nothing
+  in a 200 response distinguishes a dropped filter from an honoured one, so **no assertion on a
+  search RESULT can see this change** — the dangerous edit is entirely on the client's side of
+  the wire. The guard derives its population instead of listing it (reflection over the client's
+  board-taking methods, each invoked and its emitted URL asserted; plus a source scan of every
+  `/tasks/search.json` call site in `app/`, which reconciles its own denominator so a call site
+  it cannot parse reds rather than passing), so **a board-scoped read added later is covered
+  without editing an enumeration**. Both derivations red under the hoist mutation, and the
+  coverage leg reds when a known reader stops being reachable. **No behaviour change** — this
+  adds a test; it does not change what the bridge accepts, rejects, or writes.
+
 - **card#6393 (DL-290)** — **`coord-card-relane`, an opt-in classifier family that moves a coord
   `[TASK]`'s card to the lane a `stage:*` label added AFTER the card exists declares.** Closes the
   label-after-open half of the class DL-286 filed: the create leg fires on `issues.opened` only, so

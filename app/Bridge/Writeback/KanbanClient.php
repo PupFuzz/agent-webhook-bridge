@@ -19,6 +19,13 @@ use Illuminate\Support\Facades\Log;
  * logs": the read is the single choke-point where a degraded-but-not-erroring
  * board response is observable, so the 0-card / page-cap WARNINGs live HERE
  * (see correlationCards) rather than being duplicated across every caller (DL-026).
+ *
+ * ⛔ EVERY `/tasks/search.json` FILTER RIDES INSIDE THE `q=` STRING, never as a top-level
+ * query parameter: an unrecognised one is dropped SILENTLY and the read comes back
+ * unfiltered, 200, indistinguishable from a scoped one. `board_id` is recognised top-level
+ * too, which is what makes the hoist look equivalent when it is tested. The invariant and
+ * its measurements are owned by `docs/kanban-integration-contract.md` §3;
+ * `BoardScopedReadConstructionTest` pins the construction (card#7211).
  */
 final class KanbanClient
 {
