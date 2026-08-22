@@ -225,7 +225,8 @@ const TOOL_DEFINITIONS = [
           type: 'string',
           description:
             'Optional but recommended: [A-Za-z0-9.-]{1,64}. Re-using it returns the ' +
-            'same card instead of creating a duplicate.',
+            'same card instead of creating a duplicate — while that card is LIVE. ' +
+            'Re-using a key whose card was ARCHIVED creates a second card.',
         },
       },
       required: ['title'],

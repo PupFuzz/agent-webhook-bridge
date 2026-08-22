@@ -92,6 +92,40 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7169 (DL-296)** — **an ARCHIVED coord card is a RETIRE the real-time create leg now
+  honours, instead of minting a second card over it.** `KanbanClient::cardsByTag()` sends no
+  `archived` parameter and kanban's search applies `whereNull('archived_at')` unless one is passed,
+  so the create leg's tag pre-check **structurally could not see an archived card**: a thread whose
+  only card had been retired read as un-carded, and since `issues.reopened` is on the create path,
+  every reopen minted a duplicate. **Reproduced on a live board before any code was written** —
+  card archived, the reopen replayed through the real classifier and handler against the real API,
+  a second card observed on the board. **⚠ This changes what the bridge accepts:** a reopen that
+  creates today stops creating when the thread's only card is archived, and the refusal now
+  **signals** (`coord_card_archived_twin`, log + alert push naming the archived card ids) rather
+  than passing in silence — the remedy is to unarchive that card. Operator-approved before any
+  code. **The consumer's fork is inherited, not collapsed:** a card the reclass pass archived
+  because its source re-routed away carries `coord:reroute-archived` and does **NOT** suppress — a
+  source that routes back is carded again — while a hand-retired card does. The exemption is per
+  **thread**, matching the granularity the consumer subtracts at (sets of stable-ids, not cards),
+  so a mixed archived set — one reroute-tagged twin beside a hand-retired one — is carded again on
+  both sides. Refusing on *"any archived card exists"* was rejected explicitly: it would
+  silently stop carding legitimately-reopened work. Kanban's `archived` is a **switch**, not a
+  widening (`archived=1` returns archived ONLY), so this is a second read on the last branch before
+  the create — no existing read changes, no caller of `cardsByTag` sees a new row, and a delivery
+  that skips pays nothing. **Stated gap:** the non-prefixed (`issue_population: all`) path has no
+  tag and kanban's `by-ref.json` takes no `archived` parameter, so a retired by-ref card is still
+  re-created; pinned by a test and tracked on card#7169. **The SIBLING CLASS is filed, not asserted
+  away (card#7222):** a live-only correlation read answering *"no card"* for an archived one is a
+  shape with four create-deciding members, and DL-296 closes one. Two stay OPEN with dispositions
+  on that card — `board_create_card`'s `idem:` pre-check (re-using a key whose card was archived
+  mints a SECOND card and answers `"created": true`; **`docs/board-tools.md` and the MCP tool
+  description now carry that bound, the code is unchanged**, because both candidate fixes change
+  what the tool accepts) and the dependabot leg (it archives its own card on `closed_unmerged`,
+  `reopened` collapses to `opened`, and by-ref excludes archived rows, so a reopened dependabot PR
+  re-creates over the bridge's own retire — possibly intended, but unrecorded either way). The
+  reference channel server's snapshot goes **0.9.4 → 0.9.5** for that one-line description fix
+  (DL-038); no behavior change in the server.
+
 - **card#7126 (DL-294)** — **`coord_card_lane_stage_ids` is now accepted with `move_coord_cards`
   alone, not only with `create_coord_cards`.** The load refused any mapping that set a lane map
   without the create leg, on the stated ground that *"the revive and relane legs only re-place an
@@ -377,6 +411,28 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
     still covered only by the level-keyed leg and its stated bound.
 
 ### Fixed
+
+- **card#7209** — **The `bridge:check` channel-liveness test asserted a race it did not control: a
+  forked child held the socket open for a hardcoded 3-second `stream_socket_accept()` window while
+  the parent ran an unbounded `bridge:check` inside it.** Once the parent's own path to the probe
+  passed that window the child had already `SIGKILL`ed itself, the socket was gone, and the check
+  CORRECTLY reported it dead — so the red was the test's, not the code's. The whole test takes about
+  2s on an idle box — that gap to the 3s window was the entire margin.
+  Two agents hit it independently on unrelated work in one cycle, on a box running several build
+  agents in parallel, which is exactly the load that crosses that boundary. **The child's window was
+  not the wrong number — the parent was the unbounded half**, so raising it would have bought margin
+  and kept the race. The listener is now bound **in-process** and held open across the whole run in a
+  `try`/`finally`, making its lifetime this test's control flow instead of a wall clock: a bound UDS
+  completes the connect handshake from the kernel's backlog with no `accept()` at all (the property
+  `SystemChannelProbeEnvironmentTest` already asserts directly against the real probe, and the reason
+  the HTTP twin never needed a fork). **Measured, not asserted:** with the parent artificially
+  delayed 3.5s before the check the old shape reds and the new one passes 3/3 — and still passes with
+  a 15s delay, i.e. the ordering dependency is removed rather than widened. **The leg still
+  discriminates**, witnessed twice: mutating `SystemChannelProbeEnvironment` so a connect never
+  reports connected reds it, and closing the listener before the check reds it on the stale-socket
+  message. **Coverage goes up**: dropping the fork drops the `pcntl` skip, so the leg — one of only
+  two in the suite that reaches either liveness probe — now runs on hosts where it silently skipped,
+  and the fork-inherited-DB-connection hazard the child's hard exit existed to dodge is gone with it.
 
 - **card#7118** — **Three tests handed the shared temp root to code that enumerates it, so the suite's
   result was a function of the box's `/tmp` rather than of the branch.** `BridgeServiceProviderTest`

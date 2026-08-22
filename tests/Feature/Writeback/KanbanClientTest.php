@@ -463,6 +463,39 @@ class KanbanClientTest extends TestCase
         $this->assertSame([], $this->client()->cardsByTag(8, 'id:TASK-9'));
     }
 
+    // ---- cardRowsByTag + its archive axis (DL-296) ----
+
+    public function test_card_rows_by_tag_sends_no_archived_key_by_default(): void
+    {
+        // The default read is LIVE cards, and it must stay byte-identical: kanban reads
+        // `?archived=0` as an explicit "archived only: no" and `?archived` absent the same
+        // way, but only the ABSENT form is what every pre-DL-296 caller sent.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 42, 'tags' => ['id:QUERY-4']], 'bad-row']])]);
+
+        $rows = $this->client()->cardRowsByTag(8, 'id:QUERY-4');
+
+        $this->assertSame([['id' => 42, 'tags' => ['id:QUERY-4']]], $rows);
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET'
+            && str_contains(urldecode($r->url()), 'board_id=8 tags:"id:QUERY-4"')
+            && ! str_contains($r->url(), 'archived'));
+    }
+
+    public function test_card_rows_by_tag_asks_for_the_archived_side_when_told_to(): void
+    {
+        // `archived=1` is kanban's SWITCH to `whereNotNull('archived_at')` — the only way
+        // to see a retired twin at all (the coord create leg's DL-296 read).
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 521, 'tags' => ['id:QUERY-4'], 'archived_at' => '2026-08-21T21:19:19+00:00'],
+        ]])]);
+
+        $rows = $this->client()->cardRowsByTag(8, 'id:QUERY-4', true);
+
+        $this->assertSame([['id' => 521, 'tags' => ['id:QUERY-4'], 'archived_at' => '2026-08-21T21:19:19+00:00']], $rows);
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET'
+            && str_contains(urldecode($r->url()), 'board_id=8 tags:"id:QUERY-4"')
+            && str_contains($r->url(), 'archived=1'));
+    }
+
     public function test_board_swimlane_ids_reads_the_preload_endpoint(): void
     {
         Http::fake(['*/boards/8/preload.json' => Http::response(['data' => ['swimlanes' => [
