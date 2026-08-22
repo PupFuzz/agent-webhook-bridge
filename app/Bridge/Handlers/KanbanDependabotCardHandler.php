@@ -14,6 +14,7 @@ use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
+use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -157,7 +158,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 // >1 card for one repo+PR is a create-race artifact (see collapseDuplicates):
                 // retire the extras and move only the survivor. Self-heals duplicates minted
                 // before this guard shipped, on the PR's next event.
-                $survivor = $this->collapseDuplicates($client, $cards, $repo, $prNumber);
+                $survivor = $this->collapseDuplicates($client, $cards, $mapping, $repo, $prNumber);
                 if (($survivor['workflow_stage_id'] ?? null) !== $stageId) {
                     $client->moveCard((int) $survivor['id'], $stageId);
                     // Group-B, as the archive arm above (card#7211/card#7212): the survivor was
@@ -196,7 +197,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             // transient/permanent split below; the move-path guard self-heals it next event.
             $live = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber, $sourceRepo), $repo);
             if (count($live) > 1) {
-                $this->collapseDuplicates($client, $live, $repo, $prNumber);
+                $this->collapseDuplicates($client, $live, $mapping, $repo, $prNumber);
             }
         } catch (RequestException $e) {
             // A kanban 4xx is permanent (alert + log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
@@ -270,9 +271,9 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
      * @param  non-empty-array<int, array<string, mixed>>  $cards  id => card
      * @return array<string, mixed>
      */
-    private function collapseDuplicates(KanbanClient $client, array $cards, string $repo, int $prNumber): array
+    private function collapseDuplicates(KanbanClient $client, array $cards, WritebackMapping $mapping, string $repo, int $prNumber): array
     {
-        return CardCollapse::toSurvivor($client, $cards, 'kanban_dependabot_card', ['repo' => $repo, 'pr' => $prNumber]);
+        return CardCollapse::toSurvivor($client, $cards, 'kanban_dependabot_card', ['repo' => $repo, 'pr' => $prNumber], $mapping);
     }
 
     /**

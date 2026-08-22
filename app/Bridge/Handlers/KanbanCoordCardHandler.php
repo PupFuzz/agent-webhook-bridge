@@ -238,13 +238,13 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
             if ($tag !== null) {
                 $live = $client->cardsByTag($mapping->boardId, $tag);
                 if (count($live) > 1) {
-                    CardCollapse::toSurvivor($client, array_fill_keys($live, []), 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag]);
+                    CardCollapse::toSurvivor($client, array_fill_keys($live, []), 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag], $mapping);
                 }
             }
             if ($byRef) {
                 $liveRef = $client->correlateIssue($mapping->boardId, $issueNumber, $repo);
                 if (count($liveRef) > 1) {
-                    CardCollapse::toSurvivor($client, array_fill_keys($liveRef, []), 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'ref' => "github_issue:{$issueNumber}"]);
+                    CardCollapse::toSurvivor($client, array_fill_keys($liveRef, []), 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'ref' => "github_issue:{$issueNumber}"], $mapping);
                 }
             }
         } catch (RequestException $e) {

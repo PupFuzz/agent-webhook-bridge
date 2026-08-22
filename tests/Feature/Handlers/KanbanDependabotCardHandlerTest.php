@@ -638,4 +638,81 @@ class KanbanDependabotCardHandlerTest extends TestCase
         Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_dependabot_card: moved'
             && $ctx['card_board'] === 12 && $ctx['mapped_board'] === 8);
     }
+
+    public function test_a_collapse_archive_records_the_archived_cards_own_board_beside_the_mapped_one(): void
+    {
+        // PRESENCE on the SHARED collapse primitive (CardCollapse), which is where the
+        // card#7212 review found the record still missing: the pair was threaded into the
+        // handlers' own archive/move arms but not into the kernel they both delegate the
+        // duplicate-archive to, so this write recorded NO board at all.
+        $prUrl = 'https://github.com/owner/repo/pull/42';
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'board_id' => 8, 'workflow_stage_id' => 50, 'archived_at' => '2026-06-20T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+        ]);
+        Log::spy();
+
+        $this->handle('merged');
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'archived duplicate card sharing the same correlation key')
+            && $ctx['card_id'] === 8 && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
+    }
+
+    public function test_a_collapse_archive_that_lands_on_another_boards_card_records_that_board(): void
+    {
+        // ⭐⭐ THE DIVERGENCE CONTROL for the collapse kernel, and the arm MOST likely to
+        // touch a foreign card: the ids come from `correlatePr()` — a board-scoped search
+        // with no membership compare — and the collapse fires exactly when that search
+        // returned MORE rows than expected. `cardsForRepo()` filters on the repo parsed from
+        // the card's `pr_url`, never on the board, so a board-12 duplicate carrying this
+        // repo's PR url is archived by a board-8 mapping.
+        //
+        // ⛔ Seen to fail: before the mapping was threaded into CardCollapse::toSurvivor()
+        // this record carried neither key, so `$ctx['card_board']` was undefined.
+        $prUrl = 'https://github.com/owner/repo/pull/42';
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'board_id' => 12, 'workflow_stage_id' => 50, 'archived_at' => '2026-06-20T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+        ]);
+        Log::spy();
+
+        $this->handle('merged');
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/8.json') && ($r['_action'] ?? null) === 'archive');
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'archived duplicate card sharing the same correlation key')
+            && $ctx['card_board'] === 12       // where it LANDED
+            && $ctx['mapped_board'] === 8);    // where it was AIMED
+    }
+
+    public function test_a_collapse_archive_that_did_not_take_records_the_pair_too(): void
+    {
+        // THE ONE RULE (WritebackSuccessBoardRecordTest's docblock owns it): the pair goes on
+        // every record reporting a write kanban ACCEPTED, including the one reporting that an
+        // accepted archive did NOT take — a 200-not-archived on a FOREIGN card is exactly the
+        // cross-board touch this record exists to make visible, and it is the loudest arm.
+        $prUrl = 'https://github.com/owner/repo/pull/42';
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            // archived_at absent on the PATCH response ⇒ the 200-that-didn't-archive branch.
+            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'board_id' => 12, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+        ]);
+        Log::spy();
+
+        $this->handle('merged');
+
+        Log::shouldHaveReceived('error')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'duplicate archive returned 200 but the card is not archived')
+            && $ctx['card_board'] === 12 && $ctx['mapped_board'] === 8);
+    }
 }

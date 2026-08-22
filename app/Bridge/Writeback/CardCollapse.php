@@ -26,11 +26,34 @@ final class CardCollapse
      * kanban contract break), so it is logged LOUD + left rather than 5xx-stormed
      * (the DL-020 posture) — same as the individual archive callers.
      *
+     * ⛔ EVERY archive here is a GROUP-B write (card#7211/card#7212): the ids arrive from a
+     * board-scoped correlate/search and NO membership compare runs before the archive, so
+     * this is one of the arms most likely to touch a foreign card — it fires exactly when
+     * correlation returned more rows than expected. Both records therefore carry
+     * {@see MappedBoardGuard::boardContext()}: the archived line, and the 200-but-not-archived
+     * `Log::error`, which reports a write kanban ACCEPTED whose effect did not take — the
+     * request DID reach that card, so the board it reached is the answer this record exists
+     * to give. Several callers hand in rows they never read (`array_fill_keys($live, [])`),
+     * and `card_board => null` is the honest answer there: the primitive records the absence
+     * rather than falling back to the mapped board, which would manufacture agreement.
+     *
+     * ⚑ $mapping is NULLABLE, and that is a real state rather than a missing value: the
+     * board-tools caller (`BoardCreateCardTool`) is outside the DL-009 mapped-board regime
+     * altogether — its board is FORCED from `BoardToolsConfig`, and there is no per-repo
+     * `WritebackMapping` to pair against. Null ⇒ no pair, not a guessed one — which is why it
+     * sits LAST with a default rather than beside `$cards` where it reads better: the position
+     * is what lets the one caller that genuinely has no mapping say so by omission instead of
+     * inventing one from a config that means something else. Inside the writeback population
+     * an omission is a defect, and it reds:
+     * `WritebackSuccessBoardRecordTest::test_every_collapse_call_in_the_population_passes_its_mapping`.
+     *
      * @param  non-empty-array<int, array<string, mixed>>  $cards  id => card
      * @param  array<string, mixed>  $logContext  handler-specific correlation context (repo, pr/issue, tag)
+     * @param  ?WritebackMapping  $mapping  the repo mapping whose board every record is paired against;
+     *                                      null ONLY for a caller outside the mapped-board regime
      * @return array<string, mixed> the survivor card
      */
-    public static function toSurvivor(KanbanClient $client, array $cards, string $subsystem, array $logContext): array
+    public static function toSurvivor(KanbanClient $client, array $cards, string $subsystem, array $logContext, ?WritebackMapping $mapping = null): array
     {
         ksort($cards);
         $survivorId = array_key_first($cards);
@@ -38,7 +61,9 @@ final class CardCollapse
             if ($id === $survivorId) {
                 continue;
             }
-            $ctx = ['card_id' => $id, 'survivor' => $survivorId] + $logContext;
+            $ctx = ['card_id' => $id, 'survivor' => $survivorId]
+                + ($mapping === null ? [] : MappedBoardGuard::boardContext($cards[$id], $mapping))
+                + $logContext;
             if ($client->archiveCard($id)) {
                 Log::info("{$subsystem}: archived duplicate card sharing the same correlation key", $ctx);
             } else {

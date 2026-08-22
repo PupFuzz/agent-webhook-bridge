@@ -374,6 +374,30 @@ class KanbanCoordCardHandlerTest extends TestCase
         Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/99.json'));
     }
 
+    public function test_the_collapse_archive_records_the_mapped_board_and_a_null_card_board(): void
+    {
+        // card#7212, and the honest half of the record. This caller hands the collapse
+        // `array_fill_keys($live, [])` — ids from a tag search, with no card ROW behind them —
+        // so there is nothing to read a landed board from and `card_board` is null. That is a
+        // MEASUREMENT, not a gap to paper over: a read-time fallback to the mapped board here
+        // would manufacture the very agreement the pair exists to test. `mapped_board` is
+        // recorded either way, so the record still names which mapping fired the archive.
+        Http::fake($this->searchFake(
+            live: [[], [['id' => 100], ['id' => 99]]],
+            archived: [],
+            rest: [
+                '*/tasks/100.json' => Http::response(['data' => ['id' => 100, 'archived_at' => '2026-07-14T00:00:00+00:00']]),
+                '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+            ],
+        ));
+        Log::spy();
+
+        $this->handle();
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'archived duplicate card sharing the same correlation key')
+            && array_key_exists('card_board', $ctx) && $ctx['card_board'] === null && $ctx['mapped_board'] === 8);
+    }
+
     public function test_no_duplicate_after_create_archives_nothing(): void
     {
         Http::fake($this->searchFake(
