@@ -39,8 +39,8 @@ namespace App\Bridge\Writeback;
  * The report is inside the primitive, not left to the caller, and that is the point:
  * a refusal cannot be minted at some other log level, or with some other reason code,
  * without minting a fourth copy of the compare — and
- * `WritebackRefusalSignalCoverageTest` reds on a handler that reads a card's
- * `board_id` at all. That closure is by KIND and holds at every log level, which the
+ * `WritebackRefusalSignalCoverageTest` reds on a handler — or, since DL-301, a bridge
+ * command — that reads a card's `board_id` at all. That closure is by KIND and holds at every log level, which the
  * `Log::warning`/`Log::error` population of that test's other leg cannot do.
  */
 final class MappedBoardGuard
@@ -76,7 +76,8 @@ final class MappedBoardGuard
      * docblock): `'8'` and `8.9` both belong to a mapping of 8, and which spelling kanban
      * actually returned is exactly what a reader of this record wants. (2) The compare that
      * {@see refuses} runs — including on the Group-B sites (card#7211) that resolve ids from a
-     * board-scoped SEARCH, since DL-298 — accepts that whole interval, so normalising here
+     * board-scoped SEARCH, since DL-298, and on `bridge:reconcile --fix` since DL-301 — accepts
+     * that whole interval, so normalising here
      * would render a value no gate on any path ever computed. So the two values being EQUAL is
      * the happy path, not an invariant this renders; a divergence is the record doing its job.
      *
@@ -95,15 +96,20 @@ final class MappedBoardGuard
      * log + no-op, never a 5xx retry). Returns false when the card belongs and the
      * caller may proceed.
      *
-     * $arm is the reaction name the message is prefixed with. SIX arms call this, in two
+     * $arm is the reaction name the message is prefixed with. SEVEN arms call this, in three
      * families: the TOKEN-resolved writes (`kanban_move_card`, `kanban_block_reason`,
-     * `kanban_coord_card_move`) and, since DL-298, the SEARCH-resolved row re-checks
-     * (`dependabot_card`, `promote_on_release`, `coord_card_create`). They share one reason
-     * code (`card_not_on_mapped_board`) and are kept apart in the dedup tuple by their
+     * `kanban_coord_card_move`); since DL-298, the SEARCH-resolved row re-checks
+     * (`dependabot_card`, `promote_on_release`, `coord_card_create`); and since DL-301, the one
+     * CLI arm — `bridge_reconcile`, whose rows come from the same board-scoped search but whose
+     * write is applied by `bridge:reconcile --fix` rather than by a handler. They share one
+     * reason code (`card_not_on_mapped_board`) and are kept apart in the dedup tuple by their
      * `$outcome` (DL-274(3)).
-     * ⛔ This list is a restatement and has already gone stale once — it named three arms
-     * after DL-298 made it six. If you add a caller, add it here; the reason code is the
-     * thing to grep for if you suspect it has drifted again.
+     * ⛔ This list is a restatement and has now gone stale twice — it named three arms after
+     * DL-298 made it six, and six after DL-301 made it seven. If you add a caller, add it here;
+     * the reason code is the thing to grep for if you suspect it has drifted again. What is NOT
+     * a restatement, and is where a missing arm actually reds, is
+     * `WritebackRefusalSignalCoverageTest`'s KIND leg — which is why DL-301 widened that leg's
+     * population to the bridge CLI rather than only editing this sentence.
      * $issueNumber is passed by the issue/PR-keyed arms only, and adds the `issue` key
      * to the log context (DL-285).
      *

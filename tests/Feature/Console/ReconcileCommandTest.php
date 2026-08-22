@@ -5,6 +5,7 @@ namespace Tests\Feature\Console;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 /**
@@ -20,6 +21,11 @@ class ReconcileCommandTest extends TestCase
 
     /** Stage-order positions (workflow_stage_id => position) for board 8. */
     private const ORDER = [46 => 1.0, 49 => 3.0, 50 => 4.0, 52 => 5.0, 53 => 6.0];
+
+    private const ALERT_URL = 'http://127.0.0.1:9938/';
+
+    /** A board this install is NOT mapped to — another tenant's, on the shared instance. */
+    private const FOREIGN_BOARD = 12;
 
     protected function setUp(): void
     {
@@ -66,8 +72,9 @@ class ReconcileCommandTest extends TestCase
 
     /**
      * @param  array<string, mixed>  $mappings  repo mappings keyed by repo (defaults to one owner/repo → board 8)
+     * @param  array<string, mixed>  $top  extra TOP-LEVEL keys (e.g. `alert_channel`)
      */
-    private function writeWriteback(array $mappings = []): void
+    private function writeWriteback(array $mappings = [], array $top = []): void
     {
         $default = ['owner/repo' => [
             'board_id' => 8,
@@ -76,7 +83,7 @@ class ReconcileCommandTest extends TestCase
         File::put($this->dir.'/writeback.json', (string) json_encode([
             'identity_id' => 4242,
             'mappings' => $mappings === [] ? $default : $mappings,
-        ]));
+        ] + $top));
     }
 
     /**
@@ -103,6 +110,7 @@ class ReconcileCommandTest extends TestCase
         }
 
         Http::fake([
+            self::ALERT_URL.'*' => Http::response('', 204),
             '*tasks/search.json*' => Http::response(['data' => $cards, 'links' => ['next' => null]]),
             '*preload.json' => Http::response(['data' => ['workflows' => [['stages' => $stages]]]]),
             'https://api.github.com/*' => function (Request $request) use ($pulls) {
@@ -418,5 +426,86 @@ class ReconcileCommandTest extends TestCase
             ->assertExitCode(1);
 
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    // ------------------------------------- the resolved-row board re-check (card#7211, DL-301)
+
+    public function test_fix_moves_the_mapped_card_and_refuses_a_row_naming_another_board(): void
+    {
+        // ⛔ THE SEVENTH ARM of the DL-009 belongs-to-mapped-board guard, and the fourth
+        // search-resolved write site of card#7211 — the one DL-298 left open. `readBoardCards`
+        // is a `q=board_id=<b>` search whose rows drive `moveCard` directly, and NOTHING in a
+        // 200 response distinguishes a dropped filter from an honoured one, so a `q=`→top-level
+        // hoist would hand this command another tenant's cards on the happy path.
+        //
+        // ⚠ MIXED SET, one measurement, because the newly-refused set is expected to be EMPTY
+        // in production (`q=board_id=` IS enforced server-side, measured with a control on
+        // rt#327). A method asserting only that the foreign row is not moved could not tell
+        // "refuses foreign rows" from "stopped moving anything"; one asserting only the mapped
+        // move could not tell the guard from its absence. Every row here drifts forward
+        // identically — the ONLY thing separating them is the board the row names.
+        $this->writeWriteback([], ['alert_channel' => ['url' => self::ALERT_URL]]);
+        $this->fake([
+            $this->card(5, 50, ['pr_url' => $this->prUrl(5)]),
+            $this->card(6, 50, ['pr_url' => $this->prUrl(6)], ['board_id' => self::FOREIGN_BOARD]),
+            // Fail-closed on an absent board, stated rather than assumed: a row kanban answered
+            // without a `board_id` cannot be SHOWN to be on the mapped board, so it is refused
+            // like a foreign one — which is what a hoist against a trimmed projection looks like.
+            $this->card(7, 50, ['pr_url' => $this->prUrl(7)], ['board_id' => null]),
+        ], [5 => $this->mergedToDevPr(), 6 => $this->mergedToDevPr(), 7 => $this->mergedToDevPr()]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->expectsOutputToContain('REFUSED')
+            // Loud, not a silent skip: a cron reading exit 0 over a cross-board row in its
+            // board read would be reporting a clean reconcile over an unfiltered result set.
+            ->assertExitCode(1);
+
+        // PRESENCE WITNESS — the ordinary same-board reconcile still applies its move.
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && str_contains($r->url(), '/tasks/5.json')
+            && $r->data() === ['workflow_stage_id' => 52]);
+        // CONTROL — neither refused row is written to...
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/6.json'));
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json'));
+        // ...nor does either consume this repo's GitHub token: the guard sits BEFORE the PR
+        // read, so a foreign card's PR reference is never dereferenced with our credential.
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/pulls/6'));
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/pulls/7'));
+        // The refusal reaches the operator LIVE, through the same primitive, reason code and
+        // dedup tuple the six event-path arms share — kept apart from them by its `outcome`.
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST'
+            && str_starts_with($r->url(), self::ALERT_URL)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'card_not_on_mapped_board'
+            && $r['outcome'] === 'reconcile'
+            && $r['card_id'] === 6);
+        // ⚠ STATED BOUND, the promote-arm bound again: dedup is `(repo, outcome, reason)`, so
+        // card 7's refusal is log-only — ONE push per run carrying the FIRST refused card. The
+        // per-card `Log::warning` inside the guard is where the rest are enumerated.
+        Http::assertNotSent(fn (Request $r) => str_starts_with($r->url(), self::ALERT_URL) && $r['card_id'] === 7);
+    }
+
+    public function test_an_applied_move_records_the_cards_own_board_durably(): void
+    {
+        // card#7212 on this leg. The console `MOVED` line is not a durable record — the
+        // documented cron redirects stdout to an operator-chosen file, while the REFUSAL above
+        // lands in the log through the alert primitive. Recording only the refusal answers
+        // "did we ever stop it?" and never "did this ever happen?", which is exactly the
+        // asymmetry that makes a landed cross-board write unmeasurable after the fact.
+        //
+        // ⭐ The pair is read off the ROW, and the value pinned here proves it: a row cannot
+        // name a genuinely different board any more (the guard refuses it), so the divergence
+        // is forced through the ACCEPTED INTERVAL (DL-292) — `is_numeric` + `(int)` admits the
+        // numeric STRING '8' onto a mapped board of 8. A record echoing the mapping gives
+        // int 8 here; only one read off the card gives '8'.
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)], ['board_id' => '8'])], [5 => $this->mergedToDevPr()]);
+        Log::spy();
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'bridge_reconcile: moved'
+            && $ctx['card_id'] === 5 && $ctx['stage'] === 52
+            && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
     }
 }

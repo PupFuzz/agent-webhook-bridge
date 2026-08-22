@@ -80,11 +80,21 @@ use Tests\TestCase;
  *   • Leg 1 proves each write site was CONSIDERED, not that its record is correct — that
  *     is leg 2's and the behavioural legs' job.
  *   • A write minted in a Console command, in `bin/`, or in `app/Bridge/Tools/` is
- *     outside the file population. The board-tools surface is not under the DL-009
+ *     outside the file population — but NOT for one reason, which is why this clause no
+ *     longer reads as though there were one. The board-tools surface is not under the DL-009
  *     mapped-board regime at all: its board is FORCED from `BoardToolsConfig`, not from a
  *     per-repo `WritebackMapping`, which is why `CardCollapse::toSurvivor()` takes its
  *     mapping as `?WritebackMapping` and why `BoardCreateCardTool`'s collapse records no
  *     pair. Whether that surface wants its own board record is filed, not answered here.
+ *     ⛔ `bridge:reconcile --fix` IS inside the regime (DL-301, card#7211): it reads a mapped
+ *     board, refuses a row that names another through `MappedBoardGuard::refuses()`, and its
+ *     applied move records the pair on a `Log::info('bridge_reconcile: moved', …)`. It is a
+ *     NAMED RESIDUE of this census, not an exemption from the rule: the leg-2 scan would red on
+ *     its report line, which READS `card_board` off the pair the primitive rendered rather than
+ *     rendering one, and splitting that predicate into render-vs-read is a bigger change than the
+ *     one arm justifies. Its behavioural cover is
+ *     `ReconcileCommandTest::test_an_applied_move_records_the_cards_own_board_durably`; a SECOND
+ *     kanban write in that command would be caught by nothing here.
  *   • A CREATE has no resolved card to read a board from, so it keeps its lone `board`
  *     key. That a created card's ACTUAL placement is never read back is a sibling shape,
  *     filed as card#7225.
