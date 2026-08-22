@@ -2236,6 +2236,37 @@ class BridgeCommandsTest extends TestCase
         $this->artisan('bridge:stats')->assertExitCode(0);
     }
 
+    public function test_stats_still_reports_its_other_counts_when_the_divergence_table_is_absent(): void
+    {
+        // The install shape this arm exists for: upgraded to the card#7212 release, has not run
+        // `php artisan migrate`. Every other table is there; that one is not. Before the arm,
+        // the missing table took the WHOLE report down through guardDatabase() — exit 1, no
+        // counts at all, and a message blaming DB_HOST for a database that answered fine.
+        //
+        // ⚑ The table is really dropped, through the migration's own `down()`, and restored in
+        // `finally` — a `Schema::drop` open-coded here would be a second spelling of the DDL,
+        // and DDL commits the RefreshDatabase transaction, so an unrestored drop takes the
+        // table away from every later test in the run.
+        $this->event();
+        $file = glob(database_path('migrations/*_create_writeback_board_divergences_table.php'));
+        $this->assertCount(1, $file, 'the divergence migration has been renamed or split');
+        $migration = require $file[0];
+
+        $migration->down();
+        try {
+            $this->assertSame(0, Artisan::call('bridge:stats'));
+            $out = Artisan::output();
+        } finally {
+            $migration->up();
+        }
+
+        $this->assertStringContainsString('webhook_events', $out);
+        // NOT the zero: an absent table is a third state, and printing 0 for it would assert
+        // that nothing has ever diverged here — which is precisely what nobody measured.
+        $this->assertStringContainsString('NOT MEASURED', $out);
+        $this->assertStringContainsString('php artisan migrate', $out);
+    }
+
     public function test_inspect_shows_event_or_fails(): void
     {
         $event = $this->event();

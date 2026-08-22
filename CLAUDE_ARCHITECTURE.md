@@ -163,7 +163,7 @@ migrated, and what each stage measured, is owned by
 | `bridge:inbox` (`InboxCommand`) | Read staged `inbox.jsonl`, cursor-dedup, format, write to stdout (Claude Code hook-aware envelope); silent-when-empty |
 | `bridge:inspect` (`InspectCommand`) | Pretty-print one `webhook_events` row + its `agent_dispatches` ledger |
 | `bridge:replay` (`ReplayCommand`) | Re-run dispatch for a stored event (recovery for errored/missed dispatches) |
-| `bridge:stats` (`StatsCommand`) | Event / dispatch counts |
+| `bridge:stats` (`StatsCommand`) | Event / dispatch counts, plus the writeback board-divergence counts (DL-300 — printed every run, zero included) |
 
 ## Multi-agent mental model
 

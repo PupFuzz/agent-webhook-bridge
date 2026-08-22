@@ -28,7 +28,7 @@ php artisan bridge:prune --older-than=30d # retention: prune old events/dispatch
 php artisan bridge:reconcile             # board-vs-GitHub drift reconciler (report-only; --fix applies) — rerunnable writeback backstop
 php artisan bridge:replay <N>            # re-dispatch a stored event by id (recovery for errored/missed dispatches)
 php artisan bridge:inspect <N>           # pretty-print one event + its dispatch ledger
-php artisan bridge:stats                 # event / dispatch counts
+php artisan bridge:stats                 # event / dispatch / board-divergence counts
 
 # Seat-side (run ON the agent's box, AS the agent's own OS user — NOT the bridge's):
 python3 bin/check-channel-snapshot.py <deployed channel-server dir>

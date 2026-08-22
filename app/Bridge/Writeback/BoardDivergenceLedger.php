@@ -36,6 +36,16 @@ use Throwable;
  * unreachable DB is deterministic: retrying it re-writes the card, and losing the audit row
  * is strictly less bad than re-running the write it audits. The `Log::error` carries the
  * same rendered pair, so the observation still lands in the record that has 14 days.
+ *
+ * ⭐ A REPEAT IS COUNTED, NOT APPENDED (DL-300 Decision 4, re-derived). `bridge:reconcile`
+ * became an arm of this record in DL-301 and runs from an hourly cron, so the same
+ * divergence is re-observed on a timer for as long as it lasts — while nothing prunes this
+ * table, by design. Appending would therefore have made the ONE table with no retention
+ * grow at the cron's rate, and made `bridge:stats`'s count a measure of uptime rather than
+ * of divergences. The identity of an observation is everything it stores; a repeat bumps
+ * `observations` and `last_seen_at`, so the row still answers when it started, whether it
+ * is still happening, and how often — the three things N identical rows made the reader
+ * count for themselves.
  */
 final class BoardDivergenceLedger
 {
@@ -51,8 +61,20 @@ final class BoardDivergenceLedger
     public const DISPOSITION_RECORDED = 'recorded';
 
     /**
-     * Persist ONE divergent observation. Callers must have established the divergence
+     * Record ONE divergent observation — a new row, or one more sighting of a row that
+     * already holds exactly this observation. Callers must have established the divergence
      * already (see the class docblock) — this method does not re-test it.
+     *
+     * ⚑ The identity is derived from the row's OWN stored attributes, never from a second
+     * list of column names: whatever the record holds is what makes it distinct, so a
+     * column added to the observation joins the identity with no edit here — and the two
+     * spellings of one board that the model deliberately stores identically (`12` and
+     * `'12'`) are one observation here too, rather than two rows a reader cannot tell apart.
+     *
+     * ⚑ The increment goes FIRST, so the common case on a repeatedly-observed divergence is
+     * one UPDATE. Two processes observing the same divergence for the FIRST time can both
+     * miss and race the insert; the loser's unique-key violation lands in the catch below,
+     * which costs one sighting off a counter and never the row itself.
      *
      * @param  array{card_board: mixed, mapped_board: int}  $boardContext  as rendered by {@see MappedBoardGuard::boardContext()}
      * @param  array<string, mixed>  $card  the card the pair was read from, for its id only
@@ -60,11 +82,23 @@ final class BoardDivergenceLedger
     public static function observe(array $boardContext, array $card, string $disposition): void
     {
         try {
-            WritebackBoardDivergence::create($boardContext + [
+            $row = new WritebackBoardDivergence($boardContext + [
                 'disposition' => $disposition,
                 'card_id' => is_numeric($card['id'] ?? null) ? (int) $card['id'] : null,
                 'site' => self::callSite(),
             ]);
+            $row->observation_key = hash(
+                'sha256',
+                (string) json_encode($row->getAttributes(), JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE),
+            );
+
+            $seenBefore = WritebackBoardDivergence::query()
+                ->where('observation_key', $row->observation_key)
+                ->increment('observations');
+
+            if ($seenBefore === 0) {
+                $row->save();
+            }
         } catch (Throwable $e) {
             Log::error(
                 'writeback: a board divergence could not be persisted — this observation now expires with the log',

@@ -11,6 +11,7 @@ use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackMapping;
 use App\Models\WritebackBoardDivergence;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
@@ -236,6 +237,49 @@ class WritebackBoardDivergenceLedgerTest extends TestCase
         Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'archived duplicate card')
             && $ctx['card_board'] === '8' && $ctx['mapped_board'] === self::MAPPED_BOARD);
         $this->assertDatabaseCount('writeback_board_divergences', 0);
+    }
+
+    // ------------------------------------------------------- the same divergence, again
+
+    public function test_the_same_divergence_observed_again_counts_on_the_row_it_already_has(): void
+    {
+        // ⭐ THE CRON VECTOR, and the reason DL-300 Decision 4 was re-derived. `bridge:reconcile`
+        // is the seventh arm of the guard since DL-301 and runs hourly from cron, so one
+        // misconfiguration re-observes the SAME divergence for as long as it lasts — into the one
+        // table `bridge:prune` deliberately never touches. Appending would make the row count a
+        // measure of how long the cron has been running; the reader would still learn nothing a
+        // first-seen / last-seen / count triple does not say better.
+        $this->fakeArchive();
+        $first = CarbonImmutable::parse('2026-08-22T09:00:00+00:00');
+        $this->travelTo($first);
+
+        foreach ([0, 1, 2] as $hour) {
+            $this->travelTo($first->addHours($hour));
+            MappedBoardGuard::boardContext($this->card(9, self::FOREIGN_BOARD), $this->mapping());
+        }
+        $this->travelBack();
+
+        $row = $this->onlyRow();
+        $this->assertSame(3, $row->observations);
+        // FIRST sighting, never rewritten — "when did this start" is the question a row that
+        // moved its own timestamp could no longer answer.
+        $this->assertSame($first->toDateTimeString(), $row->created_at->toDateTimeString());
+        $this->assertSame($first->addHours(2)->toDateTimeString(), $row->last_seen_at->toDateTimeString());
+    }
+
+    public function test_two_different_divergences_are_two_rows(): void
+    {
+        // The control for the leg above, and it is not optional: a dedup key that collapsed
+        // everything into one row would pass that test perfectly. Same site, same boards, same
+        // disposition — only the CARD differs, which is the least the identity must still see.
+        $this->fakeArchive();
+
+        foreach ([9, 11] as $cardId) {
+            MappedBoardGuard::boardContext($this->card($cardId, self::FOREIGN_BOARD), $this->mapping());
+        }
+
+        $this->assertDatabaseCount('writeback_board_divergences', 2);
+        $this->assertSame([1, 1], WritebackBoardDivergence::query()->pluck('observations')->all());
     }
 
     // ------------------------------------------------------------------------ the mechanism

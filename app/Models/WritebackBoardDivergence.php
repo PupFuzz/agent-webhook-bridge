@@ -14,11 +14,21 @@ use Illuminate\Database\Eloquent\Model;
  * The log line answers the same question for 14 days; this row answers it afterwards.
  * There is no row on the happy path, so the healthy state of this table is EMPTY and
  * `bridge:prune` does not touch it (DL-300) — see the migration for the retention ruling.
+ *
+ * ONE ROW PER DISTINCT OBSERVATION. What a row observed never changes; a repeat of the
+ * same observation bumps `observations` and `last_seen_at` in place rather than
+ * appending, which is what keeps a never-pruned table bounded by the number of distinct
+ * divergences an install has ever had rather than by how often its cron runs (DL-300
+ * Decision 4). `created_at` is the FIRST sighting and is never rewritten.
  */
 class WritebackBoardDivergence extends Model
 {
-    /** Immutable observations: there is no `updated_at` column, and a row is never rewritten. */
-    public const UPDATED_AT = null;
+    /**
+     * `last_seen_at` IS the updated-at column, so Eloquent maintains it — including on the
+     * increment the ledger uses for a repeat, which is the only write a row ever takes
+     * after its insert.
+     */
+    public const UPDATED_AT = 'last_seen_at';
 
     protected $fillable = [
         'disposition',
@@ -31,7 +41,9 @@ class WritebackBoardDivergence extends Model
     protected $casts = [
         'card_id' => 'integer',
         'mapped_board' => 'integer',
+        'observations' => 'integer',
         'created_at' => 'datetime',
+        'last_seen_at' => 'datetime',
     ];
 
     /**

@@ -8,6 +8,7 @@ use App\Bridge\Handlers\KanbanDependabotCardHandler;
 use App\Bridge\Handlers\KanbanPromoteReleasedHandler;
 use App\Bridge\Support\AgentConfig;
 use Closure;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -58,6 +59,8 @@ use Tests\TestCase;
  */
 class ResolvedRowBoardGuardTest extends TestCase
 {
+    use RefreshDatabase;
+
     private const MAPPED_BOARD = 8;
 
     private const FOREIGN_BOARD = 12;

@@ -43,9 +43,16 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   from "nothing measured it".
   **Bound, stated:** a `recorded` row means a divergent card reached a site that reports a
   write. Every writeback arm inside the mapped-board regime is gated by `refuses()` (DL-292 +
-  DL-298), so on today's code that disposition is unreachable — which is exactly why it is
-  worth a durable row: it is the tripwire for the N+1th write site, not a report on the
-  current one. `bridge:reconcile --fix` remains outside the regime (card#7211).
+  DL-298 + DL-301), so on today's code that disposition is unreachable — which is exactly why
+  it is worth a durable row: it is the tripwire for the N+1th write site, not a report on the
+  current one. **`bridge:reconcile` is INSIDE that regime** — DL-301 made it the seventh
+  `refuses()` arm — so it mints a `refused` row per refused card per run, on a report-only run
+  as much as on a `--fix` one. **One row per DISTINCT observation:** a repeat bumps
+  `observations` + `last_seen_at` rather than appending, which is what keeps a table nothing
+  prunes bounded by the number of divergences rather than by how often the documented hourly
+  reconcile cron runs. `bridge:stats` prints the counts on every run — including
+  `NOT MEASURED — table missing` on an install that upgraded without `php artisan migrate`,
+  which used to take the whole report down with a message blaming `DB_HOST`.
 - **card#7211 (DL-301)** — **⚠ the fourth and last search-resolved write site is guarded:
   `bridge:reconcile --fix` re-checks every row of its board read against the mapped board before
   it moves anything, and an applied move is now recorded durably.** DL-298 (below) closed the

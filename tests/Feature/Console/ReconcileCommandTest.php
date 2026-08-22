@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\Console;
 
+use App\Models\WritebackBoardDivergence;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -20,6 +22,8 @@ use Tests\TestCase;
  */
 class ReconcileCommandTest extends TestCase
 {
+    use RefreshDatabase;
+
     private string $dir;
 
     private string|false $origGhToken;
@@ -493,6 +497,19 @@ class ReconcileCommandTest extends TestCase
         // card 7's refusal is log-only — ONE push per run carrying the FIRST refused card. The
         // per-card `Log::warning` inside the guard is where the rest are enumerated.
         Http::assertNotSent(fn (Request $r) => str_starts_with($r->url(), self::ALERT_URL) && $r['card_id'] === 7);
+        // ⭐ AND THE DURABLE HALF, which is where the alert's dedup bound stops mattering: the
+        // alert carries the first refused card and the console lines scroll past, but BOTH
+        // refusals outlive the run in the ledger (card#7212/DL-300) — which is the only surface
+        // that still answers "did a cross-board row reach this cron?" once the log has rolled.
+        // This arm had no ledger assertion at all until the growth vector was measured on it.
+        $this->assertSame(
+            [[6, '12', 'refused'], [7, null, 'refused']],
+            WritebackBoardDivergence::query()
+                ->orderBy('card_id')
+                ->get()
+                ->map(fn (WritebackBoardDivergence $r) => [$r->card_id, $r->card_board, $r->disposition])
+                ->all(),
+        );
     }
 
     public function test_an_applied_move_records_the_cards_own_board_durably(): void

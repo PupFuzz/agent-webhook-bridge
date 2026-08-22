@@ -20,6 +20,16 @@ return new class extends Migration
         // record the one thing that is already implied by every OTHER row's absence.
         // Growth is therefore the signal, not the cost: an empty table is the healthy
         // state, and `bridge:prune` deliberately does not touch this one (DL-300).
+        //
+        // ⛔ ONE ROW PER DISTINCT OBSERVATION, RE-OBSERVED IN PLACE. That is what makes
+        // "never pruned" affordable, and it is not decoration: `bridge:reconcile` is an
+        // arm of this record since DL-301 and runs from an hourly cron, so an append-only
+        // table would take N rows per hour, for as long as one misconfiguration lasted, in
+        // the one table nothing can clean up — and a count that rises with the cron
+        // frequency is not a signal about divergences at all. The identity is the whole
+        // observation (disposition, card, both boards, site); a repeat bumps `observations`
+        // and `last_seen_at` and adds no row. Growth still IS the signal — of a divergence
+        // never seen before.
         Schema::create('writeback_board_divergences', function (Blueprint $table) {
             $table->id();
             // 'refused' — the guard stopped the write; nothing was written to that card.
@@ -38,7 +48,20 @@ return new class extends Migration
             // resolved from the call stack rather than passed in by 11 call sites — a
             // per-site argument is a spelling that drifts, and the N+1th site would omit it.
             $table->string('site', 191)->nullable();
+            // The dedup identity: a hash of the whole stored observation, computed in one
+            // place (BoardDivergenceLedger) so the columns are never enumerated twice. A
+            // hash rather than a composite UNIQUE over the columns themselves, because two
+            // of those columns are NULLABLE and both MariaDB and SQLite treat NULLs in a
+            // unique index as distinct — the bound would leak on exactly the unreadable
+            // responses that accompany the failure this table exists to catch.
+            $table->char('observation_key', 64)->unique();
+            // How many times this same observation has been made, and when it last was.
+            // `created_at` is therefore the FIRST sighting and never moves: "when did this
+            // start", "is it still happening", "how often" — the three questions N
+            // identical rows answered by making the reader count them.
+            $table->unsignedInteger('observations')->default(1);
             $table->timestamp('created_at', 3)->useCurrent();
+            $table->timestamp('last_seen_at', 3)->useCurrent();
 
             // The reader's query: "is there any `recorded` row, and when?" — a `refused`
             // row means the guard did its job, a `recorded` one means a divergent card
