@@ -393,7 +393,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
-- **The shell-injection security test scored a slow-but-successful injection as "injection did not
+- **card#7233** — **The shell-injection security test scored a slow-but-successful injection as "injection did not
   execute".** `SpawnDetachedHandlerTest::test_argv_has_no_shell_injection_surface` spawned a detached
   child and read its verdict off a fixed `usleep(500_000)`, then asserted `EVIL.marker` absent — but
   three methods up, the PRESENCE leg in the same file polls a detached child for **5.0 seconds**, so
