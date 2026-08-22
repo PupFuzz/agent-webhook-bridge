@@ -11,6 +11,7 @@ use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\TrackedCardRef;
@@ -189,7 +190,12 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             $payload = is_array($card['payload'] ?? null) ? $card['payload'] : [];
             $prNumber = $this->prForRepo(TrackedCardRef::fromPayload($payload, $isShared, $refs), $repo, $refs);
             if ($cardId !== null && $prNumber !== null) {
-                $candidates[$cardId] = $prNumber;   // keyed by card id (dedup; N:1 can't collide here)
+                // The ROW's own board travels with the candidate (card#7212). This is a
+                // GROUP-B site (card#7211): the row came from a board-scoped search and no
+                // membership compare runs before the promote, so the board it lands on is
+                // knowable only from the row itself — and the promote happens two calls
+                // later, where the row is out of scope. Carried, not re-read.
+                $candidates[$cardId] = ['pr' => $prNumber, 'board' => MappedBoardGuard::boardContext($card, $mapping)];   // keyed by card id (dedup; N:1 can't collide here)
             }
         }
 
@@ -203,8 +209,8 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         }
 
         $promoted = 0;
-        foreach ($candidates as $cardId => $prNumber) {
-            if ($this->promoteIfReleased($github, $kanban, $repo, $cardId, $prNumber, $released)) {
+        foreach ($candidates as $cardId => $candidate) {
+            if ($this->promoteIfReleased($github, $kanban, $repo, $cardId, $candidate['pr'], $released, $candidate['board'])) {
                 $promoted++;
             }
         }
@@ -219,8 +225,15 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
      * (4xx) GitHub/kanban error on this card is logged + skipped (return false); a transient
      * (5xx/timeout) error PROPAGATES so redelivery re-scans (idempotent — a promoted card
      * leaves the Shipped filter).
+     *
+     * $boardContext is the candidate ROW's own board paired with the mapped one, rendered by
+     * {@see MappedBoardGuard::boardContext} at scan time and carried here so the success
+     * record names the board the promote LANDED on, not only the one config aimed at
+     * (card#7212).
+     *
+     * @param  array{card_board: mixed, mapped_board: int}  $boardContext
      */
-    private function promoteIfReleased(GitHubReadClient $github, KanbanClient $kanban, string $repo, int $cardId, int $prNumber, int $released): bool
+    private function promoteIfReleased(GitHubReadClient $github, KanbanClient $kanban, string $repo, int $cardId, int $prNumber, int $released, array $boardContext): bool
     {
         try {
             $pr = $github->getPull($repo, $prNumber);
@@ -284,7 +297,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             }
             throw $e;
         }
-        Log::info('kanban_promote_released: promoted Shipped→Released', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'stage' => $released]);
+        Log::info('kanban_promote_released: promoted Shipped→Released', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'stage' => $released] + $boardContext);
 
         return true;
     }

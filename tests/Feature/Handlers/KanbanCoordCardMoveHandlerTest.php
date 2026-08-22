@@ -977,4 +977,40 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
             (new HandlerRegistry)->resolve('kanban_coord_card_move'),
         );
     }
+
+    // --- card#7212: the success record names the board the write LANDED on ---
+
+    public function test_a_successful_terminal_move_records_both_boards(): void
+    {
+        // This arm logged NEITHER board before card#7212 — not even the intended one — so a
+        // write here left no board record at all. Its cross-board REFUSAL twin above
+        // (test_a_card_on_another_board_alerts_like_its_move_handler_twin) asserts the same
+        // pair on the other arm; that only one of the two emitted it was the defect.
+        Log::spy();
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50]]),
+        ]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_coord_card_move: moved to terminal'
+            && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
+    }
+
+    public function test_the_terminal_move_record_reads_the_cards_own_board_not_a_second_copy_of_the_mapped_one(): void
+    {
+        // The control: the accepted interval (DL-292) is the divergence this guarded arm
+        // can reach, and `===` on the numeric string is what an echo cannot produce.
+        Log::spy();
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => '8', 'workflow_stage_id' => 50]]),
+        ]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_coord_card_move: moved to terminal'
+            && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
+    }
 }

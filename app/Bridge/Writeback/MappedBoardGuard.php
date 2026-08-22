@@ -5,7 +5,9 @@ namespace App\Bridge\Writeback;
 /**
  * The DL-009 belongs-to-mapped-board security guard: the ONE place that decides
  * whether a card kanban handed back is on the operator-mapped board for this repo,
- * and the ONE place that reports the refusal (DL-292, card#7138).
+ * the ONE place that reports the refusal (DL-292, card#7138), and — since card#7212 —
+ * the ONE place that renders the (card board, mapped board) pair any writeback record
+ * carries, so the success arm reuses this rendering instead of growing a second one.
  *
  * Before this, the same rule was spelled three times — `$boardId !== $mapping->boardId`
  * in `KanbanMoveCardHandler`, `($card['board_id'] ?? null) !== $mapping->boardId` in
@@ -58,6 +60,36 @@ final class MappedBoardGuard
     }
 
     /**
+     * The board pair EVERY writeback record carries: the board the card kanban actually
+     * handed back is on, and the board this repo's mapping intended to write to.
+     *
+     * ⛔ Both keys, on BOTH arms — the asymmetry was the defect (card#7212, rt#327). Until
+     * this existed only {@see refuses} emitted the pair; a success emitted the mapped board
+     * from CONFIG alone, so a write that LANDED on an out-of-mapping card was byte-identical
+     * in the log to a correct one. Generalised: any check whose evidence is emitted only on
+     * the REFUSAL path can answer "did we ever stop it?" and never "did this ever happen?" —
+     * an absence of record is not a record of absence. Retention is 14 days and no audit
+     * table records a card or board id, so a record not written here is unrecoverable.
+     *
+     * ⚑ `card_board` is the card's RAW `board_id`, NOT normalised through the predicate, and
+     * that is deliberate twice over. (1) The accepted set is an INTERVAL (see the class
+     * docblock): `'8'` and `8.9` both belong to a mapping of 8, and which spelling kanban
+     * actually returned is exactly what a reader of this record wants. (2) Several callers
+     * are the Group-B sites (card#7211) that resolve ids from a board-scoped SEARCH and run
+     * no membership compare at all — normalising there would render an answer the code never
+     * asked. So the two values being EQUAL is the happy path, not an invariant this renders;
+     * a divergence is the record doing its job.
+     *
+     * @param  array<string, mixed>  $card  as returned by {@see KanbanClient::getCard()}, or a
+     *                                      raw search row — a card the caller has in hand either way
+     * @return array{card_board: mixed, mapped_board: int}
+     */
+    public static function boardContext(array $card, WritebackMapping $mapping): array
+    {
+        return ['card_board' => $card['board_id'] ?? null, 'mapped_board' => $mapping->boardId];
+    }
+
+    /**
      * The guard AND its refusal report. Returns true when the card is NOT on the mapped
      * board — the caller returns without writing anything (permanent refusal: alert +
      * log + no-op, never a 5xx retry). Returns false when the card belongs and the
@@ -87,12 +119,9 @@ final class MappedBoardGuard
 
         $alerts->warnAndNotify(
             $arm.': REFUSED — card is not on the mapped board',
-            [
-                'card_id' => $cardId,
-                'repo' => $repo,
-                'card_board' => $card['board_id'] ?? null,
-                'mapped_board' => $mapping->boardId,
-            ] + ($issueNumber === null ? [] : ['issue' => $issueNumber]),
+            ['card_id' => $cardId, 'repo' => $repo]
+                + self::boardContext($card, $mapping)
+                + ($issueNumber === null ? [] : ['issue' => $issueNumber]),
             $repo, $outcome, $cardId, self::REASON, $issueNumber,
         );
 

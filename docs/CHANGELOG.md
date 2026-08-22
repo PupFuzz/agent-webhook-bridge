@@ -39,6 +39,40 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7212 (rt#327 R4)** — **a successful writeback now records the board it LANDED on, not only
+  the board it AIMED at.** The success path logged `$mapping->boardId` — the operator's configured
+  board, straight from `writeback.json` — while only the REFUSAL path (`MappedBoardGuard::refuses()`)
+  logged the card's own `board_id`. ⇒ **A write that landed on an out-of-mapping card was
+  byte-identical in the log to a correct one.** Retention is 14 days and no audit table records a
+  card or board id, so *"has a cross-board write ever landed here?"* was not merely unanswered but
+  **unanswerable** — and it is the blocking reason card#7211's Group-B write sites cannot have their
+  blast radius measured retrospectively. ⭐ **Generalised: any check whose evidence is emitted only
+  on the refusal path can answer "did we ever stop it?" — never "did this ever happen?". An absence
+  of record is not a record of absence.** Every writeback write to a card whose id was **resolved
+  from kanban** now carries the same pair the refusal arm emits, from the same rendering
+  (`MappedBoardGuard::boardContext()` — canon #5: the primitive already owned it, the success arm now
+  uses it rather than growing a second copy): **`card_board`** (the card's own `board_id`, verbatim)
+  beside **`mapped_board`**. **10 sites**: `kanban_move_card`'s `moved` / `stamped correlation refs`
+  / `recorded a correlation note`; `kanban_block_reason`'s set+clear; the three
+  `kanban_coord_card_move` legs (terminal / revived / re-laned); both `kanban_dependabot_card` arms
+  (archive + move); and `kanban_promote_released`'s promote. **One non-success record moves with them
+  and is named rather than folded into the count:** the dependabot archive-contract `Log::error`
+  ("returned 200 but the card is not archived") sits in the same loop with the same card in hand and
+  reports a write that did NOT take — which is worth the same pair. **⚠ LOG-SHAPE CHANGE, not a behaviour
+  change:** nothing about what the bridge accepts, refuses, writes or retries moves — but the single
+  `board` key on `kanban_move_card: moved` and `kanban_block_reason: <action>` is **replaced** by the
+  pair (`mapped_board` carries the identical value under the name the refusal arm already uses), so a
+  log consumer grepping `"board":` on those two lines must move to `"mapped_board":`. The other seven
+  sites recorded **no board at all** and are purely additive. **Two stated bounds:** `card_board` is
+  the card's RAW value, deliberately not normalised through the guard's predicate — the accepted set
+  is an interval (DL-292), and on the unguarded Group-B arms no membership compare runs at all, so
+  normalising would render an answer the code never asked; and a **CREATE** keeps its lone `board`
+  key, because there is no resolved card to read a board from (the create response returns an id).
+  **Scope held deliberately**: whether a DURABLE record beyond a 14-day log line is warranted for
+  cross-tenant writes is a retention decision and is NOT smuggled in here. Each divergence leg was
+  **seen to fail** against a mutant rendering `mapped_board` into both slots — today's defect wearing
+  the new field's name — and `WritebackSuccessBoardRecordTest` re-derives the kanban-write population
+  from the handler sources every run, so the N+1th write site reds rather than re-minting the gap.
 - **card#7124 (DL-293)** — **a `writeback.json` mapping key now names a REPO, not a spelling.**
   `WritebackConfig::mappingFor()` was a raw array-key lookup with neither side canonicalized, so a
   mapping keyed `pupfuzz/kanban-board` against a payload spelling `PupFuzz/kanban-board` matched

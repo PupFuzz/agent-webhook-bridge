@@ -545,4 +545,40 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         }
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
+
+    // --- card#7212: the success record names the board the write LANDED on ---
+
+    public function test_a_promote_records_the_cards_own_board_beside_the_mapped_one(): void
+    {
+        // PRESENCE on a GROUP-B arm (card#7211): the candidate row came out of a
+        // board-scoped search and no membership compare runs before the promote, so the
+        // row's own board is the only reading of where the write went.
+        $this->fakeBoard([['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]]);
+        Log::spy();
+
+        $this->handle();
+
+        $this->assertMoved(5, 53);
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_promote_released: promoted Shipped→Released'
+            && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
+    }
+
+    public function test_a_promote_that_lands_on_another_boards_card_records_that_board_not_the_mapped_one(): void
+    {
+        // ⭐ THE DIVERGENCE CONTROL on this arm. A row whose own `board_id` is 12 is
+        // promoted by a board-8 mapping — unchanged behaviour, since nothing here re-checks
+        // membership (card#7211). What changes is that the record now says so, instead of
+        // being byte-identical to a correct promote.
+        //
+        // ⛔ Seen to fail: before the fix this line carried no board at all, so `card_board`
+        // was absent; a fix echoing the mapped board twice would give 8 here, not 12.
+        $this->fakeBoard([['id' => 5, 'board_id' => 12, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]]);
+        Log::spy();
+
+        $this->handle();
+
+        $this->assertMoved(5, 53);
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_promote_released: promoted Shipped→Released'
+            && $ctx['card_board'] === 12 && $ctx['mapped_board'] === 8);
+    }
 }

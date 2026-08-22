@@ -249,7 +249,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
                 return;   // already concluded — redelivery-safe no-op
             }
             $client->moveCard($id, (int) $mapping->coordCardTerminalStageId);
-            Log::info('kanban_coord_card_move: moved to terminal', ['card_id' => $id, 'stage' => $mapping->coordCardTerminalStageId, 'sid' => $sid, 'issue' => $issueNumber]);
+            Log::info('kanban_coord_card_move: moved to terminal', ['card_id' => $id, 'stage' => $mapping->coordCardTerminalStageId, 'sid' => $sid, 'issue' => $issueNumber] + MappedBoardGuard::boardContext($card, $mapping));
 
             return;
         }
@@ -285,7 +285,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         }
         $this->warnUnmappedLanes($placement, $mapping, $id, $repo, $issueNumber);
         $client->moveCard($id, $placement['stage']);
-        Log::info('kanban_coord_card_move: revived', ['card_id' => $id, 'stage' => $placement['stage'], 'lane' => $placement['lane'], 'sid' => $sid, 'issue' => $issueNumber]);
+        Log::info('kanban_coord_card_move: revived', ['card_id' => $id, 'stage' => $placement['stage'], 'lane' => $placement['lane'], 'sid' => $sid, 'issue' => $issueNumber] + MappedBoardGuard::boardContext($card, $mapping));
     }
 
     /**
@@ -310,7 +310,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
      *      own defect pointing the other way: instead of the writeback overwriting a
      *      label, the label would overwrite a board move.
      *
-     * @param  array<mixed>  $card
+     * @param  array<string, mixed>  $card  as returned by {@see KanbanClient::getCard()}
      * @param  array{stage: int, lane: ?string, unmapped: list<string>}  $placement
      */
     private function relaneOne(KanbanClient $client, WritebackMapping $mapping, array $card, int $id, ?int $stage, array $placement, ?string $sid, string $repo, int $issueNumber): void
@@ -347,7 +347,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         }
         $this->warnUnmappedLanes($placement, $mapping, $id, $repo, $issueNumber);
         $client->moveCard($id, $placement['stage']);
-        Log::info('kanban_coord_card_move: re-laned', ['card_id' => $id, 'stage' => $placement['stage'], 'lane' => $placement['lane'], 'from_stage' => $stage, 'sid' => $sid, 'issue' => $issueNumber]);
+        Log::info('kanban_coord_card_move: re-laned', ['card_id' => $id, 'stage' => $placement['stage'], 'lane' => $placement['lane'], 'from_stage' => $stage, 'sid' => $sid, 'issue' => $issueNumber] + MappedBoardGuard::boardContext($card, $mapping));
     }
 
     /**

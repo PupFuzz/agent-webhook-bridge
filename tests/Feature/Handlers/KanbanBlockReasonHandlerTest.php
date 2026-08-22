@@ -688,4 +688,37 @@ class KanbanBlockReasonHandlerTest extends TestCase
         Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m) => str_contains($m, 'writeback is not configured'));
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
+
+    // --- card#7212: the success record names the board the write LANDED on ---
+
+    public function test_a_successful_set_records_the_cards_own_board_beside_the_mapped_one(): void
+    {
+        // Same asymmetry as its move-handler twin: the old single `board` key was the
+        // config's INTENDED board, emitted whether or not the card written to was on it.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'block_reason' => null]])]);
+        Log::spy();
+
+        $this->handle('set');
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_block_reason: set'
+            && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
+    }
+
+    public function test_the_set_record_reads_the_cards_own_board_and_is_not_a_second_copy_of_the_mapped_one(): void
+    {
+        // The control, in the same shape as the move handler's: the accepted interval
+        // (DL-292) is the only divergence reachable behind the guard, and `===` on the
+        // numeric STRING is what a mapped-board echo cannot produce.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => '8', 'block_reason' => null]])]);
+        Log::spy();
+
+        $this->handle('set');
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_block_reason: set'
+            && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
+    }
 }

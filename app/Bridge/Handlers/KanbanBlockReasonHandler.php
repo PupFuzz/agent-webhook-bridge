@@ -219,6 +219,9 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             }
             throw $e;   // transient → 5xx → retry (add-if-missing / clear-if-ours is idempotent)
         }
-        Log::info('kanban_block_reason: '.$action, ['card_id' => $cardId, 'board' => $mapping->boardId, 'repo' => $repo]);
+        // Both boards, from the guard's own rendering (card#7212): the old single `board`
+        // key was the config's INTENDED board, which is emitted whether or not the card
+        // written to was on it.
+        Log::info('kanban_block_reason: '.$action, ['card_id' => $cardId, 'repo' => $repo] + MappedBoardGuard::boardContext($card, $mapping));
     }
 }

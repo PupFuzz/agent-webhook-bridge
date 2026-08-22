@@ -577,4 +577,65 @@ class KanbanDependabotCardHandlerTest extends TestCase
         }
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
+
+    // --- card#7212: the success record names the board the write LANDED on ---
+
+    public function test_an_archive_records_the_cards_own_board_beside_the_mapped_one(): void
+    {
+        // PRESENCE on a GROUP-B arm (card#7211): this id came out of a board-scoped search
+        // and no membership compare runs before the archive, so the card's board is not
+        // implied by anything upstream — reading it here is the only way the record can say
+        // where the write landed.
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+        Log::spy();
+
+        $this->handle('closed_unmerged');
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'archived (closed-unmerged)')
+            && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
+    }
+
+    public function test_an_archive_that_lands_on_another_boards_card_records_that_board_not_the_mapped_one(): void
+    {
+        // ⭐⭐ THE DIVERGENCE CONTROL, on the arm where a genuinely different board is
+        // REACHABLE. This is a Group-B site (card#7211): the id came from a board-scoped
+        // search and NO membership compare runs, so a board-8 mapping archives a board-12
+        // card — today, unchanged. This test does not stop that (the fail-closed tightening
+        // is card#7211's and is ask-first); it pins that the write now leaves a trace
+        // DISTINGUISHABLE from a correct one, which is the whole of card#7212.
+        //
+        // ⛔ Seen to fail: with the success arm echoing the mapped board (or, as it did,
+        // logging no board at all) this assertion reds — `card_board` is absent, or 8.
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 12, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+        Log::spy();
+
+        $this->handle('closed_unmerged');
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['_action'] === 'archive');
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'archived (closed-unmerged)')
+            && $ctx['card_board'] === 12       // where it LANDED
+            && $ctx['mapped_board'] === 8);    // where it was AIMED
+    }
+
+    public function test_a_move_that_lands_on_another_boards_card_records_that_board_not_the_mapped_one(): void
+    {
+        // The archive arm's twin, and a separate site: the survivor is resolved by the same
+        // unguarded search and moved. Same divergence, same `===` pinning.
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 12, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+        Log::spy();
+
+        $this->handle('merged');
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_dependabot_card: moved'
+            && $ctx['card_board'] === 12 && $ctx['mapped_board'] === 8);
+    }
 }

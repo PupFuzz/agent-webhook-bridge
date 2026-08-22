@@ -259,7 +259,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             // is looked for (card#7064). Recorded after the log, and never instead of it.
             $this->recordCardNote(
                 CardNote::refusedUncorroboratedMove($cardId, $repo, CardTokenCorroboration::cardPr($card), $payload['stamp_pr'] ?? null),
-                $card, $cardId, $client, $repo, $outcome,
+                $card, $mapping, $cardId, $client, $repo, $outcome,
             );
 
             return;
@@ -268,7 +268,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         if (($card['workflow_stage_id'] ?? null) === $stageId) {
             // Self-heal: the move is a no-op (already here), but a card# fallback card
             // may still be missing its correlation refs — stamp add-if-missing (#3866).
-            $this->stampCorrelationRefs($card, $payload, $cardId, $client, $repo, $outcome);
+            $this->stampCorrelationRefs($card, $mapping, $payload, $cardId, $client, $repo, $outcome);
 
             return;   // idempotent: already in the target stage
         }
@@ -415,8 +415,13 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // The card is now legitimately at its target stage (it passed every reject-guard
         // above) — stamp its correlation refs add-if-missing (#3866). Done AFTER the move
         // so a stale/redelivered/regressive event, which the guards no-op, never stamps.
-        $this->stampCorrelationRefs($card, $payload, $cardId, $client, $repo, $outcome);
-        Log::info('kanban_move_card: moved', ['card_id' => $cardId, 'board' => $mapping->boardId, 'stage' => $stageId, 'outcome' => $outcome]);
+        $this->stampCorrelationRefs($card, $mapping, $payload, $cardId, $client, $repo, $outcome);
+        // `card_board` + `mapped_board`, the same pair the refusal arm emits and from the
+        // same primitive (card#7212). The old single `board` key was the CONFIG's board —
+        // the one we intended to write to — so a write that landed on an out-of-mapping
+        // card logged identically to a correct one, and "has a cross-board write ever
+        // landed?" was unanswerable from the record rather than merely unanswered.
+        Log::info('kanban_move_card: moved', ['card_id' => $cardId, 'stage' => $stageId, 'outcome' => $outcome] + MappedBoardGuard::boardContext($card, $mapping));
     }
 
     /**
@@ -467,12 +472,15 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      * {@see placeholderThisPrMayReplace} (card#7064).
      *
      * $repo / $outcome are threaded in for the alert's dedup tuple only — the stamp itself
-     * is keyed on the card.
+     * is keyed on the card. $mapping is threaded in for the success record's board pair
+     * (card#7212): this is a WRITE to a resolved card, and on the self-heal path above it is
+     * the ONLY success record the delivery emits — the `moved` line never fires there — so
+     * without the pair that write's board would go unrecorded entirely.
      *
      * @param  array<string, mixed>  $card  the card as already read by getCard()
      * @param  array<string, mixed>  $payload  the target payload (may carry stamp_dl/stamp_pr/stamp_pr_url)
      */
-    private function stampCorrelationRefs(array $card, array $payload, int $cardId, KanbanClient $client, string $repo, string $outcome): void
+    private function stampCorrelationRefs(array $card, WritebackMapping $mapping, array $payload, int $cardId, KanbanClient $client, string $repo, string $outcome): void
     {
         $current = is_array($card['payload'] ?? null) ? $card['payload'] : [];
         $refs = [];
@@ -535,7 +543,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 $repo, $outcome, $cardId, 'correlation_ref_not_stamped',
             );
             $keptNamesNoPullRequest = $keptPrUrlIsPlaceholder && ! isset($dropped['pr_number']);
-            $this->recordCardNote(CardNote::droppedCorrelationRef($cardId, $repo, $dropped, $keptNamesNoPullRequest), $card, $cardId, $client, $repo, $outcome);
+            $this->recordCardNote(CardNote::droppedCorrelationRef($cardId, $repo, $dropped, $keptNamesNoPullRequest), $card, $mapping, $cardId, $client, $repo, $outcome);
         }
 
         if ($refs === []) {
@@ -544,7 +552,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
         try {
             $client->stampCorrelationRefs($cardId, $refs);
-            Log::info('kanban_move_card: stamped correlation refs', ['card_id' => $cardId, 'refs' => array_keys($refs)]);
+            Log::info('kanban_move_card: stamped correlation refs', ['card_id' => $cardId, 'refs' => array_keys($refs)] + MappedBoardGuard::boardContext($card, $mapping));
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
                 $this->alerts->warnAndNotify(
@@ -667,7 +675,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
      *
      * @param  array<string, mixed>  $card  the card as already read by getCard()
      */
-    private function recordCardNote(CardNote $note, array $card, int $cardId, KanbanClient $client, string $repo, string $outcome): void
+    private function recordCardNote(CardNote $note, array $card, WritebackMapping $mapping, int $cardId, KanbanClient $client, string $repo, string $outcome): void
     {
         if ($note->alreadyOn($card)) {
             return;
@@ -675,7 +683,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
         try {
             $client->addComment($cardId, $note->content());
-            Log::info('kanban_move_card: recorded a correlation note on the card', ['card_id' => $cardId, 'marker' => $note->marker]);
+            Log::info('kanban_move_card: recorded a correlation note on the card', ['card_id' => $cardId, 'marker' => $note->marker] + MappedBoardGuard::boardContext($card, $mapping));
         } catch (RequestException $e) {
             $this->alerts->warnAndNotify(
                 'kanban_move_card: the card note was refused by kanban — the dropped correlation leg stays in this log but is NOT visible on the card (see `body` for the reason kanban gave)',

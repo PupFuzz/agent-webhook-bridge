@@ -2315,4 +2315,79 @@ pull request it already names', $notes[0]);
         $this->assertStringContainsString('the card keeps `see the linked PR`', $notes[0]);
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
+
+    // --- card#7212: the success record names the board the write LANDED on ---
+
+    public function test_a_successful_move_records_the_cards_own_board_beside_the_mapped_one(): void
+    {
+        // PRESENCE, asserted on the record's CONTENT. Before this the line carried a single
+        // `board` key read from CONFIG — the board the write INTENDED to reach — which is
+        // emitted identically whether or not the card it reached was on that board. The two
+        // being EQUAL is the happy path; that they are two independent readings is the point.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET
+                ->push(['data' => ['id' => 5]]),                                              // PATCH
+        ]);
+        Log::spy();
+
+        $this->handle($this->payload());
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_move_card: moved'
+            && array_key_exists('card_board', $ctx) && array_key_exists('mapped_board', $ctx)
+            && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
+    }
+
+    public function test_the_move_record_reads_the_cards_own_board_and_is_not_a_second_copy_of_the_mapped_one(): void
+    {
+        // ⛔ THE CONTROL. A test asserting only that both keys are PRESENT passes against a
+        // "fix" that renders `mapped_board` into both slots — which is precisely today's
+        // defect wearing the new field's name. So force the two values APART and pin them
+        // with `===`.
+        //
+        // On THIS arm a card on a genuinely different board cannot reach the success record:
+        // MappedBoardGuard refuses it long before the move. What can reach it is the accepted
+        // INTERVAL (DL-292) — `is_numeric` + `(int)` admits the numeric STRING "8" onto a
+        // mapped board of 8 — so a reading of the card gives `'8'` where an echo of the
+        // mapping would give int 8. The genuinely-different-board control belongs on the
+        // Group-B arms, which run no membership compare at all: see
+        // KanbanDependabotCardHandlerTest and KanbanPromoteReleasedHandlerTest.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => '8', 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+        Log::spy();
+
+        $this->handle($this->payload());
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH');   // the move still happens (DL-292)
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_move_card: moved'
+            && $ctx['card_board'] === '8'       // the CARD's spelling, verbatim
+            && $ctx['mapped_board'] === 8);     // the CONFIG's, unchanged
+    }
+
+    public function test_the_self_heal_stamp_records_both_boards_when_no_move_line_is_emitted(): void
+    {
+        // The already-in-stage self-heal WRITES (it stamps correlation refs) and returns
+        // before the `moved` line, so this is the delivery's ONLY success record. Without
+        // the pair here that write's board would go unrecorded entirely.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => []]])
+                ->push(['data' => ['id' => 5]]),
+        ]);
+        Log::spy();
+
+        $this->handle($this->payload(['stamp_pr' => 148]));
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_move_card: stamped correlation refs'
+            && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
+    }
 }

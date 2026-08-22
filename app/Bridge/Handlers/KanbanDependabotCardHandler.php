@@ -10,6 +10,7 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -128,13 +129,18 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             // archiving needs no stage mapping. A repo+PR may map to >1 card (a create
             // race) — archive them all. Empty (never tracked) → nothing to do.
             if ($outcome === 'closed_unmerged') {
-                foreach (array_keys($cards) as $cardId) {
+                foreach ($cards as $cardId => $card) {
                     if ($client->archiveCard($cardId)) {
-                        Log::info('kanban_dependabot_card: archived (closed-unmerged)', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber]);
+                        // ⭐ A GROUP-B write (card#7211): this id came out of a board-scoped
+                        // SEARCH and no membership compare runs before the archive, so unlike
+                        // the token-path arms the card's board here is not implied by anything
+                        // upstream. Recording BOTH boards is what makes a landed cross-board
+                        // write distinguishable from a correct one after the fact (card#7212).
+                        Log::info('kanban_dependabot_card: archived (closed-unmerged)', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
                     } else {
                         // 200 but not archived = wrong-verb / kanban contract change.
                         // Deterministic ⇒ permanent: log LOUD + no-op, never 5xx-storm it (DL-020 posture).
-                        Log::error('kanban_dependabot_card: archive returned 200 but the card is not archived (archived_at null) — kanban _action:archive contract may have changed; NOT retrying', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber]);
+                        Log::error('kanban_dependabot_card: archive returned 200 but the card is not archived (archived_at null) — kanban _action:archive contract may have changed; NOT retrying', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
                     }
                 }
 
@@ -154,7 +160,9 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 $survivor = $this->collapseDuplicates($client, $cards, $repo, $prNumber);
                 if (($survivor['workflow_stage_id'] ?? null) !== $stageId) {
                     $client->moveCard((int) $survivor['id'], $stageId);
-                    Log::info('kanban_dependabot_card: moved', ['card_id' => $survivor['id'], 'stage' => $stageId, 'outcome' => $outcome, 'pr' => $prNumber]);
+                    // Group-B, as the archive arm above (card#7211/card#7212): the survivor was
+                    // resolved by search, not by a token, so its own board is recorded here.
+                    Log::info('kanban_dependabot_card: moved', ['card_id' => $survivor['id'], 'stage' => $stageId, 'outcome' => $outcome, 'pr' => $prNumber] + MappedBoardGuard::boardContext($survivor, $mapping));
                 }
 
                 return;
