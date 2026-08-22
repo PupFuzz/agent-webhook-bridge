@@ -551,4 +551,48 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         }
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
+
+    // --- card#7212: the success record names the board the write LANDED on ---
+
+    public function test_a_promote_records_the_cards_own_board_beside_the_mapped_one(): void
+    {
+        // PRESENCE on a GROUP-B arm (card#7211): the candidate row came out of a board-scoped
+        // search, so the row's own board is the only reading of where the write went. The
+        // DL-298 gate at candidacy decides WHETHER the row may be written to; this record says
+        // WHAT board it landed on — and only the record fires on the path the gate passes.
+        $this->fakeBoard([['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]]);
+        Log::spy();
+
+        $this->handle();
+
+        $this->assertMoved(5, 53);
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_promote_released: promoted Shipped→Released'
+            && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
+    }
+
+    public function test_the_promote_record_reads_the_rows_own_board_and_is_not_a_second_copy_of_the_mapped_one(): void
+    {
+        // ⭐ THE DIVERGENCE CONTROL on this arm, and the value it pins is CARRIED: the row's
+        // board is captured at scan time and travels to a promote two calls later.
+        //
+        // ⛔ A row on a genuinely different board cannot reach this record any more —
+        // MappedBoardGuard refuses it at candidacy (DL-298, card#7211), which is why the
+        // divergence is forced through the accepted INTERVAL (DL-292) instead, exactly as the
+        // token-path arms do: `is_numeric` + `(int)` admits the numeric STRING '8' onto a
+        // mapped board of 8, so a reading of the ROW gives '8' where an echo of the mapping
+        // gives int 8. The gate does not make this record redundant — a gate emits evidence
+        // only when it REFUSES, and this is what answers "did this ever happen?" on the path
+        // the gate passes.
+        //
+        // ⛔ Seen to fail: before the fix this line carried no board at all, so `card_board`
+        // was absent; a fix echoing the mapped board twice gives int 8 here, not '8'.
+        $this->fakeBoard([['id' => 5, 'board_id' => '8', 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]]);
+        Log::spy();
+
+        $this->handle();
+
+        $this->assertMoved(5, 53);
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_promote_released: promoted Shipped→Released'
+            && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
+    }
 }

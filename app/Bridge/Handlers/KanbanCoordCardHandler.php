@@ -246,7 +246,7 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
                 // warned if kanban answered a body with no `data` collection.
                 $live = $this->onMappedBoard($client->cardRowsByTag($mapping->boardId, $tag), $mapping, $repo, $issueNumber);
                 if (count($live) > 1) {
-                    CardCollapse::toSurvivor($client, $live, 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag]);
+                    CardCollapse::toSurvivor($client, $live, 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag], $mapping);
                 }
             }
             if ($byRef) {
@@ -258,7 +258,7 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
                     // wrong, never on the ordinary single-card path.
                     $rows = $this->onMappedBoard(array_map(fn (int $id) => $client->getCard($id), $liveRef), $mapping, $repo, $issueNumber);
                     if (count($rows) > 1) {
-                        CardCollapse::toSurvivor($client, $rows, 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'ref' => "github_issue:{$issueNumber}"]);
+                        CardCollapse::toSurvivor($client, $rows, 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'ref' => "github_issue:{$issueNumber}"], $mapping);
                     }
                 }
             }

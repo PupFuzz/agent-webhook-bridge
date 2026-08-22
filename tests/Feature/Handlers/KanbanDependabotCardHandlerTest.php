@@ -586,4 +586,151 @@ class KanbanDependabotCardHandlerTest extends TestCase
         }
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
+
+    // --- card#7212: the success record names the board the write LANDED on ---
+
+    public function test_an_archive_records_the_cards_own_board_beside_the_mapped_one(): void
+    {
+        // PRESENCE on a GROUP-B arm (card#7211): this id came out of a board-scoped search, so
+        // the card's board is not implied by anything upstream — reading it here is the only way
+        // the record can say where the write landed. The DL-298 re-check in cardsForRepo() gates
+        // the write; it emits nothing on the path it passes, which is what this record is for.
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+        Log::spy();
+
+        $this->handle('closed_unmerged');
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'archived (closed-unmerged)')
+            && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
+    }
+
+    public function test_the_archive_record_reads_the_rows_own_board_and_is_not_a_second_copy_of_the_mapped_one(): void
+    {
+        // ⭐⭐ THE DIVERGENCE CONTROL. A test asserting only that both keys are PRESENT passes
+        // against a "fix" rendering `mapped_board` into both slots — today's defect wearing the
+        // new field's name — so the two values are forced APART and pinned with `===`.
+        //
+        // ⛔ WHAT FORCES THEM APART HERE, and why it is no longer a foreign board. Until DL-298
+        // this arm ran NO membership compare, so a board-8 mapping genuinely archived a board-12
+        // card and that was the divergence. `cardsForRepo()` now re-checks the row through
+        // MappedBoardGuard (card#7211), so a foreign row never reaches the archive — which is
+        // why the control moves onto the accepted INTERVAL (DL-292), exactly as the token-path
+        // arms already did: `is_numeric` + `(int)` admits the numeric STRING '8' onto a mapped
+        // board of 8, so a reading of the ROW gives '8' where an echo of the mapping gives int 8.
+        // The gate closing the foreign-board case does not retire this leg — the gate emits
+        // evidence only when it REFUSES, and this record is what answers "did this ever happen?"
+        // on the path the gate passes.
+        //
+        // ⛔ Seen to fail: with the success arm echoing the mapped board (or, as it did,
+        // logging no board at all) this assertion reds — `card_board` is absent, or int 8.
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => '8', 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+        Log::spy();
+
+        $this->handle('closed_unmerged');
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['_action'] === 'archive');
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'archived (closed-unmerged)')
+            && $ctx['card_board'] === '8'      // the ROW's spelling, verbatim
+            && $ctx['mapped_board'] === 8);    // the CONFIG's, unchanged
+    }
+
+    public function test_the_move_record_reads_the_rows_own_board_and_is_not_a_second_copy_of_the_mapped_one(): void
+    {
+        // The archive arm's twin, and a separate site: the survivor is resolved by the same
+        // search and moved. Same divergence through the accepted interval, same `===` pinning.
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => '8', 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+        Log::spy();
+
+        $this->handle('merged');
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_dependabot_card: moved'
+            && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
+    }
+
+    public function test_a_collapse_archive_records_the_archived_cards_own_board_beside_the_mapped_one(): void
+    {
+        // PRESENCE on the SHARED collapse primitive (CardCollapse), which is where the
+        // card#7212 review found the record still missing: the pair was threaded into the
+        // handlers' own archive/move arms but not into the kernel they both delegate the
+        // duplicate-archive to, so this write recorded NO board at all.
+        $prUrl = 'https://github.com/owner/repo/pull/42';
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'board_id' => 8, 'workflow_stage_id' => 50, 'archived_at' => '2026-06-20T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+        ]);
+        Log::spy();
+
+        $this->handle('merged');
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'archived duplicate card sharing the same correlation key')
+            && $ctx['card_id'] === 8 && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
+    }
+
+    public function test_the_collapse_archive_record_reads_the_rows_own_board_not_a_copy_of_the_mapped_one(): void
+    {
+        // ⭐⭐ THE DIVERGENCE CONTROL for the collapse kernel, and the arm MOST likely to
+        // touch a foreign card: the ids come from `correlatePr()` — a board-scoped search —
+        // and the collapse fires exactly when that search returned MORE rows than expected.
+        // `cardsForRepo()` filters on the repo parsed from the card's `pr_url`; since DL-298
+        // it filters on the BOARD too, so the foreign-board duplicate is now refused rather
+        // than archived and the divergence is forced through the accepted interval instead
+        // (see the archive arm above for why that substitution is the right one).
+        //
+        // ⛔ Seen to fail: before the mapping was threaded into CardCollapse::toSurvivor()
+        // this record carried neither key, so `$ctx['card_board']` was undefined.
+        $prUrl = 'https://github.com/owner/repo/pull/42';
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'board_id' => '8', 'workflow_stage_id' => 50, 'archived_at' => '2026-06-20T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+        ]);
+        Log::spy();
+
+        $this->handle('merged');
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/8.json') && ($r['_action'] ?? null) === 'archive');
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'archived duplicate card sharing the same correlation key')
+            && $ctx['card_board'] === '8'      // the ROW's spelling, verbatim
+            && $ctx['mapped_board'] === 8);    // the CONFIG's, unchanged
+    }
+
+    public function test_a_collapse_archive_that_did_not_take_records_the_pair_too(): void
+    {
+        // THE ONE RULE (WritebackSuccessBoardRecordTest's docblock owns it): the pair goes on
+        // every record reporting a write kanban ACCEPTED, including the one reporting that an
+        // accepted archive did NOT take — a 200-not-archived on a FOREIGN card is exactly the
+        // cross-board touch this record exists to make visible, and it is the loudest arm.
+        $prUrl = 'https://github.com/owner/repo/pull/42';
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            // archived_at absent on the PATCH response ⇒ the 200-that-didn't-archive branch.
+            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'board_id' => '8', 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+        ]);
+        Log::spy();
+
+        $this->handle('merged');
+
+        Log::shouldHaveReceived('error')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'duplicate archive returned 200 but the card is not archived')
+            && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
+    }
 }

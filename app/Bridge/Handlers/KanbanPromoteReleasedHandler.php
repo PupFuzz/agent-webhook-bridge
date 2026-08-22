@@ -203,7 +203,15 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_promote_released', $cardId, $repo, 'promote_on_release')) {
                 continue;
             }
-            $candidates[$cardId] = $prNumber;   // keyed by card id (dedup; N:1 can't collide here)
+            // The ROW's own board travels with the candidate (card#7212), because the promote
+            // happens two calls later with the row out of scope. Carried, not re-read — and
+            // ONE capture serves both jobs: the gate above decides WHETHER this row may be
+            // written to, this pair records WHAT board the write landed on. The gate makes the
+            // two values agree on every path that reaches the promote, which is what turns the
+            // record from a divergence detector into the positive evidence card#7212 is about:
+            // a success line that names a board at all is what makes "did a cross-board write
+            // ever land?" answerable, and an absence of record is not a record of absence.
+            $candidates[$cardId] = ['pr' => $prNumber, 'board' => MappedBoardGuard::boardContext($card, $mapping)];   // keyed by card id (dedup; N:1 can't collide here)
         }
 
         if (count($candidates) > self::MAX_CANDIDATES) {
@@ -216,8 +224,8 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         }
 
         $promoted = 0;
-        foreach ($candidates as $cardId => $prNumber) {
-            if ($this->promoteIfReleased($github, $kanban, $repo, $cardId, $prNumber, $released)) {
+        foreach ($candidates as $cardId => $candidate) {
+            if ($this->promoteIfReleased($github, $kanban, $repo, $cardId, $candidate['pr'], $released, $candidate['board'])) {
                 $promoted++;
             }
         }
@@ -232,8 +240,15 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
      * (4xx) GitHub/kanban error on this card is logged + skipped (return false); a transient
      * (5xx/timeout) error PROPAGATES so redelivery re-scans (idempotent — a promoted card
      * leaves the Shipped filter).
+     *
+     * $boardContext is the candidate ROW's own board paired with the mapped one, rendered by
+     * {@see MappedBoardGuard::boardContext} at scan time and carried here so the success
+     * record names the board the promote LANDED on, not only the one config aimed at
+     * (card#7212).
+     *
+     * @param  array{card_board: mixed, mapped_board: int}  $boardContext
      */
-    private function promoteIfReleased(GitHubReadClient $github, KanbanClient $kanban, string $repo, int $cardId, int $prNumber, int $released): bool
+    private function promoteIfReleased(GitHubReadClient $github, KanbanClient $kanban, string $repo, int $cardId, int $prNumber, int $released, array $boardContext): bool
     {
         try {
             $pr = $github->getPull($repo, $prNumber);
@@ -297,7 +312,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             }
             throw $e;
         }
-        Log::info('kanban_promote_released: promoted Shipped→Released', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'stage' => $released]);
+        Log::info('kanban_promote_released: promoted Shipped→Released', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'stage' => $released] + $boardContext);
 
         return true;
     }
