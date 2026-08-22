@@ -73,6 +73,40 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7169 (DL-296)** — **an ARCHIVED coord card is a RETIRE the real-time create leg now
+  honours, instead of minting a second card over it.** `KanbanClient::cardsByTag()` sends no
+  `archived` parameter and kanban's search applies `whereNull('archived_at')` unless one is passed,
+  so the create leg's tag pre-check **structurally could not see an archived card**: a thread whose
+  only card had been retired read as un-carded, and since `issues.reopened` is on the create path,
+  every reopen minted a duplicate. **Reproduced on a live board before any code was written** —
+  card archived, the reopen replayed through the real classifier and handler against the real API,
+  a second card observed on the board. **⚠ This changes what the bridge accepts:** a reopen that
+  creates today stops creating when the thread's only card is archived, and the refusal now
+  **signals** (`coord_card_archived_twin`, log + alert push naming the archived card ids) rather
+  than passing in silence — the remedy is to unarchive that card. Operator-approved before any
+  code. **The consumer's fork is inherited, not collapsed:** a card the reclass pass archived
+  because its source re-routed away carries `coord:reroute-archived` and does **NOT** suppress — a
+  source that routes back is carded again — while a hand-retired card does. The exemption is per
+  **thread**, matching the granularity the consumer subtracts at (sets of stable-ids, not cards),
+  so a mixed archived set — one reroute-tagged twin beside a hand-retired one — is carded again on
+  both sides. Refusing on *"any archived card exists"* was rejected explicitly: it would
+  silently stop carding legitimately-reopened work. Kanban's `archived` is a **switch**, not a
+  widening (`archived=1` returns archived ONLY), so this is a second read on the last branch before
+  the create — no existing read changes, no caller of `cardsByTag` sees a new row, and a delivery
+  that skips pays nothing. **Stated gap:** the non-prefixed (`issue_population: all`) path has no
+  tag and kanban's `by-ref.json` takes no `archived` parameter, so a retired by-ref card is still
+  re-created; pinned by a test and tracked on card#7169. **The SIBLING CLASS is filed, not asserted
+  away (card#7222):** a live-only correlation read answering *"no card"* for an archived one is a
+  shape with four create-deciding members, and DL-296 closes one. Two stay OPEN with dispositions
+  on that card — `board_create_card`'s `idem:` pre-check (re-using a key whose card was archived
+  mints a SECOND card and answers `"created": true`; **`docs/board-tools.md` and the MCP tool
+  description now carry that bound, the code is unchanged**, because both candidate fixes change
+  what the tool accepts) and the dependabot leg (it archives its own card on `closed_unmerged`,
+  `reopened` collapses to `opened`, and by-ref excludes archived rows, so a reopened dependabot PR
+  re-creates over the bridge's own retire — possibly intended, but unrecorded either way). The
+  reference channel server's snapshot goes **0.9.4 → 0.9.5** for that one-line description fix
+  (DL-038); no behavior change in the server.
+
 - **card#7126 (DL-294)** — **`coord_card_lane_stage_ids` is now accepted with `move_coord_cards`
   alone, not only with `create_coord_cards`.** The load refused any mapping that set a lane map
   without the create leg, on the stated ground that *"the revive and relane legs only re-place an
