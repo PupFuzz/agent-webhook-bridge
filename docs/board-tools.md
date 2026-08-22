@@ -111,11 +111,22 @@ term is efficiency + defense-in-depth, not the boundary.
 - The bridge stamps `created-by:<you>` as the audit tag.
 - **Pass an `idempotency_key`.** With one, the bridge runs the full duplicate-safe
   pattern: it correlates on `idem:<you>:<key>` *before* creating (a repeat returns
-  the same card, `"idempotent_hit": true`, no second card), and after creating it
+  the same card, `"idempotent_hit": true`, no second card — **while that card is
+  live**; see the bound below), and after creating it
   re-reads and collapses any card a concurrent call raced in. Without a key, a
   retry (including any invisible MCP-client-layer retry) can double-create — the
   duplicate is visible via `board_my_cards` and bounded, but the key is why it
   exists.
+- **⚠ Bound on that guarantee — it holds only while the card is LIVE.** The
+  correlate-before-create read is `tasks/search.json` with no `archived`
+  parameter, and kanban's search applies `whereNull('archived_at')` unless one is
+  passed (DL-296). **Archive the card a key minted, call again with the same key,
+  and the pre-check sees nothing: you get a SECOND card and `"created": true`** —
+  the repeat-returns-the-same-card promise above is about a live card only. Known,
+  not fixed here: the fix is the same second archived-side read the coord create
+  leg took in DL-296, but the answer it should give a tool caller (report the
+  archived card as the hit, or refuse the create) changes what this tool accepts,
+  so it needs an operator ruling. Tracked with its siblings on card#7222.
 
 **Returns:**
 

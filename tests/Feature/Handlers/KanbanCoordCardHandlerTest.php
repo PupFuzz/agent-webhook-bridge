@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class KanbanCoordCardHandlerTest extends TestCase
@@ -258,33 +259,76 @@ class KanbanCoordCardHandlerTest extends TestCase
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
     }
 
-    public function test_one_human_retired_card_in_a_mixed_archived_set_still_suppresses(): void
+    /**
+     * THE MIXED CELL, and the one place the naive per-card spelling would disagree with
+     * the consumer. Its helpers project to STABLE-IDS before subtracting, so a sid with
+     * one reroute-tagged archived card and one untagged one is in both sets, the
+     * difference removes it, and `reconcile_simple_board` CREATES. A per-card bridge
+     * would refuse, alert the operator to unarchive a card, and be undone by the
+     * reconcile's next pass. Both row orders are asserted because the implementation
+     * returns early on the tagged row: an order-sensitive one would answer differently
+     * depending on what kanban happened to return first.
+     *
+     * @return array<string, array{list<array<string, mixed>>}>
+     */
+    public static function mixedArchivedSetOrders(): array
     {
-        // The partition is per CARD and the human decision wins: a thread that re-routed
-        // away (reroute-tagged twin) AND was retired by hand (untagged twin) is retired.
-        // Asserted because the naive spelling — "every archived card is reroute-tagged?" —
-        // reads identically on the single-card cases above and differs only here.
+        $reroute = ['id' => 524, 'tags' => ['id:QUERY-4', 'coord:reroute-archived'], 'archived_at' => '2026-08-21T21:24:24+00:00'];
+        $retired = ['id' => 525, 'tags' => ['id:QUERY-4'], 'archived_at' => '2026-08-21T21:24:24+00:00'];
+
+        return [
+            'reroute-tagged row first' => [[$reroute, $retired]],
+            'hand-retired row first' => [[$retired, $reroute]],
+        ];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $archivedRows
+     */
+    #[DataProvider('mixedArchivedSetOrders')]
+    public function test_a_mixed_archived_set_creates_because_the_consumer_exempts_the_whole_thread(array $archivedRows): void
+    {
+        $this->writeMappingWithAlert();
+        Log::spy();
+        Http::fake([
+            '*/tasks/search.json?*archived=1*' => Http::response(['data' => $archivedRows]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+            self::ALERT_URL.'*' => Http::response('', 204),
+        ]);
+
+        $this->handle();
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
+        Http::assertNotSent(fn ($r) => $this->isAlertPush($r) && $r['reason'] === 'coord_card_archived_twin');
+        // Keyed on THIS refusal's message, not on `warning` at all: a blanket negative
+        // would red on any unrelated warn a future arm adds and say nothing about this one.
+        Log::shouldNotHaveReceived('warning', [\Mockery::pattern('/the only card for this thread is ARCHIVED/'), \Mockery::any()]);
+    }
+
+    public function test_the_signal_names_every_hand_retired_twin_not_just_the_first(): void
+    {
+        // Two hand-retired cards, no reroute tag anywhere: the thread is retired and BOTH
+        // ids reach the operator, because either is a card they may need to unarchive.
+        // Reds against a `retiredTwins` that returns on its first untagged row — the
+        // shape the thread-level exemption's early return makes easy to reach for.
         $this->writeMappingWithAlert();
         Log::spy();
         Http::fake([
             '*/tasks/search.json?*archived=1*' => Http::response(['data' => [
-                ['id' => 524, 'tags' => ['id:QUERY-4', 'coord:reroute-archived'], 'archived_at' => '2026-08-21T21:24:24+00:00'],
-                ['id' => 525, 'tags' => ['id:QUERY-4'], 'archived_at' => '2026-08-21T21:24:24+00:00'],
+                ['id' => 530, 'tags' => ['id:QUERY-4'], 'archived_at' => '2026-08-21T21:24:24+00:00'],
+                ['id' => 531, 'tags' => ['id:QUERY-4', 'type:query'], 'archived_at' => '2026-08-21T21:24:25+00:00'],
             ]]),
             '*/tasks/search.json*' => Http::response(['data' => []]),
-            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),   // see the note above
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
             self::ALERT_URL.'*' => Http::response('', 204),
         ]);
 
         $this->handle();
 
         Http::assertNotSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
-        Http::assertSent(fn ($r) => $this->isAlertPush($r) && $r['reason'] === 'coord_card_archived_twin');
-        // The log names the RETIRED card only, not the reroute-archived one — 525 is the id
-        // an operator would unarchive, and naming 524 beside it would send them at a card
-        // the framework retired on purpose.
         Log::shouldHaveReceived('warning')->withArgs(
-            fn (string $m, array $c) => str_contains($m, 'the only card for this thread is ARCHIVED') && $c['archived_card_ids'] === [525],
+            fn (string $m, array $c) => str_contains($m, 'the only card for this thread is ARCHIVED') && $c['archived_card_ids'] === [530, 531],
         )->once();
     }
 

@@ -262,10 +262,16 @@ final class KanbanClient
      * orphan-adoption collapse any duplicate a blind read minted.
      *
      * LIVE cards only, and that is the contract, not an oversight (DL-296): kanban
-     * excludes archived rows unless `?archived` is passed, which every caller here
-     * wants — an idempotency probe, a post-create collapse and a move correlation
-     * must none of them see a retired card. A caller that needs the archived side
-     * asks for it explicitly via {@see cardRowsByTag}'s `$archivedOnly`.
+     * excludes archived rows unless `?archived` is passed. A caller that needs the
+     * archived side asks for it explicitly via {@see cardRowsByTag}'s `$archivedOnly`.
+     *
+     * ⚠ Live-only is RIGHT for a post-create collapse (it reduces the LIVE set to one
+     * survivor; seeing archived rows would re-archive an already-retired card) and for
+     * a move correlation (it would RESURRECT a retired card into a stage). It is NOT
+     * right for a CREATE decision, and `BoardCreateCardTool`'s `idem:` pre-check is one:
+     * re-using a key whose card was archived reads as un-carded and mints a second card.
+     * That is open, with its siblings, on card#7222 — do not read this docblock as
+     * certifying every caller.
      *
      * @return list<int>
      */

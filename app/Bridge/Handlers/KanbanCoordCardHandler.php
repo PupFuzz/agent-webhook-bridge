@@ -36,7 +36,8 @@ use Illuminate\Support\Facades\Log;
  * branch: a thread whose only card was ARCHIVED reads as un-carded, and a reopen would
  * mint a second card over the retire (DL-296). One `archivedOnly` tag search answers
  * it, and {@see retiredTwins} decides on the consumer's partition — a human retire
- * suppresses the create and signals; a reroute-archived twin does not.
+ * suppresses the create and signals; ONE reroute-archived twin exempts the whole
+ * THREAD, exactly as the consumer's set difference does.
  * Otherwise create at the stage {@see CoordCardLanePlacement} resolves (the
  * mapping's `coord_card_stage_id` unless a lane model is configured and governs this
  * issue — an anchored `[TASK]` title, card#6371), then re-read + collapse a raced
@@ -71,6 +72,19 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
      * a source that routes BACK must get its card again. The literal is a shared
      * CONTRACT with the consumer (like the `id:<sid>` adoption key), so it is pinned
      * here rather than derived; a consumer that renames it renames it on both sides.
+     *
+     * ⚠ BOUND — this carve-out covers the CONSUMER's bookkeeping archive only, because
+     * that is the only bookkeeping archive that carries a marker. The BRIDGE archives
+     * cards too and marks none of them: {@see CardCollapse::toSurvivor} retires a raced
+     * duplicate carrying this very `id:<sid>` tag, and `KanbanDependabotCardHandler`
+     * retires a dependabot card on `closed_unmerged` (DL-161). A collapse artifact is
+     * therefore INDISTINGUISHABLE here from a hand retire. That is harmless for the
+     * collapse — it only ever archives the losers of a race whose survivor stays LIVE,
+     * so the live pre-check answers first and this branch is never reached — and it
+     * bites only if that survivor later leaves the live search (a hard delete), which
+     * would leave the thread reading as retired on an archive nobody decided. Stated,
+     * not fixed: marking the bridge's own archive is a new cross-system tag the consumer
+     * would also have to partition on. Class item card#7222.
      */
     private const REROUTE_ARCHIVED_TAG = 'coord:reroute-archived';
 
@@ -258,13 +272,24 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
      * `archived_stable_ids(...) - reroute_archived_stable_ids(...)` partition, so one
      * hazard keeps one rule across both movers.
      *
-     * A retire is the DEFAULT reading of an archived card: only the consumer's own
-     * reroute tag exempts one, and the exemption is per CARD, not per thread — a thread
-     * whose archived set holds one reroute-tagged card and one human-retired card is
-     * still retired, because the human decision is the one that would be overturned.
-     * That asymmetry is deliberate and is why this returns the retired ids rather than a
-     * bool: the caller names them in the signal, so an operator can see which card to
-     * unarchive.
+     * A retire is the DEFAULT reading of an archived card, and only the consumer's own
+     * reroute tag exempts — but the exemption is per THREAD, not per card, because the
+     * consumer's is: both of its helpers project the card set down to STABLE-IDS before
+     * the subtraction, so a sid holding one reroute-tagged archived card and one
+     * untagged one is in BOTH sets, the difference removes it, and the reconcile
+     * CREATES. All rows here carry one `id:<sid>` tag by construction (they came from a
+     * search on it), so "any reroute-tagged row" IS that sid's membership in the
+     * subtrahend. One tagged row therefore empties the result and the create fires.
+     *
+     * ⚠ This is the ONE cell where the naive per-card spelling would disagree, and the
+     * disagreement is not a stricter reading — it is a refusal the reconcile's very next
+     * pass UNDOES: the bridge would decline, alert *"unarchive that card if the thread is
+     * live again"*, and the reconcile would mint a fresh card anyway, leaving the alert's
+     * remedy wrong and the suppression pointless. Matching the consumer is also the
+     * cheaper claim to keep true (card#7169, review R-M1).
+     *
+     * Returns the retired ids rather than a bool because the caller names them in the
+     * signal, so an operator can see which card to unarchive.
      *
      * Every row here is archived by construction (the caller passes `archivedOnly`), so
      * this re-tests only the tag. A row kanban answered without an `id` is still a
@@ -279,7 +304,9 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
         foreach ($rows as $row) {
             $tags = $row['tags'] ?? null;
             if (is_array($tags) && in_array(self::REROUTE_ARCHIVED_TAG, $tags, true)) {
-                continue;
+                // The whole THREAD is exempt — discard anything already collected, so the
+                // answer cannot depend on the order kanban happened to return the rows in.
+                return [];
             }
             $id = $row['id'] ?? null;
             $ids[] = is_numeric($id) ? (int) $id : 0;
