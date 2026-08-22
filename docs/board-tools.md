@@ -155,15 +155,23 @@ correct exactly until you needed it. Consequences for a caller:
   actually is**, not the lane the POST requested.
 - `placement_observed` is the discrimination that makes the nulls readable.
   **`true`** ⇒ `board_id`/`swimlane_id` are that card's own values (and
-  `swimlane_id: null` then means the card really is in no lane). **`false`** ⇒ the
-  read-back failed and **both ids are null — the response claims no placement**;
-  it never falls back to the configured board/lane, which is the defect this
-  closes. `created` / `idempotent_hit` / `card_id` are unaffected: the card exists
+  `swimlane_id: null` then means the card really is in no lane — the bridge tells
+  a *present* null from a *missing* key, so a body that omits `swimlane_id`
+  entirely is never reported as "no lane"). **`false`** ⇒ the read-back failed, or
+  answered nothing usable on either axis, and **both ids are null — the response
+  claims no placement**; it never falls back to the configured board/lane, which
+  is the defect this closes. `created` / `idempotent_hit` / `card_id` are unaffected: the card exists
   and its id is still the answer, so a read-back failure is **not** an error
   response (losing the placement is cheaper than losing the id).
 - It costs **one extra `GET /tasks/{id}.json`** per successful call, and it is the
   card the tool is about to name — after any duplicate collapse, so a survivor
-  minted by another worker reports its own placement.
+  minted by another worker reports its own placement. ⚠ **That endpoint is
+  kanban's FULL task aggregate, not a two-field read:** it eager-loads subtasks,
+  comments, attachments, both link directions (each with the linked card's board),
+  external references and the last stage-move changelog, then runs the link
+  projector — all to obtain two integers. One request, but the response body is
+  the real cost, and on the idempotency-hit arm the card can be old and
+  comment-heavy.
 - A placement that disagrees with the agent's configured board/lane is a
   `Log::warning` on the bridge; the tool still answers 200 and reports what it
   saw. What a divergence should make the tool *do* is a separate question from

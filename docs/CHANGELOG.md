@@ -159,13 +159,19 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   gave: a log line is read by someone already hunting a problem; a tool response is consumed as
   fact. **⚠ FOR A CALLER — the two keys can now disagree with your config, and there is a third:**
   `placement_observed` is `true` when the ids are that card's own values (in which case
-  `swimlane_id: null` genuinely means *no lane*), and `false` when the read-back failed — then
+  `swimlane_id: null` genuinely means *no lane* — a *present* null; a body that omits the
+  `swimlane_id` key is not a lane-less card and is not reported as one), and `false` when the
+  read-back failed or answered nothing usable on either axis — then
   **both ids are null and the response claims no placement at all**. It never falls back to the
   configured board/lane; that fallback IS the defect. `created` / `idempotent_hit` / `card_id` are
   untouched, so a read-back failure is not an error response — the card exists and its id is still
   the answer. **Cost: one extra `GET /tasks/{id}.json` per SUCCESSFUL call** (nothing on any refusal
   path), taken on the card the tool is about to name — after the duplicate collapse, so a survivor
-  another worker minted reports its own placement. A placement disagreeing with the configured scope
+  another worker minted reports its own placement. ⚠ **One request, but not a small one:** that
+  endpoint is kanban's full task aggregate — subtasks, comments, attachments, both link directions
+  (each with the linked card's board), external references, the last stage-move changelog and a
+  link-projector pass — eager-loaded to obtain two integers, and on the idempotency-hit arm the card
+  can be old and comment-heavy. A placement disagreeing with the configured scope
   is a `Log::warning` naming both pairs; the tool still answers 200 with what it saw. **What a
   divergence should make the tool DO (refuse? alert?) is deliberately NOT decided here** — that
   changes what the surface accepts and is its own gate.

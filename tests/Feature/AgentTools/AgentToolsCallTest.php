@@ -93,10 +93,19 @@ class AgentToolsCallTest extends TestCase
 
     public function test_loopback_peer_is_admitted(): void
     {
-        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
+        // Both stubs are load-bearing: the create arm ALSO reads the card back
+        // (card#7225), and an unstubbed request is NOT blocked by Http::fake — it
+        // goes to the real network, where the tool's fail-soft catch swallows the
+        // failure and this assertStatus(200) passes through the degraded path
+        // instead of the one it names. See CLAUDE_TESTING.md.
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
+        ]);
 
         $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']])
-            ->assertStatus(200);
+            ->assertStatus(200)
+            ->assertJsonPath('result.placement_observed', true);   // the admitted call went down the STUBBED path
     }
 
     public function test_external_peer_with_spoofed_loopback_xff_is_refused(): void
@@ -120,12 +129,16 @@ class AgentToolsCallTest extends TestCase
         // The mirror of the spoof case: a loopback peer carrying an EXTERNAL XFF is
         // still admitted — the header is inert in BOTH directions (it neither grants
         // nor revokes access), proving the gate keys solely on the real TCP peer.
-        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
+        ]);
 
         $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']], server: [
             'REMOTE_ADDR' => '127.0.0.1',
             'HTTP_X_FORWARDED_FOR' => '203.0.113.9',
-        ])->assertStatus(200);
+        ])->assertStatus(200)
+            ->assertJsonPath('result.placement_observed', true);   // stubbed read-back, not the fail-soft path
     }
 
     // ─── bearer resolution ───────────────────────────────────────────────────
@@ -475,10 +488,14 @@ class AgentToolsCallTest extends TestCase
         // collapse archives the higher id (9), survivor is 8.
         // Keyed by request, not Http::sequence(): the archive-side probe DL-297 added
         // pops a sequence and hands the post-create re-read the archived element.
+        // THIS worker's create returns 9, the survivor is 8 — deliberately NOT the
+        // same id, or "reports the survivor" and "reports the id kanban handed me"
+        // would be indistinguishable, and the read-back assertion below could not
+        // fail.
         Http::fake($this->archiveAxisFake(
             live: [],                                   // correlate-before-create: empty
             archived: [],                               // and nothing retired ⇒ the create fires
-            newId: 8,
+            newId: 9,                                   // what kanban answered THIS worker
             postCreate: [['id' => 8], ['id' => 9]],     // post-create re-read: raced pair
         ));
 
@@ -491,6 +508,12 @@ class AgentToolsCallTest extends TestCase
         // The raced duplicate (9) was archived.
         Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/9.json')
             && ($r['_action'] ?? null) === 'archive');
+        // ⭐ The advertised property: the placement read-back targets the SURVIVOR
+        // (8), the card the response actually names — not 9, the id this worker's
+        // own create returned. Without this the response could name 8 while
+        // describing 9's placement, and every assertion above would still pass.
+        Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/8.json'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/9.json'));
     }
 
     public function test_idempotency_key_whose_only_card_is_archived_refuses_and_creates_nothing(): void
@@ -613,6 +636,7 @@ class AgentToolsCallTest extends TestCase
         // swimlane is a real reading, and `placement_observed: true` is what says
         // so. Without this the null in the next test would be indistinguishable
         // from "the bridge could not look".
+        Log::spy();
         Http::fake([
             '*/tasks.json' => Http::response(['data' => ['id' => 42]], 201),
             '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'board_id' => 10, 'swimlane_id' => null]]),
@@ -624,6 +648,11 @@ class AgentToolsCallTest extends TestCase
             ->assertJsonPath('result.swimlane_id', null)
             ->assertJsonPath('result.board_id', 10)
             ->assertJsonPath('result.placement_observed', true);
+        // CONTROL for the two key-shape tests below: a PRESENT null is a reading,
+        // so the unusable-axis warning must NOT fire here. Keyed on that message,
+        // never on `warning` at large (the divergence warning DOES fire — a
+        // lane-less card is not the configured lane 4).
+        Log::shouldNotHaveReceived('warning', [\Mockery::pattern('/no usable board_id\/swimlane_id/'), \Mockery::any()]);
     }
 
     public function test_an_unreadable_card_reports_no_placement_and_still_answers_the_card_id(): void
@@ -655,6 +684,7 @@ class AgentToolsCallTest extends TestCase
         // A 200 whose body answers nothing about placement is not an observation.
         // `board_id` is the anchor kanban returns on every task row, so a row
         // without one leaves BOTH ids unclaimed rather than reporting a null lane.
+        Log::spy();
         Http::fake([
             '*/tasks.json' => Http::response(['data' => ['id' => 42]], 201),
             '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'swimlane_id' => 4]]),
@@ -667,6 +697,75 @@ class AgentToolsCallTest extends TestCase
             ->assertJsonPath('result.board_id', null)
             ->assertJsonPath('result.swimlane_id', null)        // NOT the 4 the row happens to carry
             ->assertJsonPath('result.placement_observed', false);
+        // ⭐ WITHOUT THIS the test cannot tell its own branch from the throw
+        // branch: an unreadable read-back yields a byte-identical body. The log
+        // is the only channel that says WHICH way the placement was lost, and
+        // `unusable` says which axis — so this also separates it from the two
+        // swimlane-key cases below, whose bodies are identical again.
+        Log::shouldHaveReceived('warning', [
+            \Mockery::pattern('/no usable board_id\/swimlane_id/'),
+            \Mockery::on(fn ($ctx) => is_array($ctx) && ($ctx['unusable'] ?? null) === 'board_id'),
+        ]);
+        Log::shouldNotHaveReceived('warning', [\Mockery::pattern('/could not be read back/'), \Mockery::any()]);
+    }
+
+    /**
+     * ⛔ THE SWIMLANE AXIS WAS NOT OBSERVATION-GATED. `is_numeric($card['swimlane_id']
+     * ?? null)` cannot tell an ABSENT key from a present null, so a read-back
+     * carrying no `swimlane_id` at all reported `swimlane_id: null` with
+     * `placement_observed: true` — i.e. it told the calling agent, as an
+     * observation it may act on, that its card is in NO lane, for a card sitting
+     * in one. `docs/kanban-integration-contract.md` §2 already published the
+     * opposite (*"or the tool reports an unobserved placement"*), so the code, not
+     * the doc, was the thing out of contract.
+     */
+    public function test_a_read_back_with_no_swimlane_key_reports_no_placement(): void
+    {
+        Log::spy();
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 42]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'board_id' => 10]]),   // no swimlane_id KEY at all
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.created', true)            // presence witness: the create still answers
+            ->assertJsonPath('result.card_id', 42)
+            ->assertJsonPath('result.board_id', null)           // unobserved on BOTH axes, exactly as a missing board_id is
+            ->assertJsonPath('result.swimlane_id', null)
+            ->assertJsonPath('result.placement_observed', false);
+        Log::shouldHaveReceived('warning', [
+            \Mockery::pattern('/no usable board_id\/swimlane_id/'),
+            \Mockery::on(fn ($ctx) => is_array($ctx) && ($ctx['unusable'] ?? null) === 'swimlane_id'),
+        ]);
+    }
+
+    /**
+     * The other half of the same gate: a PRESENT key whose value is not a number
+     * (and not null) is also a body that answered nothing about the lane — the
+     * `board_id` axis has always treated a non-numeric that way.
+     */
+    public function test_a_read_back_whose_swimlane_id_is_not_a_number_reports_no_placement(): void
+    {
+        Log::spy();
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 42]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 42, 'board_id' => 10, 'swimlane_id' => 'none']]),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.created', true)
+            ->assertJsonPath('result.card_id', 42)
+            ->assertJsonPath('result.board_id', null)
+            ->assertJsonPath('result.swimlane_id', null)
+            ->assertJsonPath('result.placement_observed', false);
+        Log::shouldHaveReceived('warning', [
+            \Mockery::pattern('/no usable board_id\/swimlane_id/'),
+            \Mockery::on(fn ($ctx) => is_array($ctx) && ($ctx['unusable'] ?? null) === 'swimlane_id'),
+        ]);
     }
 
     // ─── board_my_cards: swimlane row filter ─────────────────────────────────

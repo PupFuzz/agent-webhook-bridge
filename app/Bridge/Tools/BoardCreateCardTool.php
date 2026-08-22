@@ -172,13 +172,29 @@ final class BoardCreateCardTool implements Tool
      * nothing. False ⇒ both ids are null and the response claims NO placement —
      * never a config value dressed as an observation.
      *
-     * FAIL-SOFT, deliberately: the read-back runs after the create has already
-     * landed, so throwing here would answer a failure for a card that exists and
-     * whose id the caller would then never see (and, with no idempotency_key, its
-     * retry double-creates). Losing the placement is strictly cheaper than losing
-     * the id. `board_id` is the anchor field — kanban returns it on every task row
-     * — so a read that carries no usable one answered nothing about placement and
-     * is reported as unobserved, not as a null lane.
+     * FAIL-SOFT, deliberately — and the reason is NOT the same on both arms this
+     * primitive serves. On the CREATE arm the read-back runs after the create has
+     * already landed, so throwing would answer a failure for a card that exists
+     * and whose id the caller would then never see (and, with no
+     * idempotency_key, its retry double-creates). That argument does NOT hold on
+     * the IDEMPOTENCY-HIT arm: no create happened there and a retry is idempotent
+     * by construction. What holds there instead is the contract of a SHARED
+     * primitive — a caller cannot tell which arm answered it, so the response
+     * shape must not vary by arm; a hit that threw where a create degrades would
+     * make the tool's failure mode a function of board state the caller cannot
+     * see. Either way, losing the placement is strictly cheaper than losing the
+     * id.
+     *
+     * A read-back that answers nothing usable about EITHER axis is reported as
+     * unobserved on BOTH, never as a null lane. Kanban returns `board_id` on
+     * every task row and `swimlane_id` top-level beside it, so a missing or
+     * non-numeric `board_id`, an ABSENT `swimlane_id` key, or a present
+     * non-numeric one, all mean the body answered nothing about placement. The
+     * one real null is a PRESENT `swimlane_id: null` — that card is genuinely in
+     * no lane, and `array_key_exists` is what tells the two apart (`?? null`
+     * cannot, and would report "no lane" for a card sitting in one).
+     * `placement_observed` answers for the PLACEMENT, not per axis, which is why
+     * one unreadable axis unobserves the pair.
      *
      * A divergence from config is WARNED, not refused: what a card's placement
      * makes the tool do is a separate question from what it reports, and this
@@ -201,15 +217,28 @@ final class BoardCreateCardTool implements Tool
         }
 
         $board = is_numeric($card['board_id'] ?? null) ? (int) $card['board_id'] : null;
+        // A PRESENT `swimlane_id: null` is a reading (no lane); an ABSENT key is
+        // the body answering nothing about the lane. See the docblock — the whole
+        // placement is unobserved when either axis is.
+        $laneObserved = array_key_exists('swimlane_id', $card)
+            && ($card['swimlane_id'] === null || is_numeric($card['swimlane_id']));
+
+        $unusable = [];
         if ($board === null) {
-            Log::warning('board_create_card: the card read-back carried no usable board_id, so the response reports NO placement', [
-                'agent' => $agentName, 'arm' => $arm, 'card_id' => $cardId,
+            $unusable[] = 'board_id';
+        }
+        if (! $laneObserved) {
+            $unusable[] = 'swimlane_id';
+        }
+        if ($unusable !== []) {
+            Log::warning('board_create_card: the card read-back carried no usable board_id/swimlane_id, so the response reports NO placement', [
+                'agent' => $agentName, 'arm' => $arm, 'card_id' => $cardId, 'unusable' => implode(', ', $unusable),
             ]);
 
             return $unobserved;
         }
 
-        $swimlane = is_numeric($card['swimlane_id'] ?? null) ? (int) $card['swimlane_id'] : null;
+        $swimlane = $card['swimlane_id'] === null ? null : (int) $card['swimlane_id'];
         if ($board !== (int) $cfg->boardId || $swimlane !== (int) $cfg->swimlaneId) {
             Log::warning('board_create_card: the card this call answers with is NOT where this agent is configured to write — the response reports where it actually is', [
                 'agent' => $agentName, 'arm' => $arm, 'card_id' => $cardId,
