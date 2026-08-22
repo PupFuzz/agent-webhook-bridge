@@ -376,9 +376,10 @@ final class WritebackConfig
                 $rawLanes = $m['coord_card_lane_stage_ids'];
                 // `array_is_list` also rejects the EMPTY map `{}` (which decodes to `[]`, a
                 // list) — deliberately not a separate guard: an empty map silently disables
-                // lane-derived create stages while looking configured, and it is caught here.
+                // lane derivation on every coord-card write while looking configured, and it
+                // is caught here.
                 if (! is_array($rawLanes) || array_is_list($rawLanes)) {
-                    throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids must be a non-empty object keyed by lane (".implode(', ', CoordLaneStages::LANES).') — omit the key to disable lane-derived create stages');
+                    throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids must be a non-empty object keyed by lane (".implode(', ', CoordLaneStages::LANES).') — omit the key to disable the lane-derived stages');
                 }
                 $coordCardLaneStageIds = [];
                 foreach ($rawLanes as $lane => $stageId) {
@@ -389,36 +390,47 @@ final class WritebackConfig
                         throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids lane '{$lane}' must be a numeric workflow_stage_id");
                     }
                     // Disjointness, same class as the terminal-vs-create guard above and
-                    // fail-closed for the same reason: a lane pointed at the TERMINAL creates
+                    // fail-closed for the same reason: a lane pointed at the TERMINAL puts
                     // every issue declaring that lane into the concluded stage, where the move
-                    // leg then reads it as already-terminal and its close is a no-op.
+                    // leg then reads it as already-terminal and its close is a no-op. Stated
+                    // over PLACEMENT rather than over the create leg (DL-294): on a
+                    // move-on/create-off mapping the write that lands there is the revive.
                     if ($coordCardTerminalStageId !== null && (int) $stageId === $coordCardTerminalStageId) {
-                        throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids lane '{$lane}' must differ from coord_card_terminal_stage_id — a coord card cannot be created into the stage it concludes in");
+                        throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids lane '{$lane}' must differ from coord_card_terminal_stage_id — a coord card cannot be placed into the stage it concludes in");
                     }
                     // Two lanes on one stage is not a partial lane model, it is a WRONG one: the
-                    // create resolves to a stage that no longer says which lane it meant, and the
-                    // consumer's board→issue writeback then relabels the issue with whichever
+                    // placement resolves to a stage that no longer says which lane it meant, and
+                    // the consumer's board→issue writeback then relabels the issue with whichever
                     // lane that stage maps to — the same silent priority rewrite this key exists
                     // to stop. Reported with both lane names, since either one may be the typo.
                     $collision = array_search((int) $stageId, $coordCardLaneStageIds, true);
                     if (is_string($collision)) {
-                        throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids maps lanes '{$collision}' and '{$lane}' to the same stage id ".(int) $stageId.' — each lane needs its own stage, or the create cannot express the priority the label declares');
+                        throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids maps lanes '{$collision}' and '{$lane}' to the same stage id ".(int) $stageId.' — each lane needs its own stage, or the placement cannot express the priority the label declares');
                     }
                     $coordCardLaneStageIds[$lane] = (int) $stageId;
                 }
                 if (! isset($coordCardLaneStageIds[CoordLaneStages::DEFAULT_LANE])) {
                     throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids must carry the '".CoordLaneStages::DEFAULT_LANE."' lane — it is the stage an issue declaring no stage:* label lands in, and the fallback for a declared lane this map does not carry");
                 }
-                // The lane model is anchored on the CREATE leg by design (DL-286), and that
-                // — not an impossibility — is what this refuses. The create is the write
-                // that PLACES a coord card in a lane; the revive and relane legs only
-                // re-place a card some create already placed, and they can reach a card
-                // this mapping did not create (both correlate by the `id:<sid>` tag the
-                // consumer's reconcile writes too). So a lane map here would not be inert
-                // — it would be a lane model configured on a mapping that never expresses
-                // one, which is the shape the model does not define.
-                if (! $createCoordCards) {
-                    throw new ConfigException("writeback.json: mapping for {$repo} sets coord_card_lane_stage_ids but not create_coord_cards — the lane model is anchored on the create leg, the write that PLACES a coord card in a lane; the revive and relane legs only re-place an already-placed card. A mapping that creates none states no lane model, and this fails closed rather than half-defining one; set create_coord_cards (or remove coord_card_lane_stage_ids)");
+                // INERTNESS, and nothing narrower (DL-294, card#7126). Three writes read
+                // these ids since card#6393 — create, revive, relane — and each belongs to
+                // one of the two coord-card families: create to `create_coord_cards`, both
+                // re-placing legs to `move_coord_cards`. So EITHER family is sufficient
+                // reason to require them, exactly as `coord_card_stage_id` is already
+                // required by either (the create leg's landing stage, the move leg's revive
+                // target). With neither on, no leg here reads the map and it is configured
+                // scenery — the fail-quiet shape every other stage key is strict about.
+                //
+                // ⛔ This guard read `! $createCoordCards` until DL-294, on the stated
+                // ground that the re-placing legs "only re-place an already-placed card".
+                // That was FALSE from card#6393 onward: both legs derive their destination
+                // through CoordCardLanePlacement, and both reach cards this mapping never
+                // created (they correlate by the `id:<sid>` tag the consumer's reconcile
+                // writes too). It made the documented move-on/create-off shape unloadable
+                // with a lane model, and the operator's only route to a lane-aware revive
+                // was enabling a create leg that changes which mover creates cards there.
+                if (! $createCoordCards && ! $moveCoordCards) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} sets coord_card_lane_stage_ids but neither create_coord_cards nor move_coord_cards — the lane ids are read only by the coord-card writes: the create leg places a NEW card in the lane its `stage:*` label declares, and the move leg's revive (plus the opt-in coord-card-relane family) RE-places an existing one, including a card the consumer's reconcile created. With neither family on, nothing reads this map; set create_coord_cards and/or move_coord_cards (or remove coord_card_lane_stage_ids)");
                 }
             }
             // Which coordination issues get carded (#4553). Absent ⇒ 'prefixed' (byte-identical

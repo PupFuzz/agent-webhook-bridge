@@ -36,6 +36,40 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   one owner (`CoordLaneStages::isLaneLabel`), and two legs — one at the classifier, one asserting
   the absence of the board write — red under exactly that mutation and green with it restored.
   `unlabeled` is deliberately NOT consumed, for the same reason: removing a label states no lane.
+- **card#7157 (DL-295)** — **a DL number is now ALLOCATED, not derived from the decision log, and CI
+  refuses one that is already in use.** ⚠ **This changes what CI accepts for a contributor** (a new
+  `DL collision gate` workflow runs on every PR); nothing about an installed bridge changes — no
+  `app/` file is touched, no migration, no `.env` key, no token scope. Until now the only in-repo way
+  to pick a number was the maximum `DL-` header plus one, and that **cannot see a mint that has not
+  been pushed**: two agents branching off one `dev` tip both read the same maximum and both write the
+  same number, silently and permanently (measured near-miss 2026-08-21 — two branches both read 290;
+  the collision was avoided by an unrelated test failure, not by any check). New
+  `bin/decision-log.py next` takes the number from the board's DL counter through the toolkit's
+  allocator and then **vetoes it against every worktree of this clone** plus
+  `BRIDGE_DL_CHECKOUT_GLOBS` — the leg the incident needed, since the toolkit's own offline glob
+  matches only the main checkout. With no allocator on PATH it **refuses** rather than falling back
+  to the scan it exists to retire. **The veto refused a live collision, not a planted one:** run
+  while three agents were minting in parallel, it reported the counter's next number as 294 and
+  refused it, naming the sibling checkout that already carried an unpushed `DL-294` entry. **⛔ The gate's bound is stated rather than implied: it does NOT
+  catch two OPEN PRs each minting the same new number** — neither number is on `dev` yet, so both are
+  green until one merges, and the second reds only on a re-run after that. Both halves of the bound
+  are pinned by tests. The gate is not a required status check until an operator adds it to branch
+  protection. **This hazard is created by parallel dispatch**; "do not run two DL-minting agents at
+  once" is recorded in DL-295 as a legitimate partial mitigation rather than left unstated.
+  ⛔ **A SECOND BOUND, stated for the same reason as the first.** The allocator this tool delegates
+  to claims atomically from the board's counter **only while that endpoint answers**; when the claim
+  route is absent or unreachable it falls back to a `max + 1` scan **silently** — exit 0, a plausible
+  number, an empty stderr — and the number then arrives here looking like an allocation. Measured
+  both ways: the live board answers the non-consuming sequence read `200` today, so the primary path
+  is genuinely atomic, and against a stub answering `404` on the claim route the allocator printed a
+  scanned number with nothing on stderr. The distinction is only visible inside the allocator, so the
+  fix is filed there (toolkit card#7214); until it ships the bound is carried by DL-295 and by this
+  tool's own refusal text, which no longer claims there is no offline fallback anywhere. Two smaller
+  things with it: `check` now prints the **fence-aware vs fence-blind `## DL-` header count**, so one
+  unbalanced code fence — which hides every header after it — cannot leave an `OK` standing over a
+  truncated population (this repo's log today: 181 of 181, none skipped); and the gate's comments now
+  say what `base.sha` IS (the base-branch **tip**, not the merge base, measured on PR #542), with a
+  fixture whose head is a real merge commit pinning the head/base pairing its verdict depends on.
 
 ### Changed
 
@@ -73,6 +107,62 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   **seen to fail** against a mutant rendering `mapped_board` into both slots — today's defect wearing
   the new field's name — and `WritebackSuccessBoardRecordTest` re-derives the kanban-write population
   from the handler sources every run, so the N+1th write site reds rather than re-minting the gap.
+
+- **card#7169 (DL-296)** — **an ARCHIVED coord card is a RETIRE the real-time create leg now
+  honours, instead of minting a second card over it.** `KanbanClient::cardsByTag()` sends no
+  `archived` parameter and kanban's search applies `whereNull('archived_at')` unless one is passed,
+  so the create leg's tag pre-check **structurally could not see an archived card**: a thread whose
+  only card had been retired read as un-carded, and since `issues.reopened` is on the create path,
+  every reopen minted a duplicate. **Reproduced on a live board before any code was written** —
+  card archived, the reopen replayed through the real classifier and handler against the real API,
+  a second card observed on the board. **⚠ This changes what the bridge accepts:** a reopen that
+  creates today stops creating when the thread's only card is archived, and the refusal now
+  **signals** (`coord_card_archived_twin`, log + alert push naming the archived card ids) rather
+  than passing in silence — the remedy is to unarchive that card. Operator-approved before any
+  code. **The consumer's fork is inherited, not collapsed:** a card the reclass pass archived
+  because its source re-routed away carries `coord:reroute-archived` and does **NOT** suppress — a
+  source that routes back is carded again — while a hand-retired card does. The exemption is per
+  **thread**, matching the granularity the consumer subtracts at (sets of stable-ids, not cards),
+  so a mixed archived set — one reroute-tagged twin beside a hand-retired one — is carded again on
+  both sides. Refusing on *"any archived card exists"* was rejected explicitly: it would
+  silently stop carding legitimately-reopened work. Kanban's `archived` is a **switch**, not a
+  widening (`archived=1` returns archived ONLY), so this is a second read on the last branch before
+  the create — no existing read changes, no caller of `cardsByTag` sees a new row, and a delivery
+  that skips pays nothing. **Stated gap:** the non-prefixed (`issue_population: all`) path has no
+  tag and kanban's `by-ref.json` takes no `archived` parameter, so a retired by-ref card is still
+  re-created; pinned by a test and tracked on card#7169. **The SIBLING CLASS is filed, not asserted
+  away (card#7222):** a live-only correlation read answering *"no card"* for an archived one is a
+  shape with four create-deciding members, and DL-296 closes one. Two stay OPEN with dispositions
+  on that card — `board_create_card`'s `idem:` pre-check (re-using a key whose card was archived
+  mints a SECOND card and answers `"created": true`; **`docs/board-tools.md` and the MCP tool
+  description now carry that bound, the code is unchanged**, because both candidate fixes change
+  what the tool accepts) and the dependabot leg (it archives its own card on `closed_unmerged`,
+  `reopened` collapses to `opened`, and by-ref excludes archived rows, so a reopened dependabot PR
+  re-creates over the bridge's own retire — possibly intended, but unrecorded either way). The
+  reference channel server's snapshot goes **0.9.4 → 0.9.5** for that one-line description fix
+  (DL-038); no behavior change in the server.
+
+- **card#7126 (DL-294)** — **`coord_card_lane_stage_ids` is now accepted with `move_coord_cards`
+  alone, not only with `create_coord_cards`.** The load refused any mapping that set a lane map
+  without the create leg, on the stated ground that *"the revive and relane legs only re-place an
+  already-placed card"* — **which card#6393 falsified**: both legs resolve their destination through
+  the same `CoordCardLanePlacement` primitive the create leg uses, and both reach cards this mapping
+  never created (all three correlate by the `id:<sid>` tag the consumer's reconcile writes too). So
+  the documented **move-on / create-off** shape — cards created by the reconcile, moved by the
+  bridge — could not configure a lane model at all, and its only route to a lane-aware revive was
+  enabling `create_coord_cards`, which changes **which mover creates cards** on that install and
+  races the reconcile. The predicate is now `create_coord_cards || move_coord_cards`, mirroring how
+  `coord_card_stage_id` is already required by either family, and the guard's message states what is
+  actually true. **⚠ This widens what `writeback.json` accepts** — a config that failed closed at
+  load now loads and starts placing cards in lanes; **operator-approved**. Nothing else in the guard
+  moves, and a lane map with **neither** family still fails closed (including an explicit
+  `move_coord_cards: false` with a terminal set, where DL-204 would otherwise default the leg on).
+  On such an install a reopened `[TASK]` now revives to the lane its `stage:*` label declares instead
+  of to the fixed `coord_card_stage_id`. Two further operator-visible strings that still framed the
+  lane ids as the create leg's are corrected in the same pass — the shape guard's remediation tail
+  (*"omit the key to disable the lane-derived stages"*) and the `bridge:check` bullet in
+  `docs/writeback.md`, which named the create alone as the blast radius of a typo'd **lane** id
+  where card#6393 made it three writes. Text only; no predicate moves.
 - **card#7124 (DL-293)** — **a `writeback.json` mapping key now names a REPO, not a spelling.**
   `WritebackConfig::mappingFor()` was a raw array-key lookup with neither side canonicalized, so a
   mapping keyed `pupfuzz/kanban-board` against a payload spelling `PupFuzz/kanban-board` matched

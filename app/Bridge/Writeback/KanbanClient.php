@@ -115,8 +115,11 @@ final class KanbanClient
      * event for ~11 days (the DL-020 / DispatchService anti-pattern) — the caller
      * treats it as permanent (log + no-op). A real HTTP error still throws via
      * `->throw()` (transient 5xx → retry, 4xx → permanent), as the move path does.
-     * Caller idempotency: an already-archived card is excluded from by-ref/search
-     * correlation, so it is never re-presented here on a redelivered close.
+     * Caller idempotency: an already-archived card is excluded from the by-ref and
+     * live-search correlations THIS method's callers use, so it is never re-presented
+     * here on a redelivered close. (Since DL-296 the archive side is readable — by an
+     * explicit `archivedOnly` search — but only the coord create leg asks, and it
+     * refuses rather than writing.)
      */
     public function archiveCard(int $cardId): bool
     {
@@ -258,6 +261,18 @@ final class KanbanClient
      * probe catches that at preflight, and the shared `id:` tag lets the reconcile
      * orphan-adoption collapse any duplicate a blind read minted.
      *
+     * LIVE cards only, and that is the contract, not an oversight (DL-296): kanban
+     * excludes archived rows unless `?archived` is passed. A caller that needs the
+     * archived side asks for it explicitly via {@see cardRowsByTag}'s `$archivedOnly`.
+     *
+     * ⚠ Live-only is RIGHT for a post-create collapse (it reduces the LIVE set to one
+     * survivor; seeing archived rows would re-archive an already-retired card) and for
+     * a move correlation (it would RESURRECT a retired card into a stage). It is NOT
+     * right for a CREATE decision, and `BoardCreateCardTool`'s `idem:` pre-check is one:
+     * re-using a key whose card was archived reads as un-carded and mints a second card.
+     * That is open, with its siblings, on card#7222 — do not read this docblock as
+     * certifying every caller.
+     *
      * @return list<int>
      */
     public function cardsByTag(int $boardId, string $tag): array
@@ -316,11 +331,24 @@ final class KanbanClient
      * qualifier is needed. Used to fetch coordination cards addressed to an agent
      * via its configured address_tags.
      *
+     * `$archivedOnly` selects the OTHER side of kanban's archive axis (DL-296):
+     * `TasksController::search` applies `whereNull('archived_at')` unless
+     * `?archived` is passed and `whereNotNull('archived_at')` when it is — the
+     * parameter is a SWITCH, not a widening, and the endpoint offers no both-sides
+     * mode. So an archived twin is only ever visible to a SECOND call, and the
+     * default (`false`) is byte-identical to every read this method served before:
+     * no `archived` key reaches the query string at all, which is what keeps a
+     * pre-DL-296 kanban answering the live search identically.
+     *
      * @return list<array<string, mixed>>
      */
-    public function cardRowsByTag(int $boardId, string $tag): array
+    public function cardRowsByTag(int $boardId, string $tag, bool $archivedOnly = false): array
     {
-        $data = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId} tags:\"{$tag}\"", 'limit' => self::SEARCH_LIMIT])->throw()->json('data');
+        $query = ['q' => "board_id={$boardId} tags:\"{$tag}\"", 'limit' => self::SEARCH_LIMIT];
+        if ($archivedOnly) {
+            $query['archived'] = 1;
+        }
+        $data = $this->http()->get('/tasks/search.json', $query)->throw()->json('data');
 
         $cards = [];
         foreach (is_array($data) ? $data : [] as $row) {

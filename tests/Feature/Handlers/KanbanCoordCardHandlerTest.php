@@ -9,11 +9,14 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\HandlerRegistry;
+use Closure;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class KanbanCoordCardHandlerTest extends TestCase
@@ -84,6 +87,45 @@ class KanbanCoordCardHandlerTest extends TestCase
         );
     }
 
+    /**
+     * A ONE-callback fake for the tests that need the tag search answered DIFFERENTLY per
+     * call, because a URL-pattern map cannot express it: Laravel invokes every stub for
+     * every request and keeps the first non-null answer, so a `search.json*` stub still
+     * runs (and a `Http::sequence()` still POPS) for a request another stub answered.
+     * With two tag reads sharing that path since DL-296 — the live pre-check and the
+     * `archived=1` twin read — a sequence hands the post-create re-read the archived
+     * read's element.
+     *
+     * `$live` is one `data` payload per LIVE tag search in call order (an extra call
+     * fails the test rather than silently repeating the last answer); `$archived` answers
+     * every `archived=1` tag search; `$rest` is an ordinary pattern => response map for
+     * every other URL.
+     *
+     * @param  list<list<array<string, mixed>>>  $live
+     * @param  list<array<string, mixed>>  $archived
+     * @param  array<string, mixed>  $rest
+     */
+    private function searchFake(array $live, array $archived, array $rest = []): Closure
+    {
+        return function (Request $request) use (&$live, $archived, $rest) {
+            $url = $request->url();
+            if (str_contains($url, '/tasks/search.json')) {
+                if (str_contains($url, 'archived=1')) {
+                    return Http::response(['data' => $archived]);
+                }
+                $this->assertNotSame([], $live, "unexpected extra LIVE tag search: {$url}");
+
+                return Http::response(['data' => array_shift($live)]);
+            }
+            foreach ($rest as $pattern => $response) {
+                if (Str::is(Str::start($pattern, '*'), $url)) {
+                    return $response;
+                }
+            }
+            $this->fail("unstubbed request: {$url}");
+        };
+    }
+
     public function test_creates_a_card_with_the_locked_tags_and_fields(): void
     {
         Http::fake([
@@ -143,6 +185,169 @@ class KanbanCoordCardHandlerTest extends TestCase
         Http::assertSent(fn ($r) => $r->method() === 'GET'
             && str_contains(urldecode($r->url()), 'board_id=8 tags:"id:QUERY-4"'));
         Http::assertNotSent(fn ($r) => $r->method() === 'POST');
+        // A LIVE card answers the question, so the DL-296 archive-side read is never paid.
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'archived=1'));
+    }
+
+    // ---- The ARCHIVED twin (DL-296) ----
+    //
+    // Both correlation reads above are live-only, so a thread whose only card was retired
+    // reads as un-carded. Observed on the live sandbox board before the fix: card 521
+    // archived, `issues.reopened` replayed → card 522 minted over the retire.
+
+    public function test_an_archived_human_retired_twin_suppresses_the_create_and_signals(): void
+    {
+        // THE POSITIVE. No live card, one archived card carrying the tag and NOT the
+        // consumer's reroute tag ⇒ a deliberate retire: no card is minted, and the outcome
+        // is REPORTED (durable warning + live push), never a silent no-op.
+        $this->writeMappingWithAlert();
+        Log::spy();
+        Http::fake([
+            '*/tasks/search.json?*archived=1*' => Http::response(['data' => [['id' => 521, 'tags' => ['id:QUERY-4', 'type:query'], 'archived_at' => '2026-08-21T21:19:19+00:00']]]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),   // live: nothing
+            // Stubbed so a regression that CREATES reds as a failed assertion below,
+            // not as an unstubbed request escaping to the network.
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+            self::ALERT_URL.'*' => Http::response('', 204),
+        ]);
+
+        $this->handle();
+
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m) => str_contains($m, 'the only card for this thread is ARCHIVED'))->once();
+        Http::assertSent(fn ($r) => $this->isAlertPush($r)
+            && $r['reason'] === 'coord_card_archived_twin'
+            && $r['outcome'] === 'coord_card_create'
+            && $r['repo'] === 'org/coord'
+            && $r['issue_number'] === 4
+            && $r['card_id'] === null);
+    }
+
+    public function test_no_card_at_all_still_creates_after_the_archived_read_comes_back_empty(): void
+    {
+        // THE NEGATIVE, and the reason it is a separate test: a fix whose only test is the
+        // duplicate case cannot tell "stops the duplicate" from "stops carding". A reopen
+        // of a thread with NO card — live or archived — still gets one.
+        Http::fake([
+            '*/tasks/search.json?*archived=1*' => Http::response(['data' => []]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle();
+
+        Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), 'archived=1')
+            && str_contains(urldecode($r->url()), 'board_id=8 tags:"id:QUERY-4"'));
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
+            && $r['tags'] === ['id:QUERY-4', 'type:query']);
+    }
+
+    public function test_a_reroute_archived_twin_does_not_suppress_the_create(): void
+    {
+        // THE FORK, the side the consumer carved out: `kanban-reclass.py` archives a coord
+        // twin whose source re-routed to another board and stamps `coord:reroute-archived`.
+        // That is framework bookkeeping, not a human retire, so a reroute-BACK must card
+        // again — suppressing here would strand the thread on neither board.
+        Http::fake([
+            '*/tasks/search.json?*archived=1*' => Http::response(['data' => [['id' => 523, 'tags' => ['id:QUERY-4', 'type:query', 'coord:reroute-archived'], 'archived_at' => '2026-08-21T21:24:23+00:00']]]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle();
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
+    }
+
+    /**
+     * THE MIXED CELL, and the one place the naive per-card spelling would disagree with
+     * the consumer. Its helpers project to STABLE-IDS before subtracting, so a sid with
+     * one reroute-tagged archived card and one untagged one is in both sets, the
+     * difference removes it, and `reconcile_simple_board` CREATES. A per-card bridge
+     * would refuse, alert the operator to unarchive a card, and be undone by the
+     * reconcile's next pass. Both row orders are asserted because the implementation
+     * returns early on the tagged row: an order-sensitive one would answer differently
+     * depending on what kanban happened to return first.
+     *
+     * @return array<string, array{list<array<string, mixed>>}>
+     */
+    public static function mixedArchivedSetOrders(): array
+    {
+        $reroute = ['id' => 524, 'tags' => ['id:QUERY-4', 'coord:reroute-archived'], 'archived_at' => '2026-08-21T21:24:24+00:00'];
+        $retired = ['id' => 525, 'tags' => ['id:QUERY-4'], 'archived_at' => '2026-08-21T21:24:24+00:00'];
+
+        return [
+            'reroute-tagged row first' => [[$reroute, $retired]],
+            'hand-retired row first' => [[$retired, $reroute]],
+        ];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $archivedRows
+     */
+    #[DataProvider('mixedArchivedSetOrders')]
+    public function test_a_mixed_archived_set_creates_because_the_consumer_exempts_the_whole_thread(array $archivedRows): void
+    {
+        $this->writeMappingWithAlert();
+        Log::spy();
+        Http::fake([
+            '*/tasks/search.json?*archived=1*' => Http::response(['data' => $archivedRows]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+            self::ALERT_URL.'*' => Http::response('', 204),
+        ]);
+
+        $this->handle();
+
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
+        Http::assertNotSent(fn ($r) => $this->isAlertPush($r) && $r['reason'] === 'coord_card_archived_twin');
+        // Keyed on THIS refusal's message, not on `warning` at all: a blanket negative
+        // would red on any unrelated warn a future arm adds and say nothing about this one.
+        Log::shouldNotHaveReceived('warning', [\Mockery::pattern('/the only card for this thread is ARCHIVED/'), \Mockery::any()]);
+    }
+
+    public function test_the_signal_names_every_hand_retired_twin_not_just_the_first(): void
+    {
+        // Two hand-retired cards, no reroute tag anywhere: the thread is retired and BOTH
+        // ids reach the operator, because either is a card they may need to unarchive.
+        // Reds against a `retiredTwins` that returns on its first untagged row — the
+        // shape the thread-level exemption's early return makes easy to reach for.
+        $this->writeMappingWithAlert();
+        Log::spy();
+        Http::fake([
+            '*/tasks/search.json?*archived=1*' => Http::response(['data' => [
+                ['id' => 530, 'tags' => ['id:QUERY-4'], 'archived_at' => '2026-08-21T21:24:24+00:00'],
+                ['id' => 531, 'tags' => ['id:QUERY-4', 'type:query'], 'archived_at' => '2026-08-21T21:24:25+00:00'],
+            ]]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+            self::ALERT_URL.'*' => Http::response('', 204),
+        ]);
+
+        $this->handle();
+
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
+        Log::shouldHaveReceived('warning')->withArgs(
+            fn (string $m, array $c) => str_contains($m, 'the only card for this thread is ARCHIVED') && $c['archived_card_ids'] === [530, 531],
+        )->once();
+    }
+
+    public function test_the_archived_read_is_not_issued_on_the_by_ref_only_path(): void
+    {
+        // STATED GAP, pinned rather than implied: a non-prefixed issue under population=all
+        // has no tag, and kanban's by-ref endpoint hard-excludes archived rows with no
+        // parameter to include them — so there is no archived-visible key to read and the
+        // handler issues no tag search at all. A retired by-ref card is still re-created.
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21, 'issue_population' => 'all']);
+        Http::fake([
+            '*/boards/8/tasks/by-ref.json*' => Http::response(['data' => []]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+        ]);
+
+        $this->handle(['sid' => null, 'itype' => 'task', 'title' => 'a plain non-prefixed title']);
+
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), '/tasks/search.json'));
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
     }
 
     public function test_post_create_collapse_archives_a_raced_duplicate(): void
@@ -150,13 +355,18 @@ class KanbanCoordCardHandlerTest extends TestCase
         // The check-then-create race: pre-create tag search is empty → create; the
         // post-create re-read sees BOTH (a concurrent delivery / the reconcile also
         // carded) → keep lowest id (99), archive the racer (100).
-        Http::fake([
-            '*/tasks/search.json*' => Http::sequence()
-                ->push(['data' => []])                        // pre-create: empty → create
-                ->push(['data' => [['id' => 100], ['id' => 99]]]),   // post-create: race surfaced
-            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
-            '*/tasks/100.json' => Http::response(['data' => ['id' => 100, 'archived_at' => '2026-07-14T00:00:00+00:00']]),
-        ]);
+        // One closure, not a URL map with a sequence in it: Laravel INVOKES every stub for
+        // every request and keeps the first non-null answer, so a `search.json*` sequence
+        // is popped by the DL-296 `archived=1` read as well and the post-create re-read
+        // gets the wrong element (or an exhausted sequence).
+        Http::fake($this->searchFake(
+            live: [[], [['id' => 100], ['id' => 99]]],   // pre-create empty → create; post-create: race surfaced
+            archived: [],
+            rest: [
+                '*/tasks/100.json' => Http::response(['data' => ['id' => 100, 'archived_at' => '2026-07-14T00:00:00+00:00']]),
+                '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
+            ],
+        ));
 
         $this->handle();
 
@@ -166,15 +376,15 @@ class KanbanCoordCardHandlerTest extends TestCase
 
     public function test_no_duplicate_after_create_archives_nothing(): void
     {
-        Http::fake([
-            '*/tasks/search.json*' => Http::sequence()
-                ->push(['data' => []])
-                ->push(['data' => [['id' => 99]]]),
-            '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
-        ]);
+        Http::fake($this->searchFake(
+            live: [[], [['id' => 99]]],
+            archived: [],
+            rest: ['*/tasks.json' => Http::response(['data' => ['id' => 99]], 201)],
+        ));
 
         $this->handle();
 
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
         Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
     }
 
