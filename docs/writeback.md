@@ -245,7 +245,7 @@ If you run the bridge on a **coordination repo** (the Agent Board Framework's `[
 - **Create-only + idempotent.** This create path never moves or archives a card. (The bridge as a whole is no longer create-only for coord cards: its sibling **`move_coord_cards`** (DL-200, a guarded fleet default since DL-204 — below) carries close→terminal / reopen→revive, and the opt-in `coord-card-relane` family (card#6393) carries lane→lane on a later `stage:*` label. The reconcile still owns column/lifecycle wherever the move leg is **off**, and **archival remains the reconcile's alone**.) It correlates by the **`id:<sid>` tag**: if a card already carries it, it **skips** — which covers redelivery, opened+reopened, **and** the bridge-vs-reconcile race (both movers key on the same tag). After a create it re-reads by tag and collapses a raced duplicate (keep lowest id, archive the rest — the shared deterministic tie-break). Durable, transient(5xx→retry)/permanent(4xx→log+no-op).
 - **An ARCHIVED card is a retire, and the create leg honours it (DL-296).** Both correlation reads above are **live-only** — kanban's search applies `whereNull('archived_at')` unless `?archived` is passed, and its by-ref endpoint excludes archived rows outright — so a thread whose **only** card was archived reads as *un-carded*, and before DL-296 the next `issues.reopened` minted a second card over the retire (observed on a live board, not inferred). The create leg now asks the archive side explicitly (one `archived=1` tag search, issued **only** on the branch immediately before a create, so a skip pays nothing): an archived card carrying the `id:<sid>` tag **suppresses the create**, and the refusal **signals** (`coord_card_archived_twin`) rather than passing in silence — archival is the reconcile's and the operator's, never the bridge's to undo. **The one exception is the consumer's own reroute bookkeeping:** `kanban-reclass.py` archives a coord twin whose source re-routed to another board and stamps it **`coord:reroute-archived`**; an archived card carrying that tag does **not** suppress, so a source that routes back is carded again. That partition is the consumer's (`kanban_common.archived_stable_ids(...)` minus `reroute_archived_stable_ids(...)`) and the bridge holds the same one **at the same granularity — per THREAD, not per card**: the consumer subtracts sets of STABLE-IDS, so one reroute-tagged twin exempts the whole thread and a mixed archived set (one reroute-tagged twin **and** one hand-retired twin) is **carded again** on both sides. A per-card bridge would refuse a create the reconcile's next pass makes anyway, and tell the operator to unarchive a card that would not fix it. **Bound — the exemption keys on a MARKER, and only the consumer stamps one.** The bridge archives cards too and marks none: the duplicate collapse (`CardCollapse`) retires a raced twin carrying the same `id:<sid>` tag, and the dependabot leg retires its card on `closed_unmerged` (DL-161). So a bridge-made archive reads here as a hand retire. Harmless for the collapse, whose survivor stays live and answers the live pre-check first; it would bite only if that survivor were later hard-deleted. Tracked on card#7222. **Stated gap:** the non-prefixed (`issue_population: all`) path has no tag, and the by-ref endpoint takes no `archived` parameter, so there is no archived-visible key there — a retired **by-ref** card is still re-created on reopen. Tracked on card#7169.
 - **`identity_id` is REQUIRED (echo-gate).** A created card fires a kanban `task.created` webhook that comes back to the bridge; if any agent runs the `kanban-triage` family on that board, that echo reads as an untriaged card and could **self-wake**. The **only** guard is the global-echo gate keyed on `writeback.json` `identity_id`. `bridge:check` **warns** when `create_coord_cards` is set but `identity_id` is null.
-- **`bridge:check`.** Validates `coord_card_stage_id` (and any `swimlane_id`, and every `coord_card_lane_stage_ids` id) exists on the board — a typo'd id makes every create 422 and silently no-op. Missing `coord_card_stage_id` while `create_coord_cards` is on **fails the config closed at load** (a create with no stage can't POST).
+- **`bridge:check`.** Validates `coord_card_stage_id` (and any `swimlane_id`, and every `coord_card_lane_stage_ids` id) exists on the board — a typo'd id makes every write that reads it 422 and silently no-op. Which writes those are differs per key: `swimlane_id` is create-only (DL-027), `coord_card_stage_id` is the create *and* the revive, and a **lane** id is read by all three coord-card writes since card#6393 (create, revive, relane). Missing `coord_card_stage_id` while `create_coord_cards` is on **fails the config closed at load** (a create with no stage can't POST).
 
 ### Priority lanes: `coord_card_lane_stage_ids` (card#6371)
 
@@ -312,17 +312,19 @@ Measured on the reference install: 9 issues flipped to `stage:now`, one within 7
   **non-empty object**, every key must be one of `now`/`next`/`later`/`maybe` (an unknown key throws —
   a typo would otherwise match no label forever), every value must be numeric, it must carry
   **`later`** (the target of both fallbacks above), the lanes must map to **distinct** stage ids
-  (two lanes on one stage cannot express the priority the label declares — the create resolves to a
-  stage that no longer says which lane it meant, and the board→issue writeback then relabels the
+  (two lanes on one stage cannot express the priority the label declares — the placement resolves to
+  a stage that no longer says which lane it meant, and the board→issue writeback then relabels the
   issue with whichever lane owns it), **no lane may equal `coord_card_terminal_stage_id`** (the same
-  disjointness the terminal already has with `coord_card_stage_id`: a card created into the
-  concluded stage is one the move leg then reads as already-terminal, so its close no-ops), and the
-  mapping must also set `create_coord_cards` (the create leg is where the lane model is anchored:
-  it is the write that PLACES a coord card in a lane, and the revive and relane legs — which read
-  these ids too — only ever re-place an already-placed card. A mapping that creates none states no
-  lane model, so the config fails closed rather than half-defining one; it is a design anchor, not
-  an inertness claim — both move legs correlate by the `id:<sid>` tag the consumer's reconcile
-  writes too, so they can reach a card this mapping did not create).
+  disjointness the terminal already has with `coord_card_stage_id`: a card PLACED into the
+  concluded stage — by a create, or by a revive on a create-off mapping — is one the move leg then
+  reads as already-terminal, so its close no-ops), and the mapping must set
+  **`create_coord_cards` and/or `move_coord_cards`** (DL-294) — every write that reads these ids belongs to one of the two families: the create leg places a NEW card in its
+  declared lane, and the move leg's **revive** (plus the opt-in `coord-card-relane` family)
+  RE-places an existing one, including a card the consumer's reconcile created and the shared
+  `id:<sid>` tag correlates. With neither family on nothing reads the map, so it fails closed as
+  configured scenery — the same inertness test, and the same either-family rule, that
+  `coord_card_stage_id` already carries. **A move-on / create-off mapping may configure a lane
+  model** (below).
   Overlapping the fixed
   `coord_card_stage_id` is fine — a board whose Now column IS the fixed create stage is a
   legitimate config.
@@ -376,8 +378,9 @@ delivery to discover it has nowhere to move anything.
   missing `move_coord_cards` or `coord_card_lane_stage_ids`, naming the missing key(s) — that
   install classifies nothing and moves nothing, and no other check leg reports it (a mapping with
   no lane model is perfectly valid for every other leg). The reverse is **not** warned: a lane
-  model without this family is the normal shape of every lane-model install, since the key is the
-  create leg's.
+  model without this family is the normal shape of every lane-model install — the key is read by
+  every coord-card write and accepted with either family, so it declares no intent this one
+  family contradicts.
 
 ## Optional: card non-prefixed issues too (`issue_population`, #4553)
 
@@ -463,6 +466,12 @@ fails **closed at load** — never a silent no-op.
   (card#6393) — the same derivation the create leg runs, for the same reason; `coord_card_stage_id`
   stays the revive target for every issue the lane model does not govern, and for every install that
   configures no lane model.
+- **A lane model is configurable on a move-on / create-off mapping** (DL-294) — the shape where the
+  consumer's reconcile creates the cards and the bridge only moves them, correlating on the same
+  `id:<sid>` tag. `coord_card_lane_stage_ids` needs **either** family, not the create leg
+  specifically, so such an install gets a lane-aware revive (and relane) **without** having to turn
+  on `create_coord_cards`, which would change which mover creates its cards and race the reconcile.
+  Set the lane ids beside `move_coord_cards`; the create-leg keys stay off.
 - **What moves.** Same set as the create leg (recognized `[PREFIX]`, correlated by the **`id:<sid>`
   tag**) on `issues.closed` → terminal and `issues.reopened` → revive. `issues.opened` belongs to the
   create leg; `issues.edited` is not a lifecycle transition. **Nothing carrying the tag ⇒ nothing
