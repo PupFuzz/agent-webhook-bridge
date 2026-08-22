@@ -7,7 +7,9 @@ namespace App\Bridge\Writeback;
  * whether a card kanban handed back is on the operator-mapped board for this repo,
  * the ONE place that reports the refusal (DL-292, card#7138), and — since card#7212 —
  * the ONE place that renders the (card board, mapped board) pair any writeback record
- * carries, so the success arm reuses this rendering instead of growing a second one.
+ * carries, so the success arm reuses this rendering instead of growing a second one — and,
+ * since DL-300, the one place that PERSISTS that pair on the only occasion worth outliving
+ * the log: when the two boards disagree.
  *
  * Before this, the same rule was spelled three times — `$boardId !== $mapping->boardId`
  * in `KanbanMoveCardHandler`, `($card['board_id'] ?? null) !== $mapping->boardId` in
@@ -82,13 +84,40 @@ final class MappedBoardGuard
      * computed. So the two values being EQUAL is the happy path, not an invariant this renders;
      * a divergence is the record doing its job.
      *
+     * ⭐ AND, WHEN THE PAIR DIVERGES, IT PERSISTS ONE ROW (card#7212, second half). The log
+     * line above is retention-bounded — 14 days, pruned by the receiver's own gate since
+     * DL-199 — so on its own it answers "did this ever happen?" for a fortnight and then
+     * stops. A record that expires is an absence on a timer. The divergent case, and ONLY
+     * the divergent case, is therefore also written to `writeback_board_divergences`
+     * ({@see BoardDivergenceLedger}); the happy path persists nothing, which is what keeps
+     * an empty table meaningful — growth is the signal (DL-300).
+     *
+     * ⛔ THE RECORD IS MINTED HERE because this is the one place that holds BOTH the card and
+     * the mapping, so the durable row and the log line are the same observation, decided by
+     * the same {@see belongs} predicate — no second rendering, no second compare, and no
+     * `$arm` argument for eleven call sites to spell (and for the twelfth to omit). It is why
+     * a renderer has a side effect: the alternative is a persist call beside every record,
+     * which is the shape that produced this defect in the first place.
+     *
+     * $disposition names what happened to the write, and only {@see refuses} passes anything
+     * but the default: a divergence seen anywhere else is one no gate stopped.
+     *
      * @param  array<string, mixed>  $card  as returned by {@see KanbanClient::getCard()}, or a
      *                                      raw search row — a card the caller has in hand either way
      * @return array{card_board: mixed, mapped_board: int}
      */
-    public static function boardContext(array $card, WritebackMapping $mapping): array
-    {
-        return ['card_board' => $card['board_id'] ?? null, 'mapped_board' => $mapping->boardId];
+    public static function boardContext(
+        array $card,
+        WritebackMapping $mapping,
+        string $disposition = BoardDivergenceLedger::DISPOSITION_RECORDED,
+    ): array {
+        $context = ['card_board' => $card['board_id'] ?? null, 'mapped_board' => $mapping->boardId];
+
+        if (! self::belongs($card, $mapping)) {
+            BoardDivergenceLedger::observe($context, $card, $disposition);
+        }
+
+        return $context;
     }
 
     /**
@@ -133,7 +162,7 @@ final class MappedBoardGuard
         $alerts->warnAndNotify(
             $arm.': REFUSED — card is not on the mapped board',
             ['card_id' => $cardId, 'repo' => $repo]
-                + self::boardContext($card, $mapping)
+                + self::boardContext($card, $mapping, BoardDivergenceLedger::DISPOSITION_REFUSED)
                 + ($issueNumber === null ? [] : ['issue' => $issueNumber]),
             $repo, $outcome, $cardId, self::REASON, $issueNumber,
         );

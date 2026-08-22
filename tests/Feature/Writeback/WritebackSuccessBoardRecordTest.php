@@ -4,6 +4,7 @@ namespace Tests\Feature\Writeback;
 
 use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\WritebackMapping;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Support\SourceScan;
 use Tests\TestCase;
 
@@ -112,6 +113,8 @@ use Tests\TestCase;
  */
 class WritebackSuccessBoardRecordTest extends TestCase
 {
+    use RefreshDatabase;
+
     /**
      * Every kanban WRITE reachable from a writeback handler, a shared writeback write
      * primitive, or a `bridge:*` console command, keyed `<file>:<verb>` with the number of
