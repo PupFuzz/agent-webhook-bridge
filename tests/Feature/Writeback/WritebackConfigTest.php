@@ -904,8 +904,10 @@ class WritebackConfigTest extends TestCase
     public function test_a_lane_equal_to_the_terminal_stage_throws(): void
     {
         // Same disjointness class as coord_card_stage_id-vs-terminal: an issue declaring
-        // this lane would be CREATED into the concluded stage, and the move leg's close
-        // would then read it as already-terminal and no-op.
+        // this lane would be PLACED into the concluded stage, and the move leg's close
+        // would then read it as already-terminal and no-op. PLACED, not created: the
+        // create leg is the write that lands it here, but it is not the only one (DL-294)
+        // — the sibling below reaches this same guard with no create leg at all.
         $this->write(json_encode(['mappings' => [
             'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
                 'move_coord_cards' => true, 'coord_card_terminal_stage_id' => 99,
@@ -917,11 +919,35 @@ class WritebackConfigTest extends TestCase
         WritebackConfig::load($this->dir);
     }
 
+    public function test_a_lane_equal_to_the_terminal_stage_throws_on_a_create_off_mapping(): void
+    {
+        // The same guard over the population DL-294 ADDED. Until the widening no create-off
+        // mapping could carry a lane map at all, so this guard's verdict only ever decided
+        // a create-on config, where the create is the write that lands the card in the
+        // terminal. On a move-on/create-off mapping the REVIVE is that write, resolving
+        // through the same CoordCardLanePlacement the create leg uses — so the
+        // disjointness has to hold over a config whose lane ids no create leg reads.
+        // Not a contrived pairing: coord_card_terminal_stage_id is required-when-
+        // move_coord_cards, so a create-off lane model ALWAYS has a terminal to collide
+        // with — this guard is live on every install the widening admits.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'move_coord_cards' => true, 'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99,
+                'coord_card_lane_stage_ids' => ['later' => 42, 'maybe' => 99]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("lane 'maybe' must differ from coord_card_terminal_stage_id");
+        WritebackConfig::load($this->dir);
+    }
+
     public function test_two_lanes_sharing_one_stage_id_throws(): void
     {
         // A lane map whose lanes collide cannot express the priority the label declares:
-        // the create resolves to a stage that no longer says which lane it meant, and the
-        // consumer's board→issue writeback relabels the issue with whichever lane owns it.
+        // the placement resolves to a stage that no longer says which lane it meant, and
+        // the consumer's board→issue writeback relabels the issue with whichever lane owns
+        // it. Every coord-card write resolves through that one placement (create, revive,
+        // relane), so the collision breaks all three — not just the create this pins on.
         $this->write(json_encode(['mappings' => [
             'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
                 'coord_card_lane_stage_ids' => ['now' => 40, 'next' => 40, 'later' => 42]],

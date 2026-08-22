@@ -376,9 +376,10 @@ final class WritebackConfig
                 $rawLanes = $m['coord_card_lane_stage_ids'];
                 // `array_is_list` also rejects the EMPTY map `{}` (which decodes to `[]`, a
                 // list) — deliberately not a separate guard: an empty map silently disables
-                // lane-derived create stages while looking configured, and it is caught here.
+                // lane derivation on every coord-card write while looking configured, and it
+                // is caught here.
                 if (! is_array($rawLanes) || array_is_list($rawLanes)) {
-                    throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids must be a non-empty object keyed by lane (".implode(', ', CoordLaneStages::LANES).') — omit the key to disable lane-derived create stages');
+                    throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids must be a non-empty object keyed by lane (".implode(', ', CoordLaneStages::LANES).') — omit the key to disable the lane-derived stages');
                 }
                 $coordCardLaneStageIds = [];
                 foreach ($rawLanes as $lane => $stageId) {

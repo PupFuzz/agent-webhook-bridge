@@ -55,7 +55,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   moves, and a lane map with **neither** family still fails closed (including an explicit
   `move_coord_cards: false` with a terminal set, where DL-204 would otherwise default the leg on).
   On such an install a reopened `[TASK]` now revives to the lane its `stage:*` label declares instead
-  of to the fixed `coord_card_stage_id`.
+  of to the fixed `coord_card_stage_id`. Two further operator-visible strings that still framed the
+  lane ids as the create leg's are corrected in the same pass — the shape guard's remediation tail
+  (*"omit the key to disable the lane-derived stages"*) and the `bridge:check` bullet in
+  `docs/writeback.md`, which named the create alone as the blast radius of a typo'd **lane** id
+  where card#6393 made it three writes. Text only; no predicate moves.
 - **card#7124 (DL-293)** — **a `writeback.json` mapping key now names a REPO, not a spelling.**
   `WritebackConfig::mappingFor()` was a raw array-key lookup with neither side canonicalized, so a
   mapping keyed `pupfuzz/kanban-board` against a payload spelling `PupFuzz/kanban-board` matched
