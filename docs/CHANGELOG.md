@@ -36,6 +36,40 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   one owner (`CoordLaneStages::isLaneLabel`), and two legs — one at the classifier, one asserting
   the absence of the board write — red under exactly that mutation and green with it restored.
   `unlabeled` is deliberately NOT consumed, for the same reason: removing a label states no lane.
+- **card#7157 (DL-295)** — **a DL number is now ALLOCATED, not derived from the decision log, and CI
+  refuses one that is already in use.** ⚠ **This changes what CI accepts for a contributor** (a new
+  `DL collision gate` workflow runs on every PR); nothing about an installed bridge changes — no
+  `app/` file is touched, no migration, no `.env` key, no token scope. Until now the only in-repo way
+  to pick a number was the maximum `DL-` header plus one, and that **cannot see a mint that has not
+  been pushed**: two agents branching off one `dev` tip both read the same maximum and both write the
+  same number, silently and permanently (measured near-miss 2026-08-21 — two branches both read 290;
+  the collision was avoided by an unrelated test failure, not by any check). New
+  `bin/decision-log.py next` takes the number from the board's DL counter through the toolkit's
+  allocator and then **vetoes it against every worktree of this clone** plus
+  `BRIDGE_DL_CHECKOUT_GLOBS` — the leg the incident needed, since the toolkit's own offline glob
+  matches only the main checkout. With no allocator on PATH it **refuses** rather than falling back
+  to the scan it exists to retire. **The veto refused a live collision, not a planted one:** run
+  while three agents were minting in parallel, it reported the counter's next number as 294 and
+  refused it, naming the sibling checkout that already carried an unpushed `DL-294` entry. **⛔ The gate's bound is stated rather than implied: it does NOT
+  catch two OPEN PRs each minting the same new number** — neither number is on `dev` yet, so both are
+  green until one merges, and the second reds only on a re-run after that. Both halves of the bound
+  are pinned by tests. The gate is not a required status check until an operator adds it to branch
+  protection. **This hazard is created by parallel dispatch**; "do not run two DL-minting agents at
+  once" is recorded in DL-295 as a legitimate partial mitigation rather than left unstated.
+  ⛔ **A SECOND BOUND, stated for the same reason as the first.** The allocator this tool delegates
+  to claims atomically from the board's counter **only while that endpoint answers**; when the claim
+  route is absent or unreachable it falls back to a `max + 1` scan **silently** — exit 0, a plausible
+  number, an empty stderr — and the number then arrives here looking like an allocation. Measured
+  both ways: the live board answers the non-consuming sequence read `200` today, so the primary path
+  is genuinely atomic, and against a stub answering `404` on the claim route the allocator printed a
+  scanned number with nothing on stderr. The distinction is only visible inside the allocator, so the
+  fix is filed there (toolkit card#7214); until it ships the bound is carried by DL-295 and by this
+  tool's own refusal text, which no longer claims there is no offline fallback anywhere. Two smaller
+  things with it: `check` now prints the **fence-aware vs fence-blind `## DL-` header count**, so one
+  unbalanced code fence — which hides every header after it — cannot leave an `OK` standing over a
+  truncated population (this repo's log today: 181 of 181, none skipped); and the gate's comments now
+  say what `base.sha` IS (the base-branch **tip**, not the merge base, measured on PR #542), with a
+  fixture whose head is a real merge commit pinning the head/base pairing its verdict depends on.
 
 ### Changed
 
