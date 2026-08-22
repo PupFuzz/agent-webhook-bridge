@@ -111,22 +111,30 @@ term is efficiency + defense-in-depth, not the boundary.
 - The bridge stamps `created-by:<you>` as the audit tag.
 - **Pass an `idempotency_key`.** With one, the bridge runs the full duplicate-safe
   pattern: it correlates on `idem:<you>:<key>` *before* creating (a repeat returns
-  the same card, `"idempotent_hit": true`, no second card — **while that card is
-  live**; see the bound below), and after creating it
-  re-reads and collapses any card a concurrent call raced in. Without a key, a
-  retry (including any invisible MCP-client-layer retry) can double-create — the
-  duplicate is visible via `board_my_cards` and bounded, but the key is why it
-  exists.
-- **⚠ Bound on that guarantee — it holds only while the card is LIVE.** The
-  correlate-before-create read is `tasks/search.json` with no `archived`
-  parameter, and kanban's search applies `whereNull('archived_at')` unless one is
-  passed (DL-296). **Archive the card a key minted, call again with the same key,
-  and the pre-check sees nothing: you get a SECOND card and `"created": true`** —
-  the repeat-returns-the-same-card promise above is about a live card only. Known,
-  not fixed here: the fix is the same second archived-side read the coord create
-  leg took in DL-296, but the answer it should give a tool caller (report the
-  archived card as the hit, or refuse the create) changes what this tool accepts,
-  so it needs an operator ruling. Tracked with its siblings on card#7222.
+  the same **live** card, `"idempotent_hit": true`, no second card), and after
+  creating it re-reads and collapses any card a concurrent call raced in. Without
+  a key, a retry (including any invisible MCP-client-layer retry) can
+  double-create — the duplicate is visible via `board_my_cards` and bounded, but
+  the key is why it exists.
+- **⚠ Re-using a key whose card was ARCHIVED is REFUSED (422), not carded again
+  (DL-297).** Kanban's search is a *switch*: without an `archived` parameter it
+  returns live rows only, so an archived card is invisible to the correlation
+  above. The bridge therefore reads the archive side too, on the last branch
+  before the create, and an archived twin **suppresses** it: an archived card is a
+  deliberate retire, and un-retiring one is not this tool's to do. You get a 422
+  naming the card ids to unarchive, and **no card is created**. Your options are
+  to unarchive that card (the work is live again) or to pass a **new**
+  `idempotency_key` (this is genuinely new work). Before DL-297 that same call
+  minted a SECOND card and answered `"created": true`.
+  - That is the only BOARD STATE whose answer changed. A **live** twin is
+    still an idempotent hit — including a live twin sitting *beside* an archived
+    one, since the live read answers first and the archive side is never
+    consulted — and a key with no card on either side still creates, at the cost
+    of one extra search per card actually minted.
+  - If the archive-side read itself fails upstream, the call fails **502 with no
+    card created** rather than creating one it could not check. Fail-closed is
+    deliberate: the alternative re-mints over a retire, which is the defect this
+    closes.
 
 **Returns:**
 
@@ -141,7 +149,7 @@ term is efficiency + defense-in-depth, not the boundary.
 | --- | --- |
 | 403 | The request did not come from loopback (network gate). |
 | 401 | Missing or unrecognized bearer token. A bearer file that exists but the bridge cannot read, and one belonging to a collided pair, are **deliberately indistinguishable** from an unknown token here — the door never tells an unauthenticated caller that another agent's bearer exists (card#5778; it 500'd on the unreadable case until then). |
-| 422 | A caller-fixable bad request (missing `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool). |
+| 422 | A caller-fixable bad request (missing `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive). |
 | 502 | Upstream kanban error (may be retryable). |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
 

@@ -339,6 +339,10 @@ class AgentToolsCallTest extends TestCase
         $res->assertStatus(200)->assertJsonPath('result.card_id', 77);
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json')
             && in_array($tag, $r['tags'], true));
+        // No idempotency_key ⇒ NO correlation read on either side of the archive
+        // axis: there is no key to correlate on, so the DL-297 probe (like the
+        // DL-198 pre-check it follows) must not fire and cost a search.
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), '/tasks/search.json'));
     }
 
     public function test_idempotency_key_is_normalized_to_lowercase(): void
@@ -377,12 +381,54 @@ class AgentToolsCallTest extends TestCase
         Http::assertNothingSent();
     }
 
+    /**
+     * One closure fake answering each read for WHAT IT IS. Kanban's archive axis is
+     * a SWITCH (DL-296): `tasks/search.json` with `archived=1` returns archived rows
+     * ONLY, without it live rows ONLY — so a `Http::sequence()` on a single
+     * wildcard `tasks/search.json` pattern is POPPED by the archive-side probe and hands
+     * the post-create re-read the wrong element (the harness defect DL-296 fixed on
+     * the coord tests; this file inherited it the moment the tool grew a second
+     * read). Keyed on the request instead, so adding a read cannot silently
+     * re-target an existing stub.
+     *
+     * @param  list<array<string, mixed>>  $live  rows the LIVE pre-check answers
+     * @param  list<array<string, mixed>>  $archived  rows the archive-side probe answers
+     * @param  list<array<string, mixed>>|null  $postCreate  rows the post-create live re-read
+     *                                                       answers (null ⇒ same as $live)
+     */
+    private function archiveAxisFake(array $live, array $archived, int $newId, ?array $postCreate = null): \Closure
+    {
+        $liveReads = 0;
+
+        return function ($request) use ($live, $archived, $newId, $postCreate, &$liveReads) {
+            $url = urldecode($request->url());
+            if (str_contains($url, '/tasks/search.json')) {
+                if (str_contains($url, 'archived=1')) {
+                    return Http::response(['data' => $archived]);
+                }
+                $liveReads++;
+
+                return Http::response(['data' => $liveReads > 1 && $postCreate !== null ? $postCreate : $live]);
+            }
+            if ($request->method() === 'POST') {
+                return Http::response(['data' => ['id' => $newId]], 201);
+            }
+
+            // The collapse's archive PATCH — echo an archived card so the write reads
+            // as applied.
+            return Http::response(['data' => ['id' => $newId, 'archived_at' => '2026-08-22T00:00:00Z']]);
+        };
+    }
+
     // ─── board_create_card: idempotency both legs ────────────────────────────
 
     public function test_idempotency_correlate_before_create_returns_existing(): void
     {
         // Leg 1: a prior card already carries idem:me:k1 → return it, NO create.
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]])]);
+        // PAIRED WITNESS for the archived-twin refusal below: the ordinary hit must
+        // still hand back the same card, or "honours a retire" would be
+        // indistinguishable from "stopped being idempotent".
+        Http::fake($this->archiveAxisFake(live: [['id' => 7]], archived: [['id' => 99]], newId: 88));
 
         $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k1']]);
 
@@ -391,26 +437,85 @@ class AgentToolsCallTest extends TestCase
             ->assertJsonPath('result.idempotent_hit', true)
             ->assertJsonPath('result.card_id', 7);
         Http::assertNotSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json') && ! str_contains($r->url(), 'search'));
+        // A LIVE hit answers first and pays NOTHING for the archive axis (DL-297
+        // Decision 2) — the archived row staged above is never consulted, so an
+        // archived twin beside a live card cannot suppress anything.
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'archived=1'));
     }
 
     public function test_idempotency_raced_duplicate_is_collapsed(): void
     {
         // Leg 2: correlate empty → create (id 8) → re-read finds a raced 8 AND 9 →
         // collapse archives the higher id (9), survivor is 8.
-        Http::fake([
-            '*/tasks/search.json*' => Http::sequence()
-                ->push(['data' => []])                          // correlate-before-create: empty
-                ->push(['data' => [['id' => 8], ['id' => 9]]]), // post-create re-read: raced pair
-            '*/tasks.json' => Http::response(['data' => ['id' => 8]], 201),
-            '*/tasks/9.json' => Http::response(['data' => ['id' => 9, 'archived_at' => '2026-07-20T00:00:00Z']]),
-        ]);
+        // Keyed by request, not Http::sequence(): the archive-side probe DL-297 added
+        // pops a sequence and hands the post-create re-read the archived element.
+        Http::fake($this->archiveAxisFake(
+            live: [],                                   // correlate-before-create: empty
+            archived: [],                               // and nothing retired ⇒ the create fires
+            newId: 8,
+            postCreate: [['id' => 8], ['id' => 9]],     // post-create re-read: raced pair
+        ));
 
         $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k2']]);
 
-        $res->assertStatus(200)->assertJsonPath('result.card_id', 8);
+        $res->assertStatus(200)
+            ->assertJsonPath('result.created', true)     // positive: this cannot pass on a SUPPRESSED create
+            ->assertJsonPath('result.card_id', 8);
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json') && ! str_contains($r->url(), 'search'));
         // The raced duplicate (9) was archived.
         Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/9.json')
             && ($r['_action'] ?? null) === 'archive');
+    }
+
+    public function test_idempotency_key_whose_only_card_is_archived_refuses_and_creates_nothing(): void
+    {
+        // BOARD STATE: the card this key minted (77) exists but is ARCHIVED — a
+        // retire. kanban's search is a SWITCH (DL-296): no `archived` param ⇒ live
+        // rows only, so the live pre-check sees nothing. Before DL-297 that fell
+        // through and minted a SECOND card reporting `"created": true`.
+        Http::fake($this->archiveAxisFake(live: [], archived: [['id' => 77]], newId: 88));
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k3']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('77', $res->json('error') ?? '');
+        // NOTHING was created — the refusal is the whole outcome.
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json') && ! str_contains($r->url(), 'search'));
+        // The archived side was read ON THE WIRE (archived=1), not inferred.
+        Http::assertSent(fn ($r) => str_contains($r->url(), '/tasks/search.json')
+            && str_contains($r->url(), 'archived=1')
+            && str_contains(urldecode($r->url()), 'idem:me:k3'));
+    }
+
+    public function test_every_archived_twin_is_named_in_the_refusal(): void
+    {
+        // The remedy is "unarchive THAT card", so a multi-card retire must name
+        // both ids — a probe that returned after the first one would still refuse,
+        // and still be wrong about which card to unarchive.
+        Http::fake($this->archiveAxisFake(live: [], archived: [['id' => 77], ['id' => 91]], newId: 88));
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k3']]);
+
+        $res->assertStatus(422);
+        $error = $res->json('error') ?? '';
+        $this->assertStringContainsString('77', $error);
+        $this->assertStringContainsString('91', $error);
+    }
+
+    public function test_no_card_on_either_side_of_the_archive_axis_still_creates(): void
+    {
+        // The CONTROL for the refusal above: "honours a retire" must not pass as
+        // "stopped creating". The archived read runs (asserted on the wire) and
+        // finds nothing, so the create fires exactly as before.
+        Http::fake($this->archiveAxisFake(live: [], archived: [], newId: 88));
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k4']]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.created', true)
+            ->assertJsonPath('result.idempotent_hit', false)
+            ->assertJsonPath('result.card_id', 88);
+        Http::assertSent(fn ($r) => str_contains($r->url(), '/tasks/search.json') && str_contains($r->url(), 'archived=1'));
     }
 
     // ─── board_my_cards: swimlane row filter ─────────────────────────────────
