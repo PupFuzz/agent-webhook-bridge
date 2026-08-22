@@ -4,6 +4,7 @@ namespace Tests;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
+use Illuminate\Support\Facades\Http;
 use PDO;
 use Tests\Support\SkipsAsRoot;
 
@@ -22,6 +23,8 @@ abstract class TestCase extends BaseTestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        $this->preventStrayHttpRequests();
 
         // Hermetic intent-staging baseline. A real per-agent bridge deployment
         // exports BRIDGE_INBOX_LAYOUT=per-agent (and may export BRIDGE_STATE_DIR);
@@ -43,6 +46,44 @@ abstract class TestCase extends BaseTestCase
         $this->assertNothingWasCommittedWithoutIsolation();
 
         parent::tearDown();
+    }
+
+    /**
+     * ⛔ `Http::fake()` does NOT block a request no stub answers — it goes to the network.
+     *
+     * `PendingRequest::buildStubHandler()` invokes every registered stub callback and, when
+     * none of them answers, hands the request to the LIVE handler. A bare `Http::fake()` or a
+     * `'*'` closure answers everything and hides that; the URL-pattern ARRAY form — the
+     * majority form in this suite — does not. Until `DL-303` nothing in this repo called
+     * `preventStrayRequests()`, so an outbound call on an already-covered path left the
+     * process on every run carrying whatever the caller attached to it (the writeback bearer,
+     * via `KanbanHttpClient`), and the suite stayed GREEN: the caller's fail-soft `catch`
+     * swallowed the connection failure and the test's own assertions passed through the
+     * degradation arm while naming the happy path.
+     *
+     * ⛔ Those legs passed because DNS FAILED. "A stub answered" and "the host did not
+     * resolve" are different causes with the same result, and nothing distinguished them — so
+     * on a runner where the host DOES resolve, the same test asserts against whatever answers.
+     * One of them resolved: the crosstalk leg of `tests/Feature/Config/InstallGuardTest.php`
+     * read the operator install's real config and probed that install's live board.
+     *
+     * ⚑ WHAT THIS DOES NOT CLOSE, recorded because the number is counter-intuitive.
+     * `StrayRequestException` extends `RuntimeException`, and `makePromise()` re-throws it
+     * ahead of the `ConnectionException` wrapping — so it reaches the caller, and a caller
+     * that degrades on `catch (Throwable)` swallows it exactly as it swallowed the connection
+     * error. The test then stays green on the degradation arm and this guard is silent about
+     * it: of the strays it surfaced across the suite when it was switched on, only two reached
+     * a red test. It is therefore the FLOOR of the rule in `CLAUDE_TESTING.md`, not a
+     * replacement for it — a new API call still needs its stub in every test that reaches it
+     * AND the request asserted on the wire. A test that registers a catch-all has answered
+     * every request it will ever make and is outside this guard's reach entirely.
+     *
+     * The guard's own witness is `tests/Feature/Support/StrayRequestGuardTest.php`: nothing
+     * else in the suite reds if this call is deleted.
+     */
+    private function preventStrayHttpRequests(): void
+    {
+        Http::preventStrayRequests();
     }
 
     /**

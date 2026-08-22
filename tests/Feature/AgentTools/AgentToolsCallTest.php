@@ -94,10 +94,13 @@ class AgentToolsCallTest extends TestCase
     public function test_loopback_peer_is_admitted(): void
     {
         // Both stubs are load-bearing: the create arm ALSO reads the card back
-        // (card#7225), and an unstubbed request is NOT blocked by Http::fake — it
-        // goes to the real network, where the tool's fail-soft catch swallows the
-        // failure and this assertStatus(200) passes through the degraded path
-        // instead of the one it names. See CLAUDE_TESTING.md.
+        // (card#7225). `Http::fake()` does not block a request no stub answers, so before
+        // DL-303 a missing one went to the real network and the tool's fail-soft catch
+        // swallowed the failure, leaving this assertStatus(200) on the degraded path
+        // instead of the one it names. `Tests\TestCase` now raises `StrayRequestException`
+        // there instead — the request no longer LEAVES, but the same catch still swallows
+        // it, so dropping either stub still greens this leg on the degraded path. The stubs
+        // are what makes it the named one. See CLAUDE_TESTING.md.
         Http::fake([
             '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
             '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),

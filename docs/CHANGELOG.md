@@ -229,6 +229,39 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7300 (DL-303)** — **⚠ the test suite no longer makes real outbound HTTP calls: an
+  unstubbed request now raises `StrayRequestException` naming the URL instead of going to the
+  network.** `Http::fake()` never blocked a request no stub answered — `buildStubHandler()` falls
+  through to the **live** handler, and the URL-pattern array form — the majority form in this suite
+  — is exactly the one that lets a request slip past. Nothing in the repo called
+  `Http::preventStrayRequests()`; `tests/TestCase.php` does now, for the whole suite.
+  **Test-and-docs only: no shipped code, no config key, no migration, and nothing about what the
+  bridge accepts, refuses, writes or retries moves.** Operators see no behaviour change; the entry
+  is here because what CI proves about a release changed.
+  **The blast radius was DERIVED, not estimated** — the guard was switched on, the throw site
+  instrumented, and the full suite run: **57 stray requests across 53 test legs in 5 classes**, every
+  one of them fixed by stubbing the call and, where the call is the point of the test, asserting it
+  on the wire. ⛔ **Only 2 of those 57 reached a red test.** `StrayRequestException` is re-thrown
+  ahead of the `ConnectionException` wrapping, so it reaches the caller — and a caller that degrades
+  softly on `catch (Throwable)` swallows it exactly as it swallowed the connection error, leaving the
+  test green on the degradation arm. So the guard is the FLOOR of the standing rule, not a
+  replacement for it: a new API call still needs the stub AND the `Http::assertSent` on every test
+  that reaches it.
+  **The worst instance was not the fixture host.** `InstallGuardTest`'s crosstalk leg read
+  `bridge.config_dir` from the `BRIDGE_DIR` a deployed checkout's own `.env` sets — `phpunit.xml`
+  overrides neither — so on an operator host it ran `bridge:check` against the REAL install and made
+  four token-bearing requests to that install's live board and to `api.github.com` on every suite
+  run, while on CI the same test reached a directory that does not exist and exercised none of it.
+  Same test, two different subjects, decided by the host the runner sits on. It is hermetic now, and
+  asserts the crosstalk message rather than a bare exit code, which alone cannot say which check
+  failed.
+  **ONE url is allowed to stay stray**, `http://localhost/` inside `ChannelPushUdsTest`, whose
+  subject IS the live curl/Guzzle Unix-domain-socket transport and whose destination is a socket the
+  test binds and deletes itself. Scoped to that url, not to the class: a per-class opt-out would
+  re-mint the defect with a note attached. `tests/Feature/Support/StrayRequestGuardTest.php` is the
+  guard's own witness — delete the call in `Tests\TestCase` and it reds, naming the live
+  `cURL error 6` the suite used to emit.
+
 - **card#7225 (DL-299)** — **⚠ `board_create_card`'s `board_id` / `swimlane_id` now say WHERE THE CARD
   IS, read back from the card, instead of echoing the board and lane the calling agent is configured
   to write to.** Both arms returned `$cfg` values on keys a calling agent consumes as a reading of
