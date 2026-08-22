@@ -46,6 +46,42 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   DL-298), so on today's code that disposition is unreachable — which is exactly why it is
   worth a durable row: it is the tripwire for the N+1th write site, not a report on the
   current one. `bridge:reconcile --fix` remains outside the regime (card#7211).
+- **card#7211 (DL-301)** — **⚠ the fourth and last search-resolved write site is guarded:
+  `bridge:reconcile --fix` re-checks every row of its board read against the mapped board before
+  it moves anything, and an applied move is now recorded durably.** DL-298 (below) closed the
+  three handler sites and disclosed this one as open; a disclosed defect is not a closed one. The
+  reconciler reads a board with the same `q=board_id=<b>` server-side search and moved the ids it
+  returned, so it was the one remaining arm where a `q=`→top-level hoist — which filters in a
+  manual test, because `board_id` happens to be recognised there too — would have moved another
+  tenant's card. It now calls **the same `MappedBoardGuard::refuses()`** the six event-path arms
+  call, under the arm name `bridge_reconcile` and the synthetic outcome `reconcile`.
+  **⚠ UPGRADING — a fail-closed tightening on a write path, and the newly-refused set is EMPTY on
+  a correctly-scoped instance.** A card is refused when the row the board read returned does not
+  name the mapped board, or carries no readable board at all. The gate sits where a row becomes a
+  card the run will decide a move for — **before** the per-card GitHub read — so a refused row is
+  never moved, never has its PR reference dereferenced with this repo's GitHub token, and never
+  lands in the `in sync` / `backward` counts that would otherwise report a reconcile over another
+  board. **The refusal is loud: a `REFUSED` console line per card, the durable `Log::warning` +
+  alert from the primitive, and a NON-ZERO EXIT** — a timer reading exit 0 over a cross-board row
+  in its board read would be reporting a clean reconcile over an unfiltered result set. Dedup is
+  unchanged (`(repo, outcome, reason)`): one push per run carrying the first refused card, with
+  the console lines and the per-card log as the enumeration.
+  **The applied move is now a durable record, not just console output** (card#7212):
+  `Log::info('bridge_reconcile: moved', …)` carries the card id, the target stage and the
+  `card_board` + `mapped_board` pair — the board the move actually landed on beside the one
+  config aimed at. The refusal was always durable while the success went wherever the operator's
+  cron redirects stdout; recording only the refusal answers *"did we ever stop it?"* and never
+  *"did this ever happen?"*. The `MOVED` and `DRIFT` / `SKIP-DRIFT` console lines are unchanged —
+  they still name the mapped board, which after the guard is the same value on every row that can
+  reach a report line.
+  **Guard populations — two classes widened.** `WritebackRefusalSignalCoverageTest`'s
+  level-independent leg now also scans `app/Console/Commands/Bridge/*.php`, because this is the
+  first caller of the board guard outside the handler files (empty today; proven able to red by
+  planting a compare in the command). `WritebackSuccessBoardRecordTest`'s write census gains the
+  same directory on its file axis, with `ReconcileCommand.php:moveCard` accounted for — measured
+  as the only kanban write in any `bridge:*` command, and proven able to red by dropping that
+  entry. **A second kanban write added to that command now reds**, where an earlier revision of
+  this change would have left it caught by nothing structural.
 
 - **card#7211 (DL-298)** — **⚠ a card resolved from a board-scoped SEARCH is now re-checked
   against the mapped board before the writeback writes to it.** The second half of card#7211,
@@ -82,8 +118,9 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   **⛔ Not changed, deliberately:** the coord handler's three *read-decision* sites (the live tag
   pre-check, the by-ref pre-check, the DL-296 archived-twin read) write nothing — board-scoping
   them would make the handler create where it previously skipped, a change in the permissive
-  direction needing its own ruling. **⛔ Still open:** `bridge:reconcile --fix` reads the board
-  and moves cards from its plan with no such re-check — the fourth site, left on card#7211.
+  direction needing its own ruling. **⛔ Left open by this entry, closed by DL-301 below:**
+  `bridge:reconcile --fix` read the board and moved cards from its plan with no such re-check —
+  the fourth site.
 
 - **card#7211** — **a guard on the CALL CONSTRUCTION of every board-scoped kanban read: the
   board term must sit inside the `q=` string, never as a top-level query parameter.** Measured

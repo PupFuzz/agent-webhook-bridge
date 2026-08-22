@@ -47,7 +47,7 @@ use Tests\TestCase;
  * against a mutant rendering `mapped_board` into both slots, which is the defect wearing
  * the new field's name. This class carries the three STRUCTURAL legs those cannot be:
  *
- *  1. {@see test_every_kanban_write_in_a_writeback_handler_is_accounted_for} — the write
+ *  1. {@see test_every_kanban_write_in_the_population_is_accounted_for} — the write
  *     census. Fixing N sites without a guard leaves the N+1th to mint the bug again
  *     (canon #7), and the N+1th here is a NEW write, which no behavioural test can
  *     anticipate. Keyed `<file>:<verb>` with a COUNT rather than by line, so an unrelated
@@ -64,11 +64,15 @@ use Tests\TestCase;
  *
  * ⛔ THE DENOMINATOR, and how each pass RE-DERIVES it rather than quoting a figure
  * (canon #19). Three axes, all three now derived from the sources:
- *   • FILES — `glob()` over `app/Bridge/Handlers/Kanban*Handler.php` AND
- *     `app/Bridge/Writeback/*.php`. The second was added by the card#7212 review: the
- *     shared write primitives are exactly where canon #5 pushes duplicated writes, so a
- *     population of handlers alone made the one directory most likely to hold a shared
- *     write into a blind spot — and it did: `CardCollapse`'s archive recorded NO board.
+ *   • FILES — `glob()` over `app/Bridge/Handlers/Kanban*Handler.php`,
+ *     `app/Bridge/Writeback/*.php` AND `app/Console/Commands/Bridge/*.php`. The second was
+ *     added by the card#7212 review: the shared write primitives are exactly where canon #5
+ *     pushes duplicated writes, so a population of handlers alone made the one directory most
+ *     likely to hold a shared write into a blind spot — and it did: `CardCollapse`'s archive
+ *     recorded NO board. The third was added by the DL-301 review, for the same reason one
+ *     directory further out: `bridge:reconcile --fix` is a kanban write inside the DL-009
+ *     mapped-board regime that no glob here reached, so it was carried as a stated residue
+ *     instead of being policed. An event handler is not the only thing that writes to a card.
  *   • VERBS — {@see writeMethodsOf} reads `KanbanClient` and keeps every method whose
  *     body issues a mutating HTTP verb (`->patch(` / `->post(` / `->delete(`). A
  *     hand-written const would not red when a new write method shipped; this does.
@@ -79,12 +83,29 @@ use Tests\TestCase;
  * STATED BOUNDS, and they are real ones.
  *   • Leg 1 proves each write site was CONSIDERED, not that its record is correct — that
  *     is leg 2's and the behavioural legs' job.
- *   • A write minted in a Console command, in `bin/`, or in `app/Bridge/Tools/` is
- *     outside the file population. The board-tools surface is not under the DL-009
- *     mapped-board regime at all: its board is FORCED from `BoardToolsConfig`, not from a
+ *   • A write minted in `bin/` or in `app/Bridge/Tools/` is outside the file population, and
+ *     the reason is the REGIME, not the directory. The board-tools surface is not under the
+ *     DL-009 mapped-board rule at all: its board is FORCED from `BoardToolsConfig`, not from a
  *     per-repo `WritebackMapping`, which is why `CardCollapse::toSurvivor()` takes its
  *     mapping as `?WritebackMapping` and why `BoardCreateCardTool`'s collapse records no
  *     pair. Whether that surface wants its own board record is filed, not answered here.
+ *     ⛔ A Console command is NO LONGER outside it. `bridge:reconcile --fix` is inside the
+ *     regime (DL-301, card#7211) — it reads a mapped board, refuses a row naming another
+ *     through `MappedBoardGuard::refuses()`, and records the pair on its applied move — so
+ *     the DL-301 review put `app/Console/Commands/Bridge/*.php` in the glob rather than
+ *     leaving it as a stated residue. A second kanban write added to that command, or a first
+ *     one added to any other `bridge:*` command, now reds here until it is accounted for.
+ *     Its behavioural cover is
+ *     `ReconcileCommandTest::test_an_applied_move_records_the_cards_own_board_durably`.
+ *     ⚑ What the widening costs, stated because it is the reason it was ever deferred: leg 2
+ *     forbids spelling `card_board` / `mapped_board` by hand anywhere in the population, and a
+ *     command that wants to PRINT the card's own board would trip it. `ReconcileCommand` had
+ *     such a helper for one commit; it was deleted rather than exempted, because after the
+ *     guard the two values are equal on every row that reaches a report line, so it rendered a
+ *     divergence that cannot occur and an `unknown` arm for a row that cannot get there. The
+ *     command's report names the mapped board; the pair lives on the durable record, which is
+ *     the half that answers *"did this ever happen?"*. A command with a real need to render the
+ *     card's own value must extend the primitive, not re-spell the keys.
  *   • A CREATE has no resolved card to read a board from, so it keeps its lone `board`
  *     key. That a created card's ACTUAL placement is never read back is a sibling shape,
  *     filed as card#7225.
@@ -92,11 +113,11 @@ use Tests\TestCase;
 class WritebackSuccessBoardRecordTest extends TestCase
 {
     /**
-     * Every kanban WRITE reachable from a writeback handler or a shared writeback write
-     * primitive, keyed `<file>:<verb>` with the number of call sites, and the reason its
-     * success record does or does not carry the (card board, mapped board) pair. Set
-     * equality in both directions AND on the counts: a new write reds, and so does an
-     * entry whose call site has gone.
+     * Every kanban WRITE reachable from a writeback handler, a shared writeback write
+     * primitive, or a `bridge:*` console command, keyed `<file>:<verb>` with the number of
+     * call sites, and the reason its success record does or does not carry the (card board,
+     * mapped board) pair. Set equality in both directions AND on the counts: a new write
+     * reds, and so does an entry whose call site has gone.
      *
      * @var array<string, array{sites: int, record: string}>
      */
@@ -111,6 +132,15 @@ class WritebackSuccessBoardRecordTest extends TestCase
                 .'archived line and the 200-but-not-archived Log::error carry the pair, per the one rule '
                 .'above. The pair renders only when the caller passes a mapping — leg 3 is what makes '
                 .'that a requirement rather than a hope for every caller in this population.',
+        ],
+        'ReconcileCommand.php:moveCard' => [
+            'sites' => 1,
+            'record' => 'PAIRED — `bridge:reconcile --fix` (DL-301, card#7211). A GROUP-B site reached from a CLI '
+                .'rather than a handler: the id comes from the same board-scoped `readBoardCards` search, '
+                .'reconcileCard() re-checks each row through refuses() before the run decides anything about '
+                .'it, and the applied move records the pair on `Log::info(\'bridge_reconcile: moved\', …)`. '
+                .'The console MOVED/DRIFT lines are not the record — they go wherever the operator\'s cron '
+                .'redirects stdout.',
         ],
         'KanbanBlockReasonHandler.php:setBlockReason' => [
             'sites' => 1,
@@ -173,13 +203,15 @@ class WritebackSuccessBoardRecordTest extends TestCase
     {
         $handlers = glob(base_path('app/Bridge/Handlers/Kanban*Handler.php')) ?: [];
         $writeback = glob(base_path('app/Bridge/Writeback/*.php')) ?: [];
+        $commands = glob(base_path('app/Console/Commands/Bridge/*.php')) ?: [];
         $this->assertGreaterThanOrEqual(6, count($handlers), 'the handler population came back short — the glob, not the code, is what changed');
         $this->assertGreaterThanOrEqual(20, count($writeback), 'the writeback population came back short — the glob, not the code, is what changed');
+        $this->assertGreaterThanOrEqual(8, count($commands), 'the bridge-command population came back short — the glob, not the code, is what changed');
 
-        return array_merge($handlers, $writeback);
+        return array_merge($handlers, $writeback, $commands);
     }
 
-    public function test_every_kanban_write_in_a_writeback_handler_is_accounted_for(): void
+    public function test_every_kanban_write_in_the_population_is_accounted_for(): void
     {
         $verbs = self::writeVerbs();
         $this->assertNotSame([], $verbs, 'the write-verb derivation came back EMPTY — KanbanClient parsed to no writes at all, which is the parser failing, not the client');
@@ -198,8 +230,8 @@ class WritebackSuccessBoardRecordTest extends TestCase
         $this->assertSame(
             $expected,
             $found,
-            'a kanban WRITE in a writeback handler or a shared writeback primitive is not accounted for. '
-            .'Every write to a card whose id was RESOLVED from kanban must log the pair '
+            'a kanban WRITE in a writeback handler, a shared writeback primitive or a bridge '
+            .'command is not accounted for. Every write to a card whose id was RESOLVED from kanban must log the pair '
             .'MappedBoardGuard::boardContext() renders, so a write that lands on an out-of-mapping card is '
             .'distinguishable from a correct one after the fact (card#7212). Add the site to ACCOUNTED with '
             .'what its success record carries — or with the reason it carries no card board, which for a '
@@ -367,7 +399,8 @@ class WritebackSuccessBoardRecordTest extends TestCase
         $this->assertSame(
             [],
             $found,
-            'a writeback handler or primitive renders `card_board` / `mapped_board` itself instead of calling '
+            'a writeback handler, primitive or bridge command renders `card_board` / `mapped_board` '
+            .'itself instead of calling '
             .'MappedBoardGuard::boardContext(). One record, one rendering — two is how the refusal arm and '
             .'the success arm came to disagree about which board they were naming (card#7212).',
         );

@@ -146,7 +146,9 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
         // on the operator-mapped board for this repo. Permanent — alert + log + no-op.
         // Same reason string as the move handler's twin, kept distinct in the dedup
         // tuple by the synthetic outcome (DL-274(3)); one shared primitive owns the
-        // compare and the report for all three arms (DL-292, card#7138).
+        // compare and the report for every arm (DL-292, card#7138). How many arms that
+        // is has changed twice since — `MappedBoardGuard` owns the list; this line
+        // deliberately does not carry a second copy of it.
         if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_block_reason', $cardId, $repo, self::ALERT_OUTCOME)) {
             return;
         }

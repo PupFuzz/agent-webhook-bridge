@@ -16,7 +16,9 @@ use Tests\TestCase;
 
 /**
  * card#7211 fix #2 (DL-298) — THE RESOLVED-ROW BOARD RE-CHECK, on the three writeback
- * paths that resolve card ids from a BOARD-SCOPED SEARCH and then write to them.
+ * HANDLER paths that resolve card ids from a BOARD-SCOPED SEARCH and then write to them. The
+ * fourth such path is the `bridge:reconcile --fix` CLI; it is guarded too (DL-301) and covered
+ * beside the command — see the bound at the end of this docblock.
  *
  * The companion to {@see BoardScopedReadConstructionTest} (fix #1), and deliberately not
  * the same guard: that one pins the CALL — every board term stays inside `q=`, because an
@@ -44,8 +46,15 @@ use Tests\TestCase;
  * they share its predicate, its `card_not_on_mapped_board` reason code and its
  * warn+notify channel, and are kept apart in the dedup tuple by their `$outcome`.
  *
- * BOUND: the fourth site of card#7211, `bridge:reconcile`'s `--fix` move
- * (`ReconcileCommand`, board read → `moveCard`), is NOT covered here and is NOT guarded.
+ * ⭐ THE FOURTH SITE IS NOW GUARDED TOO (DL-301) — and it is deliberately NOT covered here.
+ * `bridge:reconcile --fix` (`ReconcileCommand`, board read → `moveCard`) calls the same
+ * `MappedBoardGuard::refuses()` on every reconcilable row, under the synthetic `reconcile`
+ * outcome. Its mixed-set leg lives beside the command, in
+ * `ReconcileCommandTest::test_fix_moves_the_mapped_card_and_refuses_a_row_naming_another_board`,
+ * because exercising it needs the whole console harness (per-repo GitHub token probe, stage-order
+ * preload, `--fix`) that this class's three handler arms have no use for — the pattern is
+ * carried, not the fixture. A method here that re-derived that harness would be a second copy of
+ * it, which is the shape this class exists to argue against.
  */
 class ResolvedRowBoardGuardTest extends TestCase
 {
