@@ -23,8 +23,15 @@ use Illuminate\Support\Facades\Log;
  * ⛔ EVERY `/tasks/search.json` FILTER RIDES INSIDE THE `q=` STRING, never as a top-level
  * query parameter: an unrecognised one is dropped SILENTLY and the read comes back
  * unfiltered, 200, indistinguishable from a scoped one. `board_id` is recognised top-level
- * too, which is what makes the hoist look equivalent when it is tested. The invariant and
- * its measurements are owned by `docs/kanban-integration-contract.md` §3;
+ * too, which is what makes the hoist look equivalent when it is tested.
+ *
+ * A FILTER is what narrows the result set by caller-supplied data (board, tags, swimlane,
+ * custom fields, free text). The complete top-level set is `q` plus the three MEASURED
+ * SWITCHES — `limit`/`page` (DL-146 pagination) and `archived` (DL-296: the archive axis has
+ * no both-sides mode, so it is reachable only as a top-level parameter; see
+ * {@see cardRowsByTag}). A switch is not an exception to the invariant, it is the other side
+ * of it, and adding one is a claim about what the server recognises. The invariant and its
+ * measurements are owned by `docs/kanban-integration-contract.md` §3;
  * `BoardScopedReadConstructionTest` pins the construction (card#7211).
  */
 final class KanbanClient
