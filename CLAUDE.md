@@ -28,7 +28,7 @@ php artisan bridge:prune --older-than=30d # retention: prune old events/dispatch
 php artisan bridge:reconcile             # board-vs-GitHub drift reconciler (report-only; --fix applies) — rerunnable writeback backstop
 php artisan bridge:replay <N>            # re-dispatch a stored event by id (recovery for errored/missed dispatches)
 php artisan bridge:inspect <N>           # pretty-print one event + its dispatch ledger
-php artisan bridge:stats                 # event / dispatch counts
+php artisan bridge:stats                 # event / dispatch / board-divergence counts
 
 # Seat-side (run ON the agent's box, AS the agent's own OS user — NOT the bridge's):
 python3 bin/check-channel-snapshot.py <deployed channel-server dir>
@@ -100,7 +100,7 @@ An ergonomic snapshot of the **last 10 releases**, trimmed each release (doc-ret
 - `app/Http/Middleware/VerifyHmacSignature.php` + `EnvelopeSizeLimit.php` — receiver entry gates. Constant-time HMAC over the raw request body. Security-critical surface.
 - `app/Http/Controllers/Webhook/WebhookController.php` — the synchronous request lifecycle: adapt → record (`dedupCreate`) → classify → stage to inbox → dispatch handlers → return. The three failure-treatment branches (classify-throws / inbox-throws / handler-throws) live here. Security-critical surface.
 - `app/Bridge/Adapters/*` (`WebhookAdapter` contract + `KanbanAdapter` / `GitHubAdapter`) — per-provider HMAC header + envelope extraction. Read alongside the upstream's webhook spec.
-- `database/migrations/*` — `webhook_events` (`UNIQUE(delivery_id)` is the at-least-once dedup gate) + `agent_dispatches` (per-agent dispatch ledger). Schema-critical surface.
+- `database/migrations/*` — `webhook_events` (`UNIQUE(delivery_id)` is the at-least-once dedup gate) + `agent_dispatches` (per-agent dispatch ledger) + `writeback_board_divergences` (the DL-300 audit row a writeback writes when the card's board and the mapped board disagree — expected EMPTY, never pruned). Schema-critical surface.
 - `app/Bridge/Dispatch/*` — the data shapes (`Intent`, `ReactionTarget`, `Actor`, `ClassifyResult`, `IntentLog`) + `DispatchService` (the dispatch loop + per-agent error isolation). `dedupCreate` is the at-least-once write primitive.
 - `app/Bridge/Classifiers/*` + `app/Bridge/Contracts/*` — built-in classifiers; custom classifiers implement the `Classifier` contract. `app/Bridge/Handlers/*` are the dispatch targets (`log_intent`, `channel_push`, …).
 - `app/Console/Commands/Bridge/InboxCommand.php` — surfaces staged intents to agent context (Claude Code hook-aware). Cursor-based dedup; silent-when-empty discipline.

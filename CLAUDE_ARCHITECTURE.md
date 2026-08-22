@@ -51,7 +51,7 @@ blocking one would queue concurrent receives behind the pruner — the exact DL-
 never throws (a 5xx would make the provider redeliver, compounding the failure). This replaced DL-012's
 cron, which three installs never scheduled — so the design now has **no cron exception at all**.
 
-`webhook_events` is **not** a work-queue — nothing drains it. It is the dedup gate (`UNIQUE(delivery_id)`, so kanban-board retries land idempotently; for GitHub the key is sha256 of the SIGNED body, not the unsigned `X-GitHub-Delivery` header — DL-176, so a replayed signed body dedups too) plus the durable audit/replay store. `agent_dispatches` is the per-agent, per-event outcome ledger (one row per agent that processed an event), enabling per-agent replay + isolation.
+`webhook_events` is **not** a work-queue — nothing drains it. It is the dedup gate (`UNIQUE(delivery_id)`, so kanban-board retries land idempotently; for GitHub the key is sha256 of the SIGNED body, not the unsigned `X-GitHub-Delivery` header — DL-176, so a replayed signed body dedups too) plus the durable audit/replay store. `agent_dispatches` is the per-agent, per-event outcome ledger (one row per agent that processed an event), enabling per-agent replay + isolation. `writeback_board_divergences` is a THIRD store with a different shape and a different retention posture: it takes a row only when a writeback observes a card whose board disagrees with the repo's mapped board, so it is expected to be empty, its growth is the signal, and retention deliberately never touches it (DL-300).
 
 ### The three-way failure treatment (load-bearing)
 
@@ -95,8 +95,10 @@ At-least-once is **borrowed**, not built: any uncaught/durability failure → 5x
 |---|---|
 | `database/migrations/..._create_webhook_events_table.php` | `webhook_events`: `UNIQUE(delivery_id)` dedup gate + audit/replay store; indexed by `(scope_id, event_type)` + `(actor_id)` |
 | `database/migrations/..._create_agent_dispatches_table.php` | `agent_dispatches`: per-agent, per-event outcome ledger (`processed_at` + `error_message`) |
+| `database/migrations/..._create_writeback_board_divergences_table.php` | `writeback_board_divergences`: one row per writeback (card board, mapped board) pair that DIVERGED (DL-300) — nothing on the happy path, never pruned |
 | `app/Models/WebhookEvent.php` | Plain Eloquent model over `webhook_events` (the `UNIQUE(delivery_id)` constraint is the dedup gate) |
 | `app/Models/AgentDispatch.php` | Plain Eloquent model for the per-agent dispatch ledger |
+| `app/Models/WritebackBoardDivergence.php` | Plain Eloquent model over the board-divergence ledger (immutable rows: no `updated_at`) |
 
 ### Classification + dispatch (the synchronous core)
 
@@ -161,7 +163,7 @@ migrated, and what each stage measured, is owned by
 | `bridge:inbox` (`InboxCommand`) | Read staged `inbox.jsonl`, cursor-dedup, format, write to stdout (Claude Code hook-aware envelope); silent-when-empty |
 | `bridge:inspect` (`InspectCommand`) | Pretty-print one `webhook_events` row + its `agent_dispatches` ledger |
 | `bridge:replay` (`ReplayCommand`) | Re-run dispatch for a stored event (recovery for errored/missed dispatches) |
-| `bridge:stats` (`StatsCommand`) | Event / dispatch counts |
+| `bridge:stats` (`StatsCommand`) | Event / dispatch counts, plus the writeback board-divergence counts (DL-300 — printed every run, zero included) |
 
 ## Multi-agent mental model
 

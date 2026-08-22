@@ -15,6 +15,15 @@ use Illuminate\Support\Facades\File;
  * implementation — two divergent copies of a destructive routine is the defect this
  * extraction exists to prevent.
  *
+ * ⛔ `writeback_board_divergences` IS NOT HERE, AND MUST NOT BE ADDED (DL-300). It is the
+ * one bridge table with no retention window at all: it exists precisely to outlive the
+ * 14-day log, so a window on it would be the same defect with a longer fuse. This file and
+ * `bridge:prune` are where a maintainer adding retention would look, which is why the
+ * ruling is stated here rather than only in the migration that made it. Growth is bounded
+ * instead by the ledger's own dedup — a repeated observation counts on the row it already
+ * has (see `BoardDivergenceLedger`), so the table is bounded by the number of DISTINCT
+ * divergences an install has ever had, not by how long a misconfiguration lasts.
+ *
  * SILENT BY CONTRACT. Nothing here prints or throws for control flow: it returns a
  * {@see RetentionResult} and lets the caller decide how to report. A service that
  * called `$this->info()` could not be invoked from a webhook, which is precisely

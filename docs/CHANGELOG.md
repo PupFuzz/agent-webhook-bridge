@@ -10,6 +10,49 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Added
 
+- **card#7212 (DL-300)** — **⚠ a writeback (card board, mapped board) pair that DIVERGES is
+  now persisted, so the question "has a cross-board write ever landed here?" survives the log.**
+  The second half of card#7212. The first half (#556) put the pair on every record of a write
+  kanban accepted, beside the refusal arm that always carried it — but a log line is
+  retention-bounded (14 days, and the receiver prunes on its own gate since DL-199), so it
+  answers *"did this ever happen?"* for a fortnight and then stops. **A record that expires is
+  an absence on a timer.** `MappedBoardGuard::boardContext()` — still the ONE rendering of the
+  pair, and now the one place that outlives it — writes a row to the new
+  `writeback_board_divergences` table when, and only when, `MappedBoardGuard::belongs()` is
+  false for the card it just rendered: `disposition` (`refused`, the guard stopped the write ·
+  `recorded`, the pair was rendered for a record of a write the bridge MADE), `card_id`, the
+  card's own board verbatim, the mapped board, the call site read from the stack, and the time.
+  The row is minted from the SAME observation as the log line, by the same predicate, in the
+  one place that holds both the card and the mapping — not from an `$arm` argument eleven call
+  sites would have to spell and the twelfth would omit.
+  **⚠ UPGRADING — run `php artisan migrate`.** One new table; no existing table, column or
+  index is touched, and there is no backfill (the observations this table is for were never
+  recorded anywhere durable, which is the defect). **Nothing about what the bridge accepts,
+  refuses, writes or retries moves** — the log shape is byte-identical to #556's, and a
+  persistence failure is logged and never thrown (it runs after kanban has already been
+  written to, and on the refusal arm whose contract is a permanent no-op).
+  **⛔ THE HAPPY PATH PERSISTS NOTHING, deliberately.** A row per successful writeback was
+  considered and refused: it would put the bridge's whole write rate into the DB to record the
+  one thing every other row's absence already implies. So the healthy state of this table is
+  EMPTY, growth is the signal, and **`bridge:prune` deliberately does not touch it** — a
+  retention window on the record that exists to outlive a retention window is the same defect
+  with a longer fuse. On a correctly-scoped install the expected steady state is zero
+  `recorded` rows and zero-or-few `refused` ones (DL-298's guards refuse nothing on a healthy
+  instance), and `bridge:stats` now prints both counts **on every run, zero included** — a line
+  that appeared only when non-empty would make "nothing was ever recorded" indistinguishable
+  from "nothing measured it".
+  **Bound, stated:** a `recorded` row means a divergent card reached a site that reports a
+  write. Every writeback arm inside the mapped-board regime is gated by `refuses()` (DL-292 +
+  DL-298 + DL-301), so on today's code that disposition is unreachable — which is exactly why
+  it is worth a durable row: it is the tripwire for the N+1th write site, not a report on the
+  current one. **`bridge:reconcile` is INSIDE that regime** — DL-301 made it the seventh
+  `refuses()` arm — so it mints a `refused` row per refused card per run, on a report-only run
+  as much as on a `--fix` one. **One row per DISTINCT observation:** a repeat bumps
+  `observations` + `last_seen_at` rather than appending, which is what keeps a table nothing
+  prunes bounded by the number of divergences rather than by how often the documented hourly
+  reconcile cron runs. `bridge:stats` prints the counts on every run — including
+  `NOT MEASURED — table missing` on an install that upgraded without `php artisan migrate`,
+  which used to take the whole report down with a message blaming `DB_HOST`.
 - **card#7211 (DL-301)** — **⚠ the fourth and last search-resolved write site is guarded:
   `bridge:reconcile --fix` re-checks every row of its board read against the mapped board before
   it moves anything, and an applied move is now recorded durably.** DL-298 (below) closed the

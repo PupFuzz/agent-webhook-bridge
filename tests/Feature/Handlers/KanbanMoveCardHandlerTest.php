@@ -6,6 +6,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Handlers\KanbanMoveCardHandler;
 use App\Bridge\Support\AgentConfig;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
@@ -15,6 +16,8 @@ use Tests\TestCase;
 
 class KanbanMoveCardHandlerTest extends TestCase
 {
+    use RefreshDatabase;
+
     private string $dir;
 
     protected function setUp(): void

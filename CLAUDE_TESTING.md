@@ -72,6 +72,12 @@ public function test_missing_required_field_throws(): void
 
 Full Laravel application context. Routes are real, middleware runs, the database is real (SQLite `:memory:` by default). Use `RefreshDatabase` when the test touches the DB.
 
+#### Isolation — "touches the DB" includes what a primitive does behind your back
+
+⛔ **The SQLite suite cannot see a missing isolation trait, and CI's MariaDB legs can.** On SQLite `:memory:` a class with no `RefreshDatabase` gets a database with **no tables**, so a write it did not mean to make throws, and any caller that swallows the error leaves the run green. On the MariaDB matrix the same class writes into the **shared** database and every later test in the run sees the rows. That is not hypothetical: `DL-300` made `MappedBoardGuard::boardContext()` persist an audit row, six writeback test classes that had never needed a database began writing one, and the branch was green on SQLite and red on both MariaDB legs — in a test class two directories away from the cause.
+
+So the rule is not *"does my test call the DB?"* but *"can anything my test calls write?"*. A handler, a console command, or a shared writeback primitive can, and its write is not visible in the test body. **`Tests\TestCase` fails any test that leaves rows behind with no isolation trait**, naming the class that did it — but only on a driver where the table exists, so a green SQLite run is not evidence. When you add a test class that exercises a writeback path, add `use RefreshDatabase;`.
+
 **HTTP testing — no separate PHP server.** The old Python suite booted `php -S` in the background and posted HTTP requests from outside the process. Feature tests hit the real route in-process via `$this->postJson()` or `$this->call()`:
 
 ```php
