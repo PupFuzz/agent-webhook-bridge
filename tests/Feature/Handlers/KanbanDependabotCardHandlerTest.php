@@ -12,6 +12,15 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
+/**
+ * ⚠ EVERY `getCard` FIXTURE HERE CARRIES `board_id` (DL-298, card#7211), and it is not
+ * decoration: `cardsForRepo` now re-checks each row it read against the mapped board and
+ * refuses one that does not name it, so a row without the field is refused like a foreign
+ * one. Kanban returns `board_id` on every task row, so a fixture omitting it was never a
+ * realistic response — the mapped-board leg belongs to
+ * `tests/Feature/Writeback/ResolvedRowBoardGuardTest.php`, which owns the foreign-row
+ * control and its paired presence witness.
+ */
 class KanbanDependabotCardHandlerTest extends TestCase
 {
     private string $dir;
@@ -143,7 +152,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
     {
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
         ]);
 
         $this->handle('merged');   // existing card at 50, target stage 52
@@ -160,7 +169,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
         // exact-string match would have dropped it (latent bug).
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/Owner/Repo/pull/42']]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/Owner/Repo/pull/42']]]),
         ]);
 
         $this->handle('merged');   // event repo is owner/repo (setUp); card url is Owner/Repo
@@ -172,7 +181,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
     {
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 42]]]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
         ]);
 
         $this->handle('merged');
@@ -193,7 +202,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
     {
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
         ]);
 
         $this->handle('closed_unmerged');   // DL-161: dependabot close-unmerged retires the card
@@ -217,7 +226,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
         ]));
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
         ]);
 
         $this->handle('closed_unmerged');
@@ -232,7 +241,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
         // handler logs LOUD (error) and no-ops.
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => null, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'archived_at' => null, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
         ]);
         Log::spy();
 
@@ -249,8 +258,8 @@ class KanbanDependabotCardHandlerTest extends TestCase
                 ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
                 ['id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
             ]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
-            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'board_id' => 8, 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
         ]);
 
         $this->handle('closed_unmerged');
@@ -275,8 +284,8 @@ class KanbanDependabotCardHandlerTest extends TestCase
                 ]]),
             '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
             // Both cards are attributed to THIS repo via pr_url (the cross-repo guard).
-            '*/tasks/99.json' => Http::response(['data' => ['id' => 99, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
-            '*/tasks/100.json' => Http::response(['data' => ['id' => 100, 'workflow_stage_id' => 50, 'archived_at' => '2026-06-20T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/99.json' => Http::response(['data' => ['id' => 99, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/100.json' => Http::response(['data' => ['id' => 100, 'board_id' => 8, 'workflow_stage_id' => 50, 'archived_at' => '2026-06-20T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
         ]);
 
         $this->handle('opened');
@@ -300,8 +309,8 @@ class KanbanDependabotCardHandlerTest extends TestCase
                     ['id' => 99, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
                 ]]),
             '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
-            '*/tasks/99.json' => Http::response(['data' => ['id' => 99, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
-            '*/tasks/100.json' => Http::response(['data' => ['id' => 100, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/other/repo/pull/42']]]),
+            '*/tasks/99.json' => Http::response(['data' => ['id' => 99, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+            '*/tasks/100.json' => Http::response(['data' => ['id' => 100, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/other/repo/pull/42']]]),
         ]);
 
         $this->handle('opened');   // our repo is owner/repo (setUp)
@@ -320,7 +329,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
                 ->push(['data' => []])
                 ->push(['data' => [['id' => 99, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
             '*/tasks.json' => Http::response(['data' => ['id' => 99]], 201),
-            '*/tasks/99.json' => Http::response(['data' => ['id' => 99, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+            '*/tasks/99.json' => Http::response(['data' => ['id' => 99, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
         ]);
 
         $this->handle('opened');
@@ -339,8 +348,8 @@ class KanbanDependabotCardHandlerTest extends TestCase
                 ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
                 ['id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
             ]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
-            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'workflow_stage_id' => 50, 'archived_at' => '2026-06-20T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/8.json' => Http::response(['data' => ['id' => 8, 'board_id' => 8, 'workflow_stage_id' => 50, 'archived_at' => '2026-06-20T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
         ]);
 
         $this->handle('merged');   // target stage 52
@@ -359,7 +368,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
         // populating pr_url can't make the handler start archiving on a bad key.
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => '']]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => '']]]),
         ]);
 
         $this->handle('closed_unmerged');

@@ -11,6 +11,7 @@ use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\TrackedCardRef;
@@ -188,9 +189,21 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             $cardId = is_numeric($card['id'] ?? null) ? (int) $card['id'] : null;
             $payload = is_array($card['payload'] ?? null) ? $card['payload'] : [];
             $prNumber = $this->prForRepo(TrackedCardRef::fromPayload($payload, $isShared, $refs), $repo, $refs);
-            if ($cardId !== null && $prNumber !== null) {
-                $candidates[$cardId] = $prNumber;   // keyed by card id (dedup; N:1 can't collide here)
+            if ($cardId === null || $prNumber === null) {
+                continue;
             }
+            // DL-298 / card#7211: the row came out of a `q=board_id=<b>` search, and the
+            // scoping is honoured by the SERVER — so this re-check refuses nothing today.
+            // That is the point: it makes the scope a property of the RESULT rather than of
+            // the call, so a `q=`→top-level hoist (which filters in a manual test, because
+            // `board_id` happens to be recognised there too, and takes the next filter
+            // hoisted beside it silently out of the query) cannot promote a card off
+            // another tenant's board. Applied where a row BECOMES a candidate, so the
+            // refused set is exactly the set this handler would otherwise have written to.
+            if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_promote_released', $cardId, $repo, 'promote_on_release')) {
+                continue;
+            }
+            $candidates[$cardId] = $prNumber;   // keyed by card id (dedup; N:1 can't collide here)
         }
 
         if (count($candidates) > self::MAX_CANDIDATES) {

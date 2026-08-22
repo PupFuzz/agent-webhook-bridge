@@ -10,6 +10,44 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Added
 
+- **card#7211 (DL-298)** — **⚠ a card resolved from a board-scoped SEARCH is now re-checked
+  against the mapped board before the writeback writes to it.** The second half of card#7211,
+  and the one that changes behaviour: the first half (below) pins the *call*, this pins the
+  *result*. `MappedBoardGuard`'s belongs-to-mapped-board rule (DL-009/DL-292) ran only on the
+  **token** path — the sites that parse `card#NNNN` / `DL-NNN` out of a PR title or branch and
+  read the card. Three writeback paths resolve their cards from a board-scoped search instead
+  and parse no token, so nothing checked that the rows kanban handed back were on the board the
+  query asked for: `kanban_dependabot_card` (archive on closed-unmerged, the duplicate collapse,
+  the survivor's move), `kanban_promote_released` (the Shipped→Released scan) and
+  `kanban_coord_card` (the post-create collapse). All three now call **the same primitive** — no
+  second copy of the compare, the same `card_not_on_mapped_board` reason, the same
+  warn-then-push report, kept apart in the dedup tuple by their `outcome`.
+  **⚠ UPGRADING — this is a fail-closed tightening on a write path, and the newly-refused set is
+  EMPTY on a correctly-scoped instance.** A card is refused (not moved, not archived, and not
+  eligible to win a collapse) when the row kanban returned does not name the mapped board, or
+  carries no readable board at all. `q=board_id=<id>` **is** enforced server-side — measured with
+  the control that makes the zero mean something (a token planted only on board B: `total:1`
+  scoped to B, `total:0` scoped to A, holding past page 1) — so on a healthy install this refuses
+  nothing and writes exactly what it wrote before. **That is the design intent, not a hedge:** the
+  same endpoint silently drops an unrecognised **top-level** parameter and answers 200 with an
+  UNFILTERED result set, and `board_id` also works top-level and filters correctly there, so the
+  hoist that would break the scope tests clean and reviews clean. The guard makes the scope a
+  property of the data rather than of how the call happens to be written. **A refusal is per row
+  — the rest of the delivery proceeds** — and it signals (durable `Log::warning` + the additive
+  push), because a cross-board write that SUCCEEDS emits no event at all.
+  **Cost: no extra request on any ordinary path.** Every one of these searches already returns
+  full rows; it was the client-side projection to ids that discarded the board. Dependabot
+  already re-read each card for its repo attribution; the promote scan already holds rows; the
+  coord collapse switched from `cardsByTag` to its row-returning twin `cardRowsByTag` — the same
+  single GET. The **one** added read is the coord handler's by-ref collapse arm (its board rides
+  in the URL path, so there is no row to check): one `getCard` per correlated card, paid only
+  when a create race has already produced more than one.
+  **⛔ Not changed, deliberately:** the coord handler's three *read-decision* sites (the live tag
+  pre-check, the by-ref pre-check, the DL-296 archived-twin read) write nothing — board-scoping
+  them would make the handler create where it previously skipped, a change in the permissive
+  direction needing its own ruling. **⛔ Still open:** `bridge:reconcile --fix` reads the board
+  and moves cards from its plan with no such re-check — the fourth site, left on card#7211.
+
 - **card#7211** — **a guard on the CALL CONSTRUCTION of every board-scoped kanban read: the
   board term must sit inside the `q=` string, never as a top-level query parameter.** Measured
   live: `q=board_id=<id>` is enforced server-side (a token planted only on board B returned
