@@ -56,6 +56,20 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   are pinned by tests. The gate is not a required status check until an operator adds it to branch
   protection. **This hazard is created by parallel dispatch**; "do not run two DL-minting agents at
   once" is recorded in DL-295 as a legitimate partial mitigation rather than left unstated.
+  ⛔ **A SECOND BOUND, stated for the same reason as the first.** The allocator this tool delegates
+  to claims atomically from the board's counter **only while that endpoint answers**; when the claim
+  route is absent or unreachable it falls back to a `max + 1` scan **silently** — exit 0, a plausible
+  number, an empty stderr — and the number then arrives here looking like an allocation. Measured
+  both ways: the live board answers the non-consuming sequence read `200` today, so the primary path
+  is genuinely atomic, and against a stub answering `404` on the claim route the allocator printed a
+  scanned number with nothing on stderr. The distinction is only visible inside the allocator, so the
+  fix is filed there (toolkit card#7214); until it ships the bound is carried by DL-295 and by this
+  tool's own refusal text, which no longer claims there is no offline fallback anywhere. Two smaller
+  things with it: `check` now prints the **fence-aware vs fence-blind `## DL-` header count**, so one
+  unbalanced code fence — which hides every header after it — cannot leave an `OK` standing over a
+  truncated population (this repo's log today: 181 of 181, none skipped); and the gate's comments now
+  say what `base.sha` IS (the base-branch **tip**, not the merge base, measured on PR #542), with a
+  fixture whose head is a real merge commit pinning the head/base pairing its verdict depends on.
 
 ### Changed
 

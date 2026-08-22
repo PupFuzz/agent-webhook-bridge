@@ -13,11 +13,18 @@ use Tests\TestCase;
  *
  * WHY A REAL ORIGIN AND NOT ONE REPOSITORY. The step's second assertion reads
  * the decision log at the LIVE tip of the target branch, which it FETCHES — the
- * whole reason it can catch a number the target branch took after this PR
- * branched off. A fixture that handed it a pre-computed file would be asserting
+ * whole reason it can catch a number the target branch took after the `BASE`
+ * snapshot. A fixture that handed it a pre-computed file would be asserting
  * the fixture; a single repo with no `origin` would not exercise the fetch at
  * all. So the fixture is an upstream repository the work tree is cloned from,
  * and the "the target branch moved under the PR" cases advance it for real.
+ *
+ * WHAT `makeRepos()` DOES NOT MODEL, and `makeCiPairing()` does. It pairs a
+ * head at the PR-branch tip with a base at the commit that branch was cut from,
+ * which equals CI only while the branch is not behind the target. CI pairs the
+ * base-branch TIP (`base.sha`) with the MERGE of the PR head into it
+ * (`github.sha`), and it is that pairing — not the fork point — that makes the
+ * `added` set mean "this PR's mints". One case builds it for real.
  *
  * THE STEP CALLS THE REAL `bin/decision-log.py`, copied into the work tree at
  * the repo-relative path the step names, so a change to the predicate reds here
@@ -258,6 +265,64 @@ class DlCollisionGateTest extends TestCase
 
         $this->assertSame(1, $rc, $out);
         $this->assertStringContainsString('DL-295', $out);
+    }
+
+    // ------------------------------------------------------------------ the CI pairing
+
+    /**
+     * The pairing CI actually hands the step, built for real: `BASE` at the
+     * base-branch TIP, and a work tree that IS the merge of the PR head into it.
+     *
+     * @return array{dir:string,baseTip:string,mergeBase:string}
+     */
+    private function makeCiPairing(): array
+    {
+        // `dev` gains its own DL-294 after this branch is cut; the PR mints DL-295.
+        $repo = $this->makeRepos($this->log(293), $this->log(293, 295), $this->log(293, 294));
+        $work = $repo['dir'];
+        $wk = $this->git($work);
+
+        exec($wk.'fetch -q origin dev 2>&1');
+        $baseTip = trim((string) shell_exec($wk.'rev-parse FETCH_HEAD'));
+
+        // A REAL merge commit. Both sides append at end-of-file, so git conflicts
+        // — that is DL-295's own stated bound (d) and is not what this case is
+        // about; what is under test is WHICH SHAs the step is handed, so the
+        // conflict is resolved the way the author would resolve it.
+        exec($wk.'merge -q --no-ff --no-commit FETCH_HEAD 2>&1');
+        file_put_contents($work.'/CLAUDE_DECISIONS.md', $this->log(293, 294, 295));
+        exec($wk.'add -A && '.$wk.'commit -q -m "merge dev into pr" 2>&1');
+
+        $parents = preg_split('/\s+/', trim((string) shell_exec($wk.'rev-list --parents -n 1 HEAD')));
+        $this->assertCount(3, (array) $parents, 'the fixture head must BE a merge commit — two parents');
+
+        return ['dir' => $work, 'baseTip' => $baseTip, 'mergeBase' => $repo['base']];
+    }
+
+    public function test_base_sha_is_the_base_branch_tip_the_head_tree_is_merged_with_not_the_merge_base(): void
+    {
+        $repo = $this->makeCiPairing();
+
+        [$rc, $out] = $this->runStep($repo['dir'], ['BASE' => $repo['baseTip'], 'BASE_REF' => 'dev']);
+
+        $this->assertSame(0, $rc, $out);
+        $this->assertStringContainsString('adds 1 DL entries (DL-295)', $out);
+
+        // THE CONTROL, and the whole reason this case exists: hand the step a
+        // base sourced INDEPENDENTLY of this head — the FORK POINT, which is what
+        // "the merge base" named while the workflow's old comment stood — and
+        // `dev`'s own post-fork DL-294 sits inside the merge tree at head, absent
+        // there, and reads as this PR's mint. An innocent PR is refused. It also
+        // proves the fixture discriminates: two different commits as `BASE`, one
+        // unchanged tree, two different verdicts.
+        [$rcMergeBase, $outMergeBase] = $this->runStep(
+            $repo['dir'],
+            ['BASE' => $repo['mergeBase'], 'BASE_REF' => 'dev'],
+        );
+
+        $this->assertSame(1, $rcMergeBase, $outMergeBase);
+        $this->assertStringContainsString('DL-294', $outMergeBase);
+        $this->assertStringContainsString('ALREADY IN USE', $outMergeBase);
     }
 
     // ------------------------------------------------------------------ fail-loud

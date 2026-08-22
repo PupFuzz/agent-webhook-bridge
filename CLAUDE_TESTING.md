@@ -174,6 +174,17 @@ fetch at all, and a pre-computed file would assert the fixture.
 - **Two cases pin the gate's stated BOUND, not its catch:** two concurrently-open PRs minting one
   number both pass, and the second reds only after the first has merged *and* it re-runs. They
   exist so the claim cannot quietly widen into "no duplicate DL can be minted".
+- **One case builds the CI PAIRING for real, because every other case only approximates it.**
+  `BASE` is the PR's `base.sha` — a snapshot of the base-branch **tip**, NOT the merge base — while
+  the tree the step reads as head is `github.sha`, the merge of the PR head into that same
+  `base.sha`. "Present at head, absent at `BASE`" means "this PR minted it" only because those two
+  are one snapshot; the other cases pair a branch tip with the commit it was cut from, which equals
+  CI only while the branch is not behind the target. That case therefore builds a real merge commit
+  (two parents, asserted) and runs the step twice: with `BASE` at the base tip it passes, and with
+  `BASE` at the **fork point** — the control, and what a `merge-base` against the PR branch returns
+  — it reds, naming the target branch's own post-fork entry as if this PR had minted it. The
+  invariant itself is owned by the workflow comment, which also records why rewriting the step to
+  derive its base with `git merge-base` would leave every case green while breaking the contract.
 - The step calls the real `bin/decision-log.py`, copied into the work tree at the repo-relative
   path the step names, so a change to the predicate reds here as well as in
   `bin/test_decision_log.py`.

@@ -10,7 +10,10 @@ collision was avoided because one agent's in-flight string happened to surface
 in an unrelated test failure, not because anything checked.
 
     next   allocate a number from the board's authoritative counter, then VETO
-           it against every local checkout this host can enumerate.
+           it against every local checkout this host can enumerate. What the
+           counter does NOT cover — and it is not nothing — is stated on
+           `cmd_next` and in DL-295's bounds; read it before trusting the word
+           atomic.
     check  refuse a decision log that uses one number twice — the CI backstop.
 
 Both read `## DL-NNN` headers through `header_numbers()`. A second spelling of
@@ -65,14 +68,24 @@ _HEADER = re.compile(r"^##[ \t]+DL-0*(\d+)\b")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 
 
-def header_numbers(text: str) -> list[tuple[int, int]]:
-    """Every DL entry header in `text`, as (number, 1-based line number).
+def header_scan(text: str) -> tuple[list[tuple[int, int]], int]:
+    """(every DL entry header outside a code fence, how many were SKIPPED inside one).
 
     Lines inside a fenced code block are skipped: a decision entry that shows
     what a header looks like is documentation, not a second entry, and treating
     it as one would refuse the very change that documents this file.
+
+    The second element is the population statement, and it exists because the
+    skip is unbounded in one direction: ONE unbalanced ``` or ~~~ swallows every
+    later `## DL-` header in the file, and a `check` over the remainder still
+    prints OK — a clean result over a population nobody named. It is reported
+    rather than assumed away. Control on this repo's own log, 2026-08-21:
+    fence-aware 181 == fence-blind 181, so nothing is skipped today; what makes
+    the day it moves visible is that the run prints the delta, not that a number
+    was written down here.
     """
     found: list[tuple[int, int]] = []
+    skipped = 0
     fence: str | None = None
     for lineno, line in enumerate(text.splitlines(), start=1):
         m = _FENCE.match(line)
@@ -82,12 +95,19 @@ def header_numbers(text: str) -> list[tuple[int, int]]:
             elif line.strip().startswith(fence):
                 fence = None
             continue
-        if fence is not None:
-            continue
         m = _HEADER.match(line)
-        if m:
-            found.append((int(m.group(1)), lineno))
-    return found
+        if m is None:
+            continue
+        if fence is not None:
+            skipped += 1
+            continue
+        found.append((int(m.group(1)), lineno))
+    return found, skipped
+
+
+def header_numbers(text: str) -> list[tuple[int, int]]:
+    """`header_scan`'s entries alone, for the callers that do not report a population."""
+    return header_scan(text)[0]
 
 
 def _read(path: str, label: str) -> str:
@@ -96,6 +116,28 @@ def _read(path: str, label: str) -> str:
     except OSError as exc:
         print(f"decision-log: cannot read the {label} decision log {path}: {exc}", file=sys.stderr)
         raise SystemExit(EXIT_USAGE) from exc
+
+
+def _scan(path: str, label: str) -> tuple[list[tuple[int, int]], int]:
+    """`header_scan` over a file, stating on stderr what the fences hid from it."""
+    entries, skipped = header_scan(_read(path, label))
+    if skipped:
+        print(
+            f"decision-log: WARNING: {skipped} `## DL-` line(s) in the {label} log {path} sit "
+            "inside a code fence and were NOT counted. That is correct for an entry quoted as an "
+            "example, and WRONG if a fence is unbalanced — one unclosed ``` or ~~~ hides every "
+            "later header, and this run's verdict would then cover a truncated population.",
+            file=sys.stderr,
+        )
+    return entries, skipped
+
+
+def _population(entries: list[tuple[int, int]], skipped: int) -> str:
+    """The head log's denominator, printed beside every OK so it is never implicit."""
+    return (
+        f"population: {len(entries)} of {len(entries) + skipped} `## DL-` header lines counted, "
+        f"{skipped} skipped inside code fences"
+    )
 
 
 def cmd_check(args: argparse.Namespace) -> int:
@@ -110,8 +152,20 @@ def cmd_check(args: argparse.Namespace) -> int:
       2. A number this change ADDS (present at head, absent at `--base`) must not
          already be in use at `--target`, the LIVE tip of the branch being merged
          into. Assertion 1 is blind to this: if the target branch gained the
-         colliding entry after this change branched off, the file at head does
-         not contain it.
+         colliding entry after the `--base` snapshot was taken, the file at head
+         does not contain it either.
+
+    WHAT `--base` MUST BE — a PAIRING with `--head`, not the fork point. "Present
+    at head, absent at base" means "this change minted it" only while head is a
+    snapshot containing base plus this change and nothing else. The CI caller
+    satisfies that by passing the PR's `base.sha` — the base-branch TIP, which is
+    frequently NOT the merge base — while `--head` is the working tree at
+    `github.sha`, the merge of the PR head INTO that same `base.sha`. The two are
+    ONE snapshot of the base branch and must not be sourced independently;
+    `.github/workflows/dl-collision-gate.yml` owns that invariant and the measured
+    consequence of breaking it. Hand this command a base its head does not
+    contain — the merge base, say — and `added` silently gains the base branch's
+    OWN post-fork entries, which then read as this change's mints.
 
     STATED BOUND — this is the whole of what the guard claims, and it is
     deliberately narrower than "no duplicate DL can be minted":
@@ -127,8 +181,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         checkout on another host. `next` is what covers those; this is the
         backstop for when `next` was bypassed.
     """
-    head = _read(args.head, "head")
-    head_headers = header_numbers(head)
+    head_headers, head_skipped = _scan(args.head, "head")
 
     seen: dict[int, int] = {}
     for number, lineno in head_headers:
@@ -154,11 +207,12 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     if args.base is None:
         print(f"OK: {args.head} carries {len(head_headers)} DL entries, no number twice.")
+        print(f"({_population(head_headers, head_skipped)})")
         print("(no --base/--target given — the target-branch assertion did not run)")
         return 0
 
-    base_numbers = {n for n, _ in header_numbers(_read(args.base, "base"))}
-    target_numbers = {n for n, _ in header_numbers(_read(args.target, "target"))}
+    base_numbers = {n for n, _ in _scan(args.base, "base")[0]}
+    target_numbers = {n for n, _ in _scan(args.target, "target")[0]}
 
     added = [(n, lineno) for n, lineno in head_headers if n not in base_numbers]
     collisions = [(n, lineno) for n, lineno in added if n in target_numbers]
@@ -177,6 +231,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         "no number it adds is already in use on the target branch, and the log "
         "at head uses no number twice."
     )
+    print(f"({_population(head_headers, head_skipped)})")
     return 0
 
 
@@ -245,6 +300,21 @@ def cmd_next(args: argparse.Namespace) -> int:
     method card#7157 indicts, and performing it under a tool's name would launder
     the same hazard, not fix it.
 
+    ⛔ THE ATOMICITY IS THE ALLOCATOR'S AND IT IS CONDITIONAL — nothing here can
+    see which arm answered. `next-dl` claims atomically from the board's
+    DL-sequence endpoint when that endpoint answers, and falls back SILENTLY to
+    its own offline `max + 1` scan when the claim route is absent (404) or
+    unreachable: rc 0, a plausible number on stdout, an EMPTY stderr. Measured
+    2026-08-21 against a stub board answering 404 on the claim route — `next-dl
+    bridge` printed `DL-0294` at rc 0 with nothing on stderr, and this command
+    printed `DL-294` as an allocation. Two agents on that path get one number,
+    which is card#7157's defect wearing a tool's name. It is RECORDED, not
+    cross-checked here: the toolkit owns the distinction (card#7214 — a strict
+    mode that refuses when the counter did not answer), and a claim-vs-peek
+    compare in this file would agree exactly when the hazard is present, because
+    both routes degrade to the SAME offline scan. DL-295 bound (e) is the whole
+    statement, with the measurements.
+
     The veto is the half the counter cannot do. A number written into a decision
     log on a branch that has not been pushed is invisible server-side, so an
     allocation is checked against every worktree of this clone and every checkout
@@ -255,9 +325,11 @@ def cmd_next(args: argparse.Namespace) -> int:
         print(
             f"decision-log: REFUSING to mint — `{ALLOCATOR}` is not on PATH.\n"
             "The next bridge DL comes from the board's DL counter, which is the only\n"
-            "source that can see a number claimed by another agent moments ago. There is\n"
-            "deliberately no offline fallback: `max(^## DL-NNN) + 1` over this checkout\n"
-            "cannot see an unpushed parallel mint, which is the defect card#7157 filed.\n"
+            "source that can see a number claimed by another agent moments ago. THIS\n"
+            "COMMAND has deliberately no offline fallback: `max(^## DL-NNN) + 1` over this\n"
+            "checkout cannot see an unpushed parallel mint, which is the defect card#7157\n"
+            f"filed. (`{ALLOCATOR}` itself HAS one and takes it silently when the board's\n"
+            "claim endpoint does not answer — DL-295 bound (e), toolkit card#7214.)\n"
             f"Install the agent-board toolkit so `{ALLOCATOR}` resolves, then re-run.",
             file=sys.stderr,
         )
@@ -334,7 +406,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p_check = sub.add_parser("check", help="refuse a decision log that uses one number twice")
     p_check.add_argument("--head", required=True, help="the decision log as this change leaves it")
-    p_check.add_argument("--base", help="the decision log at the commit this change branched from")
+    p_check.add_argument(
+        "--base",
+        help="the decision log at the snapshot --head is the merge of; in CI the PR's base.sha, "
+        "which is the base-branch TIP and NOT the merge base (see the cmd_check docstring)",
+    )
     p_check.add_argument("--target", help="the decision log at the live tip of the target branch")
     p_check.set_defaults(func=cmd_check)
 

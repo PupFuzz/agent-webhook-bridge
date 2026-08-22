@@ -15,7 +15,9 @@ vendor/bin/pint --test                              # code style (Laravel preset
 vendor/bin/phpstan analyse -c phpstan-laravel.neon  # static analysis (app/Bridge + CheckCommand, level 7)
 python3 bin/decision-log.py next                    # allocate the next DL-NNN before writing an entry
                                                     # (board counter + a veto against every local
-                                                    # checkout — never a max+1 scan; DL-295)
+                                                    # checkout, never this file's max+1; DL-295 —
+                                                    # read its bound (e) for when the allocator
+                                                    # underneath can still fall back to that scan)
 
 # Operator CLI (per-agent config under ~/.config/agent-webhook-bridge[-prod|-dev]/<agent>.yml)
 php artisan bridge:check                 # validate the install (dirs, DB connectivity, agent YAMLs)

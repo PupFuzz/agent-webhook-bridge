@@ -56,6 +56,12 @@ class Grammar(unittest.TestCase):
         text = "~~~\n## DL-300 — inside\n```\n## DL-301 — still inside\n~~~\n## DL-302 — out\n"
         self.assertEqual([(302, 6)], dl.header_numbers(text))
 
+    def test_the_scan_reports_how_many_headers_the_fences_hid_from_it(self):
+        entries, skipped = dl.header_scan("## DL-100 — real\n\n```\n## DL-101 — quoted\n```\n")
+
+        self.assertEqual([(100, 1)], entries)
+        self.assertEqual(1, skipped)
+
 
 class CheckHarness(unittest.TestCase):
     def setUp(self):
@@ -156,6 +162,61 @@ class CheckPinnedNegatives(CheckHarness):
         proc = self.check("--head", head, "--base", base, "--target", target)
 
         self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+
+
+class CheckPopulation(CheckHarness):
+    """The denominator every verdict is over — stated, because the skip is unbounded.
+
+    ONE unclosed fence hides every later header from the grammar, and the verdict
+    over the remainder is still `OK`. That is a clean result over a population
+    nobody named, so the run prints the fence-aware / fence-blind delta.
+    """
+
+    def test_a_planted_unbalanced_fence_is_stated_rather_than_silently_truncating(self):
+        head = self.write(
+            "head.md",
+            "# Decision log\n\n## DL-100 — a\n\n```\nnever closed\n\n## DL-101 — b\n\n## DL-102 — c\n",
+        )
+
+        proc = self.check("--head", head)
+
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertIn("1 of 3 `## DL-` header lines counted, 2 skipped", proc.stdout)
+        self.assertIn("inside a code fence and were NOT counted", proc.stderr)
+
+    def test_the_control_a_log_with_no_fenced_header_reports_nothing_skipped(self):
+        # Without this the warning above could be decoration that fires on every
+        # log, which states nothing at all.
+        head = self.write("head.md", log("293", "294"))
+
+        proc = self.check("--head", head)
+
+        self.assertIn("2 of 2 `## DL-` header lines counted, 0 skipped", proc.stdout)
+        self.assertNotIn("NOT counted", proc.stderr)
+
+    def test_the_population_is_stated_on_the_full_three_file_verdict_too(self):
+        base = self.write("base.md", log("293"))
+        head = self.write("head.md", log("293", "295"))
+        target = self.write("target.md", log("293", "294"))
+
+        proc = self.check("--head", head, "--base", base, "--target", target)
+
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertIn("2 of 2 `## DL-` header lines counted", proc.stdout)
+
+    def test_a_fence_hiding_the_BASE_logs_headers_is_stated(self):
+        # The base and target are read by the same grammar, and a truncated base
+        # INVENTS mints (every hidden number reads as added). Reported for all
+        # three files, not just head.
+        base = self.write("base.md", "## DL-293 — a\n\n```\n## DL-294 — hidden\n")
+        head = self.write("head.md", log("293", "294"))
+        target = self.write("target.md", log("293"))
+
+        proc = self.check("--head", head, "--base", base, "--target", target)
+
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertIn("base log", proc.stderr)
+        self.assertIn("inside a code fence and were NOT counted", proc.stderr)
 
 
 class CheckUsage(CheckHarness):
