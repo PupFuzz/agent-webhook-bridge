@@ -93,14 +93,14 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         $this->assertStringContainsString('(0 stage group(s))', $this->findingsFor([$this->httpAgent('prod-agent')])[0]->message);
     }
 
-    public function test_an_isolation_mismatch_fails(): void
+    public function test_an_identity_mismatch_fails(): void
     {
         $this->fakeResult(['configured_board_id' => 99, 'swimlane_id' => 4]);
 
         $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
 
         $this->assertSame(Severity::Fail, $findings[0]->severity);
-        $this->assertStringContainsString('ISOLATION MISMATCH — board_my_cards answered for board=99 swimlane=4, but this agent is configured for board 10 / swimlane 4.', $findings[0]->message);
+        $this->assertStringContainsString('IDENTITY MISMATCH — board_my_cards answered for board=99 swimlane=4, but this agent is configured for board 10 / swimlane 4.', $findings[0]->message);
     }
 
     /**
@@ -136,11 +136,16 @@ class BoardToolsHttpProbeCheckTest extends TestCase
     }
 
     /**
-     * The VERSION-SKEW tolerance, and the only place it is exercised: `--probe-tools-ssh`
-     * can round-trip to a bridge install that is not this one, and one predating DL-302
-     * answers the header under the old `board_id` spelling with no `configured_board_id`
-     * at all. Read strictly, that install would report an ISOLATION failure for a version
-     * difference — a specific WRONG cause. Delete this test with the fallback, not before.
+     * The VERSION-SKEW tolerance on the HTTP leg. `--probe-tools` POSTs to an
+     * operator-supplied vhost, and this repo's per-agent installation model (CLAUDE.md
+     * rule 7) puts prod and dev installs on ONE box at independent versions, both behind
+     * the loopback gate — so the endpoint can be served by a bridge predating DL-302,
+     * which answers the header under the old `board_id` spelling with no
+     * `configured_board_id` at all. Read strictly, that responder would be reported as an
+     * IDENTITY MISMATCH for a version difference — a specific WRONG cause. Its ssh twin
+     * (`SshTransportProbeTest::test_live_probe_accepts_a_responder_predating_the_header_rename`)
+     * covers the same tolerance on the leg that crosses a HOST. Delete both with the
+     * fallback, not before.
      */
     public function test_a_responder_predating_the_header_rename_is_read_under_the_old_key(): void
     {

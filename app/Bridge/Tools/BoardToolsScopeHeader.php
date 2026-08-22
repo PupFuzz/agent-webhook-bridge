@@ -20,12 +20,15 @@ namespace App\Bridge\Tools;
  * ⚑ WHY THE BOARD HAS TWO SPELLINGS. Before DL-302 the header's board sat on
  * `board_id`; that key now carries the board the returned ROWS are on (null when no
  * row was read), and the header moved to `configured_board_id`. Both are read here,
- * newest first, because the ssh probe can round-trip to a bridge install that is NOT
- * this one (`--probe-tools-ssh=<user@host-A>` is run from a host that can reach A) —
- * a responder predating DL-302 would otherwise answer a null board and the probe
- * would report an ISOLATION failure for a version skew, which is a specific wrong
- * cause rather than an honest one. Drop the fallback once no supported install can
- * answer a probe without `configured_board_id`.
+ * newest first, because NEITHER probe is guaranteed to be talking to the install it
+ * is running inside, so both can meet a responder predating DL-302: `--probe-tools`
+ * POSTs to an operator-supplied vhost, and this repo's per-agent installation model
+ * (CLAUDE.md rule 7) puts prod and dev installs on ONE box at independent versions,
+ * both behind the loopback gate; `--probe-tools-ssh=<user@host-A>` round-trips to a
+ * different HOST outright. Read strictly, such a responder answers no
+ * `configured_board_id` at all and the probe would report an identity mismatch for a
+ * version skew — a specific wrong cause rather than an honest one. Drop the fallback
+ * once no supported install can answer a probe without `configured_board_id`.
  */
 final class BoardToolsScopeHeader
 {

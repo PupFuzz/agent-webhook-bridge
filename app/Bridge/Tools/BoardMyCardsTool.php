@@ -56,7 +56,7 @@ final class BoardMyCardsTool implements Tool
             ? null
             : $this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared');
 
-        [$observedBoard, $boardObserved] = $this->observedBoard(array_merge($ownRows, $sharedRows ?? []), $boardId, $agentName, 'own+shared');
+        [$observedBoard, $boardObserved] = $this->observedBoard(array_merge($ownRows, $sharedRows ?? []), $boardId, $agentName, $sharedRows === null ? 'own' : 'own+shared');
         $result = [
             'board_id' => $observedBoard,
             'board_observed' => $boardObserved,
@@ -73,7 +73,15 @@ final class BoardMyCardsTool implements Tool
         }
 
         if ($cfg->coordBoardId !== null && $cfg->addressTags !== []) {
-            $result += $this->coordBlock($client, $cfg, $descriptionCap, $agentName);
+            // Per-key, never `+=`: array-union DISCARDS a right-hand key the left
+            // already holds, so a future key added to the literal above would drop
+            // the observed coord block with nothing red. Naming each key also puts
+            // coordBlock()'s declared shape under phpstan.
+            $coord = $this->coordBlock($client, $cfg, $descriptionCap, $agentName);
+            $result['coord_board_id'] = $coord['coord_board_id'];
+            $result['coord_board_observed'] = $coord['coord_board_observed'];
+            $result['configured_coord_board_id'] = $coord['configured_coord_board_id'];
+            $result['coord_cards'] = $coord['coord_cards'];
         }
 
         return $result;
@@ -134,23 +142,14 @@ final class BoardMyCardsTool implements Tool
     /**
      * WHICH BOARD THE ROWS SAY THEY ARE ON — the board axis's answer to what
      * {@see filterSwimlane} is for the lane axis (card#7295, DL-302). Returns
-     * `[observed board, observed?]`.
-     *
-     * The two axes are NOT symmetrical, and this is why they get different
-     * treatment. Read isolation is a LANE boundary, so the lane filter must be
-     * fail-closed and DROPS a non-matching row. The board is not a boundary here
-     * (kanban already scopes every read to the token user's board membership) —
-     * it is a CLAIM the response makes, and the claim was restated from `$cfg`
-     * for a row set nothing had re-checked. So this reports; it does not drop and
-     * it does not refuse. What a foreign row should make the tool DO is a
-     * separate, ask-gated question from what the tool SAYS, and only the saying
-     * changed here.
-     *
-     * ⚑ It costs NO extra request. Kanban's task resource carries `board_id` on
-     * every row `/tasks/search.json` returns, so the rows this tool already holds
-     * are the reading. (The same correction on `BoardCreateCardTool` — card#7225,
-     * a SEPARATE change — has to pay a `GET /tasks/{id}.json`, because a POST hands
-     * back an id and nothing else. Do not read that cost across to here.)
+     * `[observed board, observed?]`. Unobserved on ANY row unobserves the SET (the
+     * response states ONE board for a row set, so a set that does not unanimously
+     * answer has no honest single value — never a majority, never the configured
+     * board), and an EMPTY set is unobserved too: not anomalous, and the one arm
+     * that logs nothing. This REPORTS; it does not drop and it does not refuse.
+     * DL-302 Decisions 1 and 3 own why — the two axes' asymmetry, and why the
+     * compare shares `MappedBoardGuard::belongs()`'s accepted set without being
+     * routed through it.
      *
      * ⛔ NO key-absent/value-null discrimination on this axis, deliberately, and
      * that is the one place this must NOT copy its sibling. `tasks.board_id` is a
@@ -159,23 +158,13 @@ final class BoardMyCardsTool implements Tool
      * absent key, a present null and a non-numeric value therefore all mean the
      * same thing — the row answered nothing about its board — and all three are
      * UNOBSERVED. The lane axis is the opposite (a card really can be in no lane),
-     * which is why its sibling has to tell a present null from a missing key.
-     *
-     * Unobserved on ANY row unobserves the SET: the response states one board for
-     * a row set, so a set that does not unanimously answer has no honest single
-     * value, and `[null, false]` is the answer — never a majority, never the
-     * configured board. An EMPTY set is unobserved too and is NOT anomalous (an
-     * agent with no cards read no board), so it is the one arm that logs nothing.
-     *
-     * The accepted set of the compare is `is_numeric` + `(int)`, deliberately the
-     * same one `MappedBoardGuard::belongs()` applies to a card's `board_id`, so
-     * the two surfaces cannot disagree about which spellings name board N. It is
-     * NOT routed through that primitive: `belongs()` takes a `WritebackMapping`
-     * (a repo→board write mapping this read path does not have and must not
-     * invent), it answers a membership DECISION that ends in a refusal, and its
-     * predicate is pinned verbatim by `WritebackRefusalSignalCoverageTest` to
-     * DL-292's minuted vector table — reshaping it to serve a read projection is
-     * a gated change to a security guard, not a refactor.
+     * which is why the sibling correction on `board_create_card` — card#7225, a
+     * SEPARATE change, covering BOTH axes of that tool's reported placement and
+     * paying a `GET /tasks/{id}.json` for them because a create hands back an id
+     * and nothing else — has to tell a present null from a missing key. Do not read
+     * that cost across to here: kanban's task resource carries `board_id` on every
+     * row `/tasks/search.json` returns, so the rows this tool already holds ARE the
+     * reading and this axis costs no extra request.
      *
      * @param  list<array<string, mixed>>  $rows
      * @return array{0: ?int, 1: bool}

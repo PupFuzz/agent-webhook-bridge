@@ -34,7 +34,7 @@ use Throwable;
  *    one (`result.board_id` / `result.board_observed`, read off the rows), and this probe
  *    does not yet assert on it — adding a fail arm there changes what bridge:check rejects.
  *
- * IT FAILS WHERE THE OFFLINE LEGS ONLY REPORT. A connection failure, non-2xx or isolation
+ * IT FAILS WHERE THE OFFLINE LEGS ONLY REPORT. A connection failure, non-2xx or identity
  * mismatch yields `fail` (→ non-zero exit): this probe CERTIFIES the enablement before an
  * operator flips traffic on, so "could not certify" is the answer it exists to refuse.
  *
@@ -172,7 +172,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
             $gotBoard = BoardToolsScopeHeader::boardId($result);
             $gotSwimlane = BoardToolsScopeHeader::swimlaneId($result);
             if ($gotBoard !== $bt->boardId || $gotSwimlane !== $bt->swimlaneId) {
-                yield Finding::fail("board_tools probe: agent {$name}: ISOLATION MISMATCH — board_my_cards answered for board=".($gotBoard ?? 'null').' swimlane='.($gotSwimlane ?? 'null').", but this agent is configured for board {$bt->boardId} / swimlane {$bt->swimlaneId}. The window is not scoped to the configured lane.");
+                yield Finding::fail("board_tools probe: agent {$name}: IDENTITY MISMATCH — board_my_cards answered for board=".($gotBoard ?? 'null').' swimlane='.($gotSwimlane ?? 'null').", but this agent is configured for board {$bt->boardId} / swimlane {$bt->swimlaneId}. The scope header is an identity echo, so what this shows is that the presented bearer resolved to a DIFFERENT agent's window (or to a responder that answered no header at all) — look for a token collision or a mis-pinned bearer at {$bt->tokenPath}. It says nothing about the bridge-side lane filter, which this response has no observable for.");
 
                 continue;
             }

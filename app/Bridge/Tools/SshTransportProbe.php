@@ -161,8 +161,8 @@ final class SshTransportProbe
     /**
      * The opt-in `--probe-tools-ssh=<user@host>` LIVE leg: round-trip a real
      * `board_my_cards` over ssh (the forced command runs server-side) and assert
-     * reachable → JSON-clean stdout → ok:true → the returned scope header equals a
-     * configured ssh agent's lane (the same observable `--probe-tools` uses).
+     * reachable → JSON-clean stdout → ok:true → the returned scope header identifies
+     * a configured ssh agent (the same observable `--probe-tools` uses).
      * The header is what the answering agent is CONFIGURED for — an identity echo
      * that certifies which agent this key resolved to, never a reading of the rows;
      * BoardToolsScopeHeader owns both spellings of it (DL-302).
@@ -192,11 +192,11 @@ final class SshTransportProbe
         $gotSwimlane = is_array($result) ? BoardToolsScopeHeader::swimlaneId($result) : null;
         foreach ($expectedScopes as $scope) {
             if ($gotBoard === $scope['board_id'] && $gotSwimlane === $scope['swimlane_id']) {
-                return [Finding::ok("ssh {$target}: board_my_cards ok; window scoped to board {$gotBoard} / swimlane {$gotSwimlane} (matches agent {$scope['agent']})")];
+                return [Finding::ok("ssh {$target}: board_my_cards ok; window scoped to board {$gotBoard} / swimlane {$gotSwimlane} (matches agent {$scope['agent']}). The scope header is an identity echo — matching it certifies that this pinned key resolved to THAT agent, not that the bridge-side lane filter ran (config matching config is true whatever the rows held); the measured half is the response's own board_id/board_observed.")];
             }
         }
 
-        return [Finding::fail("ssh {$target}: ISOLATION — board_my_cards answered for board=".($gotBoard ?? 'null').' swimlane='.($gotSwimlane ?? 'null').' which matches no configured ssh agent lane; the window is not scoped as expected')];
+        return [Finding::fail("ssh {$target}: IDENTITY MISMATCH — board_my_cards answered for board=".($gotBoard ?? 'null').' swimlane='.($gotSwimlane ?? 'null').' which matches no configured ssh agent. The scope header is an identity echo, so what this shows is that the pinned key resolved to a DIFFERENT agent (or the responder answered no header at all) — look for a mis-pinned key or a stale forced-command --agent. It says nothing about the bridge-side lane filter, which this response has no observable for.')];
     }
 
     /**

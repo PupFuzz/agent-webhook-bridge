@@ -792,6 +792,12 @@ class AgentToolsCallTest extends TestCase
 
         $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
 
+        // The presence witness FIRST: four assertArrayNotHasKey alone are satisfied by
+        // an empty `result`, so a call that returned nothing at all would score as a
+        // clean absence. This pins that the tool ran and answered the own-lane window.
+        $this->assertArrayHasKey('board_id', $result);
+        $this->assertSame(10, $result['board_id']);
+        $this->assertTrue($result['board_observed']);
         $this->assertArrayNotHasKey('coord_board_id', $result);
         $this->assertArrayNotHasKey('coord_board_observed', $result);
         $this->assertArrayNotHasKey('configured_coord_board_id', $result);
