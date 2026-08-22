@@ -542,6 +542,268 @@ class AgentToolsCallTest extends TestCase
         $this->assertCount(1, $res->json('result.cards_by_stage.Backlog'));
     }
 
+    // ─── board_my_cards: the board axis is READ, not restated (DL-302) ───────
+
+    /**
+     * One own-lane row, on the board named by $rowBoard, plus the stage names it
+     * groups under. `board_id` is what the DL-302 reading is taken from — kanban
+     * puts it on every search row, so no extra request pays for it.
+     *
+     * @param  array<string, mixed>  $rowBoard  merged into the row (a key ABSENT here is a row that carries none)
+     * @param  list<array<string, mixed>>  $extraRows
+     */
+    private function fakeOwnLaneRows(array $rowBoard, array $extraRows = []): void
+    {
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => array_merge([
+                array_merge([
+                    'id' => 1, 'name' => 'mine', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                    'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20',
+                ], $rowBoard),
+            ], $extraRows)]),
+        ]);
+    }
+
+    public function test_my_cards_reports_the_board_the_returned_rows_are_actually_on(): void
+    {
+        $this->fakeOwnLaneRows(['board_id' => 10]);
+
+        $this->callTool(['tool' => 'board_my_cards'])
+            ->assertStatus(200)
+            ->assertJsonPath('result.board_id', 10)
+            ->assertJsonPath('result.board_observed', true)
+            ->assertJsonPath('result.configured_board_id', 10);
+    }
+
+    public function test_my_cards_reports_a_foreign_board_as_the_rows_own_never_the_configured_one(): void
+    {
+        // THE DEFECT (card#7295): the response used to state the CONFIGURED board for
+        // a row set nothing had re-checked, so a window of board-20 rows read as
+        // board 10 — as fact, to a caller with no way to tell. The row is kept (this
+        // change reports, it does not drop: dropping/refusing is a separate,
+        // ask-gated question) and the board it is actually on is what is reported.
+        $this->fakeOwnLaneRows(['board_id' => 20]);
+
+        $this->callTool(['tool' => 'board_my_cards'])
+            ->assertStatus(200)
+            ->assertJsonPath('result.board_id', 20)
+            ->assertJsonPath('result.board_observed', true)
+            ->assertJsonPath('result.configured_board_id', 10)
+            ->assertJsonPath('result.cards_by_stage.Backlog.0.id', 1);
+    }
+
+    /**
+     * The board axis has NO legitimate null — kanban's `tasks.board_id` is a
+     * non-nullable FK, so a card is always on exactly one board. Absent key,
+     * present null and non-numeric therefore all mean the same thing: the row
+     * answered nothing about its board. (The LANE axis is the opposite, which is
+     * why its sibling has to tell a present null from a missing key — do not read
+     * that discrimination across to here.)
+     *
+     * @return array<string, array{0: array<string, mixed>}>
+     */
+    public static function unreadableRowBoards(): array
+    {
+        return [
+            'key absent' => [[]],
+            'present null' => [['board_id' => null]],
+            'non-numeric' => [['board_id' => '10abc']],
+            'non-scalar' => [['board_id' => ['10']]],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $rowBoard
+     */
+    #[DataProvider('unreadableRowBoards')]
+    public function test_my_cards_reports_no_board_when_a_row_does_not_carry_a_readable_one(array $rowBoard): void
+    {
+        $this->fakeOwnLaneRows($rowBoard);
+
+        $this->callTool(['tool' => 'board_my_cards'])
+            ->assertStatus(200)
+            ->assertJsonPath('result.board_id', null)
+            ->assertJsonPath('result.board_observed', false)
+            ->assertJsonPath('result.configured_board_id', 10)
+            // The cards are still returned — an unreadable board unobserves the
+            // REPORT, it does not drop the window.
+            ->assertJsonPath('result.cards_by_stage.Backlog.0.id', 1);
+    }
+
+    public function test_my_cards_reports_no_board_when_the_rows_span_more_than_one(): void
+    {
+        // No honest single value exists for a mixed set: reporting either board
+        // would hide the other, and reporting the configured one is the defect.
+        $this->fakeOwnLaneRows(['board_id' => 10], [
+            ['id' => 2, 'name' => 'elsewhere', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 20],
+        ]);
+
+        $this->callTool(['tool' => 'board_my_cards'])
+            ->assertStatus(200)
+            ->assertJsonPath('result.board_id', null)
+            ->assertJsonPath('result.board_observed', false)
+            ->assertJsonPath('result.configured_board_id', 10)
+            ->assertJsonPath('result.cards_by_stage.Backlog.1.id', 2);
+    }
+
+    public function test_my_cards_reports_no_board_for_an_empty_window(): void
+    {
+        // The common case, and the one the old code was most wrong about: zero rows
+        // read means zero boards read. `board_observed: false` — never the config
+        // value dressed as a reading.
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+        ]);
+
+        $this->callTool(['tool' => 'board_my_cards'])
+            ->assertStatus(200)
+            ->assertJsonPath('result.board_id', null)
+            ->assertJsonPath('result.board_observed', false)
+            ->assertJsonPath('result.configured_board_id', 10);
+    }
+
+    public function test_my_cards_unobserves_the_window_when_the_shared_lane_is_on_another_board(): void
+    {
+        // The top-level board covers the WHOLE own+shared window (`shared_swimlane`
+        // states a lane and inherits this board), so a foreign shared row has to
+        // move it. Reporting board 10 here would hide the leak inside the very key
+        // a caller reads to locate its cards.
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  shared_swimlane_id: 9\n");
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => function ($request) {
+                $url = urldecode($request->url());
+
+                return Http::response(['data' => [str_contains($url, 'swimlane_id=9')
+                    ? ['id' => 2, 'name' => 'shared', 'workflow_stage_id' => 50, 'swimlane_id' => 9,
+                        'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 20]
+                    : ['id' => 1, 'name' => 'mine', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                        'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10],
+                ]]);
+            },
+        ]);
+
+        $this->callTool(['tool' => 'board_my_cards'])
+            ->assertStatus(200)
+            ->assertJsonPath('result.board_id', null)
+            ->assertJsonPath('result.board_observed', false)
+            ->assertJsonPath('result.cards_by_stage.Backlog.0.id', 1)
+            ->assertJsonPath('result.shared_swimlane.cards_by_stage.Backlog.0.id', 2);
+    }
+
+    // ─── board_my_cards: the coord block carries its own board (DL-302) ──────
+
+    /**
+     * Own-lane rows on board 10 and coord rows on $coordRowBoard, answered per
+     * REQUEST rather than by a shared wildcard: the two legs are different
+     * searches against different boards, and a single stub for both is how a coord
+     * row ends up counted in the own window (they cannot be told apart afterwards).
+     *
+     * @param  array<string, mixed>  $coordRowBoard
+     */
+    private function fakeCoordLeg(array $coordRowBoard): void
+    {
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  coord_board_id: 12\n  address_tags:\n    - repo:me\n");
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/boards/12/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 70, 'name' => 'Inbox', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => function ($request) use ($coordRowBoard) {
+                $url = urldecode($request->url());
+                if (str_contains($url, 'tags:"repo:me"')) {
+                    return Http::response(['data' => [array_merge([
+                        'id' => 9, 'name' => 'addressed to me', 'workflow_stage_id' => 70, 'swimlane_id' => 4,
+                        'tags' => ['repo:me'], 'payload' => [], 'updated_at' => '2026-07-20',
+                    ], $coordRowBoard)]]);
+                }
+
+                return Http::response(['data' => [
+                    ['id' => 1, 'name' => 'mine', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                        'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10],
+                ]]);
+            },
+        ]);
+    }
+
+    public function test_my_cards_reports_the_board_the_coord_cards_are_actually_on(): void
+    {
+        // The missing-key half of card#7295: the coord block carried NO board key at
+        // all, so a second card list from a DIFFERENT board sat under a top-level
+        // board_id that does not describe it.
+        $this->fakeCoordLeg(['board_id' => 12]);
+
+        $this->callTool(['tool' => 'board_my_cards'])
+            ->assertStatus(200)
+            ->assertJsonPath('result.board_id', 10)
+            ->assertJsonPath('result.coord_board_id', 12)
+            ->assertJsonPath('result.coord_board_observed', true)
+            ->assertJsonPath('result.configured_coord_board_id', 12)
+            ->assertJsonPath('result.coord_cards.0.id', 9);
+    }
+
+    public function test_my_cards_reports_a_foreign_coord_board_as_the_rows_own(): void
+    {
+        $this->fakeCoordLeg(['board_id' => 99]);
+
+        $this->callTool(['tool' => 'board_my_cards'])
+            ->assertStatus(200)
+            ->assertJsonPath('result.board_id', 10)
+            ->assertJsonPath('result.coord_board_id', 99)
+            ->assertJsonPath('result.coord_board_observed', true)
+            ->assertJsonPath('result.configured_coord_board_id', 12)
+            ->assertJsonPath('result.coord_cards.0.id', 9);
+    }
+
+    public function test_my_cards_reports_no_coord_board_when_the_coord_rows_carry_none(): void
+    {
+        $this->fakeCoordLeg([]);
+
+        $this->callTool(['tool' => 'board_my_cards'])
+            ->assertStatus(200)
+            ->assertJsonPath('result.board_id', 10)
+            ->assertJsonPath('result.board_observed', true)
+            ->assertJsonPath('result.coord_board_id', null)
+            ->assertJsonPath('result.coord_board_observed', false)
+            ->assertJsonPath('result.configured_coord_board_id', 12);
+    }
+
+    public function test_my_cards_carries_no_coord_board_keys_when_the_coord_leg_is_not_configured(): void
+    {
+        // The keys belong to the coord block and appear on exactly the condition it
+        // does — an install with no coord leg must not grow a null coord board it
+        // never looked for.
+        $this->fakeOwnLaneRows(['board_id' => 10]);
+
+        $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
+
+        // The presence witness FIRST: four assertArrayNotHasKey alone are satisfied by
+        // an empty `result`, so a call that returned nothing at all would score as a
+        // clean absence. This pins that the tool ran and answered the own-lane window.
+        $this->assertArrayHasKey('board_id', $result);
+        $this->assertSame(10, $result['board_id']);
+        $this->assertTrue($result['board_observed']);
+        $this->assertArrayNotHasKey('coord_board_id', $result);
+        $this->assertArrayNotHasKey('coord_board_observed', $result);
+        $this->assertArrayNotHasKey('configured_coord_board_id', $result);
+        $this->assertArrayNotHasKey('coord_cards', $result);
+    }
+
     // ─── board_my_cards: include_description (DL-245) ────────────────────────
 
     /**

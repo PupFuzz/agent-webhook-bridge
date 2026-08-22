@@ -266,10 +266,50 @@ class SshTransportProbeTest extends TestCase
     {
         $env = new FakeSshProbeEnvironment(
             authorizedKeys: self::GOOD_LINE,
-            sshStdout: (string) json_encode(['ok' => true, 'tool' => 'board_my_cards', 'result' => ['board_id' => 10, 'swimlane_id' => 4]]),
+            sshStdout: (string) json_encode(['ok' => true, 'tool' => 'board_my_cards', 'result' => [
+                'board_id' => 10, 'board_observed' => true, 'configured_board_id' => 10, 'swimlane_id' => 4,
+            ]]),
         );
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
         $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+    }
+
+    /**
+     * The window is EMPTY, so the tool observed no board and answers `board_id: null`
+     * (DL-302) — the scope header is what this leg certifies against, and reading the
+     * observation instead would fail every agent whose lane happens to be empty.
+     */
+    public function test_live_probe_certifies_from_the_header_when_no_board_was_observed(): void
+    {
+        $env = new FakeSshProbeEnvironment(
+            authorizedKeys: self::GOOD_LINE,
+            sshStdout: (string) json_encode(['ok' => true, 'tool' => 'board_my_cards', 'result' => [
+                'board_id' => null, 'board_observed' => false, 'configured_board_id' => 10, 'swimlane_id' => 4,
+            ]]),
+        );
+        $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+    }
+
+    /**
+     * A remote install predating the DL-302 header rename answers the scope under the old
+     * `board_id` key alone. This leg crosses a HOST outright (the ssh target is a different
+     * install from the one running bridge:check), so a strict read would report an identity
+     * mismatch for a version skew. Its HTTP twin
+     * (`BoardToolsHttpProbeCheckTest::test_a_responder_predating_the_header_rename_is_read_under_the_old_key`)
+     * covers the same tolerance on the HTTP leg, which can meet a skewed responder too —
+     * `--probe-tools` POSTs to an operator-supplied vhost and this repo runs prod + dev
+     * installs co-resident at independent versions (CLAUDE.md rule 7).
+     */
+    public function test_live_probe_accepts_a_responder_predating_the_header_rename(): void
+    {
+        $env = new FakeSshProbeEnvironment(
+            authorizedKeys: self::GOOD_LINE,
+            sshStdout: (string) json_encode(['ok' => true, 'tool' => 'board_my_cards', 'result' => ['board_id' => 10, 'swimlane_id' => 4]]),
+        );
+        $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
         $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
     }
 
@@ -283,14 +323,15 @@ class SshTransportProbeTest extends TestCase
         $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
     }
 
-    public function test_live_probe_isolation_mismatch_fails(): void
+    public function test_live_probe_identity_mismatch_fails(): void
     {
         $env = new FakeSshProbeEnvironment(
             authorizedKeys: self::GOOD_LINE,
-            sshStdout: (string) json_encode(['ok' => true, 'result' => ['board_id' => 99, 'swimlane_id' => 99]]),
+            sshStdout: (string) json_encode(['ok' => true, 'result' => ['configured_board_id' => 99, 'swimlane_id' => 99]]),
         );
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
         $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
+        $this->assertStringContainsString('IDENTITY MISMATCH — board_my_cards answered for board=99 swimlane=99', $findings[0]->message);
     }
 
     public function test_live_probe_unreachable_fails(): void

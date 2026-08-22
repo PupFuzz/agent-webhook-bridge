@@ -3428,7 +3428,7 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(1);
     }
 
-    public function test_check_probe_tools_isolation_mismatch_fails(): void
+    public function test_check_probe_tools_identity_mismatch_fails(): void
     {
         $endpoint = 'http://127.0.0.1/agent-tools/call';
         config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
@@ -3440,7 +3440,7 @@ class BridgeCommandsTest extends TestCase
         ]]);
 
         $this->artisan('bridge:check', ['--probe-tools' => $endpoint])
-            ->expectsOutputToContain('ISOLATION MISMATCH')
+            ->expectsOutputToContain('IDENTITY MISMATCH')
             ->assertExitCode(1);
     }
 

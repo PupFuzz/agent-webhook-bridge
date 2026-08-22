@@ -389,11 +389,16 @@ class CheckGoldenTest extends TestCase
 
             case 'board-tools-ssh-live-probe':
                 // The opt-in live round trip, certified: a clean envelope whose scope
-                // header matches the configured lane. No fixture reached this leg before.
+                // header identifies the configured agent. No fixture reached this leg before.
+                // The envelope is the shape a CURRENT responder answers (DL-302:
+                // configured_board_id is the header; board_id is the row reading) — pinning
+                // the pre-DL-302 spelling here would make this, the only end-to-end witness
+                // of the ok line, an exercise of the version-skew fallback instead. Both
+                // probes' fallbacks are unit-covered; the golden must show the live shape.
                 $this->sshInstall($i, transport: "  transport: ssh\n");
                 $this->app->instance(SshProbeEnvironment::class, new GoldenSshEnvironment(
                     authorizedKeys: self::GOOD_PINNED_LINE,
-                    roundTrip: ['exit' => 0, 'stdout' => '{"ok":true,"result":{"board_id":10,"swimlane_id":4}}', 'stderr' => ''],
+                    roundTrip: ['exit' => 0, 'stdout' => '{"ok":true,"result":{"board_id":null,"board_observed":false,"configured_board_id":10,"swimlane_id":4}}', 'stderr' => ''],
                 ));
 
                 return ['args' => ['--probe-tools-ssh' => 'bridge@host-a'], 'fpm' => false, 'coordConfig' => null];

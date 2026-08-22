@@ -77,7 +77,7 @@ class BoardToolsHttpProbeCheckTest extends TestCase
 
     public function test_a_successful_round_trip_reports_the_scoped_window(): void
     {
-        $this->fakeResult(['board_id' => 10, 'swimlane_id' => 4, 'cards_by_stage' => ['backlog' => [], 'doing' => []]]);
+        $this->fakeResult(['board_id' => 10, 'board_observed' => true, 'configured_board_id' => 10, 'swimlane_id' => 4, 'cards_by_stage' => ['backlog' => [], 'doing' => []]]);
 
         $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
 
@@ -88,19 +88,73 @@ class BoardToolsHttpProbeCheckTest extends TestCase
 
     public function test_a_missing_cards_by_stage_counts_zero_groups(): void
     {
-        $this->fakeResult(['board_id' => 10, 'swimlane_id' => 4]);
+        $this->fakeResult(['configured_board_id' => 10, 'swimlane_id' => 4]);
 
         $this->assertStringContainsString('(0 stage group(s))', $this->findingsFor([$this->httpAgent('prod-agent')])[0]->message);
     }
 
-    public function test_an_isolation_mismatch_fails(): void
+    public function test_an_identity_mismatch_fails(): void
     {
-        $this->fakeResult(['board_id' => 99, 'swimlane_id' => 4]);
+        $this->fakeResult(['configured_board_id' => 99, 'swimlane_id' => 4]);
 
         $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
 
         $this->assertSame(Severity::Fail, $findings[0]->severity);
-        $this->assertStringContainsString('ISOLATION MISMATCH — board_my_cards returned board_id=99 swimlane_id=4, but this agent is configured for board 10 / swimlane 4.', $findings[0]->message);
+        $this->assertStringContainsString('IDENTITY MISMATCH — board_my_cards answered for board=99 swimlane=4, but this agent is configured for board 10 / swimlane 4.', $findings[0]->message);
+    }
+
+    /**
+     * ⛔ THE HEADER IS THE IDENTITY ECHO, THE ROWS ARE NOT (DL-302). Since the tool
+     * reports the board its ROWS are on, a window holding a foreign row answers
+     * `board_id: 20` while still being THIS agent's window — and this probe certifies
+     * bearer→agent resolution, so it must stay OK. Failing here would turn a board-state
+     * observation into a check that rejects, which is a gated behaviour change and not
+     * this leg's question.
+     */
+    public function test_an_observed_row_board_that_differs_from_config_is_not_an_isolation_failure(): void
+    {
+        $this->fakeResult(['board_id' => 20, 'board_observed' => true, 'configured_board_id' => 10, 'swimlane_id' => 4]);
+
+        $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
+
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString('window scoped to board 10 / swimlane 4', $findings[0]->message);
+    }
+
+    /**
+     * An EMPTY window observes no board at all, so `board_id` is null there. Reading the
+     * header off that key would fail every agent with no cards — the regression this
+     * check would have shipped if the probe had not moved to `configured_board_id`.
+     */
+    public function test_an_unobserved_board_still_certifies_from_the_header(): void
+    {
+        $this->fakeResult(['board_id' => null, 'board_observed' => false, 'configured_board_id' => 10, 'swimlane_id' => 4, 'cards_by_stage' => []]);
+
+        $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
+
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+    }
+
+    /**
+     * The VERSION-SKEW tolerance on the HTTP leg. `--probe-tools` POSTs to an
+     * operator-supplied vhost, and this repo's per-agent installation model (CLAUDE.md
+     * rule 7) puts prod and dev installs on ONE box at independent versions, both behind
+     * the loopback gate — so the endpoint can be served by a bridge predating DL-302,
+     * which answers the header under the old `board_id` spelling with no
+     * `configured_board_id` at all. Read strictly, that responder would be reported as an
+     * IDENTITY MISMATCH for a version difference — a specific WRONG cause. Its ssh twin
+     * (`SshTransportProbeTest::test_live_probe_accepts_a_responder_predating_the_header_rename`)
+     * covers the same tolerance on the leg that crosses a HOST. Delete both with the
+     * fallback, not before.
+     */
+    public function test_a_responder_predating_the_header_rename_is_read_under_the_old_key(): void
+    {
+        $this->fakeResult(['board_id' => 10, 'swimlane_id' => 4, 'cards_by_stage' => []]);
+
+        $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
+
+        $this->assertSame(Severity::Ok, $findings[0]->severity);
+        $this->assertStringContainsString('window scoped to board 10 / swimlane 4', $findings[0]->message);
     }
 
     /**
@@ -110,12 +164,12 @@ class BoardToolsHttpProbeCheckTest extends TestCase
      */
     public function test_a_swimlane_only_mismatch_fails(): void
     {
-        $this->fakeResult(['board_id' => 10, 'swimlane_id' => 99]);
+        $this->fakeResult(['configured_board_id' => 10, 'swimlane_id' => 99]);
 
         $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
 
         $this->assertSame(Severity::Fail, $findings[0]->severity);
-        $this->assertStringContainsString('board_id=10 swimlane_id=99', $findings[0]->message);
+        $this->assertStringContainsString('board=10 swimlane=99', $findings[0]->message);
     }
 
     /** A missing scope header is not a match — it renders as `null`, and it still fails. */
@@ -126,7 +180,7 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
 
         $this->assertSame(Severity::Fail, $findings[0]->severity);
-        $this->assertStringContainsString('board_id=null swimlane_id=null', $findings[0]->message);
+        $this->assertStringContainsString('board=null swimlane=null', $findings[0]->message);
     }
 
     public function test_a_200_without_a_result_object_fails(): void
