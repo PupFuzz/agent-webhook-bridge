@@ -180,8 +180,59 @@ term is efficiency + defense-in-depth, not the boundary.
 
 ```jsonc
 { "created": true, "idempotent_hit": false, "card_id": 123,
-  "board_id": 10, "swimlane_id": 4 }
+  "board_id": 10, "swimlane_id": 4, "placement_observed": true,
+  "configured_board_id": 10, "configured_swimlane_id": 4 }
 ```
+
+**⚠ `board_id` / `swimlane_id` are WHERE THE CARD IS, read back from the card
+itself — not where you are configured to write (card#7225, DL-299).** Before this
+they were the config values echoed back, on both arms: the create never read its
+own result (`POST /tasks.json` hands back an id, not a placement) and the
+idempotency hit answered for a card resolved out of a tag *search*. The two
+readings are equal until something has gone wrong, so the old answer was silently
+correct exactly until you needed it. Consequences for a caller:
+
+- A card kanban did not place where the bridge asked now reports **where it
+  actually is**, not the lane the POST requested.
+- `placement_observed` is the discrimination that makes the nulls readable.
+  **`true`** ⇒ `board_id`/`swimlane_id` are that card's own values (and
+  `swimlane_id: null` then means the card really is in no lane — the bridge tells
+  a *present* null from a *missing* key, so a body that omits `swimlane_id`
+  entirely is never reported as "no lane"). **`false`** ⇒ the read-back failed, or
+  answered nothing usable on either axis, and **both ids are null — the response
+  claims no placement**; it never falls back to the configured board/lane, which
+  is the defect this closes. `created` / `idempotent_hit` / `card_id` are unaffected: the card exists
+  and its id is still the answer, so a read-back failure is **not** an error
+  response (losing the placement is cheaper than losing the id).
+- `configured_board_id` / `configured_swimlane_id` carry the scope this agent is
+  **configured to write to**, on **both** arms and whatever `placement_observed`
+  says. They are what `board_id` / `swimlane_id` used to hold, under names that
+  say what they are — so *"where the card is"* and *"where we were aiming"* are two
+  readable values instead of one ambiguous one, and a caller whose read-back
+  failed can still see its own scope (it has no other channel to it). The same
+  pairing the writeback record has carried since card#7212 — observed and
+  intended, both named, neither dressed as the other.
+  ⛔ **`board_create_card` carries ONE flag for the pair** (`placement_observed`)
+  where the matching correction on `board_my_cards` (card#7295 / DL-302, a
+  SEPARATE change) carries one per axis — deliberate, not an inconsistency: this
+  tool derives both axes from a single read-back of a single card, so they are
+  observed or unobserved together; `board_my_cards` reads two independent row
+  sets, either of which can be readable while the other is not. A flag exists per
+  unit that can independently fail to be read, and the two tools differ in how
+  many such units they have.
+- It costs **one extra `GET /tasks/{id}.json`** per successful call, and it is the
+  card the tool is about to name — after any duplicate collapse, so a survivor
+  minted by another worker reports its own placement. ⚠ **That endpoint is
+  kanban's FULL task aggregate, not a two-field read:** it eager-loads subtasks,
+  comments, attachments, both link directions (each with the linked card's board),
+  external references and the last stage-move changelog, then runs the link
+  projector — all to obtain two integers. One request, but the response body is
+  the real cost, and on the idempotency-hit arm the card can be old and
+  comment-heavy.
+- A placement that disagrees with the agent's configured board/lane is a
+  `Log::warning` on the bridge; the tool still answers 200 and reports what it
+  saw. What a divergence should make the tool *do* is a separate question from
+  what it *reports*, and only the report changed here.
 
 ## Errors
 

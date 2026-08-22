@@ -229,6 +229,43 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7225 (DL-299)** — **⚠ `board_create_card`'s `board_id` / `swimlane_id` now say WHERE THE CARD
+  IS, read back from the card, instead of echoing the board and lane the calling agent is configured
+  to write to.** Both arms returned `$cfg` values on keys a calling agent consumes as a reading of
+  its card: `createCard()` hands back an id and nothing else, so a create never read its own result,
+  and the idempotency-hit arm answered for a card resolved out of a tag SEARCH — a card it had not
+  created and had not re-checked. ⇒ **The response was silently correct until the moment it
+  mattered**, because the two readings differ only when something has already gone wrong. Ranked
+  above the same shape's log-line siblings (still open on card#7225) for the reason the operator
+  gave: a log line is read by someone already hunting a problem; a tool response is consumed as
+  fact. **⚠ FOR A CALLER — the two keys can now disagree with your config, and there is a third:**
+  `placement_observed` is `true` when the ids are that card's own values (in which case
+  `swimlane_id: null` genuinely means *no lane* — a *present* null; a body that omits the
+  `swimlane_id` key is not a lane-less card and is not reported as one), and `false` when the
+  read-back failed or answered nothing usable on either axis — then
+  **both ids are null and the response claims no placement at all**. It never falls back to the
+  configured board/lane; that fallback IS the defect. `created` / `idempotent_hit` / `card_id` are
+  untouched, so a read-back failure is not an error response — the card exists and its id is still
+  the answer. **And a fourth and fifth key:** `configured_board_id` / `configured_swimlane_id` carry
+  what the two old keys used to hold — the scope this agent is configured to write to — on BOTH arms
+  and regardless of `placement_observed`, so *where the card is* and *where we were aiming* are two
+  readable values rather than one ambiguous one, and a caller whose read-back failed can still see
+  its own scope (it has no other channel to it) — the pairing the writeback record has carried since
+  card#7212. ⛔ **One flag for the pair here, one PER AXIS on the matching `board_my_cards`
+  correction (card#7295 / DL-302, a separate change)** — deliberate, not an inconsistency: this tool
+  derives both axes from a single read-back of a single card, so they are observed or unobserved
+  together, while `board_my_cards` reads two independent row sets. A flag exists per unit that can
+  independently fail to be read. **Cost: one extra `GET /tasks/{id}.json` per SUCCESSFUL call** (nothing on any refusal
+  path), taken on the card the tool is about to name — after the duplicate collapse, so a survivor
+  another worker minted reports its own placement. ⚠ **One request, but not a small one:** that
+  endpoint is kanban's full task aggregate — subtasks, comments, attachments, both link directions
+  (each with the linked card's board), external references, the last stage-move changelog and a
+  link-projector pass — eager-loaded to obtain two integers, and on the idempotency-hit arm the card
+  can be old and comment-heavy. A placement disagreeing with the configured scope
+  is a `Log::warning` naming both pairs; the tool still answers 200 with what it saw. **What a
+  divergence should make the tool DO (refuse? alert?) is deliberately NOT decided here** — that
+  changes what the surface accepts and is its own gate.
+
 - **card#7212 (rt#327 R4)** — **a successful writeback now records the board it LANDED on, not only
   the board it AIMED at.** The success path logged `$mapping->boardId` — the operator's configured
   board, straight from `writeback.json` — while only the REFUSAL path (`MappedBoardGuard::refuses()`)

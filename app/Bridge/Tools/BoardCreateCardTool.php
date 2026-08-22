@@ -34,6 +34,15 @@ use Illuminate\Support\Facades\Log;
  * card the caller's own `board_my_cards` window (live-only, correctly) does not
  * show. Class item card#7222.
  *
+ * The placement the response carries is READ BACK from the card, never restated
+ * from this agent's config (card#7225, DL-299) — `board_id`/`swimlane_id` are the
+ * card's own, `placement_observed` says whether the bridge actually saw them, and
+ * a false there means the response claims no placement at all. The config values
+ * still ride along, on their OWN keys (`configured_board_id` /
+ * `configured_swimlane_id`, both arms), because a caller whose read-back failed
+ * has no other channel to the scope this agent was aiming at. {@see placement}
+ * owns the reasoning.
+ *
  * Caller tags matching a reserved prefix (`created-by:` / `idem:` / `id:` /
  * `type:`) or the bare `triaged` are refused (422-class) — no forging an audit
  * stamp, no poisoning idempotency, no hijacking the coord adoption/type keys, no
@@ -93,7 +102,8 @@ final class BoardCreateCardTool implements Tool
                 $hitId = $existing[0];
                 Log::info('board_create_card: idempotency hit — returning the existing card, no create', ['agent' => $agentName, 'idem_tag' => $idemTag, 'card_id' => $hitId]);
 
-                return ['created' => false, 'idempotent_hit' => true, 'card_id' => $hitId, 'board_id' => $boardId, 'swimlane_id' => (int) $cfg->swimlaneId];
+                return ['created' => false, 'idempotent_hit' => true, 'card_id' => $hitId]
+                    + $this->placement($client, $cfg, $hitId, $agentName, 'idempotency hit');
             }
 
             // The ARCHIVE side of the same key (DL-297): the read above is
@@ -140,12 +150,128 @@ final class BoardCreateCardTool implements Tool
             }
         }
 
-        return ['created' => true, 'idempotent_hit' => false, 'card_id' => $newId, 'board_id' => $boardId, 'swimlane_id' => (int) $cfg->swimlaneId];
+        return ['created' => true, 'idempotent_hit' => false, 'card_id' => $newId]
+            + $this->placement($client, $cfg, $newId, $agentName, 'created');
     }
 
     public function name(): string
     {
         return 'board_create_card';
+    }
+
+    /**
+     * WHERE THE CARD ACTUALLY IS — the placement half of this tool's answer, read
+     * back from the card itself (card#7225, DL-299). Both arms used to restate
+     * `$cfg->boardId` / `$cfg->swimlaneId`, which is where this agent is
+     * CONFIGURED to write, never a reading of the card being handed back; the two
+     * are equal until something has gone wrong, so the response was silently
+     * correct exactly until the moment a caller needed it. The idempotency-hit arm
+     * was the sharp one: that card id came from a tag SEARCH, so the tool asserted
+     * the configured board for a card it had not created and had not re-checked.
+     *
+     * `placement_observed` is the discrimination this needs to be honest, and is
+     * NOT redundant: a card legitimately in NO lane reports `swimlane_id: null`,
+     * so a null alone cannot say whether the bridge read "no lane" or read
+     * nothing. False ⇒ both ids are null and the response claims NO placement —
+     * never a config value dressed as an observation.
+     *
+     * `configured_board_id` / `configured_swimlane_id` ride along on BOTH arms,
+     * and they are NOT the fallback this change rejected: a fallback puts the
+     * config value on the OBSERVATION key, where a caller cannot tell the two
+     * apart. Named separately they answer a question the observation cannot —
+     * *"what scope was this agent aiming at?"* — which is exactly what the caller
+     * has no other channel to when `placement_observed` is false and both ids are
+     * null. `MappedBoardGuard::boardContext` ruled the same shape for the
+     * writeback record (card#7212: both keys on both arms, because a record
+     * carrying one can answer "did we stop it?" and never "did this happen?").
+     *
+     * ⛔ ONE flag for the PAIR here, one PER AXIS on the matching `board_my_cards`
+     * correction (card#7295 / DL-302 — a SEPARATE change, not depended on here).
+     * A deliberate divergence, not drift, recorded because an unrecorded one is
+     * indistinguishable from drift to the next reader: that tool reads two
+     * INDEPENDENT row sets (own+shared, coord), so either can be readable while
+     * the other is not and each needs its own flag. Here both axes come off ONE
+     * read-back of ONE card — they are observed or unobserved together, and a
+     * per-axis flag would advertise an independence this tool cannot produce. The
+     * shared rule is one flag per unit that can independently fail to be read.
+     *
+     * FAIL-SOFT, deliberately — and the reason is NOT the same on both arms this
+     * primitive serves. On the CREATE arm the read-back runs after the create has
+     * already landed, so throwing would answer a failure for a card that exists
+     * and whose id the caller would then never see (and, with no
+     * idempotency_key, its retry double-creates). That argument does NOT hold on
+     * the IDEMPOTENCY-HIT arm: no create happened there and a retry is idempotent
+     * by construction. What holds there instead is the contract of a SHARED
+     * primitive — a caller cannot tell which arm answered it, so the response
+     * shape must not vary by arm; a hit that threw where a create degrades would
+     * make the tool's failure mode a function of board state the caller cannot
+     * see. Either way, losing the placement is strictly cheaper than losing the
+     * id.
+     *
+     * A read-back that answers nothing usable about EITHER axis is reported as
+     * unobserved on BOTH, never as a null lane. Kanban returns `board_id` on
+     * every task row and `swimlane_id` top-level beside it, so a missing or
+     * non-numeric `board_id`, an ABSENT `swimlane_id` key, or a present
+     * non-numeric one, all mean the body answered nothing about placement. The
+     * one real null is a PRESENT `swimlane_id: null` — that card is genuinely in
+     * no lane, and `array_key_exists` is what tells the two apart (`?? null`
+     * cannot, and would report "no lane" for a card sitting in one).
+     * `placement_observed` answers for the PLACEMENT, not per axis, which is why
+     * one unreadable axis unobserves the pair.
+     *
+     * A divergence from config is WARNED, not refused: what a card's placement
+     * makes the tool do is a separate question from what it reports, and this
+     * change is scoped to the report.
+     *
+     * @return array{board_id: ?int, swimlane_id: ?int, placement_observed: bool, configured_board_id: int, configured_swimlane_id: int}
+     */
+    private function placement(KanbanClient $client, BoardToolsConfig $cfg, int $cardId, string $agentName, string $arm): array
+    {
+        $configured = ['configured_board_id' => (int) $cfg->boardId, 'configured_swimlane_id' => (int) $cfg->swimlaneId];
+        $unobserved = ['board_id' => null, 'swimlane_id' => null, 'placement_observed' => false] + $configured;
+
+        try {
+            $card = $client->getCard($cardId);
+        } catch (\Throwable $e) {
+            Log::warning('board_create_card: the card could not be read back, so the response reports NO placement rather than the configured board/lane', [
+                'agent' => $agentName, 'arm' => $arm, 'card_id' => $cardId, 'error' => $e->getMessage(),
+            ]);
+
+            return $unobserved;
+        }
+
+        $board = is_numeric($card['board_id'] ?? null) ? (int) $card['board_id'] : null;
+        // A PRESENT `swimlane_id: null` is a reading (no lane); an ABSENT key is
+        // the body answering nothing about the lane. See the docblock — the whole
+        // placement is unobserved when either axis is.
+        $laneObserved = array_key_exists('swimlane_id', $card)
+            && ($card['swimlane_id'] === null || is_numeric($card['swimlane_id']));
+
+        $unusable = [];
+        if ($board === null) {
+            $unusable[] = 'board_id';
+        }
+        if (! $laneObserved) {
+            $unusable[] = 'swimlane_id';
+        }
+        if ($unusable !== []) {
+            Log::warning('board_create_card: the card read-back carried no usable board_id/swimlane_id, so the response reports NO placement', [
+                'agent' => $agentName, 'arm' => $arm, 'card_id' => $cardId, 'unusable' => implode(', ', $unusable),
+            ]);
+
+            return $unobserved;
+        }
+
+        $swimlane = $card['swimlane_id'] === null ? null : (int) $card['swimlane_id'];
+        if ($board !== (int) $cfg->boardId || $swimlane !== (int) $cfg->swimlaneId) {
+            Log::warning('board_create_card: the card this call answers with is NOT where this agent is configured to write — the response reports where it actually is', [
+                'agent' => $agentName, 'arm' => $arm, 'card_id' => $cardId,
+                'observed_board_id' => $board, 'configured_board_id' => (int) $cfg->boardId,
+                'observed_swimlane_id' => $swimlane, 'configured_swimlane_id' => (int) $cfg->swimlaneId,
+            ]);
+        }
+
+        return ['board_id' => $board, 'swimlane_id' => $swimlane, 'placement_observed' => true] + $configured;
     }
 
     /**
