@@ -34,6 +34,10 @@ use Throwable;
  *  - never moves a card BACKWARD (DL-163 stage order) — backward drift is reported,
  *    not applied (it is almost always a deliberate human move);
  *  - never moves a PINNED card (DL-178 block_reason/no-automove);
+ *  - never moves a card that is NOT on the mapped board (DL-009 belongs-to-mapped-board,
+ *    reached from here at DL-301): the board read is a server-side search, so every row
+ *    is re-checked client-side through `MappedBoardGuard::refuses()` before anything
+ *    downstream touches it — see the gate in reconcileCard() for why it sits there;
  *  - treats the released_to_main / promote-owned stage as TERMINAL — never moves a
  *    card out of it, and never moves one INTO it (the promote workflow owns that
  *    transition, so release-promotion is excluded from scope);
@@ -85,9 +89,12 @@ class ReconcileCommand extends BridgeCommand
      */
     private const ALERT_OUTCOME = 'reconcile';
 
-    public function __construct(private readonly WritebackAlertNotifier $alerts = new WritebackAlertNotifier)
+    private WritebackAlertNotifier $alerts;
+
+    public function __construct(?WritebackAlertNotifier $alerts = null)
     {
         parent::__construct();
+        $this->alerts = $alerts ?? new WritebackAlertNotifier;
     }
 
     public function handle(): int
@@ -285,10 +292,12 @@ class ReconcileCommand extends BridgeCommand
 
             return;
         }
-        // ONE capture serves both jobs (card#7212): the gate above decides WHETHER this card
-        // may be written to, this pair records WHAT board a landed move actually hit — read
-        // off the row, never from the mapping the loop was iterating.
-        $board = MappedBoardGuard::boardContext($card, $mapping);
+        // What a landed move RECORDS (card#7212): the row's own board beside the mapped one,
+        // read off the row rather than from the mapping the loop was iterating. It is carried
+        // to `finish()` because the row itself is long out of scope by the time the move is
+        // applied. It feeds the durable log only — the console report names the mapped board,
+        // which the guard above has just made equal to it on every surviving row.
+        $record = MappedBoardGuard::boardContext($card, $mapping);
 
         if (! ($this->repoUsable[$cardRepo] ?? false)) {
             // The startup probe already reported this repo as unreadable (loud +
@@ -381,7 +390,7 @@ class ReconcileCommand extends BridgeCommand
             // drift but NEVER auto-move it (a batch mover must not guess direction).
             // A drifted card left unreconciled for lack of order data degrades the
             // run — exit non-zero so a cron notices rather than reading a false green.
-            $this->backward[] = $this->driftRow($cardId, $board, $current, $expected, $outcome, $evidence, 'unorderable');
+            $this->backward[] = $this->driftRow($cardId, $mapping->boardId, $record, $current, $expected, $outcome, $evidence, 'unorderable');
             $this->hadError = true;
 
             return;
@@ -389,12 +398,12 @@ class ReconcileCommand extends BridgeCommand
         if ($expPos < $curPos) {
             // Backward drift — report only. Usually a deliberate human move; the
             // reconciler never regresses a card (DL-163 posture).
-            $this->backward[] = $this->driftRow($cardId, $board, $current, $expected, $outcome, $evidence, 'backward');
+            $this->backward[] = $this->driftRow($cardId, $mapping->boardId, $record, $current, $expected, $outcome, $evidence, 'backward');
 
             return;
         }
 
-        $this->planned[] = $this->driftRow($cardId, $board, $current, $expected, $outcome, $evidence, 'forward');
+        $this->planned[] = $this->driftRow($cardId, $mapping->boardId, $record, $current, $expected, $outcome, $evidence, 'forward');
     }
 
     /**
@@ -478,15 +487,24 @@ class ReconcileCommand extends BridgeCommand
     }
 
     /**
-     * @param  array{card_board: mixed, mapped_board: int}  $board  the row's OWN board paired with the
-     *                                                              mapped one ({@see MappedBoardGuard::boardContext})
-     * @return array{card_id: int, board: array{card_board: mixed, mapped_board: int}, current: int, expected: int, outcome: string, evidence: string, kind: string}
+     * TWO board values, with distinct consumers, and neither is derivable from the other
+     * at the point it is read. `$board` is the mapped board this run reconciled the card
+     * under — what the console report names. `$record` is the pair the DURABLE move record
+     * carries (card#7212): the row's OWN `board_id` beside the mapped one, captured while
+     * the row was still in scope. They agree by construction on every row that gets here
+     * (the guard refused the rest), which is exactly why the report needs no second
+     * rendering of the card's value — but the record is written for the day that stops
+     * being true, so it reads the row and never the mapping.
+     *
+     * @param  array{card_board: mixed, mapped_board: int}  $record  {@see MappedBoardGuard::boardContext}
+     * @return array{card_id: int, board: int, record: array{card_board: mixed, mapped_board: int}, current: int, expected: int, outcome: string, evidence: string, kind: string}
      */
-    private function driftRow(int $cardId, array $board, int $current, int $expected, string $outcome, string $evidence, string $kind): array
+    private function driftRow(int $cardId, int $board, array $record, int $current, int $expected, string $outcome, string $evidence, string $kind): array
     {
         return [
             'card_id' => $cardId,
             'board' => $board,
+            'record' => $record,
             'current' => $current,
             'expected' => $expected,
             'outcome' => $outcome,
@@ -499,7 +517,7 @@ class ReconcileCommand extends BridgeCommand
     private function finish(bool $fix, int $maxMoves, KanbanClient $kanban): int
     {
         foreach ($this->planned as $p) {
-            $this->line(sprintf('DRIFT     card %d board %s: stage %d → %d (%s)  %s', $p['card_id'], self::boardText($p['board']), $p['current'], $p['expected'], $p['outcome'], $p['evidence']));
+            $this->line(sprintf('DRIFT     card %d board %d: stage %d → %d (%s)  %s', $p['card_id'], $p['board'], $p['current'], $p['expected'], $p['outcome'], $p['evidence']));
         }
         foreach ($this->backward as $p) {
             if ($p['kind'] === 'unorderable') {
@@ -509,7 +527,7 @@ class ReconcileCommand extends BridgeCommand
             } else {
                 $label = 'backward — not moved (card is ahead of its PR state; likely a deliberate human move)';
             }
-            $this->line(sprintf('SKIP-DRIFT card %d board %s: stage %d ↛ %d (%s; %s)  %s', $p['card_id'], self::boardText($p['board']), $p['current'], $p['expected'], $p['outcome'], $label, $p['evidence']));
+            $this->line(sprintf('SKIP-DRIFT card %d board %d: stage %d ↛ %d (%s; %s)  %s', $p['card_id'], $p['board'], $p['current'], $p['expected'], $p['outcome'], $label, $p['evidence']));
         }
 
         $moved = 0;
@@ -529,7 +547,7 @@ class ReconcileCommand extends BridgeCommand
                     // the operator would need an ad-hoc cron redirect to answer it, while the
                     // refusal was in the log all along. An absence of record is not a record of
                     // absence.
-                    Log::info('bridge_reconcile: moved', ['card_id' => $p['card_id'], 'stage' => $p['expected'], 'outcome' => $p['outcome']] + $p['board']);
+                    Log::info('bridge_reconcile: moved', ['card_id' => $p['card_id'], 'stage' => $p['expected'], 'outcome' => $p['outcome']] + $p['record']);
                     $this->info(sprintf('MOVED     card %d → stage %d', $p['card_id'], $p['expected']));
                     $moved++;
                 } catch (Throwable $e) {
@@ -553,25 +571,6 @@ class ReconcileCommand extends BridgeCommand
         ));
 
         return $this->hadError ? self::FAILURE : self::SUCCESS;
-    }
-
-    /**
-     * The board a drift row NAMES in the report: the card's OWN `board_id`, verbatim as
-     * kanban returned it — never the mapping's. They agree on every row that gets this far
-     * (the guard refused the rest), and printing the observed value rather than the intended
-     * one is what makes a report line evidence about the card instead of about the config.
-     *
-     * The `is_scalar` arm is TYPE-NARROWING on a `mixed` the guard has already constrained,
-     * not a case being handled: a row whose `board_id` is absent or unreadable never reaches a
-     * drift row. It is here because the pair carries the value RAW (card#7212) and a raw value
-     * cannot be cast blind — and it fails toward a visible `unknown` rather than an empty
-     * column, so if that reasoning ever stops holding the report says so.
-     *
-     * @param  array{card_board: mixed, mapped_board: int}  $board
-     */
-    private static function boardText(array $board): string
-    {
-        return is_scalar($board['card_board']) ? (string) $board['card_board'] : 'unknown';
     }
 
     private function parseMaxMoves(): ?int

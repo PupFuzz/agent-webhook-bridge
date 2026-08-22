@@ -11,7 +11,12 @@ use Tests\TestCase;
 /**
  * bridge:reconcile — board-vs-GitHub drift reconciler (DL-183). Fakes BOTH APIs
  * (kanban board read + move; GitHub PR state) to exercise the report-only default,
- * --fix, and every guard (backward/pinned/dl-only/truncated/404/cap/--repo filter).
+ * --fix, and the guards: backward, pinned, dl-only, truncated read, per-card 404,
+ * --max-moves cap, --repo filter, and the belongs-to-mapped-board row re-check
+ * (DL-301, its own section below). ⚑ That list is a coverage claim about THIS file,
+ * not a restatement of the command's safety posture — `docs/writeback.md`
+ * § Reconciliation owns that, and it has been out of step with a fourth copy once
+ * already, so add a guard here without checking there at your peril.
  */
 class ReconcileCommandTest extends TestCase
 {
@@ -167,8 +172,13 @@ class ReconcileCommandTest extends TestCase
         $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => $this->mergedToDevPr()]);
 
         // report-only: reports drift, does NOT move.
+        // ⚑ The BOARD COLUMN is asserted, not just the DRIFT keyword (DL-301 review): the
+        // report names the board this run reconciled the card under, and a bare 'DRIFT' match
+        // certified whatever that column happened to hold — including the value it holds when
+        // nothing computes it. `expectsOutputToContain` matches once per chain, so this is the
+        // existing matcher made specific rather than a second one beside it.
         $this->artisan('bridge:reconcile')
-            ->expectsOutputToContain('DRIFT')
+            ->expectsOutputToContain('DRIFT     card 5 board 8: stage 50 → 52 (merged)')
             ->assertExitCode(0);
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
 
@@ -186,7 +196,7 @@ class ReconcileCommandTest extends TestCase
         $this->fake([$this->card(5, 52, ['pr_url' => $this->prUrl(5)])], [5 => $this->openPr()]);
 
         $this->artisan('bridge:reconcile', ['--fix' => true])
-            ->expectsOutputToContain('SKIP-DRIFT')
+            ->expectsOutputToContain('SKIP-DRIFT card 5 board 8: stage 52 ↛ 50 (opened; backward')
             ->assertExitCode(0);
 
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');

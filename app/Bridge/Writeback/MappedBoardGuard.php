@@ -40,8 +40,9 @@ namespace App\Bridge\Writeback;
  * a refusal cannot be minted at some other log level, or with some other reason code,
  * without minting a fourth copy of the compare — and
  * `WritebackRefusalSignalCoverageTest` reds on a handler — or, since DL-301, a bridge
- * command — that reads a card's `board_id` at all. That closure is by KIND and holds at every log level, which the
- * `Log::warning`/`Log::error` population of that test's other leg cannot do.
+ * command — that reads a card's `board_id` at all. That closure is by KIND and holds at
+ * every log level, which the `Log::warning`/`Log::error` population of that test's other
+ * leg cannot do.
  */
 final class MappedBoardGuard
 {
@@ -77,9 +78,9 @@ final class MappedBoardGuard
      * actually returned is exactly what a reader of this record wants. (2) The compare that
      * {@see refuses} runs — including on the Group-B sites (card#7211) that resolve ids from a
      * board-scoped SEARCH, since DL-298, and on `bridge:reconcile --fix` since DL-301 — accepts
-     * that whole interval, so normalising here
-     * would render a value no gate on any path ever computed. So the two values being EQUAL is
-     * the happy path, not an invariant this renders; a divergence is the record doing its job.
+     * that whole interval, so normalising here would render a value no gate on any path ever
+     * computed. So the two values being EQUAL is the happy path, not an invariant this renders;
+     * a divergence is the record doing its job.
      *
      * @param  array<string, mixed>  $card  as returned by {@see KanbanClient::getCard()}, or a
      *                                      raw search row — a card the caller has in hand either way

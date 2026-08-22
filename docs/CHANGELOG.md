@@ -35,14 +35,17 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   `card_board` + `mapped_board` pair — the board the move actually landed on beside the one
   config aimed at. The refusal was always durable while the success went wherever the operator's
   cron redirects stdout; recording only the refusal answers *"did we ever stop it?"* and never
-  *"did this ever happen?"*. The `MOVED` console line is unchanged beside it, and the drift report
-  now names the card's own board rather than the loop's.
-  **Guard populations:** `WritebackRefusalSignalCoverageTest`'s level-independent leg now also
-  scans `app/Console/Commands/Bridge/*.php`, because this is the first caller of the board guard
-  outside the handler files (empty today; proven able to red by planting a compare in the
-  command). The write-census class was deliberately **not** widened — the command's report line
-  reads `card_board` off the pair rather than rendering one, and that residue is named in the
-  census docblock rather than left implicit.
+  *"did this ever happen?"*. The `MOVED` and `DRIFT` / `SKIP-DRIFT` console lines are unchanged —
+  they still name the mapped board, which after the guard is the same value on every row that can
+  reach a report line.
+  **Guard populations — two classes widened.** `WritebackRefusalSignalCoverageTest`'s
+  level-independent leg now also scans `app/Console/Commands/Bridge/*.php`, because this is the
+  first caller of the board guard outside the handler files (empty today; proven able to red by
+  planting a compare in the command). `WritebackSuccessBoardRecordTest`'s write census gains the
+  same directory on its file axis, with `ReconcileCommand.php:moveCard` accounted for — measured
+  as the only kanban write in any `bridge:*` command, and proven able to red by dropping that
+  entry. **A second kanban write added to that command now reds**, where an earlier revision of
+  this change would have left it caught by nothing structural.
 
 - **card#7211 (DL-298)** — **⚠ a card resolved from a board-scoped SEARCH is now re-checked
   against the mapped board before the writeback writes to it.** The second half of card#7211,
