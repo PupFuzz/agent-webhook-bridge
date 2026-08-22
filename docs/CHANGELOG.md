@@ -10,6 +10,43 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Added
 
+- **card#7211** — **a guard on the CALL CONSTRUCTION of every board-scoped kanban read: the
+  board term must sit inside the `q=` string, never as a top-level query parameter.** Measured
+  live: `q=board_id=<id>` is enforced server-side (a token planted only on board B returned
+  `total:1` scoped to B and `total:0` scoped to A — the control is what makes the zero mean
+  something), and it holds past page 1. **But an unrecognised TOP-LEVEL parameter is silently
+  dropped and the endpoint answers HTTP 200 with an UNFILTERED result set** spanning every board
+  the token can reach. **⛔ The trap: `board_id` ALSO works as a bare top-level parameter and
+  filters correctly there** — so hoisting `q=board_id=N` to `?board_id=N` tests clean, reviews
+  clean, and takes the next filter hoisted beside it (`tags`) silently out of the query. Nothing
+  in a 200 response distinguishes a dropped filter from an honoured one, so **no assertion on a
+  search RESULT can see this change** — the dangerous edit is entirely on the client's side of
+  the wire. The guard derives its population instead of listing it (reflection over the client's
+  board-taking methods, each invoked over an ARGUMENT MATRIX — every parameter's default plus a
+  sample, both sides of a boolean — and its emitted URL asserted; plus a source scan built on
+  PHP's own tokenizer that reads the top-level keys of every `/tasks/search.json` call in `app/`,
+  including one assembled into a local `$query` variable, and reconciles each file's parsed call
+  sites against that file's own count of endpoint mentions in code), so **a board-scoped read
+  added later is covered without editing an enumeration** and a call site the scan cannot follow
+  — a path behind a constant, a query built by a merge — **reds instead of being skipped**. Both
+  derivations red under the hoist mutation, and the coverage leg reds when a known reader stops
+  being reachable. **The invariant is on FILTERS, and the top-level SWITCHES are named:** what
+  narrows the result set by data (board, tags, swimlane, custom fields) rides inside `q=`, while
+  `limit`/`page` (DL-146) and `archived` (**DL-296** — the archive axis has no both-sides mode,
+  so `cardRowsByTag($archivedOnly: true)` must send it top-level) are the measured switches;
+  widening that set is a claim about what kanban recognises, and the guard's failure text says so
+  rather than asserting the old three as fact. **No behaviour change** — this adds a test; it
+  does not change what the bridge accepts, rejects, or writes.
+
+  *Adversarial review (rt#327) closed three findings on this guard, recorded because two of them
+  were the guard being wrong about itself:* the branch DL-296 added was invisible to **both**
+  derivations at once — the runtime leg invoked each method with a single argument set, and the
+  source leg could not parse a conditionally-built query — so the "two independent derivations,
+  each blind where the other sees" claim did not hold. Both legs were fixed rather than the claim
+  narrowed, and the claim is now stated as complementary-with-named-residue. The allowlist was
+  reconciled with DL-296 (a decision already shipped and measured) instead of being widened
+  silently to go green.
+
 - **card#6393 (DL-290)** — **`coord-card-relane`, an opt-in classifier family that moves a coord
   `[TASK]`'s card to the lane a `stage:*` label added AFTER the card exists declares.** Closes the
   label-after-open half of the class DL-286 filed: the create leg fires on `issues.opened` only, so
