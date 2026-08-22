@@ -161,9 +161,11 @@ final class SshTransportProbe
     /**
      * The opt-in `--probe-tools-ssh=<user@host>` LIVE leg: round-trip a real
      * `board_my_cards` over ssh (the forced command runs server-side) and assert
-     * reachable → JSON-clean stdout → ok:true → the returned scope header
-     * (board_id/swimlane_id) equals a configured ssh agent's lane (the same
-     * swimlane-isolation observable `--probe-tools` uses).
+     * reachable → JSON-clean stdout → ok:true → the returned scope header equals a
+     * configured ssh agent's lane (the same observable `--probe-tools` uses).
+     * The header is what the answering agent is CONFIGURED for — an identity echo
+     * that certifies which agent this key resolved to, never a reading of the rows;
+     * BoardToolsScopeHeader owns both spellings of it (DL-302).
      *
      * @param  list<array{agent: string, board_id: ?int, swimlane_id: ?int}>  $expectedScopes
      * @return list<Finding>
@@ -186,15 +188,15 @@ final class SshTransportProbe
         }
 
         $result = $decoded['result'] ?? null;
-        $gotBoard = is_array($result) && is_numeric($result['board_id'] ?? null) ? (int) $result['board_id'] : null;
-        $gotSwimlane = is_array($result) && is_numeric($result['swimlane_id'] ?? null) ? (int) $result['swimlane_id'] : null;
+        $gotBoard = is_array($result) ? BoardToolsScopeHeader::boardId($result) : null;
+        $gotSwimlane = is_array($result) ? BoardToolsScopeHeader::swimlaneId($result) : null;
         foreach ($expectedScopes as $scope) {
             if ($gotBoard === $scope['board_id'] && $gotSwimlane === $scope['swimlane_id']) {
                 return [Finding::ok("ssh {$target}: board_my_cards ok; window scoped to board {$gotBoard} / swimlane {$gotSwimlane} (matches agent {$scope['agent']})")];
             }
         }
 
-        return [Finding::fail("ssh {$target}: ISOLATION — board_my_cards returned board_id=".($gotBoard ?? 'null').' swimlane_id='.($gotSwimlane ?? 'null').' which matches no configured ssh agent lane; the window is not scoped as expected')];
+        return [Finding::fail("ssh {$target}: ISOLATION — board_my_cards answered for board=".($gotBoard ?? 'null').' swimlane='.($gotSwimlane ?? 'null').' which matches no configured ssh agent lane; the window is not scoped as expected')];
     }
 
     /**

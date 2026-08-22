@@ -8,6 +8,7 @@ use App\Bridge\Check\OptInCheck;
 use App\Bridge\Exceptions\UnreadableSecretException;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\SecretFile;
+use App\Bridge\Tools\BoardToolsScopeHeader;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
@@ -22,11 +23,16 @@ use Throwable;
  * server will use, and certify the round trip:
  *  - the loopback gate admits the call (a 403 names the on-box public-IP peer trap);
  *  - the bearer authenticates (a 401 names the token path / collision);
- *  - the returned window is scoped to THIS agent's configured lane. `board_my_cards` does
- *    NOT expose a per-row swimlane_id (`projectCard` drops it), so the observable that the
- *    fail-closed row filter ran is the result HEADER: `result.board_id` /
- *    `result.swimlane_id` must equal the configured scope. A mismatch is an isolation
- *    violation.
+ *  - the answering agent is the one this bearer was minted for: the result HEADER
+ *    (`result.configured_board_id` / `result.swimlane_id`, read through
+ *    {@see BoardToolsScopeHeader}) must equal the configured scope. ⛔ That header is an
+ *    identity ECHO of the resolved agent's own config, so a mismatch is a real finding — the
+ *    bearer reached a DIFFERENT agent's window — while a match certifies resolution and NOT
+ *    that the fail-closed row filter ran, which config compared against config cannot show.
+ *    `board_my_cards` exposes no per-row swimlane_id (`projectCard` drops it), so the lane
+ *    filter has no observable in this response at all; since DL-302 the BOARD axis does have
+ *    one (`result.board_id` / `result.board_observed`, read off the rows), and this probe
+ *    does not yet assert on it — adding a fail arm there changes what bridge:check rejects.
  *
  * IT FAILS WHERE THE OFFLINE LEGS ONLY REPORT. A connection failure, non-2xx or isolation
  * mismatch yields `fail` (→ non-zero exit): this probe CERTIFIES the enablement before an
@@ -163,16 +169,16 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
 
                 continue;
             }
-            $gotBoard = is_numeric($result['board_id'] ?? null) ? (int) $result['board_id'] : null;
-            $gotSwimlane = is_numeric($result['swimlane_id'] ?? null) ? (int) $result['swimlane_id'] : null;
+            $gotBoard = BoardToolsScopeHeader::boardId($result);
+            $gotSwimlane = BoardToolsScopeHeader::swimlaneId($result);
             if ($gotBoard !== $bt->boardId || $gotSwimlane !== $bt->swimlaneId) {
-                yield Finding::fail("board_tools probe: agent {$name}: ISOLATION MISMATCH — board_my_cards returned board_id=".($gotBoard ?? 'null').' swimlane_id='.($gotSwimlane ?? 'null').", but this agent is configured for board {$bt->boardId} / swimlane {$bt->swimlaneId}. The window is not scoped to the configured lane.");
+                yield Finding::fail("board_tools probe: agent {$name}: ISOLATION MISMATCH — board_my_cards answered for board=".($gotBoard ?? 'null').' swimlane='.($gotSwimlane ?? 'null').", but this agent is configured for board {$bt->boardId} / swimlane {$bt->swimlaneId}. The window is not scoped to the configured lane.");
 
                 continue;
             }
             $stageGroups = is_array($result['cards_by_stage'] ?? null) ? count($result['cards_by_stage']) : 0;
 
-            yield Finding::ok("board_tools probe: agent {$name}: {$endpoint} → 200; window scoped to board {$bt->boardId} / swimlane {$bt->swimlaneId} ({$stageGroups} stage group(s)). board_my_cards does not expose a per-row swimlane, so the returned scope header matching config is the observable that the bridge-side isolation filter ran.");
+            yield Finding::ok("board_tools probe: agent {$name}: {$endpoint} → 200; window scoped to board {$bt->boardId} / swimlane {$bt->swimlaneId} ({$stageGroups} stage group(s)). The scope header is an identity echo — matching it certifies that this bearer resolved to THIS agent, not that the bridge-side lane filter ran (config matching config is true whatever the rows held); the measured half is the response's own board_id/board_observed.");
         }
     }
 

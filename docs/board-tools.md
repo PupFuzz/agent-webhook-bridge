@@ -50,7 +50,9 @@ never silently no-ops.
 
 ```jsonc
 {
-  "board_id": 10,
+  "board_id": 10,            // the board the returned ROWS are on (null when none was read)
+  "board_observed": true,
+  "configured_board_id": 10, // the board this agent is configured to read
   "swimlane_id": 4,
   "cards_by_stage": {
     "Backlog":  [ { "id": 1, "name": "...", "stage": "Backlog", "tags": ["..."],
@@ -60,9 +62,47 @@ never silently no-ops.
     "In Review": [ /* ... */ ]
   },
   "shared_swimlane": { "swimlane_id": 9, "cards_by_stage": { /* ... */ } }, // when configured
-  "coord_cards": [ /* cards on the coord board carrying one of your address_tags */ ] // when configured
+  // the coord block, all four keys together, when the coord leg is configured:
+  "coord_board_id": 12,             // the board the coord ROWS are on (null when none was read)
+  "coord_board_observed": true,
+  "configured_coord_board_id": 12,
+  "coord_cards": [ /* cards on the coord board carrying one of your address_tags */ ]
 }
 ```
+
+### Where these cards are (`board_id` vs `configured_board_id`)
+
+**⚠ `board_id` is WHERE THE ROWS ARE, read off the rows themselves — not where you
+are configured to read (card#7295, DL-302).** Before this it was the configured
+value restated, for a row set whose own board nothing had checked, so a window of
+foreign rows would have reported this board's id as fact. What a caller gets now:
+
+- **`board_id` + `board_observed`** are the reading. `true` ⇒ every returned row
+  (your lane **and** the shared lane) reported that same board. `false` ⇒ **`board_id`
+  is null and the response claims no board** — it never falls back to config. Three
+  things unobserve it: **an empty window** (no rows read ⇒ no board read — the common
+  case, and not an error), rows **spread across more than one board**, and a row
+  carrying **no readable `board_id`**. A card is always on exactly one board upstream,
+  so there is no such thing as a row legitimately reporting "no board": absent, null
+  and non-numeric all mean *unread*.
+- **`configured_board_id`** is the scope your bridge identity is wired to — what
+  `board_id` used to carry, now under a name that says what it is. It is always
+  present. The two being equal is the healthy case, not an invariant the bridge
+  enforces here.
+- **`swimlane_id` needs no such flag**: every returned row is filtered against it and
+  a non-matching row is dropped before you see it (below), so the lane a card lands
+  under is verified by construction. The board axis is a report, not a filter — a row
+  on another board is **reported, never dropped**, and never refused. What a foreign
+  row should make the tool *do* is a separate question from what it *says*, and only
+  the saying changed here.
+- **The coord block carries the same pair for its own board** — `coord_board_id` /
+  `coord_board_observed` / `configured_coord_board_id`. Those cards come from a
+  DIFFERENT board than the top-level one, and the block used to say nothing at all
+  about that; the top-level `board_id` above it does **not** describe them.
+- **It costs no extra request.** Every kanban search row already carries `board_id`;
+  the projection simply never read it. (The same correction on `board_create_card` —
+  card#7295's sibling card#7225, a **separate** change that may not be in your build
+  — has to pay a `GET` for it, because a create hands back an id and nothing else.)
 
 ### Reading a card's scope (`include_description`)
 
@@ -381,8 +421,10 @@ php artisan bridge:check --probe-tools=<the endpoint from step 1>
 
 This exercises the real network path per enabled agent: a live `board_my_cards`
 call proving the endpoint is reachable, the loopback gate admits it, the bearer
-resolves to the right agent, and the returned window is scoped to that agent's
-configured board/swimlane. Each failure mode names its likely cause (403 → the
+resolves to the right agent, and the scope header the bridge answers with
+(`configured_board_id`/`swimlane_id`) is that agent's. ⚠ That last leg certifies
+**which agent the bearer resolved to** — it is config echoed back, so it cannot show
+that the bridge-side lane filter ran. Each failure mode names its likely cause (403 → the
 step-1 trap; 401 → bearer mismatch/collision; connection refused → wrong
 vhost/endpoint). Non-2xx or a scope mismatch exits non-zero.
 

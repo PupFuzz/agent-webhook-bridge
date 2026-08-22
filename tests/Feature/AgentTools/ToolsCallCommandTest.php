@@ -96,7 +96,12 @@ class ToolsCallCommandTest extends TestCase
         $this->assertIsArray($decoded);
         $this->assertTrue($decoded['ok']);
         $this->assertSame('board_my_cards', $decoded['tool']);
-        $this->assertSame(10, $decoded['result']['board_id']);
+        // The window is EMPTY, so no row was read and the board is UNOBSERVED — the
+        // envelope says so rather than restating the configured board as a reading
+        // (DL-302). The configured scope is still carried, under its own name.
+        $this->assertNull($decoded['result']['board_id']);
+        $this->assertFalse($decoded['result']['board_observed']);
+        $this->assertSame(10, $decoded['result']['configured_board_id']);
         $this->assertSame(4, $decoded['result']['swimlane_id']);
     }
 

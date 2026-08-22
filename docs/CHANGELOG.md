@@ -592,6 +592,40 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#7295 (DL-302)** — **⚠ `board_my_cards` reported the CONFIGURED board for a row set whose
+  own board nothing had read, and the coord block reported no board at all.** The response stated
+  `board_id` from this agent's `board_tools` config beside the cards it had just fetched, so a
+  calling agent read *"my cards are on board N"* off a value that was never a reading — while the
+  same tool already dropped and logged any row whose own `swimlane_id` did not match. One tool, two
+  axes of the same claim, two standards. **⚠ UPGRADING — a caller-visible response change, no
+  behaviour change: nothing is dropped, nothing is refused, and no extra request is made** (every
+  kanban search row already carries `board_id`; the projection simply never read it).
+  - **`board_id` is now WHERE THE ROWS ARE**, and **`board_observed`** says whether one was read.
+    `false` ⇒ `board_id` is **null** and the response claims no board — it never falls back to
+    config. Three states unobserve it: an **empty window** (no rows read ⇒ no board read; not an
+    error), rows **spread across more than one board**, and a row carrying **no readable
+    `board_id`**. A card is always on exactly one board upstream, so absent / null / non-numeric
+    all mean *unread* — this axis has no legitimate null, unlike the lane axis of the sibling
+    correction on `board_create_card` (card#7225, a separate change).
+  - **`configured_board_id` carries what `board_id` used to**, under a name that says what it is.
+    Both are always present: observed and intended, neither dressed as the other.
+  - **The coord block carries the same pair for its own board** — `coord_board_id`,
+    `coord_board_observed`, `configured_coord_board_id`, on exactly the condition `coord_cards`
+    appears. Those cards come from a different board than the top-level one and the block used to
+    say nothing about that. The `coord_cards` list itself is unchanged.
+  - **`swimlane_id` is unchanged and needs no flag**: every returned row is filtered against it and
+    a non-matching row is dropped before a caller sees it, so the lane axis is verified by
+    construction. What a foreign-board row should make the tool *do* is a separate, ask-gated
+    question from what it *says*; only the saying changed.
+  - **`bridge:check --probe-tools` / `--probe-tools-ssh` read the scope header under its own name**
+    (`configured_board_id`, with the old `board_id` spelling still accepted so a probe against a
+    remote install predating this release is not reported as an isolation failure). Left on the old
+    key, both probes would have failed **every agent whose lane is empty**. Their `ok` text is
+    corrected with them: matching that header certifies **which agent the bearer resolved to**, not
+    that the bridge-side lane filter ran — config compared against config is true whatever the rows
+    held. The probes deliberately do **not** yet fail on the new observation; a fail arm there
+    changes what `bridge:check` rejects.
+
 - **card#7233** — **The shell-injection security test scored a slow-but-successful injection as "injection did not
   execute".** `SpawnDetachedHandlerTest::test_argv_has_no_shell_injection_surface` spawned a detached
   child and read its verdict off a fixed `usleep(500_000)`, then asserted `EVIL.marker` absent — but

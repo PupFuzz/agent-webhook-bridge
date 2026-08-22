@@ -266,10 +266,46 @@ class SshTransportProbeTest extends TestCase
     {
         $env = new FakeSshProbeEnvironment(
             authorizedKeys: self::GOOD_LINE,
-            sshStdout: (string) json_encode(['ok' => true, 'tool' => 'board_my_cards', 'result' => ['board_id' => 10, 'swimlane_id' => 4]]),
+            sshStdout: (string) json_encode(['ok' => true, 'tool' => 'board_my_cards', 'result' => [
+                'board_id' => 10, 'board_observed' => true, 'configured_board_id' => 10, 'swimlane_id' => 4,
+            ]]),
         );
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
         $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+    }
+
+    /**
+     * The window is EMPTY, so the tool observed no board and answers `board_id: null`
+     * (DL-302) — the scope header is what this leg certifies against, and reading the
+     * observation instead would fail every agent whose lane happens to be empty.
+     */
+    public function test_live_probe_certifies_from_the_header_when_no_board_was_observed(): void
+    {
+        $env = new FakeSshProbeEnvironment(
+            authorizedKeys: self::GOOD_LINE,
+            sshStdout: (string) json_encode(['ok' => true, 'tool' => 'board_my_cards', 'result' => [
+                'board_id' => null, 'board_observed' => false, 'configured_board_id' => 10, 'swimlane_id' => 4,
+            ]]),
+        );
+        $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
+        $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
+        $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+    }
+
+    /**
+     * A remote install predating the DL-302 header rename answers the scope under the old
+     * `board_id` key alone. This is the leg that can genuinely meet one — the ssh target is
+     * a DIFFERENT install from the one running bridge:check — so a strict read would report
+     * an isolation failure for a version skew.
+     */
+    public function test_live_probe_accepts_a_responder_predating_the_header_rename(): void
+    {
+        $env = new FakeSshProbeEnvironment(
+            authorizedKeys: self::GOOD_LINE,
+            sshStdout: (string) json_encode(['ok' => true, 'tool' => 'board_my_cards', 'result' => ['board_id' => 10, 'swimlane_id' => 4]]),
+        );
+        $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
         $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
     }
 
@@ -287,10 +323,11 @@ class SshTransportProbeTest extends TestCase
     {
         $env = new FakeSshProbeEnvironment(
             authorizedKeys: self::GOOD_LINE,
-            sshStdout: (string) json_encode(['ok' => true, 'result' => ['board_id' => 99, 'swimlane_id' => 99]]),
+            sshStdout: (string) json_encode(['ok' => true, 'result' => ['configured_board_id' => 99, 'swimlane_id' => 99]]),
         );
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
         $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
+        $this->assertStringContainsString('ISOLATION — board_my_cards answered for board=99 swimlane=99', $findings[0]->message);
     }
 
     public function test_live_probe_unreachable_fails(): void
