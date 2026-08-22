@@ -304,6 +304,28 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#7209** — **The `bridge:check` channel-liveness test asserted a race it did not control: a
+  forked child held the socket open for a hardcoded 3-second `stream_socket_accept()` window while
+  the parent ran an unbounded `bridge:check` inside it.** Once the parent's own path to the probe
+  passed that window the child had already `SIGKILL`ed itself, the socket was gone, and the check
+  CORRECTLY reported it dead — so the red was the test's, not the code's. The whole test takes about
+  2s on an idle box — that gap to the 3s window was the entire margin.
+  Two agents hit it independently on unrelated work in one cycle, on a box running several build
+  agents in parallel, which is exactly the load that crosses that boundary. **The child's window was
+  not the wrong number — the parent was the unbounded half**, so raising it would have bought margin
+  and kept the race. The listener is now bound **in-process** and held open across the whole run in a
+  `try`/`finally`, making its lifetime this test's control flow instead of a wall clock: a bound UDS
+  completes the connect handshake from the kernel's backlog with no `accept()` at all (the property
+  `SystemChannelProbeEnvironmentTest` already asserts directly against the real probe, and the reason
+  the HTTP twin never needed a fork). **Measured, not asserted:** with the parent artificially
+  delayed 3.5s before the check the old shape reds and the new one passes 3/3 — and still passes with
+  a 15s delay, i.e. the ordering dependency is removed rather than widened. **The leg still
+  discriminates**, witnessed twice: mutating `SystemChannelProbeEnvironment` so a connect never
+  reports connected reds it, and closing the listener before the check reds it on the stale-socket
+  message. **Coverage goes up**: dropping the fork drops the `pcntl` skip, so the leg — one of only
+  two in the suite that reaches either liveness probe — now runs on hosts where it silently skipped,
+  and the fork-inherited-DB-connection hazard the child's hard exit existed to dodge is gone with it.
+
 - **card#7118** — **Three tests handed the shared temp root to code that enumerates it, so the suite's
   result was a function of the box's `/tmp` rather than of the branch.** `BridgeServiceProviderTest`
   pointed `bridge.config_dir` at `sys_get_temp_dir()`, `InstallGuardTest` constructed a
