@@ -148,6 +148,34 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7222 (DL-297)** — **`board_create_card` now REFUSES an `idempotency_key` whose card was
+  ARCHIVED, instead of minting a second card over the retire.** ⚠ **This changes what the tool
+  accepts.** The correlate-before-create probe read `tasks/search.json` with no `archived`
+  parameter, and kanban's search applies `whereNull('archived_at')` unless one is passed — so a key
+  whose card had been retired read as un-carded. Demonstrated before it was fixed: with card 77
+  archived under the key, one call returned **200, a second card (88), `"created": true`**, and
+  never read the archive side at all. The probe now reads the archive side too, on the last branch
+  before the create, and an archived twin suppresses it: **422, no card created**, the message
+  naming the ids to unarchive. **What changes for a caller, in full:** the archived-twin board
+  state, and nothing else on the board axis. A LIVE twin is still an idempotent hit — including a
+  live twin sitting beside an archived one, since the live read answers first and the archive side
+  is never consulted; a key
+  with no card on either side still creates, at the cost of one extra search per card actually
+  minted; a call with no `idempotency_key` is byte-identical. If the archive-side read itself errors
+  upstream the call is **502 with nothing created** — fail-closed, because the alternative re-mints
+  over a retire. **The caller's remedies are in the refusal:** unarchive that card if the work is
+  live again, or pass a NEW `idempotency_key` if this is genuinely new work. Handing the archived
+  card back as `"idempotent_hit": true` was the other candidate and was **rejected** — it returns a
+  retired card as a success, one the same agent's own `board_my_cards` window (live-only, correctly)
+  does not show. **The consumer's `coord:reroute-archived` carve-out is deliberately NOT carried
+  over from DL-296:** that exemption exists because the consumer's reconcile is a second mover that
+  re-creates the exempted thread, making a refusal one the other mover undoes; nothing reconciles a
+  tool-minted card, so the refusal here is durable and its remedy accurate. This is the second of
+  the four create-deciding members on card#7222's class item. The reference channel server's
+  snapshot goes **0.9.5 → 0.9.6** for the `idempotency_key` tool description, which carried the now
+  false *"re-using a key whose card was ARCHIVED creates a second card"* (DL-038); no behavior
+  change in the server.
+
 - **card#7169 (DL-296)** — **an ARCHIVED coord card is a RETIRE the real-time create leg now
   honours, instead of minting a second card over it.** `KanbanClient::cardsByTag()` sends no
   `archived` parameter and kanban's search applies `whereNull('archived_at')` unless one is passed,
@@ -176,8 +204,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   on that card — `board_create_card`'s `idem:` pre-check (re-using a key whose card was archived
   mints a SECOND card and answers `"created": true`; **`docs/board-tools.md` and the MCP tool
   description now carry that bound, the code is unchanged**, because both candidate fixes change
-  what the tool accepts) and the dependabot leg (it archives its own card on `closed_unmerged`,
-  `reopened` collapses to `opened`, and by-ref excludes archived rows, so a reopened dependabot PR
+  what the tool accepts) **[DL-297 correction, same release: that member is now FIXED — the probe
+  reads the archive side and REFUSES; read this clause as the state DL-296 shipped in, and the
+  DL-297 entry above for what the tool does now]** and the dependabot leg (it archives its own card
+  on `closed_unmerged`, `reopened` collapses to `opened`, and by-ref excludes archived rows, so a
+  reopened dependabot PR
   re-creates over the bridge's own retire — possibly intended, but unrecorded either way). The
   reference channel server's snapshot goes **0.9.4 → 0.9.5** for that one-line description fix
   (DL-038); no behavior change in the server.
@@ -467,6 +498,40 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
     still covered only by the level-keyed leg and its stated bound.
 
 ### Fixed
+
+- **card#7233** — **The shell-injection security test scored a slow-but-successful injection as "injection did not
+  execute".** `SpawnDetachedHandlerTest::test_argv_has_no_shell_injection_surface` spawned a detached
+  child and read its verdict off a fixed `usleep(500_000)`, then asserted `EVIL.marker` absent — but
+  three methods up, the PRESENCE leg in the same file polls a detached child for **5.0 seconds**, so
+  the file itself established that the window it gave the negative was ten times too small. Under
+  load — several build agents on one box — an injection that landed after 500ms passed as proof that
+  no injection was possible. **Demonstrated, not inferred:** against a stub that spawns the argv
+  through `sh -c` after a 0.7s delay — i.e. the exact defect the test exists to catch, merely slow —
+  the shipped test PASSES. **Raising the sleep was rejected**: it lowers the probability and keeps the
+  race, and reds or false-greens again on a slower host. The negative is now ordered rather than
+  timed. `touch` receives the metacharacters as ONE argv element, so it creates a file named
+  *verbatim* `legit; touch …/EVIL.marker`; the test polls for that file with the bounded-poll idiom
+  already in this file and asserts the absence only once it exists. The witness is sound because
+  `touch` with a single operand does exactly one thing — that file appearing IS the child having
+  finished — and it is doing double duty: its NAME is the proof the argv element never met a shell,
+  since a shell would have produced `…/legit` and `…/EVIL.marker` instead and the poll would time out.
+  **⚠ The operand is a PATH and every `/` in it is a separator**, including the ones inside the
+  appended absolute `EVIL.marker` path: verified at source that without its parent directory `touch`
+  dies `ENOENT` and creates nothing at all, so the test now creates that parent — without it the
+  witness would never land and the absence would again be indistinguishable from "did not finish".
+  Both halves witnessed against the same slow stub: the fixed test reds on the absence assertion when
+  the injected file lands late, and reds on the presence witness when the operand was shell-split;
+  it passes 3/3 on the real, non-injecting path. **Sibling audit (the shape: a fixed sleep guarding an
+  absence assertion) found no second member, over a stated denominator** — every
+  `sleep`/`usleep`/`time.sleep`/`setTimeout` call site in non-vendor source, **9** of them post-fix,
+  re-derived by the sweep each run rather than quoted; the instrument finds the pre-fix defect and
+  reports zero after it, so it discriminates. All nine then dispose: bounded polls terminating in a
+  PRESENCE assertion (5, two of them this test's), a Symfony `Process` timeout (2), a production
+  deadline outside any test (1), and a forked child's own hold on a bind (1). On the
+  second axis, every absence assertion downstream of async work is guarded by process completion
+  (`assert_run`, `pcntl_waitpid`, a Symfony `Process`), not by a clock. Distinct from card#7209's
+  class (a bounded CHILD window racing an unbounded PARENT operation), which is two processes; this
+  one is a fixed clock guarding a negative.
 
 - **card#7209** — **The `bridge:check` channel-liveness test asserted a race it did not control: a
   forked child held the socket open for a hardcoded 3-second `stream_socket_accept()` window while

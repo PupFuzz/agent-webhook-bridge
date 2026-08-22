@@ -24,6 +24,16 @@ use Illuminate\Support\Facades\Log;
  *    re-read + CardCollapse); the `idem:` prefix is reserved so a caller cannot
  *    poison a future idempotency probe.
  *
+ * The idempotency probe reads BOTH sides of kanban's archive axis (DL-297),
+ * because that axis is a SWITCH and not a widening: a live tag search cannot see
+ * an archived row, so re-using a key whose card was retired used to read as
+ * un-carded and mint a SECOND card reporting `"created": true`. A live twin is
+ * still the idempotent hit; an ARCHIVED-only twin is a deliberate retire and
+ * REFUSES the create (422) naming the card to unarchive — a retire is not this
+ * tool's to undo, and handing the archived card back as a hit would answer with a
+ * card the caller's own `board_my_cards` window (live-only, correctly) does not
+ * show. Class item card#7222.
+ *
  * Caller tags matching a reserved prefix (`created-by:` / `idem:` / `id:` /
  * `type:`) or the bare `triaged` are refused (422-class) — no forging an audit
  * stamp, no poisoning idempotency, no hijacking the coord adoption/type keys, no
@@ -84,6 +94,24 @@ final class BoardCreateCardTool implements Tool
                 Log::info('board_create_card: idempotency hit — returning the existing card, no create', ['agent' => $agentName, 'idem_tag' => $idemTag, 'card_id' => $hitId]);
 
                 return ['created' => false, 'idempotent_hit' => true, 'card_id' => $hitId, 'board_id' => $boardId, 'swimlane_id' => (int) $cfg->swimlaneId];
+            }
+
+            // The ARCHIVE side of the same key (DL-297): the read above is
+            // live-only, because kanban's search applies `whereNull('archived_at')`
+            // unless `?archived` is passed — so without this second read a key whose
+            // card was RETIRED reads as un-carded and mints a replacement over the
+            // retire. Placed here, on the last branch before the create, so it costs
+            // one search per card actually minted and nothing at all on the hit path.
+            $retired = self::archivedIds($client->cardRowsByTag($boardId, $idemTag, true));
+            if ($retired !== []) {
+                Log::warning('board_create_card: the only card for this idempotency key is ARCHIVED — refusing, no replacement created', ['agent' => $agentName, 'idem_tag' => $idemTag, 'archived_card_ids' => $retired]);
+
+                throw new ToolRefusalException(
+                    'board_create_card: this `idempotency_key` correlates only to ARCHIVED card(s) — '
+                    .implode(', ', $retired).' — and an archived card is a deliberate retire, which un-retiring is not this '
+                    .'tool\'s to do, so NO replacement was created. Unarchive that card if the work is live again, or pass a '
+                    .'NEW `idempotency_key` if this is genuinely new work.'
+                );
             }
         }
 
@@ -194,6 +222,41 @@ final class BoardCreateCardTool implements Tool
         }
 
         return $tags;
+    }
+
+    /**
+     * The card ids out of an `archived=1` tag search — every row, because on THIS
+     * surface every archived twin is a retire (DL-297).
+     *
+     * ⚠ This is deliberately NOT the coord create leg's `retiredTwins()`
+     * (`KanbanCoordCardHandler`), which exempts a whole thread when any row carries the
+     * consumer's `coord:reroute-archived` marker. That carve-out exists because the
+     * consumer's reconcile is a SECOND MOVER that re-creates the exempted thread on
+     * its next pass, so refusing there would be a refusal the other mover undoes
+     * (DL-296 Decision 3b). No second mover creates a tool card: an `idem:` card is
+     * minted only by this tool, by this agent's own call, and nothing reconciles it —
+     * so the refusal is durable and its remedy ("unarchive that card") is accurate.
+     * The two partitions are the same rule (a retire suppresses) applied to
+     * populations with different movers, not a divergence to reconcile; the shared
+     * READ (`cardRowsByTag(..., archivedOnly: true)`) is already single-sourced on
+     * the client. Hoisting the surrounding read-then-decide sequence into one
+     * primitive both call is the open consolidation on card#7222.
+     *
+     * A row kanban answered without a usable `id` still counts as a retire —
+     * dropping it would silently un-suppress the create — and reports as `0`.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<int>
+     */
+    private static function archivedIds(array $rows): array
+    {
+        $ids = [];
+        foreach ($rows as $row) {
+            $id = $row['id'] ?? null;
+            $ids[] = is_numeric($id) ? (int) $id : 0;
+        }
+
+        return $ids;
     }
 
     /**

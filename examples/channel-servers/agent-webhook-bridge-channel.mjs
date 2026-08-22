@@ -225,8 +225,9 @@ const TOOL_DEFINITIONS = [
           type: 'string',
           description:
             'Optional but recommended: [A-Za-z0-9.-]{1,64}. Re-using it returns the ' +
-            'same card instead of creating a duplicate — while that card is LIVE. ' +
-            'Re-using a key whose card was ARCHIVED creates a second card.',
+            'same LIVE card instead of creating a duplicate. If that card was ARCHIVED ' +
+            'the call is REFUSED (422) naming the card to unarchive — an archived card ' +
+            'is a retire, so no replacement is created; pass a NEW key for new work.',
         },
       },
       required: ['title'],
