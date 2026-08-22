@@ -265,6 +265,7 @@ All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR`
 | Per-target registry (`registry_append`) | `…/state/registry-<target>.jsonl` |
 | Detached-command logs (`spawn_detached`) | `…/state/spawn-<target>.log` |
 | Event / dispatch ledger | the DB (`webhook_events`, `agent_dispatches`) |
+| Writeback board divergences (DL-300) | the DB (`writeback_board_divergences`) — expected EMPTY; `bridge:stats` prints the counts on every run |
 
 ## Commands
 
@@ -280,7 +281,7 @@ php artisan bridge:prune --older-than=30d [--null-payloads-older-than=7d] [--dry
 php artisan bridge:reconcile [--fix] [--repo=owner/repo] [--max-moves=20]     # board-vs-GitHub drift reconciler (report-only unless --fix)
 ```
 
-`bridge:prune` is the **manual** entry point to retention; since **DL-199** the receiver runs the same shared service automatically after each response, so scheduling this is no longer required (and the design has no cron at all). `--older-than=Nd` deletes `webhook_events` (cascading `agent_dispatches`) and trims `inbox*.jsonl` lines older than the cutoff; `--null-payloads-older-than=Md` (use `M < N`) nulls the stored payload past the replay window while keeping the row's dedup-gate + audit metadata; `--dry-run` reports counts only. Idempotent — safe to re-run alongside the automatic gate.
+`bridge:prune` is the **manual** entry point to retention; since **DL-199** the receiver runs the same shared service automatically after each response, so scheduling this is no longer required (and the design has no cron at all). `--older-than=Nd` deletes `webhook_events` (cascading `agent_dispatches`) and trims `inbox*.jsonl` lines older than the cutoff; `--null-payloads-older-than=Md` (use `M < N`) nulls the stored payload past the replay window while keeping the row's dedup-gate + audit metadata; `--dry-run` reports counts only. Idempotent — safe to re-run alongside the automatic gate. **`writeback_board_divergences` is deliberately outside retention entirely** (DL-300): it exists to outlive the log, so a window on it would be the defect it closes with a longer fuse.
 
 **When you still want it:** draining a large backlog in ONE unbounded pass (the gate is deliberately bounded to `retention.batch` rows per delivery), a window different from the configured one, or any install running with `BRIDGE_RETENTION_ENABLED=false`. See `CLAUDE_DECISIONS.md` DL-012 (the command) and DL-199 (the gate).
 
