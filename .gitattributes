@@ -31,9 +31,14 @@ CHANGELOG.md export-ignore
 # A conflict in either of those, and in every other path here, still stops for a human.
 #
 # TWO RESIDUALS, measured, neither gated. (a) Union is SILENT, and applies to every three-way
-# merge git performs — merge, rebase, cherry-pick, revert: a commit that REWORDS an existing
+# merge git performs — merge, rebase, cherry-pick and revert — not only to a PR merge. Two
+# consequences, each measured with its no-attribute control: a commit that REWORDS an existing
 # entry, cherry-picked onto a branch that appended a new one, leaves BOTH spellings, stale copy
-# included. Read the merge commit's diff of `[Unreleased]`; a clean merge is not a reviewed one.
+# included (control: that one conflicts); and `git revert` of a commit whose entry sits beside a
+# later one becomes a NO-OP — `nothing to commit, working tree clean`, rc 1, entry still in the
+# file — because union re-adds exactly what the reverse patch removes (control: a conflict, ALSO
+# rc 1, so the exit code does not distinguish them; read the message). A merged `[Unreleased]` is
+# never presented for review, so read the merge commit's diff of it.
 # (b) ORDER FOLLOWS MERGE DIRECTION. With a release fold (`[Unreleased]` → `[X.Y.Z]`) as OURS
 # and a feature branch as THEIRS, the incoming entry lands UNDER the version heading — clean,
 # well-formed and wrong. Merge dev INTO the feature branch; never a feature branch into

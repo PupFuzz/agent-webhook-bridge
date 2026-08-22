@@ -101,9 +101,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   `### Added` under an emptied `[Unreleased]` produce **one** `### Added`, not two, because the
   identical heading lines merge as common context. **Two residuals, recorded rather than gated.**
   Union is **silent** and applies to every three-way merge git performs — `merge`, `rebase`,
-  `cherry-pick`, `revert` — so a commit that *rewords* an existing entry, cherry-picked onto a
-  branch that appended a new one, leaves **both** spellings, stale copy included; read the merge
-  commit's diff of `[Unreleased]`. And **order follows merge direction**: with a release fold
+  `cherry-pick` and `revert`, not only a PR merge — with two consequences, each measured against
+  its no-attribute control: a commit that *rewords* an existing entry, cherry-picked onto a branch
+  that appended a new one, leaves **both** spellings, stale copy included (control: that one
+  conflicts); and **`git revert` of a commit whose entry sits beside a later one becomes a NO-OP**
+  — `nothing to commit, working tree clean`, rc 1, the entry still in the file — because union
+  re-adds exactly what the reverse patch removes (control: a conflict, **also** rc 1, so the exit
+  code does not distinguish them). Read the merge commit's diff of `[Unreleased]`. And **order follows merge direction**: with a release fold
   (`[Unreleased]` → `[X.Y.Z]`) as OURS and a feature branch as THEIRS, the incoming entry lands
   under the version heading — clean, well-formed and wrong (measured; the opposite direction is
   correct). Merge `dev` into the feature branch, never a feature branch into `release/v<version>`.
