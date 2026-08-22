@@ -360,7 +360,7 @@ class KanbanCoordCardHandlerTest extends TestCase
         // is popped by the DL-296 `archived=1` read as well and the post-create re-read
         // gets the wrong element (or an exhausted sequence).
         Http::fake($this->searchFake(
-            live: [[], [['id' => 100], ['id' => 99]]],   // pre-create empty → create; post-create: race surfaced
+            live: [[], [['id' => 100, 'board_id' => 8], ['id' => 99, 'board_id' => 8]]],   // pre-create empty → create; post-create: race surfaced
             archived: [],
             rest: [
                 '*/tasks/100.json' => Http::response(['data' => ['id' => 100, 'archived_at' => '2026-07-14T00:00:00+00:00']]),
@@ -377,7 +377,7 @@ class KanbanCoordCardHandlerTest extends TestCase
     public function test_no_duplicate_after_create_archives_nothing(): void
     {
         Http::fake($this->searchFake(
-            live: [[], [['id' => 99]]],
+            live: [[], [['id' => 99, 'board_id' => 8]]],
             archived: [],
             rest: ['*/tasks.json' => Http::response(['data' => ['id' => 99]], 201)],
         ));

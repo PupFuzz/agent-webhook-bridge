@@ -275,6 +275,17 @@ final class KanbanClient
      * probe catches that at preflight, and the shared `id:` tag lets the reconcile
      * orphan-adoption collapse any duplicate a blind read minted.
      *
+     * ⚠ THE PROJECTION TO IDS IS WHAT DISCARDS THE BOARD (DL-298, card#7211). The search
+     * answers with full task rows carrying their own `board_id`; this method keeps only the
+     * ids, so a caller that WRITES to what comes back has nothing left to re-check the
+     * scope against and is trusting the `q=board_id=` term alone. That term IS honoured
+     * (measured, rt#327) — but `board_id` is also recognised as a bare top-level parameter
+     * and filters correctly there, so the hoist that would break the scope reviews as
+     * equivalent, and an unrecognised top-level parameter is dropped in silence. A caller
+     * whose result feeds a WRITE therefore takes {@see cardRowsByTag} — the same one GET,
+     * rows instead of ids — and re-checks each row through `MappedBoardGuard`. A caller
+     * whose result only feeds a READ decision (an existence pre-check) does not need to.
+     *
      * LIVE cards only, and that is the contract, not an oversight (DL-296): kanban
      * excludes archived rows unless `?archived` is passed. A caller that needs the
      * archived side asks for it explicitly via {@see cardRowsByTag}'s `$archivedOnly`.
@@ -343,7 +354,9 @@ final class KanbanClient
      * — the row-returning twin of {@see cardsByTag} (which projects to ids). One
      * exact `q=board_id=<b> tags:"<tag>"` search; board-scoped so no `source`
      * qualifier is needed. Used to fetch coordination cards addressed to an agent
-     * via its configured address_tags.
+     * via its configured address_tags, and — since DL-298 — by every caller whose
+     * result feeds a WRITE, because the rows carry the `board_id` the ids-only
+     * {@see cardsByTag} projects away and the writer re-checks (card#7211).
      *
      * `$archivedOnly` selects the OTHER side of kanban's archive axis (DL-296):
      * `TasksController::search` applies `whereNull('archived_at')` unless
