@@ -393,6 +393,40 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **The shell-injection security test scored a slow-but-successful injection as "injection did not
+  execute".** `SpawnDetachedHandlerTest::test_argv_has_no_shell_injection_surface` spawned a detached
+  child and read its verdict off a fixed `usleep(500_000)`, then asserted `EVIL.marker` absent — but
+  three methods up, the PRESENCE leg in the same file polls a detached child for **5.0 seconds**, so
+  the file itself established that the window it gave the negative was ten times too small. Under
+  load — several build agents on one box — an injection that landed after 500ms passed as proof that
+  no injection was possible. **Demonstrated, not inferred:** against a stub that spawns the argv
+  through `sh -c` after a 0.7s delay — i.e. the exact defect the test exists to catch, merely slow —
+  the shipped test PASSES. **Raising the sleep was rejected**: it lowers the probability and keeps the
+  race, and reds or false-greens again on a slower host. The negative is now ordered rather than
+  timed. `touch` receives the metacharacters as ONE argv element, so it creates a file named
+  *verbatim* `legit; touch …/EVIL.marker`; the test polls for that file with the bounded-poll idiom
+  already in this file and asserts the absence only once it exists. The witness is sound because
+  `touch` with a single operand does exactly one thing — that file appearing IS the child having
+  finished — and it is doing double duty: its NAME is the proof the argv element never met a shell,
+  since a shell would have produced `…/legit` and `…/EVIL.marker` instead and the poll would time out.
+  **⚠ The operand is a PATH and every `/` in it is a separator**, including the ones inside the
+  appended absolute `EVIL.marker` path: verified at source that without its parent directory `touch`
+  dies `ENOENT` and creates nothing at all, so the test now creates that parent — without it the
+  witness would never land and the absence would again be indistinguishable from "did not finish".
+  Both halves witnessed against the same slow stub: the fixed test reds on the absence assertion when
+  the injected file lands late, and reds on the presence witness when the operand was shell-split;
+  it passes 3/3 on the real, non-injecting path. **Sibling audit (the shape: a fixed sleep guarding an
+  absence assertion) found no second member, over a stated denominator** — every
+  `sleep`/`usleep`/`time.sleep`/`setTimeout` call site in non-vendor source, **9** of them post-fix,
+  re-derived by the sweep each run rather than quoted; the instrument finds the pre-fix defect and
+  reports zero after it, so it discriminates. All nine then dispose: bounded polls terminating in a
+  PRESENCE assertion (5, two of them this test's), a Symfony `Process` timeout (2), a production
+  deadline outside any test (1), and a forked child's own hold on a bind (1). On the
+  second axis, every absence assertion downstream of async work is guarded by process completion
+  (`assert_run`, `pcntl_waitpid`, a Symfony `Process`), not by a clock. Distinct from card#7209's
+  class (a bounded CHILD window racing an unbounded PARENT operation), which is two processes; this
+  one is a fixed clock guarding a negative.
+
 - **card#7209** — **The `bridge:check` channel-liveness test asserted a race it did not control: a
   forked child held the socket open for a hardcoded 3-second `stream_socket_accept()` window while
   the parent ran an unbounded `bridge:check` inside it.** Once the parent's own path to the probe
