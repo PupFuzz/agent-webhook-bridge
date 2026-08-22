@@ -203,7 +203,16 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   **both ids are null and the response claims no placement at all**. It never falls back to the
   configured board/lane; that fallback IS the defect. `created` / `idempotent_hit` / `card_id` are
   untouched, so a read-back failure is not an error response — the card exists and its id is still
-  the answer. **Cost: one extra `GET /tasks/{id}.json` per SUCCESSFUL call** (nothing on any refusal
+  the answer. **And a fourth and fifth key:** `configured_board_id` / `configured_swimlane_id` carry
+  what the two old keys used to hold — the scope this agent is configured to write to — on BOTH arms
+  and regardless of `placement_observed`, so *where the card is* and *where we were aiming* are two
+  readable values rather than one ambiguous one, and a caller whose read-back failed can still see
+  its own scope (it has no other channel to it) — the pairing the writeback record has carried since
+  card#7212. ⛔ **One flag for the pair here, one PER AXIS on the matching `board_my_cards`
+  correction (card#7295 / DL-302, a separate change)** — deliberate, not an inconsistency: this tool
+  derives both axes from a single read-back of a single card, so they are observed or unobserved
+  together, while `board_my_cards` reads two independent row sets. A flag exists per unit that can
+  independently fail to be read. **Cost: one extra `GET /tasks/{id}.json` per SUCCESSFUL call** (nothing on any refusal
   path), taken on the card the tool is about to name — after the duplicate collapse, so a survivor
   another worker minted reports its own placement. ⚠ **One request, but not a small one:** that
   endpoint is kanban's full task aggregate — subtasks, comments, attachments, both link directions

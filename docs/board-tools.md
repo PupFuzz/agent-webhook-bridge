@@ -140,7 +140,8 @@ term is efficiency + defense-in-depth, not the boundary.
 
 ```jsonc
 { "created": true, "idempotent_hit": false, "card_id": 123,
-  "board_id": 10, "swimlane_id": 4, "placement_observed": true }
+  "board_id": 10, "swimlane_id": 4, "placement_observed": true,
+  "configured_board_id": 10, "configured_swimlane_id": 4 }
 ```
 
 **⚠ `board_id` / `swimlane_id` are WHERE THE CARD IS, read back from the card
@@ -163,6 +164,22 @@ correct exactly until you needed it. Consequences for a caller:
   is the defect this closes. `created` / `idempotent_hit` / `card_id` are unaffected: the card exists
   and its id is still the answer, so a read-back failure is **not** an error
   response (losing the placement is cheaper than losing the id).
+- `configured_board_id` / `configured_swimlane_id` carry the scope this agent is
+  **configured to write to**, on **both** arms and whatever `placement_observed`
+  says. They are what `board_id` / `swimlane_id` used to hold, under names that
+  say what they are — so *"where the card is"* and *"where we were aiming"* are two
+  readable values instead of one ambiguous one, and a caller whose read-back
+  failed can still see its own scope (it has no other channel to it). The same
+  pairing the writeback record has carried since card#7212 — observed and
+  intended, both named, neither dressed as the other.
+  ⛔ **`board_create_card` carries ONE flag for the pair** (`placement_observed`)
+  where the matching correction on `board_my_cards` (card#7295 / DL-302, a
+  SEPARATE change) carries one per axis — deliberate, not an inconsistency: this
+  tool derives both axes from a single read-back of a single card, so they are
+  observed or unobserved together; `board_my_cards` reads two independent row
+  sets, either of which can be readable while the other is not. A flag exists per
+  unit that can independently fail to be read, and the two tools differ in how
+  many such units they have.
 - It costs **one extra `GET /tasks/{id}.json`** per successful call, and it is the
   card the tool is about to name — after any duplicate collapse, so a survivor
   minted by another worker reports its own placement. ⚠ **That endpoint is

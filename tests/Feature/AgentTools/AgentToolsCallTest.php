@@ -595,7 +595,13 @@ class AgentToolsCallTest extends TestCase
             ->assertJsonPath('result.card_id', 42)
             ->assertJsonPath('result.board_id', 10)
             ->assertJsonPath('result.swimlane_id', 99)          // the card's OWN lane, NOT the configured 4
-            ->assertJsonPath('result.placement_observed', true);
+            ->assertJsonPath('result.placement_observed', true)
+            // The intent is not deleted, it is RENAMED: the configured scope rides
+            // along on its own keys, so this response says both "the card is in
+            // lane 99" and "we asked for lane 4" — a divergence a caller can read
+            // without a second call, and never one value dressed as the other.
+            ->assertJsonPath('result.configured_board_id', 10)
+            ->assertJsonPath('result.configured_swimlane_id', 4);
         // The WRITE is unchanged — it still asks for the configured lane. Only the
         // report moved from intent to observation.
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json') && $r['swimlane_id'] === 4);
@@ -625,7 +631,12 @@ class AgentToolsCallTest extends TestCase
             ->assertJsonPath('result.card_id', 7)
             ->assertJsonPath('result.board_id', 77)             // observed, not the configured 10
             ->assertJsonPath('result.swimlane_id', 5)           // observed, not the configured 4
-            ->assertJsonPath('result.placement_observed', true);
+            ->assertJsonPath('result.placement_observed', true)
+            // BOTH axes diverge here, so this is the pair's sharpest witness: the
+            // four keys must carry four values, or "reports the observation" and
+            // "reports the config" are indistinguishable in the payload.
+            ->assertJsonPath('result.configured_board_id', 10)
+            ->assertJsonPath('result.configured_swimlane_id', 4);
         Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
         Log::shouldHaveReceived('warning', [\Mockery::pattern('/NOT where this agent is configured to write/'), \Mockery::any()]);
     }
@@ -674,7 +685,14 @@ class AgentToolsCallTest extends TestCase
             ->assertJsonPath('result.card_id', 42)
             ->assertJsonPath('result.board_id', null)
             ->assertJsonPath('result.swimlane_id', null)
-            ->assertJsonPath('result.placement_observed', false);
+            ->assertJsonPath('result.placement_observed', false)
+            // ⭐ THE ARM THE CONFIGURED PAIR EXISTS FOR. With the observation lost,
+            // these two are the ONLY thing the response can still say about scope
+            // — and the caller has no other channel to its own configured board or
+            // lane. They are on their own keys, so this is not the rejected
+            // fallback: nothing here claims the card IS on board 10.
+            ->assertJsonPath('result.configured_board_id', 10)
+            ->assertJsonPath('result.configured_swimlane_id', 4);
         Http::assertSent(fn ($r) => $r->method() === 'POST' && str_contains($r->url(), '/tasks.json'));
         Log::shouldHaveReceived('warning', [\Mockery::pattern('/could not be read back/'), \Mockery::any()]);
     }
@@ -715,9 +733,13 @@ class AgentToolsCallTest extends TestCase
      * carrying no `swimlane_id` at all reported `swimlane_id: null` with
      * `placement_observed: true` — i.e. it told the calling agent, as an
      * observation it may act on, that its card is in NO lane, for a card sitting
-     * in one. `docs/kanban-integration-contract.md` §2 already published the
-     * opposite (*"or the tool reports an unobserved placement"*), so the code, not
-     * the doc, was the thing out of contract.
+     * in one. The two halves of one change disagreed: the same branch's first
+     * commit had already written `docs/kanban-integration-contract.md` §2 the
+     * other way (*"or the tool reports an unobserved placement"*) while shipping
+     * code that did the opposite. ⛔ That doc sentence is NOT prior authority —
+     * it is an hour older than this test, not older than the defect, and
+     * `git show origin/dev:docs/kanban-integration-contract.md | grep -c
+     * "unobserved placement"` returns 0.
      */
     public function test_a_read_back_with_no_swimlane_key_reports_no_placement(): void
     {

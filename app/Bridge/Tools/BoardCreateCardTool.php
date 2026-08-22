@@ -37,7 +37,10 @@ use Illuminate\Support\Facades\Log;
  * The placement the response carries is READ BACK from the card, never restated
  * from this agent's config (card#7225, DL-299) — `board_id`/`swimlane_id` are the
  * card's own, `placement_observed` says whether the bridge actually saw them, and
- * a false there means the response claims no placement at all. {@see placement}
+ * a false there means the response claims no placement at all. The config values
+ * still ride along, on their OWN keys (`configured_board_id` /
+ * `configured_swimlane_id`, both arms), because a caller whose read-back failed
+ * has no other channel to the scope this agent was aiming at. {@see placement}
  * owns the reasoning.
  *
  * Caller tags matching a reserved prefix (`created-by:` / `idem:` / `id:` /
@@ -172,6 +175,26 @@ final class BoardCreateCardTool implements Tool
      * nothing. False ⇒ both ids are null and the response claims NO placement —
      * never a config value dressed as an observation.
      *
+     * `configured_board_id` / `configured_swimlane_id` ride along on BOTH arms,
+     * and they are NOT the fallback this change rejected: a fallback puts the
+     * config value on the OBSERVATION key, where a caller cannot tell the two
+     * apart. Named separately they answer a question the observation cannot —
+     * *"what scope was this agent aiming at?"* — which is exactly what the caller
+     * has no other channel to when `placement_observed` is false and both ids are
+     * null. `MappedBoardGuard::boardContext` ruled the same shape for the
+     * writeback record (card#7212: both keys on both arms, because a record
+     * carrying one can answer "did we stop it?" and never "did this happen?").
+     *
+     * ⛔ ONE flag for the PAIR here, one PER AXIS on the matching `board_my_cards`
+     * correction (card#7295 / DL-302 — a SEPARATE change, not depended on here).
+     * A deliberate divergence, not drift, recorded because an unrecorded one is
+     * indistinguishable from drift to the next reader: that tool reads two
+     * INDEPENDENT row sets (own+shared, coord), so either can be readable while
+     * the other is not and each needs its own flag. Here both axes come off ONE
+     * read-back of ONE card — they are observed or unobserved together, and a
+     * per-axis flag would advertise an independence this tool cannot produce. The
+     * shared rule is one flag per unit that can independently fail to be read.
+     *
      * FAIL-SOFT, deliberately — and the reason is NOT the same on both arms this
      * primitive serves. On the CREATE arm the read-back runs after the create has
      * already landed, so throwing would answer a failure for a card that exists
@@ -200,11 +223,12 @@ final class BoardCreateCardTool implements Tool
      * makes the tool do is a separate question from what it reports, and this
      * change is scoped to the report.
      *
-     * @return array{board_id: ?int, swimlane_id: ?int, placement_observed: bool}
+     * @return array{board_id: ?int, swimlane_id: ?int, placement_observed: bool, configured_board_id: int, configured_swimlane_id: int}
      */
     private function placement(KanbanClient $client, BoardToolsConfig $cfg, int $cardId, string $agentName, string $arm): array
     {
-        $unobserved = ['board_id' => null, 'swimlane_id' => null, 'placement_observed' => false];
+        $configured = ['configured_board_id' => (int) $cfg->boardId, 'configured_swimlane_id' => (int) $cfg->swimlaneId];
+        $unobserved = ['board_id' => null, 'swimlane_id' => null, 'placement_observed' => false] + $configured;
 
         try {
             $card = $client->getCard($cardId);
@@ -247,7 +271,7 @@ final class BoardCreateCardTool implements Tool
             ]);
         }
 
-        return ['board_id' => $board, 'swimlane_id' => $swimlane, 'placement_observed' => true];
+        return ['board_id' => $board, 'swimlane_id' => $swimlane, 'placement_observed' => true] + $configured;
     }
 
     /**
