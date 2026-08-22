@@ -9,3 +9,33 @@
 /.github export-ignore
 CHANGELOG.md export-ignore
 .styleci.yml export-ignore
+
+# ⛔ ONE PATH GETS merge=union, AND ITS NARROWNESS IS THE POINT (card#7227).
+#
+# WHY. changelog-gate.yml REQUIRES a `[Unreleased]` entry from every PR touching an in-scope
+# file, and every entry goes to the same anchor — the top of a `[Unreleased]` subsection — so
+# every merge to dev leaves every open sibling PR CONFLICTING. Measured at 21 of the last 40
+# first-parent commits touching docs/CHANGELOG.md, against six concurrent worktrees. The cost
+# is not only the resolution: a conflicted PR gets ZERO CI runs, because GitHub schedules no
+# `pull_request` workflow when it cannot compute the merge commit, so its check set is
+# `total_count: 0` — neither green nor red, and a naive "any failures?" read answers *no*.
+#
+# ⛔ DO NOT ADD CLAUDE_DECISIONS.md, AND DO NOT ADD docs/config-schema.md. Not caution —
+# both were measured being destroyed by this driver on real conflicts (#552/#553):
+#   * CLAUDE_DECISIONS.md needs NUMERIC DL ordering (DL-294 before DL-295 before DL-296).
+#     Union interleaves by position and produces the wrong order silently.
+#   * docs/config-schema.md had ONE long table row edited by both sides (DL-294's
+#     either-family wording and DL-296's archived-twin clause). Union emits the row TWICE;
+#     picking a side drops a shipped decision. It needed both semantic additions spliced into
+#     one row by hand — no automatic rule could have produced that.
+# A conflict in either of those, and in every other path here, still stops for a human.
+#
+# TWO RESIDUALS, measured, neither gated. (a) Union is SILENT, and applies to every three-way
+# merge git performs — merge, rebase, cherry-pick, revert: a commit that REWORDS an existing
+# entry, cherry-picked onto a branch that appended a new one, leaves BOTH spellings, stale copy
+# included. Read the merge commit's diff of `[Unreleased]`; a clean merge is not a reviewed one.
+# (b) ORDER FOLLOWS MERGE DIRECTION. With a release fold (`[Unreleased]` → `[X.Y.Z]`) as OURS
+# and a feature branch as THEIRS, the incoming entry lands UNDER the version heading — clean,
+# well-formed and wrong. Merge dev INTO the feature branch; never a feature branch into
+# release/v<version>. Re-cut the release branch instead.
+docs/CHANGELOG.md merge=union

@@ -73,6 +73,45 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7227** — **`docs/CHANGELOG.md` gets `merge=union` in `.gitattributes`, and nothing else
+  does.** `changelog-gate.yml` requires an `[Unreleased]` entry from every PR touching an in-scope
+  file, and every entry lands at the same anchor — the top of a `[Unreleased]` subsection — so
+  every merge to `dev` left every open sibling PR `CONFLICTING`. Measured: **21 of the last 40
+  first-parent commits** on `dev` touch `docs/CHANGELOG.md`, against **six** concurrent worktrees,
+  and the cost is superlinear (N open PRs means each merge dirties N−1). It is not only the
+  resolution: **a conflicted PR gets ZERO CI runs**, because GitHub schedules no `pull_request`
+  workflow when it cannot compute the merge commit, so its check set is `total_count: 0` — neither
+  green nor red, and a naive "any failures?" read answers *no*. **What changes:** a both-sides-add
+  conflict in `docs/CHANGELOG.md` alone now resolves by keeping both sides' lines instead of
+  stopping. **What does NOT change:** every other path merges exactly as before — a conflict in
+  `CLAUDE_DECISIONS.md`, in `docs/config-schema.md`, in `app/` or in a workflow still stops for a
+  human — and no CHANGELOG content rule, and nothing `changelog-gate.yml` asserts, moves.
+  **⛔ The two exclusions are measured, not cautious**, and are named in the `.gitattributes`
+  header where someone would widen it: `CLAUDE_DECISIONS.md` needs **numeric DL ordering**
+  (DL-294 before DL-295 before DL-296) and union interleaves by position, silently producing the
+  wrong order; `docs/config-schema.md` had **one long table row edited by both sides** (DL-294's
+  either-family wording, DL-296's archived-twin clause) and union emits that row **twice**, where
+  picking a side drops a shipped decision — it needed both semantic additions spliced into one row
+  by hand, which no automatic rule could produce. Both shapes are from the #552/#553 conflicts.
+  **Verified against this repo's own gate rather than assumed:** a real both-sides-add conflict was
+  constructed on the actual `[Unreleased]` section, resolved by union, and the gate's reader run
+  over the result — `bin/changelog-section.py --section Unreleased` extracts cleanly (rc 0) with
+  **both** entries present and the section boundary intact, and the gate's token predicate finds
+  each side's `card#` token. The post-release shape was checked too: two PRs each opening a
+  `### Added` under an emptied `[Unreleased]` produce **one** `### Added`, not two, because the
+  identical heading lines merge as common context. **Two residuals, recorded rather than gated.**
+  Union is **silent** and applies to every three-way merge git performs — `merge`, `rebase`,
+  `cherry-pick`, `revert` — so a commit that *rewords* an existing entry, cherry-picked onto a
+  branch that appended a new one, leaves **both** spellings, stale copy included; read the merge
+  commit's diff of `[Unreleased]`. And **order follows merge direction**: with a release fold
+  (`[Unreleased]` → `[X.Y.Z]`) as OURS and a feature branch as THEIRS, the incoming entry lands
+  under the version heading — clean, well-formed and wrong (measured; the opposite direction is
+  correct). Merge `dev` into the feature branch, never a feature branch into `release/v<version>`.
+  **Disclosure, not a widening:** `.gitattributes` changes what git does for every contributor,
+  which is the kind of contributor-facing behaviour `changelog-gate.yml`'s CI half exists to make
+  announce itself, and it is **not** in that gate's path scope — so this entry is voluntary and
+  the scope question is left as an operator ruling, exactly as that file's header requires.
+
 - **card#7169 (DL-296)** — **an ARCHIVED coord card is a RETIRE the real-time create leg now
   honours, instead of minting a second card over it.** `KanbanClient::cardsByTag()` sends no
   `archived` parameter and kanban's search applies `whereNull('archived_at')` unless one is passed,
