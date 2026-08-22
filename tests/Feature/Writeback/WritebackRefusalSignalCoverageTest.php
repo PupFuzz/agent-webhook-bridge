@@ -35,11 +35,14 @@ use Tests\TestCase;
  * now lives in ONE primitive that owns the compare AND the report, and
  * {@see test_the_belongs_to_mapped_board_guard_lives_in_exactly_one_place} reds on a handler
  * that reads a card's `board_id` at all — at any log level, or at none. It closes exactly one
- * refusal KIND; every other kind is still covered only by the level-keyed leg above. Neither is anything
- * outside these six handlers — `KanbanClient`'s three correlation diagnostics and
- * `CardCollapse`'s archive-contract error are a real sibling shape at the shared-client
- * layer, where there is no `(repo, outcome)` tuple to dedup on; they are recorded as a
- * remainder on card#5968 rather than silently included or silently dropped.
+ * refusal KIND; every other kind is still covered only by the level-keyed leg above. ⭐ THE TWO
+ * LEGS NO LONGER SHARE A POPULATION (DL-301, card#7211): the KIND leg also scans
+ * `app/Console/Commands/Bridge/*.php`, because `bridge:reconcile --fix` is the seventh caller of
+ * `MappedBoardGuard::refuses()` and the first outside the handler files. The LEVEL-keyed leg is
+ * unchanged and still sees only the six handlers — `KanbanClient`'s three correlation
+ * diagnostics and `CardCollapse`'s archive-contract error are a real sibling shape at the
+ * shared-client layer, where there is no `(repo, outcome)` tuple to dedup on; they are recorded
+ * as a remainder on card#5968 rather than silently included or silently dropped.
  *
  * The allow-list below is the whole point: a bare log call is not forbidden, it is
  * ACCOUNTED FOR. Set equality, not subset — a new bare call reds, and so does an
@@ -120,11 +123,19 @@ class WritebackRefusalSignalCoverageTest extends TestCase
      * convention.
      *
      * POPULATION, re-derived every run: every non-comment line in
-     * `app/Bridge/Handlers/Kanban*Handler.php` naming the card field `'board_id'` or the reason
-     * literal `'card_not_on_mapped_board'`. A membership decision cannot be written without one
-     * of the two — the card's board comes back under that key and nowhere else — so a fourth
-     * copy lands in the population whatever level it reports at. The expected set is EMPTY:
-     * after the hoist no handler reads a card's board at all.
+     * `app/Bridge/Handlers/Kanban*Handler.php` **and `app/Console/Commands/Bridge/*.php`**
+     * naming the card field `'board_id'` or the reason literal `'card_not_on_mapped_board'`.
+     * A membership decision cannot be written without one of the two — the card's board comes
+     * back under that key and nowhere else — so a fourth copy lands in the population whatever
+     * level it reports at. The expected set is EMPTY: after the hoist no handler reads a card's
+     * board at all.
+     *
+     * ⭐ THE CLI GLOB IS NOT DECORATION (DL-301, card#7211): `bridge:reconcile --fix` is the
+     * SEVENTH caller of the primitive and the first one outside the handler files, so without it
+     * the newest arm of the rule would sit exactly where this leg cannot see — and the arms this
+     * leg covers are not the ones a fresh copy gets written next to. It returns empty today
+     * because the command routes the compare and the report through `MappedBoardGuard::refuses()`
+     * like every other arm.
      *
      * An empty expectation is a measurement only because two other assertions make failure
      * possible: {@see test_the_board_scanner_discriminates_a_real_read_from_a_comment} proves
@@ -132,14 +143,19 @@ class WritebackRefusalSignalCoverageTest extends TestCase
      * guard is deleted or renamed rather than reporting a clean repo over a rule that has
      * vanished.
      *
-     * STATED BOUND: the same glob as the leg above — a membership compare minted OUTSIDE those
-     * six handler files (a new handler named off-pattern, or a fresh `Writeback/` collaborator)
-     * is not covered until the glob is widened.
+     * STATED BOUND: a membership compare minted outside BOTH globs (a new handler named
+     * off-pattern, a fresh `Writeback/` collaborator, or a writer anywhere else in `app/`) is not
+     * covered until the glob is widened. The bound is narrower than it was — it no longer says
+     * "the same glob as the leg above" — because this leg's population now includes the CLI and
+     * the leg above's does not.
      */
     public function test_the_belongs_to_mapped_board_guard_lives_in_exactly_one_place(): void
     {
-        $files = glob(base_path('app/Bridge/Handlers/Kanban*Handler.php')) ?: [];
-        $this->assertGreaterThanOrEqual(6, count($files), 'the handler population came back short — the glob, not the code, is what changed');
+        $handlers = glob(base_path('app/Bridge/Handlers/Kanban*Handler.php')) ?: [];
+        $commands = glob(base_path('app/Console/Commands/Bridge/*.php')) ?: [];
+        $this->assertGreaterThanOrEqual(6, count($handlers), 'the handler population came back short — the glob, not the code, is what changed');
+        $this->assertGreaterThanOrEqual(5, count($commands), 'the bridge-command population came back short — the glob, not the code, is what changed');
+        $files = array_merge($handlers, $commands);
 
         $found = [];
         foreach ($files as $file) {
@@ -151,7 +167,7 @@ class WritebackRefusalSignalCoverageTest extends TestCase
         $this->assertSame(
             [],
             $found,
-            'a writeback handler reads a card\'s `board_id` or names `card_not_on_mapped_board` directly. '
+            'a writeback handler or a bridge command reads a card\'s `board_id` or names `card_not_on_mapped_board` directly. '
             .'The DL-009 belongs-to-mapped-board rule and its refusal report belong to MappedBoardGuard::refuses() '
             .'(DL-292) — a second copy is how one guard came to carry two severities and three predicates (card#7133). '
             .'Route it through the primitive, or extend the primitive if the new arm needs something it does not offer.',
