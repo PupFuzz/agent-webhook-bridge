@@ -39,6 +39,27 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7126 (DL-294)** — **`coord_card_lane_stage_ids` is now accepted with `move_coord_cards`
+  alone, not only with `create_coord_cards`.** The load refused any mapping that set a lane map
+  without the create leg, on the stated ground that *"the revive and relane legs only re-place an
+  already-placed card"* — **which card#6393 falsified**: both legs resolve their destination through
+  the same `CoordCardLanePlacement` primitive the create leg uses, and both reach cards this mapping
+  never created (all three correlate by the `id:<sid>` tag the consumer's reconcile writes too). So
+  the documented **move-on / create-off** shape — cards created by the reconcile, moved by the
+  bridge — could not configure a lane model at all, and its only route to a lane-aware revive was
+  enabling `create_coord_cards`, which changes **which mover creates cards** on that install and
+  races the reconcile. The predicate is now `create_coord_cards || move_coord_cards`, mirroring how
+  `coord_card_stage_id` is already required by either family, and the guard's message states what is
+  actually true. **⚠ This widens what `writeback.json` accepts** — a config that failed closed at
+  load now loads and starts placing cards in lanes; **operator-approved**. Nothing else in the guard
+  moves, and a lane map with **neither** family still fails closed (including an explicit
+  `move_coord_cards: false` with a terminal set, where DL-204 would otherwise default the leg on).
+  On such an install a reopened `[TASK]` now revives to the lane its `stage:*` label declares instead
+  of to the fixed `coord_card_stage_id`. Two further operator-visible strings that still framed the
+  lane ids as the create leg's are corrected in the same pass — the shape guard's remediation tail
+  (*"omit the key to disable the lane-derived stages"*) and the `bridge:check` bullet in
+  `docs/writeback.md`, which named the create alone as the blast radius of a typo'd **lane** id
+  where card#6393 made it three writes. Text only; no predicate moves.
 - **card#7124 (DL-293)** — **a `writeback.json` mapping key now names a REPO, not a spelling.**
   `WritebackConfig::mappingFor()` was a raw array-key lookup with neither side canonicalized, so a
   mapping keyed `pupfuzz/kanban-board` against a payload spelling `PupFuzz/kanban-board` matched
