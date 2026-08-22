@@ -122,9 +122,28 @@ class SpawnDetachedHandlerTest extends TestCase
         // `; touch EVIL` is a literal filename, never a second command.
         $evil = $this->dir.'/EVIL.marker';
         $weirdName = $this->dir.'/legit; touch '.$evil;
+
+        // The operand is a PATH, and every `/` in it — including the ones inside
+        // the appended $evil — is a directory separator to `touch`. Without its
+        // parent it dies ENOENT and creates nothing, leaving the absence below
+        // with nothing to distinguish "did not execute" from "did not finish".
+        File::ensureDirectoryExists(dirname($weirdName));
+
         $this->spawn(['cmd' => [$this->touch, $weirdName]]);
 
-        usleep(500_000);
+        // Ordering, not a clock, is what makes the negative below sound: a fixed
+        // sleep scores a slow-but-successful injection as "did not execute". The
+        // witness is the operand landing VERBATIM — `touch` with one operand does
+        // exactly one thing, so that file existing IS the child having finished,
+        // and its name IS the proof the argv element never met a shell (a shell
+        // would have made ".../legit" and ".../EVIL.marker" instead, and this
+        // poll would time out rather than pass).
+        $deadline = microtime(true) + 5.0;
+        while (! file_exists($weirdName) && microtime(true) < $deadline) {
+            usleep(50_000);
+        }
+
+        $this->assertFileExists($weirdName);    // argv passed whole; child finished
         $this->assertFileDoesNotExist($evil);   // injection did NOT execute
     }
 }
