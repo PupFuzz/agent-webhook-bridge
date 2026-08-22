@@ -63,9 +63,15 @@ final class MappedBoardGuard
      * log + no-op, never a 5xx retry). Returns false when the card belongs and the
      * caller may proceed.
      *
-     * $arm is the reaction name the message is prefixed with (`kanban_move_card`,
-     * `kanban_block_reason`, `kanban_coord_card_move`) — the arms share one reason code
-     * and are kept apart in the dedup tuple by their `$outcome` (DL-274(3)).
+     * $arm is the reaction name the message is prefixed with. SIX arms call this, in two
+     * families: the TOKEN-resolved writes (`kanban_move_card`, `kanban_block_reason`,
+     * `kanban_coord_card_move`) and, since DL-298, the SEARCH-resolved row re-checks
+     * (`dependabot_card`, `promote_on_release`, `coord_card_create`). They share one reason
+     * code (`card_not_on_mapped_board`) and are kept apart in the dedup tuple by their
+     * `$outcome` (DL-274(3)).
+     * ⛔ This list is a restatement and has already gone stale once — it named three arms
+     * after DL-298 made it six. If you add a caller, add it here; the reason code is the
+     * thing to grep for if you suspect it has drifted again.
      * $issueNumber is passed by the issue/PR-keyed arms only, and adds the `issue` key
      * to the log context (DL-285).
      *
