@@ -2516,34 +2516,39 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('bind-FAILURE marker', $out);
     }
 
+    /**
+     * THE LISTENER IS BOUND IN THIS PROCESS AND HELD OPEN ACROSS THE WHOLE RUN, so its
+     * lifetime is this method's control flow rather than a wall clock the `bridge:check`
+     * below has to beat (card#7209). The previous shape forked a child that held the bind
+     * for a hardcoded 3-second `stream_socket_accept()` window while the parent ran an
+     * unbounded check inside it — so a parent that took longer than the window probed a
+     * socket whose listener had already gone, the check CORRECTLY reported it dead, and
+     * the assertion red on a race the test did not control. Widening the child's window
+     * only moves that boundary; the parent was the unbounded half.
+     *
+     * NO FORK IS NEEDED, for the reason the HTTP twin below states: a bound listening
+     * socket completes the connect handshake from the kernel's backlog with no
+     * `accept()` at all, and the probe only connects and closes. That property is
+     * asserted against a real host by
+     * `SystemChannelProbeEnvironmentTest::test_a_live_unix_socket_answers_connected_with_no_error`.
+     * Dropping the fork also drops the `pcntl` skip (this leg now runs everywhere) and
+     * with it the shutdown-over-fork hazard the child's `SIGKILL` existed to dodge — a
+     * graceful child exit sent COM_QUIT on the fork-inherited DB connection, surfacing in
+     * the PARENT as "MySQL server has gone away" under a real MariaDB driver.
+     */
     public function test_check_reports_channel_socket_live_when_a_session_listens(): void
     {
-        if (! function_exists('pcntl_fork')) {
-            $this->markTestSkipped('pcntl required for the UDS liveness listener');
-        }
         $sock = $this->dir.'/live.sock';
-        $pid = pcntl_fork();
-        if ($pid === 0) {
-            $server = @stream_socket_server('unix://'.$sock, $errno, $errstr);
-            if ($server !== false) {
-                @stream_socket_accept($server, 3); // accept the liveness probe
-            }
-            // Hard-exit: a graceful exit runs PHP's shutdown, which closes the DB
-            // connection inherited over fork by sending COM_QUIT on the shared
-            // socket — the PARENT then errors "MySQL server has gone away" under a
-            // real MySQL/MariaDB driver (CI), though it's invisible under the local
-            // SQLite-in-memory driver.
-            posix_kill(posix_getpid(), SIGKILL);
-        }
-        $deadline = microtime(true) + 3.0;
-        while (! file_exists($sock) && microtime(true) < $deadline) {
-            usleep(20_000);
-        }
+        $server = @stream_socket_server('unix://'.$sock, $errno, $errstr);
+        $this->assertNotFalse($server, "could not bind unix://{$sock}: {$errstr}");
         $this->writeAgentWithChannelSocket($sock);
 
-        $code = Artisan::call('bridge:check');
-        $out = Artisan::output();
-        pcntl_waitpid($pid, $status);
+        try {
+            $code = Artisan::call('bridge:check');
+            $out = Artisan::output();
+        } finally {
+            fclose($server);
+        }
 
         $this->assertSame(0, $code);
         $this->assertStringContainsString('channel socket live', $out);
