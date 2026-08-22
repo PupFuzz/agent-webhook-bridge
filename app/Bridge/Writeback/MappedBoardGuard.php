@@ -74,11 +74,11 @@ final class MappedBoardGuard
      * ⚑ `card_board` is the card's RAW `board_id`, NOT normalised through the predicate, and
      * that is deliberate twice over. (1) The accepted set is an INTERVAL (see the class
      * docblock): `'8'` and `8.9` both belong to a mapping of 8, and which spelling kanban
-     * actually returned is exactly what a reader of this record wants. (2) Several callers
-     * are the Group-B sites (card#7211) that resolve ids from a board-scoped SEARCH and run
-     * no membership compare at all — normalising there would render an answer the code never
-     * asked. So the two values being EQUAL is the happy path, not an invariant this renders;
-     * a divergence is the record doing its job.
+     * actually returned is exactly what a reader of this record wants. (2) The compare that
+     * {@see refuses} runs — including on the Group-B sites (card#7211) that resolve ids from a
+     * board-scoped SEARCH, since DL-298 — accepts that whole interval, so normalising here
+     * would render a value no gate on any path ever computed. So the two values being EQUAL is
+     * the happy path, not an invariant this renders; a divergence is the record doing its job.
      *
      * @param  array<string, mixed>  $card  as returned by {@see KanbanClient::getCard()}, or a
      *                                      raw search row — a card the caller has in hand either way
@@ -95,9 +95,15 @@ final class MappedBoardGuard
      * log + no-op, never a 5xx retry). Returns false when the card belongs and the
      * caller may proceed.
      *
-     * $arm is the reaction name the message is prefixed with (`kanban_move_card`,
-     * `kanban_block_reason`, `kanban_coord_card_move`) — the arms share one reason code
-     * and are kept apart in the dedup tuple by their `$outcome` (DL-274(3)).
+     * $arm is the reaction name the message is prefixed with. SIX arms call this, in two
+     * families: the TOKEN-resolved writes (`kanban_move_card`, `kanban_block_reason`,
+     * `kanban_coord_card_move`) and, since DL-298, the SEARCH-resolved row re-checks
+     * (`dependabot_card`, `promote_on_release`, `coord_card_create`). They share one reason
+     * code (`card_not_on_mapped_board`) and are kept apart in the dedup tuple by their
+     * `$outcome` (DL-274(3)).
+     * ⛔ This list is a restatement and has already gone stale once — it named three arms
+     * after DL-298 made it six. If you add a caller, add it here; the reason code is the
+     * thing to grep for if you suspect it has drifted again.
      * $issueNumber is passed by the issue/PR-keyed arms only, and adds the `issue` key
      * to the log context (DL-285).
      *

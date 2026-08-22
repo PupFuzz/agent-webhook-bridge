@@ -360,7 +360,7 @@ class KanbanCoordCardHandlerTest extends TestCase
         // is popped by the DL-296 `archived=1` read as well and the post-create re-read
         // gets the wrong element (or an exhausted sequence).
         Http::fake($this->searchFake(
-            live: [[], [['id' => 100], ['id' => 99]]],   // pre-create empty → create; post-create: race surfaced
+            live: [[], [['id' => 100, 'board_id' => 8], ['id' => 99, 'board_id' => 8]]],   // pre-create empty → create; post-create: race surfaced
             archived: [],
             rest: [
                 '*/tasks/100.json' => Http::response(['data' => ['id' => 100, 'archived_at' => '2026-07-14T00:00:00+00:00']]),
@@ -374,16 +374,22 @@ class KanbanCoordCardHandlerTest extends TestCase
         Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/99.json'));
     }
 
-    public function test_the_collapse_archive_records_the_mapped_board_and_a_null_card_board(): void
+    public function test_the_collapse_archive_record_reads_the_rows_own_board_not_a_copy_of_the_mapped_one(): void
     {
-        // card#7212, and the honest half of the record. This caller hands the collapse
-        // `array_fill_keys($live, [])` — ids from a tag search, with no card ROW behind them —
-        // so there is nothing to read a landed board from and `card_board` is null. That is a
-        // MEASUREMENT, not a gap to paper over: a read-time fallback to the mapped board here
-        // would manufacture the very agreement the pair exists to test. `mapped_board` is
-        // recorded either way, so the record still names which mapping fired the archive.
+        // card#7212's divergence control on this arm. The tag arm's collapse used to be handed
+        // `array_fill_keys($live, [])` — ids with no card ROW behind them — so `card_board` was
+        // null here, a MEASUREMENT rather than a gap to paper over. DL-298 (card#7211) switched
+        // the caller to the row-returning `cardRowsByTag` twin so the rows could be re-checked
+        // against the mapped board, and the same rows now feed this record: `card_board` is the
+        // archived row's own value.
+        //
+        // ⛔ The values are forced APART through the accepted INTERVAL (DL-292) — the numeric
+        // STRING '8' belongs to a mapping of 8 — because a genuinely foreign row is refused
+        // before the collapse now. A "fix" echoing `mapped_board` into both slots gives int 8
+        // here and reds. `null` remains the primitive's honest answer for a rows-less caller;
+        // no caller inside the mapped-board regime is one any more.
         Http::fake($this->searchFake(
-            live: [[], [['id' => 100], ['id' => 99]]],
+            live: [[], [['id' => 100, 'board_id' => '8'], ['id' => 99, 'board_id' => 8]]],
             archived: [],
             rest: [
                 '*/tasks/100.json' => Http::response(['data' => ['id' => 100, 'archived_at' => '2026-07-14T00:00:00+00:00']]),
@@ -395,13 +401,13 @@ class KanbanCoordCardHandlerTest extends TestCase
         $this->handle();
 
         Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'archived duplicate card sharing the same correlation key')
-            && array_key_exists('card_board', $ctx) && $ctx['card_board'] === null && $ctx['mapped_board'] === 8);
+            && $ctx['card_id'] === 100 && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
     }
 
     public function test_no_duplicate_after_create_archives_nothing(): void
     {
         Http::fake($this->searchFake(
-            live: [[], [['id' => 99]]],
+            live: [[], [['id' => 99, 'board_id' => 8]]],
             archived: [],
             rest: ['*/tasks.json' => Http::response(['data' => ['id' => 99]], 201)],
         ));

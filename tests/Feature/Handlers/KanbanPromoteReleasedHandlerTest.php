@@ -16,6 +16,12 @@ use Tests\TestCase;
 /**
  * KanbanPromoteReleasedHandler (DL-207) — the board-wide Shipped→Released scan on a
  * release merge to main. shipped=52, released=53, board=8.
+ *
+ * ⚠ EVERY board row here carries `board_id` (DL-298, card#7211): a candidate is now
+ * re-checked against the mapped board before it is promoted, so a row that does not name
+ * board 8 is refused — and kanban returns `board_id` on every task row, so a fixture
+ * omitting it was never a realistic search result. The refusal leg itself lives in
+ * `tests/Feature/Writeback/ResolvedRowBoardGuardTest.php`, with its paired witness.
  */
 class KanbanPromoteReleasedHandlerTest extends TestCase
 {
@@ -146,7 +152,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
             ."printf 'protocol=https\\nhost=github.com\\nusername=x-access-token\\npassword=tok:%s\\n' \"\$path\"\n");
         chmod($stub, 0o755);
         config(['bridge.providers.github.credential_helper' => $stub]);
-        $this->fakeBoard([['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]]);
+        $this->fakeBoard([['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]]);
 
         $this->handle('Owner/repo');   // the PAYLOAD spelling, which is not the key
 
@@ -158,11 +164,11 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
     public function test_promotes_only_shipped_cards_whose_merge_is_on_main(): void
     {
         $this->fakeBoard([
-            ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],   // on main → promote
-            ['id' => 6, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 101]],   // diverged → leave
-            ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 100]],   // not shipped → skip
-            ['id' => 8, 'workflow_stage_id' => 52, 'payload' => ['dl_number' => 'DL-1']],   // no PR → skip
-            ['id' => 9, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 102]],   // open PR → skip
+            ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],   // on main → promote
+            ['id' => 6, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 101]],   // diverged → leave
+            ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 100]],   // not shipped → skip
+            ['id' => 8, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['dl_number' => 'DL-1']],   // no PR → skip
+            ['id' => 9, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 102]],   // open PR → skip
         ]);
 
         $this->handle();
@@ -177,7 +183,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
     public function test_skips_pinned_shipped_card(): void
     {
         $this->fakeBoard([
-            ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100], 'block_reason' => 'human hold'],
+            ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100], 'block_reason' => 'human hold'],
         ]);
 
         $this->handle();
@@ -192,7 +198,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         File::delete($this->dir.'/github/token');
         config(['bridge.providers.github.token_path' => $this->dir.'/github/absent-token']);
         $this->fakeBoard([
-            ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+            ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
         ]);
 
         $this->handle();
@@ -206,7 +212,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
     {
         $this->writeWriteback([]);   // promote_on_release absent
         $this->fakeBoard([
-            ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+            ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
         ]);
 
         $this->handle();
@@ -230,7 +236,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Log::spy();
         Http::fake([
             '*/tasks/search.json*' => Http::response([
-                'data' => [['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]],
+                'data' => [['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]],
                 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=99'],
             ]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
@@ -249,7 +255,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
     {
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [
-                ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+                ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
             ], 'links' => ['next' => null]]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['message' => 'boom'], 503),
         ]);
@@ -262,8 +268,8 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
     {
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [
-                ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
-                ['id' => 6, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 101]],
+                ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+                ['id' => 6, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 101]],
             ], 'links' => ['next' => null]]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['message' => 'Not Found'], 404),
             'https://api.github.com/repos/owner/repo/pulls/101' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA6', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
@@ -285,7 +291,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Http::fake([
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/search.json*' => Http::response(['data' => [
-                ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+                ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
             ], 'links' => ['next' => null]]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['message' => 'Not Found'], 404),
         ]);
@@ -308,7 +314,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Http::fake([
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/search.json*' => Http::response(['data' => [
-                ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+                ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
             ], 'links' => ['next' => null]]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['message' => 'No common ancestor'], 404),
@@ -330,7 +336,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Http::fake([
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/search.json*' => Http::response(['data' => [
-                ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+                ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
             ], 'links' => ['next' => null]]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
@@ -353,7 +359,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Http::fake([
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/search.json*' => Http::response(['data' => [
-                ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+                ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
             ], 'links' => ['next' => null]]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
@@ -388,7 +394,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Http::fake([
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/search.json*' => Http::response([
-                'data' => [['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]],
+                'data' => [['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]],
                 'links' => ['next' => 'https://kanban.example.com/api/v3/tasks/search.json?page=99'],
             ]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
@@ -514,7 +520,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
     private function shippedCards(int $n): array
     {
         return array_map(
-            fn (int $i) => ['id' => 1000 + $i, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 200 + $i]],
+            fn (int $i) => ['id' => 1000 + $i, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 200 + $i]],
             range(1, $n),
         );
     }
@@ -530,7 +536,7 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         Http::fake([
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/search.json*' => Http::response(['data' => [
-                ['id' => 5, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
+                ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]],
             ], 'links' => ['next' => null]]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
@@ -550,9 +556,10 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
 
     public function test_a_promote_records_the_cards_own_board_beside_the_mapped_one(): void
     {
-        // PRESENCE on a GROUP-B arm (card#7211): the candidate row came out of a
-        // board-scoped search and no membership compare runs before the promote, so the
-        // row's own board is the only reading of where the write went.
+        // PRESENCE on a GROUP-B arm (card#7211): the candidate row came out of a board-scoped
+        // search, so the row's own board is the only reading of where the write went. The
+        // DL-298 gate at candidacy decides WHETHER the row may be written to; this record says
+        // WHAT board it landed on — and only the record fires on the path the gate passes.
         $this->fakeBoard([['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]]);
         Log::spy();
 
@@ -563,22 +570,29 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
             && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
     }
 
-    public function test_a_promote_that_lands_on_another_boards_card_records_that_board_not_the_mapped_one(): void
+    public function test_the_promote_record_reads_the_rows_own_board_and_is_not_a_second_copy_of_the_mapped_one(): void
     {
-        // ⭐ THE DIVERGENCE CONTROL on this arm. A row whose own `board_id` is 12 is
-        // promoted by a board-8 mapping — unchanged behaviour, since nothing here re-checks
-        // membership (card#7211). What changes is that the record now says so, instead of
-        // being byte-identical to a correct promote.
+        // ⭐ THE DIVERGENCE CONTROL on this arm, and the value it pins is CARRIED: the row's
+        // board is captured at scan time and travels to a promote two calls later.
+        //
+        // ⛔ A row on a genuinely different board cannot reach this record any more —
+        // MappedBoardGuard refuses it at candidacy (DL-298, card#7211), which is why the
+        // divergence is forced through the accepted INTERVAL (DL-292) instead, exactly as the
+        // token-path arms do: `is_numeric` + `(int)` admits the numeric STRING '8' onto a
+        // mapped board of 8, so a reading of the ROW gives '8' where an echo of the mapping
+        // gives int 8. The gate does not make this record redundant — a gate emits evidence
+        // only when it REFUSES, and this is what answers "did this ever happen?" on the path
+        // the gate passes.
         //
         // ⛔ Seen to fail: before the fix this line carried no board at all, so `card_board`
-        // was absent; a fix echoing the mapped board twice would give 8 here, not 12.
-        $this->fakeBoard([['id' => 5, 'board_id' => 12, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]]);
+        // was absent; a fix echoing the mapped board twice gives int 8 here, not '8'.
+        $this->fakeBoard([['id' => 5, 'board_id' => '8', 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]]);
         Log::spy();
 
         $this->handle();
 
         $this->assertMoved(5, 53);
         Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_promote_released: promoted Shipped→Released'
-            && $ctx['card_board'] === 12 && $ctx['mapped_board'] === 8);
+            && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
     }
 }

@@ -9,6 +9,7 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\CoordCardLanePlacement;
+use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -236,15 +237,29 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
             // eligible key and collapse a duplicate a concurrent delivery (or the reconcile)
             // minted. Deterministic survivor ⇒ racing workers converge.
             if ($tag !== null) {
-                $live = $client->cardsByTag($mapping->boardId, $tag);
+                // The ROW-returning twin of the ids-only `cardsByTag` the pre-check uses.
+                // Same one GET, so carrying the board through the collapse costs nothing —
+                // it is the ids-only PROJECTION, not the request, that was discarding it.
+                // The twin does NOT carry `correlationIds`' no-card-collection diagnostic
+                // (DL-026), and nothing is lost: reaching this line means the pre-check's
+                // `cardsByTag` ran on the same board+tag in this same delivery and already
+                // warned if kanban answered a body with no `data` collection.
+                $live = $this->onMappedBoard($client->cardRowsByTag($mapping->boardId, $tag), $mapping, $repo, $issueNumber);
                 if (count($live) > 1) {
-                    CardCollapse::toSurvivor($client, array_fill_keys($live, []), 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag], $mapping);
+                    CardCollapse::toSurvivor($client, $live, 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag], $mapping);
                 }
             }
             if ($byRef) {
                 $liveRef = $client->correlateIssue($mapping->boardId, $issueNumber, $repo);
                 if (count($liveRef) > 1) {
-                    CardCollapse::toSurvivor($client, array_fill_keys($liveRef, []), 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'ref' => "github_issue:{$issueNumber}"], $mapping);
+                    // Only this arm pays a read per card, and only on a create RACE: by-ref
+                    // projects to ids and its board rides in the URL PATH, so there is no row
+                    // to re-check without one. Paid where >1 card already means something went
+                    // wrong, never on the ordinary single-card path.
+                    $rows = $this->onMappedBoard(array_map(fn (int $id) => $client->getCard($id), $liveRef), $mapping, $repo, $issueNumber);
+                    if (count($rows) > 1) {
+                        CardCollapse::toSurvivor($client, $rows, 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'ref' => "github_issue:{$issueNumber}"], $mapping);
+                    }
                 }
             }
         } catch (RequestException $e) {
@@ -264,6 +279,41 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
             }
             throw $e;
         }
+    }
+
+    /**
+     * The rows that are on the repo's mapped board, as the `id => card` map
+     * {@see CardCollapse::toSurvivor} consumes — every other row is REFUSED and reported
+     * through `MappedBoardGuard` (DL-298, card#7211), never silently dropped.
+     *
+     * ⛔ WHY A COLLAPSE NEEDS THIS AT ALL, and why it is not the same worry as a stray
+     * archive: the tie-break keeps the LOWEST id, and card ids are allocated GLOBALLY
+     * across every board on the instance. So one foreign row in the set does not merely
+     * add an archive — if its id is lower it WINS, and the card this handler just created
+     * is the one retired. The refusal set is empty while the search is scoped (measured),
+     * which is exactly why the guard has to be structural rather than observational.
+     *
+     * A row kanban answered without a readable `id` cannot be written to or reported on,
+     * so it is dropped here; it is not a member of any write set either way.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private function onMappedBoard(array $rows, WritebackMapping $mapping, string $repo, int $issueNumber): array
+    {
+        $kept = [];
+        foreach ($rows as $row) {
+            if (! is_numeric($row['id'] ?? null)) {
+                continue;
+            }
+            $id = (int) $row['id'];
+            if (MappedBoardGuard::refuses($this->alerts, $row, $mapping, 'kanban_coord_card', $id, $repo, self::ALERT_OUTCOME, $issueNumber)) {
+                continue;
+            }
+            $kept[$id] = $row;
+        }
+
+        return $kept;
     }
 
     /**

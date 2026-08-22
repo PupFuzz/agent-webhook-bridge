@@ -10,6 +10,44 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Added
 
+- **card#7211 (DL-298)** — **⚠ a card resolved from a board-scoped SEARCH is now re-checked
+  against the mapped board before the writeback writes to it.** The second half of card#7211,
+  and the one that changes behaviour: the first half (below) pins the *call*, this pins the
+  *result*. `MappedBoardGuard`'s belongs-to-mapped-board rule (DL-009/DL-292) ran only on the
+  **token** path — the sites that parse `card#NNNN` / `DL-NNN` out of a PR title or branch and
+  read the card. Three writeback paths resolve their cards from a board-scoped search instead
+  and parse no token, so nothing checked that the rows kanban handed back were on the board the
+  query asked for: `kanban_dependabot_card` (archive on closed-unmerged, the duplicate collapse,
+  the survivor's move), `kanban_promote_released` (the Shipped→Released scan) and
+  `kanban_coord_card` (the post-create collapse). All three now call **the same primitive** — no
+  second copy of the compare, the same `card_not_on_mapped_board` reason, the same
+  warn-then-push report, kept apart in the dedup tuple by their `outcome`.
+  **⚠ UPGRADING — this is a fail-closed tightening on a write path, and the newly-refused set is
+  EMPTY on a correctly-scoped instance.** A card is refused (not moved, not archived, and not
+  eligible to win a collapse) when the row kanban returned does not name the mapped board, or
+  carries no readable board at all. `q=board_id=<id>` **is** enforced server-side — measured with
+  the control that makes the zero mean something (a token planted only on board B: `total:1`
+  scoped to B, `total:0` scoped to A, holding past page 1) — so on a healthy install this refuses
+  nothing and writes exactly what it wrote before. **That is the design intent, not a hedge:** the
+  same endpoint silently drops an unrecognised **top-level** parameter and answers 200 with an
+  UNFILTERED result set, and `board_id` also works top-level and filters correctly there, so the
+  hoist that would break the scope tests clean and reviews clean. The guard makes the scope a
+  property of the data rather than of how the call happens to be written. **A refusal is per row
+  — the rest of the delivery proceeds** — and it signals (durable `Log::warning` + the additive
+  push), because a cross-board write that SUCCEEDS emits no event at all.
+  **Cost: no extra request on any ordinary path.** Every one of these searches already returns
+  full rows; it was the client-side projection to ids that discarded the board. Dependabot
+  already re-read each card for its repo attribution; the promote scan already holds rows; the
+  coord collapse switched from `cardsByTag` to its row-returning twin `cardRowsByTag` — the same
+  single GET. The **one** added read is the coord handler's by-ref collapse arm (its board rides
+  in the URL path, so there is no row to check): one `getCard` per correlated card, paid only
+  when a create race has already produced more than one.
+  **⛔ Not changed, deliberately:** the coord handler's three *read-decision* sites (the live tag
+  pre-check, the by-ref pre-check, the DL-296 archived-twin read) write nothing — board-scoping
+  them would make the handler create where it previously skipped, a change in the permissive
+  direction needing its own ruling. **⛔ Still open:** `bridge:reconcile --fix` reads the board
+  and moves cards from its plan with no such re-check — the fourth site, left on card#7211.
+
 - **card#7211** — **a guard on the CALL CONSTRUCTION of every board-scoped kanban read: the
   board term must sit inside the `q=` string, never as a top-level query parameter.** Measured
   live: `q=board_id=<id>` is enforced server-side (a token planted only on board B returned
@@ -143,13 +181,17 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   consumer grepping `"board":` on those two lines must move to `"mapped_board":`. Those are the only
   two replacements; the other **nine** sites recorded **no board at all** and are purely additive.
   **Three stated bounds:** `card_board` is the card's RAW value, deliberately not normalised through
-  the guard's predicate — the accepted set is an interval (DL-292), and on the unguarded Group-B arms
-  no membership compare runs at all, so normalising would render an answer the code never asked; a
+  the guard's predicate — the accepted set is an interval (DL-292) and the compare the Group-B arms
+  gained at DL-298 accepts that whole interval, so normalising would render a value no gate on either
+  path ever computed; a
   **CREATE** keeps its lone `board` key, because there is no resolved card to read a board from (the
   create response returns an id); and the collapse primitive's mapping is **nullable**, because its
   board-tools caller (`BoardCreateCardTool`) is outside the DL-009 mapped-board regime entirely —
-  there its archives record no pair, and the coord-card callers, which hand the collapse ids with no
-  card rows behind them, record `card_board: null` rather than falling back to the mapped board.
+  there its archives record no pair. Every caller inside the regime hands the collapse real rows —
+  DL-298 converted the coord-card tag arm to the row-returning `cardRowsByTag` twin and its by-ref arm
+  to a per-card read for the same re-check — so `card_board` is the row's own value there; a caller
+  that ever handed in ids with no rows behind them would record `card_board: null` rather than falling
+  back to the mapped board.
   **Scope held deliberately**: whether a DURABLE record beyond a 14-day log line is warranted for
   cross-tenant writes is a retention decision and is NOT smuggled in here. Each divergence leg was
   **seen to fail** against a mutant rendering `mapped_board` into both slots — today's defect wearing

@@ -104,8 +104,10 @@ class WritebackSuccessBoardRecordTest extends TestCase
         'CardCollapse.php:archiveCard' => [
             'sites' => 1,
             'record' => 'PAIRED — the shared duplicate-collapse kernel (DL-198). Its ids come from a '
-                .'board-scoped correlate/search with NO membership compare, so this is a Group-B write '
-                .'(card#7211) and the archived row is the only reading of where it landed. Both the '
+                .'board-scoped correlate/search, so this is a Group-B write (card#7211) and the archived '
+                .'row is the only reading of where it landed. DL-298 put a refuses() re-check in front of '
+                .'every caller inside the mapped-board regime, which does not retire this record: a gate '
+                .'emits evidence only when it REFUSES. Both the '
                 .'archived line and the 200-but-not-archived Log::error carry the pair, per the one rule '
                 .'above. The pair renders only when the caller passes a mapping — leg 3 is what makes '
                 .'that a requirement rather than a hope for every caller in this population.',
@@ -126,8 +128,9 @@ class WritebackSuccessBoardRecordTest extends TestCase
         ],
         'KanbanDependabotCardHandler.php:archiveCard' => [
             'sites' => 1,
-            'record' => 'PAIRED — a GROUP-B site (card#7211): the id came from a board-scoped search with no '
-                .'membership compare, so the card row is the only reading of where the write landed.',
+            'record' => 'PAIRED — a GROUP-B site (card#7211): the id came from a board-scoped search, so the '
+                .'card row is the only reading of where the write landed. cardsForRepo() re-checks that row '
+                .'against the mapped board (DL-298) — a gate on the write, not a record of it.',
         ],
         'KanbanDependabotCardHandler.php:moveCard' => [
             'sites' => 1,
@@ -153,7 +156,8 @@ class WritebackSuccessBoardRecordTest extends TestCase
         'KanbanPromoteReleasedHandler.php:moveCard' => [
             'sites' => 1,
             'record' => 'PAIRED — Group-B: the row is read at scan time and its board CARRIED to the promote '
-                .'two calls later, where the row is out of scope. Carried, never re-read.',
+                .'two calls later, where the row is out of scope. Carried, never re-read. ONE capture serves '
+                .'the DL-298 gate at candidacy and this record alike.',
         ],
     ];
 

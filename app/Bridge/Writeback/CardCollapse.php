@@ -27,15 +27,19 @@ final class CardCollapse
      * (the DL-020 posture) — same as the individual archive callers.
      *
      * ⛔ EVERY archive here is a GROUP-B write (card#7211/card#7212): the ids arrive from a
-     * board-scoped correlate/search and NO membership compare runs before the archive, so
-     * this is one of the arms most likely to touch a foreign card — it fires exactly when
-     * correlation returned more rows than expected. Both records therefore carry
-     * {@see MappedBoardGuard::boardContext()}: the archived line, and the 200-but-not-archived
-     * `Log::error`, which reports a write kanban ACCEPTED whose effect did not take — the
-     * request DID reach that card, so the board it reached is the answer this record exists
-     * to give. Several callers hand in rows they never read (`array_fill_keys($live, [])`),
-     * and `card_board => null` is the honest answer there: the primitive records the absence
-     * rather than falling back to the mapped board, which would manufacture agreement.
+     * board-scoped correlate/search, so this is one of the arms most likely to touch a foreign
+     * card — it fires exactly when correlation returned more rows than expected. DL-298 put a
+     * `MappedBoardGuard::refuses()` re-check in front of every caller inside the mapped-board
+     * regime, which decides WHETHER a row may be written to; the pair below records WHAT board
+     * the write landed on, and the two are not substitutes — a gate emits evidence only when it
+     * REFUSES, and this record is what answers "did this ever happen?" on the path it passes.
+     * Both records therefore carry {@see MappedBoardGuard::boardContext()}: the archived line,
+     * and the 200-but-not-archived `Log::error`, which reports a write kanban ACCEPTED whose
+     * effect did not take — the request DID reach that card, so the board it reached is the
+     * answer this record exists to give. A caller that hands in rows it never read
+     * (`array_fill_keys($live, [])`) gets `card_board => null`, which is the honest answer: the
+     * primitive records the absence rather than falling back to the mapped board, which would
+     * manufacture agreement.
      *
      * ⚑ $mapping is NULLABLE, and that is a real state rather than a missing value: the
      * board-tools caller (`BoardCreateCardTool`) is outside the DL-009 mapped-board regime

@@ -2347,13 +2347,13 @@ pull request it already names', $notes[0]);
         // defect wearing the new field's name. So force the two values APART and pin them
         // with `===`.
         //
-        // On THIS arm a card on a genuinely different board cannot reach the success record:
-        // MappedBoardGuard refuses it long before the move. What can reach it is the accepted
+        // A card on a genuinely different board cannot reach the success record on ANY arm:
+        // MappedBoardGuard refuses it long before the write — on this token arm since DL-292,
+        // and on the Group-B arms since DL-298 (card#7211). What can reach it is the accepted
         // INTERVAL (DL-292) — `is_numeric` + `(int)` admits the numeric STRING "8" onto a
         // mapped board of 8 — so a reading of the card gives `'8'` where an echo of the
-        // mapping would give int 8. The genuinely-different-board control belongs on the
-        // Group-B arms, which run no membership compare at all: see
-        // KanbanDependabotCardHandlerTest and KanbanPromoteReleasedHandlerTest.
+        // mapping would give int 8. That is the mechanism every divergence leg in this class
+        // now uses; see KanbanDependabotCardHandlerTest and KanbanPromoteReleasedHandlerTest.
         $this->writeWriteback();
         $this->writeToken();
         Http::fake([
