@@ -22,8 +22,9 @@
  * worse than no doc — it sends you to a file that isn't there. This converts
  * "remember to update the docs" into "CI fails if you didn't."
  *
- * Checked, per backtick-quoted token on a line — the first two over the non-historical
- * CLAUDE_*.md docs, the third over the whole source surface (see THE MEMBER LEG below):
+ * Checked, per CITATION on a line — {@see citationsOnLine()} owns which spellings are one, and
+ * the first two run over the non-historical CLAUDE_*.md docs while the third runs over the whole
+ * source surface (see THE MEMBER LEG below):
  *   - a repo file path ending in .php that contains a '/', with optional brace
  *     expansion: `app/Bridge/Support/{AgentConfig,SubscriptionConfig}.php`
  *   - an `App\...` FQCN: `App\Bridge\Support\SecretFile` → app/Bridge/Support/SecretFile.php
@@ -53,6 +54,20 @@
  * and admitting them would red on every one. No count of them is quoted here — a figure in a
  * comment is a quoted authority no later pass recomputes; the population re-derives with
  *   grep -rohE '`[a-z][A-Za-z0-9_]*\(\)`' CLAUDE_*.md README.md docs app tests bin | sort -u | wc -l
+ *
+ * THE FORM IS NOT THE TOKEN SET (card#7330). Until that card the harvest was backtick-only, so
+ * `{@see \FQCN::member}` — the form this tree's docblocks overwhelmingly use — was read by
+ * neither leg, and the closing line reported an "examined" count and a clean verdict over a
+ * population it could not see. What changed is WHERE a citation is found, never what one MEANS:
+ * a `{@see …}` payload is read exactly when its backticked twin would be, so the two bounds above
+ * are unchanged by it and are now the RULING bounds on the dominant form. Two DISCLOSED gaps
+ * follow, and neither is protection: a `{@see self::member}` names no file (in markdown prose
+ * there is no enclosing class to resolve `self` against), and a `{@see member}` bare of any class
+ * is the bare-`func()` bound one paragraph up — reached by that paragraph's rule, though not by
+ * its rationale, since a payload inside a reference tag is a machine-readable claim about this
+ * tree rather than prose that might be quoting someone else's vocabulary. Card#7330 carries the
+ * derivation for both and owns whether they close; the populations re-derive with
+ *   grep -rohE '\{@see [^}]*\}' app tests docs bin *.md | sort | uniq -c | sort -rn
  *
  * IT ANSWERS ONLY WHERE IT CAN. A member is a finding when the class file is under `app/`
  * AND its whole ancestry (parents, traits) is resolvable there and declares nothing by that
@@ -630,6 +645,12 @@ function qualifyName(string $name, string $namespace, array $imports): string
  * entry says nothing about WHICH of its citations went. The reverse trade — keeping the wide scope
  * so the shorter annotation keeps working — is what was measured and rejected.
  *
+ * WHAT COUNTS AS REPEATING IT IS THE HARVEST, NOT A SPELLING. The annotation may name the
+ * citation in any form {@see citationsOnLine()} recognises, and that is not a convenience: a
+ * recogniser that accepted backticks only would leave a frozen `{@see …}` citation with no
+ * discharge available at all — the escape hatch would exist for one spelling and not for the one
+ * the tree actually writes (card#7330).
+ *
  * THE UNIT IS A SENTENCE WITHIN A LINE, stated because it is a real edge rather than an oversight:
  * rule 1 reads one line at a time, so a marker written on the PREVIOUS wrapped line of the same
  * markdown paragraph does not reach the citation. The report names a file and a line, so the scope
@@ -640,7 +661,10 @@ function qualifyName(string $name, string $namespace, array $imports): string
 function annotationCovers(string $line, string $tok, string $marker): bool
 {
     foreach (sentencesOf($line) as $sentence) {
-        if (str_contains($sentence, '`'.$tok.'`') && preg_match($marker, $sentence) === 1) {
+        if (preg_match($marker, $sentence) !== 1) {
+            continue;
+        }
+        if (in_array($tok, citationsOnLine($sentence), true)) {
             return true;
         }
     }
@@ -666,6 +690,56 @@ function annotationCovers(string $line, string $tok, string $marker): bool
 function citedAsRejected(string $line, string $tok): bool
 {
     return annotationCovers($line, $tok, '/\brejected\b|\bnot built\b|\bnot chosen\b|\bnot adopted\b/i');
+}
+
+/**
+ * Every CITATION written on one line, whatever spelling it was written in.
+ *
+ * THREE FORMS, ONE DEFINITION, AND THE THIRD IS WHY THIS FUNCTION EXISTS (card#7330). Rule 1
+ * harvested BACKTICKED tokens only, so `{@see \FQCN::member}` — the form this tree's docblocks
+ * overwhelmingly use — was not a token either leg ever read. That is worse than an unchecked
+ * form: the run's closing line reported an "examined" count and a clean verdict over a
+ * population the harvester could not see, which is the defect rule 1 exists to catch, one level
+ * up. Measured with a control in both directions before the fix: a planted phantom member
+ * spelled `{@see App\NoSuchNamespace\Absent::$noSuchMember}` was not even COUNTED, while the
+ * same phantom spelled in backticks was reported and reddened the run.
+ *
+ * THE SPELLING IS DISCARDED, AND THAT IS THE POINT. A caller gets the token and nothing else, so
+ * no leg can end up treating one form differently from another — which is what the DISCHARGE
+ * needs ({@see annotationCovers()}): an annotation must REPEAT the citation it discharges, and
+ * "repeat" is decided by this same harvest, so either form discharges either form.
+ *
+ * WHAT IS NOT HARVESTED, stated because an unstated bound is how the backtick-only scope
+ * survived this long: a phpDocumentor `{@see …}` may carry a trailing description, of which
+ * only the first whitespace-delimited word is the reference; a bare `@see` is read only on a
+ * comment-continuation line (` * @see X`), where it is unambiguously the tag rather than prose
+ * about it; and `{@link …}` is not read at all — this tree writes none, and a form with no
+ * instances would ship as an unexercised branch. The population re-derives with
+ *   grep -rohE '\{@[a-z]+' app tests docs bin *.md | sort -u
+ *
+ * @return list<string>
+ */
+function citationsOnLine(string $line): array
+{
+    $out = [];
+    if (preg_match_all('/`([^`]+)`/', $line, $m) !== false) {
+        foreach ($m[1] as $tok) {
+            $out[] = $tok;
+        }
+    }
+    if (preg_match_all('/\{@see\s+([^}]+)\}/', $line, $m) !== false) {
+        foreach ($m[1] as $payload) {
+            $ref = preg_split('/\s+/', trim($payload))[0] ?? '';
+            if ($ref !== '') {
+                $out[] = $ref;
+            }
+        }
+    }
+    if (preg_match('/^\s*\*\s*@see\s+(\S+)/', $line, $m) === 1) {
+        $out[] = $m[1];
+    }
+
+    return $out;
 }
 
 /**
@@ -734,10 +808,7 @@ foreach ($docs as $doc) {
         continue;
     }
     foreach (file($path, FILE_IGNORE_NEW_LINES) ?: [] as $i => $line) {
-        if (preg_match_all('/`([^`]+)`/', $line, $m) === false) {
-            continue;
-        }
-        foreach ($m[1] as $tok) {
+        foreach (citationsOnLine($line) as $tok) {
             if (annotationCovers($line, $tok, $removedMarker)) {
                 continue;
             }
@@ -753,10 +824,7 @@ foreach ($docs as $doc) {
 // RULE 1b — the MEMBER leg, over every source rules 2 and 3 walk (see the rule docblock).
 foreach (scannedSources($root) as $rel) {
     foreach (file($root.'/'.$rel, FILE_IGNORE_NEW_LINES) ?: [] as $i => $line) {
-        if (preg_match_all('/`([^`]+)`/', $line, $m) === false) {
-            continue;
-        }
-        foreach ($m[1] as $tok) {
+        foreach (citationsOnLine($line) as $tok) {
             $citation = memberCitation($tok);
             if ($citation === null) {
                 continue;
@@ -1154,7 +1222,7 @@ if ($errors !== [] || $citeErrors !== [] || $claimErrors !== []) {
         foreach ($errors as $e) {
             fwrite(STDERR, "  - {$e}\n");
         }
-        fwrite(STDERR, "\nFix the reference, or — if the construct was deliberately removed or renamed — say so in the\nSAME SENTENCE as the citation (\"removed\", \"renamed\", \"there is no …\"). CLAUDE_DECISIONS.md\nand docs/CHANGELOG.md entries are frozen, so that marker goes in an ANNOTATION appended after\nthe original sentence — and the annotation must REPEAT the citation it discharges, in\nbackticks, or it covers nothing on that line. An alternative the entry says it REJECTED needs\nnothing. See DL-013 and its DL-291 annotation.\n");
+        fwrite(STDERR, "\nFix the reference, or — if the construct was deliberately removed or renamed — say so in the\nSAME SENTENCE as the citation (\"removed\", \"renamed\", \"there is no …\"). CLAUDE_DECISIONS.md\nand docs/CHANGELOG.md entries are frozen, so that marker goes in an ANNOTATION appended after\nthe original sentence — and the annotation must REPEAT the citation it discharges, as a citation\n(backticked or `{@see …}`, either spelling), or it covers nothing on that line. An alternative\nthe entry says it REJECTED needs nothing. See DL-013 and its DL-291 annotation.\n");
     }
     if ($citeErrors !== []) {
         fwrite(STDERR, "Line-number citations (an offset goes stale the next time anything above it moves):\n");
