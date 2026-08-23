@@ -840,6 +840,42 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#7330** — **⚠ `check-doc-refs` was reporting a clean verdict over a population that
+  excluded the citation form this repo mostly writes.** Rule 1's harvest was BACKTICKED-only, so
+  every `{@see …}` citation in a docblock — 645 of them in the tree — was not a token either leg
+  read. The failure mode is worse than an unchecked form: a phantom member cited that way was not
+  reported, **not counted**, and not distinguishable at the exit code from a tree that had none,
+  while the run's closing line printed an "examined" count and said all references resolve.
+  Measured on this branch with a control in both directions, one bogus member planted in a real
+  `app/` docblock: against the OLD gate the un-backticked house-style spelling left the run at
+  **801 examined, 0 reported, rc=0** while the backticked spelling of the same phantom gave **802
+  examined, 1 reported, rc=1** — the harvester discriminated perfectly on one form and could not
+  see the other. **⚠ This changes what CI ACCEPTS for a
+  contributor:** a `{@see …}` naming a member that does not exist now reds `laravel-tests.yml`'s
+  doc-sync step where it used to pass. Nothing about an installed bridge moves — no `app/`
+  behaviour, no route, no schema.
+  - **The harvest is now form-aware; the TOKEN SET is unchanged.** One shared recogniser reads a
+    backticked token, an inline `{@see …}` tag and a standalone `@see` tag line, and hands all
+    three to the legs that already existed — so a payload is examined exactly when its backticked
+    twin would be. Widening WHERE a citation is found without widening what is REPORTED would have
+    been the same defect wearing a hat, so both legs consume the recogniser.
+  - **The discharge follows the citation.** A removed-marker annotation may repeat the citation it
+    discharges in either spelling, decided by that same recogniser. A backtick-only reader would
+    have left a frozen `{@see …}` citation with no escape hatch available at all — the hatch would
+    exist for one spelling and not for the one the tree actually writes.
+  - **Derived, not estimated: the census moves from 801 to 950 examined (+149), and 0 reported.**
+    The +149 is the population that was previously unread; all of it resolves, which is the tree
+    being clean on that form and NOT the gate being blind — the two are indistinguishable at the
+    exit code, so the difference is pinned by a test asserting the COUNT. The new gate was seen to
+    fail before being trusted: the same planted phantom, still in the un-backticked house style,
+    now gives **951 examined, 1 reported, rc=1** and names the file, line and member.
+  - **Two gaps DISCLOSED rather than closed, with their derivations.** A `{@see self::member}` (88
+    in the tree) names no file — in markdown prose there is no enclosing class to resolve `self`
+    against — and a class-less member name inside the tag (60 bare `func()` payloads) is the
+    pre-existing bare-name bound. Neither resolves to a phantom in the tree today; both are
+    disclosed gaps, not protection, and both are pinned by a test paired with a witness that the
+    same phantom IS convicted once it carries its class.
+
 - **card#7295 (DL-302)** — **⚠ `board_my_cards` reported the CONFIGURED board for a row set whose
   own board nothing had read, and the coord block reported no board at all.** The response stated
   `board_id` from this agent's `board_tools` config beside the cards it had just fetched, so a
