@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.75.0] - 2026-08-23
+
 ### Added
 
 - **card#7332 (DL-306)** — **an OPT-IN periodic standup digest pushed to one seat, carrying only
@@ -283,138 +285,83 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
-- **card#7348 (DL-308)** — **⚠ WIDENS WHAT THE MERGE GATE ACCEPTS, and read this before you
-  upgrade past DL-305: a merge into the INTEGRATION BRANCH from a head branch whose ref NAMES the
-  card now closes that card, with no closing verb in the title at all.** The DL-305 entry below
-  still describes the lexical route correctly and that route is unchanged — but shipped alone it
-  was **unsatisfiable by this shop's PR titles**. Measured against the shipped
-  `ClosureGrammar::closesCard()`, called on real merged-PR titles pulled from GitHub rather than
-  re-implemented: **0 of 351** correlated merged PRs across all four repos closed anything, while an
-  artificial `Closes card#7464` control passed — so the grammar worked and the convention simply has
-  never contained a closing verb. **A gate nothing satisfies does not protect a board, it freezes
-  one, and it does so QUIETLY:** CI green, merge succeeds, card motionless, nothing red anywhere.
-  Caught before any of it reached prod (`v0.74.1` predates DL-305).
-  **The rule now.** On a gated outcome a card moves on **either** route, and both are live:
-  **structural** — the PR merged into the integration branch (any base but `main`) AND the head ref
-  names that card (`card-4811-widget`); or **lexical** — a closing form in the title
-  (`Closes card#4811` / `Fixes DL-239`).
-  **⛔ THE PROPERTY THE GATE EXISTS FOR IS PRESERVED, which is why the widening was ruled
-  acceptable:** *no token that merely APPEARS may move a stage.* **Quoting someone else's card id
-  does not rename your branch** — a foreign mention satisfies neither half of the structural term,
-  so the peer incident that filed this card is still refused. The head ref is not prose: it is
-  minted by this install's own tooling, which is why the correlation rules already treat it as
-  authoritative over the title. What the widening reads is branch IDENTITY plus the fact of a
-  merge, never the slug's words.
-  **What you may need to change.** ⚠ The branch must name a card **token**, not merely carry its
+- **card#7348 (DL-305 + DL-308)** — **⚠ CHANGES WHAT THE WRITEBACK ACTS ON: a PR that merely
+  MENTIONS a `card#N` / `DL-NNN` token no longer moves that card to a terminal stage on merge.**
+  *"This PR mentions card N"* and *"card N's work is shipped"* are different propositions, and the
+  writeback collapsed them: `PrOutcome::forMergedBase()` was a pure function of the base ref — **no
+  completion signal in it at all** — and the classifier handed it whichever token the title or head
+  branch carried, so a PR citing a card for context moved it to `stages.merged` and the
+  `promote_on_release` sweep propagated that into a **terminal, irreversible** stage. Filed from
+  roundtable #343; the harm is **measured at peers, not hypothetical** — 17 wrong-retirement
+  candidates in one pending release bundle, and one card whose explicit human ruling (*"this card
+  does not close on that commit"*) the writeback reversed three hours later. This install measured 0
+  hijacks in 300 merged titles, which is **not immunity**: it was protected by a *convention* (one
+  card per PR, cited only when it closes it) that fails silently the first time someone cites a card
+  for context.
+  **THE RULE NOW — on a gated outcome a card moves via EITHER route, and both are live:**
+  **structural** — the PR merged into the INTEGRATION BRANCH (any base but `main`) **and** the head
+  ref NAMES that card (`card-4811-widget`); or **lexical** — a closing form in the TITLE
+  (`Closes card#4811` / `Fixes DL-239`, GitHub's own linking-keyword set).
+  *(Built in two steps inside this one release — #571 shipped the lexical route alone, #576 added
+  the structural term — and stated here as the NET rule because the lexical-only state never reached
+  a release. It was unsatisfiable by this shop's titles: measured against the shipped
+  `ClosureGrammar::closesCard()` on real merged-PR titles, **0 of 351** correlated merged PRs across
+  four repos closed anything, while an artificial `Closes card#7464` control passed. A gate nothing
+  satisfies does not protect a board, it freezes one QUIETLY — CI green, merge fine, card motionless.
+  Reach on the live convention: **0% → 93.2%**.)*
+  **⛔ RELEASE MERGES ARE NOT WIDENED.** Only the integration merge takes the structural route;
+  `merged_to_main` still requires a closing form. A release head is a disposable `release/vX` naming
+  no card, so making it a *condition* is what stops a future release convention that DID name a card
+  from silently acquiring a terminal-stage move. **`opened`, `closed_unmerged` and `started` are
+  UNGATED** (`PrOutcome::requiresClosure()` owns which, and why): `opened` is reversible and is what
+  stamps the card's PR refs so the reconciler can find the PR later, `closed_unmerged` is an abandon
+  disposition, and a branch ref cannot carry a closing verb, so gating `started` would make every
+  branch-create inert. Dependabot cards, the draft `block_reason` overlay and the release-promote
+  sweep are untouched.
+  **⛔ A BARE MENTION IS A NO-OP, NEVER A DEMOTION, and that is the load-bearing half.** The
+  writeback re-classifies in-window PRs on **every** pass (redeliveries, `bridge:replay`, scheduled
+  `bridge:reconcile`), so a rule that returned an *earlier* stage would not gently correct the
+  mistaken cards — it would **mass-demote every already-correct card on the first run**, because
+  every historical PR is a bare mention under the new grammar. Withholding the move leaves every
+  existing stage exactly where it is. **Nothing to backfill; the migration is free.**
+  **⚠ WHAT YOU MAY NEED TO CHANGE.** The branch must name a card **token**, not merely carry its
   digits: `card-4811-…`, `card#4811-…`, `fix/card-4811-…` and glued `card4811-…` close card 4811;
   the older **`fix/4811-widget`** spelling does **not**. That strictness is deliberate — the bare-id
-  test used elsewhere for *corroboration* accepts an accidental match (`chore/bump-1-2-3` vs
-  `card#2`) on the stated grounds that it can never authorize anything, which is untrue of a gate
-  onto a terminal stage. On this seat's current convention it costs about **1 merged PR in 59**,
-  each one **loudly warned**, with the lexical route still open. Reach: **0% → 93.2%** of correlated
-  merged PRs on the live convention.
-  **⛔ RELEASE MERGES ARE NOT WIDENED.** Only the integration merge takes the structural route;
-  `merged_to_main` still needs a closing form. A release head is a disposable `release/vX` naming no
-  card, so the term would rarely fire there — making it a *condition* is what stops a future release
-  convention that DID name a card from silently acquiring a terminal-stage move.
-  **`bridge:reconcile` gets the identical term over the identical two fields** (`GitHubReadClient::getPull()`
-  now projects `head_ref` beside `title`): a term on one path and not the other means the backstop
-  and the event path disagree about which merges close a card, and `--fix` runs on a schedule. The
-  term therefore lives on `PrOutcome::mergeClosesCard()` and neither path spells it.
-  **Operator surfaces stopped saying the title is the only route:** `bridge:check`'s per-mapping
-  line and the withheld-merge warning both render `PrOutcome::describeClosure()`, which composes
-  both halves from their own authorities, and the warning now **names the head ref it read** — with
-  two closure surfaces, a line quoting only the title sends you to rewrite prose when the answer is
-  that your branch is called `fix/streaming-timeout`.
+  test used elsewhere for *corroboration* tolerates an accidental match on the stated grounds that it
+  can never authorize anything, which is untrue of a gate onto a terminal stage. On this seat's
+  convention it costs about **1 merged PR in 59**, each one **loudly warned**, with the lexical route
+  still open. Failure direction is safe: a forgotten closing form leaves a card UNDER-promoted (move
+  it by hand), never silently — the withheld move emits a `Log::warning` naming the card, the outcome
+  and the accepted forms **rendered from the grammar** (DL-239 discipline). ⚠ Cards that reached
+  Shipped **before** this ships stay eligible for the release-promote sweep — audit a large
+  historical Shipped backlog before enabling `promote_on_release`. **No config key, no migration, no
+  token-scope change**, and `ClosureGrammar` restates neither token pattern (it matches the verb
+  bridge and hands the remainder to `CardTokenGrammar`/`DlTokenGrammar::parseAnchored()`).
+  **⛔ The property the gate exists for is PRESERVED:** *no token that merely APPEARS may move a
+  stage.* Quoting someone else's card id does not rename your branch, so a foreign mention satisfies
+  neither route and the peer incident that filed this card is still refused; what the structural term
+  reads is branch IDENTITY plus the fact of a merge, never the slug's words. The **DL-218
+  foreign-mention guard is intact** — on the `card#` path the resolved DL is deliberately not passed
+  to the gate, so a `Closes DL-9` naming another card's work cannot authorize the `card#` that guard
+  just ruled authoritative. A `DL-NNN` closing form closes every card that DL resolved to (DL-148 is
+  one-to-many); a `card#` closing form closes only the card it names.
+  **`bridge:reconcile` applies the identical term over the identical two fields**
+  (`GitHubReadClient::getPull()` now projects `head_ref` beside `title`) — a term on one path and not
+  the other means the backstop and the event path disagree about which merges close a card, and
+  `--fix` runs on a schedule. The term lives on `PrOutcome::mergeClosesCard()`; neither path spells
+  it. **Operator surfaces stopped saying the title is the only route:** `bridge:check`'s per-mapping
+  line and the withheld-merge warning both render `PrOutcome::describeClosure()`, and the warning
+  **names the head ref it read** — a line quoting only the title sends you to rewrite prose when the
+  answer is that your branch is called `fix/streaming-timeout`. `bridge:check` additionally **reports
+  the `identity_id` your config declares**, named as the echo-suppression key it primarily is, with
+  the instruction to mint that token as its own kanban user; ⛔ it **reports, it does not certify** —
+  it prints a CONFIGURED value without resolving the token against the API, so a green run must not
+  be read as "writer separation verified".
   **⚠ Two residuals, recorded and NOT fixed:** a card tracked by several PRs promotes at its
   **first** merged one, and a human's *"this card does not close on that commit"* ruling is
   **overridden** if the card's own work PR then merges. Shared root: **the gate can read intent, it
   cannot read authority.** The durable fix is card-side (a hold marker the writeback refuses to move
-  past) and belongs on the board, not in this classifier. **Nothing to backfill; no config key, no
-  migration, no token-scope change.** `ClosureGrammar` itself is untouched.
-
-- **card#7348 (DL-305)** — **⚠ CHANGES WHAT THE WRITEBACK ACTS ON: a PR that MENTIONS a
-  `card#N` / `DL-NNN` token no longer moves that card on merge. An explicit closing form in the
-  PR TITLE is now required** — `Closes card#4811`, `Fixes DL-239`, GitHub's own linking-keyword
-  set. *"This PR mentions card N"* and *"card N's work is shipped"* are different propositions
-  and the writeback collapsed them: `PrOutcome::forMergedBase()` was a pure function of the base
-  ref — **no completion signal in it at all** — and the classifier handed it whichever token the
-  title or head branch carried, so a PR citing a card for context moved it to `stages.merged` and
-  the `promote_on_release` sweep then propagated that into a **terminal, irreversible** stage.
-  Filed from roundtable #343 with the source claims re-verified in this tree; the harm is
-  **measured at peers, not hypothetical** — 17 wrong-retirement candidates in one pending release
-  bundle, and one card whose explicit human ruling (*"this card does not close on that commit"*)
-  the writeback reversed three hours later. This install's own exposure was measured too and is
-  **not immunity**: 0 multi-token hijacks in 300 merged PR titles, 0 reversals across 18 declined
-  cards — protected by a *convention* (one card per PR, cited only when the PR closes it) that
-  fails silently the first time someone cites a card for context.
-  - **⛔ A BARE MENTION IS A NO-OP, NEVER A DEMOTION, and that is the load-bearing half.** The
-    writeback re-classifies in-window PRs on **every** pass (redeliveries, `bridge:replay`, and
-    `bridge:reconcile` on a schedule), so a rule that returned an *earlier* stage for a mention
-    would not gently correct the mistaken cards — it would **mass-demote every already-correct
-    card on the first run**, because every historical PR is a bare mention under the new grammar.
-    Withholding the move leaves every existing stage exactly where it is. **Nothing to backfill;
-    the migration is free.** (Credit: `sola-pm` flagged this before anyone built the naive
-    version.) It has its own acceptance witness rather than being implied by the no-op one — a
-    card already sitting in the merged stage, re-derived on a later reconcile pass, observed not
-    moving, with the demotion assertion seen to fire under a mutation that keeps the log line.
-  - **The gate is the two MERGE outcomes and only those** (`PrOutcome::requiresClosure()` owns
-    which, and why the rest are not): `opened` is reversible and is what stamps the card's PR
-    refs so the reconciler can find the PR later; `closed_unmerged` is an abandon disposition;
-    a branch ref cannot carry a closing verb, so gating `started` would make every branch-create
-    inert. Dependabot cards, the draft `block_reason` overlay and the release-promote sweep are
-    untouched — the sweep asks whether a card **already** at Shipped is on `main`, which is not a
-    fresh completion claim, so its INPUT is gated at the source instead.
-  - **Failure direction is now safe**: a forgotten closing form leaves a card UNDER-promoted
-    (move it by hand). Never a silent no-op — the withheld move emits a `Log::warning` naming the
-    card, the outcome, and the accepted forms **rendered from the grammar** (DL-239 discipline).
-  - **Covers BOTH doors, and does not re-open a closed one.** A `DL-NNN` closing form closes
-    every card that DL resolved to (DL-148 is one-to-many, and the claim is about the DL); a
-    `card#` closing form closes only the card it names, so a bundled DL whose title closes one of
-    its cards moves that one alone. ⛔ The **DL-218 foreign-mention guard is left intact**: on the
-    `card#` path the resolved DL is deliberately NOT passed to the gate, so a `Closes DL-9`
-    naming another card's work cannot authorize the `card#` that guard just ruled authoritative.
-  - **A log line the gate made FALSE is corrected in the same change.** The DL-218
-    foreign-mention warn ended *"moving card#N, not the DL card(s)"*; on a merge with no
-    closing form it now announces a move that never happens, in the very log an operator
-    reads to find out why nothing moved. It states the **ruling** instead — *"the card
-    token in force is card#N"* — matching the discipline the title-vs-branch guard beside
-    it already followed. Its push-path twin keeps the move claim: `started` is ungated, so
-    that statement is still true.
-  - **`bridge:reconcile` applies the identical gate** on the same field (`getPull` now projects
-    `title`) — without it the backstop would re-plan on a schedule exactly the move the event
-    path had just declined, and the defect would arrive an hour later with a CLI's name on it.
-    The card's own `dl_number` is compared through `ExternalReferenceNormalizer`, so a stored
-    `DL-0305` and a title's `DL-305` are one DL.
-  - **`ClosureGrammar` restates neither token pattern.** It matches the verb bridge and hands the
-    REMAINDER to `CardTokenGrammar::parseAnchored()` / `DlTokenGrammar::parseAnchored()` — new
-    position tests on the owning grammars that can only ever return what `parse()` would, or
-    null. A test drives both owners' full vector sets through the closure predicate, so this
-    class cannot drift into a second, narrower accept-set the way a pasted pattern would.
-  - **Said at setup time (the third ask).** `bridge:check` gains a per-mapping `ok` line naming
-    the gated merge outcomes with their stage ids and the rendered accept-set — a peer wired a
-    brand-new board into this classifier hours before the defect surfaced and nothing in the
-    setup path warned them. Silent for a mapping that maps no merge outcome. **No new
-    `writeback.json` key**; the fail-closed unknown-key path is untouched.
-  - **`bridge:check` also now REPORTS the `identity_id` your config declares** — named as what
-    it primarily is, the **echo-suppression key**, with the writer attribution it consequently
-    declares stated second — plus the instruction to mint that token as its own kanban user.
-    `last_stage_move.actor_id` is a card's only writer attribution and it stops discriminating
-    the moment two writers share a user (measured on two installs: one where a board CLI's token
-    and the writeback token were both user 3 and a move was nearly mis-attributed, one where they
-    were distinct; the first has since been repaired, which is why the property is worth
-    reporting on every install rather than assumed). ⛔ It **reports, it does not certify**: it
-    prints a CONFIGURED value without resolving the token against the API, a token held outside
-    this install's config is invisible from here, and a green run that read as "separation
-    verified" would manufacture the assurance the operator came for.
-  - **⚠ UPGRADING — change your PR-title habit to `Closes card#N` before you deploy.** Existing
-    stages are untouched, and nothing regresses; what stops is *new* merge moves for titles that
-    only cite. Two rules worth knowing: the token must sit **flush** against the verb (`Closes the
-    regression card#4811 documents` closes nothing), and **one verb closes one token** (`Closes
-    card#1 and card#2` closes only card 1 — write `Closes card#1, closes card#2`). Both are
-    GitHub's own rules. ⚠ Cards that reached Shipped **before** this ships stay eligible for the
-    release-promote sweep — audit a large historical Shipped backlog before enabling
-    `promote_on_release`.
+  past) and belongs on the board, not in this classifier.
 
 - **card#7325 (DL-304)** — **both live probes now name WHICH spelling the answering install
   gave its scope header under, so the version-skew fallback's removal condition is a state an
@@ -453,51 +400,44 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 - **card#7300 (DL-303)** — **⚠ the test suite no longer makes real outbound HTTP calls: an
   unstubbed request now raises `StrayRequestException` naming the URL instead of going to the
   network.** `Http::fake()` never blocked a request no stub answered — `buildStubHandler()` falls
-  through to the **live** handler, and the URL-pattern array form — the majority form in this suite
-  — is exactly the one that lets a request slip past. Nothing in the repo called
-  `Http::preventStrayRequests()`; `tests/TestCase.php` does now, for the whole suite.
-  **Test-and-docs only: no shipped code, no config key, no migration, and nothing about what the
-  bridge accepts, refuses, writes or retries moves.** Operators see no behaviour change; the entry
-  is here because what CI proves about a release changed.
-  **The blast radius was DERIVED, not estimated** — the guard was switched on, the throw site
-  instrumented, and the full suite run: **57 stray requests across 53 test legs in 5 classes**, every
-  one of them fixed by stubbing the call and, where the call is the point of the test, asserting it
-  on the wire. ⛔ **Only 2 of those 57 reached a red test.** `StrayRequestException` is re-thrown
-  ahead of the `ConnectionException` wrapping, so it reaches the caller — and a caller that degrades
-  softly on `catch (Throwable)` swallows it exactly as it swallowed the connection error, leaving the
-  test green on the degradation arm — which is why the refusal is PAIRED with a recorder: a global
-  Guzzle middleware sits outside the stub handler, records the refused URL and re-throws it
+  through to the **live** handler, and the URL-pattern array form (the majority form in this suite)
+  is exactly the one that lets a request slip past. Nothing called `Http::preventStrayRequests()`;
+  `tests/TestCase.php` does now, for the whole suite. **Test-and-docs only: no shipped code, no
+  config key, no migration, and nothing about what the bridge accepts, refuses, writes or retries
+  moves.** Operators see no behaviour change; the entry is here because what CI proves about a
+  release changed.
+  **The blast radius was DERIVED, not estimated** — the guard switched on, the throw site
+  instrumented, the full suite run: **57 stray requests across 53 test legs in 5 classes**, every one
+  fixed by stubbing the call and, where the call is the point of the test, asserting it on the wire.
+  ⛔ **Only 2 of those 57 reached a red test.** `StrayRequestException` is re-thrown ahead of the
+  `ConnectionException` wrapping, so a caller that degrades softly on `catch (Throwable)` swallows it
+  exactly as it swallowed the connection error — which is why the refusal is PAIRED with a recorder:
+  a global Guzzle middleware outside the stub handler records the refused URL and re-throws it
   unchanged, and `tearDown()` then fails the test naming every refused URL it did not declare. So a
-  stub is load-bearing whether or not an assertion witnesses it — drop one and the test reds. The
-  standing rule is not replaced, because it answers what the guard cannot: only `Http::assertSent`
-  says the stub that answered was the RIGHT one, so a new API call still needs the stub AND the wire
-  assertion on every test that reaches it. Neither mechanism can see a test that registers a
-  catch-all (`Http::fake()` with no arguments, or `'*'`) — it has answered every request it will ever
-  make, and that is a different class, not fixed here.
+  stub is load-bearing whether or not an assertion witnesses it. The standing rule is not replaced:
+  only `Http::assertSent` says the stub that answered was the RIGHT one. Neither mechanism can see a
+  test registering a catch-all (`Http::fake()` with no arguments, or `'*'`) — a different class, not
+  fixed here.
   **The worst instance was not the fixture host.** `InstallGuardTest`'s crosstalk leg read
   `bridge.config_dir` from the `BRIDGE_DIR` a deployed checkout's own `.env` sets — `phpunit.xml`
   overrides neither — so on an operator host it ran `bridge:check` against the REAL install and made
   four token-bearing requests to that install's live board and to `api.github.com` on every suite
-  run, while on CI the same test reached a directory that does not exist and exercised none of it.
-  Same test, two different subjects, decided by the host the runner sits on. It is hermetic now, and
-  asserts the crosstalk message rather than a bare exit code, which alone cannot say which check
-  failed — **and the primitive is fixed rather than the sixth call site**: `Tests\TestCase` now
-  defaults `bridge.config_dir` / `bridge.secret_dir` to a path that does not exist, so the default on
-  every host is the shape CI already had and the next artisan-invoking class cannot re-mint the leak
-  by forgetting to pin one. **That default closes more than the HTTP half**: `BridgePaths::stateDir()`
-  falls back to `<config_dir>/state`, so on a deployed checkout the suite's default STATE dir was the
-  operator install's real one — the directory holding its live `inbox.jsonl` — and an unpinned test
-  that staged an intent would have appended to it. Recorded as a hazard closed, not a write observed:
-  instrumenting every state-write primitive across the whole suite logs **173 calls, none of them
-  through the default** (all resolve to a temp dir the test pinned).
-  **The report is made inside a `finally`**, so `parent::tearDown()` — and with it `RefreshDatabase`'s
-  rollback — runs even when a guard fails. Without it a single reported stray skipped the rollback and
-  left an open transaction on a statically-cached connection: measured on a one-stub mutant, the same
-  class returned 1 failure plus **158 errors** (`cannot start a transaction within a transaction`)
-  with 451 of its 527 assertions never executed, and a second straying class never named its own url —
-  the reds a sample again. An `expectStrayRequest()` declaration also EXPIRES now: a declaration no
-  refusal matched fails its own test, so the one exemption the guard has cannot rot into a live
-  blanket over whatever strays to that url next.
+  run, while on CI the same test reached a non-existent directory and exercised none of it. Same
+  test, two subjects, decided by the host. It is hermetic now — **and the primitive is fixed rather
+  than the sixth call site**: `Tests\TestCase` defaults `bridge.config_dir` / `bridge.secret_dir` to
+  a path that does not exist, so every host gets the shape CI already had and the next
+  artisan-invoking class cannot re-mint the leak. **That default closes more than the HTTP half**:
+  `BridgePaths::stateDir()` falls back to `<config_dir>/state`, so on a deployed checkout the suite's
+  default STATE dir was the operator install's real one — the directory holding its live
+  `inbox.jsonl`. Recorded as a hazard closed, not a write observed: instrumenting every state-write
+  primitive across the suite logs **173 calls, none through the default**.
+  **The report is made inside a `finally`**, so `parent::tearDown()` — and `RefreshDatabase`'s
+  rollback — runs even when a guard fails. Without it a single reported stray skipped the rollback
+  and left an open transaction on a statically-cached connection: measured on a one-stub mutant, the
+  same class returned 1 failure plus **158 errors** (`cannot start a transaction within a
+  transaction`) with 451 of its 527 assertions never executed. An `expectStrayRequest()` declaration
+  also EXPIRES: a declaration no refusal matched fails its own test, so the one exemption the guard
+  has cannot rot into a live blanket.
   **ONE url is allowed to stay stray**, `http://localhost/` inside `ChannelPushUdsTest`, whose
   subject IS the live curl/Guzzle Unix-domain-socket transport and whose destination is a socket the
   test binds and deletes itself. Scoped to that url, not to the class: a per-class opt-out would
@@ -792,88 +732,66 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 - **card#6025** — **`bin/check-doc-refs.php` resolves the MEMBER of a `Class::member` citation, over
   every source rules 2 and 3 already read.** **⚠ THIS CHANGES WHAT CI ACCEPTS** for a contributor;
-  nothing about an installed bridge (the only `app/` edits in this change are COMMENTS — no
-  statement moves, no migration, no `.env` change, no receiver accept/reject change, no exit-code
-  change). Rule 1 STRIPPED the `::member` suffix before asking whether anything existed, so a
-  citation's easy half was checked and the half that names BEHAVIOUR was thrown away.
-  **What it does NOT close, stated because card#6025's third instance is exactly that:** a bare
-  `correlationRefs()` in a merged decision-log entry carries no class and no `::`, so it never was a
-  token this script reads and it still is not — the strip was not the mechanism that hid it, and
-  this leg would not have caught it. That instance is closed by the correction to the sentence, not
-  by a gate, and the shape can recur tomorrow. Bare `func()` stays out of the token set because the
-  overwhelming majority here are external vocabulary or historical narration; no count of them is
-  quoted anywhere, and the population re-derives with the `grep` recipe in the script's own docblock.
+  nothing about an installed bridge (the only `app/` edits here are COMMENTS — no statement moves,
+  no migration, no `.env` change, no receiver accept/reject change, no exit-code change). Rule 1
+  STRIPPED the `::member` suffix before asking whether anything existed, so a citation's easy half
+  was checked and the half that names BEHAVIOUR was thrown away.
+  **What it does NOT close:** a bare `correlationRefs()` carries no class and no `::`, so it never
+  was a token this script reads and still is not — that instance is closed by correcting the
+  sentence, not by a gate, and the shape can recur tomorrow. Bare `func()` stays out of the token
+  set (the overwhelming majority here are external vocabulary or historical narration); the
+  population re-derives with the `grep` recipe in the script's own docblock.
   **Three-valued, and it answers only where it can.** A member is a finding when the class file is
   under `app/` **and** its whole ancestry is resolvable there and declares nothing by that name; an
-  ancestry that leaves `app/` is unverifiable by a filesystem scan and passes. Load-bearing for that
+  ancestry that leaves `app/` is unverifiable by a filesystem scan and PASSES. Load-bearing for that
   bound: an ancestor is qualified through the file's **import block** and matched as an FQCN, never
-  as a basename — an `extends` naming a framework base is not an `app/` class, and resolving it by
-  basename lets any same-named neighbour answer for it, convicting exactly where the design must say
-  nothing. The same reasoning binds the citation side: a bare class name resolves only when ONE
-  construct in the tree carries it, counting files under `app/` **and** the non-`App\` classes the
-  tree imports under that name. Two further scope bounds: the declaration search is delimited to the
-  cited class's own body (a sibling class in the same file is not an ancestor), and the
-  enum-synthesised `cases()` / `from()` / `tryFrom()` exemption needs a real `enum` **declaration** —
-  matching it as a word let any class whose prose mentions one answer for all three. A citation
-  carrying ARGUMENTS is now read as the member it names (up to the first `(`): re-derived over the
-  seven docs the old surface read, the anchored form drops **91** backticked `::`-bearing tokens, of
-  which **41** are genuine citations naming a class under `app/` — and none of them is a finding
-  today, so this is coverage gained at no cry-wolf cost.
-  **Two structural exemptions, both measured rather than assumed:** the decision log's FILE-PATH
-  prose stays exempt (the path leg over it returns **25 findings and 0 defects** — anticipated-file
-  lists, specimen paths in an argument about non-ASCII, shell command lines, glob patterns — and
-  greening those would mean editing frozen entries to suit a live rule), and an alternative an entry
-  says it **rejected** is skipped **sentence-scoped**, not line-scoped, because a decision-log entry
-  is one enormous line whose rejected alternatives sit beside the consequences that were built. A
-  frozen entry discharges a citation the tree no longer answers for by carrying a removed-marker in
-  an ANNOTATION appended beside the original sentence — never an edit to it.
-  **The marker vocabulary widened with the surface, because the surface is what made it wrong.**
-  It matched only a parenthesised *(removed in vX)*, and had no word for a RENAME at all — so a
-  release note saying a construct was taken out, and a plan doc narrating a rename, both red on
-  correct prose the moment `docs/` came into scope. Widening the surface without widening the
-  vocabulary ships a gate that punishes truthful writing, which is how a gate gets switched off —
-  the same failure the three-valued design exists to avoid, one level up. `removed` and `renamed`
-  now both discharge, and both are matched as WORDS: an identifier that merely begins with one — a
-  `removedAt` column, a `renamedTo` key — is prose about a field, not a statement that the cited
-  member is gone, and a substring match would have handed every line mentioning either a silent
-  exemption. **Measured cost, named rather than asserted:** **28** citations move into the
-  marker-skipped bucket — 19 that were being examined and resolving, 7 already exempt as rejected
-  alternatives, 1 naming a class not under `app/`, 1 unverifiable — and **0 that were reported**, so
-  the widening masks no finding. The bucket arithmetic closes over an unchanged population, and the
-  moved set is re-derivable by diffing `--census` across the one-line change.
+  as a basename — resolving by basename lets any same-named neighbour answer for it, convicting
+  exactly where the design must say nothing. A bare class name resolves only when ONE construct in
+  the tree carries it. Two further bounds: the declaration search is delimited to the cited class's
+  own body, and the enum-synthesised `cases()`/`from()`/`tryFrom()` exemption needs a real `enum`
+  **declaration**. A citation carrying ARGUMENTS is read as the member it names (up to the first
+  `(`): re-derived over the seven docs the old surface read, the anchored form picks up **91**
+  backticked `::`-bearing tokens, **41** of them genuine citations naming a class under `app/` —
+  none a finding today, so this is coverage gained at no cry-wolf cost.
+  **Two structural exemptions, both measured:** the decision log's FILE-PATH prose stays exempt (the
+  path leg over it returns **25 findings and 0 defects**, and greening those would mean editing
+  frozen entries to suit a live rule), and an alternative an entry says it **rejected** is skipped
+  **sentence-scoped**, not line-scoped, because a decision-log entry is one enormous line whose
+  rejected alternatives sit beside the consequences that were built. A frozen entry discharges a
+  citation the tree no longer answers for by carrying a removed-marker in an ANNOTATION beside the
+  original sentence — never an edit to it.
+  **The marker vocabulary widened with the surface, because the surface is what made it wrong.** It
+  matched only a parenthesised *(removed in vX)* and had no word for a RENAME at all, so a release
+  note and a plan doc narrating a rename both red on correct prose the moment `docs/` came into
+  scope — a gate that punishes truthful writing is how a gate gets switched off. `removed` and
+  `renamed` now both discharge, both matched as WORDS: a `removedAt` column or a `renamedTo` key is
+  prose about a field, not a statement that the cited member is gone. **Measured cost:** **28**
+  citations move into the marker-skipped bucket — 19 that were resolving, 7 already exempt as
+  rejected alternatives, 1 naming a class not under `app/`, 1 unverifiable — and **0 that were
+  reported**, so the widening masks no finding.
   **The run now discloses what it declined to answer.** Three populations used to `continue` in
   silence beneath a closing line reading "all PHP references resolve" — the shape DL-251 / stage 10
-  removed from `bridge:check`, where a leg that measured nothing still reported `ok`. Every run
-  prints a one-line unexamined tally (class not under `app/`, ambiguous class name, unverifiable
-  ancestry, removed-marker line, rejected alternative, plus ancestry walks that hit the depth bound),
-  and **`--census`** re-derives every bucket over the tree it is run on. **No census figure lives in
-  the script's comments any more:** the six that did were reproducible only by an instrumented
-  variant of it — one of them only with an exemption disabled — so no later pass could move them.
-  **Census at this commit** (`php bin/check-doc-refs.php --census`): **1020** member citations — 645 resolved against a
-  declaration, **0 reported**, 203 naming a class not under `app/`, 0 an ambiguous class name, 19 an
-  unverifiable ancestry, 139 on marker-skipped lines, 14 rejected alternatives, 0 depth-bound bails.
+  removed from `bridge:check`. Every run prints a one-line unexamined tally, and **`--census`**
+  re-derives every bucket over the tree it is run on. **No census figure lives in the script's
+  comments any more:** the six that did were reproducible only by an instrumented variant, so no
+  later pass could move them. **Census at this commit** (`php bin/check-doc-refs.php --census`):
+  **1020** member citations — 645 resolved against a declaration, **0 reported**, 203 naming a class
+  not under `app/`, 0 ambiguous, 19 unverifiable ancestry, 139 marker-skipped, 14 rejected
+  alternatives, 0 depth-bound bails.
   **The test harness no longer parks the script under test inside the tree it examines.** `bin/` is
-  in the member leg's surface, so the copy the harness ran was read by the leg it implements: a
-  `Class::member` quoted in the script's own comments became a finding against any FIXTURE that
-  declared a class of that name — a defect reported in the wrong file, which is how a gate gets
-  called flaky. The copy moves to a `harness/` directory no rule scans, and the vector that wants
-  the `bin/check-doc-refs.php` path exemption now writes that path itself, where the intent is
-  legible rather than incidental.
+  in the member leg's surface, so the copy the harness ran was read by the leg it implements — a
+  defect reported in the wrong file, which is how a gate gets called flaky. The copy moves to a
+  `harness/` directory no rule scans.
   **Evidence:** 18 vectors in `DocRefMemberLintTest`, every acceptance carrying a paired vector that
-  must be REJECTED — bar one, a `::class` citation, which names no member for a mutation to make
-  phantom. That pairing was not free: the file shipped one acceptance without a twin (a class
-  outside `app/`), and it survived total removal of the member leg — it measured the harness, not
-  the rule. Eleven single-arm mutations of the shipped script, each `php -l`-checked so a broken arm
-  cannot pass for a measurement, each restored between runs and each re-run against all 18:
-  the member leg disabled reds **18 of 18** — with the missing
-  twin added, no vector survives it; the surface narrowed back to the six current-state docs reds 6;
-  the decision log dropped from the surface reds 4; the marker vocabulary narrowed back reds 2; and
-  one each for the rejected-alternative exemption removed, an ancestor resolved by basename instead
-  of through the import block, the member search unscoped to the whole file, `enum` matched as a
-  word, the token shape re-anchored to the bare `()` spelling, the marker words matched as
-  substrings rather than words, and the external-import ambiguity dropped. Pristine and restored both green. Plus a real-surface plant of a phantom citation in
-  three scanned surfaces — a root doc, a `docs/` page and an `app/` comment — each rc 1 naming the
-  right file and line, each restored byte-identical.
+  must be REJECTED (bar a `::class` citation, which names no member for a mutation to make phantom);
+  the file had shipped one acceptance without a twin that survived total removal of the member leg —
+  it measured the harness, not the rule. Eleven single-arm mutations of the shipped script, each
+  `php -l`-checked and restored between runs: the member leg disabled reds **18 of 18**, the surface
+  narrowed to the six current-state docs reds 6, the decision log dropped reds 4, the marker
+  vocabulary narrowed reds 2, plus one each for the rejected-alternative exemption, basename
+  ancestor resolution, an unscoped member search, `enum` matched as a word, the bare-`()` token
+  shape, substring marker matching, and the external-import ambiguity. Pristine and restored both
+  green, plus a real-surface plant of a phantom citation in three scanned surfaces.
   **Neither pint nor phpstan covers `bin/`, so that test file and the script's own run are this
   rule's only gates.**
 
@@ -886,15 +804,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   reads lowercase `release: vX.Y.Z` while the declared prefix said `Release`. It is now silently
   ignored, so removing it changes nothing except what the file claims to configure.
   **[`VERSIONING.md`](../VERSIONING.md) § Release flow gains the card-coverage obligation that move
-  left behind**: the generator now emits its `## Card coverage` section **only when it could
-  actually measure**, so a body with **no** such section means the check **did not run** — not that
-  it passed — and the step now spells out the four states a body can carry plus the standing
-  `promote-released-cards --dry-run`-before-merge discipline, which is the only thing between a
-  release and an unpromoted card when the section is absent.
+  left behind**: the generator emits its `## Card coverage` section **only when it could actually
+  measure**, so a body with **no** such section means the check **did not run** — not that it passed
+  — and the step now spells out the four states a body can carry plus the standing
+  `promote-released-cards --dry-run`-before-merge discipline.
   **[`CLAUDE_GOTCHAS.md`](../CLAUDE_GOTCHAS.md) gains G-021**, on deriving this repo's pre-PR gate
   set from `.github/workflows/` instead of a remembered list, with the four traps that make the
-  derivation non-obvious: a `paths:` filter that reaches further than its workflow's name suggests
-  (the `bin/` python tests fire on `app/**`), one workflow running the suite twice so a local run
+  derivation non-obvious: a `paths:` filter reaching further than its workflow's name suggests (the
+  `bin/` python tests fire on `app/**`), one workflow running the suite twice so a local run
   certifies the SQLite leg only, a piped `rc=$?` reading the wrong process and hiding a red, and a
   fresh `git worktree` with no `.env` failing as `No application encryption key has been specified`.
   It carries no list of the gates on purpose — that list is a cache of `.github/workflows/` and
@@ -948,94 +865,66 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
-- **card#7496** — **⚠ the same accounting defect one level up: a `{@see SomeClass}` naming a class
-  and NO member was read by NEITHER of rule 1's legs and counted by neither.** The member leg needs
-  a `::` to form a citation from, and this payload has none; rule 1a's path/FQCN leg reads only the
-  six `CLAUDE_*.md` current-state docs and only `App\…` names, and this tree writes the payload in
-  an `app/` docblock. **Unreported AND absent from every accounting line** — the combination
-  card#7473 named as the harmful one, because the reader who audits the gate's own disclosure is
-  told the population is complete. No `app/` behaviour, no route, no schema, and **no change to
-  what the gate REPORTS** — no new reds, no removed reds; 984 resolved / 0 reported before and
-  after.
-  - **Convicted with nothing the run does not already ship.** Against the pre-fix gate on the
-    branch point, qualifying ONE `{@see CheckRunner}` into `{@see CheckRunner::run()}` took resolved
-    **984 → 985** and the TOTAL **1849 → 1850**. A citation that only enters the total once it
-    becomes checkable was never in the total.
-  - **One new census bucket, `class_citation`**, in `--census` and in the closing disclosure line
-    of every run. **Nothing is RESOLVED by it** — which citations can be convicted did not move,
-    only whether the run admits what it declined.
-  - **Re-derived on this branch rather than quoted from the card, and the card's own arithmetic
-    was off by one.** The full reference-tag payload set at the branch point is **752**:
-    182 forming a `Class::member` · 186 class-less member · 104 pseudo-class · **237 naming a class
-    and no member** · 21 `UPPER_SNAKE` · **22** metasyntactic-or-`::class` (the card said 21, and
-    752 only closes at 22 — an ellipsis payload count plus the one `{@see self::class}`). An
+- **card#7473 + card#7496** — **⚠ `check-doc-refs`'s remainder accounting excluded three citation
+  forms without disclosing them, so a reader auditing the gate's own numbers was told the population
+  was complete.** One defect class, closed at two levels in this release (#574 then #575). card#7330
+  disclosed a class-less `{@see member}` and a `{@see self::member}` in the script's docblock and in
+  a test, but in NEITHER the examined count NOR the `N NOT examined: …` line; card#7496 then found
+  the same shape one level up, in a `{@see SomeClass}` naming a class and NO member — read by
+  neither of rule 1's legs (the member leg needs a `::` to form a citation from; rule 1a's path/FQCN
+  leg reads only the six `CLAUDE_*.md` current-state docs and only `App\…` names). Every bucket on
+  the accounting line describes a citation whose CLASS was read and then found unusable, so a
+  citation carrying no usable class reached none of them and left the census entirely while the
+  arithmetic still balanced. **That is worse than a silent gap: it is a gap with an accounting line
+  that appears to exclude it.** No `app/` behaviour, no route, no schema, and **no change to what
+  the gate REPORTS** — no new reds, no removed reds; 984 resolved / 0 reported before and after.
+  - **Convicted with nothing the run does not already ship.** Against the pre-fix gate, qualifying
+    ONE citation into its `Class::member` spelling MOVED the run's TOTAL: `{@see body()}` →
+    `{@see DispatchOutcome::body()}` took resolved **+1** and the TOTAL **+1**;
+    `{@see self::requiresClosure()}` → `{@see PrOutcome::requiresClosure()}` moved it identically;
+    and one `{@see CheckRunner}` → `{@see CheckRunner::run()}` took resolved **984 → 985** and the
+    TOTAL **1849 → 1850**. **A citation that only enters the total once it becomes checkable was
+    never in the total.**
+  - **Three new census buckets — `classless_member`, `pseudo_class_member` and `class_citation`** —
+    in `--census` and in the closing disclosure line of every run. **Nothing is RESOLVED by them:**
+    which citations can be convicted did not move, only whether the run admits what it declined.
+    Resolving the bare form against the enclosing class stays declined on card#7330's reasoning — a
+    markdown paragraph has no enclosing class, so a citation would resolve in a docblock and be
+    unanswerable four lines later in prose.
+  - **Re-derived on this branch rather than quoted from the cards**, one of which was off by one.
+    Over the member leg's whole surface (`app/` + `tests/` + `docs/` + `bin/` + the root `*.md`):
+    **186 class-less member citations in 40 files** and **104 pseudo-class ones in 33 files**. The
+    full reference-tag payload set at the branch point is **752**: 182 forming a `Class::member` ·
+    186 class-less member · 104 pseudo-class · **237 naming a class and no member** · 21
+    `UPPER_SNAKE` · **22** metasyntactic-or-`::class` (the card said 21; 752 only closes at 22). An
     independently written derivation script agrees with the gate on every bucket.
-  - **Resolving them stays declined, and the ground for a future pass was MEASURED rather than
-    guessed** — that measurement, not the bucket, is this card's decision input. Of the 237, by the
-    gate's own resolution rule: **205 resolve unambiguously to exactly one construct under `app/`**;
-    **0 are ambiguous** (no two `app/` basenames collide and none is shadowed by an imported
-    non-`App\` name — card#7330's `Command` trap is unrealised on this tree, not absent from it);
-    **32 resolve to nothing under `app/`**, of which 28 name a class under `tests/`, 1 names an
-    imported `RequestException`, 1 is a `Tests\…` FQCN, and **2 resolve to nothing anywhere** —
-    a `\JsonException` named in a docblock and a `Widget` fixture name quoted inside a test's own
+  - **Resolving the 237 stays declined, and the ground for a future pass was MEASURED rather than
+    guessed.** By the gate's own resolution rule: **205 resolve unambiguously to exactly one
+    construct under `app/`**; **0 are ambiguous** (card#7330's `Command` trap is unrealised on this
+    tree, not absent from it); **32 resolve to nothing under `app/`**, of which 28 name a class
+    under `tests/`, 1 an imported `RequestException`, 1 a `Tests\…` FQCN, and **2 resolve to nothing
+    anywhere** — a `\JsonException` in a docblock and a `Widget` fixture name inside a test's own
     string literal. **Both of the two are false positives**, so a resolution rule's entire yield on
-    the tree that motivated it would be two cry-wolf reds; that is the trade this script's other
-    rules refuse.
-  - **The disclosure is a testable invariant, not a narrated bound.** Post-fix the TOTAL holds under
-    qualifying a class citation that resolves under `app/`, one that resolves outside it, and one
-    that resolves nowhere — each moves the citation between buckets instead. The two new vectors
-    were seen RED under three separate mutations (the tally suppressed; the bucket counted but
-    omitted from the TOTAL; the bucket counted but dropped from the disclosure sentence), and the
-    member-leg vectors that do not read the census stay GREEN under all three.
-  - **⚠ THE REMAINDER NARROWS, IT DOES NOT CLOSE.** The predicate is an upper-case initial with no
-    `::`, so card#7473's upper-case remainder splits: the CamelCase half is counted here, and an
-    ALL-CAPS short name is deliberately left OUT because in this tree's naming that shape is a
-    CONSTANT — a bucket that swallowed it would mislabel the census rather than complete it. The
-    21 `UPPER_SNAKE` payloads and the 22 metasyntactic/`::class` ones are what remains unbucketed,
-    and that is the arithmetic closing exactly as predicted. The mirror-image bound is stated too:
-    a CamelCase ENUM CASE cited bare would land in `class_citation` and be mislabelled a class —
-    checked rather than reasoned about, with no instance of it on this tree.
-
-- **card#7473** — **⚠ `check-doc-refs`'s remainder accounting did not disclose two citation forms
-  it excludes, so a reader auditing the gate's own numbers was told the population was complete.**
-  card#7330 disclosed both gaps — a class-less `{@see member}` and a `{@see self::member}` — in the
-  script's docblock and in a test, and in NEITHER the examined count NOR the `N NOT examined: …`
-  line. Every bucket on that line describes a citation whose CLASS was read and then found
-  unusable, so a citation carrying no usable class reached none of them and left the census
-  entirely, and the arithmetic still balanced without it. **That is worse than a silent gap: it is
-  a gap with an accounting line that appears to exclude it.** No `app/` behaviour, no route, no
-  schema, and **no change to what the gate REPORTS** — no new reds, no removed reds.
-  - **The measurement that convicts it needs no instrumented variant of the script.** Qualifying
-    ONE class-less citation into its `Class::member` spelling MOVED the run's TOTAL: against the
-    pre-fix gate, `{@see body()}` → `{@see DispatchOutcome::body()}` took resolved **+1** and the
-    TOTAL **+1**, and `{@see self::requiresClosure()}` → `{@see PrOutcome::requiresClosure()}`
-    moved it identically. **A citation that only enters the total once it becomes checkable was
-    never in the total.** No absolute figure is quoted for the total here — it moves with every
-    merge into this branch, and `--census` re-derives it over whatever tree it is run on.
-  - **Both forms are now COUNTED and neither is RESOLVED.** Two new census buckets —
-    `classless_member` and `pseudo_class_member` — appear in `--census` and in the closing
-    disclosure line of every run. Resolving the bare form against the enclosing class was the
-    alternative and stays declined on card#7330's reasoning: a markdown paragraph has no enclosing
-    class, so a citation would resolve in a docblock and be unanswerable four lines later in prose.
-  - **Re-derived on this branch rather than quoted from the card** (which measured 128 in 27 files
-    over `app/` alone, and re-derives to 129/27 today): over the member leg's whole surface —
-    `app/` + `tests/` + `docs/` + `bin/` + the root `*.md` — **186 class-less member citations in
-    40 files and 104 pseudo-class ones in 33 files**, which is what the total grows by. The
-    examined half does not move: 984 resolved, 0 reported, before and after.
-  - **The disclosure is now a testable invariant instead of a narrated bound.** Qualifying a
-    class-less citation moves it BETWEEN buckets and leaves the TOTAL fixed — measured post-fix on
-    this tree for all three of a method, a property (`{@see $status}`) and a `self::` citation, and
-    asserted over synthetic trees whose whole population is the one citation under test. Each new
-    vector was seen RED under three separate mutations (the tally suppressed; the buckets counted
-    but omitted from the total; the buckets counted but dropped from the disclosure sentence), and
-    the 22 pre-existing member-leg vectors stay GREEN under all three.
-  - **⚠ ONE SHAPE REMAINS, disclosed rather than assumed away.** The predicate keys on a LOWER-CASE
-    initial, which is the only thing separating a member name from a class name when there is no
-    `::`, so a class-less member whose name starts upper-case — an `UPPER_SNAKE` constant, a
-    CamelCase enum case — is in neither bucket, and qualifying one still moves the total. A
-    backticked bare `func()` also stays out, for the reason the rule docblock already gives: inside
-    a reference tag a payload is a machine-readable claim about this tree, in backticks it is
-    mostly other people's vocabulary.
+    the tree that motivated it would be two cry-wolf reds — the trade this script's other rules
+    refuse.
+  - **The disclosure is a testable invariant, not a narrated bound.** Qualifying a citation moves it
+    BETWEEN buckets and leaves the TOTAL fixed — measured post-fix for a method, a property
+    (`{@see $status}`), a `self::` citation, and a class citation resolving under `app/`, outside
+    it, and nowhere — and asserted over synthetic trees whose whole population is the one citation
+    under test. Each new vector was seen RED under three separate mutations (the tally suppressed;
+    the buckets counted but omitted from the TOTAL; the buckets counted but dropped from the
+    disclosure sentence), and the pre-existing member-leg vectors stay GREEN under all three.
+  - **⚠ THE REMAINDER NARROWS, IT DOES NOT CLOSE.** The class-less predicate keys on a LOWER-CASE
+    initial and the class predicate on an upper-case initial with no `::`, so the upper-case
+    remainder splits: the CamelCase half is counted, and an ALL-CAPS short name is deliberately left
+    OUT because in this tree's naming that shape is a CONSTANT — a bucket that swallowed it would
+    mislabel the census rather than complete it. The 21 `UPPER_SNAKE` payloads and the 22
+    metasyntactic/`::class` ones are what remains unbucketed, and that arithmetic closes exactly as
+    predicted. Two mirror-image bounds stated rather than assumed away: a CamelCase ENUM CASE cited
+    bare would land in `class_citation` and be mislabelled a class (no instance on this tree), and a
+    backticked bare `func()` stays out for the reason the rule docblock gives — inside a reference
+    tag a payload is a machine-readable claim about this tree, in backticks it is mostly other
+    people's vocabulary.
 
 - **card#7471** — **CLASS: nine tests whose NAME or docblock stated a count / absence / exclusivity
   property asserted something that structurally cannot express it, so each stayed GREEN when the
@@ -1043,50 +932,43 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   `bin/`, `config/`, `routes/` or `database/migrations/`; no migration, no `.env` change, no
   receiver accept/reject change, no token-scope change.** Nothing an install runs behaves
   differently; what changes is which regressions CI can still catch.
-  **The class, and why one instance did not close it.** `expectsOutputToContain()` answers exactly
-  *"does this substring appear at least once?"* — it cannot state a count, an absence, an ordering
-  or an exclusivity. card#7332 found the first instance (`test_inbox_collapses_duplicate_ids_on_read`
-  never asserted the collapse) and fixed it; this audits the population it came from.
+  **The class.** `expectsOutputToContain()` answers exactly *"does this substring appear at least
+  once?"* — it cannot state a count, an absence, an ordering or an exclusivity. card#7332 found the
+  first instance (`test_inbox_collapses_duplicate_ids_on_read` never asserted the collapse); this
+  audits the population it came from.
   **Denominator, re-derived against this branch's base rather than quoted from the card** (which
   said 146 across 5 — `dev` has moved): **7 files**, **154 `expectsOutputToContain` matches** of
-  which **148 are calls** and 6 are prose, **247 test methods** — `BridgeCommandsTest` (179),
-  `ReconcileCommandTest` (25), `ProvisionTest` (14), `WritebackBoardDivergenceLedgerTest` (11),
-  `BridgePathsUnseenInboxLinesTest` (7), `InstallGuardTest` (6), `StandupCommandTest` (5). The unit
-  is the METHOD, not the call site, because the claim lives in a name. All 247 were READ, not
-  grepped — the card is explicit that the worst instance will not contain the search term, and it
-  did not: **four of the nine make no output assertion at all**, so no grep of the matcher could
-  ever have reached them.
-  **Nine rewritten, each SEEN TO FAIL** — the mutation was applied to `app/`, the NEW assertion
-  watched go red, the SAME mutant then run against the file as it stands on `dev` and watched go
-  **green**, and the app file restored byte-identically (`git diff --quiet`) before the next one:
-  `bridge:stats`'s divergence counts were asserted by their row CAPTION and never by the number
-  (blank the count ⇒ still green); `test_stats_reports_counts` asserted only `assertExitCode(0)`;
+  which **148 are calls**, **247 test methods**. The unit is the METHOD, not the call site, because
+  the claim lives in a name. All 247 were READ, not grepped — the card is explicit that the worst
+  instance will not contain the search term, and it did not: **four of the nine make no output
+  assertion at all**, so no grep of the matcher could ever have reached them.
+  **Nine rewritten, each SEEN TO FAIL** — the mutation applied to `app/`, the NEW assertion watched
+  go red, the SAME mutant run against the file as it stands on `dev` and watched go **green**, the
+  app file restored byte-identically before the next one. The instructive ones:
   `test_stats_agent_flag_scopes_metrics` asserted the `[pm]` label, which the command interpolates
   from the flag whether or not it filters, so **dropping `where('agent_name', …)` was invisible**;
+  `bridge:stats`'s divergence counts were asserted by row CAPTION and never by the number;
   `bridge:replay`'s gate-drop COUNT was a caption over a one-row fixture that could not discriminate
-  it from the skipped total; `test_provision_tools_never_prints_the_token_value` could only ever
-  inspect the **already-minted** run, never the mint that holds the secret; `bridge:provision`'s
-  *"skipped one provider, still provisioned the others"* rested on an exit code an abort-on-first
-  prints identically; and `test_reconcile_fixes_filter_drift` asserted the DELETE without the
-  recreate — green for a reconcile that leaves a board with no webhook at all.
+  it from the skipped total; `test_provision_tools_never_prints_the_token_value` could only inspect
+  the **already-minted** run, never the mint that holds the secret; and
+  `test_reconcile_fixes_filter_drift` asserted the DELETE without the recreate — green for a
+  reconcile that leaves a board with no webhook at all.
   **⛔ Two absence predicates could NEVER have fired.** `Http::assertNotSent(fn ($r) =>
   str_contains($r->url(), 'board_id=9'))` guarded both `--repo` filter tests, but the board scope
   travels as the query TERM `q=board_id=<b>`, which the client percent-encodes to `q=board_id%3D9`
   — measured, not reasoned: the raw url never contains the string, so the check was a decoration on
-  a filter that could be deleted outright. Both now `urldecode()` (the form every other board-scope
-  assertion in the suite already used) and both gain the presence witness that makes the silence
-  about board 9 mean *filtered* rather than *nothing ran*.
+  a filter that could be deleted outright. Both now `urldecode()` and both gain the presence witness
+  that makes the silence about board 9 mean *filtered* rather than *nothing ran*.
   **Two supporting changes.** `Tests\Support\ConsoleTable::assertRow()` is extracted at the second
-  real caller for the metric/count tables, anchored at both ends of the line because an unanchored
-  substring on a table is a presence claim wearing a count's clothes. `CLAUDE_TESTING.md` gains the
-  two anti-patterns so the class is findable — the matcher's structural limits, and an absence
-  assertion with no presence witness or with a predicate that cannot fire.
+  real caller, anchored at both ends of the line because an unanchored substring on a table is a
+  presence claim wearing a count's clothes. `CLAUDE_TESTING.md` gains the two anti-patterns so the
+  class is findable.
   **Dispositioned, not silently capped:** 238 of the 247 methods are recorded correctly scoped, and
   the audit's own blind axis is stated — this population is the files that USE the matcher, so a
   count claim asserted by a presence-only matcher in a file that never calls it is outside the
-  denominator and unmeasured. **This adds assertions to existing tests, not tests: measured against
-  this branch's base before the card#7474 merge, the SAME 2548 tests with 8720 assertions against
-  8697.** Whole suite after the merge 2550/2550 (8747 assertions), phpstan L7 0, pint clean,
+  denominator and unmeasured. **This adds assertions to existing tests, not tests:** measured
+  against this branch's base before the card#7474 merge, the SAME 2548 tests with 8720 assertions
+  against 8697. Whole suite after the merge 2550/2550 (8747 assertions), phpstan L7 0, pint clean,
   `check-doc-refs` clean.
 
 - **card#7474 (DL-307)** — **⚠ the suite's Redis databases are now pinned, and the
@@ -1224,39 +1106,35 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
     applies to `--probe-tools` whenever the probed vhost is served by a co-resident install at a
     different version (`CLAUDE.md` rule 7).
 
-- **card#7233** — **The shell-injection security test scored a slow-but-successful injection as "injection did not
-  execute".** `SpawnDetachedHandlerTest::test_argv_has_no_shell_injection_surface` spawned a detached
-  child and read its verdict off a fixed `usleep(500_000)`, then asserted `EVIL.marker` absent — but
-  three methods up, the PRESENCE leg in the same file polls a detached child for **5.0 seconds**, so
-  the file itself established that the window it gave the negative was ten times too small. Under
-  load — several build agents on one box — an injection that landed after 500ms passed as proof that
-  no injection was possible. **Demonstrated, not inferred:** against a stub that spawns the argv
-  through `sh -c` after a 0.7s delay — i.e. the exact defect the test exists to catch, merely slow —
-  the shipped test PASSES. **Raising the sleep was rejected**: it lowers the probability and keeps the
-  race, and reds or false-greens again on a slower host. The negative is now ordered rather than
-  timed. `touch` receives the metacharacters as ONE argv element, so it creates a file named
-  *verbatim* `legit; touch …/EVIL.marker`; the test polls for that file with the bounded-poll idiom
-  already in this file and asserts the absence only once it exists. The witness is sound because
-  `touch` with a single operand does exactly one thing — that file appearing IS the child having
-  finished — and it is doing double duty: its NAME is the proof the argv element never met a shell,
-  since a shell would have produced `…/legit` and `…/EVIL.marker` instead and the poll would time out.
-  **⚠ The operand is a PATH and every `/` in it is a separator**, including the ones inside the
-  appended absolute `EVIL.marker` path: verified at source that without its parent directory `touch`
-  dies `ENOENT` and creates nothing at all, so the test now creates that parent — without it the
-  witness would never land and the absence would again be indistinguishable from "did not finish".
-  Both halves witnessed against the same slow stub: the fixed test reds on the absence assertion when
-  the injected file lands late, and reds on the presence witness when the operand was shell-split;
-  it passes 3/3 on the real, non-injecting path. **Sibling audit (the shape: a fixed sleep guarding an
-  absence assertion) found no second member, over a stated denominator** — every
-  `sleep`/`usleep`/`time.sleep`/`setTimeout` call site in non-vendor source, **9** of them post-fix,
-  re-derived by the sweep each run rather than quoted; the instrument finds the pre-fix defect and
-  reports zero after it, so it discriminates. All nine then dispose: bounded polls terminating in a
-  PRESENCE assertion (5, two of them this test's), a Symfony `Process` timeout (2), a production
-  deadline outside any test (1), and a forked child's own hold on a bind (1). On the
-  second axis, every absence assertion downstream of async work is guarded by process completion
-  (`assert_run`, `pcntl_waitpid`, a Symfony `Process`), not by a clock. Distinct from card#7209's
-  class (a bounded CHILD window racing an unbounded PARENT operation), which is two processes; this
-  one is a fixed clock guarding a negative.
+- **card#7233** — **The shell-injection security test scored a slow-but-successful injection as
+  "injection did not execute".** `SpawnDetachedHandlerTest::test_argv_has_no_shell_injection_surface`
+  spawned a detached child and read its verdict off a fixed `usleep(500_000)`, then asserted
+  `EVIL.marker` absent — but three methods up, the PRESENCE leg in the same file polls a detached
+  child for **5.0 seconds**, so the file itself established that the window it gave the negative was
+  ten times too small. Under load an injection that landed after 500ms passed as proof that no
+  injection was possible. **Demonstrated, not inferred:** against a stub that spawns the argv through
+  `sh -c` after a 0.7s delay — the exact defect the test exists to catch, merely slow — the shipped
+  test PASSES. **Raising the sleep was rejected**: it lowers the probability and keeps the race. The
+  negative is now ordered rather than timed. `touch` receives the metacharacters as ONE argv element,
+  so it creates a file named *verbatim* `legit; touch …/EVIL.marker`; the test polls for that file
+  with the bounded-poll idiom already in this file and asserts the absence only once it exists. The
+  witness is sound because `touch` with a single operand does exactly one thing — that file appearing
+  IS the child having finished — and its NAME is itself the proof the argv element never met a shell,
+  since a shell would have produced `…/legit` and `…/EVIL.marker` instead.
+  **⚠ The operand is a PATH and every `/` in it is a separator**, including those inside the appended
+  absolute `EVIL.marker` path: verified at source that without its parent directory `touch` dies
+  `ENOENT` and creates nothing, so the test now creates that parent — without it the witness would
+  never land and the absence would again be indistinguishable from "did not finish". Both halves
+  witnessed against the same slow stub; it passes 3/3 on the real, non-injecting path.
+  **Sibling audit (the shape: a fixed sleep guarding an absence assertion) found no second member,
+  over a stated denominator** — every `sleep`/`usleep`/`time.sleep`/`setTimeout` call site in
+  non-vendor source, **9** post-fix, re-derived by the sweep each run rather than quoted; the
+  instrument finds the pre-fix defect and reports zero after it, so it discriminates. All nine
+  dispose: bounded polls terminating in a PRESENCE assertion (5), a Symfony `Process` timeout (2), a
+  production deadline outside any test (1), and a forked child's own hold on a bind (1). On the
+  second axis, every absence assertion downstream of async work is guarded by process completion,
+  not by a clock. Distinct from card#7209's class (a bounded CHILD window racing an unbounded PARENT
+  operation), which is two processes; this one is a fixed clock guarding a negative.
 
 - **card#7209** — **The `bridge:check` channel-liveness test asserted a race it did not control: a
   forked child held the socket open for a hardcoded 3-second `stream_socket_accept()` window while
@@ -1315,63 +1193,54 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 - **What was silent.** A card carries **one** `pr_number` / `pr_url` / `dl_number`, stamped
   add-if-missing, first write wins. A second PR naming the same card therefore has its ref dropped —
   correctly, since overwriting would re-point an already-merged leg's correlation — but the drop had
-  **two** exits and only one of them said anything. An **uncorroborated** title-only `card#`
-  (DL-270) is refused with a log + alert. A **corroborated** token — the head branch carrying
-  `card-NNNN`, i.e. the house convention, i.e. the common case — sails past that gate, reaches the
-  stamp, finds nothing left to write and returns on a bare `if ($refs === []) return;`: no log, no
-  alert, no trace anywhere. **The better-behaved the contributor, the less evidence the lost leg
-  left.** Reproduced on the reference install: card#6645 stamps `pr_number=261` while PR #262 —
-  **same repo**, same card token — is invisible to any by-ref lookup. Ordering-dependent, not a
-  flake.
-- **The predicate is DIFFERS, not nothing-to-write, and that distinction is the whole job.**
-  `$refs === []` is also exactly what an **idempotent replay of the card's own PR** looks like, so
-  keying the record on it would mint a comment for every webhook redelivery. The condition is *a ref
-  was offered whose value differs from the stored one*, per ref: `pr_number` compares through the
-  shared `CardTokenCorroboration::tracksPr` (hoisted out of `refuses()`, so "same PR" has one
-  definition and a numeric string equals its int); `dl_number` compares on digits, the way every
-  correlation reader reads it; `pr_url` compares through **pull-request IDENTITY**. A same-PR replay
-  stays **silent**, pinned by a test, with the naive predicate mutated in and watched go red.
-- **`pr_url` is the ref with many spellings for one PR, so it gets a comparator, not a byte test.**
-  A raw compare reported a SECOND pull request where there was none, on three reachable inputs: the
-  `.../pull/0` **source-only qualifier** `bridge:check` tells operators to stamp for a shared-board
-  `source`; the card's **OWN** pull request, on a card whose `pr_number` was written by one PR and
-  whose `pr_url` was later filled in by another (per-ref add-if-missing produces exactly that state);
-  and **repo CASE**, which GitHub treats as insignificant and `ExternalReferenceNormalizer` already
-  lower-cases. The comparison now runs through `PrUrlRef` — the `(owner/repo, number)` parse hoisted
-  out of `TrackedCardRef`, so the writeback has ONE definition of "which PR does this url name"
-  rather than a second copy — plus the existing `tracksPr` for the card's own `pr_number`. Both
-  controls are pinned: a genuinely different second PR, and the same number in a DIFFERENT repo,
-  still record their dropped leg. **⚠ This changes which url ends up stamped in exactly one case:**
-  a `pr_url` holding the `.../pull/0` placeholder names no pull request, so a PR **from the repo that
-  placeholder names** now stamps its real url over it (it previously blocked the stamp forever).
-  **Only that repo** — the `0` carries no information but the REPO is a by-ref source an operator
-  stamped on purpose, so a PR from a DIFFERENT repo leaves the placeholder alone and records the
-  drop, rather than quietly re-pointing the card's source; that note is true as written, since the
-  card really does name another repo than the PR that correlated to it. Everywhere else the
-  never-overwrite guard is untouched, including an operator's free text in `pr_url`.
-- **The never-overwrite guard is UNTOUCHED** — apart from a `.../pull/0` placeholder naming this
-  PR's own repo, which is not a pull request to preserve — and a test asserts not one byte of the card's payload is
-  written on the dropped-leg path. **Not** a `pr_refs` list: that is a
-  kanban payload-schema change with its own blast radius (by-ref index, release-promote-cards,
-  `kbcard` projections) and is deliberately out of scope.
+  **two** exits and only one said anything. An **uncorroborated** title-only `card#` (DL-270) is
+  refused with a log + alert. A **corroborated** token — the head branch carrying `card-NNNN`, i.e.
+  the house convention, i.e. the common case — sails past that gate, reaches the stamp, finds
+  nothing left to write and returns on a bare `if ($refs === []) return;`: no log, no alert, no
+  trace anywhere. **The better-behaved the contributor, the less evidence the lost leg left.**
+  Reproduced on the reference install: card#6645 stamps `pr_number=261` while PR #262 — same repo,
+  same card token — is invisible to any by-ref lookup. Ordering-dependent, not a flake.
+- **The predicate is DIFFERS, not nothing-to-write.** `$refs === []` is also exactly what an
+  **idempotent replay of the card's own PR** looks like, so keying the record on it would mint a
+  comment for every webhook redelivery. The condition is *a ref was offered whose value differs from
+  the stored one*, per ref: `pr_number` through the shared `CardTokenCorroboration::tracksPr`
+  (hoisted out of `refuses()`, so "same PR" has one definition), `dl_number` on digits, `pr_url`
+  through **pull-request IDENTITY**. A same-PR replay stays **silent**, pinned by a test with the
+  naive predicate mutated in and watched go red.
+- **`pr_url` gets a comparator, not a byte test**, because one PR has many spellings. A raw compare
+  reported a SECOND pull request where there was none on three reachable inputs: the `.../pull/0`
+  **source-only qualifier** `bridge:check` tells operators to stamp for a shared-board `source`; the
+  card's **OWN** pull request, on a card whose `pr_number` and `pr_url` were written by different
+  PRs (per-ref add-if-missing produces exactly that state); and **repo CASE**, which GitHub treats
+  as insignificant. Comparison now runs through `PrUrlRef` — the `(owner/repo, number)` parse
+  hoisted out of `TrackedCardRef`, so the writeback has ONE definition of "which PR does this url
+  name". Both controls are pinned: a genuinely different second PR, and the same number in a
+  DIFFERENT repo, still record their dropped leg. **⚠ This changes which url ends up stamped in
+  exactly one case:** a `pr_url` holding the `.../pull/0` placeholder names no pull request, so a PR
+  **from the repo that placeholder names** now stamps its real url over it (it previously blocked
+  the stamp forever). **Only that repo** — the `0` carries no information but the REPO is a by-ref
+  source an operator stamped on purpose, so a PR from a DIFFERENT repo leaves the placeholder alone
+  and records the drop. Everywhere else the **never-overwrite guard is UNTOUCHED**, including an
+  operator's free text in `pr_url`, and a test asserts not one byte of the card's payload is written
+  on the dropped-leg path. **Not** a `pr_refs` list: that is a kanban payload-schema change with its
+  own blast radius (by-ref index, release-promote-cards, `kbcard` projections), deliberately out of
+  scope.
 - **The record, at both sites.** The stamp path gains `Log::warning` + a live alert
   (`correlation_ref_not_stamped`, routed through `WritebackAlertNotifier::warnAndNotify` like every
   other permanent-refusal arm — DL-274) **and** a card comment naming the ref the card keeps and the
-  one this PR offered. The already-logged `card_token_uncorroborated` refusal keeps its log and its
-  push unchanged and gains the same card comment beside them. The card is where the note goes
-  because a log line and an alert push are the *operator's* surfaces, and the person hunting a
-  missing correlation is reading the **card**.
-- **Written at most once per card per dropped SET of values.** The note's marker line is derived
-  from the FACTS (which card, which refs, which values) and never from the event, so the same drop
-  re-asserted with the same values — `opened`, then `merged`, then a redelivery of either —
-  re-derives a byte-identical marker and is matched against the `comments` the card's own `getCard`
-  aggregate already returned — **no extra read**. **The unit is the SET, not the pull request:** the
-  offered refs are re-derived from every event (`stamp_dl` from the title+branch text), so a title
-  EDITED between two events can offer a DL the first did not, growing the dropped set into a
-  different marker and a second note about the same PR — which records a drop the first note could
-  not have named. That check **degrades toward writing**: a kanban whose task aggregate carries no
-  `comments` key yields a duplicate note, never a suppressed one, because a duplicated record is
-  visible and correctable while a suppressed one is the silence being removed.
+  one this PR offered. The already-logged `card_token_uncorroborated` refusal keeps its log and push
+  unchanged and gains the same comment beside them. The card is where the note goes because a log
+  line and an alert push are the *operator's* surfaces, and the person hunting a missing correlation
+  is reading the **card**. **Written at most once per card per dropped SET of values:** the marker
+  line is derived from the FACTS (which card, which refs, which values), never from the event, so
+  the same drop re-asserted — `opened`, then `merged`, then a redelivery — re-derives a
+  byte-identical marker matched against the `comments` the card's own `getCard` aggregate already
+  returned (**no extra read**). **The unit is the SET, not the pull request:** a title EDITED between
+  two events can offer a DL the first did not, growing the set into a different marker and a second
+  note about the same PR — recording a drop the first note could not have named. The check
+  **degrades toward writing**: a kanban whose aggregate carries no `comments` key yields a duplicate
+  note, never a suppressed one, because a duplicated record is visible and correctable while a
+  suppressed one is the silence being removed.
 - **Nothing here may throw.** A 4xx, a 5xx, or any other failure of the note is caught and routed to
   the paired alert primitive (`cardnote_403_not_writable_by_this_token` · `cardnote_404_no_such_card`
   · `cardnote_4xx` · `cardnote_send_failed`) — a 5xx deliberately does **not** borrow the 4xx
@@ -1381,13 +1250,13 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 - **Doc-sync.** `docs/writeback.md` (token scope, the stamping blockquote, four new refusal-reason
   rows, the card-note bound — the last two restated "never retried", true within a delivery and
   false across events, and the blockquote restated one-note-per-PR; both corrected here and at their
-  code authorities, plus the new `comment.created` emission beside the comment-create grant), `docs/config-schema.md` (the `writeback-token` row's stated scope —
-  the sibling of the writeback.md token paragraph, and false the moment the writeback posts a
-  comment) and `docs/kanban-integration-contract.md` (the new comment-create endpoint row,
-  `comments[].content` added to what `GET /tasks/{id}.json` is read for). While there:
-  that contract's `PATCH /api/v3/tasks/{id}.json` row still documented the `{task:{workflow_stage_id}}`
+  code authorities, plus the new `comment.created` emission beside the comment-create grant),
+  `docs/config-schema.md` (the `writeback-token` row's stated scope, false the moment the writeback
+  posts a comment) and `docs/kanban-integration-contract.md` (the new comment-create endpoint row,
+  `comments[].content` added to what `GET /tasks/{id}.json` is read for). While there: that
+  contract's `PATCH /api/v3/tasks/{id}.json` row still documented the `{task:{workflow_stage_id}}`
   request wrapper **kanban DL-219 removed and now strict-rejects** — false since v0.64.0 and
-  corrected to the flat body `KanbanClient::moveCard` actually sends. Its siblings were swept: the
+  corrected to the flat body `KanbanClient::moveCard` actually sends. Siblings swept: the
   `CLAUDE_DECISIONS.md` occurrences are dated log entries superseded in-file by DL-219 (append-only,
   left as history), and the `docs/CHANGELOG.md` ones are accurate for their versions.
 
