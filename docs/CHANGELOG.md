@@ -229,6 +229,36 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7325 (DL-304)** — **both live probes now name WHICH spelling the answering install
+  gave its scope header under, so the version-skew fallback's removal condition is a state an
+  operator reads instead of a sentence someone re-reasons.** The fallback that lets
+  `bridge:check --probe-tools` / `--probe-tools-ssh` read a pre-DL-302 responder's header off the
+  old `board_id` key carried its own deletion instruction in a docblock — *"drop the fallback once
+  no supported install can answer a probe without `configured_board_id`"* — with **no owner and no
+  trigger anyone watches**, which is how a conditional deletion becomes permanent. It is also the
+  one place a **row-derived** `board_id` is still accepted as an **identity** header: on a
+  DL-302-or-later responder that key carries where the returned rows are, so the reading is right
+  for an old install and would be a conflation for a new one. **The behaviour is unchanged and the
+  fallback stays** — what changes is that it is no longer silent. Every ok line and every
+  `IDENTITY MISMATCH` tail from both probes now ends with the provenance: *Header spelling:
+  `configured_board_id`* (current responder), *⚠ VERSION SKEW … the legacy `board_id` spelling*
+  (pre-DL-302 responder, naming the conflation and the card that owns dropping the tolerance), or
+  *Header spelling: NEITHER* (no header at all — which the mismatch tail previously offered as one
+  of two guesses in a parenthetical, and now states). `BoardToolsScopeHeader` becomes a value
+  object read ONCE per response so the value and its provenance cannot disagree, and the operator
+  sentence lives on the new `ScopeHeaderSpelling` rather than being written twice.
+  **The version compare the condition was originally phrased as cannot be run:** the board-tools
+  envelope is `{ok, tool, result}` and carries no version, and a version field added now would be
+  absent on exactly the responders the question is about — so the probe measures the predicate that
+  compare was a proxy for, on the round trip it already makes. `docs/board-tools.md` § *Which
+  spelling the probe read* states the derivation; the fallback's unreachability from THIS repo
+  (`board_my_cards` emits `configured_board_id` in its base result literal, on no condition) stops
+  being a claim about the code and becomes a test over every arm of the response.
+  **No accept/reject change: no severity moves, no exit code moves** — a skewed responder still
+  passes. DL-302 ships in THIS release, so at the moment the line appears every install in the
+  field predates it; a `warn` there would paint the commonest and entirely healthy state yellow,
+  and spending the signal that way is how an operator learns to skip it.
+
 - **card#7225 (DL-299)** — **⚠ `board_create_card`'s `board_id` / `swimlane_id` now say WHERE THE CARD
   IS, read back from the card, instead of echoing the board and lane the calling agent is configured
   to write to.** Both arms returned `$cfg` values on keys a calling agent consumes as a reading of

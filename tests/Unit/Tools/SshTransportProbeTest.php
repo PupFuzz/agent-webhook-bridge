@@ -273,6 +273,10 @@ class SshTransportProbeTest extends TestCase
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
         $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
         $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+        // card#7325: this leg crosses a HOST, so its line is the ONLY place the remote
+        // install's header spelling is observable — a healthy one says so explicitly.
+        $this->assertStringContainsString('Header spelling: `configured_board_id`', $findings[0]->message);
+        $this->assertStringNotContainsString('VERSION SKEW', $findings[0]->message);
     }
 
     /**
@@ -301,7 +305,9 @@ class SshTransportProbeTest extends TestCase
      * (`BoardToolsHttpProbeCheckTest::test_a_responder_predating_the_header_rename_is_read_under_the_old_key`)
      * covers the same tolerance on the HTTP leg, which can meet a skewed responder too —
      * `--probe-tools` POSTs to an operator-supplied vhost and this repo runs prod + dev
-     * installs co-resident at independent versions (CLAUDE.md rule 7).
+     * installs co-resident at independent versions (CLAUDE.md rule 7). ⛔ Do not delete
+     * either with a reading of this repo — card#7325 (DL-304) owns when the fallback
+     * goes, and the answer depends on installs neither test can see.
      */
     public function test_live_probe_accepts_a_responder_predating_the_header_rename(): void
     {
@@ -311,6 +317,13 @@ class SshTransportProbeTest extends TestCase
         );
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
         $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+        // ⚠ ACCEPTED, NEVER SILENT (card#7325, DL-304). The board compared here came from
+        // a key that a DL-302-or-later responder uses for a row OBSERVATION, so the ok
+        // line reports the skew: this is the measurement the fallback's removal condition
+        // is read off, and it is about a host this repo cannot otherwise see.
+        $this->assertStringContainsString('VERSION SKEW', $findings[0]->message);
+        $this->assertStringContainsString('legacy `board_id` spelling', $findings[0]->message);
+        $this->assertStringContainsString('card#7325', $findings[0]->message);
     }
 
     public function test_live_probe_dirty_stdout_fails(): void

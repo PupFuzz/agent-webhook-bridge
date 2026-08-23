@@ -165,7 +165,10 @@ final class SshTransportProbe
      * a configured ssh agent (the same observable `--probe-tools` uses).
      * The header is what the answering agent is CONFIGURED for — an identity echo
      * that certifies which agent this key resolved to, never a reading of the rows;
-     * BoardToolsScopeHeader owns both spellings of it (DL-302).
+     * BoardToolsScopeHeader owns both spellings of it (DL-302), and both the ok line
+     * and the mismatch tail name WHICH spelling this responder answered under — the
+     * ssh target is a REMOTE install, so this line is the only place the version skew
+     * the fallback tolerates is observable at all (card#7325, DL-304).
      *
      * @param  list<array{agent: string, board_id: ?int, swimlane_id: ?int}>  $expectedScopes
      * @return list<Finding>
@@ -188,15 +191,16 @@ final class SshTransportProbe
         }
 
         $result = $decoded['result'] ?? null;
-        $gotBoard = is_array($result) ? BoardToolsScopeHeader::boardId($result) : null;
-        $gotSwimlane = is_array($result) ? BoardToolsScopeHeader::swimlaneId($result) : null;
+        $header = BoardToolsScopeHeader::read(is_array($result) ? $result : []);
+        $gotBoard = $header->boardId;
+        $gotSwimlane = $header->swimlaneId;
         foreach ($expectedScopes as $scope) {
             if ($gotBoard === $scope['board_id'] && $gotSwimlane === $scope['swimlane_id']) {
-                return [Finding::ok("ssh {$target}: board_my_cards ok; window scoped to board {$gotBoard} / swimlane {$gotSwimlane} (matches agent {$scope['agent']}). The scope header is an identity echo — matching it certifies that this pinned key resolved to THAT agent, not that the bridge-side lane filter ran (config matching config is true whatever the rows held); the measured half is the response's own board_id/board_observed.")];
+                return [Finding::ok("ssh {$target}: board_my_cards ok; window scoped to board {$gotBoard} / swimlane {$gotSwimlane} (matches agent {$scope['agent']}). The scope header is an identity echo — matching it certifies that this pinned key resolved to THAT agent, not that the bridge-side lane filter ran (config matching config is true whatever the rows held); the measured half is the response's own board_id/board_observed. ".$header->boardSpelling->note())];
             }
         }
 
-        return [Finding::fail("ssh {$target}: IDENTITY MISMATCH — board_my_cards answered for board=".($gotBoard ?? 'null').' swimlane='.($gotSwimlane ?? 'null').' which matches no configured ssh agent. The scope header is an identity echo, so what this shows is that the pinned key resolved to a DIFFERENT agent (or the responder answered no header at all) — look for a mis-pinned key or a stale forced-command --agent. It says nothing about the bridge-side lane filter, which this response has no observable for.')];
+        return [Finding::fail("ssh {$target}: IDENTITY MISMATCH — board_my_cards answered for board=".($gotBoard ?? 'null').' swimlane='.($gotSwimlane ?? 'null').' which matches no configured ssh agent. The scope header is an identity echo, so what this shows is that the pinned key resolved to a DIFFERENT agent — look for a mis-pinned key or a stale forced-command --agent. It says nothing about the bridge-side lane filter, which this response has no observable for. '.$header->boardSpelling->note())];
     }
 
     /**
