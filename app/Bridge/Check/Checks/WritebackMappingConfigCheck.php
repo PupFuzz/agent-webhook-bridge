@@ -5,19 +5,28 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
+use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\Finding;
 use App\Bridge\Writeback\CoordConfigTerminals;
 use App\Bridge\Writeback\GitHubTokenResolver;
+use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackMapping;
 
 /**
  * Every per-mapping writeback assertion that needs NO board read, migrated out of
  * `CheckCommand::handle()` (DL-242 stage 3a).
  *
- * All of these fire on a HALF-CONFIGURED INSTALL — the state where the writeback client
- * cannot be constructed at all — which is both why they are separated from the probe
- * plane and why they matter most: every condition here makes some writeback leg silently
- * INERT, and an inert leg produces no error, no retry, and no card movement.
+ * All the WARNING legs fire on a HALF-CONFIGURED INSTALL — the state where the writeback
+ * client cannot be constructed at all — which is both why they are separated from the
+ * probe plane and why they matter most: every condition there makes some writeback leg
+ * silently INERT, and an inert leg produces no error, no retry, and no card movement.
+ *
+ * ONE LEG IS NOT OF THAT FAMILY and is here deliberately (card#7348 / DL-305): the
+ * mention-vs-closure `ok` line speaks about a mapping that is entirely correct. It sits
+ * with the others because this is the check that walks the mappings at setup time, and
+ * because what it reports — that a merge move now needs an explicit closing form — is a
+ * property of the CODE the operator is running, which their `writeback.json` cannot tell
+ * them however carefully they read it. Its own comment at the site carries the rest.
  *
  * ONE CHECK, NOT ONE PER LEG, BECAUSE OUTPUT ORDER IS THE CONTRACT. The inline code
  * iterates mappings on the OUTSIDE and legs on the inside, so a per-leg decomposition
@@ -249,9 +258,41 @@ final class WritebackMappingConfigCheck implements Check
                     yield Finding::warn("writeback: mapping for {$repo} sets promote_on_release but no GitHub read token resolves from a FILE (<secret_dir>/github/token, or providers.github.token_path) — the promote leg runs in the FPM webhook runtime where GH_TOKEN is absent and the credential-store helper is CLI-only, so a store/GH_TOKEN-only token (usable by bridge:reconcile) leaves the promote leg INERT at runtime with no reconcile backstop. Place a read-only token file (chmod 600).");
                 }
             }
+            // card#7348 / DL-305: the MENTION-vs-CLOSURE semantics, said at setup time.
+            // The only leg here that speaks about a mapping which is entirely CORRECT —
+            // and it earns the line because what it reports is not in the operator's file.
+            // `writeback.json` says which stage a merge lands on; it cannot say that since
+            // DL-305 a merge lands there only when the PR TITLE claims the card is done. A
+            // peer wired a brand-new board into this classifier hours before the defect
+            // surfaced and nothing in the setup path told them what they were inheriting;
+            // this is that sentence, on the surface that actually runs.
+            //
+            // SCOPED TO MAPPINGS THAT HAVE A MERGE LEG AT ALL, so a started/opened-only
+            // mapping stays silent — the emptiness there is the operator's own config
+            // (Severity corollary (B)) and the gate has nothing to describe. The mapped
+            // outcomes are NAMED rather than counted, so an install that maps only one of
+            // the two is told which one.
+            // The gated set is READ from the authority, never re-listed: `PrOutcome` decides
+            // which outcomes require a closing form, and a literal pair here would be a
+            // second copy free to disagree with the runtime the day the set moves — which is
+            // precisely the failure mode this check exists to report on other people's
+            // config.
+            $gated = [];
+            foreach (PrOutcome::MERGE_OUTCOMES as $mergeOutcome) {
+                if ($mapping->stageFor($mergeOutcome) !== null) {
+                    $gated[] = "stages.{$mergeOutcome} (".$mapping->stageFor($mergeOutcome).')';
+                }
+            }
+            if ($gated !== []) {
+                yield Finding::ok("writeback: mapping for {$repo} moves a card on MERGE only when the PR TITLE carries an explicit closing form naming that card — "
+                    .implode(' and ', $gated).' '.(count($gated) === 1 ? 'is' : 'are')
+                    .' gated this way (card#7348 / DL-305). A PR that merely MENTIONS a card#/DL token is a NO-OP for the stage: the card is left exactly where it is, never moved back — so nothing needs backfilling, and a forgotten closing form costs an UNDER-promoted card you can move by hand. '
+                    .'Accepted: '.implode(', ', ClosureGrammar::accepted())
+                    .'. The token still selects WHICH card; the closing form is what says the merge finishes it. (The REJECTED side of that set — the shapes that name a card without claiming it done — is rendered by the runtime warning at the moment one is seen, where it is diagnostic rather than noise.)');
+            }
         }
 
-        yield Silence::because('every mapping has a subscribed writeback-emitting classifier spelled as the mapping spells it, and no half-configured optional leg — each of the legs above speaks only when a key is set without the key it needs, or when two files spell one repo two ways');
+        yield Silence::because('no mapping maps a merge outcome (so the mention-vs-closure line has nothing to describe), every mapping has a subscribed writeback-emitting classifier spelled as the mapping spells it, and no half-configured optional leg — each of the WARNING legs above speaks only when a key is set without the key it needs, or when two files spell one repo two ways');
     }
 
     /**

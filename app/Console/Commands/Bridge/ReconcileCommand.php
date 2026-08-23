@@ -3,6 +3,7 @@
 namespace App\Console\Commands\Bridge;
 
 use App\Bridge\Exceptions\ConfigException;
+use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Writeback\GitHubRepoProbe;
 use App\Bridge\Writeback\GitHubRepoProbeKind;
@@ -374,6 +375,25 @@ class ReconcileCommand extends BridgeCommand
 
             return;
         }
+        // card#7348 / DL-305 — the SAME closure gate the event path applies, on the same
+        // field, because this leg re-derives the same proposition from the same evidence.
+        // Without it the backstop would keep re-planning the merge move the classifier had
+        // just declined: `--fix` runs on a schedule, so the defect would simply arrive an
+        // hour later with a CLI's name on it. A card carrying a `dl_number` may also be
+        // closed by a closing form naming that DL, mirroring the classifier's DL arm.
+        //
+        // PLACED AFTER THE TERMINAL RETURN, which is what keeps it from adding a line about
+        // a decision this command does not make: `merged_to_main` is out of scope here by
+        // construction (the promote workflow owns that transition), so gating it would
+        // report a withheld move on every release PR and withhold nothing.
+        // `PrOutcome::requiresClosure()` still owns WHICH outcomes are gated — this
+        // placement narrows where the answer can matter, never what the answer is.
+        if (PrOutcome::requiresClosure($outcome) && ! $this->closes($pr['title'], $cardId, $payload, $refs)) {
+            $this->line("card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but its title carries no closing form naming this card — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305) — skipped");
+            $this->skipped++;
+
+            return;
+        }
 
         $evidence = $prUrl ?? ($pr['html_url'] !== '' ? $pr['html_url'] : "{$cardRepo}#{$prNumber}");
 
@@ -465,6 +485,52 @@ class ReconcileCommand extends BridgeCommand
         }
 
         return $none;   // unreachable (TrackedRefKind is exhaustive) — satisfies static analysis
+    }
+
+    /**
+     * Does this PR title CLAIM that merging it completes THIS card (card#7348 / DL-305)?
+     *
+     * The two ways a title can name the card mirror the two correlation channels, exactly
+     * as the classifier's own gate does: the native `card#<id>`, or a closing form naming
+     * the `DL-NNN` the card carries in its payload — a card stamped `dl_number` IS the
+     * card that DL resolves to here, which is the same relation the classifier's DL arm
+     * uses to authorize its set.
+     *
+     * THE DL IS READ OFF THE CARD, NEVER OFF THE TITLE. A `DL-NNN` in the title that this
+     * card does not carry is another card's work, and reading it would re-open through the
+     * backstop precisely the foreign-mention door DL-218 closed on the event path.
+     *
+     * THE DL COMPARE GOES THROUGH {@see ExternalReferenceNormalizer::canonicalize()}, and
+     * this is the one place in the closure path that needs it: the classifier compares two
+     * tokens parsed out of ONE string by one grammar, so their spellings agree by
+     * construction, while here a title's `DL-305` meets a STORED `dl_number` an operator
+     * or a tool may have written as `DL-0305`. That normalizer is what the board itself
+     * derives its `dl:` ref with, so this asks the same authority rather than minting a
+     * second answer about DL identity — {@see DlTokenGrammar} deliberately preserves
+     * leading zeros and is not it.
+     *
+     * @param  array<string, mixed>  $payload  the card payload (the `dl_number` stamp)
+     */
+    private function closes(string $title, int $cardId, array $payload, ExternalReferenceNormalizer $refs): bool
+    {
+        if (ClosureGrammar::closesCard($title, $cardId)) {
+            return true;
+        }
+        $dl = $payload['dl_number'] ?? null;
+        if (! is_string($dl) && ! is_int($dl)) {
+            return false;
+        }
+        $mine = $refs->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, $dl);
+        if ($mine === null) {
+            return false;
+        }
+        foreach (ClosureGrammar::closedDls($title) as $closed) {
+            if ($refs->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, $closed) === $mine) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
