@@ -1950,9 +1950,14 @@ class BridgeCommandsTest extends TestCase
             json_encode(['id' => 'e:agent:0', 'ts' => 1.0, 'kind' => 'new_card', 'summary' => 'dup'])."\n",
         );
 
-        $this->artisan('bridge:inbox', ['--hook-format' => 'plain'])
-            ->expectsOutputToContain('new_card')
-            ->assertExitCode(0);
+        // ⛔ ASSERT THE OCCURRENCE COUNT, not that the output mentions the kind. Neither
+        // of the two assertions below can distinguish one rendering from two: the cursor
+        // advance array_unique()s its ids, so it records ONE id either way, and
+        // expectsOutputToContain() is satisfied by a doubled line. Measured by mutation —
+        // drop the `isset($ids[$id])` collapse from BridgePaths::unseenInboxLines() and
+        // this test passed, which is what made it a name rather than a guard (card#7332).
+        $this->assertSame(0, Artisan::call('bridge:inbox', ['--hook-format' => 'plain']));
+        $this->assertSame(1, substr_count(Artisan::output(), 'new_card'), 'a duplicate id must be surfaced ONCE');
 
         // Surfaced once → cursor records exactly one id; a second run is silent.
         $this->assertSame(['e:agent:0'], json_decode((string) File::get($this->dir.'/state/inbox-seen.json'), true));

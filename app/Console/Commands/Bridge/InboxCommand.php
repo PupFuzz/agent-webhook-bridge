@@ -37,23 +37,11 @@ class InboxCommand extends BridgeCommand
         $agent = $this->resolveAgent();
         $seenPath = BridgePaths::seenPath($agent);
 
-        $lines = BridgePaths::agentInboxLines($agent);
-        $seen = BridgePaths::readSeen($seenPath);
-
-        // Collapse duplicate ids among the unseen lines (keep first): the
-        // writer no longer dedups before appending (DL-012), so a partial-
-        // staging redelivery can leave two lines with the same id — surface it
-        // once. Already-seen ids are filtered by $seen as before.
-        $unseen = [];
-        $unseenIds = [];
-        foreach ($lines as $line) {
-            $id = $line['id'] ?? null;
-            if (! is_string($id) || in_array($id, $seen, true) || isset($unseenIds[$id])) {
-                continue;
-            }
-            $unseenIds[$id] = true;
-            $unseen[] = $line;
-        }
+        // The unseen set (already-seen filtered, duplicate ids collapsed) is
+        // BridgePaths' rule, not this command's: the DL-306 standup digest counts
+        // the same lines, and two spellings of "unseen" would let the two surfaces
+        // disagree about one inbox.
+        $unseen = BridgePaths::unseenInboxLines($agent);
 
         if ($unseen === []) {
             return self::SUCCESS;   // silent-when-empty discipline
