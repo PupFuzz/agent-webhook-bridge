@@ -12,6 +12,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Tests\Support\PreloadStub;
 use Tests\TestCase;
 
 class KanbanMoveCardHandlerTest extends TestCase
@@ -1041,12 +1042,17 @@ class KanbanMoveCardHandlerTest extends TestCase
 
     // --- card#5312 / DL-274: the moveCard + stamp refusal arms became live signals ---
 
-    /** The stage-order preload the no-regression guard reads for a `merged` outcome. */
+    /**
+     * The stage-order preload the no-regression guard reads for a `merged` outcome.
+     *
+     * ⚑ No `swimlanes` key, deliberately: this handler's guard reads the stage order only, and
+     * the ABSENCE is itself a distinct input downstream ({@see PreloadStub}).
+     *
+     * @return array<string, mixed>
+     */
     private function fakePreload(): array
     {
-        return ['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
-            ['id' => 49, 'position' => 3], ['id' => 52, 'position' => 5],
-        ]]]]])];
+        return PreloadStub::stub(8, [49 => 3, 52 => 5]);
     }
 
     public function test_move_403_alerts_with_the_read_but_not_write_reason(): void

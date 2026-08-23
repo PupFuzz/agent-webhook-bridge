@@ -244,9 +244,15 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   on the wire. ⛔ **Only 2 of those 57 reached a red test.** `StrayRequestException` is re-thrown
   ahead of the `ConnectionException` wrapping, so it reaches the caller — and a caller that degrades
   softly on `catch (Throwable)` swallows it exactly as it swallowed the connection error, leaving the
-  test green on the degradation arm. So the guard is the FLOOR of the standing rule, not a
-  replacement for it: a new API call still needs the stub AND the `Http::assertSent` on every test
-  that reaches it.
+  test green on the degradation arm — which is why the refusal is PAIRED with a recorder: a global
+  Guzzle middleware sits outside the stub handler, records the refused URL and re-throws it
+  unchanged, and `tearDown()` then fails the test naming every refused URL it did not declare. So a
+  stub is load-bearing whether or not an assertion witnesses it — drop one and the test reds. The
+  standing rule is not replaced, because it answers what the guard cannot: only `Http::assertSent`
+  says the stub that answered was the RIGHT one, so a new API call still needs the stub AND the wire
+  assertion on every test that reaches it. Neither mechanism can see a test that registers a
+  catch-all (`Http::fake()` with no arguments, or `'*'`) — it has answered every request it will ever
+  make, and that is a different class, not fixed here.
   **The worst instance was not the fixture host.** `InstallGuardTest`'s crosstalk leg read
   `bridge.config_dir` from the `BRIDGE_DIR` a deployed checkout's own `.env` sets — `phpunit.xml`
   overrides neither — so on an operator host it ran `bridge:check` against the REAL install and made
@@ -254,7 +260,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   run, while on CI the same test reached a directory that does not exist and exercised none of it.
   Same test, two different subjects, decided by the host the runner sits on. It is hermetic now, and
   asserts the crosstalk message rather than a bare exit code, which alone cannot say which check
-  failed.
+  failed — **and the primitive is fixed rather than the sixth call site**: `Tests\TestCase` now
+  defaults `bridge.config_dir` / `bridge.secret_dir` to a path that does not exist, so the default on
+  every host is the shape CI already had and the next artisan-invoking class cannot re-mint the leak
+  by forgetting to pin one.
   **ONE url is allowed to stay stray**, `http://localhost/` inside `ChannelPushUdsTest`, whose
   subject IS the live curl/Guzzle Unix-domain-socket transport and whose destination is a socket the
   test binds and deletes itself. Scoped to that url, not to the class: a per-class opt-out would

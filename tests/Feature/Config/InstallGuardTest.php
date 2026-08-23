@@ -80,8 +80,11 @@ class InstallGuardTest extends TestCase
         //
         // The fixture dir is empty, so the crosstalk guard is the only thing that can fail
         // here — which is what the test is named for. No `Http::fake()`, deliberately: with
-        // nothing stubbed, `preventStrayRequests()` makes any outbound call from this path
-        // a RED rather than a silent one.
+        // nothing stubbed, any outbound call from this path is a RED. ⚑ It is the tearDown
+        // RECORDER in `Tests\TestCase` that makes that true, not `preventStrayRequests()` on
+        // its own — `bridge:check`'s per-mapping `catch (Throwable)` swallows the refusal
+        // exactly as it swallowed the connection error, so the refusal alone would leave this
+        // test green (card#7300 review).
         config(['bridge.config_dir' => $this->dir, 'bridge.secret_dir' => $this->dir]);
         config(['bridge.install_suffix' => '-prod']);   // real sqlite db is :memory:, lacks _prod
         $this->artisan('bridge:check')

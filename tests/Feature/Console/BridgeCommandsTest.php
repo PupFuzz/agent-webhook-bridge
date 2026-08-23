@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\UnreadableDeclarationClassifier;
+use Tests\Support\PreloadStub;
 use Tests\TestCase;
 
 class BridgeCommandsTest extends TestCase
@@ -88,23 +89,19 @@ class BridgeCommandsTest extends TestCase
      * function of whether the runner could resolve the fixture host.
      *
      * The stage set is what the cases routed through here need present for the
-     * stage-existence leg to run its HEALTHY arm — not a model of any real board, and not
-     * claimed to cover every id this class configures. A case that needs an id to be
-     * MISSING from the board stubs its own preload, which the `$stubs + $this->fakePreload()`
-     * order keeps ahead of this one (CLAUDE_GOTCHAS.md G-020).
+     * stage-existence leg to run its HEALTHY arm; the body shape and the bound on reading it
+     * as a real board belong to {@see PreloadStub}. A case that needs an id to be MISSING from
+     * the board stubs its own preload, which the `$stubs + $this->fakePreload()` order keeps
+     * ahead of this one (CLAUDE_GOTCHAS.md G-020).
+     *
+     * ⚑ `swimlanes` is present and EMPTY, which is not the same as absent: absent is what
+     * `WritebackBoardStateCheck` reports as "carried no swimlane collection at all".
      *
      * @return array<string, mixed>
      */
     private function fakePreload(int $boardId = 8): array
     {
-        return ["*/boards/{$boardId}/preload.json" => Http::response(['data' => [
-            'workflows' => [['stages' => [
-                ['id' => 21, 'position' => 1], ['id' => 49, 'position' => 2],
-                ['id' => 50, 'position' => 3], ['id' => 52, 'position' => 4],
-                ['id' => 53, 'position' => 5],
-            ]]],
-            'swimlanes' => [],
-        ]])];
+        return PreloadStub::stub($boardId, [21 => 1, 49 => 2, 50 => 3, 52 => 4, 53 => 5], swimlanes: []);
     }
 
     private function event(): WebhookEvent
