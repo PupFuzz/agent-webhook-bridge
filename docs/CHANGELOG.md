@@ -949,6 +949,45 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   8697 on the base: this adds assertions to existing tests, it does not add tests.** phpstan L7 0,
   pint clean, `check-doc-refs` clean.
 
+- **card#7474 (DL-307)** — **⚠ the suite's Redis databases are now pinned, and the
+  measurement behind the pin corrects a belief this repo held in two places: `force="true"` on a
+  `phpunit.xml` `<env>` entry does NOT make a pin win against an exported variable.** Several
+  tenants' test suites share ONE Redis on the deployment host, and this suite pinned no
+  `REDIS_DB`/`REDIS_CACHE_DB`, so the indices came from whatever a local `.env` said — measured
+  at DB 4 with such a `.env` in place, and 0/1 (the defaults every other seat also gets) without
+  one. Both are now pinned to indices claimed for this suite and published so the other seats
+  could avoid them: **`REDIS_DB=13`, `REDIS_CACHE_DB=12`**. The exposure is **latent, not live** —
+  `CACHE_STORE=array` and `QUEUE_CONNECTION=sync` mean nothing here selects Redis today — which
+  is precisely when the pin is free to add.
+  **The mechanism, measured rather than assumed (canon #9), because the obvious fix does not
+  work.** With `REDIS_DB=9` exported against a pin written `<env … value="13" force="true"/>`:
+  `getenv()='13'`, `$_ENV='13'`, **`$_SERVER='9'`, `env()='9'`, `config()='9'`**. PHPUnit's
+  `PhpHandler::handleEnvVariables()` honors `force` by writing `putenv()` and `$_ENV` and never
+  touches `$_SERVER`, where an exported variable lands under `variables_order=GPCS`; Laravel
+  resolves `env()` through Dotenv's repository, whose `DEFAULT_ADAPTERS` are `ServerConstAdapter`
+  **then** `EnvConstAdapter`, so `$_SERVER` is read first and the forced pin loses. A `<server>`
+  entry — assigned unconditionally by `handleServerVariables()` — is what closes it; with the
+  pair in place the same run reads `13` at every layer. **A pin that needs to hold therefore
+  needs BOTH entries**, and the three that need to hold (`REDIS_DB`, `REDIS_CACHE_DB`,
+  `BRIDGE_INSTALL_SUFFIX`) carry both. `Tests\Unit\PhpunitConfigPinTest` is the drift guard:
+  two copies of one value with `$_SERVER` read FIRST means a value edited on the `<env>` line
+  alone would be silently ignored, so a missing, unforced or disagreeing entry reds (each of
+  those three mutations watched red).
+  **⛔ `DB_CONNECTION` / `DB_DATABASE` / `DB_URL` are deliberately left UNFORCED and unpaired,
+  against the card's own instruction, and the absence is now load-bearing and commented as
+  such.** The `phpunit-mariadb` CI matrix and the local recipe in `CLAUDE_TESTING.md` exercise
+  the MariaDB driver by EXPORTING those variables — which works only because an unforced pin
+  yields to a real environment variable. Forcing them makes both matrix legs silently re-run
+  SQLite: green CI that has stopped testing the one thing it exists to test, and the exact
+  false-green class this card was filed to remove. Measured: with `DB_CONNECTION=mysql`
+  exported, `config('database.default')` is `mysql` — preserved on purpose.
+  Every other pin gains `force="true"` alone, which buys the child-process/`getenv()` layer and
+  is honestly labelled as not buying the in-process one; `APP_ENV`, `APP_MAINTENANCE_DRIVER` and
+  `BCRYPT_ROUNDS` are left alone with reasons in the file. **No `app/` change, no migration, no
+  config key, no receiver accept/reject change** — `phpunit.xml`, one new test, and the docs
+  whose claims the measurement falsified (G-013's `.env` vector, which a `.env` never had, and
+  G-017's `getenv()` explanation, which is not why forcing failed there).
+
 - **card#7330** — **⚠ `check-doc-refs` was reporting a clean verdict over a population that
   excluded the citation form this repo mostly writes.** Rule 1's harvest was BACKTICKED-only, so
   every `{@see …}` citation in a docblock — 645 of them in the tree — was not a token either leg
