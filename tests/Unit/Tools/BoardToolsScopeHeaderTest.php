@@ -116,20 +116,57 @@ class BoardToolsScopeHeaderTest extends TestCase
     }
 
     /**
-     * The three notes are distinct and the LEGACY one names its cause, the state, and
-     * the card that owns the removal condition — this string is the operator-facing
-     * measurement the condition is read off, so an edit that empties it or drops the
-     * card reference reds here rather than silently un-owning the fallback again.
+     * The three notes are distinct, and the LEGACY one states what was READ and offers
+     * the version cause as the likely one — this string is the operator-facing
+     * measurement the removal condition is read off, so an edit that empties it or drops
+     * the card reference reds here rather than silently un-owning the fallback again.
+     *
+     * ⛔ It does not ASSERT the version cause. An absent `configured_board_id` is all the
+     * read establishes, and DL-304 names two other live producers of that state (a relay,
+     * a responder that emits the header conditionally) for which "upgrade the install" is
+     * the wrong instruction.
      */
-    public function test_only_the_legacy_note_reports_a_version_skew_and_it_names_its_owner(): void
+    public function test_the_legacy_note_states_the_reading_and_offers_the_version_cause_as_likely(): void
     {
         $legacy = ScopeHeaderSpelling::Legacy->note();
 
-        $this->assertStringContainsString('VERSION SKEW', $legacy);
+        $this->assertStringContainsString('Header spelling: LEGACY', $legacy);
         $this->assertStringContainsString('configured_board_id', $legacy);
+        $this->assertStringContainsString('Likeliest cause', $legacy);
+        $this->assertStringContainsString('relay', $legacy);
         $this->assertStringContainsString('card#7325', $legacy);
-        $this->assertStringNotContainsString('VERSION SKEW', ScopeHeaderSpelling::Configured->note());
-        $this->assertStringNotContainsString('VERSION SKEW', ScopeHeaderSpelling::Absent->note());
+        $this->assertStringNotContainsString('Header spelling: LEGACY', ScopeHeaderSpelling::Configured->note());
+        $this->assertStringNotContainsString('Header spelling: LEGACY', ScopeHeaderSpelling::Absent->note());
         $this->assertNotSame(ScopeHeaderSpelling::Configured->note(), ScopeHeaderSpelling::Absent->note());
+    }
+
+    /**
+     * ⛔ THE CAUSE FOLLOWS THE SPELLING, AND THE UNIDENTIFIED BRANCH GETS NEITHER THE
+     * CREDENTIAL CAUSE NOR THE CREDENTIAL REMEDIATION. A mismatch tail that names a
+     * DIFFERENT agent has said the responder identified itself as someone else; on
+     * {@see ScopeHeaderSpelling::Absent} nothing identified it at all, so that sentence
+     * is a specific wrong cause and its remediation points at a healthy token.
+     *
+     * Both directions are pinned per branch: a fix that hard-wired either arm's text
+     * would pass one half and fail the other.
+     */
+    public function test_the_mismatch_cause_follows_the_spelling(): void
+    {
+        $args = ['the presented bearer', 'look at the token path', 'look at the endpoint'];
+
+        foreach ([ScopeHeaderSpelling::Configured, ScopeHeaderSpelling::Legacy] as $identified) {
+            $cause = $identified->mismatchCause(...$args);
+
+            $this->assertStringContainsString("resolved to a DIFFERENT agent's window", $cause);
+            $this->assertStringContainsString('look at the token path', $cause);
+            $this->assertStringNotContainsString('look at the endpoint', $cause);
+        }
+
+        $absent = ScopeHeaderSpelling::Absent->mismatchCause(...$args);
+
+        $this->assertStringNotContainsString('DIFFERENT agent', $absent);
+        $this->assertStringNotContainsString('look at the token path', $absent);
+        $this->assertStringContainsString('look at the endpoint', $absent);
+        $this->assertStringContainsString('the presented bearer', $absent);
     }
 }

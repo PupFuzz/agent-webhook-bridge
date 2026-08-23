@@ -241,10 +241,14 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   for an old install and would be a conflation for a new one. **The behaviour is unchanged and the
   fallback stays** — what changes is that it is no longer silent. Every ok line and every
   `IDENTITY MISMATCH` tail from both probes now ends with the provenance: *Header spelling:
-  `configured_board_id`* (current responder), *⚠ VERSION SKEW … the legacy `board_id` spelling*
-  (pre-DL-302 responder, naming the conflation and the card that owns dropping the tolerance), or
-  *Header spelling: NEITHER* (no header at all — which the mismatch tail previously offered as one
-  of two guesses in a parenthetical, and now states). `BoardToolsScopeHeader` becomes a value
+  `configured_board_id`* (current responder), *⚠ Header spelling: LEGACY … the legacy `board_id`
+  spelling* (the header answered under the old key — most likely a pre-DL-302 responder, with the
+  conflation and the card that owns dropping the tolerance named), or *Header spelling: NEITHER*
+  (no header under either key). **And a mismatch tail's CAUSE now follows that same reading**: a
+  responder that identified itself as a DIFFERENT agent sends you at the bearer / pinned key, while
+  one that echoed no identity at all sends you at the ROUTE — a wrong vhost, a relay, or any JSON
+  service answering `{ok:true,result:{}}` — because that state says nothing about your credential.
+  Previously both were offered as one parenthetical guess. `BoardToolsScopeHeader` becomes a value
   object read ONCE per response so the value and its provenance cannot disagree, and the operator
   sentence lives on the new `ScopeHeaderSpelling` rather than being written twice.
   **The version compare the condition was originally phrased as cannot be run:** the board-tools
@@ -740,9 +744,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
     that the bridge-side lane filter ran — config compared against config is true whatever the rows
     held. The probes deliberately do **not** yet fail on the new observation; a fail arm there
     changes what `bridge:check` rejects. Their mismatch finding is relabelled from
-    `ISOLATION`/`ISOLATION MISMATCH` to **`IDENTITY MISMATCH`**, and both fail tails now name the
-    cause the probe can actually see (this key/bearer resolved to a DIFFERENT agent — a token
-    collision or a mis-pinned key) instead of a lane-scoping fault it cannot. `bridge:check`
+    `ISOLATION`/`ISOLATION MISMATCH` to **`IDENTITY MISMATCH`**, and both fail tails now name a
+    cause the probe can actually see instead of a lane-scoping fault it cannot: an identity one
+    where the responder identified itself (this key/bearer resolved to a DIFFERENT agent — a token
+    collision or a mis-pinned key), and the ROUTE where it identified itself not at all (card#7325
+    below). `bridge:check`
     `message` strings are explicitly outside the `--format=json` write contract, so no machine
     consumer changes.
   - **⚠ UPGRADING — a MULTI-HOST ssh install must upgrade the PROBER side first.** The skew

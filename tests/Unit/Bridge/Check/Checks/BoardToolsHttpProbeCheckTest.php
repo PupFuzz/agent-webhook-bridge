@@ -87,7 +87,7 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         // card#7325: the line says WHICH spelling answered, so a healthy probe is a
         // reading of this responder's version too, not only of its identity.
         $this->assertStringContainsString('Header spelling: `configured_board_id`', $findings[0]->message);
-        $this->assertStringNotContainsString('VERSION SKEW', $findings[0]->message);
+        $this->assertStringNotContainsString('Header spelling: LEGACY', $findings[0]->message);
     }
 
     public function test_a_missing_cards_by_stage_counts_zero_groups(): void
@@ -105,6 +105,12 @@ class BoardToolsHttpProbeCheckTest extends TestCase
 
         $this->assertSame(Severity::Fail, $findings[0]->severity);
         $this->assertStringContainsString('IDENTITY MISMATCH — board_my_cards answered for board=99 swimlane=4, but this agent is configured for board 10 / swimlane 4.', $findings[0]->message);
+        // The responder DID identify itself, as somebody else — so the credential cause
+        // and the token-path remediation are the right ones HERE. The presence witness
+        // for the split in `test_an_absent_scope_header_fails_as_a_mismatch`: without it,
+        // collapsing both branches onto the absent wording would go green there.
+        $this->assertStringContainsString("resolved to a DIFFERENT agent's window", $findings[0]->message);
+        $this->assertStringContainsString('mis-pinned bearer at '.$this->dir.'/prod-agent', $findings[0]->message);
     }
 
     /**
@@ -165,7 +171,7 @@ class BoardToolsHttpProbeCheckTest extends TestCase
 
         $this->assertSame(Severity::Ok, $findings[0]->severity);
         $this->assertStringContainsString('window scoped to board 10 / swimlane 4', $findings[0]->message);
-        $this->assertStringContainsString('VERSION SKEW', $findings[0]->message);
+        $this->assertStringContainsString('Header spelling: LEGACY', $findings[0]->message);
         $this->assertStringContainsString('legacy `board_id` spelling', $findings[0]->message);
         $this->assertStringContainsString('card#7325', $findings[0]->message);
     }
@@ -188,10 +194,14 @@ class BoardToolsHttpProbeCheckTest extends TestCase
     /**
      * A missing scope header is not a match — it renders as `null`, and it still fails.
      *
-     * The tail names WHICH absence it is (card#7325): "answered no header under either
-     * spelling" and "answered another agent's header" are different causes, and the fail
-     * line used to offer them as one parenthetical guess. The spelling is read, so it is
-     * stated instead.
+     * ⛔ AND THE TAIL'S CAUSE IS THE ONE THIS BRANCH HAS (card#7325). "Answered no header
+     * under either spelling" and "answered another agent's header" are different causes
+     * with different remediations, and the tail this replaced offered them as one
+     * parenthetical guess. The spelling is READ, so the cause is stated from it: nothing
+     * here shows which agent the bearer reached, and the operator is sent at the endpoint
+     * — a wrong vhost, a relay, or any JSON service answering `{"ok":true,"result":{}}`
+     * produces exactly this response — never at a token path this state says nothing
+     * about, which the spelling sentence beside it would deny in the same string.
      */
     public function test_an_absent_scope_header_fails_as_a_mismatch(): void
     {
@@ -202,6 +212,9 @@ class BoardToolsHttpProbeCheckTest extends TestCase
 
         $this->assertSame(Severity::Fail, $findings[0]->severity);
         $this->assertStringContainsString('board=null swimlane=null', $findings[0]->message);
+        $this->assertStringContainsString('does not show which agent the presented bearer reached — check what '.self::ENDPOINT.' actually reached', $findings[0]->message);
+        $this->assertStringNotContainsString('DIFFERENT agent', $findings[0]->message);
+        $this->assertStringNotContainsString($this->dir.'/prod-agent', $findings[0]->message);
     }
 
     public function test_a_200_without_a_result_object_fails(): void

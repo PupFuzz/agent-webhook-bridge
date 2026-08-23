@@ -370,8 +370,8 @@ every finding with the spelling it actually read:
 | The finding's last sentence | What it tells you |
 | --- | --- |
 | *Header spelling: `configured_board_id` …* | This responder is on DL-302 or later. The fallback did not fire. |
-| *⚠ VERSION SKEW — …the legacy `board_id` spelling…* | This responder predates DL-302, and the board just compared came out of the key a current install uses for an observation. Upgrade the responding install. |
-| *Header spelling: NEITHER …* | This responder answered no header under either name — it always accompanies a failure. |
+| *⚠ Header spelling: LEGACY — …the legacy `board_id` spelling…* | This responder answered no `configured_board_id`, so the board just compared came out of the key a current install uses for an observation. Likeliest cause is an install predating DL-302 — upgrade it and re-probe; a relay, or a responder that emits the header conditionally, reads the same way. |
+| *Header spelling: NEITHER …* | This responder answered no header under either name — it always accompanies a failure, and that failure's cause is the ROUTE, not your credential: nothing in the response identifies who answered, so the tail sends you at the endpoint / the forced command rather than at a token that may be doing its job. |
 
 **Dropping the fallback is a measurement, not a judgement call, and card#7325 (DL-304) owns
 it.** Two things must hold:

@@ -200,7 +200,11 @@ final class SshTransportProbe
             }
         }
 
-        return [Finding::fail("ssh {$target}: IDENTITY MISMATCH — board_my_cards answered for board=".($gotBoard ?? 'null').' swimlane='.($gotSwimlane ?? 'null').' which matches no configured ssh agent. The scope header is an identity echo, so what this shows is that the pinned key resolved to a DIFFERENT agent — look for a mis-pinned key or a stale forced-command --agent. It says nothing about the bridge-side lane filter, which this response has no observable for. '.$header->boardSpelling->note())];
+        return [Finding::fail("ssh {$target}: IDENTITY MISMATCH — board_my_cards answered for board=".($gotBoard ?? 'null').' swimlane='.($gotSwimlane ?? 'null').' which matches no configured ssh agent. '.$header->boardSpelling->mismatchCause(
+            credential: 'the pinned key',
+            credentialFix: 'look for a mis-pinned key or a stale forced-command --agent',
+            routeFix: "check what {$target}'s forced command actually ran — a relay, or any JSON responder that is not board_my_cards, answers a probe exactly this way",
+        ).' It says nothing about the bridge-side lane filter, which this response has no observable for. '.$header->boardSpelling->note())];
     }
 
     /**
