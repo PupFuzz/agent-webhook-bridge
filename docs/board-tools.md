@@ -87,8 +87,10 @@ foreign rows would have reported this board's id as fact. What a caller gets now
   and non-numeric all mean *unread*.
 - **`configured_board_id`** is the scope your bridge identity is wired to — what
   `board_id` used to carry, now under a name that says what it is. It is always
-  present. The two being equal is the healthy case, not an invariant the bridge
-  enforces here.
+  present — unconditionally, on every arm of the response, which is what lets
+  `bridge:check`'s two live probes tell a current responder from one predating the rename
+  (**Which spelling the probe read**, below). The two being equal is the healthy case, not
+  an invariant the bridge enforces here.
 - **`swimlane_id` needs no such flag**: every returned row is filtered against it and
   a non-matching row is dropped before you see it (below), so the lane a card lands
   under is verified by construction. The board axis is a report, not a filter — a row
@@ -352,6 +354,51 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   the REAL HTTP loopback+bearer path; `bridge:check --probe-tools-ssh=<user@host>`
   the REAL ssh round-trip (see the runbook below).
 
+### Which spelling the probe read — and when the version-skew fallback can go
+
+Both live probes read the answering install's scope header under `configured_board_id`,
+**falling back to the older `board_id` spelling when it is absent** — neither probe is
+guaranteed to be talking to the install it runs inside (`--probe-tools-ssh` round-trips to
+another HOST; `--probe-tools` POSTs to a vhost a co-resident install at a different version
+can serve). Without that fallback a responder predating DL-302 is reported as an
+`IDENTITY MISMATCH`, i.e. a version difference named as an identity fault.
+
+**It is tolerance, and on a current responder the two keys mean different things** — the
+first is an identity echo, the second is where the returned ROWS are. So the probe now ends
+every finding with the spelling it actually read:
+
+| The finding's last sentence | What it tells you |
+| --- | --- |
+| *Header spelling: `configured_board_id` …* | This responder is on DL-302 or later. The fallback did not fire. |
+| *⚠ Header spelling: LEGACY — …the legacy `board_id` spelling…* | This responder answered no `configured_board_id`, so the board just compared came out of the key a current install uses for an observation. Likeliest cause is an install predating DL-302 — upgrade it and re-probe; a relay, or a responder that emits the header conditionally, reads the same way. |
+| *Header spelling: NEITHER …* | This responder answered no header under either name — it always accompanies a failure, and that failure's cause is the ROUTE, not your credential: nothing in the response identifies who answered, so the tail sends you at the endpoint / the forced command rather than at a token that may be doing its job. |
+
+**Dropping the fallback is a measurement, not a judgement call, and card#7325 (DL-304) owns
+it.** Two things must hold:
+
+1. **Every install that is a probe target answers under `configured_board_id`.** You read that
+   off the probe — run `bridge:check --probe-tools=<endpoint>` and
+   `bridge:check --probe-tools-ssh=<user@host>` against each one and look at the last sentence
+   of the finding. ⛔ The subject is the **responder**, which on the ssh leg is a different host
+   entirely: no reading of this repo answers it, and a target you did not probe is **unmeasured**,
+   not clean.
+2. **Nothing else answers this envelope.** `board_my_cards` is the only responder today and it
+   emits `configured_board_id` in its base result literal, on no condition at all — a property
+   guarded by a test, not established by reading the file. A second tool, a channel-server relay,
+   or a future responder that emits the header conditionally re-opens the question, because a row
+   observation would then be read as an identity claim with nothing red anywhere.
+
+Both true ⇒ the fallback is dead tolerance and goes, together with the two skew tests that pin it.
+
+⚠ **The version compare this replaced cannot be run.** The condition was first written as
+*"the oldest bridge version any probed install runs"* ≥ *"the release that first emitted
+`configured_board_id`"*. The board-tools envelope is `{ok, tool, result}` and carries no
+version, and a version field added now would be missing on precisely the old responders the
+question is about — so the spelling is the predicate that compare was a proxy for, measured
+directly, on the round trip the probe already makes. **DL-302 ships in the same release as this
+note**, so the earliest install that can satisfy (1) is one running that release or later;
+until every probe target is upgraded past it, the fallback stays.
+
 Audit trail: one structured log line per call (agent, tool, outcome). A queryable
 `tool_calls` ledger table is the named v2 upgrade if operators want it.
 
@@ -477,7 +524,9 @@ resolves to the right agent, and the scope header the bridge answers with
 **which agent the bearer resolved to** — it is config echoed back, so it cannot show
 that the bridge-side lane filter ran. Each failure mode names its likely cause (403 → the
 step-1 trap; 401 → bearer mismatch/collision; connection refused → wrong
-vhost/endpoint). Non-2xx or a scope mismatch exits non-zero.
+vhost/endpoint). Non-2xx or a scope mismatch exits non-zero. Every finding also names WHICH
+spelling the responder answered the header under, which is how a version skew stops reading as
+an identity fault — see **Which spelling the probe read** above.
 
 ### 7. Restart the channel server
 

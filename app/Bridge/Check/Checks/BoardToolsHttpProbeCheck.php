@@ -169,16 +169,21 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
 
                 continue;
             }
-            $gotBoard = BoardToolsScopeHeader::boardId($result);
-            $gotSwimlane = BoardToolsScopeHeader::swimlaneId($result);
+            $header = BoardToolsScopeHeader::read($result);
+            $gotBoard = $header->boardId;
+            $gotSwimlane = $header->swimlaneId;
             if ($gotBoard !== $bt->boardId || $gotSwimlane !== $bt->swimlaneId) {
-                yield Finding::fail("board_tools probe: agent {$name}: IDENTITY MISMATCH — board_my_cards answered for board=".($gotBoard ?? 'null').' swimlane='.($gotSwimlane ?? 'null').", but this agent is configured for board {$bt->boardId} / swimlane {$bt->swimlaneId}. The scope header is an identity echo, so what this shows is that the presented bearer resolved to a DIFFERENT agent's window (or to a responder that answered no header at all) — look for a token collision or a mis-pinned bearer at {$bt->tokenPath}. It says nothing about the bridge-side lane filter, which this response has no observable for.");
+                yield Finding::fail("board_tools probe: agent {$name}: IDENTITY MISMATCH — board_my_cards answered for board=".($gotBoard ?? 'null').' swimlane='.($gotSwimlane ?? 'null').", but this agent is configured for board {$bt->boardId} / swimlane {$bt->swimlaneId}. ".$header->boardSpelling->mismatchCause(
+                    credential: 'the presented bearer',
+                    credentialFix: "look for a token collision or a mis-pinned bearer at {$bt->tokenPath}",
+                    routeFix: 'check what '.$endpoint.' actually reached; a wrong vhost, a relay, or any JSON service answering `{"ok":true,"result":{}}` answers a probe exactly this way',
+                ).' It says nothing about the bridge-side lane filter, which this response has no observable for. '.$header->boardSpelling->note());
 
                 continue;
             }
             $stageGroups = is_array($result['cards_by_stage'] ?? null) ? count($result['cards_by_stage']) : 0;
 
-            yield Finding::ok("board_tools probe: agent {$name}: {$endpoint} → 200; window scoped to board {$bt->boardId} / swimlane {$bt->swimlaneId} ({$stageGroups} stage group(s)). The scope header is an identity echo — matching it certifies that this bearer resolved to THIS agent, not that the bridge-side lane filter ran (config matching config is true whatever the rows held); the measured half is the response's own board_id/board_observed.");
+            yield Finding::ok("board_tools probe: agent {$name}: {$endpoint} → 200; window scoped to board {$bt->boardId} / swimlane {$bt->swimlaneId} ({$stageGroups} stage group(s)). The scope header is an identity echo — matching it certifies that this bearer resolved to THIS agent, not that the bridge-side lane filter ran (config matching config is true whatever the rows held); the measured half is the response's own board_id/board_observed. ".$header->boardSpelling->note());
         }
     }
 

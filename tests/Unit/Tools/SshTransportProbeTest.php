@@ -273,6 +273,10 @@ class SshTransportProbeTest extends TestCase
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
         $this->assertFalse($this->hasSeverity($findings, Severity::Fail));
         $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+        // card#7325: this leg crosses a HOST, so its line is the ONLY place the remote
+        // install's header spelling is observable — a healthy one says so explicitly.
+        $this->assertStringContainsString('Header spelling: `configured_board_id`', $findings[0]->message);
+        $this->assertStringNotContainsString('Header spelling: LEGACY', $findings[0]->message);
     }
 
     /**
@@ -301,7 +305,9 @@ class SshTransportProbeTest extends TestCase
      * (`BoardToolsHttpProbeCheckTest::test_a_responder_predating_the_header_rename_is_read_under_the_old_key`)
      * covers the same tolerance on the HTTP leg, which can meet a skewed responder too —
      * `--probe-tools` POSTs to an operator-supplied vhost and this repo runs prod + dev
-     * installs co-resident at independent versions (CLAUDE.md rule 7).
+     * installs co-resident at independent versions (CLAUDE.md rule 7). ⛔ Do not delete
+     * either with a reading of this repo — card#7325 (DL-304) owns when the fallback
+     * goes, and the answer depends on installs neither test can see.
      */
     public function test_live_probe_accepts_a_responder_predating_the_header_rename(): void
     {
@@ -311,6 +317,13 @@ class SshTransportProbeTest extends TestCase
         );
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
         $this->assertTrue($this->hasSeverity($findings, Severity::Ok));
+        // ⚠ ACCEPTED, NEVER SILENT (card#7325, DL-304). The board compared here came from
+        // a key that a DL-302-or-later responder uses for a row OBSERVATION, so the ok
+        // line reports the skew: this is the measurement the fallback's removal condition
+        // is read off, and it is about a host this repo cannot otherwise see.
+        $this->assertStringContainsString('Header spelling: LEGACY', $findings[0]->message);
+        $this->assertStringContainsString('legacy `board_id` spelling', $findings[0]->message);
+        $this->assertStringContainsString('card#7325', $findings[0]->message);
     }
 
     public function test_live_probe_dirty_stdout_fails(): void
@@ -332,6 +345,34 @@ class SshTransportProbeTest extends TestCase
         $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
         $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
         $this->assertStringContainsString('IDENTITY MISMATCH — board_my_cards answered for board=99 swimlane=99', $findings[0]->message);
+        // This responder DID identify itself, as another agent — the key cause and the
+        // key remediation belong here, and this is the presence witness that keeps the
+        // absent branch below from being satisfied by collapsing both onto one wording.
+        $this->assertStringContainsString("resolved to a DIFFERENT agent's window", $findings[0]->message);
+        $this->assertStringContainsString('mis-pinned key or a stale forced-command --agent', $findings[0]->message);
+    }
+
+    /**
+     * ⛔ THE CAUSE THE ABSENT BRANCH HAS, NOT THE ONE THE OTHER BRANCH HAS (card#7325).
+     * *The pinned key resolved to a DIFFERENT agent* is unavailable here — nothing
+     * identified the responder at all, and the provenance sentence in the same string
+     * says so. Reachable without a mis-pinned anything: the forced command can land on a
+     * relay, or on any JSON responder that is not `board_my_cards`, and the key
+     * remediation would send the operator at a key that is doing its job.
+     */
+    public function test_live_probe_an_absent_header_names_no_identity_rather_than_a_wrong_key(): void
+    {
+        $env = new FakeSshProbeEnvironment(
+            authorizedKeys: self::GOOD_LINE,
+            sshStdout: (string) json_encode(['ok' => true, 'result' => []]),
+        );
+        $findings = (new SshTransportProbe($env))->probeLive('me@host', [['agent' => 'me', 'board_id' => 10, 'swimlane_id' => 4]]);
+        $this->assertTrue($this->hasSeverity($findings, Severity::Fail));
+        $this->assertStringContainsString('IDENTITY MISMATCH — board_my_cards answered for board=null swimlane=null', $findings[0]->message);
+        $this->assertStringContainsString('Header spelling: NEITHER', $findings[0]->message);
+        $this->assertStringContainsString("does not show which agent the pinned key reached — check what me@host's forced command actually ran", $findings[0]->message);
+        $this->assertStringNotContainsString('DIFFERENT agent', $findings[0]->message);
+        $this->assertStringNotContainsString('mis-pinned key', $findings[0]->message);
     }
 
     public function test_live_probe_unreachable_fails(): void

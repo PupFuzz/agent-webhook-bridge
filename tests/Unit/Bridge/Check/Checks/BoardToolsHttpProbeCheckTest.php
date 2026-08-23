@@ -84,6 +84,10 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Ok, $findings[0]->severity);
         $this->assertStringContainsString('board_tools probe: agent prod-agent: '.self::ENDPOINT.' → 200; window scoped to board 10 / swimlane 4 (2 stage group(s)).', $findings[0]->message);
+        // card#7325: the line says WHICH spelling answered, so a healthy probe is a
+        // reading of this responder's version too, not only of its identity.
+        $this->assertStringContainsString('Header spelling: `configured_board_id`', $findings[0]->message);
+        $this->assertStringNotContainsString('Header spelling: LEGACY', $findings[0]->message);
     }
 
     public function test_a_missing_cards_by_stage_counts_zero_groups(): void
@@ -101,6 +105,12 @@ class BoardToolsHttpProbeCheckTest extends TestCase
 
         $this->assertSame(Severity::Fail, $findings[0]->severity);
         $this->assertStringContainsString('IDENTITY MISMATCH — board_my_cards answered for board=99 swimlane=4, but this agent is configured for board 10 / swimlane 4.', $findings[0]->message);
+        // The responder DID identify itself, as somebody else — so the credential cause
+        // and the token-path remediation are the right ones HERE. The presence witness
+        // for the split in `test_an_absent_scope_header_fails_as_a_mismatch`: without it,
+        // collapsing both branches onto the absent wording would go green there.
+        $this->assertStringContainsString("resolved to a DIFFERENT agent's window", $findings[0]->message);
+        $this->assertStringContainsString('mis-pinned bearer at '.$this->dir.'/prod-agent', $findings[0]->message);
     }
 
     /**
@@ -144,8 +154,14 @@ class BoardToolsHttpProbeCheckTest extends TestCase
      * `configured_board_id` at all. Read strictly, that responder would be reported as an
      * IDENTITY MISMATCH for a version difference — a specific WRONG cause. Its ssh twin
      * (`SshTransportProbeTest::test_live_probe_accepts_a_responder_predating_the_header_rename`)
-     * covers the same tolerance on the leg that crosses a HOST. Delete both with the
-     * fallback, not before.
+     * covers the same tolerance on the leg that crosses a HOST. ⛔ Neither is deleted on
+     * the strength of a reading of THIS repo: both tolerate a REMOTE responder, and
+     * card#7325 (DL-304) owns the removal condition and the measurement it waits on.
+     *
+     * ⚠ AND THE TOLERANCE IS NAMED IN THE OUTPUT, not silently applied. The value
+     * compared here came from a key that on a current responder carries a row
+     * OBSERVATION, so the finding says so — an ok line that hid it would leave the one
+     * observable the removal condition is read off invisible on the leg that produces it.
      */
     public function test_a_responder_predating_the_header_rename_is_read_under_the_old_key(): void
     {
@@ -155,6 +171,9 @@ class BoardToolsHttpProbeCheckTest extends TestCase
 
         $this->assertSame(Severity::Ok, $findings[0]->severity);
         $this->assertStringContainsString('window scoped to board 10 / swimlane 4', $findings[0]->message);
+        $this->assertStringContainsString('Header spelling: LEGACY', $findings[0]->message);
+        $this->assertStringContainsString('legacy `board_id` spelling', $findings[0]->message);
+        $this->assertStringContainsString('card#7325', $findings[0]->message);
     }
 
     /**
@@ -172,15 +191,30 @@ class BoardToolsHttpProbeCheckTest extends TestCase
         $this->assertStringContainsString('board=10 swimlane=99', $findings[0]->message);
     }
 
-    /** A missing scope header is not a match — it renders as `null`, and it still fails. */
+    /**
+     * A missing scope header is not a match — it renders as `null`, and it still fails.
+     *
+     * ⛔ AND THE TAIL'S CAUSE IS THE ONE THIS BRANCH HAS (card#7325). "Answered no header
+     * under either spelling" and "answered another agent's header" are different causes
+     * with different remediations, and the tail this replaced offered them as one
+     * parenthetical guess. The spelling is READ, so the cause is stated from it: nothing
+     * here shows which agent the bearer reached, and the operator is sent at the endpoint
+     * — a wrong vhost, a relay, or any JSON service answering `{"ok":true,"result":{}}`
+     * produces exactly this response — never at a token path this state says nothing
+     * about, which the spelling sentence beside it would deny in the same string.
+     */
     public function test_an_absent_scope_header_fails_as_a_mismatch(): void
     {
         $this->fakeResult(['cards_by_stage' => []]);
 
         $findings = $this->findingsFor([$this->httpAgent('prod-agent')]);
+        $this->assertStringContainsString('Header spelling: NEITHER', $findings[0]->message);
 
         $this->assertSame(Severity::Fail, $findings[0]->severity);
         $this->assertStringContainsString('board=null swimlane=null', $findings[0]->message);
+        $this->assertStringContainsString('does not show which agent the presented bearer reached — check what '.self::ENDPOINT.' actually reached', $findings[0]->message);
+        $this->assertStringNotContainsString('DIFFERENT agent', $findings[0]->message);
+        $this->assertStringNotContainsString($this->dir.'/prod-agent', $findings[0]->message);
     }
 
     public function test_a_200_without_a_result_object_fails(): void

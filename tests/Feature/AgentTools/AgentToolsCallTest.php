@@ -924,17 +924,23 @@ class AgentToolsCallTest extends TestCase
             ->assertJsonPath('result.cards_by_stage.Backlog.1.id', 2);
     }
 
-    public function test_my_cards_reports_no_board_for_an_empty_window(): void
+    /** No rows at all — the commonest window, and the one every board key is null on. */
+    private function fakeEmptyWindow(): void
     {
-        // The common case, and the one the old code was most wrong about: zero rows
-        // read means zero boards read. `board_observed: false` — never the config
-        // value dressed as a reading.
         Http::fake([
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
                 ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
             ]]]),
             '*/tasks/search.json*' => Http::response(['data' => []]),
         ]);
+    }
+
+    public function test_my_cards_reports_no_board_for_an_empty_window(): void
+    {
+        // The common case, and the one the old code was most wrong about: zero rows
+        // read means zero boards read. `board_observed: false` — never the config
+        // value dressed as a reading.
+        $this->fakeEmptyWindow();
 
         $this->callTool(['tool' => 'board_my_cards'])
             ->assertStatus(200)
@@ -943,12 +949,14 @@ class AgentToolsCallTest extends TestCase
             ->assertJsonPath('result.configured_board_id', 10);
     }
 
-    public function test_my_cards_unobserves_the_window_when_the_shared_lane_is_on_another_board(): void
+    /**
+     * A configured shared lane, answered PER REQUEST: the own leg and the shared leg
+     * are different searches, and one wildcard stub for both cannot tell them apart.
+     * The shared row lands on $sharedRowBoard so a caller can put it on a foreign
+     * board without moving the own leg.
+     */
+    private function fakeSharedLane(int $sharedRowBoard): void
     {
-        // The top-level board covers the WHOLE own+shared window (`shared_swimlane`
-        // states a lane and inherits this board), so a foreign shared row has to
-        // move it. Reporting board 10 here would hide the leak inside the very key
-        // a caller reads to locate its cards.
         $this->writeAgent('me', $this->token, [
             'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
         ], "  shared_swimlane_id: 9\n");
@@ -956,17 +964,26 @@ class AgentToolsCallTest extends TestCase
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
                 ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
             ]]]),
-            '*/tasks/search.json*' => function ($request) {
+            '*/tasks/search.json*' => function ($request) use ($sharedRowBoard) {
                 $url = urldecode($request->url());
 
                 return Http::response(['data' => [str_contains($url, 'swimlane_id=9')
                     ? ['id' => 2, 'name' => 'shared', 'workflow_stage_id' => 50, 'swimlane_id' => 9,
-                        'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 20]
+                        'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => $sharedRowBoard]
                     : ['id' => 1, 'name' => 'mine', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
                         'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10],
                 ]]);
             },
         ]);
+    }
+
+    public function test_my_cards_unobserves_the_window_when_the_shared_lane_is_on_another_board(): void
+    {
+        // The top-level board covers the WHOLE own+shared window (`shared_swimlane`
+        // states a lane and inherits this board), so a foreign shared row has to
+        // move it. Reporting board 10 here would hide the leak inside the very key
+        // a caller reads to locate its cards.
+        $this->fakeSharedLane(sharedRowBoard: 20);
 
         $this->callTool(['tool' => 'board_my_cards'])
             ->assertStatus(200)
@@ -1076,6 +1093,92 @@ class AgentToolsCallTest extends TestCase
         $this->assertArrayNotHasKey('coord_board_observed', $result);
         $this->assertArrayNotHasKey('configured_coord_board_id', $result);
         $this->assertArrayNotHasKey('coord_cards', $result);
+    }
+
+    // ─── board_my_cards: the identity echo is UNCONDITIONAL (card#7325, DL-304) ──
+
+    /**
+     * Every arm of the response literal, named so a new one has to be added HERE to be
+     * covered — the point of the witness is the enumeration, not the count.
+     *
+     * @return array<string, array{0: string}>
+     */
+    public static function everyResponseArm(): array
+    {
+        return [
+            'an empty window' => ['empty'],
+            'rows on the configured board' => ['own'],
+            'rows on a FOREIGN board' => ['foreign'],
+            'rows with no readable board' => ['unreadable'],
+            'a configured shared lane' => ['shared'],
+            'a configured coord block' => ['coord'],
+        ];
+    }
+
+    /**
+     * ⛔ THE FALLBACK IN `BoardToolsScopeHeader` IS UNREACHABLE FROM THIS TOOL, AND
+     * THIS IS THE GUARD FOR THAT, not a reading of the file (card#7325, DL-304).
+     *
+     * The two live probes read a scope header under `configured_board_id` and fall back
+     * to the legacy `board_id` spelling when it is absent. On a DL-302-or-later
+     * responder `board_id` carries where the returned ROWS are, so if this tool ever
+     * emitted the header conditionally, a row observation would silently become an
+     * identity claim and the probes' `IDENTITY MISMATCH` verdict would be computed from
+     * the wrong quantity with nothing red anywhere. The reason that cannot happen is
+     * that `call()` emits the key in the BASE literal, on no condition at all —
+     * a property of the code that was true, asserted nowhere, and stated in prose.
+     *
+     * ⚠ It asserts PRESENCE, and deliberately also the CALL: an arm that returned
+     * nothing at all would satisfy a bare `assertArrayHasKey` on nothing, so each case
+     * pins that the window itself was answered. The value is asserted too — a key
+     * present but null is not an identity echo either.
+     */
+    #[DataProvider('everyResponseArm')]
+    public function test_my_cards_emits_the_configured_board_header_on_every_response_arm(string $arm): void
+    {
+        switch ($arm) {
+            case 'empty':
+                $this->fakeEmptyWindow();
+                break;
+            case 'own':
+                $this->fakeOwnLaneRows(['board_id' => 10]);
+                break;
+            case 'foreign':
+                $this->fakeOwnLaneRows(['board_id' => 20]);
+                break;
+            case 'unreadable':
+                $this->fakeOwnLaneRows([]);
+                break;
+            case 'shared':
+                $this->fakeSharedLane(sharedRowBoard: 10);
+                break;
+            case 'coord':
+                $this->fakeCoordLeg(['board_id' => 12]);
+                break;
+        }
+
+        $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
+
+        $this->assertIsArray($result);
+        $this->assertArrayHasKey('cards_by_stage', $result);   // the window was answered
+        $this->assertArrayHasKey('configured_board_id', $result);
+        $this->assertSame(10, $result['configured_board_id']);
+    }
+
+    /**
+     * The coord block's own echo is unconditional ON ITS OWN CONDITION — it appears with
+     * `coord_cards` and never without it. Same shape as above and a separate assertion:
+     * the two echoes sit in different literals and a change can drop one alone.
+     */
+    public function test_my_cards_emits_the_configured_coord_board_header_whenever_the_coord_block_appears(): void
+    {
+        $this->fakeCoordLeg(['board_id' => 12]);
+
+        $result = $this->callTool(['tool' => 'board_my_cards'])->assertStatus(200)->json('result');
+
+        $this->assertArrayHasKey('coord_cards', $result);
+        $this->assertArrayHasKey('configured_coord_board_id', $result);
+        $this->assertSame(12, $result['configured_coord_board_id']);
     }
 
     // ─── board_my_cards: include_description (DL-245) ────────────────────────

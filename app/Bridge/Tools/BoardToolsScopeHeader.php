@@ -27,35 +27,60 @@ namespace App\Bridge\Tools;
  * both behind the loopback gate; `--probe-tools-ssh=<user@host-A>` round-trips to a
  * different HOST outright. Read strictly, such a responder answers no
  * `configured_board_id` at all and the probe would report an identity mismatch for a
- * version skew — a specific wrong cause rather than an honest one. Drop the fallback
- * once no supported install can answer a probe without `configured_board_id`.
+ * version skew — a specific wrong cause rather than an honest one.
+ *
+ * ⚠ THE FALLBACK'S REMOVAL CONDITION IS NOT AN INSTRUCTION IN THIS DOCBLOCK — it is
+ * **card#7325 / DL-304**, which owns it, and the condition is MEASURED rather than
+ * argued: every read reports {@see $boardSpelling}, both probes print it, and the
+ * fallback may be dropped once no probed install has been observed answering under
+ * {@see ScopeHeaderSpelling::Legacy}. `docs/board-tools.md` § *Which spelling the
+ * probe read* states the derivation an operator runs. Do not delete the fallback on
+ * the strength of this file alone: the reading it tolerates is a REMOTE install's,
+ * which this repo cannot see.
  */
 final class BoardToolsScopeHeader
 {
     /**
-     * The board the answering agent is CONFIGURED for, or null when the response
-     * carries no readable one under either spelling.
-     *
-     * @param  array<string, mixed>  $result  the `result` object of a board_my_cards envelope
+     * @param  ?int  $boardId  the board the answering agent is CONFIGURED for, or null when
+     *                         the response carries no readable one under either spelling
+     * @param  ?int  $swimlaneId  the swimlane the answering agent is CONFIGURED for.
+     *                            Unchanged by DL-302: the lane axis was never restated
+     *                            wrongly, because every returned row is filtered against
+     *                            this value before it is projected.
+     * @param  ScopeHeaderSpelling  $boardSpelling  which key $boardId came from
      */
-    public static function boardId(array $result): ?int
-    {
-        $header = $result['configured_board_id'] ?? $result['board_id'] ?? null;
-
-        return is_numeric($header) ? (int) $header : null;
-    }
+    private function __construct(
+        public readonly ?int $boardId,
+        public readonly ?int $swimlaneId,
+        public readonly ScopeHeaderSpelling $boardSpelling,
+    ) {}
 
     /**
-     * The swimlane the answering agent is CONFIGURED for. Unchanged by DL-302: the
-     * lane axis was never restated wrongly, because every returned row is filtered
-     * against this value before it is projected.
+     * Read the header out of a response ONCE, provenance included.
+     *
+     * One reader, not one per value: a second entry point re-deriving the same
+     * newest-first chain to answer "which key did that come from" could disagree with
+     * the value it describes, and the disagreement would surface as a probe line that
+     * names the wrong spelling — i.e. as a wrong statement about install versions.
      *
      * @param  array<string, mixed>  $result  the `result` object of a board_my_cards envelope
      */
-    public static function swimlaneId(array $result): ?int
+    public static function read(array $result): self
     {
+        $configured = $result['configured_board_id'] ?? null;
+        $legacy = $result['board_id'] ?? null;
+
+        [$header, $spelling] = match (true) {
+            $configured !== null => [$configured, ScopeHeaderSpelling::Configured],
+            $legacy !== null => [$legacy, ScopeHeaderSpelling::Legacy],
+            default => [null, ScopeHeaderSpelling::Absent],
+        };
         $lane = $result['swimlane_id'] ?? null;
 
-        return is_numeric($lane) ? (int) $lane : null;
+        return new self(
+            is_numeric($header) ? (int) $header : null,
+            is_numeric($lane) ? (int) $lane : null,
+            $spelling,
+        );
     }
 }
