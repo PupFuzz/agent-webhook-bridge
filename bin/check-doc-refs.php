@@ -60,14 +60,26 @@
  * neither leg, and the closing line reported an "examined" count and a clean verdict over a
  * population it could not see. What changed is WHERE a citation is found, never what one MEANS:
  * a `{@see …}` payload is read exactly when its backticked twin would be, so the two bounds above
- * are unchanged by it and are now the RULING bounds on the dominant form. Two DISCLOSED gaps
- * follow, and neither is protection: a `{@see self::member}` names no file (in markdown prose
- * there is no enclosing class to resolve `self` against), and a `{@see member}` bare of any class
- * is the bare-`func()` bound one paragraph up — reached by that paragraph's rule, though not by
- * its rationale, since a payload inside a reference tag is a machine-readable claim about this
- * tree rather than prose that might be quoting someone else's vocabulary. Card#7330 carries the
- * derivation for both and owns whether they close; the populations re-derive with
+ * are unchanged by it and are now the RULING bounds on the dominant form. Two gaps follow, and
+ * neither is protection: a `{@see self::member}` names no file (in markdown prose there is no
+ * enclosing class to resolve `self` against), and a `{@see member}` bare of any class is the
+ * bare-`func()` bound one paragraph up — reached by that paragraph's rule, though not by its
+ * rationale, since a payload inside a reference tag is a machine-readable claim about this tree
+ * rather than prose that might be quoting someone else's vocabulary. Both are still UNRESOLVED;
+ * what changed is the paragraph below. The populations re-derive with
  *   grep -rohE '\{@see [^}]*\}' app tests docs bin *.md | sort | uniq -c | sort -rn
+ *
+ * A DISCLOSED GAP THE ACCOUNTING OMITS IS WORSE THAN AN UNCHECKED FORM (card#7473). Those two
+ * gaps were disclosed HERE and in a test, and were in NEITHER the examined count NOR the
+ * remainder line — so a reader auditing the run's own accounting, which is the correct thing to
+ * do, was told the population was fully accounted for by buckets that could not contain them.
+ * Convicting it needed no instrumented variant of this script: qualifying ONE class-less citation
+ * into its `Class::member` spelling MOVED the TOTAL, and a citation that only enters the total
+ * once it becomes CHECKABLE was never in it. Both forms are counted now — `classless_member` and
+ * `pseudo_class_member`, {@see unqualifiedMemberCitation()}, which owns the predicate and its
+ * bound — and neither is RESOLVED: nothing about which citations can be convicted moved, only
+ * whether the run admits what it declined. The disclosure is now testable rather than narrated —
+ * qualifying such a citation moves it between buckets and leaves the TOTAL fixed.
  *
  * IT ANSWERS ONLY WHERE IT CAN. A member is a finding when the class file is under `app/`
  * AND its whole ancestry (parents, traits) is resolvable there and declares nothing by that
@@ -103,7 +115,8 @@
  *
  * THE COVERAGE IS MEASURED, NOT ASSUMED, AND THE MEASUREMENT SHIPS. `--census` prints every
  * bucket — resolved, reported, class not under `app/`, ambiguous class name, unverifiable
- * ancestry, removed-marker sentence, rejected alternative — re-derived over the tree it is run on,
+ * ancestry, removed-marker sentence, rejected alternative, class-less member, pseudo-class member
+ * — re-derived over the tree it is run on,
  * and every run prints the unexamined tally on its own line. Deliberately no figures in this
  * comment: a figure here is a quoted authority, and the census that stood here could not be
  * recomputed by anything shipped — the defect this rule exists to catch, one level up.
@@ -230,6 +243,14 @@ function repoPhpBasenames(string $root): array
  * ones, because a clean line that speaks for citations the leg never answered for is the
  * same defect one level up (DL-251).
  *
+ * A BUCKET IS OWED TO EVERY CITATION THE LEG DECLINES, NOT ONLY TO THE ONES IT COULD HAVE
+ * ANSWERED (card#7473). The first five buckets all describe a citation whose CLASS was read
+ * and then found unusable; a citation carrying no class at all reached none of them, so it
+ * left the census entirely and the closing line's arithmetic still balanced without it. That
+ * is a worse disclosure than silence — the reader who audits the accounting is told the
+ * population is complete. {@see unqualifiedMemberCitation()} owns the two buckets that close
+ * it, and owns their bound.
+ *
  * @return array<string, int>
  */
 function tally(?string $bucket = null): array
@@ -242,6 +263,8 @@ function tally(?string $bucket = null): array
         'unverifiable_ancestry' => 0,
         'removed_marker_sentence' => 0,
         'rejected_alternative' => 0,
+        'classless_member' => 0,
+        'pseudo_class_member' => 0,
         'depth_bail' => 0,
     ];
     if ($bucket !== null) {
@@ -727,6 +750,28 @@ function citationsOnLine(string $line): array
             $out[] = $tok;
         }
     }
+
+    return array_merge($out, referenceTagCitationsOnLine($line));
+}
+
+/**
+ * The REFERENCE-TAG half of that harvest, on its own — the `{@see …}` and `@see` forms without
+ * the backticked ones.
+ *
+ * SPLIT OUT RATHER THAN COPIED (card#7473), and the caller is the reason the distinction exists
+ * at all: the census owes a bucket to a class-less member citation written in a reference tag,
+ * where the payload is a machine-readable claim about THIS tree, and owes nothing to a
+ * backticked bare `func()`, which the bare-name paragraph in the rule docblock rules out as
+ * mostly other people's vocabulary. That is the one place in this script where the SPELLING of a
+ * citation decides anything, so it is the one place that may read the forms apart — and it may
+ * not do so by re-implementing the recogniser, which would leave two harvests to drift.
+ * {@see citationsOnLine()} stays the single reader every LEG consumes.
+ *
+ * @return list<string>
+ */
+function referenceTagCitationsOnLine(string $line): array
+{
+    $out = [];
     if (preg_match_all('/\{@see\s+([^}]+)\}/', $line, $m) !== false) {
         foreach ($m[1] as $payload) {
             $ref = preg_split('/\s+/', trim($payload))[0] ?? '';
@@ -771,6 +816,55 @@ function memberCitation(string $tok): ?array
     }
 
     return [$m[1], $m[2]];
+}
+
+/**
+ * The census bucket a reference-tag payload falls into when it cites a MEMBER that no resolvable
+ * class qualifies — or null when it makes no member claim this leg can recognise.
+ *
+ * NOTHING HERE RESOLVES ANYTHING, and that is the whole design (card#7473). These citations were
+ * always going to go unanswered; what was wrong was that they went unanswered without being
+ * COUNTED, so the run's closing line balanced its arithmetic over a population that excluded
+ * them and a reader auditing the disclosure was told it was complete. Resolving the bare form
+ * against the enclosing class was the alternative and was declined on card#7330's reasoning: a
+ * markdown paragraph has no enclosing class, so `self` and a bare member name would resolve in a
+ * docblock and be unanswerable four lines later in prose, which is a gate whose verdict depends
+ * on which file a sentence was written in.
+ *
+ * ⚠ THE PREDICATE IS A LOWER-CASE INITIAL, because with no `::` to key on it is the only thing
+ * that tells a member name from a class name in this tree's naming. So the bound is stated, not
+ * assumed: a class-less member whose name starts UPPER-CASE — an `UPPER_SNAKE` constant, a
+ * CamelCase enum case — is not distinguishable here from a bare class citation and is in NEITHER
+ * bucket. That shape is the one for which qualifying a citation still moves the TOTAL, and it is
+ * a disclosed remainder of the remainder rather than protection. Its size re-derives with
+ *   grep -rohE '\{@see [A-Z][A-Za-z0-9_]*(\(\))?\}' app tests docs bin *.md | sort | uniq -c
+ * over which the constants and the enum cases are told apart by reading them, not by a regex.
+ *
+ * A PSEUDO-CLASS IS THE SAME DEFECT WEARING A CLASS, so it gets its own bucket rather than a
+ * shared one: `{@see self::member}` names no file either, was disclosed in the same breath, and
+ * qualifying one moved the TOTAL by exactly the same mechanism as the bare form — measured on
+ * this tree before the fix, both spellings +1. Two buckets rather than one because a reader who
+ * asks "how many, and of what" is answered by neither a merged figure nor prose.
+ *
+ * @return 'classless_member'|'pseudo_class_member'|null
+ */
+function unqualifiedMemberCitation(string $tok): ?string
+{
+    $tok = trim($tok);
+    $args = strpos($tok, '(');
+    if ($args !== false) {
+        $tok = substr($tok, 0, $args);
+    }
+    if (preg_match('/^(?:self|static|parent|this)::(\$?[A-Za-z_][A-Za-z0-9_]*)$/i', $tok, $m) === 1) {
+        // `::class` is a language construct, not a member — the same exclusion memberCitation()
+        // makes, for the same reason.
+        return $m[1] === 'class' ? null : 'pseudo_class_member';
+    }
+    if (preg_match('/^\$?[a-z][A-Za-z0-9_]*$/', $tok) === 1) {
+        return 'classless_member';
+    }
+
+    return null;
 }
 
 // The vocabulary that deliberately names dead code: an explicit removed-marker, or a
@@ -861,6 +955,18 @@ foreach (scannedSources($root) as $rel) {
             }
             tally('reported');
             $errors[] = sprintf('%s:%d  names `%s` — %s declares no %s (missing)', $rel, $i + 1, $tok, $resolved['file'], $member);
+        }
+        // The citations the loop above could not even form a `Class::member` from. Disjoint from
+        // it by construction: every tally there is on a token memberCitation() ACCEPTED, every
+        // tally here is on one it rejected, so no citation is counted twice and none is dropped.
+        foreach (referenceTagCitationsOnLine($line) as $tok) {
+            if (memberCitation($tok) !== null) {
+                continue;
+            }
+            $bucket = unqualifiedMemberCitation($tok);
+            if ($bucket !== null) {
+                tally($bucket);
+            }
         }
     }
 }
@@ -1184,10 +1290,18 @@ foreach (scannedSources($root) as $rel) {
  * DL-251 / stage 10 removed from `bridge:check`, where a leg that measured nothing had been
  * reporting `ok`. The buckets sum to the population, so the disclosure is arithmetic rather
  * than adjectival: `--census` prints the same numbers with the examined half beside them.
+ *
+ * ⚠ "THE BUCKETS SUM TO THE POPULATION" IS A CLAIM ABOUT THE HARVEST, NOT ABOUT THE SUM, and it
+ * was false for two whole citation forms until card#7473 while the arithmetic stayed perfectly
+ * consistent — a citation dropped before any bucket leaves a total that still balances. The
+ * shipped test of it is not the sum: it is that qualifying a class-less citation into its
+ * `Class::member` spelling MOVES it between buckets and leaves the TOTAL fixed. Before that card
+ * it moved the total, which is how a citation admits it was never in it.
  */
 $census = tally();
 $unexamined = $census['class_not_under_app'] + $census['ambiguous_class_name'] + $census['unverifiable_ancestry']
-    + $census['removed_marker_sentence'] + $census['rejected_alternative'];
+    + $census['removed_marker_sentence'] + $census['rejected_alternative']
+    + $census['classless_member'] + $census['pseudo_class_member'];
 
 if (in_array('--census', $argv, true)) {
     fwrite(STDOUT, "doc-refs member census (re-derived over this tree by this run):\n");
@@ -1203,7 +1317,7 @@ if (in_array('--census', $argv, true)) {
 }
 
 fwrite(STDOUT, sprintf(
-    "doc-refs: member citations — %d examined (%d resolved, %d reported), %d NOT examined: %d class not under app/, %d ambiguous class name, %d unverifiable ancestry, %d in a removed-marker sentence, %d a rejected alternative; %d ancestry walk(s) hit the depth bound. This run says nothing about the members in that second half.\n",
+    "doc-refs: member citations — %d examined (%d resolved, %d reported), %d NOT examined: %d class not under app/, %d ambiguous class name, %d unverifiable ancestry, %d in a removed-marker sentence, %d a rejected alternative, %d class-less member citations, %d naming a pseudo-class; %d ancestry walk(s) hit the depth bound. This run says nothing about the members in that second half.\n",
     $census['resolved'] + $census['reported'],
     $census['resolved'],
     $census['reported'],
@@ -1213,6 +1327,8 @@ fwrite(STDOUT, sprintf(
     $census['unverifiable_ancestry'],
     $census['removed_marker_sentence'],
     $census['rejected_alternative'],
+    $census['classless_member'],
+    $census['pseudo_class_member'],
     $census['depth_bail'],
 ));
 
