@@ -734,6 +734,11 @@ PHP;
      *
      * `::class` IS NOT A CLASS CITATION IN EITHER SPELLING — the predicate admits no `:` at all,
      * so a language construct cannot reach this bucket any more than it reaches the member ones.
+     *
+     * AN ARGUMENT LIST IS NOT STRIPPED, unlike in the two member predicates. There a citation
+     * carrying arguments names the same member; here the parentheses change what is being named,
+     * so `{@see Widget()}` is a call and labelling it a class would be the same kind of mislabel
+     * the ALL-CAPS exclusion avoids. It stays in the disclosed remainder.
      */
     public function test_the_class_bucket_leaves_an_all_caps_name_out_and_reads_only_a_reference_tag(): void
     {
@@ -744,7 +749,7 @@ PHP;
         ];
         $none = ['total' => 0, 'resolved' => 0, 'classless' => 0, 'pseudo' => 0, 'class' => 0];
 
-        foreach (['`Widget`', '{@see ID}', '{@see DEFAULT_LANE}', '{@see Widget::class}', '{@see self::class}'] as $unread) {
+        foreach (['`Widget`', '{@see ID}', '{@see DEFAULT_LANE}', '{@see Widget::class}', '{@see self::class}', '{@see Widget()}'] as $unread) {
             $this->assertSame($none, $this->censusOf($tree($unread)),
                 "{$unread} is outside the population this bucket discloses and must not be counted into it");
         }

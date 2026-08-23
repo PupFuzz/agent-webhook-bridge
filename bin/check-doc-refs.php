@@ -922,20 +922,23 @@ function unqualifiedMemberCitation(string $tok): ?string
  * `::class` is excluded by construction: the predicate admits no `:` at all, so a language
  * construct cannot reach this bucket any more than it reaches the member ones.
  *
+ * ⚠ IT DOES NOT STRIP AN ARGUMENT LIST, and the difference from its two siblings is deliberate.
+ * They strip because a citation carrying arguments names the same MEMBER; here the parentheses
+ * change what is being named — `{@see Widget()}` is a call, so labelling it a class would be a
+ * MISLABEL of exactly the kind the ALL-CAPS exclusion above exists to avoid, and a paren-bearing
+ * upper-case payload stays in the disclosed remainder instead. Zero instances on this tree, by
+ *   grep -rohE '\{@see \\?[A-Z][A-Za-z0-9_\\]*\(\)\}' app tests docs bin *.md
+ * so this is a rule about which way to be wrong, not a live population.
+ *
  * @return 'class_citation'|null
  */
 function classCitation(string $tok): ?string
 {
-    $tok = trim($tok);
-    $args = strpos($tok, '(');
-    if ($args !== false) {
-        $tok = substr($tok, 0, $args);
-    }
-    if (preg_match('/^\\\\?[A-Z][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)*$/', $tok) !== 1) {
+    if (preg_match('/^\\\\?[A-Z][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)*$/', trim($tok)) !== 1) {
         return null;
     }
 
-    return preg_match('/^[A-Z][A-Z0-9_]*$/', shortName($tok)) === 1 ? null : 'class_citation';
+    return preg_match('/^[A-Z][A-Z0-9_]*$/', shortName(trim($tok))) === 1 ? null : 'class_citation';
 }
 
 // The vocabulary that deliberately names dead code: an explicit removed-marker, or a
