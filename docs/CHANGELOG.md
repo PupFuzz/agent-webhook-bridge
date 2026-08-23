@@ -945,9 +945,10 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   **Dispositioned, not silently capped:** 238 of the 247 methods are recorded correctly scoped, and
   the audit's own blind axis is stated — this population is the files that USE the matcher, so a
   count claim asserted by a presence-only matcher in a file that never calls it is outside the
-  denominator and unmeasured. **2548/2548 phpunit — the SAME 2548, with 8720 assertions against
-  8697 on the base: this adds assertions to existing tests, it does not add tests.** phpstan L7 0,
-  pint clean, `check-doc-refs` clean.
+  denominator and unmeasured. **This adds assertions to existing tests, not tests: measured against
+  this branch's base before the card#7474 merge, the SAME 2548 tests with 8720 assertions against
+  8697.** Whole suite after the merge 2550/2550 (8747 assertions), phpstan L7 0, pint clean,
+  `check-doc-refs` clean.
 
 - **card#7474 (DL-307)** — **⚠ the suite's Redis databases are now pinned, and the
   measurement behind the pin corrects a belief this repo held in two places: `force="true"` on a
