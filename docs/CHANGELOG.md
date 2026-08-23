@@ -283,6 +283,56 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7348 (DL-308)** — **⚠ WIDENS WHAT THE MERGE GATE ACCEPTS, and read this before you
+  upgrade past DL-305: a merge into the INTEGRATION BRANCH from a head branch whose ref NAMES the
+  card now closes that card, with no closing verb in the title at all.** The DL-305 entry below
+  still describes the lexical route correctly and that route is unchanged — but shipped alone it
+  was **unsatisfiable by this shop's PR titles**. Measured against the shipped
+  `ClosureGrammar::closesCard()`, called on real merged-PR titles pulled from GitHub rather than
+  re-implemented: **0 of 351** correlated merged PRs across all four repos closed anything, while an
+  artificial `Closes card#7464` control passed — so the grammar worked and the convention simply has
+  never contained a closing verb. **A gate nothing satisfies does not protect a board, it freezes
+  one, and it does so QUIETLY:** CI green, merge succeeds, card motionless, nothing red anywhere.
+  Caught before any of it reached prod (`v0.74.1` predates DL-305).
+  **The rule now.** On a gated outcome a card moves on **either** route, and both are live:
+  **structural** — the PR merged into the integration branch (any base but `main`) AND the head ref
+  names that card (`card-4811-widget`); or **lexical** — a closing form in the title
+  (`Closes card#4811` / `Fixes DL-239`).
+  **⛔ THE PROPERTY THE GATE EXISTS FOR IS PRESERVED, which is why the widening was ruled
+  acceptable:** *no token that merely APPEARS may move a stage.* **Quoting someone else's card id
+  does not rename your branch** — a foreign mention satisfies neither half of the structural term,
+  so the peer incident that filed this card is still refused. The head ref is not prose: it is
+  minted by this install's own tooling, which is why the correlation rules already treat it as
+  authoritative over the title. What the widening reads is branch IDENTITY plus the fact of a
+  merge, never the slug's words.
+  **What you may need to change.** ⚠ The branch must name a card **token**, not merely carry its
+  digits: `card-4811-…`, `card#4811-…`, `fix/card-4811-…` and glued `card4811-…` close card 4811;
+  the older **`fix/4811-widget`** spelling does **not**. That strictness is deliberate — the bare-id
+  test used elsewhere for *corroboration* accepts an accidental match (`chore/bump-1-2-3` vs
+  `card#2`) on the stated grounds that it can never authorize anything, which is untrue of a gate
+  onto a terminal stage. On this seat's current convention it costs about **1 merged PR in 59**,
+  each one **loudly warned**, with the lexical route still open. Reach: **0% → 93.2%** of correlated
+  merged PRs on the live convention.
+  **⛔ RELEASE MERGES ARE NOT WIDENED.** Only the integration merge takes the structural route;
+  `merged_to_main` still needs a closing form. A release head is a disposable `release/vX` naming no
+  card, so the term would rarely fire there — making it a *condition* is what stops a future release
+  convention that DID name a card from silently acquiring a terminal-stage move.
+  **`bridge:reconcile` gets the identical term over the identical two fields** (`GitHubReadClient::getPull()`
+  now projects `head_ref` beside `title`): a term on one path and not the other means the backstop
+  and the event path disagree about which merges close a card, and `--fix` runs on a schedule. The
+  term therefore lives on `PrOutcome::mergeClosesCard()` and neither path spells it.
+  **Operator surfaces stopped saying the title is the only route:** `bridge:check`'s per-mapping
+  line and the withheld-merge warning both render `PrOutcome::describeClosure()`, which composes
+  both halves from their own authorities, and the warning now **names the head ref it read** — with
+  two closure surfaces, a line quoting only the title sends you to rewrite prose when the answer is
+  that your branch is called `fix/streaming-timeout`.
+  **⚠ Two residuals, recorded and NOT fixed:** a card tracked by several PRs promotes at its
+  **first** merged one, and a human's *"this card does not close on that commit"* ruling is
+  **overridden** if the card's own work PR then merges. Shared root: **the gate can read intent, it
+  cannot read authority.** The durable fix is card-side (a hold marker the writeback refuses to move
+  past) and belongs on the board, not in this classifier. **Nothing to backfill; no config key, no
+  migration, no token-scope change.** `ClosureGrammar` itself is untouched.
+
 - **card#7348 (DL-305)** — **⚠ CHANGES WHAT THE WRITEBACK ACTS ON: a PR that MENTIONS a
   `card#N` / `DL-NNN` token no longer moves that card on merge. An explicit closing form in the
   PR TITLE is now required** — `Closes card#4811`, `Fixes DL-239`, GitHub's own linking-keyword
