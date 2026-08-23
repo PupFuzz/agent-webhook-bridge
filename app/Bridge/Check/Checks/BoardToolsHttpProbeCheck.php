@@ -176,7 +176,7 @@ final class BoardToolsHttpProbeCheck implements OptInCheck
                 yield Finding::fail("board_tools probe: agent {$name}: IDENTITY MISMATCH — board_my_cards answered for board=".($gotBoard ?? 'null').' swimlane='.($gotSwimlane ?? 'null').", but this agent is configured for board {$bt->boardId} / swimlane {$bt->swimlaneId}. ".$header->boardSpelling->mismatchCause(
                     credential: 'the presented bearer',
                     credentialFix: "look for a token collision or a mis-pinned bearer at {$bt->tokenPath}",
-                    routeFix: 'check what '.$endpoint.' actually reached — a wrong vhost, a relay, or any JSON service answering `{"ok":true,"result":{}}` answers a probe exactly this way',
+                    routeFix: 'check what '.$endpoint.' actually reached; a wrong vhost, a relay, or any JSON service answering `{"ok":true,"result":{}}` answers a probe exactly this way',
                 ).' It says nothing about the bridge-side lane filter, which this response has no observable for. '.$header->boardSpelling->note());
 
                 continue;
