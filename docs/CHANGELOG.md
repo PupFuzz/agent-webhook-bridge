@@ -868,6 +868,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#7511** — `changelog-gate`'s size-limit remediation offered an accept-and-proceed path that does not exist: the exit-4 arm is an unconditional `exit 1`, so re-running without trimming returns 4 again. The string now states the only real remedy and cites the tracked class.
+
 - **card#7473 + card#7496** — **⚠ `check-doc-refs`'s remainder accounting excluded three citation
   forms without disclosing them, so a reader auditing the gate's own numbers was told the population
   was complete.** One defect class, closed at two levels in this release (#574 then #575). card#7330

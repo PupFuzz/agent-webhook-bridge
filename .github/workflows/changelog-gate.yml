@@ -111,8 +111,9 @@ jobs:
               echo "::error::the '## [$V]' section is larger than GitHub can publish as a release body."
               echo "auto-tag-version.yml would tag $V and then fail to create its Release (HTTP 422),"
               echo "leaving the release tagged but unpublished — the v0.72.0 failure."
-              echo "Fix: trim the section (the per-PR entries it folds in are the bulk), or accept the"
-              echo "truncated-with-pointer body the publisher falls back to and re-run this check."
+              echo "Fix: trim the section — the per-PR entries it folds in are the bulk. There is NO"
+              echo "accept-and-proceed path: this arm always exits 1, so re-running without trimming"
+              echo "returns 4 again. Recurring cost is tracked as card#7511."
               exit 1
               ;;
             *)
