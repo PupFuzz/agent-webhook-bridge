@@ -99,6 +99,31 @@ final class CardTokenGrammar
         return preg_match(self::PATTERN, $text, $m) === 1 ? (int) $m[1] : null;
     }
 
+    /**
+     * The card id this text STARTS with — the token flush at offset 0 — or null.
+     *
+     * WHO ASKS, AND WHY IT LIVES HERE. {@see ClosureGrammar} matches a closing verb and
+     * must then know whether a token sits IMMEDIATELY after it, so `Closes card#123`
+     * closes card 123 while `Closes the bug card#123 tracks` closes nothing. It cannot
+     * answer that with {@see self::parse()} (which scans the whole remainder and would
+     * make every word between the verb and a token invisible), and it must not carry a
+     * copy of {@see self::PATTERN} to anchor one itself — that is the restatement DL-239
+     * removed. So the anchoring is expressed HERE, against this class's own pattern:
+     * the leftmost match is located and accepted only when it begins at offset 0.
+     *
+     * A POSITION TEST, NEVER A SECOND ACCEPT-SET: it can only ever return what
+     * {@see self::parse()} would have returned for the same text, or null. No spelling
+     * correlates through this door that does not correlate through that one.
+     */
+    public static function parseAnchored(string $text): ?int
+    {
+        if (preg_match(self::PATTERN, $text, $m, PREG_OFFSET_CAPTURE) !== 1) {
+            return null;
+        }
+
+        return $m[0][1] === 0 ? (int) $m[1][0] : null;
+    }
+
     /** @return list<string> */
     public static function accepted(): array
     {

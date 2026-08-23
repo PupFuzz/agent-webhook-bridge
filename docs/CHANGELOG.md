@@ -283,6 +283,89 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Changed
 
+- **card#7348 (DL-305)** — **⚠ CHANGES WHAT THE WRITEBACK ACTS ON: a PR that MENTIONS a
+  `card#N` / `DL-NNN` token no longer moves that card on merge. An explicit closing form in the
+  PR TITLE is now required** — `Closes card#4811`, `Fixes DL-239`, GitHub's own linking-keyword
+  set. *"This PR mentions card N"* and *"card N's work is shipped"* are different propositions
+  and the writeback collapsed them: `PrOutcome::forMergedBase()` was a pure function of the base
+  ref — **no completion signal in it at all** — and the classifier handed it whichever token the
+  title or head branch carried, so a PR citing a card for context moved it to `stages.merged` and
+  the `promote_on_release` sweep then propagated that into a **terminal, irreversible** stage.
+  Filed from roundtable #343 with the source claims re-verified in this tree; the harm is
+  **measured at peers, not hypothetical** — 17 wrong-retirement candidates in one pending release
+  bundle, and one card whose explicit human ruling (*"this card does not close on that commit"*)
+  the writeback reversed three hours later. This install's own exposure was measured too and is
+  **not immunity**: 0 multi-token hijacks in 300 merged PR titles, 0 reversals across 18 declined
+  cards — protected by a *convention* (one card per PR, cited only when the PR closes it) that
+  fails silently the first time someone cites a card for context.
+  - **⛔ A BARE MENTION IS A NO-OP, NEVER A DEMOTION, and that is the load-bearing half.** The
+    writeback re-classifies in-window PRs on **every** pass (redeliveries, `bridge:replay`, and
+    `bridge:reconcile` on a schedule), so a rule that returned an *earlier* stage for a mention
+    would not gently correct the mistaken cards — it would **mass-demote every already-correct
+    card on the first run**, because every historical PR is a bare mention under the new grammar.
+    Withholding the move leaves every existing stage exactly where it is. **Nothing to backfill;
+    the migration is free.** (Credit: `sola-pm` flagged this before anyone built the naive
+    version.) It has its own acceptance witness rather than being implied by the no-op one — a
+    card already sitting in the merged stage, re-derived on a later reconcile pass, observed not
+    moving, with the demotion assertion seen to fire under a mutation that keeps the log line.
+  - **The gate is the two MERGE outcomes and only those** (`PrOutcome::requiresClosure()` owns
+    which, and why the rest are not): `opened` is reversible and is what stamps the card's PR
+    refs so the reconciler can find the PR later; `closed_unmerged` is an abandon disposition;
+    a branch ref cannot carry a closing verb, so gating `started` would make every branch-create
+    inert. Dependabot cards, the draft `block_reason` overlay and the release-promote sweep are
+    untouched — the sweep asks whether a card **already** at Shipped is on `main`, which is not a
+    fresh completion claim, so its INPUT is gated at the source instead.
+  - **Failure direction is now safe**: a forgotten closing form leaves a card UNDER-promoted
+    (move it by hand). Never a silent no-op — the withheld move emits a `Log::warning` naming the
+    card, the outcome, and the accepted forms **rendered from the grammar** (DL-239 discipline).
+  - **Covers BOTH doors, and does not re-open a closed one.** A `DL-NNN` closing form closes
+    every card that DL resolved to (DL-148 is one-to-many, and the claim is about the DL); a
+    `card#` closing form closes only the card it names, so a bundled DL whose title closes one of
+    its cards moves that one alone. ⛔ The **DL-218 foreign-mention guard is left intact**: on the
+    `card#` path the resolved DL is deliberately NOT passed to the gate, so a `Closes DL-9`
+    naming another card's work cannot authorize the `card#` that guard just ruled authoritative.
+  - **A log line the gate made FALSE is corrected in the same change.** The DL-218
+    foreign-mention warn ended *"moving card#N, not the DL card(s)"*; on a merge with no
+    closing form it now announces a move that never happens, in the very log an operator
+    reads to find out why nothing moved. It states the **ruling** instead — *"the card
+    token in force is card#N"* — matching the discipline the title-vs-branch guard beside
+    it already followed. Its push-path twin keeps the move claim: `started` is ungated, so
+    that statement is still true.
+  - **`bridge:reconcile` applies the identical gate** on the same field (`getPull` now projects
+    `title`) — without it the backstop would re-plan on a schedule exactly the move the event
+    path had just declined, and the defect would arrive an hour later with a CLI's name on it.
+    The card's own `dl_number` is compared through `ExternalReferenceNormalizer`, so a stored
+    `DL-0305` and a title's `DL-305` are one DL.
+  - **`ClosureGrammar` restates neither token pattern.** It matches the verb bridge and hands the
+    REMAINDER to `CardTokenGrammar::parseAnchored()` / `DlTokenGrammar::parseAnchored()` — new
+    position tests on the owning grammars that can only ever return what `parse()` would, or
+    null. A test drives both owners' full vector sets through the closure predicate, so this
+    class cannot drift into a second, narrower accept-set the way a pasted pattern would.
+  - **Said at setup time (the third ask).** `bridge:check` gains a per-mapping `ok` line naming
+    the gated merge outcomes with their stage ids and the rendered accept-set — a peer wired a
+    brand-new board into this classifier hours before the defect surfaced and nothing in the
+    setup path warned them. Silent for a mapping that maps no merge outcome. **No new
+    `writeback.json` key**; the fail-closed unknown-key path is untouched.
+  - **`bridge:check` also now REPORTS the `identity_id` your config declares** — named as what
+    it primarily is, the **echo-suppression key**, with the writer attribution it consequently
+    declares stated second — plus the instruction to mint that token as its own kanban user.
+    `last_stage_move.actor_id` is a card's only writer attribution and it stops discriminating
+    the moment two writers share a user (measured on two installs: one where a board CLI's token
+    and the writeback token were both user 3 and a move was nearly mis-attributed, one where they
+    were distinct; the first has since been repaired, which is why the property is worth
+    reporting on every install rather than assumed). ⛔ It **reports, it does not certify**: it
+    prints a CONFIGURED value without resolving the token against the API, a token held outside
+    this install's config is invisible from here, and a green run that read as "separation
+    verified" would manufacture the assurance the operator came for.
+  - **⚠ UPGRADING — change your PR-title habit to `Closes card#N` before you deploy.** Existing
+    stages are untouched, and nothing regresses; what stops is *new* merge moves for titles that
+    only cite. Two rules worth knowing: the token must sit **flush** against the verb (`Closes the
+    regression card#4811 documents` closes nothing), and **one verb closes one token** (`Closes
+    card#1 and card#2` closes only card 1 — write `Closes card#1, closes card#2`). Both are
+    GitHub's own rules. ⚠ Cards that reached Shipped **before** this ships stay eligible for the
+    release-promote sweep — audit a large historical Shipped backlog before enabling
+    `promote_on_release`.
+
 - **card#7325 (DL-304)** — **both live probes now name WHICH spelling the answering install
   gave its scope header under, so the version-skew fallback's removal condition is a state an
   operator reads instead of a sentence someone re-reasons.** The fallback that lets

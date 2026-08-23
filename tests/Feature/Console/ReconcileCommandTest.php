@@ -150,10 +150,21 @@ class ReconcileCommandTest extends TestCase
         return ['state' => 'open', 'merged' => false, 'base' => ['ref' => 'dev'], 'html_url' => 'x'];
     }
 
-    /** @return array<string, mixed> */
-    private function mergedToDevPr(): array
+    /**
+     * A merged PR whose TITLE CLOSES the card it is fixtured against (card#7348 / DL-305).
+     *
+     * The closing form is a REQUIRED part of the fixture, not decoration: since DL-305 the
+     * reconciler derives no expected stage from a merged PR that merely mentions a card,
+     * so a title-less merged PR here would make every drift test below assert its subject
+     * against a card that is skipped for an unrelated reason. `$closes` names the card so a
+     * multi-card fixture gives each PR its own closing form — a title closing card 5 must
+     * not authorize card 6.
+     *
+     * @return array<string, mixed>
+     */
+    private function mergedToDevPr(int $closes = 5): array
     {
-        return ['state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x'];
+        return ['state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x', 'title' => "work, Closes card#{$closes}"];
     }
 
     public function test_in_sync_card_is_noop(): void
@@ -272,7 +283,7 @@ class ReconcileCommandTest extends TestCase
         $this->fake([
             $this->card(5, 50, ['pr_url' => $this->prUrl(5)]),
             $this->card(6, 50, ['pr_url' => $this->prUrl(6)]),
-        ], [5 => $this->mergedToDevPr(), 6 => $this->mergedToDevPr()]);
+        ], [5 => $this->mergedToDevPr(), 6 => $this->mergedToDevPr(6)]);
 
         $this->artisan('bridge:reconcile', ['--fix' => true, '--max-moves' => 1])
             ->expectsOutputToContain('ABORTING before applying')
@@ -466,7 +477,7 @@ class ReconcileCommandTest extends TestCase
             // without a `board_id` cannot be SHOWN to be on the mapped board, so it is refused
             // like a foreign one — which is what a hoist against a trimmed projection looks like.
             $this->card(7, 50, ['pr_url' => $this->prUrl(7)], ['board_id' => null]),
-        ], [5 => $this->mergedToDevPr(), 6 => $this->mergedToDevPr(), 7 => $this->mergedToDevPr()]);
+        ], [5 => $this->mergedToDevPr(), 6 => $this->mergedToDevPr(6), 7 => $this->mergedToDevPr(7)]);
 
         $this->artisan('bridge:reconcile', ['--fix' => true])
             ->expectsOutputToContain('REFUSED')
@@ -534,5 +545,105 @@ class ReconcileCommandTest extends TestCase
         Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'bridge_reconcile: moved'
             && $ctx['card_id'] === 5 && $ctx['stage'] === 52
             && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
+    }
+
+    // --- card#7348 / DL-305: correlation is not completion, on the backstop ---
+
+    /**
+     * A merged PR whose title MENTIONS the card without closing it — the historical shape.
+     *
+     * @return array<string, mixed>
+     */
+    private function mentioningMergedPr(int $card = 5): array
+    {
+        return ['state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x', 'title' => "work, follows card#{$card}"];
+    }
+
+    public function test_witness_3_a_historical_bare_mention_card_is_not_demoted_on_a_later_pass(): void
+    {
+        // ⛔ WITNESS 3 — THE MASS-DEMOTION REGRESSION, and it needs its own witness rather
+        // than being implied by the classifier's no-op. This card is ALREADY in the merged
+        // stage (52): it is one of the already-correct cards an install is full of on the
+        // day DL-305 ships, and its PR is a bare mention under the new grammar — as every
+        // historical PR is. `bridge:reconcile --fix` re-derives an expected stage for every
+        // in-window card on EVERY pass, so a gate that returned an earlier stage here (the
+        // naive "demote a mention" reading) would walk the whole board backwards on the
+        // first run. It must derive NO expectation at all.
+        //
+        // (Make the gate return the `opened` stage instead of skipping ⇒ a backward
+        // SKIP-DRIFT row appears ⇒ RED; make it fall through to the merged stage ⇒ the
+        // in-sync count is 1 instead of the skip ⇒ RED.)
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 52, ['pr_url' => $this->prUrl(5)])], [5 => $this->mentioningMergedPr()]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->expectsOutputToContain('a MENTION, not a closure claim')
+            // ⛔ THE DEMOTION ASSERTION ITSELF, and it is the one that makes this witness
+            // about mass-demotion rather than about a message: the naive rule derives the
+            // pre-merge stage here, and stage 52 → 50 is BACKWARD, which this command
+            // prints as SKIP-DRIFT. Its absence is what says nothing walked backwards.
+            // (Chained matchers were CONTROLLED before this was trusted: replacing the
+            // second one with a string that cannot print reds the test.)
+            ->doesntExpectOutputToContain('SKIP-DRIFT')
+            ->expectsOutputToContain('1 skipped')
+            ->assertExitCode(0);
+
+        // Nothing was written, and nothing was even PLANNED — a backward row would have
+        // printed SKIP-DRIFT and an in-sync read would have counted it as reconciled.
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_a_bare_mention_merge_plans_no_forward_move_either(): void
+    {
+        // The same rule in the forward direction: this card sits at `opened` (50) and its
+        // PR is merged, which is exactly the drift the backstop exists to repair — but the
+        // PR never claimed the card was done, so there is nothing to repair TO. The
+        // failure direction is an UNDER-promoted card, recoverable by hand.
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => $this->mentioningMergedPr()]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->doesntExpectOutputToContain('DRIFT     card 5')
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_a_closing_form_naming_the_cards_own_dl_closes_it_across_spellings(): void
+    {
+        // The DL half of the gate, plus the one place the closure path needs the reference
+        // NORMALIZER: the card is stamped `DL-0305` (the board's own zero-padded spelling)
+        // and the title says `DL-305`. Those are one DL — the kanban server derives the same
+        // `dl:305` ref from both — so an exact string compare here would silently withhold
+        // every move on an install whose stamps are padded.
+        $this->writeWriteback();
+        $this->fake(
+            [$this->card(5, 50, ['pr_url' => $this->prUrl(5), 'dl_number' => 'DL-0305'])],
+            [5 => ['state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x', 'title' => 'work, Closes DL-305']],
+        );
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])->assertExitCode(0);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && str_contains($r->url(), '/tasks/5.json')
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
+    public function test_a_closing_form_naming_another_cards_dl_does_not_close_this_one(): void
+    {
+        // The mirror, and the reason the DL is read off the CARD and never off the title: a
+        // release-shaped PR that closes someone else's DL must not reconcile this card
+        // forward. That is the DL-218 foreign-mention door, kept shut on the backstop too.
+        $this->writeWriteback();
+        $this->fake(
+            [$this->card(5, 50, ['pr_url' => $this->prUrl(5), 'dl_number' => 'DL-0305'])],
+            [5 => ['state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x', 'title' => 'work, Closes DL-999']],
+        );
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->expectsOutputToContain('a MENTION, not a closure claim')
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 }

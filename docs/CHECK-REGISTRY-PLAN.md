@@ -569,7 +569,17 @@ spelling — and no golden fixture reaches it, because every fixture spells the 
 which is the state the leg exists to distinguish FROM. It is covered by three
 `WritebackMappingConfigCheckTest` cases (split reported / spellings agree ⇒ silent / no agent ⇒
 ORPHANED-not-split) plus one end-to-end `bridge:check` case, all mutation-proven against the
-pre-DL-293 tree. The enumerated count above is the stage-9 measurement, not the shipped one.]** Three more are disclosed as UNOBSERVED by condition text (the `correlation !== 'ref'` leg, the
+pre-DL-293 tree. The enumerated count above is the stage-9 measurement, not the shipped one.]**
+**[card#7348 (DL-305) correction, to the SECOND of those three cases only: the spellings-agree case
+no longer asserts a totally empty result. `WritebackMappingConfigCheck` gained a mention-vs-closure
+`ok` leg — the first non-warning leg on it, and the first that speaks about a mapping which is
+entirely correct — so that case now asserts *no WARNING*, with the green line standing as the
+WITNESS this file's own discipline asks of every absence assertion: before it, a check that returned
+at its first line satisfied that test exactly as well as one that walked the mapping loop. The leg is
+fixture-REACHED (nine golden captures gained the line, and the inventory's reported-count moved with
+it), so it is not a new member of the four-unreached set enumerated above, and the `family-on,
+terminal-missing` no-disclosure ruling below is untouched — the closure leg is not map-fed and reads
+no scope map at all.]** Three more are disclosed as UNOBSERVED by condition text (the `correlation !== 'ref'` leg, the
 promote same-stage no-op, and the promote file-token requirement). **All seven are covered by three
 new unit tests** — `WritebackMappingConfigCheckTest`, `WritebackAlertChannelCheckTest`,
 `ReconcileRepoTokensCheckTest` — deliberately scoped to the residue: golden-covered legs are *absent*
