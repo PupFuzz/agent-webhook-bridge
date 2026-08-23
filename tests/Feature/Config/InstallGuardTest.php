@@ -67,8 +67,29 @@ class InstallGuardTest extends TestCase
 
     public function test_bridge_check_fails_on_crosstalk(): void
     {
+        // ⛔ HERMETIC, and it was not. `bridge:check` reads `bridge.config_dir` /
+        // `bridge.secret_dir`, which default to the `BRIDGE_DIR` a deployed checkout's own
+        // `.env` sets and `phpunit.xml` does not override — so on an operator host this
+        // test ran the whole check against the REAL install's agents, writeback mapping and
+        // tokens, and issued four token-bearing requests to that install's live kanban and
+        // to api.github.com on every suite run (measured, card#7300). It stayed green
+        // because `Http::fake()` does not block an unstubbed request and the check's
+        // per-mapping `catch` swallows the failure; on CI, where `.env.example` points
+        // BRIDGE_DIR at a directory that does not exist, the same test exercised nothing of
+        // the sort. Same test, two different subjects, decided by the host.
+        //
+        // The fixture dir is empty, so the crosstalk guard is the only thing that can fail
+        // here — which is what the test is named for. No `Http::fake()`, deliberately: with
+        // nothing stubbed, any outbound call from this path is a RED. ⚑ It is the tearDown
+        // RECORDER in `Tests\TestCase` that makes that true, not `preventStrayRequests()` on
+        // its own — `bridge:check`'s per-mapping `catch (Throwable)` swallows the refusal
+        // exactly as it swallowed the connection error, so the refusal alone would leave this
+        // test green (card#7300 review).
+        config(['bridge.config_dir' => $this->dir, 'bridge.secret_dir' => $this->dir]);
         config(['bridge.install_suffix' => '-prod']);   // real sqlite db is :memory:, lacks _prod
-        $this->artisan('bridge:check')->assertExitCode(1);
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('crosstalk')   // exit 1 alone cannot say WHICH check failed
+            ->assertExitCode(1);
     }
 
     public function test_dispatch_fails_closed_on_crosstalk(): void

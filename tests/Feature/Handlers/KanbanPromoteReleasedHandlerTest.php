@@ -97,10 +97,17 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
         chmod($this->dir.'/github/token', 0o600);
     }
 
-    /** @param list<array<string,mixed>> $cards */
-    private function fakeBoard(array $cards): void
+    /**
+     * `$extra` is registered AHEAD of the defaults below. `+` keeps the LEFT operand's
+     * entries and their positions, which is the only order that reaches a request the
+     * defaults would otherwise answer (`CLAUDE_GOTCHAS.md` G-020).
+     *
+     * @param  list<array<string,mixed>>  $cards
+     * @param  array<string, mixed>  $extra
+     */
+    private function fakeBoard(array $cards, array $extra = []): void
     {
-        Http::fake([
+        Http::fake($extra + [
             '*/tasks/search.json*' => Http::response(['data' => $cards, 'links' => ['next' => null]]),
             'https://api.github.com/repos/owner/repo/pulls/100' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
             'https://api.github.com/repos/owner/repo/pulls/101' => Http::response(['merged' => true, 'merge_commit_sha' => 'SHA6', 'state' => 'closed', 'base' => ['ref' => 'dev']]),
@@ -152,11 +159,30 @@ class KanbanPromoteReleasedHandlerTest extends TestCase
             ."printf 'protocol=https\\nhost=github.com\\nusername=x-access-token\\npassword=tok:%s\\n' \"\$path\"\n");
         chmod($stub, 0o755);
         config(['bridge.providers.github.credential_helper' => $stub]);
-        $this->fakeBoard([['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]]);
+        // ⚑ The GitHub read is addressed with the PAYLOAD spelling, so `fakeBoard`'s
+        // `…/repos/owner/repo/…` defaults do not answer it — `Str::is` is case-SENSITIVE.
+        // Until card#7300 that left the request UNSTUBBED, and `Http::fake()` does not block
+        // one: it went to the real api.github.com on every suite run with this Bearer
+        // attached, and the assertion below passed on whatever GitHub answered.
+        $this->fakeBoard(
+            [['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 100]]],
+            [
+                // BOTH GitHub reads this card takes are addressed with the payload spelling,
+                // not just the first — the compare only became visible once the pulls read
+                // was stubbed and the promote could get past it (card#7300, pass 2).
+                'https://api.github.com/repos/Owner/repo/pulls/100' => Http::response(
+                    ['merged' => true, 'merge_commit_sha' => 'SHA5', 'state' => 'closed', 'base' => ['ref' => 'dev']],
+                ),
+                'https://api.github.com/repos/Owner/repo/compare/SHA5...main' => Http::response(['status' => 'ahead']),
+            ],
+        );
 
         $this->handle('Owner/repo');   // the PAYLOAD spelling, which is not the key
 
-        Http::assertSent(fn (Request $r) => str_starts_with($r->url(), 'https://api.github.com/')
+        // The URL is pinned, not just its host: the spelling the read is addressed with is
+        // what makes the stub above the one that answers, so a test that asserted only the
+        // host could go green on a request no stub had answered.
+        Http::assertSent(fn (Request $r) => $r->url() === 'https://api.github.com/repos/Owner/repo/pulls/100'
             && $r->hasHeader('Authorization', 'Bearer tok:owner/Repo'));
         Http::assertNotSent(fn (Request $r) => $r->hasHeader('Authorization', 'Bearer tok:Owner/repo'));
     }

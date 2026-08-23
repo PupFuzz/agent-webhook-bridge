@@ -5,6 +5,7 @@ namespace Tests\Feature\Handlers;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Handlers\ChannelPushHandler;
 use App\Bridge\Support\AgentConfig;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
@@ -73,6 +74,18 @@ class ChannelPushUdsTest extends TestCase
             usleep(20_000);
         }
         $this->assertFileExists($socketPath, 'child failed to bind the UDS');
+
+        // ⚑ THE ONE PLACE THE STRAY-REQUEST GUARD IS STOOD DOWN (card#7300 / DL-303), and
+        // it is scoped to a single URL rather than to this class. The subject of this test
+        // IS the live curl/Guzzle UDS transport (class docblock), so the request has to
+        // reach the socket the child bound — a stub would replace the thing under test, and
+        // `Tests\TestCase` otherwise turns every unstubbed request into a
+        // `StrayRequestException`. Nothing escapes the process on this path: the
+        // destination is a Unix socket this test created above and deletes below, and the
+        // `http://localhost/` in the URL is curl's placeholder authority for a UDS
+        // transfer, never a TCP connection. Anything this test reaches OTHER than that URL
+        // is still a red.
+        Http::allowStrayRequests(['http://localhost/']);
 
         // DL-014: a classifier-supplied socket must sit under the configured dir.
         config(['bridge.channel.allowed_socket_dir' => sys_get_temp_dir()]);

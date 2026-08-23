@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\UnreadableDeclarationClassifier;
+use Tests\Support\PreloadStub;
 use Tests\TestCase;
 
 class BridgeCommandsTest extends TestCase
@@ -73,6 +74,34 @@ class BridgeCommandsTest extends TestCase
     {
         File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
             ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+    }
+
+    /**
+     * The board stage order `WritebackBoardStateCheck` reads for EVERY mapping, from
+     * `/boards/{board}/preload.json`.
+     *
+     * ⚑ Leaving it unstubbed does NOT just make that one leg quieter. The whole
+     * per-mapping block sits inside one `catch (Throwable)`, so the unstubbed read
+     * replaces every later line the block would have produced with a single
+     * `could not read board … with the writeback token` — and a test asserting on one of
+     * those later lines then passes over a block that never ran (card#7300). Before
+     * `Http::preventStrayRequests()` the read also LEFT THE PROCESS, so the verdict was a
+     * function of whether the runner could resolve the fixture host.
+     *
+     * The stage set is what the cases routed through here need present for the
+     * stage-existence leg to run its HEALTHY arm; the body shape and the bound on reading it
+     * as a real board belong to {@see PreloadStub}. A case that needs an id to be MISSING from
+     * the board stubs its own preload, which the `$stubs + $this->fakePreload()` order keeps
+     * ahead of this one (CLAUDE_GOTCHAS.md G-020).
+     *
+     * ⚑ `swimlanes` is present and EMPTY, which is not the same as absent: absent is what
+     * `WritebackBoardStateCheck` reports as "carried no swimlane collection at all".
+     *
+     * @return array<string, mixed>
+     */
+    private function fakePreload(int $boardId = 8): array
+    {
+        return PreloadStub::stub($boardId, [21 => 1, 49 => 2, 50 => 3, 52 => 4, 53 => 5], swimlanes: []);
     }
 
     private function event(): WebhookEvent
@@ -577,7 +606,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => []]),
             'https://api.github.com/*' => Http::response(['message' => 'Bad credentials'], 401),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('token from token file')
@@ -598,7 +627,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => []]),
             'https://api.github.com/*' => Http::response(['message' => 'Bad credentials'], 401),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('HTTP 401 (token expired/revoked)')
@@ -614,7 +643,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => []]),
             'https://api.github.com/*' => Http::response(['message' => 'Forbidden'], 403),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('HTTP 403 (token lacks access to this private repo — needs `repo` scope)')
@@ -646,7 +675,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => []]),
             'https://api.github.com/*' => Http::response(['full_name' => 'owner/repo']),
-        ]);
+        ] + $this->fakePreload());
     }
 
     public function test_check_warns_when_promote_on_release_lacks_a_github_token_file(): void
@@ -686,7 +715,7 @@ class BridgeCommandsTest extends TestCase
         // board member / wrong board_id). bridge:check must surface it LOUDLY at
         // config time, but stay a warning (exit 0) — an empty new board is legit.
         $this->writeWritebackWithToken();
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('sees 0 cards on board 8')
@@ -697,7 +726,7 @@ class BridgeCommandsTest extends TestCase
     {
         $this->writeWritebackWithToken();
         // DL-029: the visibility probe reads the DL-146 pagination meta.total.
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 2]])]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 2]])] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('sees 2 card(s) on board 8')
@@ -712,7 +741,7 @@ class BridgeCommandsTest extends TestCase
         // there's no need to fake thousands of rows.
         $this->writeWritebackWithToken();
         $over = KanbanClient::SEARCH_LIMIT * KanbanClient::MAX_PAGES + 1;
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => $over]])]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => $over]])] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('beyond the scan ceiling')
@@ -737,7 +766,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/by-ref.json*' => Http::response(['data' => []]),                       // route exists
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('by-ref reachable')
@@ -753,7 +782,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/by-ref.json*' => Http::response(['message' => 'Not Found'], 404),       // route missing
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('by-ref returned 404')
@@ -772,7 +801,7 @@ class BridgeCommandsTest extends TestCase
                 'data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9001']]],   // no pr_url → source=null
                 'meta' => ['total' => 1],
             ]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('card 7 (DL DL-9001)')
@@ -791,7 +820,7 @@ class BridgeCommandsTest extends TestCase
                 'data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9001']]],
                 'meta' => ['total' => 1],
             ]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->doesntExpectOutputToContain('source=null')
@@ -810,7 +839,7 @@ class BridgeCommandsTest extends TestCase
                 'data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9001', 'pr_url' => 'https://github.com/owner/repo/pull/0']]],
                 'meta' => ['total' => 1],
             ]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->doesntExpectOutputToContain('source=null')
@@ -829,7 +858,7 @@ class BridgeCommandsTest extends TestCase
                 'data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9001', 'repo' => 'owner/repo']]],
                 'meta' => ['total' => 1],
             ]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->doesntExpectOutputToContain('source=null')
@@ -842,7 +871,7 @@ class BridgeCommandsTest extends TestCase
         // classifier subscribed to its github scope is inert — warn (exit 0). The
         // default writeAgent() only subscribes to kanban, so owner/repo is orphaned.
         $this->writeWritebackWithToken();
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('mapping for owner/repo is ORPHANED')
@@ -886,7 +915,7 @@ class BridgeCommandsTest extends TestCase
             'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
             'bridge.writeback.correlation' => 'scan',
         ]);
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->doesntExpectOutputToContain('ORPHANED')
@@ -921,7 +950,7 @@ class BridgeCommandsTest extends TestCase
             'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
             'bridge.writeback.correlation' => 'scan',
         ]);
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->doesntExpectOutputToContain('ORPHANED')
@@ -1208,7 +1237,7 @@ class BridgeCommandsTest extends TestCase
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             // Board has pr_number + origin but NOT pr_url.
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'pr_number'], ['key' => 'origin']]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('create_dependabot_cards is on for owner/repo but board 8 is MISSING the custom field(s) pr_url')
@@ -1232,7 +1261,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'pr_number'], ['key' => 'pr_url'], ['key' => 'origin']]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('create_dependabot_cards custom fields ok on board 8')
@@ -1269,7 +1298,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'dl_number']]]),   // no issue_number
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain("issue_population=all for owner/repo but board 8 does not register the 'issue_number' custom field")
@@ -1282,7 +1311,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'issue_number'], ['key' => 'issue_url']]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('issue_number custom field registered on board 8')
@@ -1299,7 +1328,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'issue_number']]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('DISAGREE on issue_population')
@@ -1314,7 +1343,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'issue_number']]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('coord config agrees')
@@ -1330,7 +1359,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['error' => 'boom'], 500),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain("could NOT read board 8's custom fields to verify issue_number")
@@ -1360,7 +1389,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'dl_number']]]),   // no issue_number
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain("board 8 does not register the 'issue_number' custom field")
@@ -1374,7 +1403,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'issue_number']]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('BRIDGE_WRITEBACK_CORRELATION is not `ref`')
@@ -1399,7 +1428,7 @@ class BridgeCommandsTest extends TestCase
         ]);
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->doesntExpectOutputToContain('create_dependabot_cards custom fields')
