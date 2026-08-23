@@ -476,4 +476,113 @@ PHP;
             'CLAUDE.md' => "Calls `Two::beta()`.\n",
         ], 'CLAUDE.md:1', 'the witness: only the sibling declares it, and a sibling is not an ancestor');
     }
+
+    /**
+     * THE `{@see …}` FORM (card#7330). The harvest was backtick-only, so the citation form this
+     * tree's docblocks overwhelmingly use was not a token either leg read — and the run reported
+     * an "examined" count and a clean verdict over a population it could not see.
+     *
+     * PAIRED IN BOTH DIRECTIONS, and the acceptance is NOT the witness here: a `{@see …}` phantom
+     * passed before this change too, because it was never harvested. What discriminates is the
+     * rejection, plus {@see test_a_see_tag_citation_is_counted_and_not_merely_unreported()} — being
+     * unreported and being unread produce the same exit code, and only the census tells them apart.
+     */
+    public function test_a_see_tag_citation_is_read_in_the_forms_this_tree_writes(): void
+    {
+        $doc = "<?php\n\nnamespace App\\Bridge\\Support;\n\n/**\n * Stamped by %s.\n */\nfinal class Note\n{\n}\n";
+
+        foreach (['{@see Widget::stamp()}', '{@see Widget::ID}', '{@see Widget::$label}'] as $real) {
+            $this->assertAccepted([
+                'app/Bridge/Support/Widget.php' => self::SUBJECT,
+                'app/Bridge/Support/Note.php' => sprintf($doc, $real),
+            ], "{$real} names a real member and must pass");
+        }
+
+        foreach (['{@see Widget::brand()}', '{@see Widget::$missing}', '{@see Widget::brand() the label}'] as $phantom) {
+            $this->assertMemberRejected([
+                'app/Bridge/Support/Widget.php' => self::SUBJECT,
+                'app/Bridge/Support/Note.php' => sprintf($doc, $phantom),
+            ], 'app/Bridge/Support/Note.php:6', "{$phantom} names nothing and must fail");
+        }
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'app/Bridge/Support/Note.php' => "<?php\n\nnamespace App\\Bridge\\Support;\n\n/**\n * @see Widget::brand()\n */\nfinal class Note\n{\n}\n",
+        ], 'app/Bridge/Support/Note.php:6', 'the standalone `@see` tag line is the same citation and must fail too');
+    }
+
+    /**
+     * THE VECTOR THAT SEPARATES "not reported" FROM "never read" — the whole content of card#7330.
+     * A phantom in a form the harvester cannot see produces exit 0, which is byte-identical to a
+     * tree that has no phantom; the only shipped instrument that tells them apart is the census
+     * line every run prints. So this asserts the COUNT, over a tree whose entire member population
+     * is the one `{@see …}` citation.
+     */
+    public function test_a_see_tag_citation_is_counted_and_not_merely_unreported(): void
+    {
+        [$rc, $out] = $this->runGate([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'app/Bridge/Support/Note.php' => "<?php\n\nnamespace App\\Bridge\\Support;\n\n/** Stamped by {@see Widget::stamp()}. */\nfinal class Note\n{\n}\n",
+        ]);
+
+        $this->assertSame(0, $rc, "a real member cited as `{@see …}` must pass:\n{$out}");
+        $this->assertStringContainsString('1 examined (1 resolved, 0 reported)', $out,
+            "the citation must be COUNTED, not skipped into silence — an uncounted phantom exits 0 exactly like a clean tree:\n{$out}");
+
+        [$rc, $out] = $this->runGate([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'app/Bridge/Support/Note.php' => "<?php\n\nnamespace App\\Bridge\\Support;\n\n/** Stamped by {@see Widget::brand()}. */\nfinal class Note\n{\n}\n",
+        ]);
+
+        $this->assertSame(1, $rc, "the witness: the same shape naming a phantom must red:\n{$out}");
+        $this->assertStringContainsString('1 examined (0 resolved, 1 reported)', $out,
+            "the phantom must be counted as REPORTED, not merely absent from the resolved bucket:\n{$out}");
+    }
+
+    /**
+     * The discharge is decided by the same harvest as the citation, so an annotation may repeat
+     * the citation in EITHER form — a rule that recognised only backticks would leave a frozen
+     * `{@see …}` citation with no discharge available at all.
+     */
+    public function test_a_removed_marker_discharges_a_see_tag_citation_in_either_spelling(): void
+    {
+        $doc = "<?php\n\nnamespace App\\Bridge\\Support;\n\n/** Stamped by {@see Widget::brand()}. %s */\nfinal class Note\n{\n}\n";
+
+        foreach (['{@see Widget::brand()} was removed.', '`Widget::brand()` was removed.'] as $annotation) {
+            $this->assertAccepted([
+                'app/Bridge/Support/Widget.php' => self::SUBJECT,
+                'app/Bridge/Support/Note.php' => sprintf($doc, $annotation),
+            ], "an annotation repeating the citation as `{$annotation}` discharges it");
+        }
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'app/Bridge/Support/Note.php' => sprintf($doc, '{@see Widget::stamp()} was removed.'),
+        ], 'app/Bridge/Support/Note.php:5', 'the witness: a marker naming a DIFFERENT citation discharges nothing');
+    }
+
+    /**
+     * THE BOUND, stated as a test because an unstated one is how the backtick-only scope survived
+     * (card#7330). Harvesting the `{@see …}` form changed WHERE a token is found, not what a token
+     * MEANS: a payload is read exactly when its backticked twin would be. So the pseudo-classes
+     * stay unread — `self::` names no file, and in markdown prose there is no enclosing class to
+     * resolve it against — and so does a bare member name, which this repo writes inside `{@see …}`
+     * for the enclosing class's own members. Both are DISCLOSED gaps, not protection, and card#7330
+     * owns whether they close — no size is quoted for either here, because a figure in a comment is
+     * a quoted authority no later pass recomputes; the gate's own docblock carries the derivations.
+     */
+    public function test_a_see_tag_naming_a_pseudo_class_or_a_bare_member_is_a_disclosed_gap(): void
+    {
+        $doc = "<?php\n\nnamespace App\\Bridge\\Support;\n\n/** Stamped by %s. */\nfinal class Widget\n{\n    public function stamp(): void {}\n}\n";
+
+        foreach (['{@see self::brand()}', '{@see static::brand()}', '{@see brand()}'] as $unread) {
+            $this->assertAccepted([
+                'app/Bridge/Support/Widget.php' => sprintf($doc, $unread),
+            ], "{$unread} is outside the token set and must not be convicted on");
+        }
+
+        $this->assertMemberRejected([
+            'app/Bridge/Support/Widget.php' => sprintf($doc, '{@see Widget::brand()}'),
+        ], 'app/Bridge/Support/Widget.php:5', 'the witness: the SAME phantom member, qualified by its class, IS examined');
+    }
 }
