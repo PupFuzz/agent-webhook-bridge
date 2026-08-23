@@ -324,13 +324,16 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   mistaken cards — it would **mass-demote every already-correct card on the first run**, because
   every historical PR is a bare mention under the new grammar. Withholding the move leaves every
   existing stage exactly where it is. **Nothing to backfill; the migration is free.**
-  **⚠ WHAT YOU MAY NEED TO CHANGE.** The branch must name a card **token**, not merely carry its
-  digits: `card-4811-…`, `card#4811-…`, `fix/card-4811-…` and glued `card4811-…` close card 4811;
-  the older **`fix/4811-widget`** spelling does **not**. That strictness is deliberate — the bare-id
+  **⚠ UPGRADING — check your BRANCH NAMES, not just your PR-title habit.** The branch must name a
+  card **token**, not merely carry its digits: `card-4811-…`, `card#4811-…`, `fix/card-4811-…` and
+  glued `card4811-…` close card 4811; the older **`fix/4811-widget`** spelling does **not**. That strictness is deliberate — the bare-id
   test used elsewhere for *corroboration* tolerates an accidental match on the stated grounds that it
   can never authorize anything, which is untrue of a gate onto a terminal stage. On this seat's
   convention it costs about **1 merged PR in 59**, each one **loudly warned**, with the lexical route
-  still open. Failure direction is safe: a forgotten closing form leaves a card UNDER-promoted (move
+  still open. **On the lexical side two of GitHub's own rules bite:** the token must sit **flush**
+  against the verb (`Closes the regression card#4811 documents` closes nothing), and **one verb
+  closes one token** (`Closes card#1 and card#2` closes only card 1 — write `Closes card#1, closes
+  card#2`). Failure direction is safe: a forgotten closing form leaves a card UNDER-promoted (move
   it by hand), never silently — the withheld move emits a `Log::warning` naming the card, the outcome
   and the accepted forms **rendered from the grammar** (DL-239 discipline). ⚠ Cards that reached
   Shipped **before** this ships stay eligible for the release-promote sweep — audit a large
