@@ -1,4 +1,4 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.37.0) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.41.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **What this is.** The solo-agent orientation generated from the Agent Board Framework
@@ -103,8 +103,10 @@ item regardless of which repo it lives in. Work it. Then move to the next.
    below).
 4. **Doc-sync every code PR** (per `doc-sync.md`). Every PR that changes code audits and
    updates affected docs in the same PR — doc drift is not a follow-up. For an
-   architecture-state change, grep the inverted term **and** re-read the affected subsystem (a
-   clean grep is not a clean audit). When a review pass corrects a code-state claim, grep that
+   architecture-state change, first ask whether the change **mints** an obligation no doc has
+   ever stated (no sweep finds that one), then grep the inverted term **and** re-read the
+   affected subsystem (a clean grep is not a clean audit), and name the legs you covered —
+   the repo tree and the work tracker are different populations. When a review pass corrects a code-state claim, grep that
    claim across all that repo's docs and fix every stale instance in the same PR, recording the
    regex + per-file decisions on the item's tracking issue or card (Rule X1).
 5. **PR to the integration branch** (`branch_model.integration`, `dev` by default). Releases
@@ -129,9 +131,12 @@ reopens the bar at this install.**
 coordination repo for cross-agent issue tracking. Open a GitHub issue on the repo the task
 belongs to, reference it in your PR, close it on merge.
 
-**Branch-base hygiene (Rule B).** Before pushing, `git fetch origin <integration> && git
-rebase origin/<integration>` so merged work from a prior PR doesn't show up as a reversion
-in your diff.
+**Branch-base hygiene (Rule B).** Before pushing, `git fetch origin <integration> && git rebase
+origin/<integration>` so your PR is reviewed against the current integration tip, not the state it
+was cut from. Note what this is *not* for: sibling work that merged after your branch was cut is
+never reverted by your PR. A tip-to-tip (`A..B`) diff that appears to delete it is answering "how do
+these two tips differ", not "what will this merge do" — rebasing quiets that noise; it is not
+undoing a reversion.
 
 **PR bodies — write them like a senior dev (roundtable #255).** *"A human coder would submit a
 merge with a comprehensive list of what the merge includes, and any upgrade warnings / gotchas to
@@ -305,11 +310,15 @@ actually check. (When the check *is* mechanical, tier doesn't matter — the too
 verifier.)
 
 **Non-trivial coding is dispatched because your human asked for it (card#4870, card#5937).** The
-authorization is **not** this section and **not** framework policy: it is their own dated standing
-request, in the engineering-canon block of your `~/.claude/CLAUDE.md` (*"Standing operator
-instruction — subagent dispatch"*). Read it there — it is deliberately stated in one place and not
-restated here, and it is also where a session rule that permits subagent / AgentTool use only
-*"unless the user requested it"* finds its condition already met. What **this** section owns is the
+authorization is **not** this section and **not** framework policy: your human granted it by running
+the seeder on this machine. Read it there, not here — the *"Standing operator instruction — subagent
+dispatch"* block of your `~/.claude/CLAUDE.md`, which owns the scope and is where a session rule
+permitting subagent / AgentTool / workflow use only *"unless the user requested it"* finds its
+condition already met. Its record of the act is the `coord:dispatch-grant` block beside it — same
+always-loaded file, so READ the block rather than shelling out for it: **granted** ⇒ dispatch stands; **declined** ⇒ it does
+not, so route non-trivial dispatch as an ask-first gate; **not-captured, or no such block at all** ⇒
+nobody was asked and nobody refused, so the grant stands exactly as written. Absence is never a
+decline. What **this** section owns is the
 operational boundary: any coding task beyond a few trivial lines — feature, bugfix, refactor, test —
 is dispatched to a **fresh `coder`** subagent (or **`mechanic`** for a fully-specified mechanical
 procedure), one-per-task so work never accretes onto your session. Inline is legitimate **only for trivial** edits (a
@@ -462,11 +471,16 @@ up.
    a restated PR/card status is a shadow that goes stale when the SoT moves. Log verification
    **acts** + pointers, never the verified value itself (see `docs/task-tracking-standard.md`
    §5.1, the re-accretion guard).
-   **Fence the live region (v1.5):** wrap the ENTIRE live carry-forward/status region in the
-   `<!-- coord:status-region -->` … `<!-- /coord:status-region -->` fence. INSIDE the fence, any line
-   with a status-token (SHA / `vX.Y.Z` / merge-state / `stage:`) must carry `(this cycle)` (a
-   verification act) or a SoT pointer (`see #N` / `→ #N`) — the `session-end-skip-lint` backstop
-   inspects only in-fence lines and WARNs "status-region unscanned" if the fence is dropped.
+   **Mark the live region:** keep the `<!-- coord:status-region -->` line above your session block
+   — that ONE line is the whole convention (the seeded handoff skeleton already carries it, and the
+   region runs from it to the next block heading — `SR_BLOCK_START_RE` in `state-retention.py` owns
+   which line shapes those are, and `--check-region` reports the span resolved on your file; there
+   is no closing marker to move). INSIDE the
+   region, any line with a status-token (SHA / `vX.Y.Z` / merge-state / `stage:`) must carry
+   `(this cycle)` (a verification act) or a SoT pointer (`see #N` / `→ #N`) — the
+   `session-end-skip-lint` backstop inspects only in-region lines and WARNs "status-region
+   unscanned" if the marker is gone. The skeleton's own header owns the rest of the rule (including
+   where not-live material goes); read it there rather than from a list here.
 5. **Save lessons learned to memory.** Durable takeaways from the session — a repo or tooling
    gotcha, a bridge or board mechanics quirk, a reusable pattern — go to your agent memory
    dir (one fact per file, per the memory convention). Memory is for durable knowledge;
