@@ -29,6 +29,7 @@ php artisan bridge:reconcile             # board-vs-GitHub drift reconciler (rep
 php artisan bridge:replay <N>            # re-dispatch a stored event by id (recovery for errored/missed dispatches)
 php artisan bridge:inspect <N>           # pretty-print one event + its dispatch ledger
 php artisan bridge:stats                 # event / dispatch / board-divergence counts
+php artisan bridge:standup --dry-run     # PM standup digest (DL-306): print what the bridge can derive, push nothing
 
 # Seat-side (run ON the agent's box, AS the agent's own OS user — NOT the bridge's):
 python3 bin/check-channel-snapshot.py <deployed channel-server dir>
