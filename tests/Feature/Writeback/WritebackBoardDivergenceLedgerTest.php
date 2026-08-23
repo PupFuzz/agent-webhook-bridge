@@ -14,10 +14,12 @@ use App\Models\WritebackBoardDivergence;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Tests\Support\ConsoleTable;
 use Tests\TestCase;
 
 /**
@@ -326,9 +328,34 @@ class WritebackBoardDivergenceLedgerTest extends TestCase
         // The reader's surface. The count is printed on every run, zero included: a line that
         // appeared only when non-empty would make "no cross-board write was ever recorded"
         // indistinguishable from "nothing measured it" — this card's own defect, one level up.
-        $this->artisan('bridge:stats')
-            ->expectsOutputToContain('reached a write site')
-            ->assertExitCode(0);
+        //
+        // ⛔ ON THE CELL, not on the label. `expectsOutputToContain('reached a write site')`
+        // asserted a CONSTANT — the row's caption — and said nothing about the number beside
+        // it: blank the count and that matcher stays green, which is the false-clean shape
+        // card#7471 audits. And the zero alone is not enough either: a hardcoded `0` prints a
+        // perfect zero forever, so the second half re-runs against ONE recorded divergence and
+        // requires the same cells to MOVE. That pairing is what makes the zero a measurement.
+        $this->assertSame(0, Artisan::call('bridge:stats'));
+        $empty = Artisan::output();
+        ConsoleTable::assertRow($empty, 'writeback board divergences', '0');
+        ConsoleTable::assertRow($empty, 'refused (guard stopped the write)', '0');
+        ConsoleTable::assertRow($empty, 'recorded (a divergent card reached a write site)', '0');
+
+        $this->fakeArchive();
+        CardCollapse::toSurvivor(
+            WritebackClientFactory::make(),
+            [7 => $this->card(7, self::FOREIGN_BOARD), 9 => $this->card(9, self::FOREIGN_BOARD)],
+            'kanban_dependabot_card',
+            ['repo' => 'owner/repo'],
+            $this->mapping(),
+        );
+        $this->assertSame(BoardDivergenceLedger::DISPOSITION_RECORDED, $this->onlyRow()->disposition);
+
+        $this->assertSame(0, Artisan::call('bridge:stats'));
+        $recorded = Artisan::output();
+        ConsoleTable::assertRow($recorded, 'writeback board divergences', '1');
+        ConsoleTable::assertRow($recorded, 'refused (guard stopped the write)', '0');
+        ConsoleTable::assertRow($recorded, 'recorded (a divergent card reached a write site)', '1');
     }
 
     // ------------------------------------------------------------------------------ helpers

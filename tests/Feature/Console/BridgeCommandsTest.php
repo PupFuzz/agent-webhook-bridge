@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\UnreadableDeclarationClassifier;
+use Tests\Support\ConsoleTable;
 use Tests\Support\PreloadStub;
 use Tests\TestCase;
 
@@ -2267,7 +2268,17 @@ class BridgeCommandsTest extends TestCase
         AgentDispatch::create(['webhook_event_id' => $event->id, 'agent_name' => 'a', 'processed_at' => now()]);
         AgentDispatch::create(['webhook_event_id' => $event->id, 'agent_name' => 'b', 'error_message' => 'boom']);
 
-        $this->artisan('bridge:stats')->assertExitCode(0);
+        // ⛔ THE COUNTS, which `assertExitCode(0)` alone said nothing about: this test was named
+        // for the numbers and asserted only that the command did not crash, so a `bridge:stats`
+        // that printed an empty table passed it (card#7471). The fixture is built so the four
+        // cells are mutually DISCRIMINATING — a processed row and an errored row, which land in
+        // different buckets and sum to a third — rather than four readings of one number.
+        $this->assertSame(0, Artisan::call('bridge:stats'));
+        $out = Artisan::output();
+        ConsoleTable::assertRow($out, 'webhook_events', '1');
+        ConsoleTable::assertRow($out, 'agent_dispatches', '2');
+        ConsoleTable::assertRow($out, 'processed', '1');
+        ConsoleTable::assertRow($out, 'errored (replayable)', '1');
     }
 
     public function test_stats_still_reports_its_other_counts_when_the_divergence_table_is_absent(): void
@@ -2426,9 +2437,17 @@ class BridgeCommandsTest extends TestCase
         AgentDispatch::create(['webhook_event_id' => $event->id, 'agent_name' => 'pm', 'processed_at' => now()]);
         AgentDispatch::create(['webhook_event_id' => $event->id, 'agent_name' => 'backend', 'error_message' => 'boom']);
 
-        $this->artisan('bridge:stats', ['--agent' => 'pm'])
-            ->expectsOutputToContain('[pm]')
-            ->assertExitCode(0);
+        // ⛔ THE SCOPING, not the label. `expectsOutputToContain('[pm]')` matched the row's
+        // CAPTION — which the command interpolates from the flag and would print whether or not
+        // it filtered anything — so dropping the `where('agent_name', …)` left this green
+        // (card#7471). backend's row is the discriminator: it is the ERRORED one, so an
+        // unscoped run reads 2/1/1 where a scoped one reads 1/1/0.
+        $this->assertSame(0, Artisan::call('bridge:stats', ['--agent' => 'pm']));
+        $out = Artisan::output();
+        ConsoleTable::assertRow($out, 'webhook_events', '1', 'the event count is deliberately NOT agent-scoped');
+        ConsoleTable::assertRow($out, 'agent_dispatches [pm]', '1', "backend's dispatch must not be counted");
+        ConsoleTable::assertRow($out, 'processed', '1');
+        ConsoleTable::assertRow($out, 'errored (replayable)', '0', "backend's error must not be counted");
     }
 
     public function test_inbox_build_output_envelope_logic(): void
@@ -2491,12 +2510,23 @@ class BridgeCommandsTest extends TestCase
             'webhook_event_id' => $event->id, 'agent_name' => 'prod-agent',
             'processed_at' => now(), 'outcome' => AgentDispatch::OUTCOME_DROPPED, 'reason' => 'echo',
         ]);
+        // ⛔ AND A PROCESSED ROW THAT WAS *NOT* DROPPED, which is what makes the two counts
+        // different numbers. With only the row above, skipped and gate-dropped are both 1 and
+        // the "counts gate drops" half of this test's name could not be measured at all
+        // (card#7471) — the bare `'gate-DROPPED'` matched a caption, and any count assertion
+        // over a one-row fixture would have been a second reading of the same figure.
+        AgentDispatch::create([
+            'webhook_event_id' => $event->id, 'agent_name' => 'other-agent',
+            'processed_at' => now(), 'outcome' => AgentDispatch::OUTCOME_DELIVERED,
+        ]);
 
         $code = Artisan::call('bridge:replay', ['id' => $event->id]);
         $out = Artisan::output();
         $this->assertSame(0, $code);
-        $this->assertStringContainsString('skipping 1 already-processed', $out);
-        $this->assertStringContainsString('gate-DROPPED', $out);   // names the recoverable class
+        $this->assertStringContainsString('skipping 2 already-processed', $out);
+        // The DROPPED subset, not the skipped total: a `$dropped` that lost its outcome filter
+        // prints 2 here and the caption alone would not notice.
+        $this->assertStringContainsString('1 were gate-DROPPED', $out);
         $this->assertStringContainsString('--force', $out);
     }
 
@@ -3560,10 +3590,22 @@ class BridgeCommandsTest extends TestCase
         $tokenPath = $this->dir.'/impl-board-tools-token';
         $this->writeToolsAgentYaml('impl', $tokenPath);
 
-        $this->artisan('bridge:provision-tools')->assertExitCode(0);
-
+        // ⛔ THE MINT RUN IS THE ONE THAT CAN LEAK, and it was the one this test did not read
+        // (card#7471). The value does not exist until the mint prints, so the fluent
+        // `doesntExpectOutputToContain($value)` could only ever be pointed at the SECOND,
+        // already-minted run — whose branch does not hold the secret at all. Captured output
+        // has no such ordering problem: mint, then read the buffer and the file, then compare.
+        $this->assertSame(0, Artisan::call('bridge:provision-tools'));
+        $mintOutput = Artisan::output();
         $value = trim((string) file_get_contents($tokenPath));
-        // The minted value must never appear in the artisan buffer.
+
+        // POSITIVE CONTROL: without it an absence over an empty buffer certifies a command that
+        // printed nothing — or never minted — as discreet.
+        $this->assertSame(64, strlen($value), 'no bearer was minted, so there is no value to look for');
+        $this->assertStringContainsString('MINTED', $mintOutput);
+        $this->assertStringNotContainsString($value, $mintOutput);
+
+        // …and the already-minted run, whose message names the same path a second time.
         $this->artisan('bridge:provision-tools')
             ->doesntExpectOutputToContain($value)
             ->assertExitCode(0);
