@@ -898,6 +898,57 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#7471** — **CLASS: nine tests whose NAME or docblock stated a count / absence / exclusivity
+  property asserted something that structurally cannot express it, so each stayed GREEN when the
+  behaviour it names was mutated away.** **Tests and test-support only — zero files under `app/`,
+  `bin/`, `config/`, `routes/` or `database/migrations/`; no migration, no `.env` change, no
+  receiver accept/reject change, no token-scope change.** Nothing an install runs behaves
+  differently; what changes is which regressions CI can still catch.
+  **The class, and why one instance did not close it.** `expectsOutputToContain()` answers exactly
+  *"does this substring appear at least once?"* — it cannot state a count, an absence, an ordering
+  or an exclusivity. card#7332 found the first instance (`test_inbox_collapses_duplicate_ids_on_read`
+  never asserted the collapse) and fixed it; this audits the population it came from.
+  **Denominator, re-derived against this branch's base rather than quoted from the card** (which
+  said 146 across 5 — `dev` has moved): **7 files**, **154 `expectsOutputToContain` matches** of
+  which **148 are calls** and 6 are prose, **247 test methods** — `BridgeCommandsTest` (179),
+  `ReconcileCommandTest` (25), `ProvisionTest` (14), `WritebackBoardDivergenceLedgerTest` (11),
+  `BridgePathsUnseenInboxLinesTest` (7), `InstallGuardTest` (6), `StandupCommandTest` (5). The unit
+  is the METHOD, not the call site, because the claim lives in a name. All 247 were READ, not
+  grepped — the card is explicit that the worst instance will not contain the search term, and it
+  did not: **four of the nine make no output assertion at all**, so no grep of the matcher could
+  ever have reached them.
+  **Nine rewritten, each SEEN TO FAIL** — the mutation was applied to `app/`, the NEW assertion
+  watched go red, the SAME mutant then run against the file as it stands on `dev` and watched go
+  **green**, and the app file restored byte-identically (`git diff --quiet`) before the next one:
+  `bridge:stats`'s divergence counts were asserted by their row CAPTION and never by the number
+  (blank the count ⇒ still green); `test_stats_reports_counts` asserted only `assertExitCode(0)`;
+  `test_stats_agent_flag_scopes_metrics` asserted the `[pm]` label, which the command interpolates
+  from the flag whether or not it filters, so **dropping `where('agent_name', …)` was invisible**;
+  `bridge:replay`'s gate-drop COUNT was a caption over a one-row fixture that could not discriminate
+  it from the skipped total; `test_provision_tools_never_prints_the_token_value` could only ever
+  inspect the **already-minted** run, never the mint that holds the secret; `bridge:provision`'s
+  *"skipped one provider, still provisioned the others"* rested on an exit code an abort-on-first
+  prints identically; and `test_reconcile_fixes_filter_drift` asserted the DELETE without the
+  recreate — green for a reconcile that leaves a board with no webhook at all.
+  **⛔ Two absence predicates could NEVER have fired.** `Http::assertNotSent(fn ($r) =>
+  str_contains($r->url(), 'board_id=9'))` guarded both `--repo` filter tests, but the board scope
+  travels as the query TERM `q=board_id=<b>`, which the client percent-encodes to `q=board_id%3D9`
+  — measured, not reasoned: the raw url never contains the string, so the check was a decoration on
+  a filter that could be deleted outright. Both now `urldecode()` (the form every other board-scope
+  assertion in the suite already used) and both gain the presence witness that makes the silence
+  about board 9 mean *filtered* rather than *nothing ran*.
+  **Two supporting changes.** `Tests\Support\ConsoleTable::assertRow()` is extracted at the second
+  real caller for the metric/count tables, anchored at both ends of the line because an unanchored
+  substring on a table is a presence claim wearing a count's clothes. `CLAUDE_TESTING.md` gains the
+  two anti-patterns so the class is findable — the matcher's structural limits, and an absence
+  assertion with no presence witness or with a predicate that cannot fire.
+  **Dispositioned, not silently capped:** 238 of the 247 methods are recorded correctly scoped, and
+  the audit's own blind axis is stated — this population is the files that USE the matcher, so a
+  count claim asserted by a presence-only matcher in a file that never calls it is outside the
+  denominator and unmeasured. **2548/2548 phpunit — the SAME 2548, with 8720 assertions against
+  8697 on the base: this adds assertions to existing tests, it does not add tests.** phpstan L7 0,
+  pint clean, `check-doc-refs` clean.
+
 - **card#7330** — **⚠ `check-doc-refs` was reporting a clean verdict over a population that
   excluded the citation form this repo mostly writes.** Rule 1's harvest was BACKTICKED-only, so
   every `{@see …}` citation in a docblock — 645 of them in the tree — was not a token either leg
