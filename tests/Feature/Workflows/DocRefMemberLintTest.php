@@ -618,14 +618,14 @@ PHP;
         ];
 
         $this->assertSame(
-            ['total' => 1, 'resolved' => 1, 'classless' => 0, 'pseudo' => 0],
+            ['total' => 1, 'resolved' => 1, 'classless' => 0, 'pseudo' => 0, 'class' => 0],
             $this->censusOf($tree('{@see Widget::stamp()}')),
             'the reference point: qualified, the citation is one examined member and the total is one'
         );
 
         foreach (['{@see stamp}', '{@see stamp()}', '{@see $label}'] as $bare) {
             $this->assertSame(
-                ['total' => 1, 'resolved' => 0, 'classless' => 1, 'pseudo' => 0],
+                ['total' => 1, 'resolved' => 0, 'classless' => 1, 'pseudo' => 0, 'class' => 0],
                 $this->censusOf($tree($bare)),
                 "{$bare} names a member with no class: it must be DISCLOSED as unexamined, and the total must not move when it is qualified"
             );
@@ -633,7 +633,7 @@ PHP;
 
         foreach (['{@see self::stamp()}', '{@see static::stamp}', '{@see parent::stamp()}'] as $pseudo) {
             $this->assertSame(
-                ['total' => 1, 'resolved' => 0, 'classless' => 0, 'pseudo' => 1],
+                ['total' => 1, 'resolved' => 0, 'classless' => 0, 'pseudo' => 1, 'class' => 0],
                 $this->censusOf($tree($pseudo)),
                 "{$pseudo} names no file either, and qualifying it must move it between buckets rather than into the total"
             );
@@ -646,8 +646,11 @@ PHP;
      *
      * THE PREDICATE IS A LOWER-CASE INITIAL, which is the only thing that separates a member name
      * from a class name when there is no `::` to key on. So an UPPER-case class-less member — a
-     * constant, an enum case — is in NEITHER bucket, and qualifying one still moves the total.
-     * That is the remaining shape, and it is disclosed here rather than assumed away.
+     * constant, an enum case — is in NEITHER of THESE buckets. card#7496 took the CamelCase half
+     * of that remainder into `class_citation` and left the ALL-CAPS half out on purpose
+     * ({@see test_the_class_bucket_leaves_an_all_caps_name_out_and_reads_only_a_reference_tag()}
+     * owns that bound); `{@see ID}` below is what survives, and qualifying it still moves the
+     * total.
      *
      * ONLY A REFERENCE TAG IS READ. A backticked bare `stamp()` in prose stays out for the reason
      * the rule docblock's bare-`func()` paragraph gives — most of them here are other people's
@@ -665,16 +668,95 @@ PHP;
             'app/Bridge/Support/Widget.php' => self::SUBJECT,
             'app/Bridge/Support/Note.php' => sprintf($doc, $citation),
         ];
-        $none = ['total' => 0, 'resolved' => 0, 'classless' => 0, 'pseudo' => 0];
+        $none = ['total' => 0, 'resolved' => 0, 'classless' => 0, 'pseudo' => 0, 'class' => 0];
 
-        foreach (['`stamp()`', '`self::stamp()`', '{@see ID}', '{@see Widget}', '{@see self::class}'] as $unread) {
+        foreach (['`stamp()`', '`self::stamp()`', '{@see ID}', '{@see self::class}'] as $unread) {
             $this->assertSame($none, $this->censusOf($tree($unread)),
                 "{$unread} is outside the population these buckets disclose and must not be counted into it");
         }
 
-        $this->assertSame(['total' => 1, 'resolved' => 0, 'classless' => 1, 'pseudo' => 0],
+        $this->assertSame(['total' => 1, 'resolved' => 0, 'classless' => 1, 'pseudo' => 0, 'class' => 0],
             $this->censusOf($tree('{@see stamp}')),
             'the witness: the same tree with the one form the buckets DO read counts exactly one — so the zeroes above are a predicate, not an inert harness');
+    }
+
+    /**
+     * THE DIRECT TEST OF card#7496, and the same property as its member-level twin one level up:
+     * qualifying a citation that names a CLASS AND NO MEMBER moves it between census buckets and
+     * leaves the TOTAL fixed.
+     *
+     * WHY IT WAS INVISIBLE TWICE OVER, which is what makes it worth its own vector rather than a
+     * row in the twin's. It carries no `::`, so the member leg never forms a citation from it and
+     * it reaches none of that leg's buckets; and this tree writes it in an `app/` docblock, where
+     * rule 1a's path/FQCN leg — six current-state docs, `App\…` names only — does not read. Unread
+     * by BOTH legs and counted by NEITHER, while the closing line's arithmetic went on balancing.
+     *
+     * NOTHING IS RESOLVED BY THIS. `{@see Nonexistent}` is here precisely because it names nothing
+     * in the tree and must still be ACCEPTED and merely counted: the bucket is an admission, not a
+     * verdict. Convicting one needs the resolution card#7330 bounded — a bare `Command` beside an
+     * imported `Illuminate\Console\Command` is unattributable, and guessing invents the finding.
+     */
+    public function test_qualifying_a_class_citation_moves_buckets_and_leaves_the_total_fixed(): void
+    {
+        $doc = "<?php\n\nnamespace App\\Bridge\\Support;\n\n/** Stamped by %s. */\nfinal class Note\n{\n}\n";
+        $tree = fn (string $citation): array => [
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'app/Bridge/Support/Note.php' => sprintf($doc, $citation),
+        ];
+
+        $this->assertSame(
+            ['total' => 1, 'resolved' => 1, 'classless' => 0, 'pseudo' => 0, 'class' => 0],
+            $this->censusOf($tree('{@see Widget::stamp()}')),
+            'the reference point: qualified by a member, the citation is one examined member and the total is one'
+        );
+
+        foreach (['{@see Widget}', '{@see App\\Bridge\\Support\\Widget}', '{@see \\App\\Bridge\\Support\\Widget}', '{@see Nonexistent}'] as $bare) {
+            $this->assertSame(
+                ['total' => 1, 'resolved' => 0, 'classless' => 0, 'pseudo' => 0, 'class' => 1],
+                $this->censusOf($tree($bare)),
+                "{$bare} names a class and no member: it must be DISCLOSED as unexamined, and the total must not move when a member is added to it"
+            );
+        }
+    }
+
+    /**
+     * THE BOUND ON THE CLASS BUCKET, stated as a test for card#7473's reason — an unstated bound
+     * still reads as complete.
+     *
+     * AN ALL-CAPS SHORT NAME IS LEFT OUT ON PURPOSE. With no `::` to key on, `ID` and
+     * `DEFAULT_LANE` are constants in this tree's naming, not classes, and a bucket that swallowed
+     * them would MISLABEL the census rather than complete it. That is the remainder card#7473
+     * accepted, narrowed rather than closed, and it is disclosed here rather than assumed away.
+     *
+     * ONLY A REFERENCE TAG IS READ, for the reason its member-side twin gives: a backticked
+     * `Widget` in prose is mostly other people's vocabulary, where a `{@see …}` payload is a
+     * machine-readable claim about this tree by construction.
+     *
+     * `::class` IS NOT A CLASS CITATION IN EITHER SPELLING — the predicate admits no `:` at all,
+     * so a language construct cannot reach this bucket any more than it reaches the member ones.
+     *
+     * AN ARGUMENT LIST IS NOT STRIPPED, unlike in the two member predicates. There a citation
+     * carrying arguments names the same member; here the parentheses change what is being named,
+     * so `{@see Widget()}` is a call and labelling it a class would be the same kind of mislabel
+     * the ALL-CAPS exclusion avoids. It stays in the disclosed remainder.
+     */
+    public function test_the_class_bucket_leaves_an_all_caps_name_out_and_reads_only_a_reference_tag(): void
+    {
+        $doc = "<?php\n\nnamespace App\\Bridge\\Support;\n\n/** Stamped by %s. */\nfinal class Note\n{\n}\n";
+        $tree = fn (string $citation): array => [
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'app/Bridge/Support/Note.php' => sprintf($doc, $citation),
+        ];
+        $none = ['total' => 0, 'resolved' => 0, 'classless' => 0, 'pseudo' => 0, 'class' => 0];
+
+        foreach (['`Widget`', '{@see ID}', '{@see DEFAULT_LANE}', '{@see Widget::class}', '{@see self::class}', '{@see Widget()}'] as $unread) {
+            $this->assertSame($none, $this->censusOf($tree($unread)),
+                "{$unread} is outside the population this bucket discloses and must not be counted into it");
+        }
+
+        $this->assertSame(['total' => 1, 'resolved' => 0, 'classless' => 0, 'pseudo' => 0, 'class' => 1],
+            $this->censusOf($tree('{@see Widget}')),
+            'the witness: the same tree with the one form this bucket DOES read counts exactly one — so the zeroes above are a predicate, not an inert harness');
     }
 
     /**
@@ -687,7 +769,7 @@ PHP;
      * which is a flag no CI invocation passes.
      *
      * @param  array<string, string>  $files
-     * @return array{total: int, resolved: int, classless: int, pseudo: int}
+     * @return array{total: int, resolved: int, classless: int, pseudo: int, class: int}
      */
     private function censusOf(array $files): array
     {
@@ -697,7 +779,8 @@ PHP;
         $line = '/member citations — (\d+) examined \((\d+) resolved, (\d+) reported\), (\d+) NOT examined: '
             .'(\d+) class not under app\/, (\d+) ambiguous class name, (\d+) unverifiable ancestry, '
             .'(\d+) in a removed-marker sentence, (\d+) a rejected alternative, '
-            .'(\d+) class-less member citations, (\d+) naming a pseudo-class;/';
+            .'(\d+) class-less member citations, (\d+) naming a pseudo-class, '
+            .'(\d+) naming a class and no member;/';
 
         $this->assertSame(1, preg_match($line, $out, $m),
             "every run must disclose every bucket by name — a missing one is the defect card#7473 fixed:\n{$out}");
@@ -707,6 +790,7 @@ PHP;
             'resolved' => (int) $m[2],
             'classless' => (int) $m[10],
             'pseudo' => (int) $m[11],
+            'class' => (int) $m[12],
         ];
     }
 }
