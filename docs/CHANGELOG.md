@@ -898,6 +898,54 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#7496** — **⚠ the same accounting defect one level up: a `{@see SomeClass}` naming a class
+  and NO member was read by NEITHER of rule 1's legs and counted by neither.** The member leg needs
+  a `::` to form a citation from, and this payload has none; rule 1a's path/FQCN leg reads only the
+  six `CLAUDE_*.md` current-state docs and only `App\…` names, and this tree writes the payload in
+  an `app/` docblock. **Unreported AND absent from every accounting line** — the combination
+  card#7473 named as the harmful one, because the reader who audits the gate's own disclosure is
+  told the population is complete. No `app/` behaviour, no route, no schema, and **no change to
+  what the gate REPORTS** — no new reds, no removed reds; 984 resolved / 0 reported before and
+  after.
+  - **Convicted with nothing the run does not already ship.** Against the pre-fix gate on the
+    branch point, qualifying ONE `{@see CheckRunner}` into `{@see CheckRunner::run()}` took resolved
+    **984 → 985** and the TOTAL **1849 → 1850**. A citation that only enters the total once it
+    becomes checkable was never in the total.
+  - **One new census bucket, `class_citation`**, in `--census` and in the closing disclosure line
+    of every run. **Nothing is RESOLVED by it** — which citations can be convicted did not move,
+    only whether the run admits what it declined.
+  - **Re-derived on this branch rather than quoted from the card, and the card's own arithmetic
+    was off by one.** The full reference-tag payload set at the branch point is **752**:
+    182 forming a `Class::member` · 186 class-less member · 104 pseudo-class · **237 naming a class
+    and no member** · 21 `UPPER_SNAKE` · **22** metasyntactic-or-`::class` (the card said 21, and
+    752 only closes at 22 — an ellipsis payload count plus the one `{@see self::class}`). An
+    independently written derivation script agrees with the gate on every bucket.
+  - **Resolving them stays declined, and the ground for a future pass was MEASURED rather than
+    guessed** — that measurement, not the bucket, is this card's decision input. Of the 237, by the
+    gate's own resolution rule: **205 resolve unambiguously to exactly one construct under `app/`**;
+    **0 are ambiguous** (no two `app/` basenames collide and none is shadowed by an imported
+    non-`App\` name — card#7330's `Command` trap is unrealised on this tree, not absent from it);
+    **32 resolve to nothing under `app/`**, of which 28 name a class under `tests/`, 1 names an
+    imported `RequestException`, 1 is a `Tests\…` FQCN, and **2 resolve to nothing anywhere** —
+    a `\JsonException` named in a docblock and a `Widget` fixture name quoted inside a test's own
+    string literal. **Both of the two are false positives**, so a resolution rule's entire yield on
+    the tree that motivated it would be two cry-wolf reds; that is the trade this script's other
+    rules refuse.
+  - **The disclosure is a testable invariant, not a narrated bound.** Post-fix the TOTAL holds under
+    qualifying a class citation that resolves under `app/`, one that resolves outside it, and one
+    that resolves nowhere — each moves the citation between buckets instead. The two new vectors
+    were seen RED under three separate mutations (the tally suppressed; the bucket counted but
+    omitted from the TOTAL; the bucket counted but dropped from the disclosure sentence), and the
+    member-leg vectors that do not read the census stay GREEN under all three.
+  - **⚠ THE REMAINDER NARROWS, IT DOES NOT CLOSE.** The predicate is an upper-case initial with no
+    `::`, so card#7473's upper-case remainder splits: the CamelCase half is counted here, and an
+    ALL-CAPS short name is deliberately left OUT because in this tree's naming that shape is a
+    CONSTANT — a bucket that swallowed it would mislabel the census rather than complete it. The
+    21 `UPPER_SNAKE` payloads and the 22 metasyntactic/`::class` ones are what remains unbucketed,
+    and that is the arithmetic closing exactly as predicted. The mirror-image bound is stated too:
+    a CamelCase ENUM CASE cited bare would land in `class_citation` and be mislabelled a class —
+    checked rather than reasoned about, with no instance of it on this tree.
+
 - **card#7473** — **⚠ `check-doc-refs`'s remainder accounting did not disclose two citation forms
   it excludes, so a reader auditing the gate's own numbers was told the population was complete.**
   card#7330 disclosed both gaps — a class-less `{@see member}` and a `{@see self::member}` — in the
