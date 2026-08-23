@@ -898,6 +898,47 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#7473** — **⚠ `check-doc-refs`'s remainder accounting did not disclose two citation forms
+  it excludes, so a reader auditing the gate's own numbers was told the population was complete.**
+  card#7330 disclosed both gaps — a class-less `{@see member}` and a `{@see self::member}` — in the
+  script's docblock and in a test, and in NEITHER the examined count NOR the `N NOT examined: …`
+  line. Every bucket on that line describes a citation whose CLASS was read and then found
+  unusable, so a citation carrying no usable class reached none of them and left the census
+  entirely, and the arithmetic still balanced without it. **That is worse than a silent gap: it is
+  a gap with an accounting line that appears to exclude it.** No `app/` behaviour, no route, no
+  schema, and **no change to what the gate REPORTS** — no new reds, no removed reds.
+  - **The measurement that convicts it needs no instrumented variant of the script.** Qualifying
+    ONE class-less citation into its `Class::member` spelling MOVED the run's TOTAL: against the
+    pre-fix gate, `{@see body()}` → `{@see DispatchOutcome::body()}` took resolved **+1** and the
+    TOTAL **+1**, and `{@see self::requiresClosure()}` → `{@see PrOutcome::requiresClosure()}`
+    moved it identically. **A citation that only enters the total once it becomes checkable was
+    never in the total.** No absolute figure is quoted for the total here — it moves with every
+    merge into this branch, and `--census` re-derives it over whatever tree it is run on.
+  - **Both forms are now COUNTED and neither is RESOLVED.** Two new census buckets —
+    `classless_member` and `pseudo_class_member` — appear in `--census` and in the closing
+    disclosure line of every run. Resolving the bare form against the enclosing class was the
+    alternative and stays declined on card#7330's reasoning: a markdown paragraph has no enclosing
+    class, so a citation would resolve in a docblock and be unanswerable four lines later in prose.
+  - **Re-derived on this branch rather than quoted from the card** (which measured 128 in 27 files
+    over `app/` alone, and re-derives to 129/27 today): over the member leg's whole surface —
+    `app/` + `tests/` + `docs/` + `bin/` + the root `*.md` — **186 class-less member citations in
+    40 files and 104 pseudo-class ones in 33 files**, which is what the total grows by. The
+    examined half does not move: 984 resolved, 0 reported, before and after.
+  - **The disclosure is now a testable invariant instead of a narrated bound.** Qualifying a
+    class-less citation moves it BETWEEN buckets and leaves the TOTAL fixed — measured post-fix on
+    this tree for all three of a method, a property (`{@see $status}`) and a `self::` citation, and
+    asserted over synthetic trees whose whole population is the one citation under test. Each new
+    vector was seen RED under three separate mutations (the tally suppressed; the buckets counted
+    but omitted from the total; the buckets counted but dropped from the disclosure sentence), and
+    the 22 pre-existing member-leg vectors stay GREEN under all three.
+  - **⚠ ONE SHAPE REMAINS, disclosed rather than assumed away.** The predicate keys on a LOWER-CASE
+    initial, which is the only thing separating a member name from a class name when there is no
+    `::`, so a class-less member whose name starts upper-case — an `UPPER_SNAKE` constant, a
+    CamelCase enum case — is in neither bucket, and qualifying one still moves the total. A
+    backticked bare `func()` also stays out, for the reason the rule docblock already gives: inside
+    a reference tag a payload is a machine-readable claim about this tree, in backticks it is
+    mostly other people's vocabulary.
+
 - **card#7471** — **CLASS: nine tests whose NAME or docblock stated a count / absence / exclusivity
   property asserted something that structurally cannot express it, so each stayed GREEN when the
   behaviour it names was mutated away.** **Tests and test-support only — zero files under `app/`,

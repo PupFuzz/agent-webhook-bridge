@@ -567,9 +567,15 @@ PHP;
      * MEANS: a payload is read exactly when its backticked twin would be. So the pseudo-classes
      * stay unread — `self::` names no file, and in markdown prose there is no enclosing class to
      * resolve it against — and so does a bare member name, which this repo writes inside `{@see …}`
-     * for the enclosing class's own members. Both are DISCLOSED gaps, not protection, and card#7330
-     * owns whether they close — no size is quoted for either here, because a figure in a comment is
-     * a quoted authority no later pass recomputes; the gate's own docblock carries the derivations.
+     * for the enclosing class's own members. Both are gaps, not protection — no size is quoted for
+     * either here, because a figure in a comment is a quoted authority no later pass recomputes;
+     * the gate's own docblock carries the derivations.
+     *
+     * ⚠ NOT CONVICTED IS ONLY HALF OF IT, and this test asserts the half that was never in doubt.
+     * Both forms were also absent from the CENSUS until card#7473, so the run's own accounting
+     * excluded exactly what it could not answer while reading as complete — the direct test of
+     * that is {@see test_qualifying_a_class_less_citation_moves_buckets_and_leaves_the_total_fixed()},
+     * and an acceptance here says nothing about it either way.
      */
     public function test_a_see_tag_naming_a_pseudo_class_or_a_bare_member_is_a_disclosed_gap(): void
     {
@@ -584,5 +590,123 @@ PHP;
         $this->assertMemberRejected([
             'app/Bridge/Support/Widget.php' => sprintf($doc, '{@see Widget::brand()}'),
         ], 'app/Bridge/Support/Widget.php:5', 'the witness: the SAME phantom member, qualified by its class, IS examined');
+    }
+
+    /**
+     * THE DIRECT TEST OF card#7473, and it is a property rather than a figure: qualifying a
+     * class-less citation into its `Class::member` spelling MOVES it between census buckets and
+     * leaves the TOTAL fixed.
+     *
+     * WHY THAT PROPERTY AND NOT A COUNT. A citation the harvest drops before any bucket leaves an
+     * accounting that still balances — the buckets summed to the population all along, because
+     * the population was defined as what the buckets could hold. The measurement that convicts it
+     * needs no instrument the run does not already ship: on the tree at filing, qualifying ONE
+     * `{@see toArray}` moved resolved 959 -> 960 AND the total 1516 -> 1517, and a citation that
+     * only enters the total once it becomes CHECKABLE was never in it. So the assertion here is
+     * the INVARIANCE, over trees whose entire member population is the one citation under test.
+     *
+     * NOTHING IS RESOLVED BY THIS — the class-less forms are still unexamined and still cannot be
+     * convicted ({@see test_a_see_tag_naming_a_pseudo_class_or_a_bare_member_is_a_disclosed_gap()}
+     * is the twin that pins that half). What changed is only whether the run admits them.
+     */
+    public function test_qualifying_a_class_less_citation_moves_buckets_and_leaves_the_total_fixed(): void
+    {
+        $doc = "<?php\n\nnamespace App\\Bridge\\Support;\n\n/** Stamped by %s. */\nfinal class Note\n{\n}\n";
+        $tree = fn (string $citation): array => [
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'app/Bridge/Support/Note.php' => sprintf($doc, $citation),
+        ];
+
+        $this->assertSame(
+            ['total' => 1, 'resolved' => 1, 'classless' => 0, 'pseudo' => 0],
+            $this->censusOf($tree('{@see Widget::stamp()}')),
+            'the reference point: qualified, the citation is one examined member and the total is one'
+        );
+
+        foreach (['{@see stamp}', '{@see stamp()}', '{@see $label}'] as $bare) {
+            $this->assertSame(
+                ['total' => 1, 'resolved' => 0, 'classless' => 1, 'pseudo' => 0],
+                $this->censusOf($tree($bare)),
+                "{$bare} names a member with no class: it must be DISCLOSED as unexamined, and the total must not move when it is qualified"
+            );
+        }
+
+        foreach (['{@see self::stamp()}', '{@see static::stamp}', '{@see parent::stamp()}'] as $pseudo) {
+            $this->assertSame(
+                ['total' => 1, 'resolved' => 0, 'classless' => 0, 'pseudo' => 1],
+                $this->censusOf($tree($pseudo)),
+                "{$pseudo} names no file either, and qualifying it must move it between buckets rather than into the total"
+            );
+        }
+    }
+
+    /**
+     * THE BOUND ON THE TWO NEW BUCKETS, stated as a test because card#7473's whole finding is that
+     * an unstated one still reads as complete.
+     *
+     * THE PREDICATE IS A LOWER-CASE INITIAL, which is the only thing that separates a member name
+     * from a class name when there is no `::` to key on. So an UPPER-case class-less member — a
+     * constant, an enum case — is in NEITHER bucket, and qualifying one still moves the total.
+     * That is the remaining shape, and it is disclosed here rather than assumed away.
+     *
+     * ONLY A REFERENCE TAG IS READ. A backticked bare `stamp()` in prose stays out for the reason
+     * the rule docblock's bare-`func()` paragraph gives — most of them here are other people's
+     * vocabulary or historical narration, not claims about this tree — where a payload inside
+     * `{@see …}` is a machine-readable claim by construction. Counting the backticked form would
+     * put every mention of `array_map()` in the disclosure.
+     *
+     * `::class` IS NOT A MEMBER in either spelling, which is the exclusion the qualified leg
+     * already makes; a bucket that swallowed it would be counting a language construct.
+     */
+    public function test_the_new_buckets_read_only_a_reference_tag_and_only_a_lower_case_member(): void
+    {
+        $doc = "<?php\n\nnamespace App\\Bridge\\Support;\n\n/** Stamped by %s. */\nfinal class Note\n{\n}\n";
+        $tree = fn (string $citation): array => [
+            'app/Bridge/Support/Widget.php' => self::SUBJECT,
+            'app/Bridge/Support/Note.php' => sprintf($doc, $citation),
+        ];
+        $none = ['total' => 0, 'resolved' => 0, 'classless' => 0, 'pseudo' => 0];
+
+        foreach (['`stamp()`', '`self::stamp()`', '{@see ID}', '{@see Widget}', '{@see self::class}'] as $unread) {
+            $this->assertSame($none, $this->censusOf($tree($unread)),
+                "{$unread} is outside the population these buckets disclose and must not be counted into it");
+        }
+
+        $this->assertSame(['total' => 1, 'resolved' => 0, 'classless' => 1, 'pseudo' => 0],
+            $this->censusOf($tree('{@see stamp}')),
+            'the witness: the same tree with the one form the buckets DO read counts exactly one — so the zeroes above are a predicate, not an inert harness');
+    }
+
+    /**
+     * The census the run already prints on every line, read back as numbers.
+     *
+     * IT PARSES THE WHOLE DISCLOSURE LINE, not just the field under test: the format is the
+     * gate's contract with a reader auditing what it declined to answer, so a bucket dropped from
+     * the sentence must red here rather than be silently skipped by a lenient pattern. The TOTAL
+     * is `examined + NOT examined` — derived from the shipped line rather than from `--census`,
+     * which is a flag no CI invocation passes.
+     *
+     * @param  array<string, string>  $files
+     * @return array{total: int, resolved: int, classless: int, pseudo: int}
+     */
+    private function censusOf(array $files): array
+    {
+        [$rc, $out] = $this->runGate($files);
+        $this->assertSame(0, $rc, "the census vectors carry no phantom and must pass:\n{$out}");
+
+        $line = '/member citations — (\d+) examined \((\d+) resolved, (\d+) reported\), (\d+) NOT examined: '
+            .'(\d+) class not under app\/, (\d+) ambiguous class name, (\d+) unverifiable ancestry, '
+            .'(\d+) in a removed-marker sentence, (\d+) a rejected alternative, '
+            .'(\d+) class-less member citations, (\d+) naming a pseudo-class;/';
+
+        $this->assertSame(1, preg_match($line, $out, $m),
+            "every run must disclose every bucket by name — a missing one is the defect card#7473 fixed:\n{$out}");
+
+        return [
+            'total' => (int) $m[1] + (int) $m[4],
+            'resolved' => (int) $m[2],
+            'classless' => (int) $m[10],
+            'pseudo' => (int) $m[11],
+        ];
     }
 }
