@@ -948,6 +948,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#7511** — `changelog-gate`'s size-limit remediation offered an accept-and-proceed path that does not exist: the exit-4 arm is an unconditional `exit 1`, so re-running without trimming returns 4 again. The string now states the only real remedy and cites the tracked class.
+
 - **card#7496** — **⚠ the same accounting defect one level up: a `{@see SomeClass}` naming a class
   and NO member was read by NEITHER of rule 1's legs and counted by neither.** The member leg needs
   a `::` to form a citation from, and this payload has none; rule 1a's path/FQCN leg reads only the
