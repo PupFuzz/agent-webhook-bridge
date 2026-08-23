@@ -13,7 +13,7 @@ namespace App\Bridge\Standup;
  * is no activity/liveness/context-% sibling to omit it in favour of.
  *
  * NULL means the ledger holds no DELIVERED dispatch for this seat, and it renders as an
- * ABSENT key rather than a null, an epoch, or "never" ({@see toArray}). The three
+ * ABSENT key rather than a null, an epoch, or "never" ({@see SeatSnapshot::toArray()}). The three
  * things that produce it are not distinguishable from here and the digest does not
  * pretend otherwise: the seat has genuinely never been delivered to; its rows aged out
  * of the retention window (`bridge.retention.older_than`, 30d by default); or its only
