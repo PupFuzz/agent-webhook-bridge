@@ -10,6 +10,60 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Added
 
+- **card#7332 (DL-306)** — **an OPT-IN periodic standup digest pushed to one seat, carrying only
+  the fields the bridge can honestly derive — and ABSENT wherever it cannot.** Roundtable #341 ask 3,
+  and only ask 3: the other two asks in that FR are gated on a per-seat LIVENESS signal that does not
+  exist here. Re-measured on this branch rather than taken from the card: a
+  `command grep -rnE 'last_activity|lastActivity|last_seen|lastSeen|heartbeat'` over `app/` +
+  `config/` matches, outside the files this PR adds, exactly **three** — the writeback divergence
+  ledger, its model, and the event-consumer reconciler, none of them a per-seat signal. (This PR's
+  own matches are prose in `StandupDigest`/`SeatSnapshot`/`config/bridge.php` saying why the field
+  is not there.)
+  **⇒ The bridge knows DELIVERY, not ACTIVITY.** It can say *"I pushed an event at this seat at T"*;
+  it cannot say the seat read it, acted, or is mid-turn. So the digest carries **per seat** a
+  `last_delivery_at` (named for what it is) plus `unseen_inbox_intents`, and **per board** a
+  `now_depth` — and nothing else.
+  **⛔ WHAT IS ABSENT IS THE FEATURE.** A seat with no DELIVERED dispatch carries **no
+  `last_delivery_at` key at all** — not a null, not an epoch, not `"unknown"` — and a board whose
+  `writeback.json` mapping declares no `coord_card_lane_stage_ids` yields **no row**, so a
+  `now_depth: 0` can never mean *"the bridge could not identify that column"*. A truncated or failed
+  board read yields a row whose depth is absent and whose `now_depth_unavailable` names the cause:
+  three states, never two. Pinned by an exact seat-row key-set assertion, so a later
+  `last_activity`/context-% field cannot be added without the test that forbids it going red.
+  **Four fields were asked for and deliberately NOT built** (each stated in
+  `App\Bridge\Standup\StandupDigest`): a context-% (no producer the bridge can read; the coord
+  layer's own stamp is omitted on cross-project posts by design and only refreshes when a seat
+  POSTS, so it is a lower bound on activity, never a heartbeat); `last_activity`/idle/quiet-for-N;
+  an **open `to:<agent>` thread count** (the bridge sees coordination events, not thread lifecycle,
+  and keeps no thread-state store — `unseen_inbox_intents` is the neighbouring fact it CAN state and
+  ships under that name); and an **adaptive cadence keyed on a seat looking stuck**, whose predicate
+  IS the missing signal.
+  **⚠ IT IS NOT A CRON, and that changes what the cadence means.** It rides the same after-response,
+  interval-gated, non-blocking-lock, never-throws gate retention uses (DL-199) — this design has no
+  daemon, and a report is not reason enough to reintroduce the DL-012 exception. **Consequence: the
+  pass fires on the first inbound webhook AFTER `BRIDGE_STANDUP_INTERVAL` elapses, so an install
+  receiving nothing pushes nothing.** That is a delivery cadence, not a wall clock; `bridge:standup`
+  is the manual/cron entry point for an operator who wants one, and `bridge:standup --dry-run`
+  prints the digest as JSON and pushes nothing. Unlike retention this pass makes OUTBOUND calls (one
+  board read per mapped board, then the push), each bounded by `KanbanHttpClient::TIMEOUT_SECONDS`,
+  after the response and at most once per interval — which is why it is **OFF by default**.
+  **⚠ UPGRADING: nothing changes for an install that does not set `BRIDGE_STANDUP_ENABLED=true`** —
+  no migration, no new required `.env`, no receiver accept/reject change, no token-scope change; the
+  gate registers no callback at all when disabled. New env: `BRIDGE_STANDUP_ENABLED` (bool,
+  **`false`**), `BRIDGE_STANDUP_AGENT` (the recipient seat's `<agent>.yml` name — no default
+  recipient exists, and a name that does not match the filename convention is REFUSED rather than
+  concatenated into a path), `BRIDGE_STANDUP_INTERVAL` (seconds, `86400`). The push reuses the
+  registered `channel_push` handler, so the recipient's own `channel` block is the endpoint and its
+  `channel.auth.token_path` the bearer — no second transport, no second copy of the DL-014 socket
+  gate. `BridgePaths::unseenInboxLines()` is extracted from `bridge:inbox` as the ONE definition of
+  "unseen" (already-seen filtered, duplicate ids collapsed) so the two readers of one inbox cannot
+  disagree about it; `bridge:inbox`'s behaviour is unchanged. **⚠ Extracting it found that
+  `bridge:inbox`'s own `test_inbox_collapses_duplicate_ids_on_read` never asserted the collapse** —
+  mutating it away left the test GREEN, because the cursor advance `array_unique()`s its ids and an
+  `expectsOutputToContain()` is satisfied by a doubled line. The test now asserts the occurrence
+  COUNT, and the primitive gets its own `BridgePathsUnseenInboxLinesTest`; both were watched red
+  under that mutant.
+
 - **card#7212 (DL-300)** — **⚠ a writeback (card board, mapped board) pair that DIVERGES is
   now persisted, so the question "has a cross-board write ever landed here?" survives the log.**
   The second half of card#7212. The first half (#556) put the pair on every record of a write

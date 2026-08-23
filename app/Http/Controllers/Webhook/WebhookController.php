@@ -7,6 +7,7 @@ use App\Bridge\Dispatch\DispatchService;
 use App\Bridge\Exceptions\InvalidEnvelopeException;
 use App\Bridge\Http\PlainTextResponse;
 use App\Bridge\Retention\RetentionGate;
+use App\Bridge\Standup\StandupGate;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -26,13 +27,16 @@ use Symfony\Component\HttpFoundation\Response;
  * Retention (DL-199) is queued here rather than in DispatchService::dispatch():
  * dispatch() has a second, non-inbound caller — `bridge:replay` — where the gate
  * would fire for no benefit. `receive` is the shared inbound entry across every
- * provider, which is exactly the arrival the gate keys off.
+ * provider, which is exactly the arrival the gate keys off. The opt-in standup
+ * digest (DL-306) rides the same arrival for the same reason — this design has no
+ * cron, and a report is not a good enough reason to reintroduce one.
  */
 class WebhookController extends Controller
 {
     public function __construct(
         private DispatchService $dispatcher,
         private RetentionGate $retentionGate,
+        private StandupGate $standupGate,
     ) {}
 
     public function receive(Request $request): Response
@@ -66,6 +70,9 @@ class WebhookController extends Controller
         // Only this path stores an event, so only this path can have grown the
         // stores. The pass itself runs after the response below is sent.
         $this->retentionGate->schedule();
+
+        // Off unless the install opts in; both passes run after the response below.
+        $this->standupGate->schedule();
 
         return $this->plain('ok', 200);
     }

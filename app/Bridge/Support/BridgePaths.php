@@ -102,6 +102,41 @@ final class BridgePaths
     }
 
     /**
+     * The staged inbox lines for a serving agent (or the shared inbox when null) that
+     * its seen-cursor has NOT consumed, duplicate ids collapsed (first wins).
+     *
+     * ⛔ The collapse is not tidying. The writer stopped deduping before appending
+     * (DL-012), so a partial-staging redelivery can leave two lines carrying one id —
+     * two readers counting them differently would disagree about the same inbox. This is
+     * the one home for that rule: `bridge:inbox` renders these lines and the DL-306
+     * standup digest counts them, and a second implementation of "unseen" is exactly the
+     * divergent-copy defect that makes one surface's number unfalsifiable against the
+     * other's.
+     *
+     * A line with no string `id` is not surfacable (nothing could ever mark it seen), so
+     * it is dropped here rather than counted as unseen forever.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public static function unseenInboxLines(?string $agent): array
+    {
+        $seen = self::readSeen(self::seenPath($agent));
+
+        $unseen = [];
+        $ids = [];
+        foreach (self::agentInboxLines($agent) as $line) {
+            $id = $line['id'] ?? null;
+            if (! is_string($id) || in_array($id, $seen, true) || isset($ids[$id])) {
+                continue;
+            }
+            $ids[$id] = true;
+            $unseen[] = $line;
+        }
+
+        return $unseen;
+    }
+
+    /**
      * Per-agent inbox/seen file path for the given serving agent. The agent name
      * is sanitized to a filesystem-safe token (defense-in-depth — agent names
      * already match the <agent>.yml convention, but a stray '/' must never

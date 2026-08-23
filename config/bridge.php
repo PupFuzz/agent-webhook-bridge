@@ -160,6 +160,41 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | PM standup digest (DL-306) — OFF by default, event-gated like retention
+    |--------------------------------------------------------------------------
+    |
+    | A periodic fleet-snapshot push to one seat (the PM), carrying ONLY facts the
+    | bridge can derive from its own stores. It rides the SAME event gate retention
+    | does (DL-199) rather than a cron: this design has no daemon, and adding one for
+    | a digest would re-open the DL-012 exception. ⚠ CONSEQUENCE, stated because it
+    | changes what the digest means: the pass runs on the first inbound webhook AFTER
+    | `interval` has elapsed, so an install receiving nothing pushes nothing. That is
+    | a delivery cadence, not a wall clock — an operator who wants a wall clock runs
+    | `bridge:standup` from their own cron; the two are idempotent.
+    |
+    | ⛔ THE DIGEST MAY CARRY ONLY WHAT THE BRIDGE MEASURES. It knows DELIVERY, not
+    | ACTIVITY: it can say "I pushed an event to this seat at T"; it cannot say the
+    | seat read it, acted, or is mid-turn. So there is no `last_activity`, no
+    | context-%, and no idle/stuck predicate here, and there is no adaptive cadence
+    | keyed on one — a field the bridge cannot source is ABSENT from the payload, never
+    | zero-filled or "unknown"-stringed. A digest that prints a plausible value it did
+    | not measure teaches its reader to trust a number nothing stands behind.
+    |
+    | agent — the seat the digest is pushed to, by per-agent YAML name. Its own
+    | `channel` block is the endpoint (and its `channel.auth.token_path` the bearer),
+    | so the push reuses the `channel_push` handler rather than minting a second
+    | transport. Unset ⇒ the digest is misconfigured and pushes nothing.
+    |
+    */
+
+    'standup' => [
+        'enabled' => (bool) env('BRIDGE_STANDUP_ENABLED', false),
+        'agent' => env('BRIDGE_STANDUP_AGENT'),
+        'interval' => (int) env('BRIDGE_STANDUP_INTERVAL', 86400),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Runtime-state directory
     |--------------------------------------------------------------------------
     |

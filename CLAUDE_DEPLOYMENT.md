@@ -43,7 +43,7 @@ BRIDGE_KANBAN_API_BASE_URL=https://kanban.example.com/api/v3   # upstream API ba
 
 The API token is read by convention from `<secret_dir>/<provider>/token` (e.g. `$BRIDGE_DIR/kanban/token`, chmod 600); set a per-agent `api.<provider>.token_path` override in the YAML only when an agent authenticates as a distinct account.
 
-There is **no** queue worker, scheduler, systemd unit, **or cron** to install. Retention runs off the inbound webhook itself since **DL-199** (`bridge.retention.*`, on by default) — the receiver prunes its own stores after the response has been sent, so the append-only tables and `inbox*.jsonl` stay bounded with no periodic job at all. `bridge:prune` remains as the manual/one-off command (see Commands). Set `BRIDGE_RETENTION_ENABLED=false` to opt out — but then nothing prunes unless you schedule `bridge:prune` yourself.
+There is **no** queue worker, scheduler, systemd unit, **or cron** to install. Retention runs off the inbound webhook itself since **DL-199** (`bridge.retention.*`, on by default) — the receiver prunes its own stores after the response has been sent, so the append-only tables and `inbox*.jsonl` stay bounded with no periodic job at all. `bridge:prune` remains as the manual/one-off command (see Commands). Set `BRIDGE_RETENTION_ENABLED=false` to opt out — but then nothing prunes unless you schedule `bridge:prune` yourself. The opt-in **PM standup digest** (DL-306, `bridge.standup.*`, **off by default**) rides that same gate for the same reason — so it still installs no cron, at the cost that it fires on the first delivery after its interval rather than on a wall clock. `bridge:standup` is its manual entry point (see Commands).
 
 ## Pre-flight (per host)
 
@@ -279,6 +279,7 @@ php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile]   # e
 php artisan bridge:provision-tools [--dry-run] [--agent=]                    # mint per-agent board-tools bearers (DL-217/DL-220; idempotent, collision-checked)
 php artisan bridge:prune --older-than=30d [--null-payloads-older-than=7d] [--dry-run]   # retention, manual/unbounded (the receiver self-prunes — DL-199)
 php artisan bridge:reconcile [--fix] [--repo=owner/repo] [--max-moves=20]     # board-vs-GitHub drift reconciler (report-only unless --fix)
+php artisan bridge:standup [--dry-run]                # PM standup digest (DL-306); --dry-run prints it as JSON and pushes nothing
 ```
 
 `bridge:prune` is the **manual** entry point to retention; since **DL-199** the receiver runs the same shared service automatically after each response, so scheduling this is no longer required (and the design has no cron at all). `--older-than=Nd` deletes `webhook_events` (cascading `agent_dispatches`) and trims `inbox*.jsonl` lines older than the cutoff; `--null-payloads-older-than=Md` (use `M < N`) nulls the stored payload past the replay window while keeping the row's dedup-gate + audit metadata; `--dry-run` reports counts only. Idempotent — safe to re-run alongside the automatic gate. **`writeback_board_divergences` is deliberately outside retention entirely** (DL-300): it exists to outlive the log, so a window on it would be the defect it closes with a longer fuse.
@@ -294,6 +295,20 @@ php artisan bridge:reconcile [--fix] [--repo=owner/repo] [--max-moves=20]     # 
 | `retention.older_than` | `BRIDGE_RETENTION_OLDER_THAN` | `30d` | Delete events/dispatches + trim inbox lines older than this. Same vocabulary as `--older-than`. |
 | `retention.null_payloads_older_than` | `BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN` | *(empty ⇒ leg off)* | Null payloads past the replay window, keeping the row. |
 | `retention.batch` | `BRIDGE_RETENTION_BATCH` | `500` | Max rows one pass touches per leg. While a backlog remains the gate keeps draining on successive deliveries rather than waiting out `interval`. |
+
+### Standup digest config (DL-306)
+
+`bridge:standup` is the **manual** entry point; when `standup.enabled` the receiver pushes the same digest automatically, after the response, at most once per `interval`. **Off by default** — unlike retention, a pass makes outbound calls (one board read per mapped board, then the channel push).
+
+| Key | Env | Default | Meaning |
+| --- | --- | --- | --- |
+| `standup.enabled` | `BRIDGE_STANDUP_ENABLED` | **`false`** | Push the digest after a delivery. Disabled ⇒ no terminating callback is registered at all. |
+| `standup.agent` | `BRIDGE_STANDUP_AGENT` | *(none)* | The recipient seat's `<agent>.yml` name; its own `channel` block is the endpoint and its `channel.auth.token_path` the bearer. **No default recipient.** A missing, non-string, or non-filename-shaped value (`../x`, `.hidden`) is REFUSED — the name is concatenated into a `<config_dir>/<agent>.yml` path. |
+| `standup.interval` | `BRIDGE_STANDUP_INTERVAL` | `86400` | Seconds between passes. ⚠ A **delivery** cadence: the pass runs on the first inbound webhook after this elapses, so a silent install pushes nothing. |
+
+⛔ **The digest carries only what the bridge measures.** Per seat: `last_delivery_at` (a DELIVERY time — the bridge has no per-seat activity or liveness signal, so there is no `last_activity` and no context-%) and `unseen_inbox_intents`. Per board: `now_depth`, and only for a board whose `writeback.json` mapping declares `coord_card_lane_stage_ids`. **A field it cannot source is ABSENT** — a seat with no delivered dispatch carries no `last_delivery_at` key, a board with no Now-lane model produces no row, and a failed or truncated board read produces a row whose depth is absent and whose `now_depth_unavailable` names the cause. Run `bridge:standup --dry-run` to see exactly what this install can answer for.
+
+A misconfigured posture pushes **nothing** and warns once per day, never per delivery; there is no partial digest and no fallback recipient.
 
 An unparseable window (or a non-positive `interval`/`batch`) prunes **nothing** and logs a warning once per day — it never falls back to a default cutoff, because that would delete on a typo. `bridge:check` reports the resolved retention posture at preflight.
 
