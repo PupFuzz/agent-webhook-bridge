@@ -302,8 +302,18 @@ class ReconcileCommandTest extends TestCase
 
         $this->artisan('bridge:reconcile', ['--repo' => 'owner/repo'])->assertExitCode(0);
 
-        // board 9 (owner/other) must never be read.
-        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), 'board_id=9'));
+        // ⛔ DECODE, AND PAIR IT. Two independent defects, both of which left "limits to ONE
+        // mapping" unguarded (card#7471):
+        //  1. the board scope travels as the QUERY TERM `q=board_id=<b>`, which the client
+        //     percent-encodes to `q=board_id%3D9` — so `str_contains($r->url(), 'board_id=9')`
+        //     was false for a request that DID read board 9, and the absence leg could not
+        //     fail. Every other board-scope assertion in this suite already decodes
+        //     ({@see \Tests\Feature\Writeback\KanbanClientTest}); this one did not.
+        //  2. an absence alone certifies whatever replaces the filter — including a `--repo`
+        //     that matches nothing and reads no board at all. The presence leg is what makes
+        //     the silence about board 9 mean "filtered", not "nothing ran".
+        Http::assertSent(fn (Request $r) => str_contains(urldecode($r->url()), 'board_id=8'));
+        Http::assertNotSent(fn (Request $r) => str_contains(urldecode($r->url()), 'board_id=9'));
     }
 
     public function test_repo_filter_matches_a_differently_cased_spelling(): void
@@ -321,7 +331,11 @@ class ReconcileCommandTest extends TestCase
             ->doesntExpectOutputToContain('is not a writeback.json mapping')
             ->assertExitCode(0);
 
-        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), 'board_id=9'));
+        // The MATCH is a measurement, not the absence of a complaint: board 8 was really read
+        // under the differently-cased key. And the board-9 leg decodes, for the reason the
+        // sibling above states — `board_id=9` never appears in the raw url (card#7471).
+        Http::assertSent(fn (Request $r) => str_contains(urldecode($r->url()), 'board_id=8'));
+        Http::assertNotSent(fn (Request $r) => str_contains(urldecode($r->url()), 'board_id=9'));
     }
 
     public function test_unknown_repo_filter_fails(): void

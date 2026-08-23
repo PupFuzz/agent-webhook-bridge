@@ -908,11 +908,12 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   a gap with an accounting line that appears to exclude it.** No `app/` behaviour, no route, no
   schema, and **no change to what the gate REPORTS** — no new reds, no removed reds.
   - **The measurement that convicts it needs no instrumented variant of the script.** Qualifying
-    ONE class-less citation into its `Class::member` spelling MOVED the run's TOTAL: on this branch
-    before the fix, `{@see body()}` → `{@see DispatchOutcome::body()}` took resolved 984 → 985 and
-    the TOTAL **1553 → 1554**, and `{@see self::requiresClosure()}` →
-    `{@see PrOutcome::requiresClosure()}` moved it identically. **A citation that only enters the total
-    once it becomes checkable was never in the total.**
+    ONE class-less citation into its `Class::member` spelling MOVED the run's TOTAL: against the
+    pre-fix gate, `{@see body()}` → `{@see DispatchOutcome::body()}` took resolved **+1** and the
+    TOTAL **+1**, and `{@see self::requiresClosure()}` → `{@see PrOutcome::requiresClosure()}`
+    moved it identically. **A citation that only enters the total once it becomes checkable was
+    never in the total.** No absolute figure is quoted for the total here — it moves with every
+    merge into this branch, and `--census` re-derives it over whatever tree it is run on.
   - **Both forms are now COUNTED and neither is RESOLVED.** Two new census buckets —
     `classless_member` and `pseudo_class_member` — appear in `--census` and in the closing
     disclosure line of every run. Resolving the bare form against the enclosing class was the
@@ -921,11 +922,12 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   - **Re-derived on this branch rather than quoted from the card** (which measured 128 in 27 files
     over `app/` alone, and re-derives to 129/27 today): over the member leg's whole surface —
     `app/` + `tests/` + `docs/` + `bin/` + the root `*.md` — **186 class-less member citations in
-    40 files and 104 pseudo-class ones in 33 files**, TOTAL **1553 → 1846**. The examined half does
-    not move: 984 resolved, 0 reported, before and after.
+    40 files and 104 pseudo-class ones in 33 files**, which is what the total grows by. The
+    examined half does not move: 984 resolved, 0 reported, before and after.
   - **The disclosure is now a testable invariant instead of a narrated bound.** Qualifying a
-    class-less citation moves it BETWEEN buckets and leaves the TOTAL fixed — measured post-fix at
-    1846 for all three of a method, a property (`{@see $status}`) and a `self::` citation. Each new
+    class-less citation moves it BETWEEN buckets and leaves the TOTAL fixed — measured post-fix on
+    this tree for all three of a method, a property (`{@see $status}`) and a `self::` citation, and
+    asserted over synthetic trees whose whole population is the one citation under test. Each new
     vector was seen RED under three separate mutations (the tally suppressed; the buckets counted
     but omitted from the total; the buckets counted but dropped from the disclosure sentence), and
     the 22 pre-existing member-leg vectors stay GREEN under all three.
@@ -936,6 +938,58 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
     backticked bare `func()` also stays out, for the reason the rule docblock already gives: inside
     a reference tag a payload is a machine-readable claim about this tree, in backticks it is
     mostly other people's vocabulary.
+
+- **card#7471** — **CLASS: nine tests whose NAME or docblock stated a count / absence / exclusivity
+  property asserted something that structurally cannot express it, so each stayed GREEN when the
+  behaviour it names was mutated away.** **Tests and test-support only — zero files under `app/`,
+  `bin/`, `config/`, `routes/` or `database/migrations/`; no migration, no `.env` change, no
+  receiver accept/reject change, no token-scope change.** Nothing an install runs behaves
+  differently; what changes is which regressions CI can still catch.
+  **The class, and why one instance did not close it.** `expectsOutputToContain()` answers exactly
+  *"does this substring appear at least once?"* — it cannot state a count, an absence, an ordering
+  or an exclusivity. card#7332 found the first instance (`test_inbox_collapses_duplicate_ids_on_read`
+  never asserted the collapse) and fixed it; this audits the population it came from.
+  **Denominator, re-derived against this branch's base rather than quoted from the card** (which
+  said 146 across 5 — `dev` has moved): **7 files**, **154 `expectsOutputToContain` matches** of
+  which **148 are calls** and 6 are prose, **247 test methods** — `BridgeCommandsTest` (179),
+  `ReconcileCommandTest` (25), `ProvisionTest` (14), `WritebackBoardDivergenceLedgerTest` (11),
+  `BridgePathsUnseenInboxLinesTest` (7), `InstallGuardTest` (6), `StandupCommandTest` (5). The unit
+  is the METHOD, not the call site, because the claim lives in a name. All 247 were READ, not
+  grepped — the card is explicit that the worst instance will not contain the search term, and it
+  did not: **four of the nine make no output assertion at all**, so no grep of the matcher could
+  ever have reached them.
+  **Nine rewritten, each SEEN TO FAIL** — the mutation was applied to `app/`, the NEW assertion
+  watched go red, the SAME mutant then run against the file as it stands on `dev` and watched go
+  **green**, and the app file restored byte-identically (`git diff --quiet`) before the next one:
+  `bridge:stats`'s divergence counts were asserted by their row CAPTION and never by the number
+  (blank the count ⇒ still green); `test_stats_reports_counts` asserted only `assertExitCode(0)`;
+  `test_stats_agent_flag_scopes_metrics` asserted the `[pm]` label, which the command interpolates
+  from the flag whether or not it filters, so **dropping `where('agent_name', …)` was invisible**;
+  `bridge:replay`'s gate-drop COUNT was a caption over a one-row fixture that could not discriminate
+  it from the skipped total; `test_provision_tools_never_prints_the_token_value` could only ever
+  inspect the **already-minted** run, never the mint that holds the secret; `bridge:provision`'s
+  *"skipped one provider, still provisioned the others"* rested on an exit code an abort-on-first
+  prints identically; and `test_reconcile_fixes_filter_drift` asserted the DELETE without the
+  recreate — green for a reconcile that leaves a board with no webhook at all.
+  **⛔ Two absence predicates could NEVER have fired.** `Http::assertNotSent(fn ($r) =>
+  str_contains($r->url(), 'board_id=9'))` guarded both `--repo` filter tests, but the board scope
+  travels as the query TERM `q=board_id=<b>`, which the client percent-encodes to `q=board_id%3D9`
+  — measured, not reasoned: the raw url never contains the string, so the check was a decoration on
+  a filter that could be deleted outright. Both now `urldecode()` (the form every other board-scope
+  assertion in the suite already used) and both gain the presence witness that makes the silence
+  about board 9 mean *filtered* rather than *nothing ran*.
+  **Two supporting changes.** `Tests\Support\ConsoleTable::assertRow()` is extracted at the second
+  real caller for the metric/count tables, anchored at both ends of the line because an unanchored
+  substring on a table is a presence claim wearing a count's clothes. `CLAUDE_TESTING.md` gains the
+  two anti-patterns so the class is findable — the matcher's structural limits, and an absence
+  assertion with no presence witness or with a predicate that cannot fire.
+  **Dispositioned, not silently capped:** 238 of the 247 methods are recorded correctly scoped, and
+  the audit's own blind axis is stated — this population is the files that USE the matcher, so a
+  count claim asserted by a presence-only matcher in a file that never calls it is outside the
+  denominator and unmeasured. **This adds assertions to existing tests, not tests: measured against
+  this branch's base before the card#7474 merge, the SAME 2548 tests with 8720 assertions against
+  8697.** Whole suite after the merge 2550/2550 (8747 assertions), phpstan L7 0, pint clean,
+  `check-doc-refs` clean.
 
 - **card#7474 (DL-307)** — **⚠ the suite's Redis databases are now pinned, and the
   measurement behind the pin corrects a belief this repo held in two places: `force="true"` on a
