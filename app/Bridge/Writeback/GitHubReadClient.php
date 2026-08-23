@@ -59,7 +59,15 @@ final class GitHubReadClient
      * so a consumer must gate on `merged === true` before trusting it, never on
      * emptiness (it is rarely empty).
      *
-     * @return array{state: string, merged: bool, base_ref: string, html_url: string, merge_commit_sha: string}
+     * `title` is the CLOSURE surface (card#7348 / DL-305): the reconciler recomputes the
+     * same merge decision the event path makes, so it must read the same closing form out
+     * of the same field, or the backstop would re-apply on a later pass exactly the move
+     * the event path had just declined — the defect reintroduced through the leg that
+     * exists to repair it. It is projected here rather than derived at the call site
+     * because this is the only place that knows the GitHub response shape. An absent
+     * title reads as `''`, which carries no closing form: the safe direction.
+     *
+     * @return array{state: string, merged: bool, base_ref: string, html_url: string, merge_commit_sha: string, title: string}
      */
     public function getPull(string $repo, int $number): array
     {
@@ -73,6 +81,7 @@ final class GitHubReadClient
             'base_ref' => is_string($base) ? $base : '',
             'html_url' => is_string($pr['html_url'] ?? null) ? $pr['html_url'] : '',
             'merge_commit_sha' => is_string($pr['merge_commit_sha'] ?? null) ? $pr['merge_commit_sha'] : '',
+            'title' => is_string($pr['title'] ?? null) ? $pr['title'] : '',
         ];
     }
 

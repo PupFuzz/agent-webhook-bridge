@@ -114,7 +114,11 @@ class GitHubPrCardMoveClassifierTest extends TestCase
 
         $r = $this->classify('pull_request.closed', [
             'number' => 301, 'merged' => true, 'base' => ['ref' => 'main'],
-            'title' => 'DL-42 folded release', 'head' => ['ref' => 'feature/x'],
+            // The title CLOSES the DL (card#7348 / DL-305): a merge outcome moves a card
+            // only on an explicit closing form. Drop the `Closes ` and this asserts the
+            // bare-mention no-op instead, which is what
+            // `test_a_bare_mention_on_a_merged_pr_moves_nothing` pins.
+            'title' => 'folded release, Closes DL-42', 'head' => ['ref' => 'feature/x'],
         ]);
 
         $this->assertCount(1, $this->targetsNamed($r, 'kanban_promote_released'));
@@ -189,10 +193,12 @@ class GitHubPrCardMoveClassifierTest extends TestCase
     {
         $this->fakeBoardCards();
 
-        $main = $this->classify('pull_request.closed', ['title' => 'DL-42', 'merged' => true, 'base' => ['ref' => 'main']]);
+        // Both titles CLOSE the DL (card#7348 / DL-305) — this test is about which
+        // merge STAGE the base ref selects, so it must get past the closure gate to ask.
+        $main = $this->classify('pull_request.closed', ['title' => 'Closes DL-42', 'merged' => true, 'base' => ['ref' => 'main']]);
         $this->assertSame('merged_to_main', $main->targets[0]->payload['outcome']);
 
-        $dev = $this->classify('pull_request.closed', ['title' => 'DL-42', 'merged' => true, 'base' => ['ref' => 'dev']]);
+        $dev = $this->classify('pull_request.closed', ['title' => 'Closes DL-42', 'merged' => true, 'base' => ['ref' => 'dev']]);
         $this->assertSame('merged', $dev->targets[0]->payload['outcome']);
     }
 
@@ -243,7 +249,9 @@ class GitHubPrCardMoveClassifierTest extends TestCase
             ['id' => 7, 'payload' => ['dl_number' => 'DL-9']],  // different DL, not matched
         ]])]);
 
-        $r = $this->classify('pull_request.closed', ['title' => 'DL-42', 'merged' => true, 'base' => ['ref' => 'main']]);
+        // `Closes DL-42` closes everything that DL tracks — the claim is made about the
+        // DL, and DL-148 makes the resolution one-to-many (card#7348 / DL-305).
+        $r = $this->classify('pull_request.closed', ['title' => 'Closes DL-42', 'merged' => true, 'base' => ['ref' => 'main']]);
 
         $this->assertCount(2, $r->targets);
         $ids = array_map(fn ($t) => $t->payload['card_id'], $r->targets);
@@ -579,7 +587,11 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         // card 7, but the intended card is #4811.
         $result = $this->classify('pull_request.closed', [
             'number' => 148, 'merged' => true, 'base' => ['ref' => 'dev'],
-            'title' => 'Static guard against DL-9 re-introduction card#4811', 'head' => ['ref' => 'f'],
+            // The closing form names the card the DL-218 guard rules AUTHORITATIVE, and
+            // the foreign DL-9 is NOT closed — which is the point card#7348 / DL-305 adds
+            // here: a `Closes DL-9` in this title would name card 7's work, not this one's,
+            // so it is deliberately not what authorizes the move.
+            'title' => 'Static guard against DL-9 re-introduction. Closes card#4811', 'head' => ['ref' => 'f'],
         ]);
 
         $move = $this->targetsNamed($result, 'kanban_move_card');
@@ -639,7 +651,11 @@ class GitHubPrCardMoveClassifierTest extends TestCase
 
         $result = $this->classify('pull_request.closed', [
             'number' => 130, 'merged' => true, 'base' => ['ref' => 'dev'],
-            'title' => 'Rework the widget (card#5139) — coord #369',
+            // The closing form names the BRANCH's card, the descriptive citation does
+            // not — which is the shape card#7348 / DL-305 makes routine: a title cites one
+            // card and closes another. The title token is still 5139 (leftmost), so the
+            // card#5287 rule under test is unchanged.
+            'title' => 'Rework the widget (card#5139) — coord #369. Closes card#5287',
             'head' => ['ref' => 'fix/card-5287-title-hijack'],
         ]);
 
@@ -1477,7 +1493,7 @@ class GitHubPrCardMoveClassifierTest extends TestCase
 
         $result = $this->classify('pull_request.closed', [
             'number' => 148, 'merged' => true, 'base' => ['ref' => 'dev'],
-            'title' => 'DL-9 bundled fix', 'head' => ['ref' => 'f'],
+            'title' => 'bundled fix, Closes DL-9', 'head' => ['ref' => 'f'],
             'html_url' => 'https://github.com/owner/repo/pull/148',
         ]);
 
@@ -1831,5 +1847,217 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertCount(1, $r->targets);
         $this->assertSame('kanban_dependabot_card', $r->targets[0]->handler);
         $this->assertSame('opened', $r->targets[0]->payload['outcome']);
+    }
+
+    // --- card#7348 / DL-305: correlation is not completion ---
+    //
+    // The three acceptance witnesses the FR asked for live here and in
+    // `ReconcileCommandTest` (the third one, because the "later pass" that would have
+    // mass-demoted is the reconciler's). Witnesses 1 and 2 are deliberately the SAME
+    // fixture differing in ONE thing — the closing form — so nothing else can explain
+    // the difference between them.
+
+    /**
+     * The FIXTURE both witnesses run: a merged-to-dev PR on a `card#` branch, whose title
+     * is the only variable.
+     *
+     * @return array<string, mixed>
+     */
+    private function mergedPrTitled(string $title): array
+    {
+        return [
+            'number' => 7348, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => $title,
+            'head' => ['ref' => 'card-4811-widget'],
+            'html_url' => 'https://github.com/owner/repo/pull/7348',
+        ];
+    }
+
+    public function test_witness_1_a_bare_mention_on_a_merged_pr_moves_nothing(): void
+    {
+        // ⛔ WITNESS 1 — THE DEFECT. Before DL-305 this exact event moved card 4811 to the
+        // `merged` stage (52) and the release sweep then promoted it to a TERMINAL stage. A
+        // peer measured 17 wrong-retirement candidates from this shape in ONE release
+        // bundle. The PR is about card 4811 — it says so — but it never claimed to finish
+        // it. (Revert the gate ⇒ one kanban_move_card target ⇒ RED.)
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classify('pull_request.closed', $this->mergedPrTitled('feat: widget rework, follows card#4811'));
+
+        $this->assertSame([], $this->targetsNamed($r, 'kanban_move_card'));
+        $this->assertSame([], $r->targets);
+        // NEVER A SILENT NO-OP: the operator is told which card did not move and why.
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'mention-vs-closure')
+            && str_contains((string) $msg, '4811')
+            && str_contains((string) $msg, 'NO stage move'))->once();
+    }
+
+    public function test_witness_2_the_same_pr_with_a_closing_form_moves_the_card(): void
+    {
+        // ⛔ WITNESS 2 — one variable changed. Same PR, same branch, same card, same base
+        // ref: only the title now CLAIMS the card is done, and the move is exactly what it
+        // always was. This is what makes witness 1 evidence about closure rather than about
+        // some unrelated thing the gate broke.
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classify('pull_request.closed', $this->mergedPrTitled('feat: widget rework, Closes card#4811'));
+
+        $move = $this->targetsNamed($r, 'kanban_move_card');
+        $this->assertCount(1, $move);
+        $this->assertSame(4811, $move[0]->payload['card_id']);
+        $this->assertSame('merged', $move[0]->payload['outcome']);
+        // The provenance stamps ride the move exactly as before — withholding a move
+        // withholds its stamps, and landing one lands them.
+        $this->assertSame(7348, $move[0]->payload['stamp_pr']);
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    public function test_witness_3a_a_redelivered_bare_mention_merge_still_moves_nothing(): void
+    {
+        // ⛔ WITNESS 3, the event-path half (the reconciler holds the other). GitHub
+        // redelivers, and `bridge:replay` re-runs stored events, so the SAME merged PR is
+        // classified again and again. The gate must keep returning NO TARGET on every pass
+        // — never an earlier stage. A rule that returned the pre-merge stage instead would
+        // look correct on one card and would mass-demote every already-correct card on the
+        // first run after this shipped, because their PRs are bare mentions under the new
+        // grammar too.
+        Http::fake();
+
+        $first = $this->classify('pull_request.closed', $this->mergedPrTitled('feat: widget rework, follows card#4811'));
+        $second = $this->classify('pull_request.closed', $this->mergedPrTitled('feat: widget rework, follows card#4811'));
+
+        $this->assertSame([], $first->targets);
+        $this->assertSame([], $second->targets, 'a later pass must not emit a target either');
+        // The claim that matters is not just "no MOVE" but "no target of any kind" — a
+        // demotion would arrive as a kanban_move_card carrying an earlier outcome, and
+        // asserting only on the move-to-52 would not have seen it.
+        Http::assertNotSent(fn () => true);
+    }
+
+    public function test_a_bare_mention_still_moves_on_the_ungated_outcomes(): void
+    {
+        // THE SCOPE OF THE GATE, stated as a test because the failure direction depends on
+        // it: `opened` is reversible and is what STAMPS the card so the reconciler can find
+        // the PR later, and `closed_unmerged` is an abandon disposition. Gating those would
+        // strand cards rather than protect them. Only the merge outcomes claim completion.
+        Http::fake();
+
+        $opened = $this->classify('pull_request.opened', $this->mergedPrTitled('feat: widget rework, follows card#4811'));
+        $this->assertSame('opened', $this->targetsNamed($opened, 'kanban_move_card')[0]->payload['outcome']);
+
+        $abandoned = $this->classify('pull_request.closed', [
+            'number' => 7349, 'merged' => false,
+            'title' => 'feat: widget rework, follows card#4811', 'head' => ['ref' => 'card-4811-widget'],
+        ]);
+        $this->assertSame('closed_unmerged', $this->targetsNamed($abandoned, 'kanban_move_card')[0]->payload['outcome']);
+    }
+
+    public function test_a_started_push_is_untouched_by_the_closure_gate(): void
+    {
+        // A branch ref cannot carry a closing verb, and `started` promotes only from a
+        // narrow allowlist. Gating it would make every branch-create inert — the exact
+        // "silently INERT leg" shape bridge:check exists to warn about.
+        $this->writeMapping(['started' => 49, 'started_from_stages' => [46]]);
+        Http::fake();
+
+        $r = (new GitHubPrCardMoveClassifier)->classify(new ClassifyContext(
+            'push',
+            ['created' => true, 'ref' => 'refs/heads/card-4811-widget', 'repository' => ['full_name' => 'owner/repo']],
+            new Actor('999'), 'github', 'owner/repo', $this->agent,
+        ));
+
+        $move = $this->targetsNamed($r, 'kanban_move_card');
+        $this->assertCount(1, $move);
+        $this->assertSame('started', $move[0]->payload['outcome']);
+    }
+
+    public function test_closing_a_dl_closes_every_card_that_dl_tracks(): void
+    {
+        // DL-148 is one-to-many and the claim is made about the DL, so `Closes DL-9` closes
+        // the whole set. The alternative — demanding one `card#` per bundled card — would
+        // make a bundled release PR impossible to close at all.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 7, 'payload' => ['dl_number' => 'DL-9']],
+            ['id' => 8, 'payload' => ['dl_number' => 'DL-9']],
+        ]])]);
+
+        $r = $this->classify('pull_request.closed', [
+            'number' => 150, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'bundled fix, Closes DL-9', 'head' => ['ref' => 'f'],
+        ]);
+
+        $this->assertEqualsCanonicalizing([7, 8], array_map(fn ($t) => $t->payload['card_id'], $this->targetsNamed($r, 'kanban_move_card')));
+    }
+
+    public function test_closing_one_card_of_a_bundled_dl_moves_only_that_card(): void
+    {
+        // The FILTER, not an all-or-nothing gate: the DL resolves to two cards and the
+        // title claims only one of them is done. Moving both would be the same
+        // over-reach in miniature that card#7348 is about.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 7, 'payload' => ['dl_number' => 'DL-9']],
+            ['id' => 8, 'payload' => ['dl_number' => 'DL-9']],
+        ]])]);
+
+        Log::spy();
+
+        $r = $this->classify('pull_request.closed', [
+            'number' => 151, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'DL-9 partial, Closes card#7', 'head' => ['ref' => 'f'],
+        ]);
+
+        $move = $this->targetsNamed($r, 'kanban_move_card');
+        $this->assertCount(1, $move);
+        $this->assertSame(7, $move[0]->payload['card_id']);
+        // ⛔ AND THE DROPPED ONE IS NAMED. A partial close moves a card and silently drops
+        // the rest — a real event with no move to notice it by, which is the same silence
+        // card#7348 is about, in miniature. The warning is keyed on the WITHHELD SET, so
+        // it fires here even though something did move. (Key the warning on "nothing
+        // closed" instead ⇒ card 8 disappears without a word ⇒ RED.)
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'mention-vs-closure')
+            && str_contains((string) $msg, 'card(s) 8'))->once();
+    }
+
+    public function test_a_foreign_dl_closing_form_cannot_authorize_the_conflicting_card_token(): void
+    {
+        // ⛔ THE DL-218 GUARD, LEFT INTACT AND NOT RE-OPENED FROM THE OTHER SIDE. DL-9
+        // resolves to card 7, a co-present `card#4811` names a different card, so the
+        // explicit card# is authoritative — and `Closes DL-9` is then a claim about card
+        // 7's work, not card 4811's. It must NOT authorize the move that the guard just
+        // routed to 4811. (Pass the resolved DL into the filter on this path ⇒ card 4811
+        // moves on someone else's closing form ⇒ the hijack re-emerges ⇒ RED.)
+        $this->fakeBoardCards();   // DL-9 → card 7
+
+        $r = $this->classify('pull_request.closed', [
+            'number' => 152, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'Static guard, Closes DL-9, card#4811', 'head' => ['ref' => 'f'],
+        ]);
+
+        $this->assertSame([], $this->targetsNamed($r, 'kanban_move_card'));
+    }
+
+    public function test_the_dl_218_warning_states_the_ruling_and_no_longer_asserts_a_move(): void
+    {
+        // ⛔ A LOG LINE THAT WENT FALSE WHEN THE GATE LANDED. The foreign-DL-mention warn
+        // used to end "moving card#N, not the DL card(s)" — true while only the handler
+        // stood between it and a move, and false the moment the closure gate can withhold
+        // one. This event is exactly that case: the guard rules card#4811 authoritative and
+        // the title closes nothing, so the old wording announced a move that never happened,
+        // in the log the operator reads to find out why nothing moved. The line now states
+        // the RULING, which is what is unconditionally true where it is emitted.
+        $this->fakeBoardCards();   // DL-9 → card 7
+        Log::spy();
+
+        $r = $this->classify('pull_request.closed', [
+            'number' => 153, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'Static guard against DL-9, see card#4811', 'head' => ['ref' => 'f'],
+        ]);
+
+        $this->assertSame([], $this->targetsNamed($r, 'kanban_move_card'));
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'foreign-DL-mention guard, DL-218')
+            && str_contains((string) $msg, 'the card token in force is card#4811')
+            && ! str_contains((string) $msg, 'moving card#4811'))->once();
     }
 }
