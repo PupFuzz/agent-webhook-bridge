@@ -4,9 +4,11 @@ namespace Tests\Unit\Bridge\Check\Checks;
 
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Checks\WritebackMappingConfigCheck;
+use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Support\Facades\File;
@@ -322,9 +324,23 @@ class WritebackMappingConfigCheckTest extends TestCase
         // The load-bearing half: a bare mention is a no-op, NOT a demotion.
         $this->assertStringContainsString('NO-OP for the stage', $message);
         $this->assertStringContainsString('never moved back', $message);
-        // The accept-set is RENDERED from the grammar, never spelled out here (DL-239) —
-        // asserted through the grammar so this cannot pin a stale copy of it.
+        // The accept-set is RENDERED from the authority, never spelled out here (DL-239) —
+        // asserted through the authority so this cannot pin a stale copy of it. Since
+        // DL-308 that is `PrOutcome::describeClosure()`, which composes BOTH routes: this
+        // surface tells an operator what they inherited, so a line still claiming the
+        // title is the only thing that moves a card is the DL-239 defect on the worst
+        // possible surface. Both halves are asserted, each through its own grammar.
+        $this->assertStringContainsString(PrOutcome::describeClosureAccepted(), $message);
         $this->assertStringContainsString(implode(', ', ClosureGrammar::accepted()), $message);
+        $this->assertStringContainsString(implode(', ', CardTokenGrammar::accepted()), $message);
+        $this->assertStringContainsString('HEAD BRANCH REF', $message);
+        // …and the SETUP flavour, not the diagnostic one: DL-305 kept the rejected shapes
+        // off this surface deliberately (noise at setup, diagnosis at runtime), and
+        // composing two routes must not quietly overturn that. The trailing sentence here
+        // PROMISES the rejected side is deferred to the runtime warning, so printing it
+        // would make this line contradict itself.
+        $this->assertStringNotContainsString('does NOT close', $message);
+        $this->assertStringNotContainsString('not accepted:', $message);
     }
 
     public function test_a_mapping_with_only_one_merge_stage_names_only_that_one(): void

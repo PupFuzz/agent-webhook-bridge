@@ -58,15 +58,31 @@ use Illuminate\Support\Facades\Log;
  * CORRELATION IS NOT COMPLETION (card#7348 / DL-305). A token says WHICH card a PR is
  * about; it never said that merging the PR finishes it — and the merge outcomes are the
  * ones whose stage is terminal or feeds the terminal release sweep. So on a MERGE
- * outcome the card also needs an explicit closing form in the PR TITLE
- * ({@see ClosureGrammar}) naming the card that moves — through the same resolution that
- * selected it, so a foreign `Closes DL-NNN` cannot authorize a `card#` the DL-218 guard
- * just ruled authoritative. Absent, the move is WITHHELD and warned: a bare mention is a
- * NO-OP for the stage, deliberately NOT a demotion, because the writeback re-classifies
- * in-window PRs on every pass and returning an earlier stage would mass-demote every
- * already-correct card on the first run. The TITLE is the only closure surface — the head
- * branch names the work, not its completion (three merged PRs here track one card), and
- * reading a slug as a completion assertion would make an accidental word load-bearing.
+ * outcome the card also needs CLOSURE EVIDENCE naming the card that moves — through the
+ * same resolution that selected it, so a foreign `Closes DL-NNN` cannot authorize a
+ * `card#` the DL-218 guard just ruled authoritative. Absent, the move is WITHHELD and
+ * warned: a bare mention is a NO-OP for the stage, deliberately NOT a demotion, because
+ * the writeback re-classifies in-window PRs on every pass and returning an earlier stage
+ * would mass-demote every already-correct card on the first run.
+ *
+ * ⚠ THE TITLE IS NO LONGER THE ONLY CLOSURE SURFACE (card#7348 / DL-308), and the
+ * paragraph that stood here said it was. DL-305 excluded the head branch on the argument
+ * that "the branch names the work, not its completion" — true as far as it goes, and it
+ * left an accept-set that 0 of 351 real merged PRs in this shop could satisfy, because
+ * the house convention has never written a closing verb. The widening does not read the
+ * slug as an assertion: it reads the BRANCH IDENTITY plus the fact of a merge into the
+ * integration branch, which is what the Shipped stage asserts and what a citation of
+ * someone else's card id cannot produce. {@see PrOutcome::mergeClosesCard()} owns that
+ * term, {@see ClosureGrammar} still owns the lexical one, and BOTH close.
+ *
+ * ⚠ AND DL-305's OTHER OBSERVATION SURVIVES THE WIDENING AS A RESIDUAL, recorded here
+ * because it is now reachable rather than hypothetical: three merged PRs here track one
+ * card, so a multi-PR card promotes at its FIRST merged PR. The grammar layer can read
+ * INTENT and cannot read AUTHORITY — no predicate over a title and a branch ref can know
+ * that a human ruled this card does not close on this commit. The durable fix is
+ * card-side (a hold/pin marker the writeback refuses to move past whatever the grammar
+ * concludes) and is deliberately NOT built here; it is named in DL-308 as the follow-up.
+ *
  * {@see PrOutcome::requiresClosure()} owns which outcomes are gated and why the others
  * are not.
  *
@@ -559,7 +575,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      */
     private function closingCards(array $payload, string $outcome, array $cardIds, ?string $dl): array
     {
-        $closing = $this->closureFilter($this->prTitle($payload), $outcome, $cardIds, $dl);
+        $closing = $this->closureFilter($this->prTitle($payload), $this->prHead($payload), $outcome, $cardIds, $dl);
         $withheld = array_values(array_diff($cardIds, $closing));
         if ($withheld !== []) {
             $this->warnMentionWithoutClosure($payload, $outcome, $withheld);
@@ -576,14 +592,29 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * *does merging this PR finish that card*. On a merge outcome those are the same
      * question only by accident, and the accident cost a peer 17 wrong-retirement
      * candidates plus one card whose explicit human ruling the writeback reversed. So on
-     * an outcome {@see PrOutcome::requiresClosure()} gates, a card moves only when the PR
-     * TITLE carries a closing form naming it.
+     * an outcome {@see PrOutcome::requiresClosure()} gates, a card moves only when the
+     * event carries evidence that this merge FINISHES it.
      *
-     * TWO WAYS TO NAME IT, and they mirror the two ways the card was SELECTED:
-     *  - `Closes DL-NNN` where that DL is the one that RESOLVED this set — the claim is
-     *    made about the DL, and a DL is one-to-many (DL-148), so it closes the whole set;
-     *  - `Closes card#<id>` — closes exactly the card it names, which is why the set is
-     *    FILTERED rather than accepted or rejected whole.
+     * TWO KINDS OF EVIDENCE, and only the second is prose (card#7348 / DL-308):
+     *  - STRUCTURAL — {@see PrOutcome::mergeClosesCard()}: the PR merged into the
+     *    integration branch AND the head ref itself names the card. This is what the
+     *    house convention actually produces, and DL-305 shipped without it: measured
+     *    against the title-only accept-set, 0 of 351 correlated merged PRs in this shop
+     *    closed anything, so the gate would have frozen every board it guards. Applied
+     *    PER CARD, like the `card#` form and unlike the DL form — a branch ref names one
+     *    card, so a bundled DL whose branch names one of its cards moves that one alone.
+     *  - LEXICAL — a closing form in the TITLE, in the two spellings that mirror the two
+     *    ways the card was SELECTED:
+     *      - `Closes DL-NNN` where that DL is the one that RESOLVED this set — the claim
+     *        is made about the DL, and a DL is one-to-many (DL-148), so it closes the
+     *        whole set;
+     *      - `Closes card#<id>` — closes exactly the card it names, which is why the set
+     *        is FILTERED rather than accepted or rejected whole.
+     *
+     * THE STRUCTURAL TERM WIDENS THE ACCEPT-SET; IT REPLACES NOTHING. Both routes close,
+     * and the upstream foreign-mention discrimination is untouched — a title citing a card
+     * the branch does not name never reaches this filter with that card in the set, which
+     * is exactly why the widening preserves the property roundtable #343 endorsed.
      *
      * `$dl` IS THE RESOLUTION, NOT THE SUBJECT'S TEXT. Callers pass the DL only where it
      * resolved to the cards being filtered; the `card#` path passes null even when a DL
@@ -597,7 +628,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * @param  list<int>  $cardIds
      * @return list<int>
      */
-    private function closureFilter(string $title, string $outcome, array $cardIds, ?string $dl): array
+    private function closureFilter(string $title, string $headRef, string $outcome, array $cardIds, ?string $dl): array
     {
         if (! PrOutcome::requiresClosure($outcome)) {
             return $cardIds;
@@ -606,7 +637,11 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             return $cardIds;
         }
 
-        return array_values(array_filter($cardIds, fn (int $id) => ClosureGrammar::closesCard($title, $id)));
+        return array_values(array_filter(
+            $cardIds,
+            fn (int $id) => ClosureGrammar::closesCard($title, $id)
+                || PrOutcome::mergeClosesCard($outcome, $headRef, $id),
+        ));
     }
 
     /**
@@ -615,9 +650,16 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * A merge that moves nothing is exactly the high-value miss this classifier warns
      * loudly about everywhere else: the PR publishes, the card never moves, and without a
      * line nobody is told. It says what the subject DID carry (a correlating token), what
-     * it did NOT (a closing form), and the remediation — rendered from
-     * {@see ClosureGrammar::describe()} rather than spelled out here, so a grammar move
-     * rewrites the operator-facing text by construction (the DL-239 ruling).
+     * it did NOT (closure evidence, on EITHER route), and the remediation — rendered from
+     * {@see PrOutcome::describeClosure()} rather than spelled out here, so a move in either
+     * underlying authority rewrites the operator-facing text by construction (the DL-239
+     * ruling; DL-308 is what gave it two authorities to compose).
+     *
+     * IT NAMES THE HEAD REF, not only the title (card#7348 / DL-308). Since the branch is
+     * now one of the two things that can close a card, an operator asking *why did this
+     * merge move nothing* needs to see BOTH surfaces that were read — a line quoting only
+     * the title would send them to rewrite prose when the actual answer is that their
+     * branch is called `fix/streaming-timeout`.
      *
      * ONE LINE PER EVENT, not per card: a bundled DL resolving to several cards withholds
      * them as one set for one reason, and N lines would be N copies of one sentence.
@@ -634,12 +676,13 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     {
         $pr = $this->prNumber($payload);
         $where = $pr !== null ? "PR #{$pr}" : 'PR';
+        $them = count($cardIds) === 1 ? 'that card' : 'them';
         Log::warning("kanban_move_card: {$where} merged (outcome '{$outcome}') and correlates card(s) "
-            .implode(',', $cardIds).' — but its TITLE carries no closing form naming '
-            .(count($cardIds) === 1 ? 'that card' : 'them')
-            .', so this PR MENTIONS the card rather than claiming its work is done: NO stage move (mention-vs-closure, DL-305). '
-            .'A merge moves a card only when the title says so ('.ClosureGrammar::describe().'). '
-            ."The card is left where it is, never moved back. Title: {$this->prTitle($payload)}");
+            .implode(',', $cardIds).' — but nothing in this merge claims that work is done: the HEAD BRANCH REF does not name '
+            .$them.' and the TITLE carries no closing form naming '.$them
+            .', so this PR MENTIONS the card rather than claiming its work is done: NO stage move (mention-vs-closure, DL-305/DL-308). '
+            .'A merge moves a card on '.PrOutcome::describeClosure().'. '
+            ."The card is left where it is, never moved back. Title: {$this->prTitle($payload)} — head ref: {$this->prHead($payload)}");
     }
 
     /**
