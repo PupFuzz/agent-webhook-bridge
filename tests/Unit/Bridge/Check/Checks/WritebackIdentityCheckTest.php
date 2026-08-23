@@ -37,17 +37,23 @@ class WritebackIdentityCheckTest extends TestCase
         $this->assertSame(Severity::Ok, $findings[0]->severity);
         $message = $findings[0]->message;
         // The id itself — the fact the operator cannot get anywhere else at setup time.
-        $this->assertStringContainsString('kanban user 4242', $message);
-        // WHY it matters: it is what a moved card records, and the board's only writer
-        // attribution.
+        $this->assertStringContainsString('identity_id 4242', $message);
+        // ⛔ ITS PRIMARY ROLE NAMED FIRST. `identity_id` is the echo-suppression key; the
+        // attribution it also declares is a consequence, not the definition. A line that
+        // describes it as merely an attribution field teaches an operator the wrong repair
+        // when the writeback starts looping on its own writes.
+        $this->assertStringContainsString('ECHO-SUPPRESSION key', $message);
+        // WHY the attribution half matters: it is what a moved card records, and the
+        // board's only writer attribution.
         $this->assertStringContainsString('last_stage_move.actor_id', $message);
         // The instruction, which is the half roundtable #343 asked for by name.
         $this->assertStringContainsString('OWN kanban user', $message);
         // ⛔ AND THE BOUND, asserted so it cannot be dropped in an edit that shortens the
-        // line: this leg REPORTS, it does not certify. A board CLI's token on the same host
-        // is invisible from here — that is the exact shape that was measured colliding —
-        // so a green run must never read as "separation verified".
-        $this->assertStringContainsString('does not certify separation', $message);
+        // line: this leg REPORTS a CONFIGURED value, it does not resolve or certify one. It
+        // never calls the API to ask who the token really is, and a board CLI's token on the
+        // same host is invisible from here — that is the exact shape that was measured
+        // colliding — so a green run must never read as "separation verified".
+        $this->assertStringContainsString('neither resolves the token against the API nor certifies separation', $message);
     }
 
     public function test_an_absent_identity_still_warns_about_the_echo_loop(): void
@@ -65,7 +71,7 @@ class WritebackIdentityCheckTest extends TestCase
         $this->assertStringContainsString('no identity_id', $findings[0]->message);
         // The two arms are exclusive: an install with nothing set gets the actionable warn,
         // never a report of a user it does not have.
-        $this->assertStringNotContainsString('writes to the board as kanban user', $findings[0]->message);
+        $this->assertStringNotContainsString('ECHO-SUPPRESSION key', $findings[0]->message);
     }
 
     public function test_no_writeback_config_reports_nothing(): void

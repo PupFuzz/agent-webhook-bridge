@@ -292,13 +292,17 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
     brand-new board into this classifier hours before the defect surfaced and nothing in the
     setup path warned them. Silent for a mapping that maps no merge outcome. **No new
     `writeback.json` key**; the fail-closed unknown-key path is untouched.
-  - **`bridge:check` also now REPORTS the kanban user the writeback writes as**, with the
-    instruction to mint that token as its own user — `last_stage_move.actor_id` is a card's only
-    writer attribution and it stops discriminating the moment two writers share a user (measured
-    on two installs: one where a board CLI's token and the writeback token are both user 3 and a
-    move was nearly mis-attributed, one where they are 7 and 10). ⛔ It **reports, it does not
-    certify**: a token held outside this install's config is invisible from here, and a green run
-    that read as "separation verified" would manufacture the assurance the operator came for.
+  - **`bridge:check` also now REPORTS the `identity_id` your config declares** — named as what
+    it primarily is, the **echo-suppression key**, with the writer attribution it consequently
+    declares stated second — plus the instruction to mint that token as its own kanban user.
+    `last_stage_move.actor_id` is a card's only writer attribution and it stops discriminating
+    the moment two writers share a user (measured on two installs: one where a board CLI's token
+    and the writeback token were both user 3 and a move was nearly mis-attributed, one where they
+    were distinct; the first has since been repaired, which is why the property is worth
+    reporting on every install rather than assumed). ⛔ It **reports, it does not certify**: it
+    prints a CONFIGURED value without resolving the token against the API, a token held outside
+    this install's config is invisible from here, and a green run that read as "separation
+    verified" would manufacture the assurance the operator came for.
   - **⚠ UPGRADING — change your PR-title habit to `Closes card#N` before you deploy.** Existing
     stages are untouched, and nothing regresses; what stops is *new* merge moves for titles that
     only cite. Two rules worth knowing: the token must sit **flush** against the verb (`Closes the
