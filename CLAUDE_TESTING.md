@@ -243,17 +243,37 @@ trustworthy. That is measured history, not a hypothetical (DL-237(e)).
 
 ## Database configuration
 
-`phpunit.xml` sets the test environment unconditionally:
+`phpunit.xml` pins the test environment — but *how strongly* differs per key, and the
+difference is deliberate:
 
 ```xml
+<!-- Overridable from the environment on purpose: the MariaDB matrix. -->
 <env name="DB_CONNECTION" value="sqlite"/>
 <env name="DB_DATABASE" value=":memory:"/>
-<!-- Neutralize the install-suffix crosstalk guard in tests, so a
-     deployed worktree's .env (BRIDGE_INSTALL_SUFFIX=-dev/-prod) can't
-     fire it against the sqlite :memory: test DB. InstallGuardTest sets
-     the suffix explicitly per-test to exercise the guard. -->
-<env name="BRIDGE_INSTALL_SUFFIX" value=""/>
+<!-- Pinned against an ambient value, which takes BOTH entries. -->
+<env name="BRIDGE_INSTALL_SUFFIX" value="" force="true"/>
+<server name="BRIDGE_INSTALL_SUFFIX" value=""/>
 ```
+
+⛔ **`force="true"` alone does not make a pin win against an exported variable** (card#7474).
+PHPUnit's `PhpHandler::handleEnvVariables()` honors `force` by writing `putenv()` and `$_ENV`,
+and never touches `$_SERVER` — where an exported variable lands under this build's
+`variables_order=GPCS`. Laravel resolves `env()` through Dotenv's repository, whose
+`DEFAULT_ADAPTERS` are `ServerConstAdapter` **then** `EnvConstAdapter`, so `$_SERVER` is read
+first and the forced pin loses. Measured, with `REDIS_DB=9` exported against a forced pin of
+`13`: `getenv()='13'`, `$_ENV='13'`, `$_SERVER='9'`, `env()='9'`, `config()='9'`. A `<server>`
+entry — written unconditionally by `handleServerVariables()` — is what closes it, and with the
+pair in place the same run reads `13` at every layer. This is the mechanism behind G-017's
+older finding that forcing a value here did not fix an operator's export.
+
+So the two entry kinds buy different things: `<env … force="true">` is what **child processes**
+and `getenv()` readers inherit; `<server>` is what `env()`/`config()` resolve **in this
+process**. A `.env` defeats neither — Laravel's Dotenv repository is immutable and phpunit has
+already written by the time bootstrap loads the file, so a `.env` value loses to an unforced
+pin too (measured; it is *not* the vector G-013 attributes it to).
+
+`Tests\Unit\PhpunitConfigPinTest` guards the pairing: two copies of one value, with `$_SERVER`
+read first, means a value edited on the `<env>` line alone would be silently ignored.
 
 `BRIDGE_INSTALL_SUFFIX=""` is not decoration. The install-suffix crosstalk guard fires when the suffix in the environment doesn't match the DB name. A deployed worktree's `.env` may have `BRIDGE_INSTALL_SUFFIX=-dev`, which would cause the guard to throw against the `:memory:` test database. The empty override neutralizes it. `InstallGuardTest` sets the suffix explicitly per-test to exercise the guard logic directly.
 

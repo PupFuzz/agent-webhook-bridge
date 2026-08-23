@@ -110,21 +110,21 @@ The unique key on `webhook_events.delivery_id` (and composite key on `agent_disp
 
 **Symptom:** Running the test suite from a deployed worktree (one with `BRIDGE_INSTALL_SUFFIX=-dev` or `-prod` in `.env`) fires the InstallGuard against the SQLite `:memory:` test DB, because the DB name `:memory:` doesn't contain `_dev` or `_prod`. Every test that triggers `DispatchService::dispatch()` or `bridge:check` fails with a DSN-safety error unrelated to the test's intent.
 
-**Cause:** `phpunit.xml`'s `<env>` stanzas use the non-forced form, so a real environment variable wins over the XML value. A `.env` file in the project root is loaded by Laravel's bootstrap, setting `BRIDGE_INSTALL_SUFFIX=-dev` before `phpunit.xml`'s override runs. The `InstallGuard::dsnCrosstalk()` check fires on `_dev`/`_prod` suffixes.
+**Cause:** an ambient `BRIDGE_INSTALL_SUFFIX=-dev` reaches `config('bridge.install_suffix')`, and `InstallGuard::dsnCrosstalk()` fires on `_dev`/`_prod` suffixes.
 
-**Fix:** `phpunit.xml` includes:
+⚠ **The vector named here until card#7474 — a project-root `.env` — was wrong, and measuring it is what corrected the fix.** A `.env` cannot beat a `phpunit.xml` pin at all, forced or not: phpunit writes before bootstrap and Laravel's Dotenv repository is immutable, so `.env` loading is a no-op for any key the pin already set. Measured with `BRIDGE_INSTALL_SUFFIX=-dev` in a `.env`: `config()` reads `''`, the pinned value. The real vector is a shell **export** — which an unforced pin loses to, and which `force="true"` *also* loses to (see the Fix).
+
+**Fix:** `phpunit.xml` pins the suffix with **both** entry kinds — the pair is what actually holds, and `force="true"` on its own does not:
 ```xml
-<!-- Neutralize the install-suffix crosstalk guard in tests, so a
-     deployed worktree's .env (BRIDGE_INSTALL_SUFFIX=-dev/-prod) can't
-     fire it against the sqlite :memory: test DB. InstallGuardTest sets
-     the suffix explicitly per-test to exercise the guard. -->
-<env name="BRIDGE_INSTALL_SUFFIX" value=""/>
+<env name="BRIDGE_INSTALL_SUFFIX" value="" force="true"/>
+<server name="BRIDGE_INSTALL_SUFFIX" value=""/>
 ```
+`force` reaches `putenv()`/`$_ENV` (what child processes inherit); an exported value lives in `$_SERVER`, which Laravel's Dotenv repository reads FIRST and which only a `<server>` entry overwrites. `CLAUDE_TESTING.md` § Database configuration owns the measured mechanism; `Tests\Unit\PhpunitConfigPinTest` guards the pairing.
 `InstallGuardTest` sets the suffix explicitly per test case via `Config::set('bridge.install_suffix', ...)` and cleans up after itself — this is the only test that exercises the guard, not every test that writes to the DB.
 
-If the guard fires unexpectedly in a test: verify `phpunit.xml` has this stanza and hasn't been edited away. If running tests via a wrapper that forces `.env` before phpunit starts, add `BRIDGE_INSTALL_SUFFIX=` to the wrapper invocation.
+If the guard fires unexpectedly in a test: verify `phpunit.xml` still has **both** entries and that they agree (the guard test reds if either is missing or they diverge).
 
-**Related:** `phpunit.xml` (line 33), `app/Bridge/Support/InstallGuard.php`, `tests/Feature/Config/InstallGuardTest.php`.
+**Related:** `phpunit.xml` (the `BRIDGE_INSTALL_SUFFIX` pin pair), `app/Bridge/Support/InstallGuard.php`, `tests/Feature/Config/InstallGuardTest.php`, `tests/Unit/PhpunitConfigPinTest.php`, `CLAUDE_TESTING.md` § Database configuration, G-017 (the sibling this correction reconciles with).
 
 ---
 
@@ -174,7 +174,7 @@ If the guard fires unexpectedly in a test: verify `phpunit.xml` has this stanza 
 
 **Cause:** A real per-agent deployment exports `BRIDGE_INBOX_LAYOUT=per-agent` (and may export `BRIDGE_STATE_DIR`) in its shell. Laravel's Dotenv does **not** override an already-set shell var, so the export reaches `config('bridge.inbox_layout')`. Under `per-agent`, `IntentLog::stage()` writes to the per-agent file (`inbox-<agent>.jsonl`), but the tests read the **shared** `inbox.jsonl` — so they see 0 lines. The tests isolate `bridge.config_dir` in `setUp` but not the layout, so the operator's env bleeds in. Same class as G-013 (ambient env wins over the suite).
 
-**Fix:** A `phpunit.xml` `<env … force="true">` does **NOT** fix it — `env()` reads the `getenv()` layer where the shell export lives, which phpunit's `<env>` doesn't reach (verified: forcing `BRIDGE_INBOX_LAYOUT=shared` in `phpunit.xml` still failed). The authoritative fix is a **runtime `config()` pin in the base `Tests\TestCase::setUp()`**:
+**Fix:** A `phpunit.xml` `<env … force="true">` does **NOT** fix it (verified: forcing `BRIDGE_INBOX_LAYOUT=shared` in `phpunit.xml` still failed). ⚠ The *reason* recorded here until card#7474 — that `<env>` doesn't reach the `getenv()` layer — is wrong: `force` does reach `getenv()`, measured. The export wins because it lands in `$_SERVER`, which Laravel's Dotenv repository reads BEFORE `$_ENV`/putenv and which no `<env>` entry writes. So there are now two working fixes: a paired `<server>` entry in `phpunit.xml` (see `CLAUDE_TESTING.md` § Database configuration), or the one this repo took here — a **runtime `config()` pin in the base `Tests\TestCase::setUp()`**, which stays preferable when the value is per-test-overridable:
 ```php
 config(['bridge.inbox_layout' => 'shared', 'bridge.state_dir' => null]);
 ```
