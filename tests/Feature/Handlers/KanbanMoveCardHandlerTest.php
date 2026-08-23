@@ -12,6 +12,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Tests\Support\PreloadStub;
 use Tests\TestCase;
 
 class KanbanMoveCardHandlerTest extends TestCase
@@ -73,7 +74,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET
                 ->push(['data' => ['id' => 5]]),                                                // PATCH
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload());
 
@@ -81,6 +82,14 @@ class KanbanMoveCardHandlerTest extends TestCase
             && str_contains($r->url(), '/tasks/5.json')
             && $r->data() === ['workflow_stage_id' => 52]
             && $r->hasHeader('Authorization', 'Bearer wb-token'));
+        // The no-regression guard's stage-order read, pinned ON THE WIRE. It is the one
+        // leg of this move that degrades SILENTLY: `noRegression()` fails open inside a
+        // `catch (Throwable)`, so an unstubbed `/preload.json` leaves this test asserting a
+        // move the guard never got to weigh — and until card#7300 it also left the request
+        // (bearer attached) on the real network, where the verdict depended on whether the
+        // runner could resolve the fixture host.
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET'
+            && str_contains($r->url(), '/boards/8/preload.json'));
     }
 
     public function test_already_in_target_stage_is_idempotent_noop(): void
@@ -131,7 +140,7 @@ class KanbanMoveCardHandlerTest extends TestCase
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])
                 ->push(['data' => ['id' => 5]])
                 ->push(['data' => ['id' => 5]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
 
@@ -150,7 +159,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => '148']]])
                 ->push(['data' => ['id' => 5]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
 
@@ -197,7 +206,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 900]]])
                 ->push(['data' => ['id' => 5]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload(['stamp_pr' => 148]));   // no uncorroborated flag
 
@@ -281,7 +290,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
                 ->push(['data' => ['id' => 5]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload());   // no card_token_near_miss flag
 
@@ -318,7 +327,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => '8', 'workflow_stage_id' => 49]])   // GET
                 ->push(['data' => ['id' => 5]]),                                                 // PATCH
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload());
 
@@ -339,7 +348,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push('{"data":{"id":5,"board_id":8.0,"workflow_stage_id":49}}')   // GET
                 ->push(['data' => ['id' => 5]]),                                     // PATCH
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload());
 
@@ -441,7 +450,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET ok
                 ->push(['error' => 'invalid stage'], 422),                                      // PATCH 4xx
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload());   // no exception
 
@@ -662,7 +671,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
                 ->push(['data' => ['id' => 5]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload(['board_id' => 999]));
 
@@ -1033,12 +1042,17 @@ class KanbanMoveCardHandlerTest extends TestCase
 
     // --- card#5312 / DL-274: the moveCard + stamp refusal arms became live signals ---
 
-    /** The stage-order preload the no-regression guard reads for a `merged` outcome. */
+    /**
+     * The stage-order preload the no-regression guard reads for a `merged` outcome.
+     *
+     * ⚑ No `swimlanes` key, deliberately: this handler's guard reads the stage order only, and
+     * the ABSENCE is itself a distinct input downstream ({@see PreloadStub}).
+     *
+     * @return array<string, mixed>
+     */
     private function fakePreload(): array
     {
-        return ['*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
-            ['id' => 49, 'position' => 3], ['id' => 52, 'position' => 5],
-        ]]]]])];
+        return PreloadStub::stub(8, [49 => 3, 52 => 5]);
     }
 
     public function test_move_403_alerts_with_the_read_but_not_write_reason(): void
@@ -1210,7 +1224,7 @@ class KanbanMoveCardHandlerTest extends TestCase
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['origin' => 'preemptive']]])  // GET
                 ->push(['data' => ['id' => 5]])   // PATCH move
                 ->push(['data' => ['id' => 5]]),  // PATCH stamp
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
 
@@ -1229,7 +1243,7 @@ class KanbanMoveCardHandlerTest extends TestCase
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['dl_number' => 'DL-0099']]])  // GET: dl already set
                 ->push(['data' => ['id' => 5]])   // move
                 ->push(['data' => ['id' => 5]]),  // stamp (pr only)
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
 
@@ -1249,7 +1263,7 @@ class KanbanMoveCardHandlerTest extends TestCase
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 77]]])  // GET: pr set, dl absent
                 ->push(['data' => ['id' => 5]])   // move
                 ->push(['data' => ['id' => 5]]),  // stamp (dl only)
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
 
@@ -1265,7 +1279,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['dl_number' => 'DL-0042', 'pr_number' => 77]]])
                 ->push(['data' => ['id' => 5]]),  // move only
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload(['stamp_dl' => 'DL-42', 'stamp_pr' => 77]));
 
@@ -1283,7 +1297,7 @@ class KanbanMoveCardHandlerTest extends TestCase
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])  // GET: no pr_url
                 ->push(['data' => ['id' => 5]])   // move
                 ->push(['data' => ['id' => 5]]),  // stamp
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload(['stamp_pr' => 77, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/77']));
 
@@ -1302,7 +1316,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_url' => 'https://github.com/owner/repo/pull/1']]])  // GET: pr_url already set
                 ->push(['data' => ['id' => 5]]),  // move only — nothing to stamp
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload(['stamp_pr_url' => 'https://github.com/owner/repo/pull/77']));
 
@@ -1335,7 +1349,7 @@ class KanbanMoveCardHandlerTest extends TestCase
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])  // GET
                 ->push(['data' => ['id' => 5]])                    // move OK
                 ->push(['message' => 'unknown field'], 422),      // stamp 4xx — permanent
-        ]);
+        ] + $this->fakePreload());
 
         // Must NOT throw: a permanent stamp failure is log + no-op (the move succeeded).
         $this->handle($this->payload(['stamp_dl' => 'DL-42']));
@@ -1352,7 +1366,7 @@ class KanbanMoveCardHandlerTest extends TestCase
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])  // GET
                 ->push(['data' => ['id' => 5]])       // move OK
                 ->push(['error' => 'boom'], 500),     // stamp 5xx — transient
-        ]);
+        ] + $this->fakePreload());
 
         // A transient stamp failure propagates → 5xx → redelivery re-stamps (idempotent).
         $this->expectException(RequestException::class);
@@ -1368,7 +1382,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])
                 ->push(['data' => ['id' => 5]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload());
 
@@ -2077,7 +2091,7 @@ class KanbanMoveCardHandlerTest extends TestCase
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => []]])   // GET: a bare card
                 ->push(['data' => ['id' => 5]])    // move
                 ->push(['data' => ['id' => 5]]),   // stamp
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload([
             'stamp_dl' => 'DL-42', 'stamp_pr' => 261, 'stamp_pr_url' => 'https://github.com/owner/repo/pull/261',
@@ -2104,7 +2118,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => 261]]])   // GET: earlier stage
                 ->push(['data' => ['id' => 5]]),   // move
-        ]);
+        ] + $this->fakePreload());
 
         $this->handle($this->payload(['stamp_pr' => 262]));
 
@@ -2333,7 +2347,7 @@ pull request it already names', $notes[0]);
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET
                 ->push(['data' => ['id' => 5]]),                                              // PATCH
-        ]);
+        ] + $this->fakePreload());
         Log::spy();
 
         $this->handle($this->payload());
@@ -2363,7 +2377,7 @@ pull request it already names', $notes[0]);
             '*/tasks/5.json' => Http::sequence()
                 ->push(['data' => ['id' => 5, 'board_id' => '8', 'workflow_stage_id' => 49]])
                 ->push(['data' => ['id' => 5]]),
-        ]);
+        ] + $this->fakePreload());
         Log::spy();
 
         $this->handle($this->payload());
