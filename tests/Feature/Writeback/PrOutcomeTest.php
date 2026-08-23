@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\Writeback;
 
+use App\Bridge\Support\CardTokenGrammar;
+use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackConfig;
 use Tests\TestCase;
@@ -37,5 +39,81 @@ class PrOutcomeTest extends TestCase
         // `reopened` is a handler-internal outcome with no config stage of its own, so it
         // is absent from OUTCOMES and would be missed by the loop above.
         $this->assertFalse(PrOutcome::requiresClosure('reopened'));
+    }
+
+    // --- card#7348 / DL-308: the structural closure term ---
+
+    public function test_an_integration_merge_from_a_branch_naming_the_card_closes_it(): void
+    {
+        // The positive, in every branch-ref spelling the ONE card-token authority accepts —
+        // derived from that authority rather than retyped, so a grammar move lands here as
+        // a red test instead of as a silently narrower gate. This is the shape
+        // `board-card-start` mints and the shape 92% of this shop's recent merged PRs carry.
+        foreach (['card-4811-widget', 'card#4811-widget', 'card4811-widget', 'fix/card-4811-widget'] as $ref) {
+            $this->assertTrue(PrOutcome::mergeClosesCard('merged', $ref, 4811), "'{$ref}' names card 4811");
+        }
+    }
+
+    public function test_the_structural_term_is_keyed_on_this_card_not_on_any_card(): void
+    {
+        // ⛔ THE NEGATIVE THE WIDENING RESTS ON, at the predicate. A branch naming SOME
+        // card must not close a DIFFERENT one — otherwise a title citing someone else's
+        // card id would ride any card-named branch into a terminal stage, which is the
+        // peer incident card#7348 was filed for, re-minted through the new route.
+        $this->assertFalse(PrOutcome::mergeClosesCard('merged', 'card-9999-other', 4811));
+        // …and a branch that names no card at all closes nothing. `fix/4811-widget`
+        // carries the id but not a token: the strict reading is deliberate (DL-308) —
+        // the loose bare-id test the classifier uses for CORROBORATION accepts an
+        // accidental match on the stated grounds that it can never authorize anything,
+        // and that justification does not survive being moved to a gate that can.
+        $this->assertFalse(PrOutcome::mergeClosesCard('merged', 'fix/streaming-timeout', 4811));
+        $this->assertFalse(PrOutcome::mergeClosesCard('merged', 'fix/4811-widget', 4811));
+        $this->assertFalse(PrOutcome::mergeClosesCard('merged', '', 4811));
+    }
+
+    public function test_only_the_integration_merge_takes_the_structural_route(): void
+    {
+        // A release merge still needs a closing form, and no ungated outcome can reach the
+        // structural route at all (it is only ever asked about a merge). Asserted over the
+        // full outcome vocabulary so a future outcome cannot land on this side unexamined.
+        $this->assertFalse(PrOutcome::mergeClosesCard(PrOutcome::RELEASE_MERGE, 'card-4811-widget', 4811));
+        foreach (array_diff(WritebackConfig::OUTCOMES, [PrOutcome::INTEGRATION_MERGE]) as $other) {
+            $this->assertFalse(PrOutcome::mergeClosesCard($other, 'card-4811-widget', 4811), "{$other} must not close structurally");
+        }
+        $this->assertFalse(PrOutcome::mergeClosesCard('reopened', 'card-4811-widget', 4811));
+        // The constants and the mapping agree — `forMergedBase` is what produces the
+        // outcome this predicate compares against, so a drift between them would make the
+        // structural route silently unreachable rather than red.
+        $this->assertSame(PrOutcome::INTEGRATION_MERGE, PrOutcome::forMergedBase('dev'));
+        $this->assertSame(PrOutcome::RELEASE_MERGE, PrOutcome::forMergedBase(PrOutcome::RELEASE_BASE));
+    }
+
+    public function test_the_operator_sentence_renders_both_routes_from_their_authorities(): void
+    {
+        // DL-239 applied across two authorities. The surfaces that tell an operator what
+        // moves a card (`bridge:check`, the withheld-merge warning) render THIS, so a move
+        // in either grammar rewrites them by construction — and, more to the point here, so
+        // that neither surface can go on asserting the title is the only closure route.
+        $sentence = PrOutcome::describeClosure();
+
+        $this->assertStringContainsString(ClosureGrammar::describe(), $sentence);
+        $this->assertStringContainsString(CardTokenGrammar::describe(), $sentence);
+        $this->assertStringContainsString(PrOutcome::RELEASE_BASE, $sentence);
+        // The structural half must be SAID, not merely implied by a token list.
+        $this->assertStringContainsString('HEAD BRANCH REF', $sentence);
+
+        // The SETUP flavour is the same sentence with both rejected sides withheld —
+        // DL-305's editorial split (noise at setup, diagnosis at runtime), preserved rather
+        // than overturned by composing two routes into one renderer.
+        $accepted = PrOutcome::describeClosureAccepted();
+        $this->assertStringContainsString(implode(', ', ClosureGrammar::accepted()), $accepted);
+        $this->assertStringContainsString(implode(', ', CardTokenGrammar::accepted()), $accepted);
+        $this->assertStringNotContainsString('does NOT close', $accepted);
+        $this->assertStringNotContainsString('not accepted:', $accepted);
+        // Both flavours describe the SAME structural condition — one clause, one owner, so
+        // a change to what the merge must be cannot land on one surface and not the other.
+        foreach ([$sentence, $accepted] as $flavour) {
+            $this->assertStringContainsString('a merge into the integration branch', $flavour);
+        }
     }
 }

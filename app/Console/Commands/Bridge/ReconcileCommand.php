@@ -375,11 +375,15 @@ class ReconcileCommand extends BridgeCommand
 
             return;
         }
-        // card#7348 / DL-305 — the SAME closure gate the event path applies, on the same
-        // field, because this leg re-derives the same proposition from the same evidence.
-        // Without it the backstop would keep re-planning the merge move the classifier had
-        // just declined: `--fix` runs on a schedule, so the defect would simply arrive an
-        // hour later with a CLI's name on it. A card carrying a `dl_number` may also be
+        // card#7348 / DL-305 (widened DL-308) — the SAME closure gate the event path
+        // applies, over the SAME TWO FIELDS (the head branch ref and the title), because
+        // this leg re-derives the same proposition from the same evidence. Without it the
+        // backstop would keep re-planning the merge move the classifier had just declined:
+        // `--fix` runs on a schedule, so the defect would simply arrive an hour later with
+        // a CLI's name on it. Since DL-308 the lockstep cuts the other way too — a term
+        // added here and not there (or there and not here) makes the two paths disagree
+        // about which merges close a card, which is why the term itself lives on
+        // `PrOutcome` and neither path spells it. A card carrying a `dl_number` may also be
         // closed by a closing form naming that DL, mirroring the classifier's DL arm.
         //
         // PLACED AFTER THE TERMINAL RETURN, which is what keeps it from adding a line about
@@ -388,8 +392,8 @@ class ReconcileCommand extends BridgeCommand
         // report a withheld move on every release PR and withhold nothing.
         // `PrOutcome::requiresClosure()` still owns WHICH outcomes are gated — this
         // placement narrows where the answer can matter, never what the answer is.
-        if (PrOutcome::requiresClosure($outcome) && ! $this->closes($pr['title'], $cardId, $payload, $refs)) {
-            $this->line("card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but its title carries no closing form naming this card — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305) — skipped");
+        if (PrOutcome::requiresClosure($outcome) && ! $this->closes($pr['title'], $pr['head_ref'], $outcome, $cardId, $payload, $refs)) {
+            $this->line("card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but neither its head branch ref ('{$pr['head_ref']}') nor a closing form in its title names this card — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305/DL-308) — skipped");
             $this->skipped++;
 
             return;
@@ -488,12 +492,24 @@ class ReconcileCommand extends BridgeCommand
     }
 
     /**
-     * Does this PR title CLAIM that merging it completes THIS card (card#7348 / DL-305)?
+     * Does this PR CLAIM that merging it completes THIS card (card#7348 / DL-305, widened
+     * by DL-308)?
      *
-     * The two ways a title can name the card mirror the two correlation channels, exactly
-     * as the classifier's own gate does: the native `card#<id>`, or a closing form naming
-     * the `DL-NNN` the card carries in its payload — a card stamped `dl_number` IS the
-     * card that DL resolves to here, which is the same relation the classifier's DL arm
+     * THE STRUCTURAL ROUTE IS ASKED FIRST and is not about the title at all: a merge into
+     * the integration branch from a head branch whose ref names this card
+     * ({@see PrOutcome::mergeClosesCard()}). The classifier applies the identical term to
+     * the identical two fields, and it has to — this leg re-derives the same proposition
+     * from the same evidence on a schedule, so a term present on one side and absent on
+     * the other means the backstop and the event path disagree about which merges close a
+     * card, which is the drift `PrOutcome` exists to prevent. In practice only the
+     * integration outcome ever reaches here (the `merged_to_main` terminal return sits
+     * above), but the outcome is passed rather than assumed so the two calls are the same
+     * call.
+     *
+     * The two LEXICAL ways a title can name the card mirror the two correlation channels,
+     * exactly as the classifier's own gate does: the native `card#<id>`, or a closing form
+     * naming the `DL-NNN` the card carries in its payload — a card stamped `dl_number` IS
+     * the card that DL resolves to here, which is the same relation the classifier's DL arm
      * uses to authorize its set.
      *
      * THE DL IS READ OFF THE CARD, NEVER OFF THE TITLE. A `DL-NNN` in the title that this
@@ -511,8 +527,11 @@ class ReconcileCommand extends BridgeCommand
      *
      * @param  array<string, mixed>  $payload  the card payload (the `dl_number` stamp)
      */
-    private function closes(string $title, int $cardId, array $payload, ExternalReferenceNormalizer $refs): bool
+    private function closes(string $title, string $headRef, string $outcome, int $cardId, array $payload, ExternalReferenceNormalizer $refs): bool
     {
+        if (PrOutcome::mergeClosesCard($outcome, $headRef, $cardId)) {
+            return true;
+        }
         if (ClosureGrammar::closesCard($title, $cardId)) {
             return true;
         }

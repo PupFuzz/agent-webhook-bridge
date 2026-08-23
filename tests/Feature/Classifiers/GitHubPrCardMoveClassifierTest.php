@@ -1849,37 +1849,59 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame('opened', $r->targets[0]->payload['outcome']);
     }
 
-    // --- card#7348 / DL-305: correlation is not completion ---
+    // --- card#7348 / DL-305 (widened DL-308): correlation is not completion ---
     //
-    // The three acceptance witnesses the FR asked for live here and in
-    // `ReconcileCommandTest` (the third one, because the "later pass" that would have
-    // mass-demoted is the reconciler's). Witnesses 1 and 2 are deliberately the SAME
-    // fixture differing in ONE thing — the closing form — so nothing else can explain
-    // the difference between them.
+    // The acceptance witnesses live here and in `ReconcileCommandTest` (the redelivery
+    // one, because the "later pass" that would have mass-demoted is the reconciler's).
+    // Every pair below differs in exactly ONE thing, so nothing else can explain the
+    // difference between them:
+    //   1 vs 2  — the closing form            ⇒ isolates the LEXICAL route
+    //   1 vs 4  — the head branch ref         ⇒ isolates the STRUCTURAL route (DL-308)
+    //   4 vs 5  — the base ref                ⇒ pins the release-merge exclusion
+    //
+    // ⛔ WITNESSES 1 AND 3a WERE RE-ANCHORED BY DL-308, and the reason is worth stating
+    // where the next auditor will read it rather than in a changelog. Their original
+    // fixture was a merged-to-dev PR on branch `card-4811-widget` whose title merely
+    // mentioned card#4811, asserted to move NOTHING. That fixture is now an ACCEPTED case:
+    // it is a PR that IS card 4811's work, merged to the integration branch, which is
+    // exactly what DL-308 ruled closes a card. The assertion was not weakened to go green
+    // — the accept-set changed by decision, and the witness had to be re-pointed at the
+    // vector that is still refused (a title citing a card the BRANCH does not name, which
+    // is the peer incident this card was filed for). If you are here because a change made
+    // witness 1 pass trivially, check that first.
 
     /**
-     * The FIXTURE both witnesses run: a merged-to-dev PR on a `card#` branch, whose title
-     * is the only variable.
+     * The FIXTURE these witnesses run: a merged-to-dev PR, with the two closure surfaces —
+     * the title and the head ref — as the only variables.
+     *
+     * ⛔ THE DEFAULT HEAD NAMES NO CARD, deliberately, and that default is load-bearing
+     * since DL-308: a branch that named the card would close it structurally, and a
+     * witness about the closing FORM would then be passing for the other reason.
      *
      * @return array<string, mixed>
      */
-    private function mergedPrTitled(string $title): array
+    private function mergedPrTitled(string $title, string $head = 'fix/streaming-timeout', string $base = 'dev'): array
     {
         return [
-            'number' => 7348, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'number' => 7348, 'merged' => true, 'base' => ['ref' => $base],
             'title' => $title,
-            'head' => ['ref' => 'card-4811-widget'],
+            'head' => ['ref' => $head],
             'html_url' => 'https://github.com/owner/repo/pull/7348',
         ];
     }
 
     public function test_witness_1_a_bare_mention_on_a_merged_pr_moves_nothing(): void
     {
-        // ⛔ WITNESS 1 — THE DEFECT. Before DL-305 this exact event moved card 4811 to the
-        // `merged` stage (52) and the release sweep then promoted it to a TERMINAL stage. A
-        // peer measured 17 wrong-retirement candidates from this shape in ONE release
-        // bundle. The PR is about card 4811 — it says so — but it never claimed to finish
-        // it. (Revert the gate ⇒ one kanban_move_card target ⇒ RED.)
+        // ⛔ WITNESS 1 — THE DEFECT, and since DL-308 it is the FOREIGN-MENTION vector
+        // specifically. Before DL-305 this exact event moved card 4811 to the `merged`
+        // stage (52) and the release sweep then promoted it to a TERMINAL stage. A peer
+        // measured 17 wrong-retirement candidates from this shape in ONE release bundle.
+        // Nothing here claims card 4811 is finished: the title CITES it, and the head
+        // branch — this install's own artifact — is called `fix/streaming-timeout` and
+        // names no card at all. Quoting someone else's card id does not rename your
+        // branch, which is the whole reason the DL-308 widening was ruled to preserve the
+        // property roundtable #343 endorsed. (Revert either gate ⇒ one kanban_move_card
+        // target ⇒ RED.)
         Http::fake();
         Log::spy();
 
@@ -1890,15 +1912,21 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         // NEVER A SILENT NO-OP: the operator is told which card did not move and why.
         Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'mention-vs-closure')
             && str_contains((string) $msg, '4811')
-            && str_contains((string) $msg, 'NO stage move'))->once();
+            && str_contains((string) $msg, 'NO stage move')
+            // …AND IT NAMES THE BRANCH IT READ (DL-308). With two closure surfaces, a line
+            // quoting only the title sends the operator to rewrite prose when the actual
+            // answer is the branch name. (Drop the head ref from the warning ⇒ RED.)
+            && str_contains((string) $msg, 'fix/streaming-timeout'))->once();
     }
 
     public function test_witness_2_the_same_pr_with_a_closing_form_moves_the_card(): void
     {
-        // ⛔ WITNESS 2 — one variable changed. Same PR, same branch, same card, same base
-        // ref: only the title now CLAIMS the card is done, and the move is exactly what it
-        // always was. This is what makes witness 1 evidence about closure rather than about
-        // some unrelated thing the gate broke.
+        // ⛔ WITNESS 2 — one variable changed: THE CLOSING FORM. Same PR, same branch
+        // (which names no card, so the DL-308 structural route cannot be what moves this),
+        // same card, same base ref — only the title now CLAIMS the card is done, and the
+        // move is exactly what it always was. This is what makes witness 1 evidence about
+        // closure rather than about some unrelated thing the gate broke, and what keeps
+        // the LEXICAL route independently witnessed after DL-308 widened the accept-set.
         Http::fake();
         Log::spy();
 
@@ -1922,7 +1950,9 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         // — never an earlier stage. A rule that returned the pre-merge stage instead would
         // look correct on one card and would mass-demote every already-correct card on the
         // first run after this shipped, because their PRs are bare mentions under the new
-        // grammar too.
+        // grammar too. (DL-308 shrank that population — a PR on its own card's branch now
+        // closes — but did not empty it: this fixture is the residue, and the no-demotion
+        // property is what makes the residue harmless.)
         Http::fake();
 
         $first = $this->classify('pull_request.closed', $this->mergedPrTitled('feat: widget rework, follows card#4811'));
@@ -1934,6 +1964,126 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         // demotion would arrive as a kanban_move_card carrying an earlier outcome, and
         // asserting only on the move-to-52 would not have seen it.
         Http::assertNotSent(fn () => true);
+    }
+
+    // --- card#7348 / DL-308: the structural route ---
+
+    public function test_witness_4_the_same_mention_closes_when_the_branch_names_that_card(): void
+    {
+        // ⛔ WITNESS 4 — ONE VARIABLE CHANGED FROM WITNESS 1: the head branch ref. The
+        // title is byte-identical and still carries no closing verb; the branch is now
+        // `card-4811-widget`, the artifact `board-card-start` mints for card 4811. This
+        // is the case DL-305 refused and DL-308 accepts, and it is not a marginal one:
+        // measured against the shipped title-only accept-set, 0 of 351 correlated merged
+        // PRs in this shop closed anything, so without this route the gate freezes every
+        // board it guards — quietly, because CI is green and the merge succeeds.
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classify('pull_request.closed', $this->mergedPrTitled('feat: widget rework, follows card#4811', 'card-4811-widget'));
+
+        $move = $this->targetsNamed($r, 'kanban_move_card');
+        $this->assertCount(1, $move);
+        $this->assertSame(4811, $move[0]->payload['card_id']);
+        $this->assertSame('merged', $move[0]->payload['outcome']);
+        // The provenance stamps ride the structural move exactly as they ride the lexical
+        // one — the route decides WHETHER the card moves, never what the move carries.
+        $this->assertSame(7348, $move[0]->payload['stamp_pr']);
+        Log::shouldNotHaveReceived('warning');
+    }
+
+    public function test_witness_5_a_release_merge_is_not_widened_by_the_branch(): void
+    {
+        // ⛔ WITNESS 5 — ONE VARIABLE CHANGED FROM WITNESS 4: the base ref. The structural
+        // route is conditioned on a merge into the INTEGRATION branch, because
+        // merged-to-integration is the proposition the Shipped stage asserts. A release
+        // PR's head is normally a disposable `release/vX` that names no card, so the term
+        // would rarely fire here anyway — stating it as a condition is what stops a future
+        // release convention that DID name a card from silently acquiring a TERMINAL-stage
+        // move nobody approved. (Drop the outcome check from mergeClosesCard ⇒ this card
+        // lands in the released stage on a branch name ⇒ RED.)
+        Http::fake();
+
+        $r = $this->classify('pull_request.closed', $this->mergedPrTitled('feat: widget rework, follows card#4811', 'card-4811-widget', 'main'));
+
+        $this->assertSame([], $this->targetsNamed($r, 'kanban_move_card'));
+    }
+
+    public function test_witness_6_a_foreign_title_mention_cannot_ride_a_branch_that_names_another_card(): void
+    {
+        // ⛔⛔ WITNESS 6 — THE NEGATIVE THE WHOLE WIDENING RESTS ON, and the one the
+        // agreement is void without. The title cites card#4811 while the branch names
+        // card 9999. The structural term must corroborate the card it CLOSES, not merely
+        // observe that this merge closed SOMETHING: card 4811 is named by prose alone and
+        // must not move, while card 9999 — whose branch this is — does.
+        //
+        // ⚠ WHICH GUARD THIS ONE ACTUALLY DISCRIMINATES, stated because the mutation run
+        // measured it rather than assumed it. On THIS event the title-vs-branch authority
+        // rule (card#5287) refuses 4811 at SELECTION, so 4811 never reaches the closure
+        // filter at all — and keying the structural term on "the ref names ANY card"
+        // leaves this test GREEN. That mutation is caught by
+        // `test_the_structural_term_is_keyed_on_this_card_not_on_any_card` (at the
+        // predicate), by `test_the_structural_route_closes_only_the_bundled_card_its_branch_names`
+        // (where the DL puts two cards in the filter and selection cannot intervene), and
+        // by the backstop's own negative in `ReconcileCommandTest`. What this witness
+        // pins is the END-TO-END property those three imply and none of them states: on
+        // the peer's actual vector, the foreign card does not move and the branch's card
+        // does. Do not read it as covering the keying — it does not.
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classify('pull_request.closed', $this->mergedPrTitled('feat: widget rework, follows card#4811', 'card-9999-other'));
+
+        $move = $this->targetsNamed($r, 'kanban_move_card');
+        $this->assertSame([9999], array_map(fn ($t) => $t->payload['card_id'], $move), 'only the branch\'s own card may move');
+        $this->assertNotContains(4811, array_map(fn ($t) => $t->payload['card_id'], $move));
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'title-vs-branch conflict, card#5287')
+            && str_contains((string) $msg, 'card#4811'))->once();
+    }
+
+    public function test_the_structural_route_closes_only_the_bundled_card_its_branch_names(): void
+    {
+        // PER CARD, not per event. A branch ref names ONE card, so a bundled DL resolving
+        // to two cards on a branch that names one of them closes that one alone — the same
+        // filter semantics the `card#` closing form has, and deliberately NOT the DL closing
+        // form's whole-set semantics (a claim made about a DL is made about everything the
+        // DL tracks; a branch name is a claim about one card). (Return the whole set when
+        // the branch names any member ⇒ card 8 retires on card 7's branch ⇒ RED.)
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 7, 'payload' => ['dl_number' => 'DL-9']],
+            ['id' => 8, 'payload' => ['dl_number' => 'DL-9']],
+        ]])]);
+        Log::spy();
+
+        $r = $this->classify('pull_request.closed', [
+            'number' => 154, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'bundled fix for DL-9', 'head' => ['ref' => 'card-7-partial'],
+        ]);
+
+        $move = $this->targetsNamed($r, 'kanban_move_card');
+        $this->assertSame([7], array_map(fn ($t) => $t->payload['card_id'], $move));
+        // …and the one left behind is still NAMED, on the same warning the lexical partial
+        // close emits. A structural partial is as silent as a lexical one without it.
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'mention-vs-closure')
+            && str_contains((string) $msg, 'card(s) 8'))->once();
+    }
+
+    public function test_a_foreign_dl_closing_form_still_cannot_ride_the_structural_route(): void
+    {
+        // ⛔ THE DL-218 GUARD, RE-TESTED THROUGH THE NEW DOOR. DL-9 resolves to card 7; a
+        // co-present card#4811 names a different card, so the explicit card# is ruled
+        // authoritative and the DL is foreign to it. The branch names neither. Widening the
+        // accept-set must not turn the foreign `Closes DL-9` into an authorization for
+        // 4811, and must not turn "this merged to dev" into one either: merged-to-dev is
+        // half the structural term, never the whole of it.
+        $this->fakeBoardCards();   // DL-9 → card 7
+
+        $r = $this->classify('pull_request.closed', [
+            'number' => 155, 'merged' => true, 'base' => ['ref' => 'dev'],
+            'title' => 'Static guard, Closes DL-9, card#4811', 'head' => ['ref' => 'fix/streaming-timeout'],
+        ]);
+
+        $this->assertSame([], $this->targetsNamed($r, 'kanban_move_card'));
     }
 
     public function test_a_bare_mention_still_moves_on_the_ungated_outcomes(): void

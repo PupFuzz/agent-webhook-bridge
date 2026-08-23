@@ -660,4 +660,78 @@ class ReconcileCommandTest extends TestCase
 
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
+
+    // --- card#7348 / DL-308: the structural route, in lockstep on the backstop ---
+
+    /**
+     * A merged PR whose title only MENTIONS the card, on a head branch that names `$card`.
+     *
+     * @return array<string, mixed>
+     */
+    private function mergedPrOnBranch(string $head, int $card = 5): array
+    {
+        return ['state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x',
+            'title' => "work, follows card#{$card}", 'head' => ['ref' => $head]];
+    }
+
+    public function test_the_backstop_reconciles_a_merge_whose_branch_names_the_card(): void
+    {
+        // THE LOCKSTEP POSITIVE. This is byte-for-byte the situation
+        // `test_a_bare_mention_merge_plans_no_forward_move_either` above refuses — same
+        // card, same stage, same mention-only title — with ONE field added: a head branch
+        // ref naming card 5. The classifier moves this card (witness 4); if the backstop
+        // did not, the two paths would disagree about which merges close a card, and
+        // `--fix` on a schedule would keep declining a move the event path had made. That
+        // is the drift `PrOutcome` owns the term to prevent, and this is the assertion
+        // that the term is actually WIRED here rather than only there.
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => $this->mergedPrOnBranch('card-5-widget')]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->doesntExpectOutputToContain('a MENTION, not a closure claim')
+            ->assertExitCode(0);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && str_contains($r->url(), '/tasks/5.json')
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
+    public function test_the_backstop_refuses_a_branch_that_names_another_card(): void
+    {
+        // ⛔ THE NEGATIVE, on the leg that runs unattended on a schedule — which is where a
+        // wrong widening does the most damage, because nobody is watching a cron the way
+        // they watch a merge. One variable changed from the test above: the branch names
+        // card 9999, so nothing about this merge claims card 5 is done. (Key the term on
+        // "the ref names any card" ⇒ card 5 is PATCHed to the merged stage by a cron ⇒ RED.)
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => $this->mergedPrOnBranch('card-9999-other')]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            // ONE matcher, spanning BOTH claims — the skip line names the ref it read (so
+            // an operator debugging a card that will not move sees the surface that decided
+            // it) AND states the ruling. Two chained `expectsOutputToContain` calls against
+            // one line do not both match: the first consumes it.
+            ->expectsOutputToContain("neither its head branch ref ('card-9999-other') nor a closing form in its title names this card — a MENTION, not a closure claim")
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_the_backstop_does_not_demote_a_shipped_card_whose_branch_named_it(): void
+    {
+        // The DL-305 no-demotion property, re-asserted through the new route: a card
+        // already at the merged stage whose PR closes it structurally must reconcile to
+        // IN-SYNC, not to a move. Widening what closes a card widens the population this
+        // command re-derives an expectation for on every pass, so the property that made
+        // DL-305 safe to ship has to be re-witnessed against the wider population rather
+        // than inherited from it.
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 52, ['pr_url' => $this->prUrl(5)])], [5 => $this->mergedPrOnBranch('card-5-widget')]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->doesntExpectOutputToContain('SKIP-DRIFT')
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
 }
