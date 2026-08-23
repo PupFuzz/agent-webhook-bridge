@@ -5,6 +5,7 @@ namespace Tests\Feature\Support;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\StrayRequestException;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\NestedSuite;
 use Tests\TestCase;
 
 /**
@@ -27,6 +28,8 @@ use Tests\TestCase;
  */
 class StrayRequestGuardTest extends TestCase
 {
+    use NestedSuite;
+
     private const UNSTUBBED = 'https://kanban.example.com/api/v3/tasks/1.json';
 
     public function test_an_unstubbed_request_throws_instead_of_leaving_the_process(): void
@@ -85,5 +88,71 @@ class StrayRequestGuardTest extends TestCase
 
         $this->expectStrayRequest(self::UNSTUBBED);
         $this->assertSame([], $this->undeclaredStrayRequests());
+    }
+
+    /**
+     * ⛔ A DECLARATION EXPIRES WITH THE STRAY IT DECLARES.
+     *
+     * `expectStrayRequest()` is the one thing that silences the reporter, so a declaration
+     * that has stopped being true is a live exemption covering whatever strays to that url
+     * next — a declaration witnessed by nothing, which is the shape card#7300 was filed on
+     * and which the three declarations above would otherwise be free to become.
+     *
+     * Run out-of-process for the reason the harness exists: this asserts that a test FAILS,
+     * and a test cannot assert its own failure from inside itself. The pair is
+     * discriminating — the fixture that declares AND strays must PASS, or a guard that
+     * simply failed every declaring test would satisfy the half that matters.
+     */
+    public function test_a_declaration_nothing_strayed_to_fails_its_own_test(): void
+    {
+        $dir = sys_get_temp_dir().'/stray-declaration-'.uniqid();
+        mkdir($dir, 0700, true);
+
+        try {
+            $this->writeDeclaringClass($dir, 'DeclaredAndStrayedTest', true);
+            $this->writeDeclaringClass($dir, 'DeclaredAndDidNotStrayTest', false);
+
+            [, $junit] = $this->runNestedSuite($dir);
+
+            // The control: a declaration the test still drives is not a finding.
+            $this->assertSame(
+                '0',
+                (string) $this->nestedSuiteFor($junit, 'DeclaredAndStrayedTest')['failures'],
+                'a declaration the test DOES stray to must stay silent — otherwise the guard below is just failing every declaring test',
+            );
+
+            $this->assertStringContainsString(
+                self::UNSTUBBED,
+                $this->nestedFailureFor($junit, 'DeclaredAndDidNotStrayTest'),
+                'a declaration nothing strayed to must fail its own test, naming the url that has stopped being declared-for',
+            );
+        } finally {
+            exec('rm -rf '.escapeshellarg($dir));
+        }
+    }
+
+    private function writeDeclaringClass(string $dir, string $class, bool $strays): void
+    {
+        $url = self::UNSTUBBED;
+        $request = $strays ? "try { Http::get('{$url}'); } catch (\\Throwable) {}" : '';
+
+        file_put_contents($dir.'/'.$class.'.php', <<<PHP
+        <?php
+
+        namespace Tests\\Fixtures\\StrayDeclaration;
+
+        use Illuminate\\Support\\Facades\\Http;
+        use Tests\\TestCase;
+
+        class {$class} extends TestCase
+        {
+            public function test_case(): void
+            {
+                \$this->expectStrayRequest('{$url}');
+                {$request}
+                \$this->assertTrue(true);
+            }
+        }
+        PHP);
     }
 }

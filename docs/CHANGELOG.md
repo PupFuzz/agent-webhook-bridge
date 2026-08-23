@@ -263,7 +263,20 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   failed — **and the primitive is fixed rather than the sixth call site**: `Tests\TestCase` now
   defaults `bridge.config_dir` / `bridge.secret_dir` to a path that does not exist, so the default on
   every host is the shape CI already had and the next artisan-invoking class cannot re-mint the leak
-  by forgetting to pin one.
+  by forgetting to pin one. **That default closes more than the HTTP half**: `BridgePaths::stateDir()`
+  falls back to `<config_dir>/state`, so on a deployed checkout the suite's default STATE dir was the
+  operator install's real one — the directory holding its live `inbox.jsonl` — and an unpinned test
+  that staged an intent would have appended to it. Recorded as a hazard closed, not a write observed:
+  instrumenting every state-write primitive across the whole suite logs **173 calls, none of them
+  through the default** (all resolve to a temp dir the test pinned).
+  **The report is made inside a `finally`**, so `parent::tearDown()` — and with it `RefreshDatabase`'s
+  rollback — runs even when a guard fails. Without it a single reported stray skipped the rollback and
+  left an open transaction on a statically-cached connection: measured on a one-stub mutant, the same
+  class returned 1 failure plus **158 errors** (`cannot start a transaction within a transaction`)
+  with 451 of its 527 assertions never executed, and a second straying class never named its own url —
+  the reds a sample again. An `expectStrayRequest()` declaration also EXPIRES now: a declaration no
+  refusal matched fails its own test, so the one exemption the guard has cannot rot into a live
+  blanket over whatever strays to that url next.
   **ONE url is allowed to stay stray**, `http://localhost/` inside `ChannelPushUdsTest`, whose
   subject IS the live curl/Guzzle Unix-domain-socket transport and whose destination is a socket the
   test binds and deletes itself. Scoped to that url, not to the class: a per-class opt-out would

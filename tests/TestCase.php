@@ -25,10 +25,20 @@ abstract class TestCase extends BaseTestCase
     /**
      * A path that must not exist, so an install-reading check finds nothing rather than
      * finding the OPERATOR'S install. Deliberately not a temp dir the test creates: no test
-     * may depend on this default resolving to a real directory, and a path that cannot be
-     * created by accident is the cheapest way to keep that true.
+     * may depend on this default resolving to a real directory.
+     *
+     * ⛔ The `/dev/null/` prefix is load-bearing, and the first spelling — `/nonexistent/` —
+     * was not enough for the sentence above. `BridgePaths::ensureDir()` is
+     * `mkdir($dir, 0700, true)`, RECURSIVE from `/`. Measured on this host: `/nonexistent/…`
+     * fails errno 13 `EACCES` — a PERMISSION verdict, and permission is exactly what
+     * `CAP_DAC_OVERRIDE` bypasses, so a root runner (which this suite explicitly supports,
+     * {@see SkipsAsRoot}) would create a directory at the filesystem ROOT; `/dev/null/…` fails
+     * errno 20 `ENOTDIR`, raised by path RESOLUTION because a non-directory is used as a
+     * directory component, which no privilege bypasses. ⚑ The two errnos are measured; the
+     * root behaviour is inferred from them and was not executed here (this host refuses
+     * unprivileged user namespaces and no escalation was made).
      */
-    private const NO_INSTALL_DIR = '/nonexistent/bridge-tests-no-install-dir';
+    private const NO_INSTALL_DIR = '/dev/null/bridge-tests-no-install-dir';
 
     /**
      * Every url the stray guard refused during this test, in order.
@@ -66,12 +76,35 @@ abstract class TestCase extends BaseTestCase
         ]);
     }
 
+    /**
+     * ⛔ `parent::tearDown()` runs even when a guard above it fails, and the `finally` is the
+     * only reason.
+     *
+     * Every guard above reports by THROWING (`fail()`), and a throw out of `tearDown()` skips
+     * everything after it — which is `tearDownTheTestEnvironment()`, i.e. `Mockery::close()`,
+     * `HandleExceptions::flushState()`, `$app->flush()`, and every
+     * `beforeApplicationDestroyed` callback. `RefreshDatabase` registers its ROLLBACK as one of
+     * those and caches the PDO in the static `RefreshDatabaseState::$inMemoryConnections`,
+     * which outlives the test case: skip the rollback once and the connection keeps an open
+     * transaction for the rest of the PROCESS. Measured on the `BridgeCommandsTest` mutant that
+     * witnesses the stray reporter (drop one `fakePreload()`): without the `finally` the class
+     * reports 1 failure and **158 errors** — `cannot start a transaction within a transaction`
+     * — and 451 of its 527 assertions never execute; with it, 1 failure and 0 errors.
+     *
+     * ⚑ That is not just noise. It breaks the claim the guard exists to make: with two strays
+     * in two `RefreshDatabase` classes, the first names its url and the second dies in
+     * `setUp()` before it can name its own. One stray would report a SAMPLE of the strays —
+     * the exact defect card#7300 was filed on. `StrayRequestGuardCascadeTest` is the witness.
+     */
     protected function tearDown(): void
     {
-        $this->assertNothingWasCommittedWithoutIsolation();
-        $this->assertNoStrayRequestWasSwallowed();
-
-        parent::tearDown();
+        try {
+            $this->assertNothingWasCommittedWithoutIsolation();
+            $this->assertNoStrayRequestWasSwallowed();
+            $this->assertEveryDeclaredStrayActuallyStrayed();
+        } finally {
+            parent::tearDown();
+        }
     }
 
     /**
@@ -84,6 +117,14 @@ abstract class TestCase extends BaseTestCase
      * class is noisy" is not the bar, and this is not an opt-out: the request is still refused
      * and still never leaves the process; all this says is which test is the one asserting it.
      * Scope it to the exact url, never to a pattern or a class.
+     *
+     * ⚑ A declaration EXPIRES with the stray it declares: `tearDown()` fails a passing test
+     * that declared a url no refusal ever matched. Without that, a declaration that stopped
+     * being true would keep silently suppressing whatever LATER strays to the same url — a
+     * declaration witnessed by nothing, which is the shape card#7300 was filed on.
+     *
+     * ⚑ It is per-URL and not per-request: declaring a url excludes EVERY refusal to it in
+     * this test, not one. See `undeclaredStrayRequests()`.
      */
     protected function expectStrayRequest(string $url): void
     {
@@ -96,6 +137,12 @@ abstract class TestCase extends BaseTestCase
      *
      * Readable by a test so the reporting predicate itself has a witness that can fail; the
      * only caller is `tests/Feature/Support/StrayRequestGuardTest.php`.
+     *
+     * ⚑ `array_diff` is per-VALUE, so a declared url is removed on every occurrence, not
+     * once: declare `/x` and stray to it five times and this returns none of them. That is
+     * deliberate and matches how a declaration is scoped (to a url, never to a count) — but it
+     * is why the `tearDown()` message counts UNDECLARED refusals and says so, rather than
+     * claiming to count the outbound requests the class made.
      *
      * @return list<string>
      */
@@ -187,12 +234,46 @@ abstract class TestCase extends BaseTestCase
         $urls = array_unique($unexpected);
 
         $this->fail(
-            static::class.' made '.count($unexpected).' outbound request(s) no stub answered, to '
+            static::class.' made '.count($unexpected).' UNDECLARED outbound request(s) no stub answered, to '
             .count($urls).' distinct url(s): '.implode(', ', $urls).'. The guard refused each one, so nothing '
             .'left the process — but the caller SWALLOWED the refusal, so the assertions above '
             .'passed through a degradation arm while naming the happy path. Stub the url in '
             .'every test that reaches it and assert it on the wire (CLAUDE_TESTING.md § Outbound '
             .'HTTP). A test whose SUBJECT is the stray declares it with expectStrayRequest().',
+        );
+    }
+
+    /**
+     * ⛔ A declaration nothing witnesses is the defect, not the exemption.
+     *
+     * `expectStrayRequest()` suppresses the report for a url. Nothing made it expire: declare
+     * a url the test stops straying to and it passes, while quietly covering whatever strays
+     * to that url NEXT. So a declaration that never matched a refusal fails its own test —
+     * the same bar `Http::assertSent()` sets for a stub.
+     *
+     * ⚑ Only on a test that otherwise SUCCEEDED. A test that already failed usually stopped
+     * before the request it declares, and reporting a stale declaration on top of the real
+     * failure would name a consequence as a cause. `status()` is set before `tearDown()` runs
+     * ({@see \PHPUnit\Framework\TestCase::runBare()}), so it is readable here.
+     */
+    private function assertEveryDeclaredStrayActuallyStrayed(): void
+    {
+        if ($this->expectedStrayRequests === [] || ! $this->status()->isSuccess()) {
+            return;
+        }
+
+        $unfired = array_values(array_unique(array_diff($this->expectedStrayRequests, $this->strayRequests)));
+
+        if ($unfired === []) {
+            return;
+        }
+
+        // `fail()` for the same reason as the two guards above: this reports on the class.
+        $this->fail(
+            static::class.' declared '.count($unfired).' stray url(s) with expectStrayRequest() that nothing '
+            .'strayed to: '.implode(', ', $unfired).'. A declaration is an assertion that this test DRIVES that '
+            .'request, and it expires with it — drop the declaration, or fix the test so it reaches the url '
+            .'again (CLAUDE_TESTING.md § Outbound HTTP).',
         );
     }
 
