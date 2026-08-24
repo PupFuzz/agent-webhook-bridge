@@ -3,6 +3,7 @@
 namespace Tests\Unit\Support;
 
 use App\Bridge\Support\ExternalReferenceNormalizer;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -37,6 +38,78 @@ class ExternalReferenceNormalizerTest extends TestCase
         $this->assertSame('85', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, '#85'));
         $this->assertSame('85', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, '85'));
         $this->assertSame('85', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, 85));
+    }
+
+    /**
+     * The parity cases the kanban authority added in ITS DL-251 and this mirror had not
+     * carried: a correlation value that is not a single decorated integer names no
+     * identifier, so it derives NO ref rather than the concatenation of its digit runs —
+     * which is a real, DIFFERENT pull request or decision.
+     */
+    #[DataProvider('severalDigitRunCases')]
+    public function test_a_value_carrying_several_digit_runs_names_no_single_identifier(string $in): void
+    {
+        // Concatenating the runs is what minted a plausible-but-wrong ref: the date below
+        // derived "20260823" here while the server derived nothing for the same card.
+        $this->assertNull($this->n()->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, $in));
+    }
+
+    /** @return array<string, array{string}> */
+    public static function severalDigitRunCases(): array
+    {
+        return [
+            'decimal' => ['1.5'],
+            'two counts in prose' => ['PR 12 of 34'],
+            'version then number' => ['v1.2 #85'],
+            'iso date' => ['2026-08-23'],
+            'range' => ['12-34'],
+        ];
+    }
+
+    public function test_a_non_integer_number_derives_no_ref_rather_than_a_different_real_one(): void
+    {
+        $this->assertNull(
+            $this->n()->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, 1.5),
+            'a non-integer value names no pull request, so it must derive no ref rather than PR #1'
+        );
+    }
+
+    public function test_one_stored_value_derives_one_ref_regardless_of_json_type(): void
+    {
+        // What a card correlates to must be a property of the VALUE, not of the JSON type
+        // it arrived as. The float half of this is reachable in the bridge as of DL-309:
+        // TrackedCardRef reads `pr_number` straight off a decoded card payload, where a
+        // number-typed field arrives as a PHP float.
+        $n = $this->n();
+        $this->assertSame(
+            $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, '1.5'),
+            $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, 1.5),
+        );
+    }
+
+    public function test_an_integral_float_still_derives_its_integer_ref(): void
+    {
+        // Control, kept deliberately: the refusal is scoped to the non-integral case, not
+        // to floats generally.
+        $n = $this->n();
+        $this->assertSame('85', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, 85.0));
+        $this->assertSame('1', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, 1.0));
+    }
+
+    public function test_a_non_numeric_system_keeps_its_value_verbatim_and_is_not_truncated(): void
+    {
+        // The float branch sits BEFORE the system branch, so an unknown system's verbatim
+        // contract survives a numeric value instead of truncating it.
+        $n = $this->n();
+        $this->assertSame('1.5', $n->canonicalize('jira', 1.5));
+        $this->assertSame('PROJ-123', $n->canonicalize('jira', 'PROJ-123'));
+    }
+
+    public function test_a_float_too_large_to_be_an_integer_identifier_derives_no_ref(): void
+    {
+        $n = $this->n();
+        $this->assertNull($n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, 1.0e20));
+        $this->assertSame('1000000000000000', $n->canonicalize(ExternalReferenceNormalizer::SYSTEM_DL, 1.0e15));
     }
 
     public function test_all_zero_numeric_ref_canonicalizes_to_single_zero(): void

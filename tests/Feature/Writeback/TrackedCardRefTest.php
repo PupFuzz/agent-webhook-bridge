@@ -64,6 +64,64 @@ class TrackedCardRefTest extends TestCase
         $this->assertSame(7, $ref->prNumber);
     }
 
+    /**
+     * DL-309 — which pull request a `pr_number` names is the normalizer's answer, not a
+     * local `(int)` cast. `1.5` truncated to PR 1 here while the kanban server (its
+     * DL-251) derives no `github_pr` ref at all from the same stored value: one card, two
+     * authorities, two answers, and PR 1 is a real, unrelated pull request the reconcile
+     * would then read and move the card from.
+     */
+    public function test_a_non_integer_pr_number_names_no_pull_request(): void
+    {
+        // A number-typed kanban field decodes to a PHP float; the durable inbox / a JSON
+        // round-trip can hand back the same value as a string. Both must answer alike.
+        foreach ([1.5, '1.5'] as $value) {
+            $ref = TrackedCardRef::fromPayload(['pr_number' => $value], false, $this->refs);
+
+            $this->assertSame(TrackedRefKind::None, $ref->kind, 'value: '.var_export($value, true));
+            $this->assertNull($ref->prNumber);
+        }
+    }
+
+    public function test_a_non_integer_pr_number_is_not_ambiguous_either_on_a_shared_board(): void
+    {
+        // The shared-board arm truncated identically, and `Ambiguous` is the kind
+        // bridge:reconcile prints an operator-facing skip line for — one that would have
+        // named the fabricated number as the card's PR.
+        $ref = TrackedCardRef::fromPayload(['pr_number' => 1.5], true, $this->refs);
+
+        $this->assertSame(TrackedRefKind::None, $ref->kind);
+        $this->assertNull($ref->prNumber);
+    }
+
+    public function test_an_integral_pr_number_is_still_tracked_whatever_its_json_type(): void
+    {
+        // Control: the refusal is scoped to values naming no single integer, not to floats
+        // or numeric strings generally.
+        foreach ([85, 85.0, '85', '085'] as $value) {
+            $ref = TrackedCardRef::fromPayload(['pr_number' => $value], false, $this->refs);
+
+            $this->assertSame(TrackedRefKind::PrNumber, $ref->kind, 'value: '.var_export($value, true));
+            $this->assertSame(85, $ref->prNumber);
+        }
+    }
+
+    /**
+     * The admission test deliberately did NOT move with DL-309: this leg is the BARE
+     * positive number it always was. Both values below canonicalize to a ref the kanban
+     * server does index (`-5` → "5", `#85` → "85"), so routing the value through the
+     * normalizer without keeping the admission test would have silently widened what the
+     * reconcile acts on — an outward move driven by a value nobody meant as a PR number.
+     */
+    public function test_a_negative_or_decorated_pr_number_is_still_not_a_bare_pr_number(): void
+    {
+        foreach ([-5, '-5', '#85', 'PR-85'] as $value) {
+            $ref = TrackedCardRef::fromPayload(['pr_number' => $value], false, $this->refs);
+
+            $this->assertSame(TrackedRefKind::None, $ref->kind, 'value: '.var_export($value, true));
+        }
+    }
+
     public function test_dl_only_is_dl_only(): void
     {
         $ref = TrackedCardRef::fromPayload(['dl_number' => 'DL-0207'], false, $this->refs);

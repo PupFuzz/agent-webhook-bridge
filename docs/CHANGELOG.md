@@ -8,6 +8,61 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.75.1] - 2026-08-24
+
+### Fixed
+
+- **card#7564 (DL-311)** — **the remaining three sites that answered "which pull request does this
+  value name" with a bare `(int)` now ask the normalizer, and the question has ONE implementation.**
+  DL-309 closed the two sites its investigation named; it did not close the shape. A card storing
+  `'1.5'` still read as PR **1** — a real, unrelated pull request — in:
+  **(1) `CardTokenCorroboration::tracksPr`**, the predicate gating an **uncorroborated title-only
+  `card#` write**. ⚠ This one is **permissive, not fail-closed**: the gate refuses when the card does
+  NOT track the event's PR, so a false "same PR" **allowed** a title-only move/`block_reason` write
+  onto a card the pull request had nothing to do with. Reachable on the default configuration; the
+  docblock's fail-closed claim was true only of NON-numeric values, and `'1.5'` is numeric.
+  **(2) `KanbanClient::correlatePr` and (3) `correlateIssue`**, `scan`-mode only — the legacy
+  correlation fallback (`BRIDGE_WRITEBACK_CORRELATION=scan`, kept and unchanged in every other
+  respect), where the same value matched PR/issue 1 while `ref` mode asks the kanban server, which
+  has refused it since kanban DL-251. **Two modes of one correlation now answer one card
+  identically.**
+  **One predicate, not four spellings of it (canon #5):** the positive-bare-number ADMISSION and the
+  normalizer DERIVATION are hoisted into `BareRefNumber` and shared by all three sites plus
+  `TrackedCardRef`, whose behavior is unchanged (its inline form was byte-equivalent; DL-309's
+  admission mutants still red it).
+  ⚠ **Consumer-visible delta, in the fail-closed direction only:** an uncorroborated title-only
+  `card#` naming a card whose `pr_number` names no single pull request is now REFUSED (alert +
+  card note) instead of written, and `scan` mode no longer correlates such a card. **Nothing widened**
+  — `85`, `85.0`, `'085'` and `'148'` corroborate and correlate exactly as before, and `-5` / `'#85'`
+  still name no PR here even though the kanban server indexes the refs they canonicalize to.
+  Sibling sweep (card#7564's open axis, now closed): no other `(int)` cast in `app/` reads a
+  caller-supplied correlation value — the rest cast kanban/GitHub server-generated ids.
+  `KanbanMoveCardHandler`'s `stamp_pr` stays out of the class (a GitHub delivery's own PR number).
+
+- **card#7536 (DL-309)** — **a correlation value that is not a single decorated integer now derives
+  NO ref, matching the kanban server.** kanban-board ruled that in its own **DL-251** and the bridge's
+  deliberate 1:1 mirror of `ExternalReferenceNormalizer` did not move with it, so one stored value
+  answered two ways: `'1.5'` derived PR **15** here and **nothing** there; `'2026-08-23'` derived
+  **20260823**; `'PR 12 of 34'` derived **1234**. Each fabricated ref names a **real, unrelated**
+  pull request or decision, and neither system reports the mismatch. Well-formed values are
+  **byte-identical** before and after — `'DL-028'`, `'#85'`, `'85'`, `85` and the integral float
+  `85.0` all canonicalize exactly as they did.
+  **Two halves, because either alone leaves the harm:** `canonicalize()` takes `float|int|string` and
+  renders a float faithfully ahead of the system branch (nothing truncated, and a non-numeric system's
+  verbatim contract survives a numeric value), and a numeric system's ref must be **one** digit run
+  rather than the concatenation of every run found. `TrackedCardRef::fromPayload` — which was doing
+  its own `(int)` on `pr_number` **outside** the normalizer — now asks it which pull request the value
+  names, so `bridge:reconcile` and the DL-207 promote sweep no longer read a GitHub PR the card never
+  named. Measured: with the normalizer alone fixed, three of the new tests stay red.
+  ⚠ **Consumer-visible delta: an absent correlation where a wrong one used to be.** A card carrying a
+  malformed `pr_number` is no longer a tracked card at all — no GitHub read, no move, and no skip
+  line (it names no PR, so it is not a skipped card). A card carrying a malformed `dl_number` no
+  longer false-matches a DL token in `scan`-mode correlation or in the reconcile's closure compare.
+  ⚠ **What deliberately did NOT widen:** the `pr_number` leg still admits a **positive bare** number
+  only. `-5` and `'#85'` canonicalize to refs the kanban server does index (`"5"`, `"85"`), and
+  letting them in here would have started driving outward moves off values nobody meant as a PR
+  number — a separate ruling, pinned by tests rather than by prose.
+
 ## [0.75.0] - 2026-08-23
 
 ### Added
