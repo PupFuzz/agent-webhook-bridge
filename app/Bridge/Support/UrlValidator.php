@@ -5,10 +5,15 @@ namespace App\Bridge\Support;
 use App\Bridge\Exceptions\ConfigException;
 
 /**
- * Shared http(s) URL validation for config values (the receiver base URL, a
- * provider API base URL, a channel URL). One home so every URL-shaped config
- * field rejects whitespace / non-http schemes / hostless values with the same
- * actionable message naming the field.
+ * Shared http(s) URL validation for the two INSTALL ENDPOINT config values: the
+ * receiver base URL and a provider API base URL. One home so both reject
+ * whitespace / non-http schemes / hostless values with the same actionable
+ * message naming the field.
+ *
+ * A channel URL is NOT one of them. `channel.url` is shape-checked at its own
+ * parse site in `AgentConfig` and its loopback gate belongs to the `channel_push`
+ * handler; `alert_channel.url` has `LocalhostUrl`. Listing a caller this class
+ * does not have is what sent a reader here looking for the https floor on it.
  */
 final class UrlValidator
 {

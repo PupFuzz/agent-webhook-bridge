@@ -8,7 +8,8 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardCollapse;
-use App\Bridge\Writeback\CoordLaneStages;
+use App\Bridge\Writeback\CoordCardLanePlacement;
+use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -32,7 +33,13 @@ use Illuminate\Support\Facades\Log;
  * Correlation + idempotency key on the `id:<sid>` TAG (the
  * locked contract adoption key): if a card already carries it, skip — which covers
  * redelivery, opened+reopened, AND the bridge-vs-reconcile race (both movers key on
- * the same tag). Otherwise create at the stage {@see CoordLaneStages} resolves (the
+ * the same tag). That read is LIVE-only, so a fourth duplicate source needs its own
+ * branch: a thread whose only card was ARCHIVED reads as un-carded, and a reopen would
+ * mint a second card over the retire (DL-296). One `archivedOnly` tag search answers
+ * it, and {@see retiredTwins} decides on the consumer's partition — a human retire
+ * suppresses the create and signals; ONE reroute-archived twin exempts the whole
+ * THREAD, exactly as the consumer's set difference does.
+ * Otherwise create at the stage {@see CoordCardLanePlacement} resolves (the
  * mapping's `coord_card_stage_id` unless a lane model is configured and governs this
  * issue — an anchored `[TASK]` title, card#6371), then re-read + collapse a raced
  * duplicate via the shared {@see CardCollapse}.
@@ -55,6 +62,32 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
      * repo (DL-274(3)).
      */
     private const ALERT_OUTCOME = 'coord_card_create';
+
+    /**
+     * The consumer's `REROUTE_ARCHIVED_TAG` (`kanban_common.REROUTE_ARCHIVED_TAG`),
+     * carried here because the two movers must partition the archived population the
+     * SAME way or the bridge would honour a retire the reconcile is about to undo
+     * (DL-296). It is stamped by the consumer's reclass pass when it archives a coord
+     * twin whose source re-routed to another board — FRAMEWORK bookkeeping, not a human
+     * decision — which is why an archived card carrying it does NOT suppress a create:
+     * a source that routes BACK must get its card again. The literal is a shared
+     * CONTRACT with the consumer (like the `id:<sid>` adoption key), so it is pinned
+     * here rather than derived; a consumer that renames it renames it on both sides.
+     *
+     * ⚠ BOUND — this carve-out covers the CONSUMER's bookkeeping archive only, because
+     * that is the only bookkeeping archive that carries a marker. The BRIDGE archives
+     * cards too and marks none of them: {@see CardCollapse::toSurvivor} retires a raced
+     * duplicate carrying this very `id:<sid>` tag, and `KanbanDependabotCardHandler`
+     * retires a dependabot card on `closed_unmerged` (DL-161). A collapse artifact is
+     * therefore INDISTINGUISHABLE here from a hand retire. That is harmless for the
+     * collapse — it only ever archives the losers of a race whose survivor stays LIVE,
+     * so the live pre-check answers first and this branch is never reached — and it
+     * bites only if that survivor later leaves the live search (a hard delete), which
+     * would leave the thread reading as retired on an archive nobody decided. Stated,
+     * not fixed: marking the bridge's own archive is a new cross-system tag the consumer
+     * would also have to partition on. Class item card#7222.
+     */
+    private const REROUTE_ARCHIVED_TAG = 'coord:reroute-archived';
 
     private WritebackAlertNotifier $alerts;
 
@@ -153,6 +186,23 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
 
                 return;
             }
+            // Both reads above are LIVE-only (kanban excludes archived rows), so a thread
+            // whose ONLY card was RETIRED reads as un-carded and a reopen would mint a
+            // second card over the retire (DL-296). Ask the archive side explicitly, and
+            // only here — this is the last branch before the create, so the extra search
+            // is paid once per card the handler was about to mint, never on a skip.
+            if ($tag !== null) {
+                $retired = self::retiredTwins($client->cardRowsByTag($mapping->boardId, $tag, true));
+                if ($retired !== []) {
+                    $this->alerts->warnAndNotify(
+                        'kanban_coord_card: the only card for this thread is ARCHIVED (a deliberate retire, and archival is not the bridge\'s to undo) — NOT creating a replacement; unarchive that card if the thread is live again',
+                        ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag, 'archived_card_ids' => $retired],
+                        $repo, self::ALERT_OUTCOME, null, 'coord_card_archived_twin', $issueNumber,
+                    );
+
+                    return;
+                }
+            }
 
             // Churn-avoidance fields mirror the reconcile's build_create so its next pass
             // doesn't update-churn them: description, priority (brief⇒1), and the issue
@@ -187,15 +237,29 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
             // eligible key and collapse a duplicate a concurrent delivery (or the reconcile)
             // minted. Deterministic survivor ⇒ racing workers converge.
             if ($tag !== null) {
-                $live = $client->cardsByTag($mapping->boardId, $tag);
+                // The ROW-returning twin of the ids-only `cardsByTag` the pre-check uses.
+                // Same one GET, so carrying the board through the collapse costs nothing —
+                // it is the ids-only PROJECTION, not the request, that was discarding it.
+                // The twin does NOT carry `correlationIds`' no-card-collection diagnostic
+                // (DL-026), and nothing is lost: reaching this line means the pre-check's
+                // `cardsByTag` ran on the same board+tag in this same delivery and already
+                // warned if kanban answered a body with no `data` collection.
+                $live = $this->onMappedBoard($client->cardRowsByTag($mapping->boardId, $tag), $mapping, $repo, $issueNumber);
                 if (count($live) > 1) {
-                    CardCollapse::toSurvivor($client, array_fill_keys($live, []), 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag]);
+                    CardCollapse::toSurvivor($client, $live, 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag], $mapping);
                 }
             }
             if ($byRef) {
                 $liveRef = $client->correlateIssue($mapping->boardId, $issueNumber, $repo);
                 if (count($liveRef) > 1) {
-                    CardCollapse::toSurvivor($client, array_fill_keys($liveRef, []), 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'ref' => "github_issue:{$issueNumber}"]);
+                    // Only this arm pays a read per card, and only on a create RACE: by-ref
+                    // projects to ids and its board rides in the URL PATH, so there is no row
+                    // to re-check without one. Paid where >1 card already means something went
+                    // wrong, never on the ordinary single-card path.
+                    $rows = $this->onMappedBoard(array_map(fn (int $id) => $client->getCard($id), $liveRef), $mapping, $repo, $issueNumber);
+                    if (count($rows) > 1) {
+                        CardCollapse::toSurvivor($client, $rows, 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'ref' => "github_issue:{$issueNumber}"], $mapping);
+                    }
                 }
             }
         } catch (RequestException $e) {
@@ -218,6 +282,90 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
     }
 
     /**
+     * The rows that are on the repo's mapped board, as the `id => card` map
+     * {@see CardCollapse::toSurvivor} consumes — every other row is REFUSED and reported
+     * through `MappedBoardGuard` (DL-298, card#7211), never silently dropped.
+     *
+     * ⛔ WHY A COLLAPSE NEEDS THIS AT ALL, and why it is not the same worry as a stray
+     * archive: the tie-break keeps the LOWEST id, and card ids are allocated GLOBALLY
+     * across every board on the instance. So one foreign row in the set does not merely
+     * add an archive — if its id is lower it WINS, and the card this handler just created
+     * is the one retired. The refusal set is empty while the search is scoped (measured),
+     * which is exactly why the guard has to be structural rather than observational.
+     *
+     * A row kanban answered without a readable `id` cannot be written to or reported on,
+     * so it is dropped here; it is not a member of any write set either way.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private function onMappedBoard(array $rows, WritebackMapping $mapping, string $repo, int $issueNumber): array
+    {
+        $kept = [];
+        foreach ($rows as $row) {
+            if (! is_numeric($row['id'] ?? null)) {
+                continue;
+            }
+            $id = (int) $row['id'];
+            if (MappedBoardGuard::refuses($this->alerts, $row, $mapping, 'kanban_coord_card', $id, $repo, self::ALERT_OUTCOME, $issueNumber)) {
+                continue;
+            }
+            $kept[$id] = $row;
+        }
+
+        return $kept;
+    }
+
+    /**
+     * The archived cards that represent a DELIBERATE RETIRE, out of the rows an
+     * `archived=1` tag search returned (DL-296) — the bridge's copy of the consumer's
+     * `archived_stable_ids(...) - reroute_archived_stable_ids(...)` partition, so one
+     * hazard keeps one rule across both movers.
+     *
+     * A retire is the DEFAULT reading of an archived card, and only the consumer's own
+     * reroute tag exempts — but the exemption is per THREAD, not per card, because the
+     * consumer's is: both of its helpers project the card set down to STABLE-IDS before
+     * the subtraction, so a sid holding one reroute-tagged archived card and one
+     * untagged one is in BOTH sets, the difference removes it, and the reconcile
+     * CREATES. All rows here carry one `id:<sid>` tag by construction (they came from a
+     * search on it), so "any reroute-tagged row" IS that sid's membership in the
+     * subtrahend. One tagged row therefore empties the result and the create fires.
+     *
+     * ⚠ This is the ONE cell where the naive per-card spelling would disagree, and the
+     * disagreement is not a stricter reading — it is a refusal the reconcile's very next
+     * pass UNDOES: the bridge would decline, alert *"unarchive that card if the thread is
+     * live again"*, and the reconcile would mint a fresh card anyway, leaving the alert's
+     * remedy wrong and the suppression pointless. Matching the consumer is also the
+     * cheaper claim to keep true (card#7169, review R-M1).
+     *
+     * Returns the retired ids rather than a bool because the caller names them in the
+     * signal, so an operator can see which card to unarchive.
+     *
+     * Every row here is archived by construction (the caller passes `archivedOnly`), so
+     * this re-tests only the tag. A row kanban answered without an `id` is still a
+     * retire — dropping it would silently un-suppress the create — and reports as `0`.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<int>
+     */
+    private static function retiredTwins(array $rows): array
+    {
+        $ids = [];
+        foreach ($rows as $row) {
+            $tags = $row['tags'] ?? null;
+            if (is_array($tags) && in_array(self::REROUTE_ARCHIVED_TAG, $tags, true)) {
+                // The whole THREAD is exempt — discard anything already collected, so the
+                // answer cannot depend on the order kanban happened to return the rows in.
+                return [];
+            }
+            $id = $row['id'] ?? null;
+            $ids[] = is_numeric($id) ? (int) $id : 0;
+        }
+
+        return $ids;
+    }
+
+    /**
      * The stage a new coord card is created in (card#6371): the lane the issue's
      * `stage:*` label DECLARES, when this mapping configures the board's lane model
      * and the lane model governs this issue — else the mapping's fixed
@@ -230,6 +378,11 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
      * states (measured on the reference install: 9 issues flipped to `stage:now` —
      * card#6348 (reporter's install, sola), not a card on this repo's board).
      *
+     * The resolution itself is {@see CoordCardLanePlacement}, shared with the move
+     * handler's revive and relane legs so the three writes cannot disagree about where
+     * a `[TASK]` belongs (card#6393). What stays here is the WARN, which the primitive
+     * deliberately does not carry.
+     *
      * The unresolvable arm is a DECISION, not a fail-quiet: a `stage:*` label naming a
      * lane the operator's map does not carry is SKIPPED (the scan continues to the
      * issue's next declared lane, then to the default) and WARNs naming it, so the
@@ -240,54 +393,21 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
      *
      * @param  array<mixed>  $p  the reaction-target payload (its `labels` key is the
      *                           issue's labels; a target that carries none resolves like
-     *                           an unlabelled issue — see {@see labels()} for why that is
-     *                           a boundary read and not back-compat)
+     *                           an unlabelled issue — see
+     *                           {@see CoordCardLanePlacement::labelsFrom()} for why that
+     *                           is a boundary read and not back-compat)
      */
     private function createStage(WritebackMapping $mapping, string $title, array $p, string $repo, int $issueNumber): int
     {
         // coordCardStageId is non-null here — handle() refuses the target otherwise.
-        $fixed = $mapping->coordCardStageId;
-        if ($mapping->coordCardLaneStageIds === null || ! CoordLaneStages::governs($title)) {
-            return $fixed;
-        }
-        $resolved = CoordLaneStages::resolveLane($this->labels($p), array_keys($mapping->coordCardLaneStageIds));
-        if ($resolved['unmapped'] !== []) {
+        $placement = CoordCardLanePlacement::resolve($mapping, (int) $mapping->coordCardStageId, $title, CoordCardLanePlacement::labelsFrom($p));
+        if ($placement['unmapped'] !== []) {
             // The skipped lanes and the mapped set are CONTEXT, not interpolation: the
             // DL-285 refusal-signal guard keys its accounted-for list on the message
             // literal, and an interpolated message degrades that key to a line number.
-            Log::warning('kanban_coord_card: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — creating in the next mapped lane it declares, else the default lane; add the lane to the mapping if this board has that column', ['repo' => $repo, 'issue' => $issueNumber, 'unmapped_lanes' => $resolved['unmapped'], 'created_in_lane' => $resolved['lane'] ?? CoordLaneStages::DEFAULT_LANE, 'mapped_lanes' => array_keys($mapping->coordCardLaneStageIds)]);
+            Log::warning('kanban_coord_card: the issue declares a lane that is not mapped in coord_card_lane_stage_ids — creating in the next mapped lane it declares, else the default lane; add the lane to the mapping if this board has that column', ['repo' => $repo, 'issue' => $issueNumber, 'unmapped_lanes' => $placement['unmapped'], 'created_in_lane' => $placement['lane'], 'mapped_lanes' => array_keys($mapping->coordCardLaneStageIds ?? [])]);
         }
 
-        // WritebackConfig fails the load closed unless the map carries DEFAULT_LANE, so
-        // the null arm resolves; a non-null lane is mapped by construction (resolveLane
-        // only ever returns one of $mappedLanes).
-        return $mapping->coordCardLaneStageIds[$resolved['lane'] ?? CoordLaneStages::DEFAULT_LANE];
-    }
-
-    /**
-     * The issue's labels as carried on the reaction-target payload. Narrowed at the
-     * read — a missing / non-list `labels` key reads as "no labels declared" (the
-     * DEFAULT_LANE arm) rather than throwing — because this handler does not author the
-     * targets it is handed: `kanban_coord_card` is registered unconditionally in
-     * `HandlerRegistry`, so any classifier an operator wires (docs/customization.md) can
-     * emit one with a payload of its own shape and no `labels` key at all. This is a
-     * BOUNDARY read of a foreign payload, not back-compat for a stored wire shape:
-     * reaction targets are never persisted (no targets table; `bridge:replay`
-     * re-classifies the stored raw webhook body, so a replayed target is always minted
-     * by today's classifier).
-     *
-     * @param  array<mixed>  $p
-     * @return list<string>
-     */
-    private function labels(array $p): array
-    {
-        $out = [];
-        foreach (is_array($p['labels'] ?? null) ? $p['labels'] : [] as $label) {
-            if (is_string($label) && $label !== '') {
-                $out[] = $label;
-            }
-        }
-
-        return $out;
+        return $placement['stage'];
     }
 }

@@ -14,7 +14,9 @@ namespace App\Bridge\Dispatch;
  * Same-event dedup is by debounceKey (last-wins associative-array key) at
  * dispatch time: targets in one ClassifyResult sharing a debounceKey fire the
  * handler once. There is NO cross-delivery debounce in the synchronous model —
- * debounceSeconds is carried to the handler/handler-log but not enforced here.
+ * debounceSeconds reaches the handler (the whole target is passed to handle())
+ * but is not enforced here, and no shipped handler reads it — LogIntentHandler's
+ * forensic line carries debounce_key, not debounce_seconds.
  */
 final class ReactionTarget
 {

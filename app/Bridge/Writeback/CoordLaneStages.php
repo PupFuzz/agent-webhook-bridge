@@ -3,9 +3,12 @@
 namespace App\Bridge\Writeback;
 
 /**
- * The coordination board's PRIORITY-LANE model as the coord-card CREATE path needs
- * it: which `stage:*` label declares which lane, which lane an undeclared issue
- * defaults to, and which coordination issues the lane model governs at all.
+ * The coordination board's PRIORITY-LANE model as the coord-card writes need it:
+ * which `stage:*` label declares which lane, which lane an undeclared issue defaults
+ * to, and which coordination issues the lane model governs at all. It started as the
+ * CREATE path's rule; since card#6393 all three coord-card writes read it through
+ * {@see CoordCardLanePlacement}, and the paragraphs below still argue it from the
+ * create path because that is where the harm was measured.
  *
  * WHY THIS EXISTS. The bridge creates a coord card in real time (DL-198) at the
  * mapping's fixed `coord_card_stage_id`, ignoring the issue's `stage:*` label. On a
@@ -94,6 +97,31 @@ final class CoordLaneStages
     public static function governs(string $title): bool
     {
         return str_starts_with(strtoupper($title), self::LANE_MODEL_TITLE_PREFIX);
+    }
+
+    /**
+     * Whether $label is one of THIS MODEL'S OWN lane labels — the prefix followed by a
+     * {@see LANES} member, compared case-insensitively like {@see resolveLane} does.
+     *
+     * The lane vocabulary has one owner and this is it: a caller asking "does this label
+     * state a lane?" must not spell the prefix beside its own copy of the lane list.
+     *
+     * THE PREFIX ALONE IS NOT THE QUESTION, and the difference is a behaviour
+     * difference, not a tidiness one (card#6393). A `stage:`-prefixed label OUTSIDE
+     * LANES — `stage:done`, `stage:blocked`, anything an install invents in that
+     * namespace — states no lane this model knows, so {@see resolveLane} finds nothing
+     * and the caller lands on {@see DEFAULT_LANE}. That is the right answer for a
+     * CREATE, which must place the card somewhere; it is the wrong one for a MOVE,
+     * which would demote a card to `later` on a label that expressed no lane at all —
+     * the same invented sequencing decision the `coord-card-relane` family excludes the
+     * `unlabeled` action for.
+     */
+    public static function isLaneLabel(string $label): bool
+    {
+        $name = strtolower($label);
+
+        return str_starts_with($name, self::LABEL_PREFIX)
+            && in_array(substr($name, strlen(self::LABEL_PREFIX)), self::LANES, true);
     }
 
     /**

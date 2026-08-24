@@ -43,7 +43,7 @@ BRIDGE_KANBAN_API_BASE_URL=https://kanban.example.com/api/v3   # upstream API ba
 
 The API token is read by convention from `<secret_dir>/<provider>/token` (e.g. `$BRIDGE_DIR/kanban/token`, chmod 600); set a per-agent `api.<provider>.token_path` override in the YAML only when an agent authenticates as a distinct account.
 
-There is **no** queue worker, scheduler, systemd unit, **or cron** to install. Retention runs off the inbound webhook itself since **DL-199** (`bridge.retention.*`, on by default) — the receiver prunes its own stores after the response has been sent, so the append-only tables and `inbox*.jsonl` stay bounded with no periodic job at all. `bridge:prune` remains as the manual/one-off command (see Commands). Set `BRIDGE_RETENTION_ENABLED=false` to opt out — but then nothing prunes unless you schedule `bridge:prune` yourself.
+There is **no** queue worker, scheduler, systemd unit, **or cron** to install. Retention runs off the inbound webhook itself since **DL-199** (`bridge.retention.*`, on by default) — the receiver prunes its own stores after the response has been sent, so the append-only tables and `inbox*.jsonl` stay bounded with no periodic job at all. `bridge:prune` remains as the manual/one-off command (see Commands). Set `BRIDGE_RETENTION_ENABLED=false` to opt out — but then nothing prunes unless you schedule `bridge:prune` yourself. The opt-in **PM standup digest** (DL-306, `bridge.standup.*`, **off by default**) rides that same gate for the same reason — so it still installs no cron, at the cost that it fires on the first delivery after its interval rather than on a wall clock. `bridge:standup` is its manual entry point (see Commands).
 
 ## Pre-flight (per host)
 
@@ -265,12 +265,13 @@ All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR`
 | Per-target registry (`registry_append`) | `…/state/registry-<target>.jsonl` |
 | Detached-command logs (`spawn_detached`) | `…/state/spawn-<target>.log` |
 | Event / dispatch ledger | the DB (`webhook_events`, `agent_dispatches`) |
+| Writeback board divergences (DL-300) | the DB (`writeback_board_divergences`) — expected EMPTY; `bridge:stats` prints the counts on every run |
 
 ## Commands
 
 ```bash
 php artisan bridge:check [--probe-tools=<endpoint>]   # validate .env, dirs, DB, agent YAMLs; --probe-tools live-probes the board-tools path (DL-220)
-php artisan bridge:stats                              # event/dispatch counts; errored (replayable) count
+php artisan bridge:stats                              # event/dispatch counts; errored (replayable) count; writeback board divergences
 php artisan bridge:inspect {id}                       # one webhook event + its dispatch ledger
 php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an event
 php artisan bridge:inbox [--hook-format=auto|claude-code|plain]              # surface unseen inbox intents
@@ -278,9 +279,10 @@ php artisan bridge:provision [--dry-run] [--list] [--agent=] [--reconcile]   # e
 php artisan bridge:provision-tools [--dry-run] [--agent=]                    # mint per-agent board-tools bearers (DL-217/DL-220; idempotent, collision-checked)
 php artisan bridge:prune --older-than=30d [--null-payloads-older-than=7d] [--dry-run]   # retention, manual/unbounded (the receiver self-prunes — DL-199)
 php artisan bridge:reconcile [--fix] [--repo=owner/repo] [--max-moves=20]     # board-vs-GitHub drift reconciler (report-only unless --fix)
+php artisan bridge:standup [--dry-run]                # PM standup digest (DL-306); --dry-run prints it as JSON and pushes nothing
 ```
 
-`bridge:prune` is the **manual** entry point to retention; since **DL-199** the receiver runs the same shared service automatically after each response, so scheduling this is no longer required (and the design has no cron at all). `--older-than=Nd` deletes `webhook_events` (cascading `agent_dispatches`) and trims `inbox*.jsonl` lines older than the cutoff; `--null-payloads-older-than=Md` (use `M < N`) nulls the stored payload past the replay window while keeping the row's dedup-gate + audit metadata; `--dry-run` reports counts only. Idempotent — safe to re-run alongside the automatic gate.
+`bridge:prune` is the **manual** entry point to retention; since **DL-199** the receiver runs the same shared service automatically after each response, so scheduling this is no longer required (and the design has no cron at all). `--older-than=Nd` deletes `webhook_events` (cascading `agent_dispatches`) and trims `inbox*.jsonl` lines older than the cutoff; `--null-payloads-older-than=Md` (use `M < N`) nulls the stored payload past the replay window while keeping the row's dedup-gate + audit metadata; `--dry-run` reports counts only. Idempotent — safe to re-run alongside the automatic gate. **`writeback_board_divergences` is deliberately outside retention entirely** (DL-300): it exists to outlive the log, so a window on it would be the defect it closes with a longer fuse.
 
 **When you still want it:** draining a large backlog in ONE unbounded pass (the gate is deliberately bounded to `retention.batch` rows per delivery), a window different from the configured one, or any install running with `BRIDGE_RETENTION_ENABLED=false`. See `CLAUDE_DECISIONS.md` DL-012 (the command) and DL-199 (the gate).
 
@@ -294,11 +296,25 @@ php artisan bridge:reconcile [--fix] [--repo=owner/repo] [--max-moves=20]     # 
 | `retention.null_payloads_older_than` | `BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN` | *(empty ⇒ leg off)* | Null payloads past the replay window, keeping the row. |
 | `retention.batch` | `BRIDGE_RETENTION_BATCH` | `500` | Max rows one pass touches per leg. While a backlog remains the gate keeps draining on successive deliveries rather than waiting out `interval`. |
 
+### Standup digest config (DL-306)
+
+`bridge:standup` is the **manual** entry point; when `standup.enabled` the receiver pushes the same digest automatically, after the response, at most once per `interval`. **Off by default** — unlike retention, a pass makes outbound calls (one board read per mapped board, then the channel push).
+
+| Key | Env | Default | Meaning |
+| --- | --- | --- | --- |
+| `standup.enabled` | `BRIDGE_STANDUP_ENABLED` | **`false`** | Push the digest after a delivery. Disabled ⇒ no terminating callback is registered at all. |
+| `standup.agent` | `BRIDGE_STANDUP_AGENT` | *(none)* | The recipient seat's `<agent>.yml` name; its own `channel` block is the endpoint and its `channel.auth.token_path` the bearer. **No default recipient.** A missing, non-string, or non-filename-shaped value (`../x`, `.hidden`) is REFUSED — the name is concatenated into a `<config_dir>/<agent>.yml` path. |
+| `standup.interval` | `BRIDGE_STANDUP_INTERVAL` | `86400` | Seconds between passes. ⚠ A **delivery** cadence: the pass runs on the first inbound webhook after this elapses, so a silent install pushes nothing. |
+
+⛔ **The digest carries only what the bridge measures.** Per seat: `last_delivery_at` (a DELIVERY time — the bridge has no per-seat activity or liveness signal, so there is no `last_activity` and no context-%) and `unseen_inbox_intents`. Per board: `now_depth`, and only for a board whose `writeback.json` mapping declares `coord_card_lane_stage_ids`. **A field it cannot source is ABSENT** — a seat with no delivered dispatch carries no `last_delivery_at` key, a board with no Now-lane model produces no row, and a failed or truncated board read produces a row whose depth is absent and whose `now_depth_unavailable` names the cause. Run `bridge:standup --dry-run` to see exactly what this install can answer for.
+
+A misconfigured posture pushes **nothing** and warns once per day, never per delivery; there is no partial digest and no fallback recipient.
+
 An unparseable window (or a non-positive `interval`/`batch`) prunes **nothing** and logs a warning once per day — it never falls back to a default cutoff, because that would delete on a typo. `bridge:check` reports the resolved retention posture at preflight.
 
 `bridge:replay` re-runs the `processed_at`-guarded dispatch loop: errored rows (`processed_at` null) re-run; **already-succeeded rows are skipped** so a sibling's already-delivered push / `spawn_detached` is never re-fired. `--agent` scopes to one agent. `--force` clears `processed_at` first so done rows (incl. handler-note rows) re-run too — use it to re-attempt a missed channel push once the agent is back.
 
-`bridge:reconcile` is the **rerunnable backstop for the event-driven writeback** (DL-183): GitHub delivers each webhook once with no retry, so a bridge outage during a PR event silently strands that card. It recomputes each tracked card's expected stage from GitHub PR ground truth and reports the drift (report-only by default; `--fix` applies the *forward* moves). It **never** moves a card backward or out of the promote-owned `released_to_main` stage, skips pinned cards, aborts a partial (truncated) board read, and caps a run at `--max-moves` (default 20). Needs a github read token (the kanban repo is private) — resolved **per repo** from `bridge.providers.github.token_path` (`BRIDGE_GITHUB_TOKEN_PATH`, authoritative when set — point it at a centralized credential like `~/.config/coord/github-pat`), else `<secret_dir>/github/token`, else **store-native** (DL-185: `git-credential-coord` + the store's `[git-credential-map]` → a per-repo least-privilege PAT; `bridge.providers.github.credential_helper` / `BRIDGE_GITHUB_CREDENTIAL_HELPER`, default `git-credential-coord`, empty to disable — needs `HOME`/`COORD_CREDENTIALS` in the reconcile env to find the store), else an ambient `GH_TOKEN`. No new cron — schedule it from host cron or the session-close ritual (start report-only). See [`docs/writeback.md`](docs/writeback.md) § *Reconciliation*.
+`bridge:reconcile` is the **rerunnable backstop for the event-driven writeback** (DL-183): GitHub delivers each webhook once with no retry, so a bridge outage during a PR event silently strands that card. It recomputes each tracked card's expected stage from GitHub PR ground truth and reports the drift (report-only by default; `--fix` applies the *forward* moves). Its **safety posture** — every guard it reuses, what it refuses, what aborts a board and what caps a run — is enumerated ONCE in [`docs/writeback.md`](docs/writeback.md) § *Reconciliation* and deliberately not restated here: the list stood in three hand-synced copies and the DL-301 refusal reached only one of them. Needs a github read token (the kanban repo is private) — resolved **per repo** from `bridge.providers.github.token_path` (`BRIDGE_GITHUB_TOKEN_PATH`, authoritative when set — point it at a centralized credential like `~/.config/coord/github-pat`), else `<secret_dir>/github/token`, else **store-native** (DL-185: `git-credential-coord` + the store's `[git-credential-map]` → a per-repo least-privilege PAT; `bridge.providers.github.credential_helper` / `BRIDGE_GITHUB_CREDENTIAL_HELPER`, default `git-credential-coord`, empty to disable — needs `HOME`/`COORD_CREDENTIALS` in the reconcile env to find the store), else an ambient `GH_TOKEN`. No new cron — schedule it from host cron or the session-close ritual (start report-only). See [`docs/writeback.md`](docs/writeback.md) § *Reconciliation*.
 
 ## Smoke test
 

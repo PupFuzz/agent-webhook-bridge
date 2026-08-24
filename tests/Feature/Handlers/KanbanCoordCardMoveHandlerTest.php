@@ -2,10 +2,14 @@
 
 namespace Tests\Feature\Handlers;
 
+use App\Bridge\Classifiers\CoordinationClassifier;
+use App\Bridge\Dispatch\Actor;
+use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Handlers\KanbanCoordCardMoveHandler;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\HandlerRegistry;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
@@ -23,6 +27,8 @@ use Tests\TestCase;
  */
 class KanbanCoordCardMoveHandlerTest extends TestCase
 {
+    use RefreshDatabase;
+
     private string $dir;
 
     protected function setUp(): void
@@ -467,6 +473,87 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
             && $r['issue_number'] === 4);
     }
 
+    public function test_a_card_on_another_board_alerts_like_its_move_handler_twin(): void
+    {
+        // card#7133. The refusal itself is correct — nothing moves — but a cross-board
+        // write that SUCCEEDS emits no event on this path, so this arm is the only
+        // surface that can tell an operator the collision is happening at all. As a bare
+        // Log::info it was indistinguishable from the handler never having been invoked.
+        $this->writeMappingWithAlert();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 12, 'workflow_stage_id' => 50]]),
+        ]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'card_not_on_mapped_board'
+            && $r['outcome'] === 'coord_card_move'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 4);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m, array $ctx) => str_contains($m, 'not on the mapped board')
+            && $ctx['card_board'] === 12 && $ctx['mapped_board'] === 8);
+        $this->assertNoMove();
+    }
+
+    public function test_a_non_numeric_board_id_that_casts_onto_the_mapped_board_refuses(): void
+    {
+        // THE VECTOR FOR THE `is_numeric` DISJUNCT, and the only one that is: `'8abc'`
+        // is not numeric, but `(int) '8abc' === 8` — so with `is_numeric` deleted the
+        // `(int)` compare would AGREE with the mapped board and this handler would move a
+        // card that is not on it. Deleting the disjunct reds this method; deleting it
+        // with a `null`/`'abc'` fixture instead reds nothing, because those cast to 0 and
+        // the second disjunct refuses them on its own.
+        //
+        // ⛔ Direction, because it was reported backwards once: `is_numeric` does not make
+        // this predicate stricter. `!==` against a readonly int refused ANY non-int, so
+        // the twins ALSO refused `"8"` and `8.0` — legitimate cards, mis-refused. This
+        // predicate's refusal set is a strict SUBSET of theirs: the most PERMISSIVE of
+        // the three spellings, and the most correct. `is_numeric` is here to stop `(int)`
+        // coercing a non-numeric value INTO the mapped id, which is the one thing
+        // tolerating numeric strings opens up. card#7138 / DL-292 picked it as the
+        // canonical form and hoisted it into `MappedBoardGuard`, so this method now
+        // exercises the SHARED predicate — the twins carry the same leg (their tests say
+        // so) and the mutation that deletes `is_numeric` reds all three.
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => '8abc', 'workflow_stage_id' => 50]]),
+        ]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'card_not_on_mapped_board'
+            && $r['card_id'] === 7);
+        $this->assertNoMove();
+    }
+
+    public function test_an_absent_board_id_refuses(): void
+    {
+        // Kept as its own leg, and honestly labelled: a null `board_id` is refused by the
+        // `(int)` compare alone (0 !== 8), so this method pins the ARM's behaviour on a
+        // card whose board is unreadable — it is NOT a vector for the disjunct above.
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => null, 'workflow_stage_id' => 50]]),
+        ]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'card_not_on_mapped_board'
+            && $r['card_id'] === 7);
+        $this->assertNoMove();
+    }
+
     public function test_malformed_payload_alerts_on_the_empty_repo_key(): void
     {
         $this->writeMappingWithAlert();
@@ -523,6 +610,390 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }
 
+    // =====================================================================
+    // The lane-aware revive + the relane leg (card#6393)
+    // =====================================================================
+    //
+    // The class card#6393 names is "a coord-card stage minted or kept with NO lane
+    // input": on a lane-model board the consumer's kanban-writeback pass maps the
+    // card's lane back onto the issue's `stage:*` label before its issues-sync runs, so
+    // a bridge move that ignores the lane REWRITES the sequencing ruling the issue
+    // states. Instance 1 is the revive arm; instance 2 is a `[TASK]` labelled after it
+    // was carded.
+
+    /** @param array<string, mixed> $overrides */
+    private function writeLaneMapping(array $overrides = []): void
+    {
+        $this->writeMapping(array_merge([
+            'board_id' => 8,
+            'stages' => ['opened' => 50],
+            'create_coord_cards' => true,
+            'move_coord_cards' => true,
+            'coord_card_stage_id' => 21,
+            'coord_card_terminal_stage_id' => 99,
+            'coord_card_lane_stage_ids' => ['now' => 40, 'next' => 41, 'later' => 42, 'maybe' => 43],
+        ], $overrides));
+    }
+
+    /**
+     * A card in $stage whose last move was made by $actorType.
+     *
+     * @return array<string, mixed>
+     */
+    private function card(int $stage, string $actorType = 'service'): array
+    {
+        return ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => $stage,
+            'last_stage_move' => ['to_stage_id' => $stage, 'actor_type' => $actorType, 'actor_id' => 3]];
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     */
+    private function handleTask(array $overrides): void
+    {
+        $this->handle(array_merge(['sid' => 'TASK-4', 'title' => '[TASK] do the thing'], $overrides));
+    }
+
+    // ---- instance 1: the revive arm is lane-aware ----
+
+    public function test_revive_returns_a_task_to_the_lane_its_label_declares(): void
+    {
+        // THE DEFECT: pre-card#6393 this moved the card to the fixed 21, and the
+        // consumer's lane→label pass then rewrote the issue's `stage:later` to whatever
+        // lane 21 sits in. The vector is deliberately NOT `later`: `later` is the
+        // no-label default, so a leg that stopped deriving would land in the same stage
+        // as a working one and could not fail.
+        $this->writeLaneMapping();
+        $this->fakeBoard($this->card(99));
+
+        $this->handleTask(['disposition' => 'revive', 'labels' => ['stage:now']]);
+
+        $this->assertMovedTo(40);
+    }
+
+    public function test_revive_on_a_move_on_create_off_install_lands_in_the_declared_lane(): void
+    {
+        // ⛔ DL-294 / card#7126 — THE BEHAVIOUR THE WIDENING EXISTS TO ENABLE, and the
+        // reason "it loads now" is not the control. This mapping creates NO coord cards:
+        // its cards are the consumer reconcile's, correlated by the shared `id:<sid>` tag.
+        // Before DL-294 the config was unloadable, so this install's only route to a
+        // lane-aware revive was enabling `create_coord_cards` — which changes WHICH mover
+        // creates cards there and races the reconcile (docs/writeback.md).
+        //
+        // The vector is `stage:now` (40), never `later`: 42 is the no-label default, so a
+        // leg that stopped deriving would land in the same stage as a working one. 21 is
+        // the fixed revive target — the answer this leg gave before the lane ids were read.
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50],
+            'move_coord_cards' => true, 'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99,
+            'coord_card_lane_stage_ids' => ['now' => 40, 'next' => 41, 'later' => 42, 'maybe' => 43]]);
+        $this->fakeBoard($this->card(99));
+
+        $this->handleTask(['disposition' => 'revive', 'labels' => ['stage:now']]);
+
+        $this->assertMovedTo(40);
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && ($r->data()['workflow_stage_id'] ?? null) === 21);
+    }
+
+    public function test_revive_of_an_unlabelled_task_uses_the_default_lane(): void
+    {
+        // `_task_lane`'s own default — Later, not the fixed create stage.
+        $this->writeLaneMapping();
+        $this->fakeBoard($this->card(99));
+
+        $this->handleTask(['disposition' => 'revive', 'labels' => ['from:pm']]);
+
+        $this->assertMovedTo(42);
+    }
+
+    public function test_revive_without_a_lane_map_is_byte_identical_and_uses_the_fixed_stage(): void
+    {
+        // THE OPT-IN PIN: an install that configured no lane stage ids must behave
+        // exactly as it did before card#6393 — the fixed coord_card_stage_id — even for
+        // a `[TASK]` carrying a `stage:*` label.
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
+            'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99]);
+        $this->fakeBoard($this->card(99));
+
+        $this->handleTask(['disposition' => 'revive', 'labels' => ['stage:now']]);
+
+        $this->assertMovedTo(21);
+    }
+
+    public function test_revive_of_a_non_task_title_keeps_the_fixed_stage(): void
+    {
+        // The lane model governs an anchored `[TASK]` title only — `classify_coord`'s
+        // own gate. A `[QUERY]` keeps the pre-existing fixed-stage behaviour.
+        $this->writeLaneMapping();
+        $this->fakeBoard($this->card(99));
+
+        $this->handle(['disposition' => 'revive', 'sid' => 'QUERY-4', 'title' => '[QUERY] ask', 'labels' => ['stage:now']]);
+
+        $this->assertMovedTo(21);
+    }
+
+    public function test_revive_warns_when_the_declared_lane_is_not_mapped(): void
+    {
+        $this->writeLaneMapping(['coord_card_lane_stage_ids' => ['now' => 40, 'next' => 41, 'later' => 42]]);
+        $this->fakeBoard($this->card(99));
+        Log::spy();
+
+        $this->handleTask(['disposition' => 'revive', 'labels' => ['stage:maybe']]);
+
+        $this->assertMovedTo(42);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $c) => str_contains($m, 'lane') && str_contains($m, 'not mapped')
+            && $c['unmapped_lanes'] === ['maybe']
+            && $c['moved_to_lane'] === 'later'
+            && $c['mapped_lanes'] === ['now', 'next', 'later'])->once();
+    }
+
+    public function test_revive_still_refuses_a_human_set_terminal_with_a_lane_map(): void
+    {
+        // The actor-gate is unchanged by the lane derivation — it runs first.
+        $this->writeLaneMapping();
+        $this->fakeBoard($this->card(99, 'human'));
+
+        $this->handleTask(['disposition' => 'revive', 'labels' => ['stage:now']]);
+
+        $this->assertNoMove();
+    }
+
+    // ---- instance 2: relane ----
+
+    public function test_relane_moves_a_task_to_the_lane_its_new_label_declares(): void
+    {
+        // The shipped case: a `[TASK]` opened unlabelled is carded in `later`; labelling
+        // it `stage:now` afterwards used to leave the card in `later` and let the
+        // consumer's writeback converge the brand-new label back to `stage:later`.
+        $this->writeLaneMapping();
+        $this->fakeBoard($this->card(42));
+
+        $this->handleTask(['disposition' => 'relane', 'labels' => ['stage:now']]);
+
+        $this->assertMovedTo(40);
+    }
+
+    public function test_relane_is_idempotent_when_the_card_is_already_in_the_declared_lane(): void
+    {
+        $this->writeLaneMapping();
+        $this->fakeBoard($this->card(40));
+
+        $this->handleTask(['disposition' => 'relane', 'labels' => ['stage:now']]);
+
+        $this->assertNoMove();
+    }
+
+    public function test_relane_refuses_a_lane_a_human_placed_the_card_in(): void
+    {
+        // THE GATE THAT KEEPS THIS FROM RE-MINTING card#6393 IN REVERSE. A human dragged
+        // this card to `later`; letting a `stage:now` label pull it back would make the
+        // label override a deliberate board move — the same two-movers-disagree defect
+        // pointing the other way.
+        $this->writeLaneMapping();
+        $this->fakeBoard($this->card(42, 'human'));
+
+        $this->handleTask(['disposition' => 'relane', 'labels' => ['stage:now']]);
+
+        $this->assertNoMove();
+    }
+
+    public function test_relane_fails_closed_when_actor_type_is_absent(): void
+    {
+        // The pre-feature row shape: kanban sends last_stage_move with null fields. null
+        // is not "service" ⇒ fail CLOSED, exactly as the revive gate does.
+        $this->writeLaneMapping();
+        $this->fakeBoard(['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 42,
+            'last_stage_move' => ['to_stage_id' => 42, 'actor_type' => null, 'actor_id' => null, 'at' => null]]);
+
+        $this->handleTask(['disposition' => 'relane', 'labels' => ['stage:now']]);
+
+        $this->assertNoMove();
+    }
+
+    public function test_relane_never_pulls_a_concluded_card_out_of_the_terminal(): void
+    {
+        // The card of a CLOSED issue sits in the terminal, and the close leg put it
+        // there as a service actor — so the actor-gate alone would let a label edit
+        // resurrect it. Relane is a lane→lane move; the terminal is not a lane.
+        $this->writeLaneMapping();
+        $this->fakeBoard($this->card(99));
+
+        $this->handleTask(['disposition' => 'relane', 'labels' => ['stage:now']]);
+
+        $this->assertNoMove();
+    }
+
+    public function test_relane_refuses_a_card_that_is_not_in_a_mapped_lane(): void
+    {
+        // A card someone has advanced to a working column is live work with a placement
+        // of its own; a label edit must not yank it back into a lane.
+        $this->writeLaneMapping();
+        $this->fakeBoard($this->card(50));
+
+        $this->handleTask(['disposition' => 'relane', 'labels' => ['stage:now']]);
+
+        $this->assertNoMove();
+    }
+
+    public function test_relane_without_a_lane_map_moves_nothing(): void
+    {
+        // THE OPT-IN PIN for instance 2: with no lane stage ids there is no lane to
+        // write, so the leg is inert rather than falling back to the fixed stage (which
+        // would be a brand-new move on a board with no lane model at all).
+        $this->writeMapping(['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
+            'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99]);
+        $this->fakeBoard($this->card(42));
+        Log::spy();
+
+        $this->handleTask(['disposition' => 'relane', 'labels' => ['stage:now']]);
+
+        $this->assertNoMove();
+        // The CAUSE is in the line, not just the silence: this one is a config gap the
+        // operator can close, and its twin below is the design working. One message for
+        // both would tell the reader which of the two it was: nothing.
+        Log::shouldHaveReceived('info')->once()->withArgs(fn (string $m) => str_contains($m, 'no lane model is configured for this repo'));
+    }
+
+    public function test_relane_of_a_non_task_title_moves_nothing(): void
+    {
+        $this->writeLaneMapping();
+        $this->fakeBoard($this->card(42));
+        Log::spy();
+
+        $this->handle(['disposition' => 'relane', 'sid' => 'QUERY-4', 'title' => '[QUERY] ask', 'labels' => ['stage:now']]);
+
+        $this->assertNoMove();
+        // The other cause of the same gate — the lane model is configured and simply does
+        // not govern a `[QUERY]`. Nothing for the operator to do, which is exactly what the
+        // line above must not be confused with.
+        Log::shouldHaveReceived('info')->once()->withArgs(fn (string $m) => str_contains($m, 'the lane model does not govern this issue'));
+    }
+
+    public function test_an_unknown_disposition_is_refused_as_a_malformed_payload(): void
+    {
+        // The allow-list, re-pinned now that it has three members: a disposition nobody
+        // enumerated must never fall through to a move.
+        $this->writeMappingWithAlert();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+
+        $this->handle(['disposition' => 'archive']);
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'coord_card_move_payload_invalid');
+        $this->assertNoMove();
+    }
+
+    // ---- the WIRE, end to end ----
+    //
+    // Every lane leg above hands the handler a `labels` list the TEST wrote, and the
+    // classifier legs assert the payload key in isolation — neither exercises the wire
+    // between them. These two drive a real GitHub body through classify → resolve →
+    // handle, so a classifier that stopped stamping `title`/`labels`, or renamed either
+    // key, reds here even though both sides' own legs stay green.
+    //
+    // The moving vectors are deliberately `stage:now` and never `stage:later`: `later` is
+    // the no-labels default, so a broken wire would land the card in the same stage as a
+    // working one and the leg could not fail.
+
+    /**
+     * Classify one real webhook body under $family and run every target it emits through
+     * the registry, exactly as the dispatcher would. Returns the target count, so a leg
+     * asserting NOTHING happened proves it at the board and not merely at the classifier.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function dispatch(string $eventType, array $payload, string $family): int
+    {
+        $agent = AgentConfig::fromArray('me', [
+            'identity' => ['github_user_id' => 99],
+            'subscriptions' => [],
+            'classifier' => ['class' => CoordinationClassifier::class, 'config' => ['families' => [$family]]],
+        ]);
+
+        $result = (new CoordinationClassifier)->classify(new ClassifyContext(
+            $eventType, $payload, new Actor(id: '99', name: null, isKnownAgent: false), 'github', 'org/coord', $agent,
+        ));
+
+        foreach ($result->targets as $target) {
+            $handler = (new HandlerRegistry)->resolve($target->handler);
+            $this->assertNotNull($handler);
+            $handler->handle($target, $agent);
+        }
+
+        return count($result->targets);
+    }
+
+    /**
+     * A real `issues.labeled` body announcing $addedLabel on a `[TASK]` thread.
+     *
+     * @return array<string, mixed>
+     */
+    private function labeledBody(string $addedLabel): array
+    {
+        return [
+            'action' => 'labeled',
+            'issue' => [
+                'number' => 4,
+                'title' => '[TASK] do the thing',
+                'html_url' => 'https://github.com/org/coord/issues/4',
+                'labels' => [['name' => 'from:pm'], ['name' => $addedLabel]],
+            ],
+            'label' => ['id' => 11488592716, 'name' => $addedLabel, 'color' => '0e8a16', 'default' => false],
+        ];
+    }
+
+    public function test_full_dispatch_revive_derives_the_lane_from_the_webhook_labels(): void
+    {
+        $this->writeLaneMapping();
+        $this->fakeBoard($this->card(99));
+
+        $this->assertSame(1, $this->dispatch('issues.reopened', ['issue' => [
+            'number' => 4,
+            'title' => '[TASK] do the thing',
+            'html_url' => 'https://github.com/org/coord/issues/4',
+            'labels' => [['name' => 'from:pm'], ['name' => 'stage:now']],
+        ]], 'coord-card-move'));
+
+        $this->assertMovedTo(40);
+    }
+
+    public function test_full_dispatch_relane_moves_the_card_to_the_newly_labelled_lane(): void
+    {
+        // The shipped shape of instance 2, from a real `issues.labeled` body: the card
+        // sits in `later` (where the unlabelled open put it) and the delivery announces
+        // `stage:now` at the top level.
+        $this->writeLaneMapping();
+        $this->fakeBoard($this->card(42));
+
+        $this->assertSame(1, $this->dispatch('issues.labeled', $this->labeledBody('stage:now'), 'coord-card-relane'));
+
+        $this->assertMovedTo(40);
+    }
+
+    public function test_full_dispatch_a_stage_prefixed_non_lane_label_moves_no_card(): void
+    {
+        // THE PERMISSIVE-DIRECTION FAILURE, asserted at the BOARD rather than at the
+        // classifier — the classifier's own leg proves no target is emitted, and this
+        // proves the consequence that would follow if one were.
+        //
+        // The vector is chosen so a permissive filter CANNOT pass: the card sits in `now`
+        // (40) and `stage:done` names no lane, so a `stage:`-PREFIX trigger resolves the
+        // placement to the DEFAULT_LANE and PATCHes the card to `later` (42) — demoting a
+        // sequenced task on a label that expressed no sequencing at all, and handing the
+        // consumer's lane→label pass a `stage:later` to write back onto the issue. On a
+        // stream of 641 already-arriving `issues.labeled` deliveries — the operator's
+        // measurement, not one re-derived here — that is not one misfire.
+        $this->writeLaneMapping();
+        $this->fakeBoard($this->card(40));
+
+        $emitted = $this->dispatch('issues.labeled', $this->labeledBody('stage:done'), 'coord-card-relane');
+
+        // The board consequence is asserted FIRST, deliberately: it is the claim that
+        // matters, and a leg that reds on the target count instead would report the
+        // symptom the operator never sees.
+        $this->assertNoMove();
+        $this->assertSame(0, $emitted);
+    }
+
     public function test_handler_is_registered_under_its_reaction_name(): void
     {
         // The silent-registration trap: an unregistered handler makes the whole leg
@@ -531,5 +1002,41 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
             KanbanCoordCardMoveHandler::class,
             (new HandlerRegistry)->resolve('kanban_coord_card_move'),
         );
+    }
+
+    // --- card#7212: the success record names the board the write LANDED on ---
+
+    public function test_a_successful_terminal_move_records_both_boards(): void
+    {
+        // This arm logged NEITHER board before card#7212 — not even the intended one — so a
+        // write here left no board record at all. Its cross-board REFUSAL twin above
+        // (test_a_card_on_another_board_alerts_like_its_move_handler_twin) asserts the same
+        // pair on the other arm; that only one of the two emitted it was the defect.
+        Log::spy();
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50]]),
+        ]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_coord_card_move: moved to terminal'
+            && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
+    }
+
+    public function test_the_terminal_move_record_reads_the_cards_own_board_not_a_second_copy_of_the_mapped_one(): void
+    {
+        // The control: the accepted interval (DL-292) is the divergence this guarded arm
+        // can reach, and `===` on the numeric string is what an echo cannot produce.
+        Log::spy();
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => '8', 'workflow_stage_id' => 50]]),
+        ]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_coord_card_move: moved to terminal'
+            && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
     }
 }

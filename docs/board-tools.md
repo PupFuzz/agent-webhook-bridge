@@ -50,7 +50,9 @@ never silently no-ops.
 
 ```jsonc
 {
-  "board_id": 10,
+  "board_id": 10,            // the board the returned ROWS are on (null when none was read)
+  "board_observed": true,
+  "configured_board_id": 10, // the board this agent is configured to read
   "swimlane_id": 4,
   "cards_by_stage": {
     "Backlog":  [ { "id": 1, "name": "...", "stage": "Backlog", "tags": ["..."],
@@ -60,9 +62,49 @@ never silently no-ops.
     "In Review": [ /* ... */ ]
   },
   "shared_swimlane": { "swimlane_id": 9, "cards_by_stage": { /* ... */ } }, // when configured
-  "coord_cards": [ /* cards on the coord board carrying one of your address_tags */ ] // when configured
+  // the coord block, all four keys together, when the coord leg is configured:
+  "coord_board_id": 12,             // the board the coord ROWS are on (null when none was read)
+  "coord_board_observed": true,
+  "configured_coord_board_id": 12,
+  "coord_cards": [ /* cards on the coord board carrying one of your address_tags */ ]
 }
 ```
+
+### Where these cards are (`board_id` vs `configured_board_id`)
+
+**⚠ `board_id` is WHERE THE ROWS ARE, read off the rows themselves — not where you
+are configured to read (card#7295, DL-302).** Before this it was the configured
+value restated, for a row set whose own board nothing had checked, so a window of
+foreign rows would have reported this board's id as fact. What a caller gets now:
+
+- **`board_id` + `board_observed`** are the reading. `true` ⇒ every returned row
+  (your lane **and** the shared lane) reported that same board. `false` ⇒ **`board_id`
+  is null and the response claims no board** — it never falls back to config. Three
+  things unobserve it: **an empty window** (no rows read ⇒ no board read — the common
+  case, and not an error), rows **spread across more than one board**, and a row
+  carrying **no readable `board_id`**. A card is always on exactly one board upstream,
+  so there is no such thing as a row legitimately reporting "no board": absent, null
+  and non-numeric all mean *unread*.
+- **`configured_board_id`** is the scope your bridge identity is wired to — what
+  `board_id` used to carry, now under a name that says what it is. It is always
+  present — unconditionally, on every arm of the response, which is what lets
+  `bridge:check`'s two live probes tell a current responder from one predating the rename
+  (**Which spelling the probe read**, below). The two being equal is the healthy case, not
+  an invariant the bridge enforces here.
+- **`swimlane_id` needs no such flag**: every returned row is filtered against it and
+  a non-matching row is dropped before you see it (below), so the lane a card lands
+  under is verified by construction. The board axis is a report, not a filter — a row
+  on another board is **reported, never dropped**, and never refused. What a foreign
+  row should make the tool *do* is a separate question from what it *says*, and only
+  the saying changed here.
+- **The coord block carries the same pair for its own board** — `coord_board_id` /
+  `coord_board_observed` / `configured_coord_board_id`. Those cards come from a
+  DIFFERENT board than the top-level one, and the block used to say nothing at all
+  about that; the top-level `board_id` above it does **not** describe them.
+- **It costs no extra request.** Every kanban search row already carries `board_id`;
+  the projection simply never read it. (The same correction on `board_create_card` —
+  card#7295's sibling card#7225, a **separate** change that may not be in your build
+  — has to pay a `GET` for it, because a create hands back an id and nothing else.)
 
 ### Reading a card's scope (`include_description`)
 
@@ -111,18 +153,88 @@ term is efficiency + defense-in-depth, not the boundary.
 - The bridge stamps `created-by:<you>` as the audit tag.
 - **Pass an `idempotency_key`.** With one, the bridge runs the full duplicate-safe
   pattern: it correlates on `idem:<you>:<key>` *before* creating (a repeat returns
-  the same card, `"idempotent_hit": true`, no second card), and after creating it
-  re-reads and collapses any card a concurrent call raced in. Without a key, a
-  retry (including any invisible MCP-client-layer retry) can double-create — the
-  duplicate is visible via `board_my_cards` and bounded, but the key is why it
-  exists.
+  the same **live** card, `"idempotent_hit": true`, no second card), and after
+  creating it re-reads and collapses any card a concurrent call raced in. Without
+  a key, a retry (including any invisible MCP-client-layer retry) can
+  double-create — the duplicate is visible via `board_my_cards` and bounded, but
+  the key is why it exists.
+- **⚠ Re-using a key whose card was ARCHIVED is REFUSED (422), not carded again
+  (DL-297).** Kanban's search is a *switch*: without an `archived` parameter it
+  returns live rows only, so an archived card is invisible to the correlation
+  above. The bridge therefore reads the archive side too, on the last branch
+  before the create, and an archived twin **suppresses** it: an archived card is a
+  deliberate retire, and un-retiring one is not this tool's to do. You get a 422
+  naming the card ids to unarchive, and **no card is created**. Your options are
+  to unarchive that card (the work is live again) or to pass a **new**
+  `idempotency_key` (this is genuinely new work). Before DL-297 that same call
+  minted a SECOND card and answered `"created": true`.
+  - That is the only BOARD STATE whose answer changed. A **live** twin is
+    still an idempotent hit — including a live twin sitting *beside* an archived
+    one, since the live read answers first and the archive side is never
+    consulted — and a key with no card on either side still creates, at the cost
+    of one extra search per card actually minted.
+  - If the archive-side read itself fails upstream, the call fails **502 with no
+    card created** rather than creating one it could not check. Fail-closed is
+    deliberate: the alternative re-mints over a retire, which is the defect this
+    closes.
 
 **Returns:**
 
 ```jsonc
 { "created": true, "idempotent_hit": false, "card_id": 123,
-  "board_id": 10, "swimlane_id": 4 }
+  "board_id": 10, "swimlane_id": 4, "placement_observed": true,
+  "configured_board_id": 10, "configured_swimlane_id": 4 }
 ```
+
+**⚠ `board_id` / `swimlane_id` are WHERE THE CARD IS, read back from the card
+itself — not where you are configured to write (card#7225, DL-299).** Before this
+they were the config values echoed back, on both arms: the create never read its
+own result (`POST /tasks.json` hands back an id, not a placement) and the
+idempotency hit answered for a card resolved out of a tag *search*. The two
+readings are equal until something has gone wrong, so the old answer was silently
+correct exactly until you needed it. Consequences for a caller:
+
+- A card kanban did not place where the bridge asked now reports **where it
+  actually is**, not the lane the POST requested.
+- `placement_observed` is the discrimination that makes the nulls readable.
+  **`true`** ⇒ `board_id`/`swimlane_id` are that card's own values (and
+  `swimlane_id: null` then means the card really is in no lane — the bridge tells
+  a *present* null from a *missing* key, so a body that omits `swimlane_id`
+  entirely is never reported as "no lane"). **`false`** ⇒ the read-back failed, or
+  answered nothing usable on either axis, and **both ids are null — the response
+  claims no placement**; it never falls back to the configured board/lane, which
+  is the defect this closes. `created` / `idempotent_hit` / `card_id` are unaffected: the card exists
+  and its id is still the answer, so a read-back failure is **not** an error
+  response (losing the placement is cheaper than losing the id).
+- `configured_board_id` / `configured_swimlane_id` carry the scope this agent is
+  **configured to write to**, on **both** arms and whatever `placement_observed`
+  says. They are what `board_id` / `swimlane_id` used to hold, under names that
+  say what they are — so *"where the card is"* and *"where we were aiming"* are two
+  readable values instead of one ambiguous one, and a caller whose read-back
+  failed can still see its own scope (it has no other channel to it). The same
+  pairing the writeback record has carried since card#7212 — observed and
+  intended, both named, neither dressed as the other.
+  ⛔ **`board_create_card` carries ONE flag for the pair** (`placement_observed`)
+  where the matching correction on `board_my_cards` (card#7295 / DL-302, a
+  SEPARATE change) carries one per axis — deliberate, not an inconsistency: this
+  tool derives both axes from a single read-back of a single card, so they are
+  observed or unobserved together; `board_my_cards` reads two independent row
+  sets, either of which can be readable while the other is not. A flag exists per
+  unit that can independently fail to be read, and the two tools differ in how
+  many such units they have.
+- It costs **one extra `GET /tasks/{id}.json`** per successful call, and it is the
+  card the tool is about to name — after any duplicate collapse, so a survivor
+  minted by another worker reports its own placement. ⚠ **That endpoint is
+  kanban's FULL task aggregate, not a two-field read:** it eager-loads subtasks,
+  comments, attachments, both link directions (each with the linked card's board),
+  external references and the last stage-move changelog, then runs the link
+  projector — all to obtain two integers. One request, but the response body is
+  the real cost, and on the idempotency-hit arm the card can be old and
+  comment-heavy.
+- A placement that disagrees with the agent's configured board/lane is a
+  `Log::warning` on the bridge; the tool still answers 200 and reports what it
+  saw. What a divergence should make the tool *do* is a separate question from
+  what it *reports*, and only the report changed here.
 
 ## Errors
 
@@ -130,7 +242,7 @@ term is efficiency + defense-in-depth, not the boundary.
 | --- | --- |
 | 403 | The request did not come from loopback (network gate). |
 | 401 | Missing or unrecognized bearer token. A bearer file that exists but the bridge cannot read, and one belonging to a collided pair, are **deliberately indistinguishable** from an unknown token here — the door never tells an unauthenticated caller that another agent's bearer exists (card#5778; it 500'd on the unreadable case until then). |
-| 422 | A caller-fixable bad request (missing `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool). |
+| 422 | A caller-fixable bad request (missing `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive). |
 | 502 | Upstream kanban error (may be retryable). |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
 
@@ -241,6 +353,51 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   `bridge:check --probe-tools=<endpoint>` exercises
   the REAL HTTP loopback+bearer path; `bridge:check --probe-tools-ssh=<user@host>`
   the REAL ssh round-trip (see the runbook below).
+
+### Which spelling the probe read — and when the version-skew fallback can go
+
+Both live probes read the answering install's scope header under `configured_board_id`,
+**falling back to the older `board_id` spelling when it is absent** — neither probe is
+guaranteed to be talking to the install it runs inside (`--probe-tools-ssh` round-trips to
+another HOST; `--probe-tools` POSTs to a vhost a co-resident install at a different version
+can serve). Without that fallback a responder predating DL-302 is reported as an
+`IDENTITY MISMATCH`, i.e. a version difference named as an identity fault.
+
+**It is tolerance, and on a current responder the two keys mean different things** — the
+first is an identity echo, the second is where the returned ROWS are. So the probe now ends
+every finding with the spelling it actually read:
+
+| The finding's last sentence | What it tells you |
+| --- | --- |
+| *Header spelling: `configured_board_id` …* | This responder is on DL-302 or later. The fallback did not fire. |
+| *⚠ Header spelling: LEGACY — …the legacy `board_id` spelling…* | This responder answered no `configured_board_id`, so the board just compared came out of the key a current install uses for an observation. Likeliest cause is an install predating DL-302 — upgrade it and re-probe; a relay, or a responder that emits the header conditionally, reads the same way. |
+| *Header spelling: NEITHER …* | This responder answered no header under either name — it always accompanies a failure, and that failure's cause is the ROUTE, not your credential: nothing in the response identifies who answered, so the tail sends you at the endpoint / the forced command rather than at a token that may be doing its job. |
+
+**Dropping the fallback is a measurement, not a judgement call, and card#7325 (DL-304) owns
+it.** Two things must hold:
+
+1. **Every install that is a probe target answers under `configured_board_id`.** You read that
+   off the probe — run `bridge:check --probe-tools=<endpoint>` and
+   `bridge:check --probe-tools-ssh=<user@host>` against each one and look at the last sentence
+   of the finding. ⛔ The subject is the **responder**, which on the ssh leg is a different host
+   entirely: no reading of this repo answers it, and a target you did not probe is **unmeasured**,
+   not clean.
+2. **Nothing else answers this envelope.** `board_my_cards` is the only responder today and it
+   emits `configured_board_id` in its base result literal, on no condition at all — a property
+   guarded by a test, not established by reading the file. A second tool, a channel-server relay,
+   or a future responder that emits the header conditionally re-opens the question, because a row
+   observation would then be read as an identity claim with nothing red anywhere.
+
+Both true ⇒ the fallback is dead tolerance and goes, together with the two skew tests that pin it.
+
+⚠ **The version compare this replaced cannot be run.** The condition was first written as
+*"the oldest bridge version any probed install runs"* ≥ *"the release that first emitted
+`configured_board_id`"*. The board-tools envelope is `{ok, tool, result}` and carries no
+version, and a version field added now would be missing on precisely the old responders the
+question is about — so the spelling is the predicate that compare was a proxy for, measured
+directly, on the round trip the probe already makes. **DL-302 ships in the same release as this
+note**, so the earliest install that can satisfy (1) is one running that release or later;
+until every probe target is upgraded past it, the fallback stays.
 
 Audit trail: one structured log line per call (agent, tool, outcome). A queryable
 `tool_calls` ledger table is the named v2 upgrade if operators want it.
@@ -362,10 +519,14 @@ php artisan bridge:check --probe-tools=<the endpoint from step 1>
 
 This exercises the real network path per enabled agent: a live `board_my_cards`
 call proving the endpoint is reachable, the loopback gate admits it, the bearer
-resolves to the right agent, and the returned window is scoped to that agent's
-configured board/swimlane. Each failure mode names its likely cause (403 → the
+resolves to the right agent, and the scope header the bridge answers with
+(`configured_board_id`/`swimlane_id`) is that agent's. ⚠ That last leg certifies
+**which agent the bearer resolved to** — it is config echoed back, so it cannot show
+that the bridge-side lane filter ran. Each failure mode names its likely cause (403 → the
 step-1 trap; 401 → bearer mismatch/collision; connection refused → wrong
-vhost/endpoint). Non-2xx or a scope mismatch exits non-zero.
+vhost/endpoint). Non-2xx or a scope mismatch exits non-zero. Every finding also names WHICH
+spelling the responder answered the header under, which is how a version skew stops reading as
+an identity fault — see **Which spelling the probe read** above.
 
 ### 7. Restart the channel server
 

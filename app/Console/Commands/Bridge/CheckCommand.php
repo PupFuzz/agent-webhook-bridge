@@ -218,6 +218,17 @@ class CheckCommand extends BridgeCommand
                     continue;
                 }
 
+                // Every SPELLING this agent subscribed a github scope with (card#7124
+                // review). UNCONDITIONAL — unlike the three maps below, which are gated on
+                // a classifier or a family: the dispatcher's exact-spelling match is
+                // classifier-independent, so the leg that reports a spelling split must not
+                // inherit a gate that would silence it on the very install it is for.
+                foreach ($cfg->subscriptions as $sub) {
+                    if ($sub->provider === 'github') {
+                        $ctx->githubScopeSpellings[CheckContext::canonicalScope($sub->scopeId)][] = $sub->scopeId;
+                    }
+                }
+
                 // Record which github scopes this agent DRIVES the writeback for:
                 // its classifier must emit writeback reactions (#2162). Detected
                 // out-of-process (DL-025) — AgentClassifierResolvableCheck's
@@ -227,7 +238,7 @@ class CheckCommand extends BridgeCommand
                 if (ClassifierResolver::probeImplements($cfg->classifierClass, EmitsWritebackReactions::class)) {
                     foreach ($cfg->subscriptions as $sub) {
                         if ($sub->provider === 'github') {
-                            $ctx->writebackEmittingScopes[$sub->scopeId] = true;
+                            $ctx->writebackEmittingScopes[CheckContext::canonicalScope($sub->scopeId)] = true;
                         }
                     }
                 }
@@ -239,7 +250,19 @@ class CheckCommand extends BridgeCommand
                 if (in_array('coord-card-move', $cfg->classifierConfig->strings('families'), true)) {
                     foreach ($cfg->subscriptions as $sub) {
                         if ($sub->provider === 'github') {
-                            $ctx->coordCardMoveScopes[$sub->scopeId] = true;
+                            $ctx->coordCardMoveScopes[CheckContext::canonicalScope($sub->scopeId)] = true;
+                        }
+                    }
+                }
+
+                // card#6393: the same record for the coord-card-relane family, and the same
+                // raw-config membership test is the resolved answer for the same reason (it
+                // is never a default either). Kept separate from the map above because the
+                // two families are independently enabled.
+                if (in_array('coord-card-relane', $cfg->classifierConfig->strings('families'), true)) {
+                    foreach ($cfg->subscriptions as $sub) {
+                        if ($sub->provider === 'github') {
+                            $ctx->coordCardRelaneScopes[CheckContext::canonicalScope($sub->scopeId)] = true;
                         }
                     }
                 }

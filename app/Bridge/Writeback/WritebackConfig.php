@@ -4,6 +4,7 @@ namespace App\Bridge\Writeback;
 
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\UnreadableFileException;
+use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\FileContents;
 use App\Bridge\Support\PathHelper;
 
@@ -31,12 +32,13 @@ use App\Bridge\Support\PathHelper;
  *         "create_dependabot_cards": false,        // optional (DL-024)
  *         "card_id_tag_template": "id:DEV-pr-{n}",  // optional (#75) — id: tag stamped on created dependabot cards; {n}/{pr_number}, {repo}
  *         "create_coord_cards": false,             // optional (DL-198) — real-time coord-issue → card create
- *         "coord_card_stage_id": 21,               // required-when-create_coord_cards/move_coord_cards — stage a new coord card lands in, and the revive target
+ *         "coord_card_stage_id": 21,               // required-when-create_coord_cards/move_coord_cards — stage a new coord card lands in, and the revive target (both lane-derived where coord_card_lane_stage_ids is set — card#6393)
  *         "coord_card_lane_stage_ids": {"now": 13, "next": 14, "later": 15, "maybe": 16},
  *                                                  // optional (card#6371) — the board's priority-lane stage ids; a lane-model-governed
- *                                                  // coord card is created in the stage its `stage:*` label declares, `later` when it
- *                                                  // declares none. Must carry `later`; each id distinct and none equal to
- *                                                  // coord_card_terminal_stage_id. Absent ⇒ every coord card lands in coord_card_stage_id
+ *                                                  // coord card is created — and, since card#6393, revived and re-laned — in the stage
+ *                                                  // its `stage:*` label declares, `later` when it declares none. Must carry `later`; each
+ *                                                  // id distinct and none equal to coord_card_terminal_stage_id. Absent ⇒ every coord card
+ *                                                  // lands in coord_card_stage_id
  *         "move_coord_cards": false,               // DL-200; guarded fleet default (DL-204): absent ⇒ on where coord_card_terminal_stage_id present, inert where absent
  *         "coord_card_terminal_stage_id": 99,      // required-when-move_coord_cards — terminal a closed coord card moves to (MUST differ from coord_card_stage_id)
  *         "swimlane_id": 31,                        // optional — lane for CREATED cards (DL-027)
@@ -46,6 +48,12 @@ use App\Bridge\Support\PathHelper;
  *     }
  *   }
  *
+ * A mapping key is matched CASE-INSENSITIVELY (DL-293): GitHub `owner/repo` is, so
+ * `mappingFor()` canonicalizes both sides through the same
+ * {@see ExternalReferenceNormalizer} the kanban server uses for a
+ * card's `source`. Two keys that name the SAME repo in different spellings are a config
+ * error and FAIL CLOSED at load — one would otherwise shadow the other silently.
+ *
  * identity_id is unioned into the global echo set so the resulting card_updated
  * webhook doesn't loop back (DL-018).
  */
@@ -54,13 +62,56 @@ final class WritebackConfig
     public const OUTCOMES = ['started', 'opened', 'merged', 'merged_to_main', 'closed_unmerged'];
 
     /**
-     * @param  array<string, WritebackMapping>  $mappings  keyed by "owner/repo"
+     * The canonical repo => mapping index every lookup reads, built once here so
+     * `mappingFor()` cannot answer "is this the same repo?" differently from the
+     * kanban server (DL-293).
+     *
+     * @var array<string, WritebackMapping>
+     */
+    private readonly array $byCanonicalRepo;
+
+    /** @var array<string, string> canonical repo => the spelling writeback.json used */
+    private readonly array $configuredRepos;
+
+    /**
+     * @param  array<string, WritebackMapping>  $mappings  keyed by "owner/repo" AS SPELLED in
+     *                                                     writeback.json. The key stays verbatim because the credential store's
+     *                                                     `[git-credential-map]` IS case-sensitive ({@see GitHubTokenResolver::resolveFor}),
+     *                                                     so a canonicalized key would resolve no per-repo token. Repo IDENTITY lives in
+     *                                                     the canonical index instead — never index `$mappings` to answer "which mapping
+     *                                                     is this repo's?", call {@see self::mappingFor} (DL-293).
+     *
+     * @throws ConfigException on a blank key, or on two keys that name the same repo
      */
     public function __construct(
         public readonly ?int $identityId,
         public readonly array $mappings,
         public readonly ?AlertChannel $alertChannel = null,
-    ) {}
+    ) {
+        $refs = new ExternalReferenceNormalizer;
+        $byCanonicalRepo = [];
+        $configuredRepos = [];
+        foreach ($mappings as $repo => $mapping) {
+            $canonical = $refs->canonicalizeSource((string) $repo);
+            if ($canonical === null) {
+                throw new ConfigException('writeback.json: a mapping key is blank — every mapping must be keyed by its "owner/repo"');
+            }
+            // FAIL CLOSED (DL-293). Two spellings of one repo were two mappings before the
+            // canonical index and would now collapse to whichever came last — and the loser
+            // is invisible: the board it names simply never gets written. An operator who
+            // wrote two must say which one they meant.
+            if (isset($configuredRepos[$canonical])) {
+                throw new ConfigException(
+                    "writeback.json: mappings \"{$configuredRepos[$canonical]}\" and \"{$repo}\" are the same repo ({$canonical}) — "
+                    .'GitHub owner/repo is case-insensitive, so one mapping would silently shadow the other; keep exactly one'
+                );
+            }
+            $byCanonicalRepo[$canonical] = $mapping;
+            $configuredRepos[$canonical] = (string) $repo;
+        }
+        $this->byCanonicalRepo = $byCanonicalRepo;
+        $this->configuredRepos = $configuredRepos;
+    }
 
     /**
      * Load the policy, or null when `writeback.json` is absent (writeback off).
@@ -325,9 +376,10 @@ final class WritebackConfig
                 $rawLanes = $m['coord_card_lane_stage_ids'];
                 // `array_is_list` also rejects the EMPTY map `{}` (which decodes to `[]`, a
                 // list) — deliberately not a separate guard: an empty map silently disables
-                // lane-derived create stages while looking configured, and it is caught here.
+                // lane derivation on every coord-card write while looking configured, and it
+                // is caught here.
                 if (! is_array($rawLanes) || array_is_list($rawLanes)) {
-                    throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids must be a non-empty object keyed by lane (".implode(', ', CoordLaneStages::LANES).') — omit the key to disable lane-derived create stages');
+                    throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids must be a non-empty object keyed by lane (".implode(', ', CoordLaneStages::LANES).') — omit the key to disable the lane-derived stages');
                 }
                 $coordCardLaneStageIds = [];
                 foreach ($rawLanes as $lane => $stageId) {
@@ -338,28 +390,47 @@ final class WritebackConfig
                         throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids lane '{$lane}' must be a numeric workflow_stage_id");
                     }
                     // Disjointness, same class as the terminal-vs-create guard above and
-                    // fail-closed for the same reason: a lane pointed at the TERMINAL creates
+                    // fail-closed for the same reason: a lane pointed at the TERMINAL puts
                     // every issue declaring that lane into the concluded stage, where the move
-                    // leg then reads it as already-terminal and its close is a no-op.
+                    // leg then reads it as already-terminal and its close is a no-op. Stated
+                    // over PLACEMENT rather than over the create leg (DL-294): on a
+                    // move-on/create-off mapping the write that lands there is the revive.
                     if ($coordCardTerminalStageId !== null && (int) $stageId === $coordCardTerminalStageId) {
-                        throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids lane '{$lane}' must differ from coord_card_terminal_stage_id — a coord card cannot be created into the stage it concludes in");
+                        throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids lane '{$lane}' must differ from coord_card_terminal_stage_id — a coord card cannot be placed into the stage it concludes in");
                     }
                     // Two lanes on one stage is not a partial lane model, it is a WRONG one: the
-                    // create resolves to a stage that no longer says which lane it meant, and the
-                    // consumer's board→issue writeback then relabels the issue with whichever
+                    // placement resolves to a stage that no longer says which lane it meant, and
+                    // the consumer's board→issue writeback then relabels the issue with whichever
                     // lane that stage maps to — the same silent priority rewrite this key exists
                     // to stop. Reported with both lane names, since either one may be the typo.
                     $collision = array_search((int) $stageId, $coordCardLaneStageIds, true);
                     if (is_string($collision)) {
-                        throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids maps lanes '{$collision}' and '{$lane}' to the same stage id ".(int) $stageId.' — each lane needs its own stage, or the create cannot express the priority the label declares');
+                        throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids maps lanes '{$collision}' and '{$lane}' to the same stage id ".(int) $stageId.' — each lane needs its own stage, or the placement cannot express the priority the label declares');
                     }
                     $coordCardLaneStageIds[$lane] = (int) $stageId;
                 }
                 if (! isset($coordCardLaneStageIds[CoordLaneStages::DEFAULT_LANE])) {
                     throw new ConfigException("writeback.json: mapping for {$repo} coord_card_lane_stage_ids must carry the '".CoordLaneStages::DEFAULT_LANE."' lane — it is the stage an issue declaring no stage:* label lands in, and the fallback for a declared lane this map does not carry");
                 }
-                if (! $createCoordCards) {
-                    throw new ConfigException("writeback.json: mapping for {$repo} sets coord_card_lane_stage_ids but not create_coord_cards — the lane stage ids are read only by the coord-card create path, so nothing would use them; set create_coord_cards (or remove coord_card_lane_stage_ids)");
+                // INERTNESS, and nothing narrower (DL-294, card#7126). Three writes read
+                // these ids since card#6393 — create, revive, relane — and each belongs to
+                // one of the two coord-card families: create to `create_coord_cards`, both
+                // re-placing legs to `move_coord_cards`. So EITHER family is sufficient
+                // reason to require them, exactly as `coord_card_stage_id` is already
+                // required by either (the create leg's landing stage, the move leg's revive
+                // target). With neither on, no leg here reads the map and it is configured
+                // scenery — the fail-quiet shape every other stage key is strict about.
+                //
+                // ⛔ This guard read `! $createCoordCards` until DL-294, on the stated
+                // ground that the re-placing legs "only re-place an already-placed card".
+                // That was FALSE from card#6393 onward: both legs derive their destination
+                // through CoordCardLanePlacement, and both reach cards this mapping never
+                // created (they correlate by the `id:<sid>` tag the consumer's reconcile
+                // writes too). It made the documented move-on/create-off shape unloadable
+                // with a lane model, and the operator's only route to a lane-aware revive
+                // was enabling a create leg that changes which mover creates cards there.
+                if (! $createCoordCards && ! $moveCoordCards) {
+                    throw new ConfigException("writeback.json: mapping for {$repo} sets coord_card_lane_stage_ids but neither create_coord_cards nor move_coord_cards — the lane ids are read only by the coord-card writes: the create leg places a NEW card in the lane its `stage:*` label declares, and the move leg's revive (plus the opt-in coord-card-relane family) RE-places an existing one, including a card the consumer's reconcile created. With neither family on, nothing reads this map; set create_coord_cards and/or move_coord_cards (or remove coord_card_lane_stage_ids)");
                 }
             }
             // Which coordination issues get carded (#4553). Absent ⇒ 'prefixed' (byte-identical
@@ -438,9 +509,39 @@ final class WritebackConfig
         return new AlertChannel($socket, $url, $tokenPath);
     }
 
+    /**
+     * The mapping for a repo, matched CASE-INSENSITIVELY through the same
+     * canonicalization the kanban server applies to a card's `source` (DL-293).
+     *
+     * GitHub `owner/repo` is case-insensitive, and both sides of this compare are
+     * operator-written: the writeback.json key, and — via the payload's
+     * `repository.full_name` → `scope_id` — the owner's registered display casing.
+     * A raw key lookup made those two spellings a silent no-match: every caller reads
+     * null as "this repo is not tracked" and returns — the handlers on a `Log::info`, the
+     * classifiers with no log at all — so a misconfigured install and a deliberately
+     * untracked repo were the same output.
+     */
     public function mappingFor(string $repo): ?WritebackMapping
     {
-        return $this->mappings[$repo] ?? null;
+        $canonical = (new ExternalReferenceNormalizer)->canonicalizeSource($repo);
+
+        return $canonical === null ? null : ($this->byCanonicalRepo[$canonical] ?? null);
+    }
+
+    /**
+     * The spelling writeback.json used for a repo, whatever spelling you ask with, or
+     * null when the repo is not mapped.
+     *
+     * The raw key is not interchangeable with the canonical one: it is what resolves a
+     * per-repo credential from the store's case-sensitive `[git-credential-map]`, and it
+     * is what an operator can find in their own config file. So a consumer that matched
+     * a repo case-insensitively must come back through here before probing or printing.
+     */
+    public function configuredRepoFor(string $repo): ?string
+    {
+        $canonical = (new ExternalReferenceNormalizer)->canonicalizeSource($repo);
+
+        return $canonical === null ? null : ($this->configuredRepos[$canonical] ?? null);
     }
 
     /**

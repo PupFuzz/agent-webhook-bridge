@@ -6,6 +6,7 @@ use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Handlers\KanbanBlockReasonHandler;
 use App\Bridge\Support\AgentConfig;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
@@ -15,6 +16,8 @@ use Tests\TestCase;
 
 class KanbanBlockReasonHandlerTest extends TestCase
 {
+    use RefreshDatabase;
+
     private string $dir;
 
     protected function setUp(): void
@@ -213,6 +216,60 @@ class KanbanBlockReasonHandlerTest extends TestCase
         Http::fake(['*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 999, 'block_reason' => null]])]);
 
         $this->handle('set');   // belongs-to-mapped-board guard — no throw, no write
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    // --- card#7138 / DL-292: same widening as the move handler's twin — this arm now
+    //     shares one predicate with it and with `kanban_coord_card_move`. See that
+    //     handler's test for the direction: `!==` against a `readonly int` refused a
+    //     numeric-string / float `board_id` naming the mapped board itself. ---
+
+    public function test_a_numeric_string_board_id_naming_the_mapped_board_writes(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => '8', 'block_reason' => null]])   // GET
+                ->push(['data' => ['id' => 5]]),                                             // PATCH
+        ]);
+
+        $this->handle('set');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r['block_reason'] === KanbanBlockReasonHandler::MARKER);
+    }
+
+    public function test_a_float_board_id_naming_the_mapped_board_writes(): void
+    {
+        // RAW JSON body: `json_encode(8.0)` emits `8`, so an array fixture would
+        // round-trip to an int and re-test the case above. `8.0` on the wire decodes to
+        // float(8) — refused by the old `!==` spelling.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push('{"data":{"id":5,"board_id":8.0,"block_reason":null}}')   // GET
+                ->push(['data' => ['id' => 5]]),                                 // PATCH
+        ]);
+
+        $this->handle('set');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r['block_reason'] === KanbanBlockReasonHandler::MARKER);
+    }
+
+    public function test_a_board_id_that_casts_onto_the_mapped_board_but_is_not_numeric_is_refused(): void
+    {
+        // The `is_numeric` disjunct's vector on this arm: `(int) '8abc' === 8`, so
+        // without it the cast compare would agree with the mapped board and write to a
+        // card that is not on it.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => '8abc', 'block_reason' => null]])]);
+
+        $this->handle('set');
 
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
@@ -633,5 +690,38 @@ class KanbanBlockReasonHandlerTest extends TestCase
 
         Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $m) => str_contains($m, 'writeback is not configured'));
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    // --- card#7212: the success record names the board the write LANDED on ---
+
+    public function test_a_successful_set_records_the_cards_own_board_beside_the_mapped_one(): void
+    {
+        // Same asymmetry as its move-handler twin: the old single `board` key was the
+        // config's INTENDED board, emitted whether or not the card written to was on it.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'block_reason' => null]])]);
+        Log::spy();
+
+        $this->handle('set');
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_block_reason: set'
+            && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8);
+    }
+
+    public function test_the_set_record_reads_the_cards_own_board_and_is_not_a_second_copy_of_the_mapped_one(): void
+    {
+        // The control, in the same shape as the move handler's: the accepted interval
+        // (DL-292) is the only divergence reachable behind the guard, and `===` on the
+        // numeric STRING is what a mapped-board echo cannot produce.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => '8', 'block_reason' => null]])]);
+        Log::spy();
+
+        $this->handle('set');
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_block_reason: set'
+            && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
     }
 }

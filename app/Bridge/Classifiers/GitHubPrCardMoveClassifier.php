@@ -10,6 +10,7 @@ use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClassifierConfig;
+use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\DlTokenGrammar;
 use App\Bridge\Writeback\CardTokenVerdict;
 use App\Bridge\Writeback\PrOutcome;
@@ -53,6 +54,37 @@ use Illuminate\Support\Facades\Log;
  * (this install's own artifact) outranks the PR title (prose), and a title-only token
  * is passed to the handler marked UNCORROBORATED for a card-side corroboration gate.
  * {@see cardTokenResolution} owns that rule (card#5287 / DL-270).
+ *
+ * CORRELATION IS NOT COMPLETION (card#7348 / DL-305). A token says WHICH card a PR is
+ * about; it never said that merging the PR finishes it — and the merge outcomes are the
+ * ones whose stage is terminal or feeds the terminal release sweep. So on a MERGE
+ * outcome the card also needs CLOSURE EVIDENCE naming the card that moves — through the
+ * same resolution that selected it, so a foreign `Closes DL-NNN` cannot authorize a
+ * `card#` the DL-218 guard just ruled authoritative. Absent, the move is WITHHELD and
+ * warned: a bare mention is a NO-OP for the stage, deliberately NOT a demotion, because
+ * the writeback re-classifies in-window PRs on every pass and returning an earlier stage
+ * would mass-demote every already-correct card on the first run.
+ *
+ * ⚠ THE TITLE IS NO LONGER THE ONLY CLOSURE SURFACE (card#7348 / DL-308), and the
+ * paragraph that stood here said it was. DL-305 excluded the head branch on the argument
+ * that "the branch names the work, not its completion" — true as far as it goes, and it
+ * left an accept-set that 0 of 351 real merged PRs in this shop could satisfy, because
+ * the house convention has never written a closing verb. The widening does not read the
+ * slug as an assertion: it reads the BRANCH IDENTITY plus the fact of a merge into the
+ * integration branch, which is what the Shipped stage asserts and what a citation of
+ * someone else's card id cannot produce. {@see PrOutcome::mergeClosesCard()} owns that
+ * term, {@see ClosureGrammar} still owns the lexical one, and BOTH close.
+ *
+ * ⚠ AND DL-305's OTHER OBSERVATION SURVIVES THE WIDENING AS A RESIDUAL, recorded here
+ * because it is now reachable rather than hypothetical: three merged PRs here track one
+ * card, so a multi-PR card promotes at its FIRST merged PR. The grammar layer can read
+ * INTENT and cannot read AUTHORITY — no predicate over a title and a branch ref can know
+ * that a human ruled this card does not close on this commit. The durable fix is
+ * card-side (a hold/pin marker the writeback refuses to move past whatever the grammar
+ * concludes) and is deliberately NOT built here; it is named in DL-308 as the follow-up.
+ *
+ * {@see PrOutcome::requiresClosure()} owns which outcomes are gated and why the others
+ * are not.
  *
  * Emits NO intents (the writeback is machine-only, "no agent in the loop"). A PR
  * with no parseable card reference, or a repo with no `writeback.json` mapping →
@@ -328,9 +360,29 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
                         ? $this->stampRefs($this->titleAndHead($payload), $this->prNumber($payload), $this->prUrl($payload), $dl)
                         : [];
 
-                    return new ClassifyResult(targets: array_merge($this->moveTargets($cardIds, $repo, $moveOutcome, $stampRefs), $overlayTargets));
+                    // card#7348 / DL-305 — the closure gate on the DL-selected set. A
+                    // `Closes DL-NNN` closes everything that DL tracks (DL-148 makes the
+                    // resolution one-to-many, and the claim is made about the DL); a
+                    // `Closes card#N` closes only the card it names, so a bundled DL whose
+                    // title closes one of its cards moves that one alone.
+                    $closing = $this->closingCards($payload, $moveOutcome, $cardIds, $dl);
+                    if ($closing === []) {
+                        return new ClassifyResult(targets: $overlayTargets);
+                    }
+
+                    return new ClassifyResult(targets: array_merge($this->moveTargets($closing, $repo, $moveOutcome, $stampRefs), $overlayTargets));
                 }
-                Log::warning('kanban_move_card: PR carries '.$dl.' (resolves to card(s) '.implode(',', $cardIds).") AND a DIFFERENT card#{$cardToken} — treating the explicit card# as authoritative (foreign-DL-mention guard, DL-218); moving card#{$cardToken}, not the DL card(s)");
+                // States the RULING, never the outcome (card#7348 / DL-305 corrected this).
+                // It used to end "moving card#N, not the DL card(s)" — true when the only
+                // thing left between here and a move was the handler, and FALSE the moment
+                // the closure gate below can withhold it: on a merge with no closing form
+                // this line announced a move that never happened, in the same log the
+                // operator reads to find out why nothing moved. The title-vs-branch guard
+                // above already draws exactly this line, for the DL-148 reason; the ruling
+                // is what is unconditionally true at this point, so the ruling is what is
+                // said. ⚠ The push path's twin keeps its move claim: `started` is not a
+                // gated outcome, so nothing downstream of it can withhold the move.
+                Log::warning('kanban_move_card: PR carries '.$dl.' (resolves to card(s) '.implode(',', $cardIds).") AND a DIFFERENT card#{$cardToken} — treating the explicit card# as authoritative (foreign-DL-mention guard, DL-218); the card token in force is card#{$cardToken}, not the DL card(s)");
                 $conflictDl = $dl;   // foreign to the card# card → do not stamp it
                 // fall through to the card# path below (do NOT return the DL targets)
             } elseif ($cardToken === null) {
@@ -379,6 +431,17 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         // the DL-218 `$conflictDl` exclusion applied to the SURFACE rather than to one
         // already-resolved token.
         $stampText = $foreignTitleToken !== null ? $this->prHead($payload) : $this->titleAndHead($payload);
+
+        // card#7348 / DL-305 — the closure gate on the `card#` path. `$dl` is passed as
+        // NULL on purpose, and that is the DL-218 guard staying intact rather than being
+        // re-decided here: this path is reached when the DL resolved to nothing, or when
+        // it resolved to a DIFFERENT card and the explicit `card#` was ruled
+        // authoritative. In both cases the DL did not resolve to THIS card, so a closing
+        // form naming it is a claim about someone else's work and must not authorize this
+        // move. Only `Closes card#<this id>` does.
+        if ($this->closingCards($payload, $moveOutcome, [$cardToken], null) === []) {
+            return new ClassifyResult(targets: $overlayTargets);
+        }
 
         return new ClassifyResult(targets: array_merge([
             ReactionTarget::make('kanban_move_card', (string) $cardToken, payload: array_merge(
@@ -486,6 +549,140 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         }
 
         return $targets;
+    }
+
+    /**
+     * The correlated cards this event may move, with every WITHHELD one warned about
+     * (card#7348 / DL-305) — the closure gate as both move-emitting paths consume it.
+     *
+     * IT WARNS ON THE REMAINDER, NOT ON THE EMPTY CASE, and the difference is a whole
+     * class of silence. A bundled DL resolving to three cards whose title closes one of
+     * them moves that one and drops two — a real event, with no move to notice it by. If
+     * the warning hung off "nothing closed" those two would vanish exactly as the defect
+     * this card fixes used to move them: without a word. The set difference makes the
+     * total-withholding case the ordinary case of one rule rather than a second rule.
+     *
+     * LOGGED AT THIS LAYER, NOT INSIDE {@see closureFilter()}, for the reason the DL-218
+     * conflict diagnostics were split the same way: the predicate is asked as a pure
+     * question in tests, and a caller that only wants the answer must be able to ask
+     * without emitting operator-facing text. The draft overlay resolves the same tokens on
+     * the same event and deliberately does NOT come through here — it is ungated — so
+     * there is no double-log to split off in the first place.
+     *
+     * @param  array<mixed>  $payload
+     * @param  list<int>  $cardIds
+     * @return list<int>
+     */
+    private function closingCards(array $payload, string $outcome, array $cardIds, ?string $dl): array
+    {
+        $closing = $this->closureFilter($this->prTitle($payload), $this->prHead($payload), $outcome, $cardIds, $dl);
+        $withheld = array_values(array_diff($cardIds, $closing));
+        if ($withheld !== []) {
+            $this->warnMentionWithoutClosure($payload, $outcome, $withheld);
+        }
+
+        return $closing;
+    }
+
+    /**
+     * WHICH of the correlated cards this event may actually MOVE (card#7348 / DL-305) —
+     * the closure gate, in one place, for both move-emitting paths.
+     *
+     * Correlation answers *which card is this PR about*; nothing in it ever answered
+     * *does merging this PR finish that card*. On a merge outcome those are the same
+     * question only by accident, and the accident cost a peer 17 wrong-retirement
+     * candidates plus one card whose explicit human ruling the writeback reversed. So on
+     * an outcome {@see PrOutcome::requiresClosure()} gates, a card moves only when the
+     * event carries evidence that this merge FINISHES it.
+     *
+     * TWO KINDS OF EVIDENCE, and only the second is prose (card#7348 / DL-308):
+     *  - STRUCTURAL — {@see PrOutcome::mergeClosesCard()}: the PR merged into the
+     *    integration branch AND the head ref itself names the card. This is what the
+     *    house convention actually produces, and DL-305 shipped without it: measured
+     *    against the title-only accept-set, 0 of 351 correlated merged PRs in this shop
+     *    closed anything, so the gate would have frozen every board it guards. Applied
+     *    PER CARD, like the `card#` form and unlike the DL form — a branch ref names one
+     *    card, so a bundled DL whose branch names one of its cards moves that one alone.
+     *  - LEXICAL — a closing form in the TITLE, in the two spellings that mirror the two
+     *    ways the card was SELECTED:
+     *      - `Closes DL-NNN` where that DL is the one that RESOLVED this set — the claim
+     *        is made about the DL, and a DL is one-to-many (DL-148), so it closes the
+     *        whole set;
+     *      - `Closes card#<id>` — closes exactly the card it names, which is why the set
+     *        is FILTERED rather than accepted or rejected whole.
+     *
+     * THE STRUCTURAL TERM WIDENS THE ACCEPT-SET; IT REPLACES NOTHING. Both routes close,
+     * and the upstream foreign-mention discrimination is untouched — a title citing a card
+     * the branch does not name never reaches this filter with that card in the set, which
+     * is exactly why the widening preserves the property roundtable #343 endorsed.
+     *
+     * `$dl` IS THE RESOLUTION, NOT THE SUBJECT'S TEXT. Callers pass the DL only where it
+     * resolved to the cards being filtered; the `card#` path passes null even when a DL
+     * is present in the title, because there it either resolved to nothing or resolved to
+     * a DIFFERENT card (the DL-218 conflict). A closing form naming a DL that never
+     * resolved to this card is a claim about other work.
+     *
+     * RETURNS THE INPUT UNCHANGED for every ungated outcome, which is what makes
+     * `started` / `opened` / `closed_unmerged` / `reopened` byte-identical to before.
+     *
+     * @param  list<int>  $cardIds
+     * @return list<int>
+     */
+    private function closureFilter(string $title, string $headRef, string $outcome, array $cardIds, ?string $dl): array
+    {
+        if (! PrOutcome::requiresClosure($outcome)) {
+            return $cardIds;
+        }
+        if ($dl !== null && ClosureGrammar::closesDl($title, $dl)) {
+            return $cardIds;
+        }
+
+        return array_values(array_filter(
+            $cardIds,
+            fn (int $id) => ClosureGrammar::closesCard($title, $id)
+                || PrOutcome::mergeClosesCard($outcome, $headRef, $id),
+        ));
+    }
+
+    /**
+     * The withheld-merge WARNING — never a silent no-op (card#7348 / DL-305).
+     *
+     * A merge that moves nothing is exactly the high-value miss this classifier warns
+     * loudly about everywhere else: the PR publishes, the card never moves, and without a
+     * line nobody is told. It says what the subject DID carry (a correlating token), what
+     * it did NOT (closure evidence, on EITHER route), and the remediation — rendered from
+     * {@see PrOutcome::describeClosure()} rather than spelled out here, so a move in either
+     * underlying authority rewrites the operator-facing text by construction (the DL-239
+     * ruling; DL-308 is what gave it two authorities to compose).
+     *
+     * IT NAMES THE HEAD REF, not only the title (card#7348 / DL-308). Since the branch is
+     * now one of the two things that can close a card, an operator asking *why did this
+     * merge move nothing* needs to see BOTH surfaces that were read — a line quoting only
+     * the title would send them to rewrite prose when the actual answer is that their
+     * branch is called `fix/streaming-timeout`.
+     *
+     * ONE LINE PER EVENT, not per card: a bundled DL resolving to several cards withholds
+     * them as one set for one reason, and N lines would be N copies of one sentence.
+     *
+     * WHAT IT MAY CLAIM is bounded by where it is emitted — classify time. It says no
+     * move is EMITTED, which is unconditionally true here (the target is not built at
+     * all), and claims nothing about any other leg of the same event: the draft overlay
+     * and the DL-207 promote scan are appended independently and are untouched by this.
+     *
+     * @param  array<mixed>  $payload
+     * @param  list<int>  $cardIds
+     */
+    private function warnMentionWithoutClosure(array $payload, string $outcome, array $cardIds): void
+    {
+        $pr = $this->prNumber($payload);
+        $where = $pr !== null ? "PR #{$pr}" : 'PR';
+        $them = count($cardIds) === 1 ? 'that card' : 'them';
+        Log::warning("kanban_move_card: {$where} merged (outcome '{$outcome}') and correlates card(s) "
+            .implode(',', $cardIds).' — but nothing in this merge claims that work is done: the HEAD BRANCH REF does not name '
+            .$them.' and the TITLE carries no closing form naming '.$them
+            .', so this PR MENTIONS the card rather than claiming its work is done: NO stage move (mention-vs-closure, DL-305/DL-308). '
+            .'A merge moves a card on '.PrOutcome::describeClosure().'. '
+            ."The card is left where it is, never moved back. Title: {$this->prTitle($payload)} — head ref: {$this->prHead($payload)}");
     }
 
     /**

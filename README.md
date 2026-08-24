@@ -67,7 +67,7 @@ Don't use the bridge when:
 4. **Validate the install**: `php artisan bridge:check`
 5. **Provision subscriptions**: `php artisan bridge:provision`
 6. **Deploy the app**: point Apache + PHP-FPM at `public/`; no cron, no worker, no scheduler.
-7. **Wire your agent hooks** (Claude Code example): see `examples/claude-code/settings.json`.
+7. **Wire your agent hooks** (Claude Code example): see `examples/claude-code/settings.json.example`.
 
 After step 7, kanban activity reaches your agent's session-start and mid-session surfaces within seconds of the webhook arriving. Edit a card via the kanban UI, start a new Claude session, see the event in your context.
 

@@ -563,7 +563,23 @@ fixtures reach the mapping-count line, the no-identity and missing-token warns, 
 reconcile arm, orphan, the DL-160 pair, the DL-195 revive, the DL-198 echo, DL-204 in both directions,
 and the outer load `catch`. **Four legs no fixture reaches at all:** the whole `alert_channel` check,
 `issuePopulationAgreement()`, the #4553 `population=all` warn itself, and the reconcile probe's `Http`
-arm. Three more are disclosed as UNOBSERVED by condition text (the `correlation !== 'ref'` leg, the
+arm. **[card#7124 (DL-293) correction: FIVE as it ships. `WritebackMappingConfigCheck` gained a
+`SPELLING SPLIT` leg — a mapping key and an agent `scope_id` that canonicalize equal but differ in
+spelling — and no golden fixture reaches it, because every fixture spells the two the same way,
+which is the state the leg exists to distinguish FROM. It is covered by three
+`WritebackMappingConfigCheckTest` cases (split reported / spellings agree ⇒ silent / no agent ⇒
+ORPHANED-not-split) plus one end-to-end `bridge:check` case, all mutation-proven against the
+pre-DL-293 tree. The enumerated count above is the stage-9 measurement, not the shipped one.]**
+**[card#7348 (DL-305) correction, to the SECOND of those three cases only: the spellings-agree case
+no longer asserts a totally empty result. `WritebackMappingConfigCheck` gained a mention-vs-closure
+`ok` leg — the first non-warning leg on it, and the first that speaks about a mapping which is
+entirely correct — so that case now asserts *no WARNING*, with the green line standing as the
+WITNESS this file's own discipline asks of every absence assertion: before it, a check that returned
+at its first line satisfied that test exactly as well as one that walked the mapping loop. The leg is
+fixture-REACHED (nine golden captures gained the line, and the inventory's reported-count moved with
+it), so it is not a new member of the four-unreached set enumerated above, and the `family-on,
+terminal-missing` no-disclosure ruling below is untouched — the closure leg is not map-fed and reads
+no scope map at all.]** Three more are disclosed as UNOBSERVED by condition text (the `correlation !== 'ref'` leg, the
 promote same-stage no-op, and the promote file-token requirement). **All seven are covered by three
 new unit tests** — `WritebackMappingConfigCheckTest`, `WritebackAlertChannelCheckTest`,
 `ReconcileRepoTokensCheckTest` — deliberately scoped to the residue: golden-covered legs are *absent*
@@ -1141,7 +1157,7 @@ argument for the other.**]**
 **`warnIfDirInsecure()` was extracted, not copied, because this is the stage its second caller
 arrives in.** It was a private method on `CheckCommand` with exactly two call sites — units 2 and 4
 of this very stage — so migrating them meant either one shared primitive or two copies of a
-permission verdict. It became `DirectoryPermissions::warnIfInsecure()` (renamed `verdictFor()` in DL-265, when it
+permission verdict. It became `DirectoryPermissions::warnIfInsecure()`, a name that no longer exists (renamed `verdictFor()` in DL-265, when it
 gained a `fail` arm the old name denied), returning `?Finding` rather
 than yielding, because each caller decides where the warn sits in ITS output: the config-dir check
 emits it straight after its own ok line; the secret-dir check emits it only on a split layout. This
@@ -2145,7 +2161,7 @@ ask what each one CONCLUDED — and that is a static-analysis job nobody has bui
 the filing; it is not claimed as done.
 
 **A FOURTH CANDIDATE WAS FILED AGAINST THIS SET AND WAS NOT A MEMBER — the misfiling is the more
-useful finding (DL-264, card#5774).** The DL-259 audit found `DirectoryPermissions::warnIfInsecure()` (now `verdictFor()`, DL-265)
+useful finding (DL-264, card#5774).** The DL-259 audit found `DirectoryPermissions::warnIfInsecure()`, a name that no longer exists (now `verdictFor()`, DL-265)
 returning `null` on a failed `fileperms()`, filed it here as the silent-leg shape, and wrote the
 mechanism down: a green `secret dir: …` line followed by silence, "both halves read as certified."
 Every reader of that card — including the one who implemented it — found the reading obvious, because

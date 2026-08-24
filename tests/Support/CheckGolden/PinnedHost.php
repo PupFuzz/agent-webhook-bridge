@@ -32,7 +32,8 @@ use Illuminate\Support\Facades\File;
  *      stage-0 NAMED GAP; pinning closes it rather than assuming hosts agree.
  *   2. `XDG_RUNTIME_DIR` — interpolated into the HTTP channel bind-failure marker path.
  *   3. `COORD_CONFIG` — the proven-divergent one above, read by
- *      `CheckCommand::checkCoordTerminalAgreement()`.
+ *      `WritebackBoardStateCheck::coordTerminalAgreement()` (and by
+ *      `WritebackMappingConfigCheck`, which spells the same two `$where` diagnoses).
  *   4. `GH_TOKEN` — `GitHubTokenResolver` falls back to it (resolver L204), so an
  *      operator shell that exports it silently satisfies a token probe that must fail
  *      on a fixture with no token.

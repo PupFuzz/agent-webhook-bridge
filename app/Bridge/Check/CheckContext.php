@@ -5,6 +5,7 @@ namespace App\Bridge\Check;
 use App\Bridge\Check\EventConsumers\EventConsumerReconciliation;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
+use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\SharedIdentitiesFile;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Writeback\KanbanClient;
@@ -78,9 +79,10 @@ final class CheckContext
      * (the bridge dispatches to all of them), so this is a list per scope and the
      * consumed set is their union (card#4183 / DL-196).
      *
-     * ACCUMULATED *DURING* THE PER-AGENT LOOP, NOT AFTER IT — one of the THREE fields
-     * here whose trap is PARTIAL rather than EMPTY ({@see self::$writebackEmittingScopes}
-     * and {@see self::$coordCardMoveScopes} are the others; the two groups are separated
+     * ACCUMULATED *DURING* THE PER-AGENT LOOP, NOT AFTER IT — one of the FOUR fields
+     * here whose trap is PARTIAL rather than EMPTY ({@see self::$writebackEmittingScopes},
+     * {@see self::$coordCardMoveScopes} and {@see self::$coordCardRelaneScopes} are the
+     * others; the two groups are separated
      * below). {@see self::$configs} is assigned once the loop has finished, so a check
      * reading it too early sees nothing at all; this one grows an entry per agent, so a
      * check reading it from a slot INSIDE the loop would see the agents processed so far
@@ -155,6 +157,73 @@ final class CheckContext
      * @var array<string, true>
      */
     public array $coordCardMoveScopes = [];
+
+    /**
+     * github scopes where an agent enables the coord-card-relane family (card#6393) —
+     * gate 1 of the label-driven lane move, exactly as {@see self::$coordCardMoveScopes}
+     * is for the DL-204 close/reopen move. Gate 2 is the mapping's `move_coord_cards`
+     * PLUS a configured `coord_card_lane_stage_ids`; with either missing the classifier
+     * emits nothing at all, which is a silence no other leg reports.
+     *
+     * SEPARATE FROM the move map rather than folded into it, because the two families are
+     * independently enabled: an install can run either without the other, and one map
+     * would make each family's advisory speak for the other's absence.
+     *
+     * Same accumulation timing and the same two traps as the sibling above (PARTIAL, not
+     * empty, inside the per-agent loop; short by any aborted agent — consult
+     * {@see self::$agentScopeCoverage}).
+     *
+     * @var array<string, true>
+     */
+    public array $coordCardRelaneScopes = [];
+
+    /**
+     * Every SPELLING each github scope was subscribed with, keyed by its canonical form
+     * (card#7124 review). The three maps above are keyed by identity so they cannot report
+     * a working install as ORPHANED; this is what keeps that canonicalization from
+     * ANSWERING FOR the dispatcher, which does not share it.
+     *
+     * ⛔ THE DISPATCHER MATCHES A SUBSCRIPTION BY EXACT SPELLING.
+     * `SubscriptionRegistry::subscribedTo` (NAMED, not `{@see}`-linked — pint's docblock
+     * fixer turns a fully-qualified `{@see}` into a real import, and this class does not
+     * otherwise use it) compares
+     * `$sub->scopeId === $scopeId` raw against the delivery's scope, so an agent
+     * subscribed as `pupfuzz/x` receives NOTHING for a delivery spelled `PupFuzz/x`. An
+     * identity-match at this layer therefore does NOT imply a dispatch-layer match, and a
+     * check that silently canonicalized both sides would certify that install healthy
+     * while every delivery on it reaches no agent at all — the DL-265 shape (a leg that
+     * examined nothing stops reporting `ok`), re-minted by the fix meant to close a
+     * silent-failure class.
+     *
+     * ACCUMULATED UNCONDITIONALLY for every github subscription of every agent that
+     * parsed — the dispatch consequence is classifier-independent, so it must not inherit
+     * the writeback-emitting / family gates the three maps above carry. It carries the
+     * same abort trap as they do: an agent that never parsed contributes no spelling.
+     *
+     * @var array<string, list<string>>
+     */
+    public array $githubScopeSpellings = [];
+
+    /**
+     * The key form of the three github scope maps above, and the form to look one up
+     * with (DL-293).
+     *
+     * BOTH SIDES OF THAT COMPARE ARE OPERATOR-WRITTEN AND NAME THE SAME THING: the key is
+     * an agent YAML's `subscriptions[].scope_id`, and every consumer asks with a
+     * `writeback.json` mapping key. GitHub `owner/repo` is case-insensitive, so two
+     * spellings of one repo are one repo — and a raw compare here does not report a
+     * mismatch, it reports the mapping as ORPHANED (inert), which is a config accusation
+     * against an install that is working.
+     *
+     * The canonicalization is {@see WritebackConfig::mappingFor}'s, so a scope map and the
+     * writeback config cannot disagree about which repo a string names. A value that
+     * canonicalizes to nothing keeps its raw form — it is no scope's id, so it matches
+     * nothing either way, and the map key stays a string.
+     */
+    public static function canonicalScope(string $scopeId): string
+    {
+        return (new ExternalReferenceNormalizer)->canonicalizeSource($scopeId) ?? $scopeId;
+    }
 
     /**
      * Every `<name>.yml` the config-dir scan SAW, whether or not it parsed.

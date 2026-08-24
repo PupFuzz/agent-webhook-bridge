@@ -18,24 +18,86 @@
         </include>
     </source>
     <php>
+        <!-- ⚑ `force="true"` DOES NOT make a pin beat an exported variable, and
+             believing it does is the trap this block exists to document. Measured
+             on PHPUnit 13.3.1 + this Laravel, with REDIS_DB=9 exported against a
+             pin written `<env name="REDIS_DB" value="13" force="true"/>`:
+
+                 getenv()='13'  $_ENV='13'  $_SERVER='9'  env()='9'  config()='9'
+
+             `force` makes PhpHandler::handleEnvVariables() putenv() and write
+             $_ENV unconditionally, but it never touches $_SERVER — and with this
+             build's `variables_order=GPCS` an exported variable lands there.
+             Laravel resolves env() through Dotenv's repository, whose
+             DEFAULT_ADAPTERS are ServerConstAdapter THEN EnvConstAdapter (putenv
+             appended last), so $_SERVER is read first and the forced pin loses.
+             This is the measured mechanism behind G-017's older finding that
+             forcing BRIDGE_INBOX_LAYOUT in this file did not fix an export.
+
+             So the two entry kinds buy different things, and neither is redundant:
+             `<env … force="true">` is what CHILD PROCESSES and getenv() readers
+             inherit; `<server>` — written unconditionally by
+             handleServerVariables() — is what env()/config() resolve IN THIS
+             PROCESS. A `.env` defeats neither: Laravel's Dotenv repository is
+             immutable and phpunit has already written by the time bootstrap loads
+             the file.
+
+             Paired with `<server>`: the Redis indices, whose leaking reaches
+             ANOTHER TENANT's data rather than just this suite's, and
+             BRIDGE_INSTALL_SUFFIX, whose leaking reds every DB-touching test (the
+             symptom G-013 records — and an EXPORT, measured, is its real vector;
+             a `.env` never had the power G-013 attributes to it).
+             Keep each `<server>` adjacent to its `<env>` — two copies of one value,
+             and $_SERVER is read FIRST, so a value edited on the `<env>` alone
+             would be silently ignored. `Tests\Unit\PhpunitConfigPinTest` is
+             the drift guard on that pairing.
+             `force="true"` alone: every value whose leaking would let the suite
+             reach shared or outward infrastructure, or would change a result.
+             Neither: APP_ENV (Laravel's own environment selection; every
+             isolation-critical value is pinned individually, so a leaked APP_ENV
+             cannot reach one through a `.env.<env>` file), APP_MAINTENANCE_DRIVER
+             and BCRYPT_ROUNDS (an override changes duration or storage of nothing
+             the suite asserts on), and the DB_* group, which is overridden on
+             purpose — see its own note. -->
         <env name="APP_ENV" value="testing"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
-        <env name="BROADCAST_CONNECTION" value="null"/>
-        <env name="CACHE_STORE" value="array"/>
+        <env name="BROADCAST_CONNECTION" value="null" force="true"/>
+        <env name="CACHE_STORE" value="array" force="true"/>
+        <!-- ⛔ NOT force="true", and the absence is load-bearing. The
+             `phpunit-mariadb` CI matrix, and the local recipe in CLAUDE_TESTING.md
+             § Running MariaDB tests locally, exercise the MariaDB driver by
+             EXPORTING DB_CONNECTION/DB_HOST/DB_DATABASE — which works only because
+             an unforced pin yields to a real environment variable. Forcing these
+             would make both matrix legs silently re-run SQLite: green CI that has
+             stopped testing the one thing it exists to test. -->
         <env name="DB_CONNECTION" value="sqlite"/>
         <env name="DB_DATABASE" value=":memory:"/>
         <env name="DB_URL" value=""/>
-        <!-- Neutralize the install-suffix crosstalk guard in tests, so a
-             deployed worktree's .env (BRIDGE_INSTALL_SUFFIX=-dev/-prod) can't
-             fire it against the sqlite :memory: test DB. InstallGuardTest sets
-             the suffix explicitly per-test to exercise the guard. -->
-        <env name="BRIDGE_INSTALL_SUFFIX" value=""/>
-        <env name="MAIL_MAILER" value="array"/>
-        <env name="QUEUE_CONNECTION" value="sync"/>
-        <env name="SESSION_DRIVER" value="array"/>
-        <env name="PULSE_ENABLED" value="false"/>
-        <env name="TELESCOPE_ENABLED" value="false"/>
-        <env name="NIGHTWATCH_ENABLED" value="false"/>
+        <!-- Neutralize the install-suffix crosstalk guard in tests, so an ambient
+             BRIDGE_INSTALL_SUFFIX=-dev/-prod can't fire it against the sqlite
+             :memory: test DB. InstallGuardTest sets the suffix explicitly per-test
+             to exercise the guard. The vector is an EXPORT, not a `.env` (G-013 says
+             `.env`; measured, a `.env` loses to the pin and an export beats
+             `force="true"` — hence the paired `<server>`). -->
+        <env name="BRIDGE_INSTALL_SUFFIX" value="" force="true"/>
+        <server name="BRIDGE_INSTALL_SUFFIX" value=""/>
+        <env name="MAIL_MAILER" value="array" force="true"/>
+        <env name="QUEUE_CONNECTION" value="sync" force="true"/>
+        <!-- Several tenants' suites share ONE Redis on the deployment host. Pin the
+             databases this suite could touch to indices claimed for it, so a
+             concurrent neighbouring run cannot read, write or flush the same
+             keyspace. Nothing selects Redis today (CACHE_STORE=array,
+             QUEUE_CONNECTION=sync), so this is latent rather than live — but the
+             unpinned fallbacks are 0 and 1, the two indices every other seat also
+             gets by default, which is the worst pair to inherit. -->
+        <env name="REDIS_DB" value="13" force="true"/>
+        <server name="REDIS_DB" value="13"/>
+        <env name="REDIS_CACHE_DB" value="12" force="true"/>
+        <server name="REDIS_CACHE_DB" value="12"/>
+        <env name="SESSION_DRIVER" value="array" force="true"/>
+        <env name="PULSE_ENABLED" value="false" force="true"/>
+        <env name="TELESCOPE_ENABLED" value="false" force="true"/>
+        <env name="NIGHTWATCH_ENABLED" value="false" force="true"/>
     </php>
 </phpunit>

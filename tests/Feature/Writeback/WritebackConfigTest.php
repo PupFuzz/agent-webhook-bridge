@@ -904,8 +904,10 @@ class WritebackConfigTest extends TestCase
     public function test_a_lane_equal_to_the_terminal_stage_throws(): void
     {
         // Same disjointness class as coord_card_stage_id-vs-terminal: an issue declaring
-        // this lane would be CREATED into the concluded stage, and the move leg's close
-        // would then read it as already-terminal and no-op.
+        // this lane would be PLACED into the concluded stage, and the move leg's close
+        // would then read it as already-terminal and no-op. PLACED, not created: the
+        // create leg is the write that lands it here, but it is not the only one (DL-294)
+        // — the sibling below reaches this same guard with no create leg at all.
         $this->write(json_encode(['mappings' => [
             'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
                 'move_coord_cards' => true, 'coord_card_terminal_stage_id' => 99,
@@ -917,11 +919,35 @@ class WritebackConfigTest extends TestCase
         WritebackConfig::load($this->dir);
     }
 
+    public function test_a_lane_equal_to_the_terminal_stage_throws_on_a_create_off_mapping(): void
+    {
+        // The same guard over the population DL-294 ADDED. Until the widening no create-off
+        // mapping could carry a lane map at all, so this guard's verdict only ever decided
+        // a create-on config, where the create is the write that lands the card in the
+        // terminal. On a move-on/create-off mapping the REVIVE is that write, resolving
+        // through the same CoordCardLanePlacement the create leg uses — so the
+        // disjointness has to hold over a config whose lane ids no create leg reads.
+        // Not a contrived pairing: coord_card_terminal_stage_id is required-when-
+        // move_coord_cards, so a create-off lane model ALWAYS has a terminal to collide
+        // with — this guard is live on every install the widening admits.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'move_coord_cards' => true, 'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99,
+                'coord_card_lane_stage_ids' => ['later' => 42, 'maybe' => 99]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage("lane 'maybe' must differ from coord_card_terminal_stage_id");
+        WritebackConfig::load($this->dir);
+    }
+
     public function test_two_lanes_sharing_one_stage_id_throws(): void
     {
         // A lane map whose lanes collide cannot express the priority the label declares:
-        // the create resolves to a stage that no longer says which lane it meant, and the
-        // consumer's board→issue writeback relabels the issue with whichever lane owns it.
+        // the placement resolves to a stage that no longer says which lane it meant, and
+        // the consumer's board→issue writeback relabels the issue with whichever lane owns
+        // it. Every coord-card write resolves through that one placement (create, revive,
+        // relane), so the collision breaks all three — not just the create this pins on.
         $this->write(json_encode(['mappings' => [
             'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'create_coord_cards' => true, 'coord_card_stage_id' => 21,
                 'coord_card_lane_stage_ids' => ['now' => 40, 'next' => 40, 'later' => 42]],
@@ -946,17 +972,72 @@ class WritebackConfigTest extends TestCase
         $this->assertSame(['now' => 21, 'next' => 41, 'later' => 42], WritebackConfig::load($this->dir)->mappingFor('o/r')->coordCardLaneStageIds);
     }
 
-    public function test_lane_map_without_create_coord_cards_throws(): void
+    public function test_lane_map_loads_with_the_move_family_alone_and_no_create_leg(): void
     {
-        // Nothing but the create path reads these ids, so a lane map on a mapping that
-        // creates no coord cards is a misconfiguration that would look active forever.
+        // DL-294 / card#7126 — THE WIDENING. A move-on/create-off mapping is a documented
+        // shape (docs/writeback.md: coord_card_stage_id "is required here too, even with
+        // create_coord_cards off"), its cards are created by the consumer's reconcile, and
+        // since card#6393 the revive and relane legs READ these lane ids. So the lane model
+        // is expressible on it, and the load must accept it. Before DL-294 this config threw.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'move_coord_cards' => true, 'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99,
+                'coord_card_lane_stage_ids' => ['now' => 40, 'later' => 42]],
+        ]]));
+
+        $mapping = WritebackConfig::load($this->dir)->mappingFor('o/r');
+        $this->assertSame(['now' => 40, 'later' => 42], $mapping->coordCardLaneStageIds);
+        $this->assertFalse($mapping->createCoordCards);
+        $this->assertTrue($mapping->moveCoordCards);
+    }
+
+    public function test_lane_map_loads_under_the_dl_204_move_default_with_no_explicit_flag(): void
+    {
+        // The same widening reached the way DL-204 says an install reaches the move leg —
+        // the terminal present, no `move_coord_cards` key. The guard reads the RESOLVED
+        // flag, not the raw key, so the default-on path is inside the widening rather than
+        // beside it.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99,
+                'coord_card_lane_stage_ids' => ['later' => 42]],
+        ]]));
+
+        $this->assertSame(['later' => 42], WritebackConfig::load($this->dir)->mappingFor('o/r')->coordCardLaneStageIds);
+    }
+
+    public function test_lane_map_with_neither_coord_card_family_throws(): void
+    {
+        // ⛔ THE NEGATIVE PIN for DL-294's widening: a loosening whose only test is the
+        // newly-allowed case cannot tell "accepts the right thing" from "accepts
+        // everything". A mapping that neither creates NOR moves coord cards runs no leg
+        // that reads these ids, so the lane model has nothing to place — still fail-closed.
+        // `move_coord_cards` is absent AND `coord_card_terminal_stage_id` is absent, so the
+        // DL-204 default resolves the move leg OFF too.
         $this->write(json_encode(['mappings' => [
             'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'coord_card_stage_id' => 21,
                 'coord_card_lane_stage_ids' => ['later' => 42]],
         ]]));
 
         $this->expectException(ConfigException::class);
-        $this->expectExceptionMessage('coord_card_lane_stage_ids but not create_coord_cards');
+        $this->expectExceptionMessage('sets coord_card_lane_stage_ids but neither create_coord_cards nor move_coord_cards');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_lane_map_with_an_explicit_move_opt_out_throws(): void
+    {
+        // The other spelling of "neither family": the terminal is present (so the DL-204
+        // default would turn the move leg on) but the operator explicitly opted OUT. The
+        // guard must read the resolved flag, not the terminal's presence — reading the
+        // terminal would accept a mapping whose every lane-reading leg is off.
+        $this->write(json_encode(['mappings' => [
+            'o/r' => ['board_id' => 8, 'stages' => ['opened' => 50], 'coord_card_stage_id' => 21,
+                'move_coord_cards' => false, 'coord_card_terminal_stage_id' => 99,
+                'coord_card_lane_stage_ids' => ['later' => 42]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('sets coord_card_lane_stage_ids but neither create_coord_cards nor move_coord_cards');
         WritebackConfig::load($this->dir);
     }
 
@@ -968,5 +1049,102 @@ class WritebackConfigTest extends TestCase
         config(['bridge.config_dir' => $this->dir]);
         $this->expectException(ConfigException::class);
         WritebackConfig::loadDefault();
+    }
+
+    // ---- DL-293: a mapping key names a repo, and GitHub repo names are case-insensitive.
+
+    public function test_mapping_key_matches_a_differently_cased_payload_repo(): void
+    {
+        // The armed shape: the operator wrote the key the way every GitHub URL accepts and
+        // every `gh` command echoes, and the payload arrives in the owner's registered
+        // display casing. A raw key lookup made that a permanent silent no-match.
+        $this->write(json_encode(['mappings' => [
+            'owner/Repo' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+        ]]));
+
+        $cfg = WritebackConfig::load($this->dir);
+        $this->assertSame(8, $cfg->mappingFor('Owner/repo')?->boardId);
+        $this->assertSame(8, $cfg->mappingFor('OWNER/REPO')?->boardId);
+        $this->assertSame(8, $cfg->mappingFor('owner/Repo')?->boardId);
+    }
+
+    public function test_a_mapping_key_spelled_exactly_as_the_payload_still_resolves(): void
+    {
+        // THE REGRESSION LEG, and the one that would have caught the outage: every live
+        // mapping key on the reference fleet is non-canonical (`PupFuzz/...`) and so is the
+        // `repository.full_name` it is matched against. Canonicalizing only ONE side would
+        // have redded every production mapping at once, silently, through each call site's
+        // "repo not tracked" return.
+        $this->write(json_encode(['mappings' => [
+            'PupFuzz/agent-webhook-bridge' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+            'PupFuzz/kanban-board' => ['board_id' => 5, 'stages' => ['opened' => 30]],
+        ]]));
+
+        $cfg = WritebackConfig::load($this->dir);
+        $this->assertSame(8, $cfg->mappingFor('PupFuzz/agent-webhook-bridge')?->boardId);
+        $this->assertSame(5, $cfg->mappingFor('PupFuzz/kanban-board')?->boardId);
+    }
+
+    public function test_an_unmapped_repo_still_resolves_to_null(): void
+    {
+        // The negative the widening must not swallow: matching case-insensitively is not
+        // matching everything.
+        $this->write(json_encode(['mappings' => [
+            'owner/Repo' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+        ]]));
+
+        $cfg = WritebackConfig::load($this->dir);
+        $this->assertNull($cfg->mappingFor('owner/other-repo'));
+        $this->assertNull($cfg->mappingFor('other-owner/repo'));
+        $this->assertNull($cfg->mappingFor('owner/repo2'));
+        $this->assertNull($cfg->mappingFor(''));
+    }
+
+    public function test_two_keys_naming_the_same_repo_fail_closed_naming_both_spellings(): void
+    {
+        $this->write(json_encode(['mappings' => [
+            'Owner/Repo' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+            'owner/repo' => ['board_id' => 9, 'stages' => ['opened' => 60]],
+        ]]));
+
+        try {
+            WritebackConfig::load($this->dir);
+            $this->fail('expected a ConfigException for two mapping keys naming one repo');
+        } catch (ConfigException $e) {
+            // Both ORIGINAL spellings, so the operator can find the two lines in their file.
+            $this->assertStringContainsString('"Owner/Repo"', $e->getMessage());
+            $this->assertStringContainsString('"owner/repo"', $e->getMessage());
+            $this->assertStringContainsString('same repo (owner/repo)', $e->getMessage());
+        }
+    }
+
+    public function test_a_blank_mapping_key_fails_closed(): void
+    {
+        // A key that canonicalizes to nothing can match no payload repo: it is a dead
+        // mapping, and a dead mapping is exactly the silent misconfiguration this fails
+        // closed on.
+        $this->write(json_encode(['mappings' => [
+            '   ' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+        ]]));
+
+        $this->expectException(ConfigException::class);
+        $this->expectExceptionMessage('mapping key is blank');
+        WritebackConfig::load($this->dir);
+    }
+
+    public function test_configured_repo_for_returns_the_spelling_the_operator_wrote(): void
+    {
+        // The raw key is NOT interchangeable with the canonical one: it is what resolves a
+        // per-repo token from the store's case-sensitive [git-credential-map], so anything
+        // that matched a repo case-insensitively has to come back for it.
+        $this->write(json_encode(['mappings' => [
+            'PupFuzz/agent-webhook-bridge' => ['board_id' => 8, 'stages' => ['opened' => 50]],
+        ]]));
+
+        $cfg = WritebackConfig::load($this->dir);
+        $this->assertSame('PupFuzz/agent-webhook-bridge', $cfg->configuredRepoFor('pupfuzz/agent-webhook-bridge'));
+        $this->assertSame('PupFuzz/agent-webhook-bridge', $cfg->configuredRepoFor('PupFuzz/agent-webhook-bridge'));
+        $this->assertNull($cfg->configuredRepoFor('pupfuzz/not-mapped'));
+        $this->assertSame(['PupFuzz/agent-webhook-bridge'], array_keys($cfg->mappings));
     }
 }

@@ -122,6 +122,25 @@ final class DlTokenGrammar
         return preg_match_all(self::PATTERN, $text, $m) === 1 ? 'DL-'.$m[1][0] : null;
     }
 
+    /**
+     * The `DL-NNN` token this text STARTS with — flush at offset 0 — normalized exactly
+     * as {@see self::parse()} normalizes it, or null.
+     *
+     * The card-token twin's docblock owns the reasoning ({@see CardTokenGrammar::parseAnchored()});
+     * it is the same door for the same caller ({@see ClosureGrammar}), and it exists on
+     * both stems because a closure grammar that reached only one of them would relocate
+     * the defect rather than close it: a `DL-NNN` is a second door into the same terminal
+     * stage.
+     */
+    public static function parseAnchored(string $text): ?string
+    {
+        if (preg_match(self::PATTERN, $text, $m, PREG_OFFSET_CAPTURE) !== 1) {
+            return null;
+        }
+
+        return $m[0][1] === 0 ? 'DL-'.$m[1][0] : null;
+    }
+
     /** @return list<string> */
     public static function accepted(): array
     {

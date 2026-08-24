@@ -22,11 +22,19 @@ use Illuminate\Support\Facades\Log;
  * configured swimlane and a non-matching one is DROPPED + logged (a misbehaving
  * upstream must never leak a foreign lane's card into a caller's window).
  *
+ * The BOARD axis is the other half of that sentence, and until DL-302 it was the
+ * odd one out in this file: the response stated the CONFIGURED board for a row set
+ * whose own `board_id` nothing had read. {@see observedBoard} now reports the board
+ * the returned rows actually carry, `board_observed` says whether the bridge read
+ * one at all, and `configured_board_id` keeps the scope this agent is configured
+ * for as a separately named value — never one dressed as the other.
+ *
  * `include_description` (DL-245) is the tool's only argument: OPT-IN, because a
  * card body is ~2 KB and the projection has no bound on how many cards a lane
- * holds. Absent ⇒ the response is byte-identical to the DL-217 shape (the two
- * description keys are ABSENT, not null-valued). The field costs no extra API
- * call — `KanbanClient::swimlaneCards()` already fetches `description` and the
+ * holds. Absent ⇒ the projected CARD is byte-identical to the DL-217 shape (the
+ * two description keys are ABSENT, not null-valued; the enclosing response grew
+ * the DL-302 board keys). The field costs no extra API call —
+ * `KanbanClient::swimlaneCards()` already fetches `description` and the
  * projection discarded it.
  */
 final class BoardMyCardsTool implements Tool
@@ -44,22 +52,36 @@ final class BoardMyCardsTool implements Tool
         $stageNames = $client->boardStageNames($boardId);
 
         $ownRows = $this->filterSwimlane($client->swimlaneCards($boardId, $swimlaneId), $swimlaneId, $agentName, 'own');
+        $sharedRows = $cfg->sharedSwimlaneId === null
+            ? null
+            : $this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared');
+
+        [$observedBoard, $boardObserved] = $this->observedBoard(array_merge($ownRows, $sharedRows ?? []), $boardId, $agentName, $sharedRows === null ? 'own' : 'own+shared');
         $result = [
-            'board_id' => $boardId,
+            'board_id' => $observedBoard,
+            'board_observed' => $boardObserved,
+            'configured_board_id' => $boardId,
             'swimlane_id' => $swimlaneId,
             'cards_by_stage' => $this->groupByStage($ownRows, $stageNames, $descriptionCap),
         ];
 
-        if ($cfg->sharedSwimlaneId !== null) {
-            $sharedRows = $this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared');
+        if ($sharedRows !== null) {
             $result['shared_swimlane'] = [
-                'swimlane_id' => $cfg->sharedSwimlaneId,
+                'swimlane_id' => (int) $cfg->sharedSwimlaneId,
                 'cards_by_stage' => $this->groupByStage($sharedRows, $stageNames, $descriptionCap),
             ];
         }
 
         if ($cfg->coordBoardId !== null && $cfg->addressTags !== []) {
-            $result['coord_cards'] = $this->coordCards($client, $cfg, $descriptionCap);
+            // Per-key, never `+=`: array-union DISCARDS a right-hand key the left
+            // already holds, so a future key added to the literal above would drop
+            // the observed coord block with nothing red. Naming each key also puts
+            // coordBlock()'s declared shape under phpstan.
+            $coord = $this->coordBlock($client, $cfg, $descriptionCap, $agentName);
+            $result['coord_board_id'] = $coord['coord_board_id'];
+            $result['coord_board_observed'] = $coord['coord_board_observed'];
+            $result['configured_coord_board_id'] = $coord['configured_coord_board_id'];
+            $result['coord_cards'] = $coord['coord_cards'];
         }
 
         return $result;
@@ -118,14 +140,102 @@ final class BoardMyCardsTool implements Tool
     }
 
     /**
+     * WHICH BOARD THE ROWS SAY THEY ARE ON — the board axis's answer to what
+     * {@see filterSwimlane} is for the lane axis (card#7295, DL-302). Returns
+     * `[observed board, observed?]`. Unobserved on ANY row unobserves the SET (the
+     * response states ONE board for a row set, so a set that does not unanimously
+     * answer has no honest single value — never a majority, never the configured
+     * board), and an EMPTY set is unobserved too: not anomalous, and the one arm
+     * that logs nothing. This REPORTS; it does not drop and it does not refuse.
+     * DL-302 Decisions 1 and 3 own why — the two axes' asymmetry, and why the
+     * compare shares `MappedBoardGuard::belongs()`'s accepted set without being
+     * routed through it.
+     *
+     * ⛔ NO key-absent/value-null discrimination on this axis, deliberately, and
+     * that is the one place this must NOT copy its sibling. `tasks.board_id` is a
+     * non-nullable foreign key in kanban: a card is always on exactly one board,
+     * so there is no such thing as a row legitimately reporting "no board". An
+     * absent key, a present null and a non-numeric value therefore all mean the
+     * same thing — the row answered nothing about its board — and all three are
+     * UNOBSERVED. The lane axis is the opposite (a card really can be in no lane),
+     * which is why the sibling correction on `board_create_card` — card#7225, a
+     * SEPARATE change, covering BOTH axes of that tool's reported placement and
+     * paying a `GET /tasks/{id}.json` for them because a create hands back an id
+     * and nothing else — has to tell a present null from a missing key. Do not read
+     * that cost across to here: kanban's task resource carries `board_id` on every
+     * row `/tasks/search.json` returns, so the rows this tool already holds ARE the
+     * reading and this axis costs no extra request.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return array{0: ?int, 1: bool}
+     */
+    private function observedBoard(array $rows, int $configuredBoardId, string $agentName, string $leg): array
+    {
+        if ($rows === []) {
+            return [null, false];
+        }
+
+        $boards = [];
+        foreach ($rows as $row) {
+            $rowBoard = $row['board_id'] ?? null;
+            if (! is_numeric($rowBoard)) {
+                Log::warning('board_my_cards: a returned row carried no readable board, so the response reports NO board for this row set rather than the configured one', [
+                    'agent' => $agentName,
+                    'leg' => $leg,
+                    'configured_board' => $configuredBoardId,
+                    'row_board' => is_scalar($rowBoard) ? $rowBoard : null,
+                    'card_id' => is_scalar($row['id'] ?? null) ? $row['id'] : null,
+                ]);
+
+                return [null, false];
+            }
+            $boards[(int) $rowBoard] = true;
+        }
+
+        if (count($boards) > 1) {
+            Log::warning('board_my_cards: the returned rows are spread across more than one board, so the response reports NO board for this row set', [
+                'agent' => $agentName,
+                'leg' => $leg,
+                'configured_board' => $configuredBoardId,
+                'observed_boards' => array_keys($boards),
+            ]);
+
+            return [null, false];
+        }
+
+        $observed = (int) array_key_first($boards);
+        if ($observed !== $configuredBoardId) {
+            Log::warning('board_my_cards: the returned rows are NOT on the board this agent is configured to read — the response reports where they actually are, and nothing was dropped', [
+                'agent' => $agentName,
+                'leg' => $leg,
+                'configured_board' => $configuredBoardId,
+                'observed_board' => $observed,
+                'rows' => count($rows),
+            ]);
+        }
+
+        return [$observed, true];
+    }
+
+    /**
      * Coordination cards addressed to this agent (Q1): the union of cards on the
      * coord board carrying ANY of the agent's address_tags. De-duplicated by id
      * (a card can carry several address tags). Not swimlane-filtered — the
      * addressing IS the scope here.
      *
-     * @return list<array<string, mixed>>
+     * The block carries the SAME board pair as the top level (card#7295 comment
+     * append, DL-302). It used to carry no board key at all, which is the
+     * missing-key sibling of the wrong-value defect this card names: a caller was
+     * handed a second card list, from a DIFFERENT board, with nothing saying so —
+     * and the top-level `board_id` sitting above it is the obvious thing for a
+     * reader to assume covers it. Stating the coord board explicitly is what stops
+     * the top-level reading from being inherited by rows it does not describe; it
+     * is the same standard applied to both windows in one file, which is the whole
+     * complaint on this card.
+     *
+     * @return array{coord_board_id: ?int, coord_board_observed: bool, configured_coord_board_id: int, coord_cards: list<array<string, mixed>>}
      */
-    private function coordCards(KanbanClient $client, BoardToolsConfig $cfg, ?int $descriptionCap): array
+    private function coordBlock(KanbanClient $client, BoardToolsConfig $cfg, ?int $descriptionCap, string $agentName): array
     {
         $coordBoardId = (int) $cfg->coordBoardId;
         $byId = [];
@@ -138,9 +248,16 @@ final class BoardMyCardsTool implements Tool
             }
         }
         ksort($byId);
+        $rows = array_values($byId);
         $coordStageNames = $client->boardStageNames($coordBoardId);
+        [$observedBoard, $boardObserved] = $this->observedBoard($rows, $coordBoardId, $agentName, 'coord');
 
-        return array_map(fn (array $row): array => $this->projectCard($row, $coordStageNames, $descriptionCap), array_values($byId));
+        return [
+            'coord_board_id' => $observedBoard,
+            'coord_board_observed' => $boardObserved,
+            'configured_coord_board_id' => $coordBoardId,
+            'coord_cards' => array_map(fn (array $row): array => $this->projectCard($row, $coordStageNames, $descriptionCap), $rows),
+        ];
     }
 
     /**

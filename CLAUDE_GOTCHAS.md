@@ -110,21 +110,21 @@ The unique key on `webhook_events.delivery_id` (and composite key on `agent_disp
 
 **Symptom:** Running the test suite from a deployed worktree (one with `BRIDGE_INSTALL_SUFFIX=-dev` or `-prod` in `.env`) fires the InstallGuard against the SQLite `:memory:` test DB, because the DB name `:memory:` doesn't contain `_dev` or `_prod`. Every test that triggers `DispatchService::dispatch()` or `bridge:check` fails with a DSN-safety error unrelated to the test's intent.
 
-**Cause:** `phpunit.xml`'s `<env>` stanzas use the non-forced form, so a real environment variable wins over the XML value. A `.env` file in the project root is loaded by Laravel's bootstrap, setting `BRIDGE_INSTALL_SUFFIX=-dev` before `phpunit.xml`'s override runs. The `InstallGuard::dsnCrosstalk()` check fires on `_dev`/`_prod` suffixes.
+**Cause:** an ambient `BRIDGE_INSTALL_SUFFIX=-dev` reaches `config('bridge.install_suffix')`, and `InstallGuard::dsnCrosstalk()` fires on `_dev`/`_prod` suffixes.
 
-**Fix:** `phpunit.xml` includes:
+⚠ **The vector named here until card#7474 — a project-root `.env` — was wrong, and measuring it is what corrected the fix.** A `.env` cannot beat a `phpunit.xml` pin at all, forced or not: phpunit writes before bootstrap and Laravel's Dotenv repository is immutable, so `.env` loading is a no-op for any key the pin already set. Measured with `BRIDGE_INSTALL_SUFFIX=-dev` in a `.env`: `config()` reads `''`, the pinned value. The real vector is a shell **export** — which an unforced pin loses to, and which `force="true"` *also* loses to (see the Fix).
+
+**Fix:** `phpunit.xml` pins the suffix with **both** entry kinds — the pair is what actually holds, and `force="true"` on its own does not:
 ```xml
-<!-- Neutralize the install-suffix crosstalk guard in tests, so a
-     deployed worktree's .env (BRIDGE_INSTALL_SUFFIX=-dev/-prod) can't
-     fire it against the sqlite :memory: test DB. InstallGuardTest sets
-     the suffix explicitly per-test to exercise the guard. -->
-<env name="BRIDGE_INSTALL_SUFFIX" value=""/>
+<env name="BRIDGE_INSTALL_SUFFIX" value="" force="true"/>
+<server name="BRIDGE_INSTALL_SUFFIX" value=""/>
 ```
+`force` reaches `putenv()`/`$_ENV` (what child processes inherit); an exported value lives in `$_SERVER`, which Laravel's Dotenv repository reads FIRST and which only a `<server>` entry overwrites. `CLAUDE_TESTING.md` § Database configuration owns the measured mechanism; `Tests\Unit\PhpunitConfigPinTest` guards the pairing.
 `InstallGuardTest` sets the suffix explicitly per test case via `Config::set('bridge.install_suffix', ...)` and cleans up after itself — this is the only test that exercises the guard, not every test that writes to the DB.
 
-If the guard fires unexpectedly in a test: verify `phpunit.xml` has this stanza and hasn't been edited away. If running tests via a wrapper that forces `.env` before phpunit starts, add `BRIDGE_INSTALL_SUFFIX=` to the wrapper invocation.
+If the guard fires unexpectedly in a test: verify `phpunit.xml` still has **both** entries and that they agree (the guard test reds if either is missing or they diverge).
 
-**Related:** `phpunit.xml` (line 33), `app/Bridge/Support/InstallGuard.php`, `tests/Feature/Config/InstallGuardTest.php`.
+**Related:** `phpunit.xml` (the `BRIDGE_INSTALL_SUFFIX` pin pair), `app/Bridge/Support/InstallGuard.php`, `tests/Feature/Config/InstallGuardTest.php`, `tests/Unit/PhpunitConfigPinTest.php`, `CLAUDE_TESTING.md` § Database configuration, G-017 (the sibling this correction reconciles with).
 
 ---
 
@@ -134,9 +134,9 @@ If the guard fires unexpectedly in a test: verify `phpunit.xml` has this stanza 
 
 **Cause:** `webhook_events.delivery_id` is `VARCHAR(64)`. MariaDB in strict mode rejects values that exceed the column width, but in non-strict mode it silently truncates. Two `delivery_id` values that differ only past position 64 — a real possibility for UUID-like ids with a shared prefix format — would hash to the same 64-char prefix and collide on the UNIQUE constraint, causing the dedup gate to fire when it shouldn't.
 
-**Fix:** `AbstractWebhookAdapter::assertDeliveryIdLength()` (line 38–42) rejects any `delivery_id` longer than 64 chars with `InvalidEnvelopeException('delivery_id_too_long')`, which maps to a deterministic 400 at the controller level. This fires before the DB write, making the over-length case an explicit parse error rather than a silent data-corruption.
+**Fix:** `AbstractWebhookAdapter::assertFieldLengths()` rejects any `delivery_id` longer than 64 chars with `InvalidEnvelopeException('delivery_id_too_long')`, which the controller maps to a deterministic `invalid_envelope` 400. It applies the same rule to the siblings that flow through the same INSERT (`scope_id`, `event_type`, `actor_id`), each at its own column width. This fires before the DB write, making the over-length case an explicit parse error rather than a silent data-corruption.
 
-**Related:** `app/Bridge/Adapters/AbstractWebhookAdapter.php` `assertDeliveryIdLength()`, `database/migrations/..._create_webhook_events_table.php` (the column comment explains the rationale).
+**Related:** `app/Bridge/Adapters/AbstractWebhookAdapter.php` `assertFieldLengths()`, `database/migrations/..._create_webhook_events_table.php` (the column comment explains the rationale).
 
 ---
 
@@ -174,7 +174,7 @@ If the guard fires unexpectedly in a test: verify `phpunit.xml` has this stanza 
 
 **Cause:** A real per-agent deployment exports `BRIDGE_INBOX_LAYOUT=per-agent` (and may export `BRIDGE_STATE_DIR`) in its shell. Laravel's Dotenv does **not** override an already-set shell var, so the export reaches `config('bridge.inbox_layout')`. Under `per-agent`, `IntentLog::stage()` writes to the per-agent file (`inbox-<agent>.jsonl`), but the tests read the **shared** `inbox.jsonl` — so they see 0 lines. The tests isolate `bridge.config_dir` in `setUp` but not the layout, so the operator's env bleeds in. Same class as G-013 (ambient env wins over the suite).
 
-**Fix:** A `phpunit.xml` `<env … force="true">` does **NOT** fix it — `env()` reads the `getenv()` layer where the shell export lives, which phpunit's `<env>` doesn't reach (verified: forcing `BRIDGE_INBOX_LAYOUT=shared` in `phpunit.xml` still failed). The authoritative fix is a **runtime `config()` pin in the base `Tests\TestCase::setUp()`**:
+**Fix:** A `phpunit.xml` `<env … force="true">` does **NOT** fix it (verified: forcing `BRIDGE_INBOX_LAYOUT=shared` in `phpunit.xml` still failed). ⚠ The *reason* recorded here until card#7474 — that `<env>` doesn't reach the `getenv()` layer — is wrong: `force` does reach `getenv()`, measured. The export wins because it lands in `$_SERVER`, which Laravel's Dotenv repository reads BEFORE `$_ENV`/putenv and which no `<env>` entry writes. So there are now two working fixes: a paired `<server>` entry in `phpunit.xml` (see `CLAUDE_TESTING.md` § Database configuration), or the one this repo took here — a **runtime `config()` pin in the base `Tests\TestCase::setUp()`**, which stays preferable when the value is per-test-overridable:
 ```php
 config(['bridge.inbox_layout' => 'shared', 'bridge.state_dir' => null]);
 ```
@@ -249,6 +249,36 @@ Caller-first placement is the same knife's other edge, and it is why an override
 **Discovery:** DL-247 / card#5552. The `writeback-board-unreadable` golden fixture registered a single blanket 500 — `Http::fake(fn () => Http::response(['message' => 'nope'], 500))` — *after* `moveLegInstall()`, whose default set ends in `'*'`. The 500 never ran, and the fixture captured **fully healthy** output for its entire life — committed, reviewed, and green the whole time. The cure splits it into two board-scoped 500s passed through the helper: scoped, not blanket, for the reason above. A sibling audit (card#5584) over all 426 `Http::fake` / `Http::fakeSequence` call sites in `tests/` found no second live instance; the one adjacent shape worth knowing is `CheckGoldenTest::test_the_capture_does_not_depend_on_terminal_width()`, which calls `captureFixture()` twice in one test method with no HTTP reset between them (`bootGoldenInstall()` resets the host and the install, **not** the stub set). It is benign only because both calls name the same fixture, so the stacked second registration is byte-identical to the first — pass two *different* fixture names there and the second one's HTTP plane is silently the first one's (its builder registers a bare catch-all `Http::fake()`, which answers everything).
 
 **Related:** `Illuminate\Http\Client\Factory::fake()` + `::stubUrl()` and `Illuminate\Http\Client\PendingRequest::buildStubHandler()` in `vendor/` (cited by method, not line — `laravel/framework` is `^13.8`, so vendor line numbers drift on any patch bump), `tests/Feature/Console/Check/CheckGoldenTest.php` `moveLegInstall()` (the `$stubs + [...]` cure and its docblock), `tests/Support/CheckGolden/BootsGoldenInstall.php` (resets the host and install, not the stubs), `CLAUDE_DECISIONS.md` DL-247, `CLAUDE_TESTING.md` (the "Register the whole stub set once" paragraph under § Feature tests).
+
+---
+
+## G-021 — an all-green local pre-PR run is not the gate set: the gate set is the workflows, and a hand-assembled run silently omits whichever one you remembered wrong
+
+**Symptom:** every gate you ran before pushing was green, and CI reds anyway — or the gate that would have redded never ran locally at all, so the branch looks certified when nothing exercised the failing leg. Nothing about the local run announces that it was short; a run that omits a gate looks exactly like a run that passes it.
+
+**Cause:** this repo ships no runner for its own gate set (`composer test` runs the suite and nothing else), so any pre-PR run is hand-assembled — and a hand-assembled run is a **cache** of `.github/workflows/`, with a cache's failure mode: correct when it was written, wrong the first time a workflow moves. A list of the gate commands written out in a doc is the same cache one level up, which is why this entry does not carry one. **The gate set for a PR is whatever the `pull_request`-triggered workflows under `.github/workflows/` actually run on the paths that PR touches — derive it from that directory at PR time, every time, and never from a remembered list.** [`CLAUDE.md`](CLAUDE.md) standing rule 5 owns the post-push half of the same rule (what must be green before a self-merge, read live from the Actions API, deliberately not enumerated — card#5575); this entry is the pre-push half.
+
+Four traps make that derivation harder than reading the filenames:
+
+**Trap 1 — a workflow's `paths:` filter is not a reliable guide to whether it fires.** The `bin/` python-tools workflow's filter includes `app/**`, and that is load-bearing rather than untidy: one of its tests asserts about `app/` PHP *source shape*, so a filter naming only `bin/` would make the job structurally unable to run on the change that invalidates it (its own header records the incident where exactly that happened). A change that "obviously doesn't touch `bin/`" therefore still runs those tests, and they can red on it. Read each workflow's filter — including the ones whose *name* sounds unrelated to your diff.
+
+**Trap 2 — one workflow can run one gate command more than once, under different environments, and "the set of commands" loses the second run.** `laravel-tests.yml` runs the PHPUnit suite in an SQLite job **and** in a MariaDB matrix job; a local `vendor/bin/phpunit` covers the SQLite leg only, because `phpunit.xml` pins `DB_CONNECTION=sqlite`. **A locally-green suite is therefore not a certification of the matrix leg** — say so when reporting a local run, rather than reporting "suite green" unqualified. What the divergence costs and how to run the MariaDB leg locally are owned by [`CLAUDE_TESTING.md`](CLAUDE_TESTING.md) § CI and § Running MariaDB tests locally (G-002 is what that divergence costs, from the inside).
+
+**Trap 3 — capture each gate's rc directly; a piped `rc=$?` reads the wrong process.** After a pipeline, `$?` is the **last element's** status, so `vendor/bin/phpunit | tee run.log; rc=$?` reports `tee`'s success and a red suite disappears. This is not hypothetical — it hid a real red here. Run each gate as its own command and read `$?` on the next line (or gate on the command itself: `if ! cmd; then …`); if a pipeline is unavoidable, read `${PIPESTATUS[0]}` or set `pipefail` deliberately.
+
+**Trap 4 — a fresh `git worktree` has no `.env`, and PHPUnit's first failure reads like a code defect.** `.env` is gitignored (the whole `.env*` family is), so a worktree created for a branch starts without one and the suite dies with `No application encryption key has been specified`. Nothing in that message points at the worktree. Fix it the way the CI setup step does, before concluding anything about the branch:
+
+```bash
+cp .env.example .env && php artisan key:generate --force
+```
+
+**Fix:** derive the gate list from the `pull_request` triggers + `paths:` filters in `.github/workflows/` for the paths your PR touches, run each derived gate as a separate command with its own rc read, and report the rcs — plus the SQLite-only bound from trap 2 — rather than a bare "green".
+
+**Deliberately not "fixed":** the derivation is still done by hand here. Replacing hand-authored gate runners with one derived from the workflow files is tracked as agent-board-toolkit **card#7122** — read the disposition there; this entry deliberately does not restate it.
+
+**Discovery:** a hand-authored local gate runner was written against a reading of the workflows and shipped missing one of the gates a PR here can trigger — the `bin/` python `unittest discover` leg, because a casual read of the workflows does not surface that its `paths:` filter reaches `app/**` (trap 1). The omission is invisible from the runner's own output: it exits 0 over the gates it knows about.
+
+**Related:** `.github/workflows/` (the authority — derive, don't cache), [`CLAUDE.md`](CLAUDE.md) standing rule 5 (the post-push half), [`CLAUDE_TESTING.md`](CLAUDE_TESTING.md) § CI + § Running MariaDB tests locally (the SQLite-vs-MariaDB divergence and its local recipe), G-002 (a MariaDB-only defect a SQLite-only run cannot see), G-013 (a sibling override in the same `phpunit.xml` env block), G-017 (a sibling shape: an environment difference reddening locally while CI stays green).
 
 ---
 

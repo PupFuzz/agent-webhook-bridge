@@ -4,8 +4,11 @@ namespace Tests\Unit\Bridge\Check\Checks;
 
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Checks\WritebackMappingConfigCheck;
+use App\Bridge\Support\CardTokenGrammar;
+use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
+use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Support\Facades\File;
@@ -104,7 +107,7 @@ class WritebackMappingConfigCheckTest extends TestCase
         // so the absence below is evidence rather than a check that never ran.
         $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_PREFIXED), emitting: false);
 
-        $this->assertCount(1, $findings);
+        $this->assertCount(1, $this->warnings($findings));
         $this->assertStringContainsString('is ORPHANED', $findings[0]['message']);
         $this->assertStringNotContainsString('issue_population', $this->joined($findings));
     }
@@ -239,7 +242,7 @@ class WritebackMappingConfigCheckTest extends TestCase
 
         $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 52));
 
-        $this->assertCount(1, $findings);
+        $this->assertCount(1, $this->warnings($findings));
         $this->assertSame(Severity::Warn, $findings[0]['severity']);
         $this->assertStringContainsString(
             'stages.merged and stages.merged_to_main are the same stage — the Shipped→Released promote is a no-op',
@@ -254,7 +257,7 @@ class WritebackMappingConfigCheckTest extends TestCase
         // Orphaned on purpose — the witness for the two absences below.
         $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53), emitting: false);
 
-        $this->assertCount(1, $findings);
+        $this->assertCount(1, $this->warnings($findings));
         $this->assertStringContainsString('is ORPHANED', $findings[0]['message']);
         $this->assertStringNotContainsString('the same stage', $this->joined($findings));
         $this->assertStringNotContainsString('no GitHub read token resolves from a FILE', $this->joined($findings));
@@ -269,7 +272,7 @@ class WritebackMappingConfigCheckTest extends TestCase
 
         $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53));
 
-        $this->assertCount(1, $findings);
+        $this->assertCount(1, $this->warnings($findings));
         $this->assertSame(Severity::Warn, $findings[0]['severity']);
         $this->assertStringContainsString('no GitHub read token resolves from a FILE', $findings[0]['message']);
         $this->assertStringContainsString('the credential-store helper is CLI-only', $findings[0]['message']);
@@ -281,7 +284,7 @@ class WritebackMappingConfigCheckTest extends TestCase
         // different upstream state than the resolves-but-not-from-a-file case above.
         $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53));
 
-        $this->assertCount(1, $findings);
+        $this->assertCount(1, $this->warnings($findings));
         $this->assertStringContainsString('no GitHub read token resolves from a FILE', $findings[0]['message']);
     }
 
@@ -299,8 +302,69 @@ class WritebackMappingConfigCheckTest extends TestCase
 
         $findings = $this->findings($this->promoteMapping(merged: 52, mergedToMain: 53), emitting: false);
 
+        $this->assertCount(1, $this->warnings($findings));
+        $this->assertStringContainsString('is ORPHANED', $findings[0]['message']);
+    }
+
+    // ---- card#7348 / DL-305: the mention-vs-closure setup line ----
+
+    public function test_a_mapping_with_merge_stages_states_the_mention_vs_closure_semantics(): void
+    {
+        // THE ASK THIS LEG EXISTS FOR (roundtable #343): a peer wired a brand-new board
+        // into this classifier and nothing in the setup path told them a bare mention would
+        // move a card into a terminal stage. This is the sentence, on the surface that runs.
+        $findings = $this->findings(new WritebackMapping(self::BOARD, ['merged' => 52, 'merged_to_main' => 53]));
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $message = $findings[0]['message'];
+        // BOTH gated outcomes are NAMED with their stage ids — an install that maps one of
+        // the two must be able to see which.
+        $this->assertStringContainsString('stages.merged (52) and stages.merged_to_main (53) are gated', $message);
+        // The load-bearing half: a bare mention is a no-op, NOT a demotion.
+        $this->assertStringContainsString('NO-OP for the stage', $message);
+        $this->assertStringContainsString('never moved back', $message);
+        // The accept-set is RENDERED from the authority, never spelled out here (DL-239) —
+        // asserted through the authority so this cannot pin a stale copy of it. Since
+        // DL-308 that is `PrOutcome::describeClosure()`, which composes BOTH routes: this
+        // surface tells an operator what they inherited, so a line still claiming the
+        // title is the only thing that moves a card is the DL-239 defect on the worst
+        // possible surface. Both halves are asserted, each through its own grammar.
+        $this->assertStringContainsString(PrOutcome::describeClosureAccepted(), $message);
+        $this->assertStringContainsString(implode(', ', ClosureGrammar::accepted()), $message);
+        $this->assertStringContainsString(implode(', ', CardTokenGrammar::accepted()), $message);
+        $this->assertStringContainsString('HEAD BRANCH REF', $message);
+        // …and the SETUP flavour, not the diagnostic one: DL-305 kept the rejected shapes
+        // off this surface deliberately (noise at setup, diagnosis at runtime), and
+        // composing two routes must not quietly overturn that. The trailing sentence here
+        // PROMISES the rejected side is deferred to the runtime warning, so printing it
+        // would make this line contradict itself.
+        $this->assertStringNotContainsString('does NOT close', $message);
+        $this->assertStringNotContainsString('not accepted:', $message);
+    }
+
+    public function test_a_mapping_with_only_one_merge_stage_names_only_that_one(): void
+    {
+        // The discriminator: the line reports what the mapping ACTUALLY maps. Map both and
+        // it names both (above); map one and it must not claim the other is gated.
+        $findings = $this->findings(new WritebackMapping(self::BOARD, ['merged' => 52]));
+
+        $this->assertCount(1, $findings);
+        $this->assertStringContainsString('stages.merged (52) is gated', $findings[0]['message']);
+        $this->assertStringNotContainsString('merged_to_main', $findings[0]['message']);
+    }
+
+    public function test_a_mapping_with_no_merge_stage_says_nothing_about_closure(): void
+    {
+        // SEEN TO FAIL, the other way round: a started/opened-only mapping has no merge leg,
+        // so the gate has nothing to describe and the emptiness is the operator's own config
+        // (the Severity corollary-(B) ruling). Orphaned on purpose so the run has a witness —
+        // without one, a check that never reached the loop would satisfy this absence too.
+        $findings = $this->findings(new WritebackMapping(self::BOARD, ['opened' => 50]), emitting: false);
+
         $this->assertCount(1, $findings);
         $this->assertStringContainsString('is ORPHANED', $findings[0]['message']);
+        $this->assertStringNotContainsString('closing form', $this->joined($findings));
     }
 
     // ---- helpers ----
@@ -348,6 +412,84 @@ class WritebackMappingConfigCheckTest extends TestCase
         chmod($path, 0o600);
     }
 
+    // ---- card#7124 review: the github scope SPELLING SPLIT (the dispatcher does not
+    // ---- share the writeback's DL-293 canonicalization).
+
+    public function test_a_scope_spelled_differently_from_the_mapping_key_is_reported_not_silently_matched(): void
+    {
+        // ⛔ THE REGRESSION THIS LEG EXISTS FOR. DL-293 made the writeback match this pair
+        // as one repo, which correctly stopped the ORPHANED accusation — and would have
+        // left NOTHING in its place, on an install where `SubscriptionRegistry` still
+        // matches a subscription by exact spelling, so every delivery is dispatched to
+        // nobody. Silence there is strictly worse than the wrong warn it replaced.
+        $ctx = new CheckContext;
+        $ctx->writeback = new WritebackConfig(7, ['PupFuzz/kanban-board' => $this->mapping()]);
+        $ctx->writebackEmittingScopes = ['pupfuzz/kanban-board' => true];
+        $ctx->githubScopeSpellings = ['pupfuzz/kanban-board' => ['pupfuzz/kanban-board']];
+
+        $findings = $this->warnings(array_map(
+            fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
+            $this->findingsOf((new WritebackMappingConfigCheck), $ctx),
+        ));
+
+        $this->assertCount(1, $findings, 'the split must be REPORTED, never silently matched');
+        $this->assertSame(Severity::Warn, $findings[0]['severity']);
+        // Both spellings, so the operator can find both lines in both files.
+        $this->assertStringContainsString('"PupFuzz/kanban-board"', $findings[0]['message']);
+        $this->assertStringContainsString('"pupfuzz/kanban-board"', $findings[0]['message']);
+        // And the mechanism, which is the half the ORPHANED warn never carried.
+        $this->assertStringContainsString('EXACT spelling', $findings[0]['message']);
+        $this->assertStringNotContainsString('ORPHANED', $findings[0]['message']);
+    }
+
+    public function test_a_scope_spelled_exactly_as_the_mapping_key_reports_no_split(): void
+    {
+        // The negative: this leg speaks only for a genuine divergence, which is every
+        // install that has not hit it.
+        $ctx = new CheckContext;
+        $ctx->writeback = new WritebackConfig(7, [self::REPO => $this->mapping()]);
+        $ctx->writebackEmittingScopes = [self::REPO => true];
+        $ctx->githubScopeSpellings = [self::REPO => [self::REPO, self::REPO]];
+
+        $findings = $this->findingsOf((new WritebackMappingConfigCheck), $ctx);
+
+        // ⚑ This absence finally has the WITNESS the class docblock demands of every
+        // absence here, and it is the mention-vs-closure `ok` (card#7348 / DL-305): before
+        // it existed this test asserted a totally empty result, which a check that returned
+        // at the first line would have satisfied just as well. Now the green line proves the
+        // mapping loop ran to the end, and the absence of any warning beside it is evidence.
+        $this->assertSame([], $this->warnings(array_map(
+            fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
+            $findings,
+        )));
+        $this->assertCount(1, $findings);
+        $this->assertStringContainsString('moves a card on MERGE only when', $findings[0]->message);
+    }
+
+    public function test_an_unsubscribed_mapping_is_orphaned_not_a_spelling_split(): void
+    {
+        // The two legs answer different questions and must not be confused: no agent at
+        // all is ORPHANED, and there is no spelling to name.
+        $ctx = new CheckContext;
+        $ctx->writeback = new WritebackConfig(7, [self::REPO => $this->mapping()]);
+
+        $messages = array_map(
+            fn (Finding $f) => $f->message,
+            // The mention-vs-closure `ok` (card#7348 / DL-305) is not this leg's subject.
+            array_filter($this->findingsOf((new WritebackMappingConfigCheck), $ctx), fn (Finding $f) => $f->severity !== Severity::Ok),
+        );
+        $messages = array_values($messages);
+
+        $this->assertCount(1, $messages);
+        $this->assertStringContainsString('is ORPHANED', $messages[0]);
+        $this->assertStringNotContainsString('SPELLING SPLIT', $messages[0]);
+    }
+
+    private function mapping(): WritebackMapping
+    {
+        return new WritebackMapping(8, ['merged' => 52]);
+    }
+
     /** @return list<array{severity: Severity, message: string}> */
     private function findings(WritebackMapping $mapping, bool $emitting = true): array
     {
@@ -361,6 +503,25 @@ class WritebackMappingConfigCheckTest extends TestCase
             fn (Finding $f) => ['severity' => $f->severity, 'message' => $f->message],
             $this->findingsOf((new WritebackMappingConfigCheck), $ctx),
         );
+    }
+
+    /**
+     * The findings this file is about — every WARNING leg, with the one non-warning leg
+     * dropped (card#7348 / DL-305).
+     *
+     * The mention-vs-closure line is an `ok` that fires for every mapping carrying a merge
+     * stage, which is every mapping in this file. It is measured by its own test below;
+     * here it would turn each count assertion into a count of two things with one subject.
+     * Dropping it by SEVERITY rather than by message text is deliberate: a text match would
+     * silently start passing through the day the wording moves, and the property these
+     * tests want is *nothing else spoke*, which is exactly "no further warning".
+     *
+     * @param  list<array{severity: Severity, message: string}>  $findings
+     * @return list<array{severity: Severity, message: string}>
+     */
+    private function warnings(array $findings): array
+    {
+        return array_values(array_filter($findings, fn (array $f) => $f['severity'] !== Severity::Ok));
     }
 
     /** @param  list<array{severity: Severity, message: string}>  $findings */

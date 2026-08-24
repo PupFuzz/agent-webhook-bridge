@@ -15,20 +15,129 @@
  * Exit 0 = every rule clean; exit 1 = at least one finding, reported per rule with the file and
  * line it fired on. An exit code alone cannot say WHICH rule fired, so each block names itself.
  *
- * RULE 1 (DL-013): assert that every PHP file path / FQCN named in the
- * non-historical CLAUDE_*.md docs resolves to an extant file. The doc system is
+ * RULE 1 (DL-013): assert that every PHP file path, FQCN and class MEMBER named in this repo's
+ * prose resolves to something that exists. The doc system is
  * the onboarding map (for the next maintainer AND the next AI session), so a
  * doc that names a since-deleted class (e.g. ProviderApiConfig after DL-007) is
  * worse than no doc — it sends you to a file that isn't there. This converts
  * "remember to update the docs" into "CI fails if you didn't."
  *
- * Checked, per backtick-quoted token on a line:
+ * Checked, per CITATION on a line — {@see citationsOnLine()} owns which spellings are one, and
+ * the first two run over the non-historical CLAUDE_*.md docs while the third runs over the whole
+ * source surface (see THE MEMBER LEG below):
  *   - a repo file path ending in .php that contains a '/', with optional brace
  *     expansion: `app/Bridge/Support/{AgentConfig,SubscriptionConfig}.php`
  *   - an `App\...` FQCN: `App\Bridge\Support\SecretFile` → app/Bridge/Support/SecretFile.php
- * A line carrying an explicit removed-marker — "(removed in …)", "deleted",
- * "no longer exists", "there is no" — is skipped (history may name dead classes
- * deliberately). CLAUDE_DECISIONS.md is excluded outright (append-only history).
+ *   - a MEMBER citation — `App\Bridge\Support\Finding::warn()`, `CheckSlot::BoardToolsSshAdvisory`,
+ *     `DlTokenGrammar::sole()` — resolved to the declaring file, then to the member itself
+ * A citation whose OWN SENTENCE carries an explicit removed-marker — "removed", "renamed",
+ * "deleted", "no longer exists", "there is no" — is skipped (history may name dead classes
+ * deliberately); the vocabulary is satisfiable by an annotation appended beside a frozen
+ * sentence, never only by an edit to it, and that annotation must NAME the citation it
+ * discharges. {@see $removedMarker} for the bound on those words and
+ * {@see annotationCovers()} for the scope, which both of rule 1's escape hatches share.
+ *
+ * THE MEMBER LEG (card#6025). The FQCN leg STRIPPED a `::member` suffix before asking whether
+ * anything existed, so the class resolved and the half of the citation that names BEHAVIOUR was
+ * never read — `DlTokenGrammar::sole()` and a phantom spelled exactly like it were equally
+ * invisible. A phantom member is the same defect as a phantom class one level down — it sends a
+ * maintainer to a method that is not there — and it is minted by CURRENT drafting, not only by
+ * deletion.
+ *
+ * WHAT THIS LEG DOES NOT CLOSE, stated because card#6025's third instance is exactly it. That
+ * instance was a bare `correlationRefs()` in a merged decision-log entry: it carries NO class
+ * and no `::`, so it never was a token this script reads and it still is not — the `::member`
+ * strip was not the mechanism that hid it, and this leg would not have caught it. It is closed
+ * by the correction to that sentence, not by a gate, and the same shape can recur tomorrow.
+ * Bare `func()` in prose stays deliberately out of the token set: the overwhelming majority of
+ * them here are external vocabulary or historical narration rather than claims about this tree,
+ * and admitting them would red on every one. No count of them is quoted here — a figure in a
+ * comment is a quoted authority no later pass recomputes; the population re-derives with
+ *   grep -rohE '`[a-z][A-Za-z0-9_]*\(\)`' CLAUDE_*.md README.md docs app tests bin | sort -u | wc -l
+ *
+ * THE FORM IS NOT THE TOKEN SET (card#7330). Until that card the harvest was backtick-only, so
+ * `{@see \FQCN::member}` — the form this tree's docblocks overwhelmingly use — was read by
+ * neither leg, and the closing line reported an "examined" count and a clean verdict over a
+ * population it could not see. What changed is WHERE a citation is found, never what one MEANS:
+ * a `{@see …}` payload is read exactly when its backticked twin would be, so the two bounds above
+ * are unchanged by it and are now the RULING bounds on the dominant form. Two gaps follow, and
+ * neither is protection: a `{@see self::member}` names no file (in markdown prose there is no
+ * enclosing class to resolve `self` against), and a `{@see member}` bare of any class is the
+ * bare-`func()` bound one paragraph up — reached by that paragraph's rule, though not by its
+ * rationale, since a payload inside a reference tag is a machine-readable claim about this tree
+ * rather than prose that might be quoting someone else's vocabulary. Both are still UNRESOLVED;
+ * what changed is the paragraph below. The populations re-derive with
+ *   grep -rohE '\{@see [^}]*\}' app tests docs bin *.md | sort | uniq -c | sort -rn
+ *
+ * A DISCLOSED GAP THE ACCOUNTING OMITS IS WORSE THAN AN UNCHECKED FORM (card#7473). Those two
+ * gaps were disclosed HERE and in a test, and were in NEITHER the examined count NOR the
+ * remainder line — so a reader auditing the run's own accounting, which is the correct thing to
+ * do, was told the population was fully accounted for by buckets that could not contain them.
+ * Convicting it needed no instrumented variant of this script: qualifying ONE class-less citation
+ * into its `Class::member` spelling MOVED the TOTAL, and a citation that only enters the total
+ * once it becomes CHECKABLE was never in it. Both forms are counted now — `classless_member` and
+ * `pseudo_class_member`, {@see unqualifiedMemberCitation()}, which owns the predicate and its
+ * bound — and neither is RESOLVED: nothing about which citations can be convicted moved, only
+ * whether the run admits what it declined. The disclosure is now testable rather than narrated —
+ * qualifying such a citation moves it between buckets and leaves the TOTAL fixed.
+ *
+ * A CITATION THAT NAMES A CLASS AND NO MEMBER IS THAT SHAPE ONE LEVEL UP (card#7496). It carries
+ * no `::`, so the member leg never forms a citation from it; and this tree writes it in an `app/`
+ * docblock rather than in one of the six current-state docs, so rule 1a's path/FQCN leg does not
+ * reach it either. Unread by BOTH legs AND absent from every accounting line — the combination
+ * the paragraph above names as the harmful one, and convicted the same way, with nothing this
+ * script does not already ship: qualifying ONE `{@see SomeClass}` into `{@see SomeClass::member()}`
+ * MOVED the TOTAL. It is counted now — `class_citation`, {@see classCitation()}, which owns the
+ * predicate and its bound — and like the other two it is NOT RESOLVED. Resolving it was the
+ * alternative and was declined on a MEASUREMENT rather than on caution: every class-form payload
+ * in this tree was resolved against this tree's class files first, nearly all of them landed on
+ * exactly one construct, and the residue that landed on none was a PHP built-in exception named
+ * in a docblock and a fixture class name quoted inside a test's own string literal — both false
+ * positives. A rule whose entire yield on the tree that motivated it is cry-wolf reds is the
+ * trade this script's other rules refuse, and card#7330's unattributable bare `Command` is the
+ * hazard any later attempt inherits. The population re-derives with the grep above; its
+ * resolvability re-derives by matching each payload's short name against the basenames of the
+ * `*.php` under `app/`.
+ *
+ * IT ANSWERS ONLY WHERE IT CAN. A member is a finding when the class file is under `app/`
+ * AND its whole ancestry (parents, traits) is resolvable there and declares nothing by that
+ * name. A class whose ancestry leaves `app/` — a framework base, a vendor trait — is
+ * UNVERIFIABLE by a filesystem scan and passes: the alternative is a gate that reds on
+ * inherited members it cannot see, which is the cry-wolf trade this script's other rules
+ * refuse. Same for the name itself: a bare `Command` is resolved only when ONE construct in
+ * this tree carries it, counting both files under `app/` and the non-`App\` classes the tree
+ * imports under that name — an `app/…/Command.php` beside `Illuminate\Console\Command` makes
+ * the citation unattributable, and guessing between them would invent the finding.
+ *
+ * IT READS THE WHOLE SOURCE SURFACE — {@see scannedSources()}, the `app/` + `tests/` + `docs/` +
+ * `bin/` + root `*.md` set rules 2 and 3 already walk — and NOT the six-doc current-state list
+ * the path/FQCN leg reads. A member citation makes the same claim wherever it is written, and
+ * those six docs are a minority of the places this repo writes them: of the eight false prose
+ * claims card#6025 fixed, six sat outside that list. THIS FILE IS IN THAT SURFACE, and the test
+ * harness copies it into every fixture tree it builds — so a `Class::member` quoted in here must
+ * name a class no fixture declares, or the script reds on its own comments.
+ *
+ * CLAUDE_DECISIONS.md IS SCANNED FOR MEMBERS, AND FOR NOTHING ELSE. It is append-only
+ * history, and its FILE-PATH prose is time-stamped rather than current: the path leg over it
+ * measures 25 findings and 0 defects — anticipated-file lists from a design DL, specimen
+ * paths in an argument about non-ASCII (`app/café.php`), shell command lines, glob patterns.
+ * Greening those would mean editing frozen entries to suit a live rule. A member citation is
+ * different in kind: it names a construct that either exists in this tree or does not, and
+ * the escape hatch does not require rewriting the sentence — the removed-marker vocabulary
+ * matches an ANNOTATION appended beside the original, which is what the freeze rule already
+ * prescribes (see the DL-273 `correlationRefs()` annotation). What the annotation owes in
+ * return is the citation itself: the marker is scoped to the sentence it is written in, so an
+ * appended clause discharges the citations it REPEATS and no others (card#7127). The log's
+ * OTHER structural exemption is {@see citedAsRejected()}: an alternative the entry says it
+ * rejected is absent on purpose, and it has always been read at that same scope.
+ *
+ * THE COVERAGE IS MEASURED, NOT ASSUMED, AND THE MEASUREMENT SHIPS. `--census` prints every
+ * bucket — resolved, reported, class not under `app/`, ambiguous class name, unverifiable
+ * ancestry, removed-marker sentence, rejected alternative, class-less member, pseudo-class member,
+ * class citation — re-derived over the tree it is run on,
+ * and every run prints the unexamined tally on its own line. Deliberately no figures in this
+ * comment: a figure here is a quoted authority, and the census that stood here could not be
+ * recomputed by anything shipped — the defect this rule exists to catch, one level up.
  */
 $root = dirname(__DIR__);
 
@@ -142,29 +251,798 @@ function repoPhpBasenames(string $root): array
     return $cache;
 }
 
-// Skip a line that deliberately names dead code: an explicit removed-marker, or
-// a struck-through (~~…~~) historical heading.
-$skip = '/\(removed\b|\bdeleted\b|no longer exists|there is no\b|replaced by\b|~~/i';
+/**
+ * Every bucket this run's member leg put a citation in, counted by the scan itself.
+ *
+ * A CENSUS THAT IS NOT DERIVED BY THE SHIPPED CODE IS A QUOTED AUTHORITY: the figures that
+ * used to sit in this file's docblock were reproducible only by an instrumented variant of
+ * it, so no later pass could move them. Passing a bucket records one citation; passing
+ * nothing reads the counts back. `--census` prints them; every run prints the unexamined
+ * ones, because a clean line that speaks for citations the leg never answered for is the
+ * same defect one level up (DL-251).
+ *
+ * A BUCKET IS OWED TO EVERY CITATION THE LEG DECLINES, NOT ONLY TO THE ONES IT COULD HAVE
+ * ANSWERED (card#7473). The first five buckets all describe a citation whose CLASS was read
+ * and then found unusable; a citation carrying no class at all reached none of them, so it
+ * left the census entirely and the closing line's arithmetic still balanced without it. That
+ * is a worse disclosure than silence — the reader who audits the accounting is told the
+ * population is complete. {@see unqualifiedMemberCitation()} owns the two buckets that close
+ * it, and owns their bound. {@see classCitation()} owns the third (card#7496), for the payload
+ * that names a class and no member at all — read by neither leg, and so by neither's accounting.
+ *
+ * ⚠ THE LEAD OF THE PRINTED LINE NAMES THE LEG, NOT EVERY PAYLOAD IN IT. `class_not_under_app`
+ * has always been a bucket for a citation that is not an answerable member, and `class_citation`
+ * is one for a payload that is not a member at all; the population these buckets partition is
+ * "what the member leg walked", which is why the line still opens with "member citations".
+ *
+ * @return array<string, int>
+ */
+function tally(?string $bucket = null): array
+{
+    static $counts = [
+        'resolved' => 0,
+        'reported' => 0,
+        'class_not_under_app' => 0,
+        'ambiguous_class_name' => 0,
+        'unverifiable_ancestry' => 0,
+        'removed_marker_sentence' => 0,
+        'rejected_alternative' => 0,
+        'classless_member' => 0,
+        'pseudo_class_member' => 0,
+        'class_citation' => 0,
+        'depth_bail' => 0,
+    ];
+    if ($bucket !== null) {
+        $counts[$bucket]++;
+    }
+
+    return $counts;
+}
+
+/**
+ * The class file a `Class::member` citation names, and — when it names none — WHICH population
+ * it fell into, so the run can disclose what it declined to answer instead of dropping it.
+ *
+ * An `App\…` prefix is resolved by namespace. A namespace-less name is resolved by basename,
+ * and ONLY when exactly one construct in this tree carries it: a second file under `app/`, or a
+ * non-`App\` class the tree IMPORTS under that name, makes the citation unattributable.
+ * Guessing between candidates would invent the finding — `Command::argument()` beside an
+ * unrelated `app/Command.php` is the shape that convicts where this scan can see nothing.
+ *
+ * Restricted to `app/` on purpose. The prose here cites test classes, external product
+ * vocabulary and cross-repo constructs in the same `Foo::bar()` shape, and a scan that
+ * reached them would answer about whichever file happened to share a basename.
+ *
+ * @return array{file: ?string, reason: string}
+ */
+function classFileForCitation(string $root, string $class): array
+{
+    if (str_starts_with($class, 'App\\')) {
+        $rel = 'app/'.str_replace('\\', '/', substr($class, strlen('App\\'))).'.php';
+
+        return is_file($root.'/'.$rel)
+            ? ['file' => $rel, 'reason' => 'resolved']
+            : ['file' => null, 'reason' => 'class_not_under_app'];
+    }
+    if (str_contains($class, '\\')) {
+        return ['file' => null, 'reason' => 'class_not_under_app'];
+    }
+    $matches = [];
+    foreach (appClassFiles($root) as $rel) {
+        if (basename($rel, '.php') === $class) {
+            $matches[] = $rel;
+        }
+    }
+    if ($matches === []) {
+        return ['file' => null, 'reason' => 'class_not_under_app'];
+    }
+    if (count($matches) > 1 || in_array($class, importedNonAppNames($root), true)) {
+        return ['file' => null, 'reason' => 'ambiguous_class_name'];
+    }
+
+    return ['file' => $matches[0], 'reason' => 'resolved'];
+}
+
+/**
+ * The class file an ANCESTOR resolves to — FQCN only, never a basename. An ancestry that
+ * leaves `App\` is unverifiable by a filesystem scan, and the whole point of qualifying the
+ * ancestor first is that `extends Command` under `use Illuminate\Console\Command;` must not be
+ * answered by whatever `app/` file happens to share the basename.
+ */
+function classFileForAncestor(string $root, string $fqcn): ?string
+{
+    if (! str_starts_with($fqcn, 'App\\')) {
+        return null;
+    }
+    $rel = 'app/'.str_replace('\\', '/', substr($fqcn, strlen('App\\'))).'.php';
+
+    return is_file($root.'/'.$rel) ? $rel : null;
+}
+
+/**
+ * Every name under which this tree imports a class from OUTSIDE `App\` — the alias when the
+ * import carries one, the basename otherwise. Column-0 `use` only: an indented one is a trait
+ * use inside a class body, which names no import.
+ *
+ * @return list<string>
+ */
+function importedNonAppNames(string $root): array
+{
+    static $cache = null;
+    if ($cache !== null) {
+        return $cache;
+    }
+    $names = [];
+    foreach (appClassFiles($root) as $rel) {
+        foreach (importsOf((string) @file_get_contents($root.'/'.$rel)) as $alias => $fqcn) {
+            if (! str_starts_with($fqcn, 'App\\')) {
+                $names[$alias] = true;
+            }
+        }
+    }
+    $cache = array_keys($names);
+
+    return $cache;
+}
+
+/**
+ * Every repo-relative *.php path under app/, computed once.
+ *
+ * @return list<string>
+ */
+function appClassFiles(string $root): array
+{
+    static $cache = null;
+    if ($cache !== null) {
+        return $cache;
+    }
+    $cache = [];
+    if (is_dir($root.'/app')) {
+        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root.'/app', FilesystemIterator::SKIP_DOTS));
+        foreach ($it as $file) {
+            if ($file->isFile() && $file->getExtension() === 'php') {
+                $cache[] = substr($file->getPathname(), strlen($root) + 1);
+            }
+        }
+    }
+
+    return $cache;
+}
+
+/**
+ * Is `$member` declared by `$class` (as declared in `$rel`) or by an ancestor of it?
+ *
+ * THREE-VALUED, and that is the whole design. `true` = found; `false` = the class and its
+ * whole ancestry are readable under `app/` and none of them declares it; `null` = the
+ * ancestry LEAVES `app/` (a framework base class, a vendor trait), so the question was not
+ * answered. Only `false` is reported. A two-valued version of this function reds every
+ * citation of an inherited member — the failure mode that makes a gate get switched off.
+ *
+ * SCOPED TO THE CITED CLASS'S BODY, not the file: a second class in one file would otherwise
+ * vouch for the first, since a whole-file scan cannot tell whose body a declaration sits in.
+ *
+ * The member forms are the ones PHP actually declares: a method, a class constant, an enum
+ * case, and a property (promoted or not). They are matched as declarations, never as uses,
+ * so a call to `sole()` inside a class does not vouch for `sole()` existing on it.
+ */
+function memberDeclared(string $root, string $rel, string $class, string $member, int $depth = 0): ?bool
+{
+    if ($depth > 4) {
+        tally('depth_bail');
+
+        return null;
+    }
+    $src = @file_get_contents($root.'/'.$rel);
+    if ($src === false) {
+        return null;
+    }
+    $shape = classShape($src, $class);
+    if ($shape === null) {
+        return null;
+    }
+    // The three methods PHP synthesises onto every backed/pure enum. They are declared in no
+    // file, so a scan for declarations reads `Severity::cases()` as a phantom.
+    if ($shape['kind'] === 'enum' && in_array($member, ['cases', 'from', 'tryFrom'], true)) {
+        return true;
+    }
+
+    $name = preg_quote(ltrim($member, '$'), '/');
+    $declarations = str_starts_with($member, '$')
+        ? ['/(?:public|protected|private|readonly|var)\s+(?:[^;{()]*\s)?\$'.$name.'\b/']
+        : [
+            '/\bfunction\s+'.$name.'\s*\(/i',
+            '/\bconst\s+(?:[A-Za-z_][A-Za-z0-9_]*\s+)?'.$name.'\b/',
+            '/\bcase\s+'.$name.'\b/',
+            '/(?:public|protected|private|readonly)\s+(?:[^;{()]*\s)?\$'.$name.'\b/',
+        ];
+    foreach ($declarations as $pattern) {
+        if (preg_match($pattern, $shape['body']) === 1) {
+            return true;
+        }
+    }
+
+    $answered = true;
+    foreach (ancestorsOf($src, $shape) as $ancestor) {
+        $ancestorFile = classFileForAncestor($root, $ancestor);
+        if ($ancestorFile === null) {
+            $answered = false;
+
+            continue;
+        }
+        $inherited = memberDeclared($root, $ancestorFile, shortName($ancestor), $member, $depth + 1);
+        if ($inherited === true) {
+            return true;
+        }
+        if ($inherited === null) {
+            $answered = false;
+        }
+    }
+
+    return $answered ? false : null;
+}
+
+/**
+ * The declaration `$class` makes in `$src`: its kind, the header between the name and the
+ * opening brace, and the body inside it.
+ *
+ * TOKENIZED rather than pattern-matched, because the two things a regex gets wrong here are
+ * the two this function exists for. A whole-file match lets a sibling class in the same file
+ * declare the member — so the body is delimited by real brace depth, counting the `{` that
+ * opens an interpolated string as well. And `enum` is a WORD as well as a keyword: a docblock
+ * saying "mentions an enum Severity in passing" made a plain class answer `cases()`/`from()`,
+ * where `T_ENUM` is emitted for the declaration and never for the prose.
+ *
+ * @return array{kind: string, header: string, body: string}|null
+ */
+function classShape(string $src, string $class): ?array
+{
+    $tokens = @token_get_all($src);
+    $count = count($tokens);
+    for ($i = 0; $i < $count; $i++) {
+        $tok = $tokens[$i];
+        if (! is_array($tok) || ! in_array($tok[0], [T_CLASS, T_INTERFACE, T_TRAIT, T_ENUM], true)) {
+            continue;
+        }
+        // `Foo::class` carries the same token id as a declaration keyword, and an anonymous
+        // `new class extends Base` would otherwise read as a declaration OF `Base` — the first
+        // T_STRING after the keyword is the parent's name when the class has none of its own.
+        $before = previousSignificant($tokens, $i);
+        if ($before === T_DOUBLE_COLON || $before === T_NEW) {
+            continue;
+        }
+        $kind = strtolower($tok[1]);
+        $name = null;
+        $header = '';
+        $j = $i + 1;
+        for (; $j < $count && $tokens[$j] !== '{'; $j++) {
+            $t = $tokens[$j];
+            if (is_array($t) && in_array($t[0], [T_COMMENT, T_DOC_COMMENT], true)) {
+                continue;
+            }
+            if ($name === null && is_array($t) && $t[0] === T_STRING) {
+                $name = $t[1];
+            }
+            $header .= is_array($t) ? $t[1] : $t;
+        }
+        if ($name !== $class || $j >= $count) {
+            continue;
+        }
+        $body = '';
+        $depth = 0;
+        for (; $j < $count; $j++) {
+            $t = $tokens[$j];
+            $text = is_array($t) ? $t[1] : $t;
+            if ($text === '{' || (is_array($t) && in_array($t[0], [T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES], true))) {
+                $depth++;
+            } elseif ($text === '}') {
+                $depth--;
+                if ($depth === 0) {
+                    break;
+                }
+            }
+            $body .= $text;
+        }
+
+        return ['kind' => $kind, 'header' => $header, 'body' => $body];
+    }
+
+    return null;
+}
+
+/** The id of the last token before `$i` that is not whitespace or a comment, or null. */
+function previousSignificant(array $tokens, int $i): int|string|null
+{
+    for ($k = $i - 1; $k >= 0; $k--) {
+        $t = $tokens[$k];
+        if (is_array($t) && in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+            continue;
+        }
+
+        return is_array($t) ? $t[0] : $t;
+    }
+
+    return null;
+}
+
+/**
+ * The FULLY QUALIFIED names a class body inherits from: `extends`/`implements` targets from
+ * the header, and the traits its body `use`s.
+ *
+ * QUALIFIED THROUGH THE FILE'S IMPORT BLOCK, which is the whole point. An unqualified
+ * `extends Command` in a file carrying `use Illuminate\Console\Command;` is definitively not
+ * an `app/` class, but as a bare basename it resolves against `app/` and lets any same-named
+ * neighbour answer for a framework base — a FALSE finding, on a class this scan cannot see
+ * into, of exactly the cry-wolf kind that gets a gate switched off. An unimported bare name is
+ * qualified with the file's own namespace, which is what PHP itself does.
+ *
+ * The body is already delimited to the cited class, so a trait `use` is unambiguous there,
+ * while a closure's `use (` cannot match. (A `use A, B { … }` conflict block contributes its
+ * names; there is none in this tree.)
+ *
+ * @param  array{kind: string, header: string, body: string}  $shape
+ * @return list<string>
+ */
+function ancestorsOf(string $src, array $shape): array
+{
+    $imports = importsOf($src);
+    $namespace = namespaceOf($src);
+
+    $header = (string) preg_replace('/^\s*[A-Za-z0-9_]+\s*(?::\s*[A-Za-z_\\\\]+)?/', '', $shape['header']);
+    $header = (string) preg_replace('/\b(?:extends|implements)\b/', ',', $header);
+
+    $names = preg_split('/[\s,]+/', trim($header)) ?: [];
+    if (preg_match_all('/(?:^|[;{}\s])use\s+([A-Za-z_\\\\][A-Za-z0-9_\\\\,\s]*?)\s*[;{]/', $shape['body'], $m) !== false) {
+        foreach ($m[1] as $group) {
+            foreach (preg_split('/[\s,]+/', trim($group)) ?: [] as $name) {
+                $names[] = $name;
+            }
+        }
+    }
+
+    $out = [];
+    foreach ($names as $name) {
+        if (preg_match('/^\\\\?[A-Za-z_][A-Za-z0-9_\\\\]*$/', $name) !== 1) {
+            continue;
+        }
+        $out[] = qualifyName($name, $namespace, $imports);
+    }
+
+    return $out;
+}
+
+/** The namespace `$src` declares, or '' for the global one. */
+function namespaceOf(string $src): string
+{
+    return preg_match('/^namespace\s+([A-Za-z_][A-Za-z0-9_\\\\]*)\s*;/m', $src, $m) === 1 ? $m[1] : '';
+}
+
+/**
+ * The file's import block as alias => FQCN. Column-0 `use` only: an indented one sits inside a
+ * class body and is a trait use, not an import. A grouped `use App\{A, B};` is not matched —
+ * there is none in this tree, and an unmatched import leaves its ancestor unqualified and so
+ * unresolvable, which is an unanswered question rather than a wrong answer.
+ *
+ * @return array<string, string>
+ */
+function importsOf(string $src): array
+{
+    $out = [];
+    if (preg_match_all('/^use\s+(?!function\b|const\b)([A-Za-z_][A-Za-z0-9_\\\\]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;/m', $src, $m, PREG_SET_ORDER) === false) {
+        return $out;
+    }
+    foreach ($m as $use) {
+        $fqcn = $use[1];
+        $alias = ($use[2] ?? '') !== '' ? $use[2] : (str_contains($fqcn, '\\') ? substr($fqcn, strrpos($fqcn, '\\') + 1) : $fqcn);
+        $out[$alias] = $fqcn;
+    }
+
+    return $out;
+}
+
+/** The class name without its namespace — the name the declaration itself carries. */
+function shortName(string $fqcn): string
+{
+    return str_contains($fqcn, '\\') ? substr($fqcn, strrpos($fqcn, '\\') + 1) : $fqcn;
+}
+
+/**
+ * PHP's own name resolution, narrowed to what this scan needs: a leading `\` is already
+ * absolute, a first segment matching an import takes that import's FQCN, and anything else is
+ * relative to the file's namespace.
+ *
+ * @param  array<string, string>  $imports
+ */
+function qualifyName(string $name, string $namespace, array $imports): string
+{
+    if (str_starts_with($name, '\\')) {
+        return ltrim($name, '\\');
+    }
+    $first = explode('\\', $name)[0];
+    if (isset($imports[$first])) {
+        return $imports[$first].substr($name, strlen($first));
+    }
+
+    return $namespace === '' ? $name : $namespace.'\\'.$name;
+}
+
+/**
+ * Does an annotation matching `$marker` DISCHARGE the citation `$tok` written on this line?
+ *
+ * ONE SCOPE, TWO VOCABULARIES — that is the whole reason this function exists (card#7127). Rule 1
+ * carries two escape hatches, a removed-marker and a rejected alternative, and both answer the
+ * same question: *does this annotation cover this citation?* They used to answer it at two
+ * granularities in one file — the marker over the whole LINE, the rejection over the SENTENCE —
+ * which is two formats for one thing, and left a third hatch free to arrive at a third. The
+ * granularity is decided here, once; a caller supplies only the words it accepts. WHAT COUNTS AS
+ * A SENTENCE is {@see sentencesOf()}'s answer, and its terminator set is deliberately not the
+ * obvious one — read that docblock before assuming where a fragment ends.
+ *
+ * SENTENCE-SCOPED, AND THE ANNOTATION MUST NAME WHAT IT DISCHARGES. A line-scoped marker
+ * discharges every citation on its line, and the lines carrying one are the longest prose in this
+ * repo: a `docs/CHANGELOG.md` entry is a single line that narrates a removal AND cites the live
+ * members that replaced it, so one truthful "X was removed" switched the gate off for all of them
+ * — silently, and growing with every release note. No figure is quoted for that loss on purpose;
+ * `--census` re-derives the buckets over the tree it is run on, and a number written here would be
+ * a quoted authority no later pass recomputes.
+ *
+ * WHAT IT COSTS THE FROZEN DOCS, stated because it is a real cost and not a free win. The freeze
+ * rule forbids editing a merged decision-log sentence (DL-277), so the discharge is an annotation
+ * appended AFTER it — and an appended annotation is a different sentence. It must therefore repeat
+ * the citation it discharges, which is one token more than "removed in v0.60" and is what makes an
+ * annotation legible at all on a forty-sentence entry: an unnamed marker at the end of such an
+ * entry says nothing about WHICH of its citations went. The reverse trade — keeping the wide scope
+ * so the shorter annotation keeps working — is what was measured and rejected.
+ *
+ * WHAT COUNTS AS REPEATING IT IS THE HARVEST, NOT A SPELLING. The annotation may name the
+ * citation in any form {@see citationsOnLine()} recognises, and that is not a convenience: a
+ * recogniser that accepted backticks only would leave a frozen `{@see …}` citation with no
+ * discharge available at all — the escape hatch would exist for one spelling and not for the one
+ * the tree actually writes (card#7330).
+ *
+ * THE UNIT IS A SENTENCE WITHIN A LINE, stated because it is a real edge rather than an oversight:
+ * rule 1 reads one line at a time, so a marker written on the PREVIOUS wrapped line of the same
+ * markdown paragraph does not reach the citation. The report names a file and a line, so the scope
+ * an author is asked to satisfy is the one the report points at; reaching the paragraph instead
+ * would need a rule that knows where a paragraph ends across six different prose surfaces, and
+ * would re-admit exactly the distance this function exists to bound.
+ */
+function annotationCovers(string $line, string $tok, string $marker): bool
+{
+    foreach (sentencesOf($line) as $sentence) {
+        if (preg_match($marker, $sentence) !== 1) {
+            continue;
+        }
+        if (in_array($tok, citationsOnLine($sentence), true)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Is this citation inside a sentence that says the construct was REJECTED?
+ *
+ * Every decision-log entry carries an "Alternatives considered" section, and an alternative is
+ * named in the same `Class::member` shape as the built thing. The member leg reads this file
+ * too, so its examples must be quotable: there is no `ReactionTarget::survivesEcho` / `Severity::NotRequested`,
+ * by decision — and a gate that reds on them demands that a log of choices name only the choice
+ * that was made.
+ *
+ * The scope is {@see annotationCovers()}'s, and this hatch is where that scope was first got
+ * right: a decision-log entry is one enormous line whose alternatives sit beside the
+ * consequences, so a line-scoped read of "rejected" would exempt the built constructs cited two
+ * clauses away. Measured over `CLAUDE_DECISIONS.md` when it landed: 11 citations exempted, of
+ * which 2 were findings.
+ */
+function citedAsRejected(string $line, string $tok): bool
+{
+    return annotationCovers($line, $tok, '/\brejected\b|\bnot built\b|\bnot chosen\b|\bnot adopted\b/i');
+}
+
+/**
+ * Every CITATION written on one line, whatever spelling it was written in.
+ *
+ * THREE FORMS, ONE DEFINITION, AND THE THIRD IS WHY THIS FUNCTION EXISTS (card#7330). Rule 1
+ * harvested BACKTICKED tokens only, so `{@see \FQCN::member}` — the form this tree's docblocks
+ * overwhelmingly use — was not a token either leg ever read. That is worse than an unchecked
+ * form: the run's closing line reported an "examined" count and a clean verdict over a
+ * population the harvester could not see, which is the defect rule 1 exists to catch, one level
+ * up. Measured with a control in both directions before the fix: a planted phantom member
+ * spelled `{@see App\NoSuchNamespace\Absent::$noSuchMember}` was not even COUNTED, while the
+ * same phantom spelled in backticks was reported and reddened the run.
+ *
+ * THE SPELLING IS DISCARDED, AND THAT IS THE POINT. A caller gets the token and nothing else, so
+ * no leg can end up treating one form differently from another — which is what the DISCHARGE
+ * needs ({@see annotationCovers()}): an annotation must REPEAT the citation it discharges, and
+ * "repeat" is decided by this same harvest, so either form discharges either form.
+ *
+ * WHAT IS NOT HARVESTED, stated because an unstated bound is how the backtick-only scope
+ * survived this long: a phpDocumentor `{@see …}` may carry a trailing description, of which
+ * only the first whitespace-delimited word is the reference; a bare `@see` is read only on a
+ * comment-continuation line (` * @see X`), where it is unambiguously the tag rather than prose
+ * about it; and `{@link …}` is not read at all — this tree writes none, and a form with no
+ * instances would ship as an unexercised branch. The population re-derives with
+ *   grep -rohE '\{@[a-z]+' app tests docs bin *.md | sort -u
+ *
+ * @return list<string>
+ */
+function citationsOnLine(string $line): array
+{
+    $out = [];
+    if (preg_match_all('/`([^`]+)`/', $line, $m) !== false) {
+        foreach ($m[1] as $tok) {
+            $out[] = $tok;
+        }
+    }
+
+    return array_merge($out, referenceTagCitationsOnLine($line));
+}
+
+/**
+ * The REFERENCE-TAG half of that harvest, on its own — the `{@see …}` and `@see` forms without
+ * the backticked ones.
+ *
+ * SPLIT OUT RATHER THAN COPIED (card#7473), and the caller is the reason the distinction exists
+ * at all: the census owes a bucket to a class-less member citation written in a reference tag,
+ * where the payload is a machine-readable claim about THIS tree, and owes nothing to a
+ * backticked bare `func()`, which the bare-name paragraph in the rule docblock rules out as
+ * mostly other people's vocabulary. That is the one place in this script where the SPELLING of a
+ * citation decides anything, so it is the one place that may read the forms apart — and it may
+ * not do so by re-implementing the recogniser, which would leave two harvests to drift.
+ * {@see citationsOnLine()} stays the single reader every LEG consumes.
+ *
+ * @return list<string>
+ */
+function referenceTagCitationsOnLine(string $line): array
+{
+    $out = [];
+    if (preg_match_all('/\{@see\s+([^}]+)\}/', $line, $m) !== false) {
+        foreach ($m[1] as $payload) {
+            $ref = preg_split('/\s+/', trim($payload))[0] ?? '';
+            if ($ref !== '') {
+                $out[] = $ref;
+            }
+        }
+    }
+    if (preg_match('/^\s*\*\s*@see\s+(\S+)/', $line, $m) === 1) {
+        $out[] = $m[1];
+    }
+
+    return $out;
+}
+
+/**
+ * The `Class::member` citation a token makes, or null if it makes none.
+ *
+ * `::class` is excluded (it is a language construct, not a member), as are the pseudo-classes
+ * `self`/`static`/`parent`, which name no file.
+ *
+ * READ UP TO THE FIRST `(`, so a citation that carries ARGUMENTS is the same citation. The
+ * anchored form matched `Foo::bar()` and dropped `Foo::bar(string $x, …)` before the census
+ * ever counted it — 96 `::`-bearing tokens in the scanned docs alone, 36 of them genuine
+ * citations resolving under `app/`. The argument list is prose about the signature; the
+ * referent is the member, and it is the referent this leg answers for.
+ *
+ * @return array{0: string, 1: string}|null [class, member]
+ */
+function memberCitation(string $tok): ?array
+{
+    $tok = trim($tok);
+    $args = strpos($tok, '(');
+    if ($args !== false) {
+        $tok = substr($tok, 0, $args);
+    }
+    if (preg_match('/^\\\\?([A-Za-z_][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)*)::(\$?[A-Za-z_][A-Za-z0-9_]*)$/', $tok, $m) !== 1) {
+        return null;
+    }
+    if ($m[2] === 'class' || in_array(strtolower($m[1]), ['self', 'static', 'parent', 'this'], true)) {
+        return null;
+    }
+
+    return [$m[1], $m[2]];
+}
+
+/**
+ * The census bucket a reference-tag payload falls into when it cites a MEMBER that no resolvable
+ * class qualifies — or null when it makes no member claim this leg can recognise.
+ *
+ * NOTHING HERE RESOLVES ANYTHING, and that is the whole design (card#7473). These citations were
+ * always going to go unanswered; what was wrong was that they went unanswered without being
+ * COUNTED, so the run's closing line balanced its arithmetic over a population that excluded
+ * them and a reader auditing the disclosure was told it was complete. Resolving the bare form
+ * against the enclosing class was the alternative and was declined on card#7330's reasoning: a
+ * markdown paragraph has no enclosing class, so `self` and a bare member name would resolve in a
+ * docblock and be unanswerable four lines later in prose, which is a gate whose verdict depends
+ * on which file a sentence was written in.
+ *
+ * ⚠ THE PREDICATE IS A LOWER-CASE INITIAL, because with no `::` to key on it is the only thing
+ * that tells a member name from a class name in this tree's naming. So the bound is stated, not
+ * assumed: a class-less member whose name starts UPPER-CASE — an `UPPER_SNAKE` constant, a
+ * CamelCase enum case — is not distinguishable here from a bare class citation and is in NEITHER
+ * bucket. {@see classCitation()} NARROWED that remainder without closing it (card#7496): the
+ * CamelCase half is counted there now, as a class, which is a MISLABEL when the payload was in
+ * fact an enum case, and the ALL-CAPS half is deliberately still in no bucket. The remainder that
+ * survives re-derives with
+ *   grep -rohE '\{@see \\?[A-Z][A-Z0-9_]*\}' app tests docs bin *.md | sort | uniq -c
+ * over which the constants and the enum cases are told apart by reading them, not by a regex.
+ *
+ * A PSEUDO-CLASS IS THE SAME DEFECT WEARING A CLASS, so it gets its own bucket rather than a
+ * shared one: `{@see self::member}` names no file either, was disclosed in the same breath, and
+ * qualifying one moved the TOTAL by exactly the same mechanism as the bare form — measured on
+ * this tree before the fix, both spellings +1. Two buckets rather than one because a reader who
+ * asks "how many, and of what" is answered by neither a merged figure nor prose.
+ *
+ * @return 'classless_member'|'pseudo_class_member'|null
+ */
+function unqualifiedMemberCitation(string $tok): ?string
+{
+    $tok = trim($tok);
+    $args = strpos($tok, '(');
+    if ($args !== false) {
+        $tok = substr($tok, 0, $args);
+    }
+    if (preg_match('/^(?:self|static|parent|this)::(\$?[A-Za-z_][A-Za-z0-9_]*)$/i', $tok, $m) === 1) {
+        // `::class` is a language construct, not a member — the same exclusion memberCitation()
+        // makes, for the same reason.
+        return $m[1] === 'class' ? null : 'pseudo_class_member';
+    }
+    if (preg_match('/^\$?[a-z][A-Za-z0-9_]*$/', $tok) === 1) {
+        return 'classless_member';
+    }
+
+    return null;
+}
+
+/**
+ * The census bucket a reference-tag payload falls into when it names a CLASS and NO member — or
+ * null when it makes no such claim.
+ *
+ * NOTHING HERE RESOLVES ANYTHING EITHER, and for the sibling's reason one level up (card#7496).
+ * These payloads were unread by BOTH legs — no `::` for the member leg to form a citation from,
+ * and written in an `app/` docblock where rule 1a's path/FQCN leg does not read — so they were
+ * unreported AND absent from every accounting line, which is the combination that misleads: a
+ * reader auditing the run's own disclosure was told the population was complete. Counting them
+ * closes that half and only that half. Convicting them was measured before it was declined, not
+ * instead of being declined; the header docblock carries the measurement and card#7330's
+ * unattributable bare `Command` carries the hazard.
+ *
+ * ⚠ THE PREDICATE IS AN UPPER-CASE INITIAL AND NO `::`, which NARROWS the remainder
+ * {@see unqualifiedMemberCitation()} disclosed rather than closing it, in both directions:
+ *  - an ALL-CAPS short name is left OUT, because in this tree's naming that shape is a CONSTANT
+ *    and a bucket that swallowed it would mislabel the census rather than complete it. That is
+ *    the accepted remainder, re-derivable by the grep in that function's docblock;
+ *  - a CamelCase ENUM CASE cited bare lands IN here and is labelled a class, which this
+ *    predicate cannot tell apart. Disclosed rather than assumed away, and it was checked rather
+ *    than reasoned about: every class-form payload on the tree that shipped this was resolved
+ *    against that tree's `app/` and `tests/` class files, and the ones that matched no class at
+ *    all were an imported built-in and a fixture name in a string literal — no enum case among
+ *    them.
+ *
+ * `::class` is excluded by construction: the predicate admits no `:` at all, so a language
+ * construct cannot reach this bucket any more than it reaches the member ones.
+ *
+ * ⚠ IT DOES NOT STRIP AN ARGUMENT LIST, and the difference from its two siblings is deliberate.
+ * They strip because a citation carrying arguments names the same MEMBER; here the parentheses
+ * change what is being named — `{@see Widget()}` is a call, so labelling it a class would be a
+ * MISLABEL of exactly the kind the ALL-CAPS exclusion above exists to avoid, and a paren-bearing
+ * upper-case payload stays in the disclosed remainder instead. Zero instances on this tree, by
+ *   grep -rohE '\{@see \\?[A-Z][A-Za-z0-9_\\]*\(\)\}' app tests docs bin *.md
+ * so this is a rule about which way to be wrong, not a live population.
+ *
+ * @return 'class_citation'|null
+ */
+function classCitation(string $tok): ?string
+{
+    if (preg_match('/^\\\\?[A-Z][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)*$/', trim($tok)) !== 1) {
+        return null;
+    }
+
+    return preg_match('/^[A-Z][A-Z0-9_]*$/', shortName(trim($tok))) === 1 ? null : 'class_citation';
+}
+
+// The vocabulary that deliberately names dead code: an explicit removed-marker, or a
+// struck-through (~~…~~) historical heading. ⚠ `~~` NARROWED WITH THE PROSE MARKERS
+// (card#7127): a struck block spanning several sentences on one line now discharges only the
+// fragment carrying the `~~`, not the whole line. Zero instances in this tree strike more than
+// one fragment, so this is disclosed rather than measured — and it is named here because every
+// other sentence describing the scope talks about prose markers, where a reader would not
+// infer it. `ever existed` is the marker the freeze rule
+// forces on the decision log — a frozen sentence cannot be corrected in place, so the
+// correction is an annotation appended beside it saying the referent never existed (DL-273).
+//
+// EVERY WORD HERE IS SATISFIABLE BY AN ANNOTATION APPENDED BESIDE THE ORIGINAL, which is why
+// the vocabulary is spelled as statements rather than as a directive: the freeze rule forbids
+// editing a merged entry, so the only discharge a frozen sentence can offer is a clause added
+// after it. A rule whose escape hatch required rewriting the sentence would have no escape
+// hatch on the two documents that need one most. What the annotation may NOT omit is the
+// citation itself — {@see annotationCovers()} owns that scope, and owns it for both hatches.
+//
+// `removed` AND `renamed` ARE WORD-BOUNDED, not parenthesised, and that is a widening this
+// change owed. `\(removed\b` matched only "(removed in vX)", so "`X` removed (dead)" — a
+// perfect removal marker — did not discharge, and a rename ("`X` is renamed `Y`") had no
+// vocabulary at all. Both are the speech act this list exists for, and both are what a
+// CHANGELOG entry says by construction: the surface widening that brought release notes and
+// living plan docs into scope is what turned that narrowness into a gate reddening on correct
+// prose. Word-bounded is the bound that keeps it honest — an identifier that merely STARTS
+// with the word (`removedAt`, `renamedTo`) discharges nothing.
+$removedMarker = '/\bremoved\b|\brenamed\b|\bdeleted\b|no longer exists|there is no\b|replaced by\b|ever existed\b|~~/i';
 $errors = [];
 
+// RULE 1a — the path / FQCN leg, over the CURRENT-STATE docs only.
 foreach ($docs as $doc) {
     $path = $root.'/'.$doc;
     if (! is_file($path)) {
         continue;
     }
-    $lines = file($path, FILE_IGNORE_NEW_LINES);
-    foreach ($lines as $i => $line) {
-        if (preg_match($skip, $line) === 1) {
-            continue;
-        }
-        if (preg_match_all('/`([^`]+)`/', $line, $m) === false) {
-            continue;
-        }
-        foreach ($m[1] as $tok) {
+    foreach (file($path, FILE_IGNORE_NEW_LINES) ?: [] as $i => $line) {
+        foreach (citationsOnLine($line) as $tok) {
+            if (annotationCovers($line, $tok, $removedMarker)) {
+                continue;
+            }
             foreach (refsFromToken($tok) as $ref) {
                 if (! refResolves($root, $ref)) {
                     $errors[] = sprintf('%s:%d  names `%s` (missing)', $doc, $i + 1, $tok);
                 }
+            }
+        }
+    }
+}
+
+// RULE 1b — the MEMBER leg, over every source rules 2 and 3 walk (see the rule docblock).
+foreach (scannedSources($root) as $rel) {
+    foreach (file($root.'/'.$rel, FILE_IGNORE_NEW_LINES) ?: [] as $i => $line) {
+        foreach (citationsOnLine($line) as $tok) {
+            $citation = memberCitation($tok);
+            if ($citation === null) {
+                continue;
+            }
+            if (annotationCovers($line, $tok, $removedMarker)) {
+                tally('removed_marker_sentence');
+
+                continue;
+            }
+            if (citedAsRejected($line, $tok)) {
+                tally('rejected_alternative');
+
+                continue;
+            }
+            [$class, $member] = $citation;
+            $resolved = classFileForCitation($root, $class);
+            if ($resolved['file'] === null) {
+                tally($resolved['reason']);
+
+                continue;
+            }
+            // The DECLARED name is the short one — an FQCN citation and a bare one name the
+            // same declaration, and only one of the two spellings appears in the file.
+            $declared = memberDeclared($root, $resolved['file'], shortName($class), $member);
+            if ($declared === null) {
+                tally('unverifiable_ancestry');
+
+                continue;
+            }
+            if ($declared) {
+                tally('resolved');
+
+                continue;
+            }
+            tally('reported');
+            $errors[] = sprintf('%s:%d  names `%s` — %s declares no %s (missing)', $rel, $i + 1, $tok, $resolved['file'], $member);
+        }
+        // The citations the loop above could not even form a `Class::member` from. Disjoint from
+        // it by construction: every tally there is on a token memberCitation() ACCEPTED, every
+        // tally here is on one it rejected, so no citation is counted twice and none is dropped.
+        // The two predicates below are disjoint from EACH OTHER the same way — one admits only a
+        // lower-case initial or a pseudo-class, the other only an upper-case initial with no
+        // `::` — so the `??` picks a bucket rather than resolving a tie.
+        foreach (referenceTagCitationsOnLine($line) as $tok) {
+            if (memberCitation($tok) !== null) {
+                continue;
+            }
+            $bucket = unqualifiedMemberCitation($tok) ?? classCitation($tok);
+            if ($bucket !== null) {
+                tally($bucket);
             }
         }
     }
@@ -346,10 +1224,32 @@ function boundNamedInSameSentence(string $text, string $trigger): bool
     return false;
 }
 
-/** @return list<string> */
+/**
+ * `$text` split into sentences.
+ *
+ * A TERMINATOR IS NOT ALWAYS FOLLOWED BY WHITESPACE, and in this repo it usually is not. The
+ * obvious pattern — `[.!?]\s+` — reads *"…was removed.** `Foo::bar()` is live"* as ONE sentence,
+ * because the bold close sits between the period and the space. `docs/CHANGELOG.md` and
+ * `CLAUDE_DECISIONS.md` are the two surfaces the sentence scope exists for and they carry hundreds
+ * of that terminator each, so under the naive pattern a marker sentence merges with everything
+ * after it and hands the whole line back to the marker — the line scope restored at green, one
+ * character from the case the tests do cover. Closing emphasis, quotes and brackets are therefore
+ * part of the terminator: `.**`, `.*`, `."`, `.)`, and the `.**]**` an appended annotation ends on.
+ *
+ * BYTE-ORIENTED, NOT `/u`, AND THAT IS MEASURED RATHER THAN ASSUMED. The class carries three
+ * multi-byte closers, so `/u` is the reflex; but `preg_split` with `/u` returns `false` on input
+ * that is not valid UTF-8, and this function's fallback is the WHOLE text — which would silently
+ * restore the widest possible scope on precisely the file nobody inspects. Without `/u` the same
+ * five inputs (`’`, `”`, `»`, `…`, an em-dash mid-prose) split identically and every fragment is
+ * valid UTF-8, because each closer's bytes are consumed whole or not at all. The fallback stays
+ * fail-open on purpose — a fragment this function cannot compute must never invent a finding — and
+ * this is the bound that keeps the fail-open path unreachable for real input.
+ *
+ * @return list<string>
+ */
 function sentencesOf(string $text): array
 {
-    return preg_split('/(?<=[.!?])\s+/', $text) ?: [$text];
+    return preg_split('/(?<=[.!?])[)\]"\'’”*_`»]*\s+/', $text) ?: [$text];
 }
 
 /**
@@ -459,13 +1359,64 @@ foreach (scannedSources($root) as $rel) {
     }
 }
 
+/**
+ * What the member leg DECLINED to answer, on every run.
+ *
+ * Three populations `continue` in silence otherwise, and a closing line reading "all PHP
+ * references resolve" would then speak for citations this leg never examined — the exact shape
+ * DL-251 / stage 10 removed from `bridge:check`, where a leg that measured nothing had been
+ * reporting `ok`. The buckets sum to the population, so the disclosure is arithmetic rather
+ * than adjectival: `--census` prints the same numbers with the examined half beside them.
+ *
+ * ⚠ "THE BUCKETS SUM TO THE POPULATION" IS A CLAIM ABOUT THE HARVEST, NOT ABOUT THE SUM, and it
+ * was false for two whole citation forms until card#7473 while the arithmetic stayed perfectly
+ * consistent — a citation dropped before any bucket leaves a total that still balances. The
+ * shipped test of it is not the sum: it is that qualifying a class-less citation into its
+ * `Class::member` spelling MOVES it between buckets and leaves the TOTAL fixed. Before that card
+ * it moved the total, which is how a citation admits it was never in it.
+ */
+$census = tally();
+$unexamined = $census['class_not_under_app'] + $census['ambiguous_class_name'] + $census['unverifiable_ancestry']
+    + $census['removed_marker_sentence'] + $census['rejected_alternative']
+    + $census['classless_member'] + $census['pseudo_class_member'] + $census['class_citation'];
+
+if (in_array('--census', $argv, true)) {
+    fwrite(STDOUT, "doc-refs member census (re-derived over this tree by this run):\n");
+    foreach ($census as $bucket => $n) {
+        fwrite(STDOUT, sprintf("  %-24s %d\n", $bucket, $n));
+    }
+    fwrite(STDOUT, sprintf(
+        "  %-24s %d\n",
+        'TOTAL citations',
+        $census['resolved'] + $census['reported'] + $unexamined
+    ));
+    fwrite(STDOUT, "`depth_bail` is not a bucket of the total — it counts ancestry walks abandoned at the depth bound, each of which lands its citation in `unverifiable_ancestry` unless another ancestor answered first.\n");
+}
+
+fwrite(STDOUT, sprintf(
+    "doc-refs: member citations — %d examined (%d resolved, %d reported), %d NOT examined: %d class not under app/, %d ambiguous class name, %d unverifiable ancestry, %d in a removed-marker sentence, %d a rejected alternative, %d class-less member citations, %d naming a pseudo-class, %d naming a class and no member; %d ancestry walk(s) hit the depth bound. This run says nothing about the members in that second half.\n",
+    $census['resolved'] + $census['reported'],
+    $census['resolved'],
+    $census['reported'],
+    $unexamined,
+    $census['class_not_under_app'],
+    $census['ambiguous_class_name'],
+    $census['unverifiable_ancestry'],
+    $census['removed_marker_sentence'],
+    $census['rejected_alternative'],
+    $census['classless_member'],
+    $census['pseudo_class_member'],
+    $census['class_citation'],
+    $census['depth_bail'],
+));
+
 if ($errors !== [] || $citeErrors !== [] || $claimErrors !== []) {
     if ($errors !== []) {
-        fwrite(STDERR, "Dangling doc references (a CLAUDE_*.md names a PHP file that does not exist):\n");
+        fwrite(STDERR, "Dangling doc references (a CLAUDE_*.md names a PHP file, class or class member that does not exist):\n");
         foreach ($errors as $e) {
             fwrite(STDERR, "  - {$e}\n");
         }
-        fwrite(STDERR, "\nFix the reference, or — if the class was deliberately removed — note it on the\nsame line with a marker like \"(removed in vX)\". See DL-013.\n");
+        fwrite(STDERR, "\nFix the reference, or — if the construct was deliberately removed or renamed — say so in the\nSAME SENTENCE as the citation (\"removed\", \"renamed\", \"there is no …\"). CLAUDE_DECISIONS.md\nand docs/CHANGELOG.md entries are frozen, so that marker goes in an ANNOTATION appended after\nthe original sentence — and the annotation must REPEAT the citation it discharges, as a citation\n(backticked or `{@see …}`, either spelling), or it covers nothing on that line. An alternative\nthe entry says it REJECTED needs nothing. See DL-013 and its DL-291 annotation.\n");
     }
     if ($citeErrors !== []) {
         fwrite(STDERR, "Line-number citations (an offset goes stale the next time anything above it moves):\n");

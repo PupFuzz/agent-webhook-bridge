@@ -8,6 +8,1361 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.75.0] - 2026-08-23
+
+### Added
+
+- **card#7332 (DL-306)** — **an OPT-IN periodic standup digest pushed to one seat, carrying only
+  the fields the bridge can honestly derive — and ABSENT wherever it cannot.** Roundtable #341 ask 3,
+  and only ask 3: the other two asks in that FR are gated on a per-seat LIVENESS signal that does not
+  exist here. Re-measured on this branch rather than taken from the card: a
+  `command grep -rnE 'last_activity|lastActivity|last_seen|lastSeen|heartbeat'` over `app/` +
+  `config/` matches, outside the files this PR adds, exactly **three** — the writeback divergence
+  ledger, its model, and the event-consumer reconciler, none of them a per-seat signal. (This PR's
+  own matches are prose in `StandupDigest`/`SeatSnapshot`/`config/bridge.php` saying why the field
+  is not there.)
+  **⇒ The bridge knows DELIVERY, not ACTIVITY.** It can say *"I pushed an event at this seat at T"*;
+  it cannot say the seat read it, acted, or is mid-turn. So the digest carries **per seat** a
+  `last_delivery_at` (named for what it is) plus `unseen_inbox_intents`, and **per board** a
+  `now_depth` — and nothing else.
+  **⛔ WHAT IS ABSENT IS THE FEATURE.** A seat with no DELIVERED dispatch carries **no
+  `last_delivery_at` key at all** — not a null, not an epoch, not `"unknown"` — and a board whose
+  `writeback.json` mapping declares no `coord_card_lane_stage_ids` yields **no row**, so a
+  `now_depth: 0` can never mean *"the bridge could not identify that column"*. A truncated or failed
+  board read yields a row whose depth is absent and whose `now_depth_unavailable` names the cause:
+  three states, never two. Pinned by an exact seat-row key-set assertion, so a later
+  `last_activity`/context-% field cannot be added without the test that forbids it going red.
+  **Four fields were asked for and deliberately NOT built** (each stated in
+  `App\Bridge\Standup\StandupDigest`): a context-% (no producer the bridge can read; the coord
+  layer's own stamp is omitted on cross-project posts by design and only refreshes when a seat
+  POSTS, so it is a lower bound on activity, never a heartbeat); `last_activity`/idle/quiet-for-N;
+  an **open `to:<agent>` thread count** (the bridge sees coordination events, not thread lifecycle,
+  and keeps no thread-state store — `unseen_inbox_intents` is the neighbouring fact it CAN state and
+  ships under that name); and an **adaptive cadence keyed on a seat looking stuck**, whose predicate
+  IS the missing signal.
+  **⚠ IT IS NOT A CRON, and that changes what the cadence means.** It rides the same after-response,
+  interval-gated, non-blocking-lock, never-throws gate retention uses (DL-199) — this design has no
+  daemon, and a report is not reason enough to reintroduce the DL-012 exception. **Consequence: the
+  pass fires on the first inbound webhook AFTER `BRIDGE_STANDUP_INTERVAL` elapses, so an install
+  receiving nothing pushes nothing.** That is a delivery cadence, not a wall clock; `bridge:standup`
+  is the manual/cron entry point for an operator who wants one, and `bridge:standup --dry-run`
+  prints the digest as JSON and pushes nothing. Unlike retention this pass makes OUTBOUND calls (one
+  board read per mapped board, then the push), each bounded by `KanbanHttpClient::TIMEOUT_SECONDS`,
+  after the response and at most once per interval — which is why it is **OFF by default**.
+  **⚠ UPGRADING: nothing changes for an install that does not set `BRIDGE_STANDUP_ENABLED=true`** —
+  no migration, no new required `.env`, no receiver accept/reject change, no token-scope change; the
+  gate registers no callback at all when disabled. New env: `BRIDGE_STANDUP_ENABLED` (bool,
+  **`false`**), `BRIDGE_STANDUP_AGENT` (the recipient seat's `<agent>.yml` name — no default
+  recipient exists, and a name that does not match the filename convention is REFUSED rather than
+  concatenated into a path), `BRIDGE_STANDUP_INTERVAL` (seconds, `86400`). The push reuses the
+  registered `channel_push` handler, so the recipient's own `channel` block is the endpoint and its
+  `channel.auth.token_path` the bearer — no second transport, no second copy of the DL-014 socket
+  gate. `BridgePaths::unseenInboxLines()` is extracted from `bridge:inbox` as the ONE definition of
+  "unseen" (already-seen filtered, duplicate ids collapsed) so the two readers of one inbox cannot
+  disagree about it; `bridge:inbox`'s behaviour is unchanged. **⚠ Extracting it found that
+  `bridge:inbox`'s own `test_inbox_collapses_duplicate_ids_on_read` never asserted the collapse** —
+  mutating it away left the test GREEN, because the cursor advance `array_unique()`s its ids and an
+  `expectsOutputToContain()` is satisfied by a doubled line. The test now asserts the occurrence
+  COUNT, and the primitive gets its own `BridgePathsUnseenInboxLinesTest`; both were watched red
+  under that mutant.
+
+- **card#7212 (DL-300)** — **⚠ a writeback (card board, mapped board) pair that DIVERGES is
+  now persisted, so the question "has a cross-board write ever landed here?" survives the log.**
+  The second half of card#7212. The first half (#556) put the pair on every record of a write
+  kanban accepted, beside the refusal arm that always carried it — but a log line is
+  retention-bounded (14 days, and the receiver prunes on its own gate since DL-199), so it
+  answers *"did this ever happen?"* for a fortnight and then stops. **A record that expires is
+  an absence on a timer.** `MappedBoardGuard::boardContext()` — still the ONE rendering of the
+  pair, and now the one place that outlives it — writes a row to the new
+  `writeback_board_divergences` table when, and only when, `MappedBoardGuard::belongs()` is
+  false for the card it just rendered: `disposition` (`refused`, the guard stopped the write ·
+  `recorded`, the pair was rendered for a record of a write the bridge MADE), `card_id`, the
+  card's own board verbatim, the mapped board, the call site read from the stack, and the time.
+  The row is minted from the SAME observation as the log line, by the same predicate, in the
+  one place that holds both the card and the mapping — not from an `$arm` argument eleven call
+  sites would have to spell and the twelfth would omit.
+  **⚠ UPGRADING — run `php artisan migrate`.** One new table; no existing table, column or
+  index is touched, and there is no backfill (the observations this table is for were never
+  recorded anywhere durable, which is the defect). **Nothing about what the bridge accepts,
+  refuses, writes or retries moves** — the log shape is byte-identical to #556's, and a
+  persistence failure is logged and never thrown (it runs after kanban has already been
+  written to, and on the refusal arm whose contract is a permanent no-op).
+  **⛔ THE HAPPY PATH PERSISTS NOTHING, deliberately.** A row per successful writeback was
+  considered and refused: it would put the bridge's whole write rate into the DB to record the
+  one thing every other row's absence already implies. So the healthy state of this table is
+  EMPTY, growth is the signal, and **`bridge:prune` deliberately does not touch it** — a
+  retention window on the record that exists to outlive a retention window is the same defect
+  with a longer fuse. On a correctly-scoped install the expected steady state is zero
+  `recorded` rows and zero-or-few `refused` ones (DL-298's guards refuse nothing on a healthy
+  instance), and `bridge:stats` now prints both counts **on every run, zero included** — a line
+  that appeared only when non-empty would make "nothing was ever recorded" indistinguishable
+  from "nothing measured it".
+  **Bound, stated:** a `recorded` row means a divergent card reached a site that reports a
+  write. Every writeback arm inside the mapped-board regime is gated by `refuses()` (DL-292 +
+  DL-298 + DL-301), so on today's code that disposition is unreachable — which is exactly why
+  it is worth a durable row: it is the tripwire for the N+1th write site, not a report on the
+  current one. **`bridge:reconcile` is INSIDE that regime** — DL-301 made it the seventh
+  `refuses()` arm — so it mints a `refused` row per refused card per run, on a report-only run
+  as much as on a `--fix` one. **One row per DISTINCT observation:** a repeat bumps
+  `observations` + `last_seen_at` rather than appending, which is what keeps a table nothing
+  prunes bounded by the number of divergences rather than by how often the documented hourly
+  reconcile cron runs. `bridge:stats` prints the counts on every run — including
+  `NOT MEASURED — table missing` on an install that upgraded without `php artisan migrate`,
+  which used to take the whole report down with a message blaming `DB_HOST`.
+- **card#7211 (DL-301)** — **⚠ the fourth and last search-resolved write site is guarded:
+  `bridge:reconcile --fix` re-checks every row of its board read against the mapped board before
+  it moves anything, and an applied move is now recorded durably.** DL-298 (below) closed the
+  three handler sites and disclosed this one as open; a disclosed defect is not a closed one. The
+  reconciler reads a board with the same `q=board_id=<b>` server-side search and moved the ids it
+  returned, so it was the one remaining arm where a `q=`→top-level hoist — which filters in a
+  manual test, because `board_id` happens to be recognised there too — would have moved another
+  tenant's card. It now calls **the same `MappedBoardGuard::refuses()`** the six event-path arms
+  call, under the arm name `bridge_reconcile` and the synthetic outcome `reconcile`.
+  **⚠ UPGRADING — a fail-closed tightening on a write path, and the newly-refused set is EMPTY on
+  a correctly-scoped instance.** A card is refused when the row the board read returned does not
+  name the mapped board, or carries no readable board at all. The gate sits where a row becomes a
+  card the run will decide a move for — **before** the per-card GitHub read — so a refused row is
+  never moved, never has its PR reference dereferenced with this repo's GitHub token, and never
+  lands in the `in sync` / `backward` counts that would otherwise report a reconcile over another
+  board. **The refusal is loud: a `REFUSED` console line per card, the durable `Log::warning` +
+  alert from the primitive, and a NON-ZERO EXIT** — a timer reading exit 0 over a cross-board row
+  in its board read would be reporting a clean reconcile over an unfiltered result set. Dedup is
+  unchanged (`(repo, outcome, reason)`): one push per run carrying the first refused card, with
+  the console lines and the per-card log as the enumeration.
+  **The applied move is now a durable record, not just console output** (card#7212):
+  `Log::info('bridge_reconcile: moved', …)` carries the card id, the target stage and the
+  `card_board` + `mapped_board` pair — the board the move actually landed on beside the one
+  config aimed at. The refusal was always durable while the success went wherever the operator's
+  cron redirects stdout; recording only the refusal answers *"did we ever stop it?"* and never
+  *"did this ever happen?"*. The `MOVED` and `DRIFT` / `SKIP-DRIFT` console lines are unchanged —
+  they still name the mapped board, which after the guard is the same value on every row that can
+  reach a report line.
+  **Guard populations — two classes widened.** `WritebackRefusalSignalCoverageTest`'s
+  level-independent leg now also scans `app/Console/Commands/Bridge/*.php`, because this is the
+  first caller of the board guard outside the handler files (empty today; proven able to red by
+  planting a compare in the command). `WritebackSuccessBoardRecordTest`'s write census gains the
+  same directory on its file axis, with `ReconcileCommand.php:moveCard` accounted for — measured
+  as the only kanban write in any `bridge:*` command, and proven able to red by dropping that
+  entry. **A second kanban write added to that command now reds**, where an earlier revision of
+  this change would have left it caught by nothing structural.
+
+- **card#7211 (DL-298)** — **⚠ a card resolved from a board-scoped SEARCH is now re-checked
+  against the mapped board before the writeback writes to it.** The second half of card#7211,
+  and the one that changes behaviour: the first half (below) pins the *call*, this pins the
+  *result*. `MappedBoardGuard`'s belongs-to-mapped-board rule (DL-009/DL-292) ran only on the
+  **token** path — the sites that parse `card#NNNN` / `DL-NNN` out of a PR title or branch and
+  read the card. Three writeback paths resolve their cards from a board-scoped search instead
+  and parse no token, so nothing checked that the rows kanban handed back were on the board the
+  query asked for: `kanban_dependabot_card` (archive on closed-unmerged, the duplicate collapse,
+  the survivor's move), `kanban_promote_released` (the Shipped→Released scan) and
+  `kanban_coord_card` (the post-create collapse). All three now call **the same primitive** — no
+  second copy of the compare, the same `card_not_on_mapped_board` reason, the same
+  warn-then-push report, kept apart in the dedup tuple by their `outcome`.
+  **⚠ UPGRADING — this is a fail-closed tightening on a write path, and the newly-refused set is
+  EMPTY on a correctly-scoped instance.** A card is refused (not moved, not archived, and not
+  eligible to win a collapse) when the row kanban returned does not name the mapped board, or
+  carries no readable board at all. `q=board_id=<id>` **is** enforced server-side — measured with
+  the control that makes the zero mean something (a token planted only on board B: `total:1`
+  scoped to B, `total:0` scoped to A, holding past page 1) — so on a healthy install this refuses
+  nothing and writes exactly what it wrote before. **That is the design intent, not a hedge:** the
+  same endpoint silently drops an unrecognised **top-level** parameter and answers 200 with an
+  UNFILTERED result set, and `board_id` also works top-level and filters correctly there, so the
+  hoist that would break the scope tests clean and reviews clean. The guard makes the scope a
+  property of the data rather than of how the call happens to be written. **A refusal is per row
+  — the rest of the delivery proceeds** — and it signals (durable `Log::warning` + the additive
+  push), because a cross-board write that SUCCEEDS emits no event at all.
+  **Cost: no extra request on any ordinary path.** Every one of these searches already returns
+  full rows; it was the client-side projection to ids that discarded the board. Dependabot
+  already re-read each card for its repo attribution; the promote scan already holds rows; the
+  coord collapse switched from `cardsByTag` to its row-returning twin `cardRowsByTag` — the same
+  single GET. The **one** added read is the coord handler's by-ref collapse arm (its board rides
+  in the URL path, so there is no row to check): one `getCard` per correlated card, paid only
+  when a create race has already produced more than one.
+  **⛔ Not changed, deliberately:** the coord handler's three *read-decision* sites (the live tag
+  pre-check, the by-ref pre-check, the DL-296 archived-twin read) write nothing — board-scoping
+  them would make the handler create where it previously skipped, a change in the permissive
+  direction needing its own ruling. **⛔ Left open by this entry, closed by DL-301 below:**
+  `bridge:reconcile --fix` read the board and moved cards from its plan with no such re-check —
+  the fourth site.
+
+- **card#7211** — **a guard on the CALL CONSTRUCTION of every board-scoped kanban read: the
+  board term must sit inside the `q=` string, never as a top-level query parameter.** Measured
+  live: `q=board_id=<id>` is enforced server-side (a token planted only on board B returned
+  `total:1` scoped to B and `total:0` scoped to A — the control is what makes the zero mean
+  something), and it holds past page 1. **But an unrecognised TOP-LEVEL parameter is silently
+  dropped and the endpoint answers HTTP 200 with an UNFILTERED result set** spanning every board
+  the token can reach. **⛔ The trap: `board_id` ALSO works as a bare top-level parameter and
+  filters correctly there** — so hoisting `q=board_id=N` to `?board_id=N` tests clean, reviews
+  clean, and takes the next filter hoisted beside it (`tags`) silently out of the query. Nothing
+  in a 200 response distinguishes a dropped filter from an honoured one, so **no assertion on a
+  search RESULT can see this change** — the dangerous edit is entirely on the client's side of
+  the wire. The guard derives its population instead of listing it (reflection over the client's
+  board-taking methods, each invoked over an ARGUMENT MATRIX — every parameter's default plus a
+  sample, both sides of a boolean — and its emitted URL asserted; plus a source scan built on
+  PHP's own tokenizer that reads the top-level keys of every `/tasks/search.json` call in `app/`,
+  including one assembled into a local `$query` variable, and reconciles each file's parsed call
+  sites against that file's own count of endpoint mentions in code), so **a board-scoped read
+  added later is covered without editing an enumeration** and a call site the scan cannot follow
+  — a path behind a constant, a query built by a merge — **reds instead of being skipped**. Both
+  derivations red under the hoist mutation, and the coverage leg reds when a known reader stops
+  being reachable. **The invariant is on FILTERS, and the top-level SWITCHES are named:** what
+  narrows the result set by data (board, tags, swimlane, custom fields) rides inside `q=`, while
+  `limit`/`page` (DL-146) and `archived` (**DL-296** — the archive axis has no both-sides mode,
+  so `cardRowsByTag($archivedOnly: true)` must send it top-level) are the measured switches;
+  widening that set is a claim about what kanban recognises, and the guard's failure text says so
+  rather than asserting the old three as fact. **No behaviour change** — this adds a test; it
+  does not change what the bridge accepts, rejects, or writes.
+
+  *Adversarial review (rt#327) closed three findings on this guard, recorded because two of them
+  were the guard being wrong about itself:* the branch DL-296 added was invisible to **both**
+  derivations at once — the runtime leg invoked each method with a single argument set, and the
+  source leg could not parse a conditionally-built query — so the "two independent derivations,
+  each blind where the other sees" claim did not hold. Both legs were fixed rather than the claim
+  narrowed, and the claim is now stated as complementary-with-named-residue. The allowlist was
+  reconciled with DL-296 (a decision already shipped and measured) instead of being widened
+  silently to go green.
+
+- **card#6393 (DL-290)** — **`coord-card-relane`, an opt-in classifier family that moves a coord
+  `[TASK]`'s card to the lane a `stage:*` label added AFTER the card exists declares.** Closes the
+  label-after-open half of the class DL-286 filed: the create leg fires on `issues.opened` only, so
+  a `[TASK]` filed in the GitHub UI and labelled a moment later is carded in `later`, and the
+  consumer's board→issue writeback then converges that brand-new label back to `stage:later` — the
+  bridge silently overwriting a written sequencing ruling. **Opt-in and default-OFF**: add
+  `coord-card-relane` to the agent's `classifier.config.families`; it additionally requires
+  `move_coord_cards` (a relane *is* the bridge moving a coord card) and `coord_card_lane_stage_ids`
+  (with no lane model there is no lane to write). Both are checked at classify time — a
+  half-configured install emits nothing rather than paying a card search and a card read per
+  delivery to find that out — and **`bridge:check` warns** naming the missing key, since that
+  install is otherwise silent in a new way (no config error, nothing classified, no card moved). **No webhook-subscription
+  change is needed** — `issues.labeled` already arrives: **641** such deliveries had reached the
+  reference install and been dropped as action-undeclared (an operator measurement, last one
+  2026-08-20 15:31:53 UTC — no delivery corpus was reachable from this branch to re-derive it).
+- **The trigger filter is the LANE VOCABULARY, not the `stage:` namespace, and the difference is
+  measured.** A `str_starts_with($name, 'stage:')` trigger accepts any label an install invents in
+  that namespace; `CoordLaneStages::resolveLane` then recognizes none of them, the placement falls
+  back to the `later` default, and the handler MOVES the card there. Driven through
+  classify→handle with the prefix-only predicate in place, `stage:done` on a `[TASK]` sitting in
+  lane `now` (stage 40) PATCHes the card to stage 42 (`later`) — a demotion on a label that
+  expressed no sequencing, whose `stage:later` the consumer would then write onto the issue. Because
+  the family runs on a stream that already arrives, that is not one misfire. The vocabulary now has
+  one owner (`CoordLaneStages::isLaneLabel`), and two legs — one at the classifier, one asserting
+  the absence of the board write — red under exactly that mutation and green with it restored.
+  `unlabeled` is deliberately NOT consumed, for the same reason: removing a label states no lane.
+- **card#7157 (DL-295)** — **a DL number is now ALLOCATED, not derived from the decision log, and CI
+  refuses one that is already in use.** ⚠ **This changes what CI accepts for a contributor** (a new
+  `DL collision gate` workflow runs on every PR); nothing about an installed bridge changes — no
+  `app/` file is touched, no migration, no `.env` key, no token scope. Until now the only in-repo way
+  to pick a number was the maximum `DL-` header plus one, and that **cannot see a mint that has not
+  been pushed**: two agents branching off one `dev` tip both read the same maximum and both write the
+  same number, silently and permanently (measured near-miss 2026-08-21 — two branches both read 290;
+  the collision was avoided by an unrelated test failure, not by any check). New
+  `bin/decision-log.py next` takes the number from the board's DL counter through the toolkit's
+  allocator and then **vetoes it against every worktree of this clone** plus
+  `BRIDGE_DL_CHECKOUT_GLOBS` — the leg the incident needed, since the toolkit's own offline glob
+  matches only the main checkout. With no allocator on PATH it **refuses** rather than falling back
+  to the scan it exists to retire. **The veto refused a live collision, not a planted one:** run
+  while three agents were minting in parallel, it reported the counter's next number as 294 and
+  refused it, naming the sibling checkout that already carried an unpushed `DL-294` entry. **⛔ The gate's bound is stated rather than implied: it does NOT
+  catch two OPEN PRs each minting the same new number** — neither number is on `dev` yet, so both are
+  green until one merges, and the second reds only on a re-run after that. Both halves of the bound
+  are pinned by tests. The gate is not a required status check until an operator adds it to branch
+  protection. **This hazard is created by parallel dispatch**; "do not run two DL-minting agents at
+  once" is recorded in DL-295 as a legitimate partial mitigation rather than left unstated.
+  ⛔ **A SECOND BOUND, stated for the same reason as the first.** The allocator this tool delegates
+  to claims atomically from the board's counter **only while that endpoint answers**; when the claim
+  route is absent or unreachable it falls back to a `max + 1` scan **silently** — exit 0, a plausible
+  number, an empty stderr — and the number then arrives here looking like an allocation. Measured
+  both ways: the live board answers the non-consuming sequence read `200` today, so the primary path
+  is genuinely atomic, and against a stub answering `404` on the claim route the allocator printed a
+  scanned number with nothing on stderr. The distinction is only visible inside the allocator, so the
+  fix is filed there (toolkit card#7214); until it ships the bound is carried by DL-295 and by this
+  tool's own refusal text, which no longer claims there is no offline fallback anywhere. Two smaller
+  things with it: `check` now prints the **fence-aware vs fence-blind `## DL-` header count**, so one
+  unbalanced code fence — which hides every header after it — cannot leave an `OK` standing over a
+  truncated population (this repo's log today: 181 of 181, none skipped); and the gate's comments now
+  say what `base.sha` IS (the base-branch **tip**, not the merge base, measured on PR #542), with a
+  fixture whose head is a real merge commit pinning the head/base pairing its verdict depends on.
+
+### Changed
+
+- **card#7348 (DL-305 + DL-308)** — **⚠ CHANGES WHAT THE WRITEBACK ACTS ON: a PR that merely
+  MENTIONS a `card#N` / `DL-NNN` token no longer moves that card to a terminal stage on merge.**
+  *"This PR mentions card N"* and *"card N's work is shipped"* are different propositions, and the
+  writeback collapsed them: `PrOutcome::forMergedBase()` was a pure function of the base ref — **no
+  completion signal in it at all** — and the classifier handed it whichever token the title or head
+  branch carried, so a PR citing a card for context moved it to `stages.merged` and the
+  `promote_on_release` sweep propagated that into a **terminal, irreversible** stage. Filed from
+  roundtable #343; the harm is **measured at peers, not hypothetical** — 17 wrong-retirement
+  candidates in one pending release bundle, and one card whose explicit human ruling (*"this card
+  does not close on that commit"*) the writeback reversed three hours later. This install measured 0
+  hijacks in 300 merged titles, which is **not immunity**: it was protected by a *convention* (one
+  card per PR, cited only when it closes it) that fails silently the first time someone cites a card
+  for context.
+  **THE RULE NOW — on a gated outcome a card moves via EITHER route, and both are live:**
+  **structural** — the PR merged into the INTEGRATION BRANCH (any base but `main`) **and** the head
+  ref NAMES that card (`card-4811-widget`); or **lexical** — a closing form in the TITLE
+  (`Closes card#4811` / `Fixes DL-239`, GitHub's own linking-keyword set).
+  *(Built in two steps inside this one release — #571 shipped the lexical route alone, #576 added
+  the structural term — and stated here as the NET rule because the lexical-only state never reached
+  a release. It was unsatisfiable by this shop's titles: measured against the shipped
+  `ClosureGrammar::closesCard()` on real merged-PR titles, **0 of 351** correlated merged PRs across
+  four repos closed anything, while an artificial `Closes card#7464` control passed. A gate nothing
+  satisfies does not protect a board, it freezes one QUIETLY — CI green, merge fine, card motionless.
+  Reach on the live convention: **0% → 93.2%**.)*
+  **⛔ RELEASE MERGES ARE NOT WIDENED.** Only the integration merge takes the structural route;
+  `merged_to_main` still requires a closing form. A release head is a disposable `release/vX` naming
+  no card, so making it a *condition* is what stops a future release convention that DID name a card
+  from silently acquiring a terminal-stage move. **`opened`, `closed_unmerged` and `started` are
+  UNGATED** (`PrOutcome::requiresClosure()` owns which, and why): `opened` is reversible and is what
+  stamps the card's PR refs so the reconciler can find the PR later, `closed_unmerged` is an abandon
+  disposition, and a branch ref cannot carry a closing verb, so gating `started` would make every
+  branch-create inert. Dependabot cards, the draft `block_reason` overlay and the release-promote
+  sweep are untouched.
+  **⛔ A BARE MENTION IS A NO-OP, NEVER A DEMOTION, and that is the load-bearing half.** The
+  writeback re-classifies in-window PRs on **every** pass (redeliveries, `bridge:replay`, scheduled
+  `bridge:reconcile`), so a rule that returned an *earlier* stage would not gently correct the
+  mistaken cards — it would **mass-demote every already-correct card on the first run**, because
+  every historical PR is a bare mention under the new grammar. Withholding the move leaves every
+  existing stage exactly where it is. **Nothing to backfill; the migration is free.**
+  **⚠ UPGRADING — check your BRANCH NAMES, not just your PR-title habit.** The branch must name a
+  card **token**, not merely carry its digits: `card-4811-…`, `card#4811-…`, `fix/card-4811-…` and
+  glued `card4811-…` close card 4811; the older **`fix/4811-widget`** spelling does **not**. That strictness is deliberate — the bare-id
+  test used elsewhere for *corroboration* tolerates an accidental match on the stated grounds that it
+  can never authorize anything, which is untrue of a gate onto a terminal stage. On this seat's
+  convention it costs about **1 merged PR in 59**, each one **loudly warned**, with the lexical route
+  still open. **On the lexical side two of GitHub's own rules bite:** the token must sit **flush**
+  against the verb (`Closes the regression card#4811 documents` closes nothing), and **one verb
+  closes one token** (`Closes card#1 and card#2` closes only card 1 — write `Closes card#1, closes
+  card#2`). Failure direction is safe: a forgotten closing form leaves a card UNDER-promoted (move
+  it by hand), never silently — the withheld move emits a `Log::warning` naming the card, the outcome
+  and the accepted forms **rendered from the grammar** (DL-239 discipline). ⚠ Cards that reached
+  Shipped **before** this ships stay eligible for the release-promote sweep — audit a large
+  historical Shipped backlog before enabling `promote_on_release`. **No config key, no migration, no
+  token-scope change**, and `ClosureGrammar` restates neither token pattern (it matches the verb
+  bridge and hands the remainder to `CardTokenGrammar`/`DlTokenGrammar::parseAnchored()`).
+  **⛔ The property the gate exists for is PRESERVED:** *no token that merely APPEARS may move a
+  stage.* Quoting someone else's card id does not rename your branch, so a foreign mention satisfies
+  neither route and the peer incident that filed this card is still refused; what the structural term
+  reads is branch IDENTITY plus the fact of a merge, never the slug's words. The **DL-218
+  foreign-mention guard is intact** — on the `card#` path the resolved DL is deliberately not passed
+  to the gate, so a `Closes DL-9` naming another card's work cannot authorize the `card#` that guard
+  just ruled authoritative. A `DL-NNN` closing form closes every card that DL resolved to (DL-148 is
+  one-to-many); a `card#` closing form closes only the card it names.
+  **`bridge:reconcile` applies the identical term over the identical two fields**
+  (`GitHubReadClient::getPull()` now projects `head_ref` beside `title`) — a term on one path and not
+  the other means the backstop and the event path disagree about which merges close a card, and
+  `--fix` runs on a schedule. The term lives on `PrOutcome::mergeClosesCard()`; neither path spells
+  it. **Operator surfaces stopped saying the title is the only route:** `bridge:check`'s per-mapping
+  line and the withheld-merge warning both render `PrOutcome::describeClosure()`, and the warning
+  **names the head ref it read** — a line quoting only the title sends you to rewrite prose when the
+  answer is that your branch is called `fix/streaming-timeout`. `bridge:check` additionally **reports
+  the `identity_id` your config declares**, named as the echo-suppression key it primarily is, with
+  the instruction to mint that token as its own kanban user; ⛔ it **reports, it does not certify** —
+  it prints a CONFIGURED value without resolving the token against the API, so a green run must not
+  be read as "writer separation verified".
+  **⚠ Two residuals, recorded and NOT fixed:** a card tracked by several PRs promotes at its
+  **first** merged one, and a human's *"this card does not close on that commit"* ruling is
+  **overridden** if the card's own work PR then merges. Shared root: **the gate can read intent, it
+  cannot read authority.** The durable fix is card-side (a hold marker the writeback refuses to move
+  past) and belongs on the board, not in this classifier.
+
+- **card#7325 (DL-304)** — **both live probes now name WHICH spelling the answering install
+  gave its scope header under, so the version-skew fallback's removal condition is a state an
+  operator reads instead of a sentence someone re-reasons.** The fallback that lets
+  `bridge:check --probe-tools` / `--probe-tools-ssh` read a pre-DL-302 responder's header off the
+  old `board_id` key carried its own deletion instruction in a docblock — *"drop the fallback once
+  no supported install can answer a probe without `configured_board_id`"* — with **no owner and no
+  trigger anyone watches**, which is how a conditional deletion becomes permanent. It is also the
+  one place a **row-derived** `board_id` is still accepted as an **identity** header: on a
+  DL-302-or-later responder that key carries where the returned rows are, so the reading is right
+  for an old install and would be a conflation for a new one. **The behaviour is unchanged and the
+  fallback stays** — what changes is that it is no longer silent. Every ok line and every
+  `IDENTITY MISMATCH` tail from both probes now ends with the provenance: *Header spelling:
+  `configured_board_id`* (current responder), *⚠ Header spelling: LEGACY … the legacy `board_id`
+  spelling* (the header answered under the old key — most likely a pre-DL-302 responder, with the
+  conflation and the card that owns dropping the tolerance named), or *Header spelling: NEITHER*
+  (no header under either key). **And a mismatch tail's CAUSE now follows that same reading**: a
+  responder that identified itself as a DIFFERENT agent sends you at the bearer / pinned key, while
+  one that echoed no identity at all sends you at the ROUTE — a wrong vhost, a relay, or any JSON
+  service answering `{ok:true,result:{}}` — because that state says nothing about your credential.
+  Previously both were offered as one parenthetical guess. `BoardToolsScopeHeader` becomes a value
+  object read ONCE per response so the value and its provenance cannot disagree, and the operator
+  sentence lives on the new `ScopeHeaderSpelling` rather than being written twice.
+  **The version compare the condition was originally phrased as cannot be run:** the board-tools
+  envelope is `{ok, tool, result}` and carries no version, and a version field added now would be
+  absent on exactly the responders the question is about — so the probe measures the predicate that
+  compare was a proxy for, on the round trip it already makes. `docs/board-tools.md` § *Which
+  spelling the probe read* states the derivation; the fallback's unreachability from THIS repo
+  (`board_my_cards` emits `configured_board_id` in its base result literal, on no condition) stops
+  being a claim about the code and becomes a test over every arm of the response.
+  **No accept/reject change: no severity moves, no exit code moves** — a skewed responder still
+  passes. DL-302 ships in THIS release, so at the moment the line appears every install in the
+  field predates it; a `warn` there would paint the commonest and entirely healthy state yellow,
+  and spending the signal that way is how an operator learns to skip it.
+
+- **card#7300 (DL-303)** — **⚠ the test suite no longer makes real outbound HTTP calls: an
+  unstubbed request now raises `StrayRequestException` naming the URL instead of going to the
+  network.** `Http::fake()` never blocked a request no stub answered — `buildStubHandler()` falls
+  through to the **live** handler, and the URL-pattern array form (the majority form in this suite)
+  is exactly the one that lets a request slip past. Nothing called `Http::preventStrayRequests()`;
+  `tests/TestCase.php` does now, for the whole suite. **Test-and-docs only: no shipped code, no
+  config key, no migration, and nothing about what the bridge accepts, refuses, writes or retries
+  moves.** Operators see no behaviour change; the entry is here because what CI proves about a
+  release changed.
+  **The blast radius was DERIVED, not estimated** — the guard switched on, the throw site
+  instrumented, the full suite run: **57 stray requests across 53 test legs in 5 classes**, every one
+  fixed by stubbing the call and, where the call is the point of the test, asserting it on the wire.
+  ⛔ **Only 2 of those 57 reached a red test.** `StrayRequestException` is re-thrown ahead of the
+  `ConnectionException` wrapping, so a caller that degrades softly on `catch (Throwable)` swallows it
+  exactly as it swallowed the connection error — which is why the refusal is PAIRED with a recorder:
+  a global Guzzle middleware outside the stub handler records the refused URL and re-throws it
+  unchanged, and `tearDown()` then fails the test naming every refused URL it did not declare. So a
+  stub is load-bearing whether or not an assertion witnesses it. The standing rule is not replaced:
+  only `Http::assertSent` says the stub that answered was the RIGHT one. Neither mechanism can see a
+  test registering a catch-all (`Http::fake()` with no arguments, or `'*'`) — a different class, not
+  fixed here.
+  **The worst instance was not the fixture host.** `InstallGuardTest`'s crosstalk leg read
+  `bridge.config_dir` from the `BRIDGE_DIR` a deployed checkout's own `.env` sets — `phpunit.xml`
+  overrides neither — so on an operator host it ran `bridge:check` against the REAL install and made
+  four token-bearing requests to that install's live board and to `api.github.com` on every suite
+  run, while on CI the same test reached a non-existent directory and exercised none of it. Same
+  test, two subjects, decided by the host. It is hermetic now — **and the primitive is fixed rather
+  than the sixth call site**: `Tests\TestCase` defaults `bridge.config_dir` / `bridge.secret_dir` to
+  a path that does not exist, so every host gets the shape CI already had and the next
+  artisan-invoking class cannot re-mint the leak. **That default closes more than the HTTP half**:
+  `BridgePaths::stateDir()` falls back to `<config_dir>/state`, so on a deployed checkout the suite's
+  default STATE dir was the operator install's real one — the directory holding its live
+  `inbox.jsonl`. Recorded as a hazard closed, not a write observed: instrumenting every state-write
+  primitive across the suite logs **173 calls, none through the default**.
+  **The report is made inside a `finally`**, so `parent::tearDown()` — and `RefreshDatabase`'s
+  rollback — runs even when a guard fails. Without it a single reported stray skipped the rollback
+  and left an open transaction on a statically-cached connection: measured on a one-stub mutant, the
+  same class returned 1 failure plus **158 errors** (`cannot start a transaction within a
+  transaction`) with 451 of its 527 assertions never executed. An `expectStrayRequest()` declaration
+  also EXPIRES: a declaration no refusal matched fails its own test, so the one exemption the guard
+  has cannot rot into a live blanket.
+  **ONE url is allowed to stay stray**, `http://localhost/` inside `ChannelPushUdsTest`, whose
+  subject IS the live curl/Guzzle Unix-domain-socket transport and whose destination is a socket the
+  test binds and deletes itself. Scoped to that url, not to the class: a per-class opt-out would
+  re-mint the defect with a note attached. `tests/Feature/Support/StrayRequestGuardTest.php` is the
+  guard's own witness — delete the call in `Tests\TestCase` and it reds, naming the live
+  `cURL error 6` the suite used to emit.
+
+- **card#7225 (DL-299)** — **⚠ `board_create_card`'s `board_id` / `swimlane_id` now say WHERE THE CARD
+  IS, read back from the card, instead of echoing the board and lane the calling agent is configured
+  to write to.** Both arms returned `$cfg` values on keys a calling agent consumes as a reading of
+  its card: `createCard()` hands back an id and nothing else, so a create never read its own result,
+  and the idempotency-hit arm answered for a card resolved out of a tag SEARCH — a card it had not
+  created and had not re-checked. ⇒ **The response was silently correct until the moment it
+  mattered**, because the two readings differ only when something has already gone wrong. Ranked
+  above the same shape's log-line siblings (still open on card#7225) for the reason the operator
+  gave: a log line is read by someone already hunting a problem; a tool response is consumed as
+  fact. **⚠ FOR A CALLER — the two keys can now disagree with your config, and there is a third:**
+  `placement_observed` is `true` when the ids are that card's own values (in which case
+  `swimlane_id: null` genuinely means *no lane* — a *present* null; a body that omits the
+  `swimlane_id` key is not a lane-less card and is not reported as one), and `false` when the
+  read-back failed or answered nothing usable on either axis — then
+  **both ids are null and the response claims no placement at all**. It never falls back to the
+  configured board/lane; that fallback IS the defect. `created` / `idempotent_hit` / `card_id` are
+  untouched, so a read-back failure is not an error response — the card exists and its id is still
+  the answer. **And a fourth and fifth key:** `configured_board_id` / `configured_swimlane_id` carry
+  what the two old keys used to hold — the scope this agent is configured to write to — on BOTH arms
+  and regardless of `placement_observed`, so *where the card is* and *where we were aiming* are two
+  readable values rather than one ambiguous one, and a caller whose read-back failed can still see
+  its own scope (it has no other channel to it) — the pairing the writeback record has carried since
+  card#7212. ⛔ **One flag for the pair here, one PER AXIS on the matching `board_my_cards`
+  correction (card#7295 / DL-302, a separate change)** — deliberate, not an inconsistency: this tool
+  derives both axes from a single read-back of a single card, so they are observed or unobserved
+  together, while `board_my_cards` reads two independent row sets. A flag exists per unit that can
+  independently fail to be read. **Cost: one extra `GET /tasks/{id}.json` per SUCCESSFUL call** (nothing on any refusal
+  path), taken on the card the tool is about to name — after the duplicate collapse, so a survivor
+  another worker minted reports its own placement. ⚠ **One request, but not a small one:** that
+  endpoint is kanban's full task aggregate — subtasks, comments, attachments, both link directions
+  (each with the linked card's board), external references, the last stage-move changelog and a
+  link-projector pass — eager-loaded to obtain two integers, and on the idempotency-hit arm the card
+  can be old and comment-heavy. A placement disagreeing with the configured scope
+  is a `Log::warning` naming both pairs; the tool still answers 200 with what it saw. **What a
+  divergence should make the tool DO (refuse? alert?) is deliberately NOT decided here** — that
+  changes what the surface accepts and is its own gate.
+
+- **card#7212 (rt#327 R4)** — **a successful writeback now records the board it LANDED on, not only
+  the board it AIMED at.** The success path logged `$mapping->boardId` — the operator's configured
+  board, straight from `writeback.json` — while only the REFUSAL path (`MappedBoardGuard::refuses()`)
+  logged the card's own `board_id`. ⇒ **A write that landed on an out-of-mapping card was
+  byte-identical in the log to a correct one.** Retention is 14 days and no audit table records a
+  card or board id, so *"has a cross-board write ever landed here?"* was not merely unanswered but
+  **unanswerable** — and it is the blocking reason card#7211's Group-B write sites cannot have their
+  blast radius measured retrospectively. ⭐ **Generalised: any check whose evidence is emitted only
+  on the refusal path can answer "did we ever stop it?" — never "did this ever happen?". An absence
+  of record is not a record of absence.** Every writeback write to a card whose id was **resolved
+  from kanban**, in a writeback **handler** or in a shared writeback **write primitive**, now carries
+  the same pair the refusal arm emits, from the same rendering (`MappedBoardGuard::boardContext()` —
+  canon #5: the primitive already owned it, the success arm now uses it rather than growing a second
+  copy): **`card_board`** (the card's own `board_id`, verbatim) beside **`mapped_board`**. **11
+  sites**: `kanban_move_card`'s `moved` / `stamped correlation refs` / `recorded a correlation note`;
+  `kanban_block_reason`'s set+clear; the three `kanban_coord_card_move` legs (terminal / revived /
+  re-laned); both `kanban_dependabot_card` arms (archive + move); `kanban_promote_released`'s
+  promote; and the shared `CardCollapse` duplicate-archive both create-capable handlers delegate to.
+  **⛔ ONE RULE, not a case-by-case call** — the pair records where a write LANDED, so it goes on
+  every record reporting the outcome of a write kanban **ACCEPTED** (2xx), including the two
+  `archive returned 200 but the card is not archived` `Log::error`s: an accepted archive whose effect
+  did not take still REACHED that card, and a 200-not-archived on a foreign card is exactly the
+  cross-board touch the record exists to expose. A **4xx** arm is the other side of the line — kanban
+  rejected the request, nothing landed on any board — so every write-refusal arm is deliberately
+  unchanged and names no `card_board`: `kanban_move_card`'s `kanban refused the move (4xx)` keeps its
+  pre-existing config-sourced `board` key, and the `blockreason` / `stamp` / `cardnote` /
+  `promote_movecard` arms keep logging no board at all. **⚠ LOG-SHAPE CHANGE, not a behaviour change:** nothing about what
+  the bridge accepts, refuses, writes or retries moves — but the single `board` key on
+  `kanban_move_card: moved` and `kanban_block_reason: <action>` is **replaced** by the pair
+  (`mapped_board` carries the identical value under the name the refusal arm already uses), so a log
+  consumer grepping `"board":` on those two lines must move to `"mapped_board":`. Those are the only
+  two replacements; the other **nine** sites recorded **no board at all** and are purely additive.
+  **Three stated bounds:** `card_board` is the card's RAW value, deliberately not normalised through
+  the guard's predicate — the accepted set is an interval (DL-292) and the compare the Group-B arms
+  gained at DL-298 accepts that whole interval, so normalising would render a value no gate on either
+  path ever computed; a
+  **CREATE** keeps its lone `board` key, because there is no resolved card to read a board from (the
+  create response returns an id); and the collapse primitive's mapping is **nullable**, because its
+  board-tools caller (`BoardCreateCardTool`) is outside the DL-009 mapped-board regime entirely —
+  there its archives record no pair. Every caller inside the regime hands the collapse real rows —
+  DL-298 converted the coord-card tag arm to the row-returning `cardRowsByTag` twin and its by-ref arm
+  to a per-card read for the same re-check — so `card_board` is the row's own value there; a caller
+  that ever handed in ids with no rows behind them would record `card_board: null` rather than falling
+  back to the mapped board.
+  **Scope held deliberately**: whether a DURABLE record beyond a 14-day log line is warranted for
+  cross-tenant writes is a retention decision and is NOT smuggled in here. Each divergence leg was
+  **seen to fail** against a mutant rendering `mapped_board` into both slots — today's defect wearing
+  the new field's name — and `WritebackSuccessBoardRecordTest` re-derives the kanban-write population
+  every run on **all three** of its axes (the file glob over `app/Bridge/Handlers/Kanban*Handler.php`
+  **and** `app/Bridge/Writeback/`; the write VERBS, read out of `KanbanClient` as every method whose
+  body issues `->patch(`/`->post(`/`->delete(`; and the RECEIVERS, matched on `->verb(` for any
+  receiver but `$this->`), so the N+1th write site reds rather than re-minting the gap — reproduced
+  on all three: a new client write verb, an aliased-local receiver, and a write in a shared primitive
+  each red the census, and the last of those is how `CardCollapse` was found still recording nothing.
+
+- **card#7222 (DL-297)** — **`board_create_card` now REFUSES an `idempotency_key` whose card was
+  ARCHIVED, instead of minting a second card over the retire.** ⚠ **This changes what the tool
+  accepts.** The correlate-before-create probe read `tasks/search.json` with no `archived`
+  parameter, and kanban's search applies `whereNull('archived_at')` unless one is passed — so a key
+  whose card had been retired read as un-carded. Demonstrated before it was fixed: with card 77
+  archived under the key, one call returned **200, a second card (88), `"created": true`**, and
+  never read the archive side at all. The probe now reads the archive side too, on the last branch
+  before the create, and an archived twin suppresses it: **422, no card created**, the message
+  naming the ids to unarchive. **What changes for a caller, in full:** the archived-twin board
+  state, and nothing else on the board axis. A LIVE twin is still an idempotent hit — including a
+  live twin sitting beside an archived one, since the live read answers first and the archive side
+  is never consulted; a key
+  with no card on either side still creates, at the cost of one extra search per card actually
+  minted; a call with no `idempotency_key` is byte-identical. If the archive-side read itself errors
+  upstream the call is **502 with nothing created** — fail-closed, because the alternative re-mints
+  over a retire. **The caller's remedies are in the refusal:** unarchive that card if the work is
+  live again, or pass a NEW `idempotency_key` if this is genuinely new work. Handing the archived
+  card back as `"idempotent_hit": true` was the other candidate and was **rejected** — it returns a
+  retired card as a success, one the same agent's own `board_my_cards` window (live-only, correctly)
+  does not show. **The consumer's `coord:reroute-archived` carve-out is deliberately NOT carried
+  over from DL-296:** that exemption exists because the consumer's reconcile is a second mover that
+  re-creates the exempted thread, making a refusal one the other mover undoes; nothing reconciles a
+  tool-minted card, so the refusal here is durable and its remedy accurate. This is the second of
+  the four create-deciding members on card#7222's class item. The reference channel server's
+  snapshot goes **0.9.5 → 0.9.6** for the `idempotency_key` tool description, which carried the now
+  false *"re-using a key whose card was ARCHIVED creates a second card"* (DL-038); no behavior
+  change in the server.
+
+- **card#7169 (DL-296)** — **an ARCHIVED coord card is a RETIRE the real-time create leg now
+  honours, instead of minting a second card over it.** `KanbanClient::cardsByTag()` sends no
+  `archived` parameter and kanban's search applies `whereNull('archived_at')` unless one is passed,
+  so the create leg's tag pre-check **structurally could not see an archived card**: a thread whose
+  only card had been retired read as un-carded, and since `issues.reopened` is on the create path,
+  every reopen minted a duplicate. **Reproduced on a live board before any code was written** —
+  card archived, the reopen replayed through the real classifier and handler against the real API,
+  a second card observed on the board. **⚠ This changes what the bridge accepts:** a reopen that
+  creates today stops creating when the thread's only card is archived, and the refusal now
+  **signals** (`coord_card_archived_twin`, log + alert push naming the archived card ids) rather
+  than passing in silence — the remedy is to unarchive that card. Operator-approved before any
+  code. **The consumer's fork is inherited, not collapsed:** a card the reclass pass archived
+  because its source re-routed away carries `coord:reroute-archived` and does **NOT** suppress — a
+  source that routes back is carded again — while a hand-retired card does. The exemption is per
+  **thread**, matching the granularity the consumer subtracts at (sets of stable-ids, not cards),
+  so a mixed archived set — one reroute-tagged twin beside a hand-retired one — is carded again on
+  both sides. Refusing on *"any archived card exists"* was rejected explicitly: it would
+  silently stop carding legitimately-reopened work. Kanban's `archived` is a **switch**, not a
+  widening (`archived=1` returns archived ONLY), so this is a second read on the last branch before
+  the create — no existing read changes, no caller of `cardsByTag` sees a new row, and a delivery
+  that skips pays nothing. **Stated gap:** the non-prefixed (`issue_population: all`) path has no
+  tag and kanban's `by-ref.json` takes no `archived` parameter, so a retired by-ref card is still
+  re-created; pinned by a test and tracked on card#7169. **The SIBLING CLASS is filed, not asserted
+  away (card#7222):** a live-only correlation read answering *"no card"* for an archived one is a
+  shape with four create-deciding members, and DL-296 closes one. Two stay OPEN with dispositions
+  on that card — `board_create_card`'s `idem:` pre-check (re-using a key whose card was archived
+  mints a SECOND card and answers `"created": true`; **`docs/board-tools.md` and the MCP tool
+  description now carry that bound, the code is unchanged**, because both candidate fixes change
+  what the tool accepts) **[DL-297 correction, same release: that member is now FIXED — the probe
+  reads the archive side and REFUSES; read this clause as the state DL-296 shipped in, and the
+  DL-297 entry above for what the tool does now]** and the dependabot leg (it archives its own card
+  on `closed_unmerged`, `reopened` collapses to `opened`, and by-ref excludes archived rows, so a
+  reopened dependabot PR
+  re-creates over the bridge's own retire — possibly intended, but unrecorded either way). The
+  reference channel server's snapshot goes **0.9.4 → 0.9.5** for that one-line description fix
+  (DL-038); no behavior change in the server.
+
+- **card#7126 (DL-294)** — **`coord_card_lane_stage_ids` is now accepted with `move_coord_cards`
+  alone, not only with `create_coord_cards`.** The load refused any mapping that set a lane map
+  without the create leg, on the stated ground that *"the revive and relane legs only re-place an
+  already-placed card"* — **which card#6393 falsified**: both legs resolve their destination through
+  the same `CoordCardLanePlacement` primitive the create leg uses, and both reach cards this mapping
+  never created (all three correlate by the `id:<sid>` tag the consumer's reconcile writes too). So
+  the documented **move-on / create-off** shape — cards created by the reconcile, moved by the
+  bridge — could not configure a lane model at all, and its only route to a lane-aware revive was
+  enabling `create_coord_cards`, which changes **which mover creates cards** on that install and
+  races the reconcile. The predicate is now `create_coord_cards || move_coord_cards`, mirroring how
+  `coord_card_stage_id` is already required by either family, and the guard's message states what is
+  actually true. **⚠ This widens what `writeback.json` accepts** — a config that failed closed at
+  load now loads and starts placing cards in lanes; **operator-approved**. Nothing else in the guard
+  moves, and a lane map with **neither** family still fails closed (including an explicit
+  `move_coord_cards: false` with a terminal set, where DL-204 would otherwise default the leg on).
+  On such an install a reopened `[TASK]` now revives to the lane its `stage:*` label declares instead
+  of to the fixed `coord_card_stage_id`. Two further operator-visible strings that still framed the
+  lane ids as the create leg's are corrected in the same pass — the shape guard's remediation tail
+  (*"omit the key to disable the lane-derived stages"*) and the `bridge:check` bullet in
+  `docs/writeback.md`, which named the create alone as the blast radius of a typo'd **lane** id
+  where card#6393 made it three writes. Text only; no predicate moves.
+- **card#7124 (DL-293)** — **a `writeback.json` mapping key now names a REPO, not a spelling.**
+  `WritebackConfig::mappingFor()` was a raw array-key lookup with neither side canonicalized, so a
+  mapping keyed `pupfuzz/kanban-board` against a payload spelling `PupFuzz/kanban-board` matched
+  **nothing, silently, forever** — every one of the 12 call sites reads "no mapping" as "this repo
+  is not tracked" and returns (six handlers on a `Log::info` nobody reads, six classifier sites
+  with no log at all), so a misconfigured install and a deliberately untracked repo produced
+  identical output: no error, no alert, no `bridge:check` finding, no card
+  moved. GitHub `owner/repo` is case-insensitive; the lookup now canonicalizes both sides through
+  the same vendored `ExternalReferenceNormalizer` the writeback already used for this exact
+  question one file over. **⚠ This widens what the writeback accepts** — a mapping that matched
+  nothing starts matching, and starts moving cards. **The key's spelling is KEPT**: it is what
+  `bridge:reconcile` resolves a per-repo token with (`[git-credential-map]` is case-SENSITIVE,
+  DL-185, re-verified against the installed helper) and what every operator-facing line prints
+  back. **⛔ The order was the whole risk:** on the reference fleet all 4 live mapping keys AND
+  every payload are non-canonical in the same way, so canonicalizing only the lookup would have
+  killed writeback on three production repos at once, through that same silent path — the
+  regression leg that catches it (keys spelled exactly as the live ones, and they must STILL
+  resolve) reds against precisely that mutant.
+- **card#7124 (DL-293)** — **two mapping keys naming ONE repo now fail the config CLOSED at load**,
+  naming both spellings and the repo they collide on. They were two mappings before the canonical
+  index and can only be one after it; keeping the last silently is how a board gets written by the
+  wrong mapping. A **blank** key fails closed the same way — it can match no payload repo, so it
+  is a dead mapping, which is the silent misconfiguration this change exists to end.
+- **card#7124 (DL-293)** — **`bridge:check` gains a `SPELLING SPLIT` warn, and it is the reason the
+  line above is safe.** The writeback now matches a repo by identity; **the DISPATCHER does not** —
+  `SubscriptionRegistry::subscribedTo` still compares an agent's `scope_id` to the delivery's scope
+  by EXACT spelling, and widening it is a separate, hard-gated change. So on an install whose agent
+  YAML and `writeback.json` spell one repo two ways, **every GitHub delivery is dispatched to
+  nobody** — no log, no finding, no alert — and canonicalizing the check's compare without this
+  leg would have turned that install's (wrongly-reasoned) ORPHANED warn into **silence and exit 0**.
+  The new warn names **both** spellings and the mechanism, which is strictly more than either state
+  it replaces. Config-surface warn only; nothing about what the receiver accepts.
+- **card#7124 (DL-293)** — **the promote leg and the dependabot `id:` tag now use the CONFIGURED
+  repo spelling.** `KanbanPromoteReleasedHandler` fed the payload spelling to the case-SENSITIVE
+  credential store (DL-185), and `KanbanDependabotCardHandler` rendered `{repo}` into a persisted
+  provenance tag from it. Both were safe **by construction** until this change — reaching them
+  required a byte-for-byte mapping match — so widening the match without re-keying them would have
+  left `bridge:check` and the runtime probing different credentials.
+- **card#7124 (DL-293)** — **`bridge:check` stops calling a working mapping ORPHANED.** The three
+  github scope maps (`writebackEmittingScopes` / `coordCardMoveScopes` / `coordCardRelaneScopes`)
+  are keyed by an agent YAML's `scope_id` and read with a `writeback.json` mapping key — the same
+  repo-identity compare, and once the writeback matches by identity a case-differing pair yields a
+  live writeback the check accuses of being inert. One primitive (`CheckContext::canonicalScope()`)
+  now owns that key form for both the build and its readers, and `AgentScopeCoverage` compares
+  canonically too, while the spelling it RECORDS stays raw — that one is rendered verbatim in the
+  `--format=json` document (DL-249), which is untouched.
+- **card#7124 (DL-293)** — **`bridge:reconcile --repo` matches case-insensitively**, then re-keys
+  to the configured spelling for the per-repo token probe. Typing the spelling GitHub accepts used
+  to report "is not a writeback.json mapping" for a repo that was mapped.
+- **card#7133** — **`kanban_coord_card_move`'s belongs-to-mapped-board refusal now ALERTS** instead of
+  writing an untagged `Log::info`. It is the third copy of the DL-009 tag-collision guard, and the only
+  one that did not signal: the `kanban_move_card` twin has pushed `card_not_on_mapped_board` since the
+  alert channel existed (FR-4), and the `kanban_block_reason` twin joined it at DL-285 — the sweep that
+  gave this handler its notifier and routed its other arms, but read only the `Log::warning` sites and
+  so never saw this one. **[card#7138 correction: the present-tense "It is the third copy" was true when this landed
+  and is false as it ships — there are now NO copies. DL-292, below in this same section, hoists the
+  compare and the report into one `MappedBoardGuard` that all three arms call. Read this sentence as
+  the state card#7133 found and fixed, not as the state being released.]** The refusal itself is unchanged and correct — **the predicate is untouched**,
+  nothing moves — but on this path a cross-board write that
+  *succeeds* emits no event either, so this arm is the only surface that can tell an operator the
+  collision is occurring at all; as an info line with no reason code it was indistinguishable from the
+  handler never having been invoked. **[card#7138 correction: "the predicate is untouched" is an
+  accurate claim about THIS change and must not be read as a standing one — DL-292 below changes the
+  predicate on the two twin arms, deliberately and under the same gate. This entry raised reporting
+  only; that one moves the compare.]** Same reason string as the twins, kept off their dedup markers by
+  the synthetic `coord_card_move` outcome, and carrying `card_board` + `mapped_board` so all three
+  refusals read as one class. **What that buys, stated rather than implied:** the alert dedups on
+  `(repo, outcome, reason)` like every other, so the operator is woken on the FIRST cross-board
+  collision on a repo and every later one is log-only until the marker is cleared — this converts
+  *silent* into *told once*, not into *told each time*. The per-card, per-delivery `Log::warning`
+  is where the rest are enumerated (`docs/writeback.md` carries the bound). **Cheap now, and deliberately landed before it is not:** the repo carries
+  no configured *value* for `coord_card_terminal_stage_id` — a mapping lives in the install's own
+  `writeback.json`, outside version control — so this says nothing about any particular install, but
+  the leg is unexercised wherever `move_coord_cards` has not been turned on, and turning it on is what
+  makes the refusal reachable in anger.
+- **Why `WritebackRefusalSignalCoverageTest` was green over that gap, recorded rather than assumed
+  closed:** its population is the `Log::warning`/`Log::error` call sites, so the exclusion of
+  `Log::info` is by LEVEL, not by kind — a refusal written at info level is invisible to it. The guard
+  is unchanged (widening it to `Log::info` would sweep in every "not tracked" and success line); the
+  bound is now stated in its docblock and in `docs/writeback.md` so a green run is not read as "no
+  refusal is silent". **[card#7138 correction: the guard is no longer unchanged — DL-292 (below,
+  under *Changed*) adds a second, level-independent leg that closes this one refusal KIND
+  structurally. The reasoning above stands: the fix was NOT to widen the population by level. The
+  `Log::info` bound itself still holds for every other refusal kind.]**
+- **card#6393 (DL-290)** — **the `move_coord_cards` REVIVE arm is lane-aware.** A reopened `[TASK]`'s
+  card returns to the lane its `stage:*` label declares instead of to the fixed
+  `coord_card_stage_id`, which used to re-impose that stage — and its label — on every reopen (the
+  sibling DL-286's audit named and deferred, because the move family's target payload carried no
+  title and no labels to derive from; it now carries both, as the create family already did).
+  **Default-ON, but only for the population that already has BOTH `move_coord_cards` and
+  `coord_card_lane_stage_ids` live; byte-identical for every install with no lane map.**
+- **One shared `CoordCardLanePlacement` primitive now answers "which stage does this coord card
+  belong in" for all three writes** (create, revive, relane), extracted behaviour-preserving from
+  `KanbanCoordCardHandler::createStage()`. Three near-identical derivations of one rule is how the
+  three movers come to disagree about where a `[TASK]` belongs. The unmapped-lane `Log::warning`
+  deliberately stays at each handler CALL SITE and is **not** hoisted into the primitive:
+  `WritebackRefusalSignalCoverageTest` holds set-equality over the bare log calls in
+  `app/Bridge/Handlers/Kanban*Handler.php`, and a diagnostic moved into `app/Bridge/Writeback/`
+  would leave that guard reporting clean over a population it no longer covers.
+- **The relane leg cannot become a third mover, and the third gate is the one that matters.** It
+  refuses unless (1) the answer is lane-DERIVED, (2) the card is currently in a mapped lane — so a
+  card advanced to a working column, or parked in the terminal by a close, is never yanked back —
+  and (3) the card's current stage is **service-set** (`last_stage_move.actor_type === "service"`,
+  the same allow-list the revive arm already carried, not a parallel gate). Without (3) a label
+  would override a human's deliberate board re-lane, which is this card's own defect pointing the
+  other way.
+
+- **card#6025** — **`bin/check-doc-refs.php` resolves the MEMBER of a `Class::member` citation, over
+  every source rules 2 and 3 already read.** **⚠ THIS CHANGES WHAT CI ACCEPTS** for a contributor;
+  nothing about an installed bridge (the only `app/` edits here are COMMENTS — no statement moves,
+  no migration, no `.env` change, no receiver accept/reject change, no exit-code change). Rule 1
+  STRIPPED the `::member` suffix before asking whether anything existed, so a citation's easy half
+  was checked and the half that names BEHAVIOUR was thrown away.
+  **What it does NOT close:** a bare `correlationRefs()` carries no class and no `::`, so it never
+  was a token this script reads and still is not — that instance is closed by correcting the
+  sentence, not by a gate, and the shape can recur tomorrow. Bare `func()` stays out of the token
+  set (the overwhelming majority here are external vocabulary or historical narration); the
+  population re-derives with the `grep` recipe in the script's own docblock.
+  **Three-valued, and it answers only where it can.** A member is a finding when the class file is
+  under `app/` **and** its whole ancestry is resolvable there and declares nothing by that name; an
+  ancestry that leaves `app/` is unverifiable by a filesystem scan and PASSES. Load-bearing for that
+  bound: an ancestor is qualified through the file's **import block** and matched as an FQCN, never
+  as a basename — resolving by basename lets any same-named neighbour answer for it, convicting
+  exactly where the design must say nothing. A bare class name resolves only when ONE construct in
+  the tree carries it. Two further bounds: the declaration search is delimited to the cited class's
+  own body, and the enum-synthesised `cases()`/`from()`/`tryFrom()` exemption needs a real `enum`
+  **declaration**. A citation carrying ARGUMENTS is read as the member it names (up to the first
+  `(`): re-derived over the seven docs the old surface read, the anchored form picks up **91**
+  backticked `::`-bearing tokens, **41** of them genuine citations naming a class under `app/` —
+  none a finding today, so this is coverage gained at no cry-wolf cost.
+  **Two structural exemptions, both measured:** the decision log's FILE-PATH prose stays exempt (the
+  path leg over it returns **25 findings and 0 defects**, and greening those would mean editing
+  frozen entries to suit a live rule), and an alternative an entry says it **rejected** is skipped
+  **sentence-scoped**, not line-scoped, because a decision-log entry is one enormous line whose
+  rejected alternatives sit beside the consequences that were built. A frozen entry discharges a
+  citation the tree no longer answers for by carrying a removed-marker in an ANNOTATION beside the
+  original sentence — never an edit to it.
+  **The marker vocabulary widened with the surface, because the surface is what made it wrong.** It
+  matched only a parenthesised *(removed in vX)* and had no word for a RENAME at all, so a release
+  note and a plan doc narrating a rename both red on correct prose the moment `docs/` came into
+  scope — a gate that punishes truthful writing is how a gate gets switched off. `removed` and
+  `renamed` now both discharge, both matched as WORDS: a `removedAt` column or a `renamedTo` key is
+  prose about a field, not a statement that the cited member is gone. **Measured cost:** **28**
+  citations move into the marker-skipped bucket — 19 that were resolving, 7 already exempt as
+  rejected alternatives, 1 naming a class not under `app/`, 1 unverifiable — and **0 that were
+  reported**, so the widening masks no finding.
+  **The run now discloses what it declined to answer.** Three populations used to `continue` in
+  silence beneath a closing line reading "all PHP references resolve" — the shape DL-251 / stage 10
+  removed from `bridge:check`. Every run prints a one-line unexamined tally, and **`--census`**
+  re-derives every bucket over the tree it is run on. **No census figure lives in the script's
+  comments any more:** the six that did were reproducible only by an instrumented variant, so no
+  later pass could move them. **Census at this commit** (`php bin/check-doc-refs.php --census`):
+  **1020** member citations — 645 resolved against a declaration, **0 reported**, 203 naming a class
+  not under `app/`, 0 ambiguous, 19 unverifiable ancestry, 139 marker-skipped, 14 rejected
+  alternatives, 0 depth-bound bails.
+  **The test harness no longer parks the script under test inside the tree it examines.** `bin/` is
+  in the member leg's surface, so the copy the harness ran was read by the leg it implements — a
+  defect reported in the wrong file, which is how a gate gets called flaky. The copy moves to a
+  `harness/` directory no rule scans.
+  **Evidence:** 18 vectors in `DocRefMemberLintTest`, every acceptance carrying a paired vector that
+  must be REJECTED (bar a `::class` citation, which names no member for a mutation to make phantom);
+  the file had shipped one acceptance without a twin that survived total removal of the member leg —
+  it measured the harness, not the rule. Eleven single-arm mutations of the shipped script, each
+  `php -l`-checked and restored between runs: the member leg disabled reds **18 of 18**, the surface
+  narrowed to the six current-state docs reds 6, the decision log dropped reds 4, the marker
+  vocabulary narrowed reds 2, plus one each for the rejected-alternative exemption, basename
+  ancestor resolution, an unscoped member search, `enum` matched as a word, the bare-`()` token
+  shape, substring marker matching, and the external-import ambiguity. Pristine and restored both
+  green, plus a real-surface plant of a phantom citation in three scanned surfaces.
+  **Neither pint nor phpstan covers `bin/`, so that test file and the script's own run are this
+  rule's only gates.**
+
+- **Release/CI documentation, and one inert release-config key removed.** No `app/`, no `bin/`, no
+  test, no behaviour — but `.release-pr.json` changes, so it is recorded here rather than left to a
+  release to discover. **`title_prefix` is dropped from [`.release-pr.json`](../.release-pr.json)**:
+  the shared `release-pr-body` generator deleted the key (agent-board-toolkit **card#7038**) because
+  it was read into a variable nothing interpolated — a knob declared to consumers while incapable of
+  changing any output, the observable proof being that every release PR title this repo has shipped
+  reads lowercase `release: vX.Y.Z` while the declared prefix said `Release`. It is now silently
+  ignored, so removing it changes nothing except what the file claims to configure.
+  **[`VERSIONING.md`](../VERSIONING.md) § Release flow gains the card-coverage obligation that move
+  left behind**: the generator emits its `## Card coverage` section **only when it could actually
+  measure**, so a body with **no** such section means the check **did not run** — not that it passed
+  — and the step now spells out the four states a body can carry plus the standing
+  `promote-released-cards --dry-run`-before-merge discipline.
+  **[`CLAUDE_GOTCHAS.md`](../CLAUDE_GOTCHAS.md) gains G-021**, on deriving this repo's pre-PR gate
+  set from `.github/workflows/` instead of a remembered list, with the four traps that make the
+  derivation non-obvious: a `paths:` filter reaching further than its workflow's name suggests (the
+  `bin/` python tests fire on `app/**`), one workflow running the suite twice so a local run
+  certifies the SQLite leg only, a piped `rc=$?` reading the wrong process and hiding a red, and a
+  fresh `git worktree` with no `.env` failing as `No application encryption key has been specified`.
+  It carries no list of the gates on purpose — that list is a cache of `.github/workflows/` and
+  drifts identically, the class agent-board-toolkit **card#7122** tracks.
+- **card#7138 (DL-292)** — **the belongs-to-mapped-board security guard (DL-009) is ONE primitive
+  owning the compare AND its refusal report, and the canonical predicate is the `is_numeric` +
+  `(int)` form.** It was written out three times, in three non-equivalent spellings, across
+  `kanban_move_card`, `kanban_block_reason` and `kanban_coord_card_move` — one behaviour, three
+  implementations, so a change to the rule had to land three times and correctly each time. It
+  demonstrably did not: card#7133 found the same guard carrying two different report severities.
+  `MappedBoardGuard::refuses()` now runs the predicate and emits the `warnAndNotify` itself; the
+  three call sites are one line each. Hoisting only the predicate would have left the severity half
+  of the class exactly where it was.
+  - **⚠ UPGRADING — this WIDENS what `kanban_move_card` and `kanban_block_reason` accept. It is a
+    behaviour change to a security guard, gated and approved as one, not a refactor.** Both twins
+    compared with `!==` against a `readonly int`, which does no type juggling, so they refused **any**
+    non-int `board_id` — including the numeric string `"8"` and the JSON float `8.0`, which name the
+    very board that is mapped. That is a **false refusal**: a legitimate move silently no-ops and a
+    `card_not_on_mapped_board` alert wakes the operator over correct work. The coord copy's refusal set
+    was already a strict SUBSET of the twins' — **the most permissive of the three, and the most
+    correct** — and is now the shared one. The accepted set only grows: everything those arms accepted
+    before is still accepted, and `"8abc"` (which `(int)` would coerce onto the mapped id) is still
+    refused by the `is_numeric` leg, now load-bearing on all three arms instead of one.
+  - **The widened set is an INTERVAL, stated plainly rather than by example, because `(int)`
+    TRUNCATES.** For a mapped board of 8 the guard accepts every numeric spelling of a value in
+    `[8, 9)` — so `"8"`, `8.0`, `"08"`, `" 8"` and also `8.9` and `"8.0000001"`; `7.9` (→ `7`) is
+    refused, so truncation can only reach the mapped board from above. There is no form of
+    `is_numeric` + `(int)` that takes `"8"` and refuses `8.9`, so this is inherent to the approved
+    predicate rather than a second decision, and it is **ruled deliberate and left as-is** — a
+    lossless compare would be another behaviour change to the same guard to refuse a value no
+    install emits, and no new reason code is added for a case that is a kanban contract change
+    rather than a tenancy event. **Nothing changes in practice on a current install:** kanban
+    returns `board_id` as a JSON integer today — verified live against a board-8 card — so the
+    widened set is reachable only if that stops being true. `docs/writeback.md` states the accepted
+    set per value; DL-292 carries the full vector table.
+  - **⭐ The finding that outranks the fix: `WritebackRefusalSignalCoverageTest` is re-pointed at the
+    primitive, closing the class by KIND rather than by log level.** That guard exists to catch a
+    refusal that does not alert, and it was **green over card#7133's defect for the defect's entire
+    life** — its population is the `Log::warning`/`Log::error` sites, so a security refusal written at
+    `Log::info` sat structurally outside it. Widening it by level is not the fix (`Log::info` is also
+    ~34 not-tracked, success and policy lines; the signal would drown). A second, level-independent
+    leg instead re-derives every non-comment line in the handler glob naming the card field
+    `board_id` or the reason `card_not_on_mapped_board` and requires that set to be **empty** — a
+    membership decision cannot be written without reading the card's board. A fourth copy reds at any
+    log level, or at none. Proven by firing it: a copy planted in a handler at `Log::info` reds the new
+    leg while the level-keyed leg stays green, which is the original defect reproduced and caught. The
+    empty expectation is a measurement, not a decoration: a scanner control pins that it finds a
+    planted site, and a positive assertion pins that the primitive still holds the rule, so a deleted
+    guard cannot read as a clean repo. **It closes exactly one refusal kind** — every other kind is
+    still covered only by the level-keyed leg and its stated bound.
+
+### Fixed
+
+- **card#7511** — `changelog-gate`'s size-limit remediation offered an accept-and-proceed path that does not exist: the exit-4 arm is an unconditional `exit 1`, so re-running without trimming returns 4 again. The string now states the only real remedy and cites the tracked class.
+
+- **card#7473 + card#7496** — **⚠ `check-doc-refs`'s remainder accounting excluded three citation
+  forms without disclosing them, so a reader auditing the gate's own numbers was told the population
+  was complete.** One defect class, closed at two levels in this release (#574 then #575). card#7330
+  disclosed a class-less `{@see member}` and a `{@see self::member}` in the script's docblock and in
+  a test, but in NEITHER the examined count NOR the `N NOT examined: …` line; card#7496 then found
+  the same shape one level up, in a `{@see SomeClass}` naming a class and NO member — read by
+  neither of rule 1's legs (the member leg needs a `::` to form a citation from; rule 1a's path/FQCN
+  leg reads only the six `CLAUDE_*.md` current-state docs and only `App\…` names). Every bucket on
+  the accounting line describes a citation whose CLASS was read and then found unusable, so a
+  citation carrying no usable class reached none of them and left the census entirely while the
+  arithmetic still balanced. **That is worse than a silent gap: it is a gap with an accounting line
+  that appears to exclude it.** No `app/` behaviour, no route, no schema, and **no change to what
+  the gate REPORTS** — no new reds, no removed reds; 984 resolved / 0 reported before and after.
+  - **Convicted with nothing the run does not already ship.** Against the pre-fix gate, qualifying
+    ONE citation into its `Class::member` spelling MOVED the run's TOTAL: `{@see body()}` →
+    `{@see DispatchOutcome::body()}` took resolved **+1** and the TOTAL **+1**;
+    `{@see self::requiresClosure()}` → `{@see PrOutcome::requiresClosure()}` moved it identically;
+    and one `{@see CheckRunner}` → `{@see CheckRunner::run()}` took resolved **984 → 985** and the
+    TOTAL **1849 → 1850**. **A citation that only enters the total once it becomes checkable was
+    never in the total.**
+  - **Three new census buckets — `classless_member`, `pseudo_class_member` and `class_citation`** —
+    in `--census` and in the closing disclosure line of every run. **Nothing is RESOLVED by them:**
+    which citations can be convicted did not move, only whether the run admits what it declined.
+    Resolving the bare form against the enclosing class stays declined on card#7330's reasoning — a
+    markdown paragraph has no enclosing class, so a citation would resolve in a docblock and be
+    unanswerable four lines later in prose.
+  - **Re-derived on this branch rather than quoted from the cards**, one of which was off by one.
+    Over the member leg's whole surface (`app/` + `tests/` + `docs/` + `bin/` + the root `*.md`):
+    **186 class-less member citations in 40 files** and **104 pseudo-class ones in 33 files**. The
+    full reference-tag payload set at the branch point is **752**: 182 forming a `Class::member` ·
+    186 class-less member · 104 pseudo-class · **237 naming a class and no member** · 21
+    `UPPER_SNAKE` · **22** metasyntactic-or-`::class` (the card said 21; 752 only closes at 22). An
+    independently written derivation script agrees with the gate on every bucket.
+  - **Resolving the 237 stays declined, and the ground for a future pass was MEASURED rather than
+    guessed.** By the gate's own resolution rule: **205 resolve unambiguously to exactly one
+    construct under `app/`**; **0 are ambiguous** (card#7330's `Command` trap is unrealised on this
+    tree, not absent from it); **32 resolve to nothing under `app/`**, of which 28 name a class
+    under `tests/`, 1 an imported `RequestException`, 1 a `Tests\…` FQCN, and **2 resolve to nothing
+    anywhere** — a `\JsonException` in a docblock and a `Widget` fixture name inside a test's own
+    string literal. **Both of the two are false positives**, so a resolution rule's entire yield on
+    the tree that motivated it would be two cry-wolf reds — the trade this script's other rules
+    refuse.
+  - **The disclosure is a testable invariant, not a narrated bound.** Qualifying a citation moves it
+    BETWEEN buckets and leaves the TOTAL fixed — measured post-fix for a method, a property
+    (`{@see $status}`), a `self::` citation, and a class citation resolving under `app/`, outside
+    it, and nowhere — and asserted over synthetic trees whose whole population is the one citation
+    under test. Each new vector was seen RED under three separate mutations (the tally suppressed;
+    the buckets counted but omitted from the TOTAL; the buckets counted but dropped from the
+    disclosure sentence), and the pre-existing member-leg vectors stay GREEN under all three.
+  - **⚠ THE REMAINDER NARROWS, IT DOES NOT CLOSE.** The class-less predicate keys on a LOWER-CASE
+    initial and the class predicate on an upper-case initial with no `::`, so the upper-case
+    remainder splits: the CamelCase half is counted, and an ALL-CAPS short name is deliberately left
+    OUT because in this tree's naming that shape is a CONSTANT — a bucket that swallowed it would
+    mislabel the census rather than complete it. The 21 `UPPER_SNAKE` payloads and the 22
+    metasyntactic/`::class` ones are what remains unbucketed, and that arithmetic closes exactly as
+    predicted. Two mirror-image bounds stated rather than assumed away: a CamelCase ENUM CASE cited
+    bare would land in `class_citation` and be mislabelled a class (no instance on this tree), and a
+    backticked bare `func()` stays out for the reason the rule docblock gives — inside a reference
+    tag a payload is a machine-readable claim about this tree, in backticks it is mostly other
+    people's vocabulary.
+
+- **card#7471** — **CLASS: nine tests whose NAME or docblock stated a count / absence / exclusivity
+  property asserted something that structurally cannot express it, so each stayed GREEN when the
+  behaviour it names was mutated away.** **Tests and test-support only — zero files under `app/`,
+  `bin/`, `config/`, `routes/` or `database/migrations/`; no migration, no `.env` change, no
+  receiver accept/reject change, no token-scope change.** Nothing an install runs behaves
+  differently; what changes is which regressions CI can still catch.
+  **The class.** `expectsOutputToContain()` answers exactly *"does this substring appear at least
+  once?"* — it cannot state a count, an absence, an ordering or an exclusivity. card#7332 found the
+  first instance (`test_inbox_collapses_duplicate_ids_on_read` never asserted the collapse); this
+  audits the population it came from.
+  **Denominator, re-derived against this branch's base rather than quoted from the card** (which
+  said 146 across 5 — `dev` has moved): **7 files**, **154 `expectsOutputToContain` matches** of
+  which **148 are calls**, **247 test methods**. The unit is the METHOD, not the call site, because
+  the claim lives in a name. All 247 were READ, not grepped — the card is explicit that the worst
+  instance will not contain the search term, and it did not: **four of the nine make no output
+  assertion at all**, so no grep of the matcher could ever have reached them.
+  **Nine rewritten, each SEEN TO FAIL** — the mutation applied to `app/`, the NEW assertion watched
+  go red, the SAME mutant run against the file as it stands on `dev` and watched go **green**, the
+  app file restored byte-identically before the next one. The instructive ones:
+  `test_stats_agent_flag_scopes_metrics` asserted the `[pm]` label, which the command interpolates
+  from the flag whether or not it filters, so **dropping `where('agent_name', …)` was invisible**;
+  `bridge:stats`'s divergence counts were asserted by row CAPTION and never by the number;
+  `bridge:replay`'s gate-drop COUNT was a caption over a one-row fixture that could not discriminate
+  it from the skipped total; `test_provision_tools_never_prints_the_token_value` could only inspect
+  the **already-minted** run, never the mint that holds the secret; and
+  `test_reconcile_fixes_filter_drift` asserted the DELETE without the recreate — green for a
+  reconcile that leaves a board with no webhook at all.
+  **⛔ Two absence predicates could NEVER have fired.** `Http::assertNotSent(fn ($r) =>
+  str_contains($r->url(), 'board_id=9'))` guarded both `--repo` filter tests, but the board scope
+  travels as the query TERM `q=board_id=<b>`, which the client percent-encodes to `q=board_id%3D9`
+  — measured, not reasoned: the raw url never contains the string, so the check was a decoration on
+  a filter that could be deleted outright. Both now `urldecode()` and both gain the presence witness
+  that makes the silence about board 9 mean *filtered* rather than *nothing ran*.
+  **Two supporting changes.** `Tests\Support\ConsoleTable::assertRow()` is extracted at the second
+  real caller, anchored at both ends of the line because an unanchored substring on a table is a
+  presence claim wearing a count's clothes. `CLAUDE_TESTING.md` gains the two anti-patterns so the
+  class is findable.
+  **Dispositioned, not silently capped:** 238 of the 247 methods are recorded correctly scoped, and
+  the audit's own blind axis is stated — this population is the files that USE the matcher, so a
+  count claim asserted by a presence-only matcher in a file that never calls it is outside the
+  denominator and unmeasured. **This adds assertions to existing tests, not tests:** measured
+  against this branch's base before the card#7474 merge, the SAME 2548 tests with 8720 assertions
+  against 8697. Whole suite after the merge 2550/2550 (8747 assertions), phpstan L7 0, pint clean,
+  `check-doc-refs` clean.
+
+- **card#7474 (DL-307)** — **⚠ the suite's Redis databases are now pinned, and the
+  measurement behind the pin corrects a belief this repo held in two places: `force="true"` on a
+  `phpunit.xml` `<env>` entry does NOT make a pin win against an exported variable.** Several
+  tenants' test suites share ONE Redis on the deployment host, and this suite pinned no
+  `REDIS_DB`/`REDIS_CACHE_DB`, so the indices came from whatever a local `.env` said — measured
+  at DB 4 with such a `.env` in place, and 0/1 (the defaults every other seat also gets) without
+  one. Both are now pinned to indices claimed for this suite and published so the other seats
+  could avoid them: **`REDIS_DB=13`, `REDIS_CACHE_DB=12`**. The exposure is **latent, not live** —
+  `CACHE_STORE=array` and `QUEUE_CONNECTION=sync` mean nothing here selects Redis today — which
+  is precisely when the pin is free to add.
+  **The mechanism, measured rather than assumed (canon #9), because the obvious fix does not
+  work.** With `REDIS_DB=9` exported against a pin written `<env … value="13" force="true"/>`:
+  `getenv()='13'`, `$_ENV='13'`, **`$_SERVER='9'`, `env()='9'`, `config()='9'`**. PHPUnit's
+  `PhpHandler::handleEnvVariables()` honors `force` by writing `putenv()` and `$_ENV` and never
+  touches `$_SERVER`, where an exported variable lands under `variables_order=GPCS`; Laravel
+  resolves `env()` through Dotenv's repository, whose `DEFAULT_ADAPTERS` are `ServerConstAdapter`
+  **then** `EnvConstAdapter`, so `$_SERVER` is read first and the forced pin loses. A `<server>`
+  entry — assigned unconditionally by `handleServerVariables()` — is what closes it; with the
+  pair in place the same run reads `13` at every layer. **A pin that needs to hold therefore
+  needs BOTH entries**, and the three that need to hold (`REDIS_DB`, `REDIS_CACHE_DB`,
+  `BRIDGE_INSTALL_SUFFIX`) carry both. `Tests\Unit\PhpunitConfigPinTest` is the drift guard:
+  two copies of one value with `$_SERVER` read FIRST means a value edited on the `<env>` line
+  alone would be silently ignored, so a missing, unforced or disagreeing entry reds (each of
+  those three mutations watched red).
+  **⛔ `DB_CONNECTION` / `DB_DATABASE` / `DB_URL` are deliberately left UNFORCED and unpaired,
+  against the card's own instruction, and the absence is now load-bearing and commented as
+  such.** The `phpunit-mariadb` CI matrix and the local recipe in `CLAUDE_TESTING.md` exercise
+  the MariaDB driver by EXPORTING those variables — which works only because an unforced pin
+  yields to a real environment variable. Forcing them makes both matrix legs silently re-run
+  SQLite: green CI that has stopped testing the one thing it exists to test, and the exact
+  false-green class this card was filed to remove. Measured: with `DB_CONNECTION=mysql`
+  exported, `config('database.default')` is `mysql` — preserved on purpose.
+  Every other pin gains `force="true"` alone, which buys the child-process/`getenv()` layer and
+  is honestly labelled as not buying the in-process one; `APP_ENV`, `APP_MAINTENANCE_DRIVER` and
+  `BCRYPT_ROUNDS` are left alone with reasons in the file. **No `app/` change, no migration, no
+  config key, no receiver accept/reject change** — `phpunit.xml`, one new test, and the docs
+  whose claims the measurement falsified (G-013's `.env` vector, which a `.env` never had, and
+  G-017's `getenv()` explanation, which is not why forcing failed there).
+
+- **card#7330** — **⚠ `check-doc-refs` was reporting a clean verdict over a population that
+  excluded the citation form this repo mostly writes.** Rule 1's harvest was BACKTICKED-only, so
+  every `{@see …}` citation in a docblock — 645 of them in the tree — was not a token either leg
+  read. The failure mode is worse than an unchecked form: a phantom member cited that way was not
+  reported, **not counted**, and not distinguishable at the exit code from a tree that had none,
+  while the run's closing line printed an "examined" count and said all references resolve.
+  Measured on this branch with a control in both directions, one bogus member planted in a real
+  `app/` docblock: against the OLD gate the un-backticked house-style spelling left the run at
+  **801 examined, 0 reported, rc=0** while the backticked spelling of the same phantom gave **802
+  examined, 1 reported, rc=1** — the harvester discriminated perfectly on one form and could not
+  see the other. **⚠ This changes what CI ACCEPTS for a
+  contributor:** a `{@see …}` naming a member that does not exist now reds `laravel-tests.yml`'s
+  doc-sync step where it used to pass. Nothing about an installed bridge moves — no `app/`
+  behaviour, no route, no schema.
+  - **The harvest is now form-aware; the TOKEN SET is unchanged.** One shared recogniser reads a
+    backticked token, an inline `{@see …}` tag and a standalone `@see` tag line, and hands all
+    three to the legs that already existed — so a payload is examined exactly when its backticked
+    twin would be. Widening WHERE a citation is found without widening what is REPORTED would have
+    been the same defect wearing a hat, so both legs consume the recogniser.
+  - **The discharge follows the citation.** A removed-marker annotation may repeat the citation it
+    discharges in either spelling, decided by that same recogniser. A backtick-only reader would
+    have left a frozen `{@see …}` citation with no escape hatch available at all — the hatch would
+    exist for one spelling and not for the one the tree actually writes.
+  - **Derived, not estimated: the census moves from 801 to 950 examined (+149), and 0 reported.**
+    The +149 is the population that was previously unread; all of it resolves, which is the tree
+    being clean on that form and NOT the gate being blind — the two are indistinguishable at the
+    exit code, so the difference is pinned by a test asserting the COUNT. The new gate was seen to
+    fail before being trusted: the same planted phantom, still in the un-backticked house style,
+    now gives **951 examined, 1 reported, rc=1** and names the file, line and member.
+  - **Two gaps DISCLOSED rather than closed, with their derivations.** A `{@see self::member}` (88
+    in the tree) names no file — in markdown prose there is no enclosing class to resolve `self`
+    against — and a class-less member name inside the tag (60 bare `func()` payloads) is the
+    pre-existing bare-name bound. Neither resolves to a phantom in the tree today; both are
+    disclosed gaps, not protection, and both are pinned by a test paired with a witness that the
+    same phantom IS convicted once it carries its class.
+
+- **card#7295 (DL-302)** — **⚠ `board_my_cards` reported the CONFIGURED board for a row set whose
+  own board nothing had read, and the coord block reported no board at all.** The response stated
+  `board_id` from this agent's `board_tools` config beside the cards it had just fetched, so a
+  calling agent read *"my cards are on board N"* off a value that was never a reading — while the
+  same tool already dropped and logged any row whose own `swimlane_id` did not match. One tool, two
+  axes of the same claim, two standards. **⚠ UPGRADING — this is a BREAKING change to the meaning
+  of `result.board_id` in a shipped cross-seat response contract, and it is hard-gate class**
+  (DL-302 records it as such, on DL-223's precedent, shipped under the operator's standing
+  dev-branch authorization): an agent reading that key gets `null` on the common empty-window path
+  after upgrade. **Nothing is dropped, nothing is refused, and no extra request is made** (every
+  kanban search row already carries `board_id`; the projection simply never read it).
+  - **`board_id` is now WHERE THE ROWS ARE**, and **`board_observed`** says whether one was read.
+    `false` ⇒ `board_id` is **null** and the response claims no board — it never falls back to
+    config. Three states unobserve it: an **empty window** (no rows read ⇒ no board read; not an
+    error), rows **spread across more than one board**, and a row carrying **no readable
+    `board_id`**. A card is always on exactly one board upstream, so absent / null / non-numeric
+    all mean *unread* — this axis has no legitimate null, unlike the lane axis of the sibling
+    correction on `board_create_card` (card#7225, a separate change that may not be in your
+    build; it corrects BOTH axes of that tool's reported placement, and only its lane axis has a
+    legitimate null).
+  - **`configured_board_id` carries what `board_id` used to**, under a name that says what it is.
+    Both are always present: observed and intended, neither dressed as the other.
+  - **The coord block carries the same pair for its own board** — `coord_board_id`,
+    `coord_board_observed`, `configured_coord_board_id`, on exactly the condition `coord_cards`
+    appears. Those cards come from a different board than the top-level one and the block used to
+    say nothing about that. The `coord_cards` list itself is unchanged.
+  - **`swimlane_id` is unchanged and needs no flag**: every returned row is filtered against it and
+    a non-matching row is dropped before a caller sees it, so the lane axis is verified by
+    construction. What a foreign-board row should make the tool *do* is a separate, ask-gated
+    question from what it *says*; only the saying changed.
+  - **`bridge:check --probe-tools` / `--probe-tools-ssh` read the scope header under its own name**
+    (`configured_board_id`, with the old `board_id` spelling still accepted so a probe against a
+    remote install predating this release is not reported as an identity mismatch). Left on the old
+    key, both probes would have failed **every agent whose lane is empty**. Their `ok` text is
+    corrected with them: matching that header certifies **which agent the bearer resolved to**, not
+    that the bridge-side lane filter ran — config compared against config is true whatever the rows
+    held. The probes deliberately do **not** yet fail on the new observation; a fail arm there
+    changes what `bridge:check` rejects. Their mismatch finding is relabelled from
+    `ISOLATION`/`ISOLATION MISMATCH` to **`IDENTITY MISMATCH`**, and both fail tails now name a
+    cause the probe can actually see instead of a lane-scoping fault it cannot: an identity one
+    where the responder identified itself (this key/bearer resolved to a DIFFERENT agent — a token
+    collision or a mis-pinned key), and the ROUTE where it identified itself not at all (card#7325
+    below). `bridge:check`
+    `message` strings are explicitly outside the `--format=json` write contract, so no machine
+    consumer changes.
+  - **⚠ UPGRADING — a MULTI-HOST ssh install must upgrade the PROBER side first.** The skew
+    tolerance above runs **one way only**: a current `bridge:check` reads an older responder's
+    header. The reverse is not tolerated and cannot be, because the fix lives on the reading
+    side. `--probe-tools-ssh=<agent>@<host-A>` is run from host B and round-trips to the bridge on
+    host A (`docs/multi-host.md`), so B's `bridge:check` and A's responder are independent
+    installs at independent versions. A `bridge:check` **predating this release** reads
+    `result.board_id` strictly; on **an agent whose lane is empty — the commonest state** — a
+    current responder on host A answers `board_id: null`, and the old prober reports a mismatch
+    and exits 1. **Signature of that false failure:** `board_id=null` inside an `ISOLATION`
+    finding from a pre-upgrade `bridge:check --probe-tools-ssh`, on an install whose ssh setup
+    did not change. It is a version skew, not an isolation fault — upgrade the host that RUNS
+    `bridge:check` before, or with, the host that answers the forced command. The same ordering
+    applies to `--probe-tools` whenever the probed vhost is served by a co-resident install at a
+    different version (`CLAUDE.md` rule 7).
+
+- **card#7233** — **The shell-injection security test scored a slow-but-successful injection as
+  "injection did not execute".** `SpawnDetachedHandlerTest::test_argv_has_no_shell_injection_surface`
+  spawned a detached child and read its verdict off a fixed `usleep(500_000)`, then asserted
+  `EVIL.marker` absent — but three methods up, the PRESENCE leg in the same file polls a detached
+  child for **5.0 seconds**, so the file itself established that the window it gave the negative was
+  ten times too small. Under load an injection that landed after 500ms passed as proof that no
+  injection was possible. **Demonstrated, not inferred:** against a stub that spawns the argv through
+  `sh -c` after a 0.7s delay — the exact defect the test exists to catch, merely slow — the shipped
+  test PASSES. **Raising the sleep was rejected**: it lowers the probability and keeps the race. The
+  negative is now ordered rather than timed. `touch` receives the metacharacters as ONE argv element,
+  so it creates a file named *verbatim* `legit; touch …/EVIL.marker`; the test polls for that file
+  with the bounded-poll idiom already in this file and asserts the absence only once it exists. The
+  witness is sound because `touch` with a single operand does exactly one thing — that file appearing
+  IS the child having finished — and its NAME is itself the proof the argv element never met a shell,
+  since a shell would have produced `…/legit` and `…/EVIL.marker` instead.
+  **⚠ The operand is a PATH and every `/` in it is a separator**, including those inside the appended
+  absolute `EVIL.marker` path: verified at source that without its parent directory `touch` dies
+  `ENOENT` and creates nothing, so the test now creates that parent — without it the witness would
+  never land and the absence would again be indistinguishable from "did not finish". Both halves
+  witnessed against the same slow stub; it passes 3/3 on the real, non-injecting path.
+  **Sibling audit (the shape: a fixed sleep guarding an absence assertion) found no second member,
+  over a stated denominator** — every `sleep`/`usleep`/`time.sleep`/`setTimeout` call site in
+  non-vendor source, **9** post-fix, re-derived by the sweep each run rather than quoted; the
+  instrument finds the pre-fix defect and reports zero after it, so it discriminates. All nine
+  dispose: bounded polls terminating in a PRESENCE assertion (5), a Symfony `Process` timeout (2), a
+  production deadline outside any test (1), and a forked child's own hold on a bind (1). On the
+  second axis, every absence assertion downstream of async work is guarded by process completion,
+  not by a clock. Distinct from card#7209's class (a bounded CHILD window racing an unbounded PARENT
+  operation), which is two processes; this one is a fixed clock guarding a negative.
+
+- **card#7209** — **The `bridge:check` channel-liveness test asserted a race it did not control: a
+  forked child held the socket open for a hardcoded 3-second `stream_socket_accept()` window while
+  the parent ran an unbounded `bridge:check` inside it.** Once the parent's own path to the probe
+  passed that window the child had already `SIGKILL`ed itself, the socket was gone, and the check
+  CORRECTLY reported it dead — so the red was the test's, not the code's. The whole test takes about
+  2s on an idle box — that gap to the 3s window was the entire margin.
+  Two agents hit it independently on unrelated work in one cycle, on a box running several build
+  agents in parallel, which is exactly the load that crosses that boundary. **The child's window was
+  not the wrong number — the parent was the unbounded half**, so raising it would have bought margin
+  and kept the race. The listener is now bound **in-process** and held open across the whole run in a
+  `try`/`finally`, making its lifetime this test's control flow instead of a wall clock: a bound UDS
+  completes the connect handshake from the kernel's backlog with no `accept()` at all (the property
+  `SystemChannelProbeEnvironmentTest` already asserts directly against the real probe, and the reason
+  the HTTP twin never needed a fork). **Measured, not asserted:** with the parent artificially
+  delayed 3.5s before the check the old shape reds and the new one passes 3/3 — and still passes with
+  a 15s delay, i.e. the ordering dependency is removed rather than widened. **The leg still
+  discriminates**, witnessed twice: mutating `SystemChannelProbeEnvironment` so a connect never
+  reports connected reds it, and closing the listener before the check reds it on the stale-socket
+  message. **Coverage goes up**: dropping the fork drops the `pcntl` skip, so the leg — one of only
+  two in the suite that reaches either liveness probe — now runs on hosts where it silently skipped,
+  and the fork-inherited-DB-connection hazard the child's hard exit existed to dodge is gone with it.
+
+- **card#7118** — **Three tests handed the shared temp root to code that enumerates it, so the suite's
+  result was a function of the box's `/tmp` rather than of the branch.** `BridgeServiceProviderTest`
+  pointed `bridge.config_dir` at `sys_get_temp_dir()`, `InstallGuardTest` constructed a
+  `SubscriptionRegistry` over it, and `AgentConfigTest::test_load_missing_file_throws` asserted a
+  config was absent from it — but `/tmp` is world-writable, and `SubscriptionRegistry::agentConfigs()`
+  parses every `*.yml` it finds there. A 38-byte stray YAML left by an unrelated OS user reds
+  `BridgeServiceProviderTest` on any branch, `dev` included. The two failure modes differ: instance 1
+  reds outright, while instance 2 was a false GREEN — its `expectException(ConfigException::class)`
+  is satisfied by a co-tenant's malformed YAML, so the crosstalk guard it exists to pin could be
+  broken without the test noticing. All three now use the isolation idiom the other 82
+  `sys_get_temp_dir()` sites in `tests/` already use (`sys_get_temp_dir().'/<prefix>-'.uniqid()`,
+  created in `setUp()`, removed in `tearDown()`), and the two exception assertions now assert on the
+  message rather than on the class alone. **Control** (the deliverable, not the green suite): with a
+  deliberately-invalid YAML planted in the real `/tmp` and no `TMPDIR` override, the three classes
+  went 48/50 with 1 error + 1 failure before and 50/50 after. `CLAUDE_TESTING.md` gains the rule
+  under *Anti-patterns to avoid* — it was a convention 82 sites followed and nothing wrote down,
+  which is why the four exceptions were invisible.
+
+- **card#7064** — **A SECOND pull request correlating to one card had its correlation leg dropped in
+  silence; the drop is now RECORDED — a log line, an alert, and a comment on the card itself.**
+  **⚠ NEW OPERATOR-FACING SURFACE, and one token permission to grant:** the writeback now posts
+  kanban **card comments** (`POST /api/v3/tasks/{id}/comments.json`), so the least-privilege
+  writeback token needs **comment-create** on the mapped boards. Missing it is **fail-soft, never
+  fatal** — the note 403s, the drop still reaches the log and the alert channel
+  (`cardnote_403_not_writable_by_this_token`), and no move outcome changes — but the card shows
+  nothing until the grant is made. **Not retried within a delivery; re-attempted on the next event
+  asserting the same drop** — the once-per-note check can only match a note kanban STORED, so an
+  install missing the grant keeps signalling rather than going quiet after the first failure. **A
+  note write also emits a kanban `comment.created` webhook** — a new event TYPE out of a path that
+  previously emitted nothing back, echo-suppressed by the global set seeded from `writeback.json`'s
+  `identity_id` (which `bridge:check` only WARNS about when unset). **No migration, no new `.env`, and no change to
+  what the receiver accepts or rejects.**
+- **What was silent.** A card carries **one** `pr_number` / `pr_url` / `dl_number`, stamped
+  add-if-missing, first write wins. A second PR naming the same card therefore has its ref dropped —
+  correctly, since overwriting would re-point an already-merged leg's correlation — but the drop had
+  **two** exits and only one said anything. An **uncorroborated** title-only `card#` (DL-270) is
+  refused with a log + alert. A **corroborated** token — the head branch carrying `card-NNNN`, i.e.
+  the house convention, i.e. the common case — sails past that gate, reaches the stamp, finds
+  nothing left to write and returns on a bare `if ($refs === []) return;`: no log, no alert, no
+  trace anywhere. **The better-behaved the contributor, the less evidence the lost leg left.**
+  Reproduced on the reference install: card#6645 stamps `pr_number=261` while PR #262 — same repo,
+  same card token — is invisible to any by-ref lookup. Ordering-dependent, not a flake.
+- **The predicate is DIFFERS, not nothing-to-write.** `$refs === []` is also exactly what an
+  **idempotent replay of the card's own PR** looks like, so keying the record on it would mint a
+  comment for every webhook redelivery. The condition is *a ref was offered whose value differs from
+  the stored one*, per ref: `pr_number` through the shared `CardTokenCorroboration::tracksPr`
+  (hoisted out of `refuses()`, so "same PR" has one definition), `dl_number` on digits, `pr_url`
+  through **pull-request IDENTITY**. A same-PR replay stays **silent**, pinned by a test with the
+  naive predicate mutated in and watched go red.
+- **`pr_url` gets a comparator, not a byte test**, because one PR has many spellings. A raw compare
+  reported a SECOND pull request where there was none on three reachable inputs: the `.../pull/0`
+  **source-only qualifier** `bridge:check` tells operators to stamp for a shared-board `source`; the
+  card's **OWN** pull request, on a card whose `pr_number` and `pr_url` were written by different
+  PRs (per-ref add-if-missing produces exactly that state); and **repo CASE**, which GitHub treats
+  as insignificant. Comparison now runs through `PrUrlRef` — the `(owner/repo, number)` parse
+  hoisted out of `TrackedCardRef`, so the writeback has ONE definition of "which PR does this url
+  name". Both controls are pinned: a genuinely different second PR, and the same number in a
+  DIFFERENT repo, still record their dropped leg. **⚠ This changes which url ends up stamped in
+  exactly one case:** a `pr_url` holding the `.../pull/0` placeholder names no pull request, so a PR
+  **from the repo that placeholder names** now stamps its real url over it (it previously blocked
+  the stamp forever). **Only that repo** — the `0` carries no information but the REPO is a by-ref
+  source an operator stamped on purpose, so a PR from a DIFFERENT repo leaves the placeholder alone
+  and records the drop. Everywhere else the **never-overwrite guard is UNTOUCHED**, including an
+  operator's free text in `pr_url`, and a test asserts not one byte of the card's payload is written
+  on the dropped-leg path. **Not** a `pr_refs` list: that is a kanban payload-schema change with its
+  own blast radius (by-ref index, release-promote-cards, `kbcard` projections), deliberately out of
+  scope.
+- **The record, at both sites.** The stamp path gains `Log::warning` + a live alert
+  (`correlation_ref_not_stamped`, routed through `WritebackAlertNotifier::warnAndNotify` like every
+  other permanent-refusal arm — DL-274) **and** a card comment naming the ref the card keeps and the
+  one this PR offered. The already-logged `card_token_uncorroborated` refusal keeps its log and push
+  unchanged and gains the same comment beside them. The card is where the note goes because a log
+  line and an alert push are the *operator's* surfaces, and the person hunting a missing correlation
+  is reading the **card**. **Written at most once per card per dropped SET of values:** the marker
+  line is derived from the FACTS (which card, which refs, which values), never from the event, so
+  the same drop re-asserted — `opened`, then `merged`, then a redelivery — re-derives a
+  byte-identical marker matched against the `comments` the card's own `getCard` aggregate already
+  returned (**no extra read**). **The unit is the SET, not the pull request:** a title EDITED between
+  two events can offer a DL the first did not, growing the set into a different marker and a second
+  note about the same PR — recording a drop the first note could not have named. The check
+  **degrades toward writing**: a kanban whose aggregate carries no `comments` key yields a duplicate
+  note, never a suppressed one, because a duplicated record is visible and correctable while a
+  suppressed one is the silence being removed.
+- **Nothing here may throw.** A 4xx, a 5xx, or any other failure of the note is caught and routed to
+  the paired alert primitive (`cardnote_403_not_writable_by_this_token` · `cardnote_404_no_such_card`
+  · `cardnote_4xx` · `cardnote_send_failed`) — a 5xx deliberately does **not** borrow the 4xx
+  vocabulary and name a permission problem the server never reported. Throwing would 5xx a move that
+  already happened, over an observability write: the redelivery storm every refusal arm in this
+  handler exists to avoid.
+- **Doc-sync.** `docs/writeback.md` (token scope, the stamping blockquote, four new refusal-reason
+  rows, the card-note bound — the last two restated "never retried", true within a delivery and
+  false across events, and the blockquote restated one-note-per-PR; both corrected here and at their
+  code authorities, plus the new `comment.created` emission beside the comment-create grant),
+  `docs/config-schema.md` (the `writeback-token` row's stated scope, false the moment the writeback
+  posts a comment) and `docs/kanban-integration-contract.md` (the new comment-create endpoint row,
+  `comments[].content` added to what `GET /tasks/{id}.json` is read for). While there: that
+  contract's `PATCH /api/v3/tasks/{id}.json` row still documented the `{task:{workflow_stage_id}}`
+  request wrapper **kanban DL-219 removed and now strict-rejects** — false since v0.64.0 and
+  corrected to the flat body `KanbanClient::moveCard` actually sends. Siblings swept: the
+  `CLAUDE_DECISIONS.md` occurrences are dated log entries superseded in-file by DL-219 (append-only,
+  left as history), and the `docs/CHANGELOG.md` ones are accurate for their versions.
+
+- **card#6025** — **Six false prose claims, each verified at source rather than through the comment
+  that made it.** A claim whose referent does not exist is worse than no claim: it sends a maintainer
+  to a construct that is not there. `README.md` pointed at `examples/claude-code/settings.json` (the
+  file ships as `settings.json.example`); `docs/customization.md` pointed classifier authors at
+  `tests/Feature/Classifiers/InboxOnlyClassifierTest.php`, which lives under `tests/Unit/`;
+  `SshPinnedLineCheck` and `tests/Support/CheckGolden/PinnedHost.php` cited `CheckCommand` methods the
+  DL-242 migration removed, in the present tense and with no removal marker (the advisory is
+  `BoardToolsSshDefaultAdvisoryCheck` in its own slot; the `$COORD_CONFIG` reader is
+  `WritebackBoardStateCheck::coordTerminalAgreement()`); `ChannelSnapshotProbe` named
+  `visibleOrUnverified`, private to it until DL-254 hoisted the guard to
+  `PathVisibility::unverifiedUnlessVisible()`; and `ReactionTarget`'s docblock said `debounceSeconds`
+  is carried to the handler **and the handler-log** — the handler half is true, the log half is not
+  (`LogIntentHandler` writes `debounce_key`, never `debounce_seconds`, and no shipped handler reads
+  the field). **The comment was corrected rather than the code taught to match it:** adding a writer
+  to make a false sentence true is backwards.
+- **card#6025** — **Two stale citations in the current-state docs, found by the new member leg on its
+  first real-surface run, and a third the widened surface caught in this change's own CHANGELOG
+  entry.** `CLAUDE_CONVENTIONS.md` claimed webhook receiver URLs are validated as https in an
+  `AgentConfig::validateUrl` that no longer exists — **both halves false**: the https floor belongs
+  to `UrlValidator::secureHttpUrl` on the SECRET-BEARING provider API base URL, while the receiver
+  base URL goes through `UrlValidator::httpUrl`, which enforces no https floor at all.
+  `CLAUDE_GOTCHAS.md` cited `AbstractWebhookAdapter::assertDeliveryIdLength()`, which no longer exists,
+  **with a line offset**; the method is `assertFieldLengths()` and it now covers `scope_id`,
+  `event_type` and `actor_id` at their own widths (the offset is dropped rather than re-pinned —
+  name the construct). **Both statements had siblings, and the sibling audit is the reason this is
+  not one fix:** the corrected `CLAUDE_CONVENTIONS.md` sentence carried a new absolute — *every
+  other URL-shaped config value goes through `UrlValidator::httpUrl`* — that is itself false, and so
+  was `UrlValidator`'s own docblock, which had listed "a channel URL" among callers it does not have
+  since the class was written. `channel.url` is shape-checked at its parse site in `AgentConfig`
+  (non-empty, no whitespace; the loopback gate is the `channel_push` handler's) and `alert_channel.url`
+  defers to `LocalhostUrl`; both surfaces now say so. Swept with
+  `grep -rnE 'UrlValidator|validateUrl'` over `*.md` / `*.php` / `*.yml` outside `vendor/`: 24 hits,
+  2 false (both fixed), 22 accurate — the DL-175 / DL-209 decision-log and CHANGELOG entries describe
+  what was true when written and are left frozen.
+- **card#6025** — **Eighteen frozen-history citations discharged by annotation, never by an edit to
+  the sentence.** Eleven in `CLAUDE_DECISIONS.md` were surfaced by the member leg's first run; three
+  more appeared once ancestors were qualified through the import block (a classifier whose whole
+  ancestry turned out to be readable, so citations of two grammar constants and a near-miss probe it
+  no longer declares stopped being unverifiable); four are `docs/CHANGELOG.md` entries the widened
+  surface reached, each recording a rename or removal in a release that shipped it. Two living
+  `docs/CHECK-REGISTRY-PLAN.md` lines and one `tests/Support/FindingFactories.php` docblock already
+  carried their correction inline and were reworded to state it in the vocabulary the gate reads —
+  a construct that was renamed, and one deliberately not built.
+- **card#7127 (DL-291)** — **`bin/check-doc-refs.php`'s two escape hatches now read an annotation at
+  ONE scope, and that scope is the SENTENCE.** The removed-marker was line-scoped while its sibling
+  `citedAsRejected()` in the same file was sentence-scoped — two answers to one question (*does this
+  annotation cover this citation?*) inside a single script — so a `docs/CHANGELOG.md` entry, which is
+  a single line that narrates a removal **and** cites the live members that replaced it, discharged
+  every citation on it. card#6025 measured that loss and filed it rather than folding it in, because
+  it was disclosed by the per-run unexamined tally rather than silent. **The scope is hoisted into
+  one helper both hatches consume** (`annotationCovers()`, over the `sentencesOf()` splitter rule 3
+  already shipped) rather than sentence-scoping copied into the marker leg, which would have kept
+  the two implementations that are the defect. **The file/FQCN leg moves with the member leg** — the
+  marker is one variable read by both, and moving one would have re-opened the same split one level
+  up.
+- **⚑ The sentence boundary is NOT `[.!?]\s`, and getting that wrong left the fix one character from
+  inert.** A terminator in these documents is usually not followed by whitespace — the sentence
+  closes with markdown emphasis, a quote or a bracket first (`.**`, `.*`, `."`, `.)`, and the
+  `.**]**` an appended annotation ends on). Under the naive pattern *"…was removed.** `Foo::bar()` is
+  live"* is one fragment, the whole line goes back to the marker, and the line scope is restored **at
+  green**. This is not an edge: `docs/CHANGELOG.md` and `CLAUDE_DECISIONS.md`, the two surfaces the
+  scope exists for, carry hundreds of the bold form each. Closing punctuation is now part of the
+  terminator, the bound is documented on the **splitter** rather than on one caller, and the vector
+  was watched red against the wrong boundary before it was fixed. The splitter is deliberately
+  byte-oriented rather than `/u`: `preg_split` with `/u` returns `false` on non-UTF-8 input and the
+  fallback is the whole text, which would silently restore the widest scope on exactly the file
+  nobody inspects.
+- **⚠ UPGRADING — this changes what CI accepts for a contributor and nothing about an installed
+  bridge:** a doc line whose removed-marker sits in a different sentence from a dangling citation now
+  reds where it passed. On a frozen entry, where the discharge must be an annotation appended after
+  the original sentence, that annotation must now REPEAT the citation it discharges in backticks —
+  "removed in v0.60" at the foot of a forty-sentence entry names none of that entry's citations,
+  which is why it is no longer taken to cover them.
+- **Measured as a reconciliation rather than a before/after table**, because a totals table is a
+  quoted authority read at whatever tree its author stood on. Re-derive by running the pre- and
+  post-change scripts with `--census` over the *same* tree from a directory no rule scans; at a fixed
+  corpus the bucket deltas must sum to zero. So run: **80 citations leave the removed-marker bucket;
+  50 become examined and all 50 resolve, with `reported` unmoved; the remaining 30 land in a
+  different NOT-examined bucket** (26 `class_not_under_app`, 2 `unverifiable_ancestry`, 2
+  `rejected_alternative`) — a dated reading, since this very entry is part of the corpus it measures. That last group is what a "coverage recovered" headline hides — releasing
+  a citation from the marker is not the same as answering it. On the path leg, 128 tokens stop being
+  line-skipped but only **4** are references it can resolve at all, and all four resolve: the reason
+  to move that leg is consistency, not the token count. `reported` went 0 → **1** → 0, re-derivably:
+  strip the `card#7127` annotation from DL-237's SUPERSEDED note and the gate reports a member
+  DL-237 removed, `ChannelSnapshotProbe::referenceFileSet()`. The fix was to the document — a further
+  appended annotation naming it in full, both frozen sentences untouched per DL-277 — never to the
+  scope.
+- **⚠ Disclosed narrowing:** the `~~` alternative narrowed with the prose markers, so a struck-through
+  block spanning several sentences on one line now discharges only the fragment carrying the `~~`.
+  Zero live instances in this tree; named because the rest of this entry describes the change purely
+  in terms of prose markers.
+- **Not closed, and deliberately:** a sentence that both names a marker word and carries a citation
+  still discharges that citation, so prose *about* the vocabulary can switch it off. Accepted on the
+  record on card#7127. ⚠ Its previously-recorded instance, `CLAUDE_CONVENTIONS.md:141`, turned out
+  **not** to be one — that line's citation and marker merged only under the broken sentence boundary
+  above, and with it fixed the citation is examined. The measured cost of this residue on this tree
+  is zero citations.
+
 ## [0.74.1] - 2026-08-19
 
 ### Changed
@@ -97,7 +1452,12 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   refusal-signal class closes: 18 more permanent-refusal arms now emit a live signal, leaving two
   accounted-for log-only branches.** `writeback_move_failed` becomes
   `{type, repo, outcome, card_id, issue_number, reason}` — one body shape, with `issue_number` null on
-  every card-keyed arm and `card_id` null wherever it is set. The three **issue/PR-keyed** handlers
+  every card-keyed arm and `card_id` null wherever it is set **[card#7133 correction: the second half
+  never held. `kanban_coord_card_move`'s per-card arms run inside a loop over cards the correlation
+  read already returned and carry BOTH ids — `coord_card_move_card_4xx` did so in this very release.
+  What holds is only that both fields are always sent, populated or null. `docs/writeback.md`'s
+  `issue_number` paragraph is the per-arm authority; the `issue_number`-null-on-card-keyed-arms half
+  stands.]**. The three **issue/PR-keyed** handlers
   (`kanban_coord_card`, `kanban_coord_card_move`, `kanban_dependabot_card`) refuse while *creating* or
   *finding* a card, so they had no card id to key an alert on and **no notifier wiring of any kind**;
   each now carries the optional-notifier constructor and a synthetic `outcome`
@@ -674,7 +2034,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 - **DL-269** — **The node channel-server suite could write a false deafness marker beside a perfectly healthy socket, because it inherited the seat's LIVE addressing environment.** The suite spawns the real channel server, whose `markerPath()` falls back to the ambient environment. A seat exports `BRIDGE_CHANNEL_SOCKET` pointing at its **live** socket, so a child spawned with a plain `{...process.env}` binds it, gets `EADDRINUSE`, and writes a `.FAILED` deafness marker next to a socket that is working. **Both existing suites already scrubbed their child env — one by allowlist, one by denylist — and both measured clean; neither could tell you when it STOPPED being clean.** `live-state-guard.mjs` neutralises all four addressing inputs at import and **fails the run if the seat's real runtime dir moved**. DL-269 records the audit across all three languages and why PHP is accepted without a guard. Test-only — no runtime code, no behaviour change.
 - **card#5232, DL-268** — **The channel-server snapshot version drifted across roughly a dozen green CI runs, because the guard that enforces it reads one of the two files that carry it.** **⚠ CHANGES WHAT CI ACCEPTS: a PR whose `examples/channel-servers/package-lock.json` version disagrees with `package.json` now fails.** No app code, no migration, no new required `.env`, no receiver accept/reject change, no token-scope change. DL-038 made `package.json` `version` the staleness signal a copied snapshot compares against canonical and guarded it with `version-bump-guard` — which reads the manifest only. Measured on `dev`: the lockfile's root `version` sat at **`0.7.1`** while the manifest went `0.7.2 → 0.8.3`, every run green, because a guard cannot fail on a field it never reads. **The drift is not live and was never fixed** — it closed at `6c4f504` when an `npm` run resynced the lock as a side effect, so its agreement had been luck. **Not an outage at any point:** `npm ci` validates the dependency tree, not the root `version`. A new step asserts the lockfile's `.version` **and** `.packages[""].version` both equal the manifest's — both, because the defect class is precisely a guard reading one of N fields that must agree, and covering only the root re-mints it one level down. It is **not diff-gated** the way the bump step is (agreement is a property of the tree, so no shape of diff earns an exemption) — though not unconditional either: the workflow's `paths:` filter means a PR touching neither the directory nor the workflow never runs the job at all, which is still complete coverage of the entry path, since drift can only be introduced by a PR that edits those files. An **absent** manifest `version` FAILS rather than comparing jq's `null` to `null`. **The trigger set is deliberately NOT weakened:** a lockfile change keeps demanding a bump, because a transitive dependency bump changes what `npm ci` installs and so genuinely moves the deployed artifact. A lockfile-only dependency PR is therefore red by construction (dependabot cannot bump the manifest) and takes a **one-command maintainer commit**, documented in the guard's own error output — the surface the maintainer actually reaches — rather than in a runbook that has to be found first. The new assertion is driven by a test that extracts the step's real `run:` block from the YAML and executes it under `bash`, so it cannot drift from what CI runs; its positive control is **real history rather than invented JSON** (the pair as it stood at `4abe8e3`, the last commit at which the defect was live), and it is mutation-proven 4/4 against a 5-test baseline with both control axes asserted. **Deleted in passing:** the bump step's comment claimed the filter excludes *"the CI workflow itself"*, which it never did — the workflow was never inside the pathspec, so the clause described a protection that was not performed and read as an invitation to add the lockfile to that same exclusion list. **Sibling audit → card#5910 (one confirmed, one refuted):** `VERSION` vs `docs/CHANGELOG.md` has the same shape — `auto-tag-version.yml` is the only automation reading both and merely WARNs on a missing section while publishing a placeholder release note; left unfixed deliberately, as adding a PR-rejecting check is a hard gate. `composer.json`+`composer.lock` **looked** identical in shape in both this repo and kanban-board (no `composer validate` in either CI) and is **refuted** — `composer install` in the shared `setup-app` composite refuses an out-of-sync pair itself (measured two-sided: rc 4 mismatched, rc 0 restored).
 - **card#5548, DL-267** — **A destroyed run is not a measurement: `bin/check-golden-mutate.php` laundered a FAILED WRITE into the strongest verdict the program can produce.** When `file_put_contents` could not apply the mutant, the golden run aborted for that unrelated reason and every predicate scored **observed-via-abort at exit 0** — the best-looking outcome available, from a run that measured nothing. All writes now route through one `$writeOrThrow()`, which **throws rather than exits, because `exit()` does not run `finally`** — exiting from the mutation loop would leave a mutant on disk, the poisoning the file's own header warns about. The restore-failure path **reads the file back instead of inferring**, so *"a mutant is live"* is printed only when one is. Degenerate whole-run result sets (all observed-via-abort, all UNOBSERVED) and empty ones are **refused rather than rendered**; all-observed is deliberately not refused, being a legitimate strong result. A narrowed `--only`/`--limit` run no longer overwrites the artifacts, whose header claims to cover every predicate in `handle()`. Test-tooling only — no `app/` change, no runtime change.
-- **card#5796, DL-265** — **`bridge:check` reported a NON-DIRECTORY's file mode as the secret dir's, and told the operator to `chmod 700` it.** **⚠ OPERATOR-VISIBLE on a split layout** (`secret_dir` ≠ `config_dir`); a single-dir install is unaffected (the config-dir check gates on `is_dir()` first). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change;** `--format=json` `schema` stays **1**. DL-264 (above) gated the shared permission verdict's stat on `file_exists()`, which is true for a regular file, a socket, a fifo — anything that stats. So `BRIDGE_SECRET_DIR=/etc/passwd` reached `fileperms()`, succeeded, and printed *"secret dir /etc/passwd is group/world-accessible (mode 0644) — chmod 700 (it holds secrets)"*: a **real mode for the wrong subject**, whose remedy would be actively harmful if followed, while the operator's actual fault — *this setting does not point at a directory* — was never named. Now a **nested** `! is_dir()` arm INSIDE the existence gate names that fault directly. **Nested, because a single `is_dir()` gate is what DL-264 already rejected:** it answers false for an absent path AND for a present non-directory, so it would report a regular file as *"does not exist"* — trading one false claim for another in the class DL-262/263/264 exist to close. **⚠ It is this primitive's first `fail`, so it flips the exit code where the run previously exited 0.** DL-014's warn-not-fail rationale covers a loose **mode**, where the bridge still works and is merely less safe; it does not reach a path that is not a directory, because every secret and token resolves *underneath* it (`<dir>/<provider>/…`), so not one can be opened and no inbound webhook can be verified — a fault proven about that install, which is `Severity` limb 1 and the same ground the sibling config-dir leg stands on. **No healthy install newly reds:** the only state that flips already rejects every webhook. `DirectoryPermissions::warnIfInsecure()` is renamed **`verdictFor()`** — the old name had already stopped being true when DL-264 gave it an `unvalidated` arm, and a `fail` behind a name promising a warn is a trap for the third caller the primitive exists to protect.
+- **card#5796, DL-265** — **`bridge:check` reported a NON-DIRECTORY's file mode as the secret dir's, and told the operator to `chmod 700` it.** **⚠ OPERATOR-VISIBLE on a split layout** (`secret_dir` ≠ `config_dir`); a single-dir install is unaffected (the config-dir check gates on `is_dir()` first). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change;** `--format=json` `schema` stays **1**. DL-264 (above) gated the shared permission verdict's stat on `file_exists()`, which is true for a regular file, a socket, a fifo — anything that stats. So `BRIDGE_SECRET_DIR=/etc/passwd` reached `fileperms()`, succeeded, and printed *"secret dir /etc/passwd is group/world-accessible (mode 0644) — chmod 700 (it holds secrets)"*: a **real mode for the wrong subject**, whose remedy would be actively harmful if followed, while the operator's actual fault — *this setting does not point at a directory* — was never named. Now a **nested** `! is_dir()` arm INSIDE the existence gate names that fault directly. **Nested, because a single `is_dir()` gate is what DL-264 already rejected:** it answers false for an absent path AND for a present non-directory, so it would report a regular file as *"does not exist"* — trading one false claim for another in the class DL-262/263/264 exist to close. **⚠ It is this primitive's first `fail`, so it flips the exit code where the run previously exited 0.** DL-014's warn-not-fail rationale covers a loose **mode**, where the bridge still works and is merely less safe; it does not reach a path that is not a directory, because every secret and token resolves *underneath* it (`<dir>/<provider>/…`), so not one can be opened and no inbound webhook can be verified — a fault proven about that install, which is `Severity` limb 1 and the same ground the sibling config-dir leg stands on. **No healthy install newly reds:** the only state that flips already rejects every webhook. `DirectoryPermissions::warnIfInsecure()` is renamed **`verdictFor()`** — the old name had already stopped being true when DL-264 gave it an `unvalidated` arm, and a `fail` behind a name promising a warn is a trap for the third caller the primitive exists to protect. **[card#6025:** there is no `DirectoryPermissions::warnIfInsecure()` in the tree today — this entry is the release that renamed it.**]**
 
 - **card#5774, DL-264** — **`bridge:check` ABORTED — stack trace, exit 1, no report for any subsystem — when `BRIDGE_SECRET_DIR` pointed at a directory it could not stat.** **⚠ OPERATOR-VISIBLE on a split layout** (`secret_dir` ≠ `config_dir`); a single-dir install is unaffected (the config-dir check gates first). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change;** `--format=json` `schema` stays **1**. The shared DL-014 permission verdict ran `$perms = fileperms($dir)` ungated: `fileperms()` on an unstattable path **RAISES** rather than returning `false`, and under Laravel's error handler that warning is an uncaught `ErrorException` — so the whole preflight died on a directory it merely could not measure. **The card filed against this predicted the opposite mechanism** (a silent green line + a silent perms leg) and specified a fix on `$perms === false` that is **unreachable**; it was caught by running the command against the state before writing the fix, not by review. Now gated with `file_exists()` and split by cause: an absent directory is a **`warn`** naming it, one behind an untraversable ancestor is **`unvalidated`** via the shared `PathVisibility` guard (the checking process commonly runs as a different OS user, so *"absent"* is not a conclusion it is entitled to draw). Neither arm flips an exit code — the exit only changes in that a run which previously died with no output now exits on the merits of its findings. **`file_exists()` rather than `is_dir()` is deliberate:** a `secret_dir` pointing at a regular file keeps its pre-existing (wrong-subject but loud) mode warn instead of being quietly reclassified as *"does not exist"*, which would be a new false claim in the very class this fixes. **That wrong-subject report is closed by DL-265 below, which ships in this same release** — it is a nested second gate, not the `is_dir()` swap rejected here. **Sibling audit by reading, not grepping:** every stat-family call in `app/` (`fileperms`, `filetype`, `readlink`) was checked for a pre-gate — `DirectoryPermissions` was the only unguarded one.
 - **card#5789, DL-263** — **Five `is_file()`-gated reads threw an undocumented `ErrorException` on a present-but-unreadable file — the inbox reader among them, where the degraded answer is *"no intents staged"* for a file the process simply cannot see into.** **⚠ OPERATOR-VISIBLE on the same ordinary topology as DL-262** (the bridge runs as a different OS user than the agent, DL-227). **No migration, no new required `.env`, no receiver accept/reject change, no token-scope change;** `--format=json` `schema` stays **1**. **No exit code moves in the fixed direction** — four of the five paths already aborted, and the fifth can only turn a 5xx into a served request. DL-262 fixed one member of this class and filed the rest; this lands the consolidation. **The audit found FIVE, not the four on the card, and how matters:** `BridgePaths::readJsonl` uses `file()` rather than `file_get_contents()`, so the grep that produced the card's list could not have surfaced it — it came from re-reading the subsystem (canon #7). Its `?: []` fallback was **already dead code** under the console and HTTP kernels. **Hoisted, not re-derived:** new `FileContents::read($path, $subject)` returns the bytes / `null` when absent / throws `UnreadableFileException` when present-but-unreadable, and `TokenFile::readTrimmed` — which held the only correct copy — now layers trimming and the secret subtype ON it. **`UnreadableSecretException` is retained as a SUBCLASS** so the six callers that catch it do not silently widen to non-secret faults. **Per-site disposition turns on what the benign answer CLAIMS:** `BridgePaths::readSeen` + `readJsonl` **propagate** (fail-soft is strictly worse — `bridge:inbox` filters on both, so `[]` re-surfaces every seen intent or hides the inbox, and `updateSeenLocked` then opens the same file `c+` and throws anyway: a duplicate inbox followed by a crash); `WritebackConfig::load` raises **`ConfigException`** (`null` means *"writeback is off"*, so answering it for a permissions fault would silently disable every card move on the dispatch path); `AgentRegistry::loadSharedIdentities` **degrades to `[]` with a warning** — the one exception, because its other caller is the receiver, which must not 5xx over an optional policy file. **That last one makes existing docs TRUE rather than needing a doc edit:** `SharedIdentitiesCheck`'s docblock, DL-259 and `UnvalidatedCallSiteTest`'s comment all already claimed the loader answers `[]` for a file it could not read. It did not. **A pre-existing defect fixed in passing:** `ProvisionResult::cannotReconcile` hardcoded *"secret **missing** at …"*, but one of its two existing callers already passed a perms message — so a present, `0644` secret was reported as missing; the parameter is now a reason rendered verbatim. **An `@`-suppression sweep was the rejected fix** (it converts every one of these into the "absent" answer — card#5698's defect minted five more times). **Every new assertion was watched go RED** against a pre-fix tree reconstructed by stashing only the tracked `app/` changes — 5 reds, four raw `ErrorException`s and the provisioner's literal `API error: file_get_contents(…)` — each unreadable-state test carries a **skip-if-still-readable** guard, and each propagating site asserts the outcome directly rather than only the exception type. **Test-harness trap recorded in DL-263:** `expectsOutputToContain` registers one Mockery `doWrite` matcher per substring and Mockery dispatches to the FIRST match, so two substrings of one line cannot both be satisfied and a following `doesntExpectOutputToContain` silently cannot fail.
@@ -898,7 +2258,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 - **#319** — **`coord_non_addressed_disposition` (DL-215, card #4650, roundtable #90):** the `coord-message` family gains the durable-inbox sibling the `impl-ci-wake` family already had (`impl_non_wake_disposition`). A coordination event that fails the recipient gate was unconditionally gate-dropped; the new key (`drop` default | `inbox_stage`) lets it be staged to the durable inbox instead. Under `inbox_stage` the normal coord `Intent` (`coord_issue`/`coord_pr`/`coord_comment`) is built with **no** `channel_push` — a durable record, never a live wake. It softens **only** the recipient gate (`$forMe`): the `subject === null` (unhandled action) and `drop_title_all_of` (noise-title) drops still fire, an addressed event still live-wakes, and `route_intents:true` routes the staged intent with no hand-emit (no wake widening). Any value other than `inbox_stage` falls back to `drop`. Absent key ⇒ `drop` ⇒ byte-identical to pre-DL-215.
 
 ### Fixed
-- **#320** — **seen-cursor locked read-modify-write closes the #4630 clobber race (DL-216, card #4630):** the DL-199 review deferred a race in the inbox seen-cursor. `BridgePaths::writeSeen` locked only the write, not the read→modify→write around it, and two callers open-coded an unlocked RMW on the same cursor file (`InboxCommand` advance; `RetentionService::pruneSeen`, the DL-212 sweep). A prune landing between inbox's read and its write could write an intersection computed from the pre-advance cursor, dropping a just-marked id back to unseen (consequence bounded — one re-delivered wake, never data loss). New `BridgePaths::updateSeenLocked(path, transform)` — the JSON-array sibling of `filterJsonlLocked` — holds one `flock(LOCK_EX)` across read→transform→write; both callers route through it. `writeSeen` is **retired** (the unlocked-write primitive that let the race exist is gone), leaving `updateSeenLocked` the sole cursor writer. Byte-identical on-disk format; the change is purely the concurrency guarantee.
+- **#320** — **seen-cursor locked read-modify-write closes the #4630 clobber race (DL-216, card #4630):** the DL-199 review deferred a race in the inbox seen-cursor. `BridgePaths::writeSeen` locked only the write, not the read→modify→write around it, and two callers open-coded an unlocked RMW on the same cursor file (`InboxCommand` advance; `RetentionService::pruneSeen`, the DL-212 sweep). A prune landing between inbox's read and its write could write an intersection computed from the pre-advance cursor, dropping a just-marked id back to unseen (consequence bounded — one re-delivered wake, never data loss). New `BridgePaths::updateSeenLocked(path, transform)` — the JSON-array sibling of `filterJsonlLocked` — holds one `flock(LOCK_EX)` across read→transform→write; both callers route through it. `writeSeen` is **retired** (the unlocked-write primitive that let the race exist is gone), leaving `updateSeenLocked` the sole cursor writer. Byte-identical on-disk format; the change is purely the concurrency guarantee. **[card#6025:** there is no `BridgePaths::writeSeen` in the tree today — the entry records the code as it stood.**]**
 
 ### Changed
 - **#321** — **fold the writeback config-load resolve into `WritebackConfig::loadDefault()`** (card #4500, dedup audit F7). The `config('bridge.config_dir')` → `WritebackConfig::load()` resolve was copied byte-for-byte across 13 sites (6 handlers, `GitHubPrCardMoveClassifier` ×3, `CoordinationClassifier` ×2, plus `ReconcileCommand` and `WritebackAlertNotifier` — the two the audit under-counted, surfaced by canon #7 + review). One shallow `loadDefault(): ?self` folds **only** the resolve; every caller keeps its own fail branch. Zero behavior change.
@@ -1668,7 +3028,7 @@ The tracked `CoordinationClassifier` with its **default families `[coord-message
 
 ### Changed
 
-- ⚠ **Inbox dedup moved off the synchronous hot path + `webhook_events.payload` is now nullable (DL-012).** `IntentLog` no longer scans the whole inbox file per intent (an O(file) cost that grew on calendar time and inflated webhook latency); idempotency is the upstream `agent_dispatches.processed_at` gate plus a read-side id-collapse in `bridge:inbox`. **Run `php artisan migrate` on deploy** (the payload-nullable migration). `BridgePaths::jsonlContainsId` removed (dead). (#32)
+- ⚠ **Inbox dedup moved off the synchronous hot path + `webhook_events.payload` is now nullable (DL-012).** `IntentLog` no longer scans the whole inbox file per intent (an O(file) cost that grew on calendar time and inflated webhook latency); idempotency is the upstream `agent_dispatches.processed_at` gate plus a read-side id-collapse in `bridge:inbox`. **Run `php artisan migrate` on deploy** (the payload-nullable migration). `BridgePaths::jsonlContainsId` removed (dead). (#32) **[card#6025:** there is no `BridgePaths::jsonlContainsId` in the tree today — this entry is the release that removed it.**]**
 
 ### Removed
 
@@ -1776,7 +3136,7 @@ The tracked `CoordinationClassifier` with its **default families `[coord-message
 
 ### Breaking
 
-- **`agents.json` must be migrated to `schema_version: 2`.** A v1 file is not parsed — `AgentRegistry::load` warns with a migration note and degrades to an empty registry. Replace any `github_login` matching key with the immutable `github_user_id`; declare shared accounts under `shared_identities`. Kanban-only registries migrate by bumping the version number alone. No in-code compatibility shim (single-operator project).
+- **`agents.json` must be migrated to `schema_version: 2`.** A v1 file is not parsed — `AgentRegistry::load` warns with a migration note and degrades to an empty registry. Replace any `github_login` matching key with the immutable `github_user_id`; declare shared accounts under `shared_identities`. Kanban-only registries migrate by bumping the version number alone. No in-code compatibility shim (single-operator project). **[card#6025:** there is no `AgentRegistry::load` in the tree today — the roster is built by `AgentRegistry::fromAgentConfigs()`.**]**
 
 ### Verification
 

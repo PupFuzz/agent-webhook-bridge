@@ -78,6 +78,11 @@ class CoordinationCardMoveClassifierTest extends TestCase
             'issue_number' => 7,
             'sid' => 'QUERY-7',
             'disposition' => 'terminal',
+            // The lane inputs (card#6393) — stamped on EVERY move target, not only the
+            // revive one, because the family emits one payload shape. The terminal leg
+            // ignores both (a close is unconditional over lanes, ruled on #18).
+            'title' => '[QUERY] something',
+            'labels' => [],
         ], $target->payload);
     }
 

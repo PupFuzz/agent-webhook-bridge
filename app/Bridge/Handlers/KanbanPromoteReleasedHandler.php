@@ -11,6 +11,7 @@ use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\GitHubReadClient;
 use App\Bridge\Writeback\GitHubTokenResolver;
 use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\TrackedCardRef;
@@ -136,7 +137,17 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         // store helper is CLI-only (DL-184), so in practice a placed <secret_dir>/github/token
         // (or a providers.github.token_path) is required. Unresolved ⇒ permanent config gap:
         // durable alert + loud log + no-op (never 5xx-storm an unfixable event).
-        $resolution = (new GitHubTokenResolver)->resolveFor($repo);
+        // ⛔ THE CONFIGURED SPELLING, NOT THE PAYLOAD'S (card#7124 review). The resolver
+        // keys the credential store's `[git-credential-map]`, which is case-SENSITIVE
+        // (DL-185's "raw repo key, not canonical" ruling), while `$repo` is whatever the
+        // payload spelled. Until DL-293 those were the same string BY CONSTRUCTION —
+        // reaching this line required `mappingFor()` to have matched byte-for-byte — and
+        // DL-293 removed that guarantee without restoring it here, so `bridge:check` (which
+        // iterates the configured keys) and this leg would probe DIFFERENT keys and
+        // GitHubTokenResolver's "can never diverge" contract would be false for this
+        // consumer. `?? $repo` is the unmapped case, which the guard above already excludes.
+        $configuredRepo = $writeback->configuredRepoFor($repo) ?? $repo;
+        $resolution = (new GitHubTokenResolver)->resolveFor($configuredRepo);
         if (! $resolution->ok()) {
             $this->alerts->warnAndNotify(
                 'kanban_promote_released: no GitHub read token for repo — cannot verify commit reachability; skipping (place <secret_dir>/github/token, or set providers.github.token_path)',
@@ -178,9 +189,29 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             $cardId = is_numeric($card['id'] ?? null) ? (int) $card['id'] : null;
             $payload = is_array($card['payload'] ?? null) ? $card['payload'] : [];
             $prNumber = $this->prForRepo(TrackedCardRef::fromPayload($payload, $isShared, $refs), $repo, $refs);
-            if ($cardId !== null && $prNumber !== null) {
-                $candidates[$cardId] = $prNumber;   // keyed by card id (dedup; N:1 can't collide here)
+            if ($cardId === null || $prNumber === null) {
+                continue;
             }
+            // DL-298 / card#7211: the row came out of a `q=board_id=<b>` search, and the
+            // scoping is honoured by the SERVER — so this re-check refuses nothing today.
+            // That is the point: it makes the scope a property of the RESULT rather than of
+            // the call, so a `q=`→top-level hoist (which filters in a manual test, because
+            // `board_id` happens to be recognised there too, and takes the next filter
+            // hoisted beside it silently out of the query) cannot promote a card off
+            // another tenant's board. Applied where a row BECOMES a candidate, so the
+            // refused set is exactly the set this handler would otherwise have written to.
+            if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_promote_released', $cardId, $repo, 'promote_on_release')) {
+                continue;
+            }
+            // The ROW's own board travels with the candidate (card#7212), because the promote
+            // happens two calls later with the row out of scope. Carried, not re-read — and
+            // ONE capture serves both jobs: the gate above decides WHETHER this row may be
+            // written to, this pair records WHAT board the write landed on. The gate makes the
+            // two values agree on every path that reaches the promote, which is what turns the
+            // record from a divergence detector into the positive evidence card#7212 is about:
+            // a success line that names a board at all is what makes "did a cross-board write
+            // ever land?" answerable, and an absence of record is not a record of absence.
+            $candidates[$cardId] = ['pr' => $prNumber, 'board' => MappedBoardGuard::boardContext($card, $mapping)];   // keyed by card id (dedup; N:1 can't collide here)
         }
 
         if (count($candidates) > self::MAX_CANDIDATES) {
@@ -193,8 +224,8 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
         }
 
         $promoted = 0;
-        foreach ($candidates as $cardId => $prNumber) {
-            if ($this->promoteIfReleased($github, $kanban, $repo, $cardId, $prNumber, $released)) {
+        foreach ($candidates as $cardId => $candidate) {
+            if ($this->promoteIfReleased($github, $kanban, $repo, $cardId, $candidate['pr'], $released, $candidate['board'])) {
                 $promoted++;
             }
         }
@@ -209,8 +240,15 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
      * (4xx) GitHub/kanban error on this card is logged + skipped (return false); a transient
      * (5xx/timeout) error PROPAGATES so redelivery re-scans (idempotent — a promoted card
      * leaves the Shipped filter).
+     *
+     * $boardContext is the candidate ROW's own board paired with the mapped one, rendered by
+     * {@see MappedBoardGuard::boardContext} at scan time and carried here so the success
+     * record names the board the promote LANDED on, not only the one config aimed at
+     * (card#7212).
+     *
+     * @param  array{card_board: mixed, mapped_board: int}  $boardContext
      */
-    private function promoteIfReleased(GitHubReadClient $github, KanbanClient $kanban, string $repo, int $cardId, int $prNumber, int $released): bool
+    private function promoteIfReleased(GitHubReadClient $github, KanbanClient $kanban, string $repo, int $cardId, int $prNumber, int $released, array $boardContext): bool
     {
         try {
             $pr = $github->getPull($repo, $prNumber);
@@ -274,7 +312,7 @@ final class KanbanPromoteReleasedHandler implements DurableReaction, Handler
             }
             throw $e;
         }
-        Log::info('kanban_promote_released: promoted Shipped→Released', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'stage' => $released]);
+        Log::info('kanban_promote_released: promoted Shipped→Released', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber, 'stage' => $released] + $boardContext);
 
         return true;
     }

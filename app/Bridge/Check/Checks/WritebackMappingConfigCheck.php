@@ -8,16 +8,24 @@ use App\Bridge\Check\Silence;
 use App\Bridge\Support\Finding;
 use App\Bridge\Writeback\CoordConfigTerminals;
 use App\Bridge\Writeback\GitHubTokenResolver;
+use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackMapping;
 
 /**
  * Every per-mapping writeback assertion that needs NO board read, migrated out of
  * `CheckCommand::handle()` (DL-242 stage 3a).
  *
- * All of these fire on a HALF-CONFIGURED INSTALL — the state where the writeback client
- * cannot be constructed at all — which is both why they are separated from the probe
- * plane and why they matter most: every condition here makes some writeback leg silently
- * INERT, and an inert leg produces no error, no retry, and no card movement.
+ * All the WARNING legs fire on a HALF-CONFIGURED INSTALL — the state where the writeback
+ * client cannot be constructed at all — which is both why they are separated from the
+ * probe plane and why they matter most: every condition there makes some writeback leg
+ * silently INERT, and an inert leg produces no error, no retry, and no card movement.
+ *
+ * ONE LEG IS NOT OF THAT FAMILY and is here deliberately (card#7348 / DL-305): the
+ * mention-vs-closure `ok` line speaks about a mapping that is entirely correct. It sits
+ * with the others because this is the check that walks the mappings at setup time, and
+ * because what it reports — that a merge move now needs an explicit closing form — is a
+ * property of the CODE the operator is running, which their `writeback.json` cannot tell
+ * them however carefully they read it. Its own comment at the site carries the rest.
  *
  * ONE CHECK, NOT ONE PER LEG, BECAUSE OUTPUT ORDER IS THE CONTRACT. The inline code
  * iterates mappings on the OUTSIDE and legs on the inside, so a per-leg decomposition
@@ -54,22 +62,59 @@ final class WritebackMappingConfigCheck implements Check
         }
 
         foreach ($writeback->mappings as $repo => $mapping) {
+            // The scope maps are keyed by repo IDENTITY, not by spelling (DL-293) — an
+            // agent YAML and writeback.json can name one repo two ways, and a raw compare
+            // would call the mapping ORPHANED on an install whose writeback works.
+            // `$repo` itself keeps its configured spelling in every message: it is what
+            // the operator can find in their own file.
+            $scope = CheckContext::canonicalScope((string) $repo);
             // #2162: a writeback.json mapping is INERT unless some agent runs a
             // writeback-emitting classifier subscribed to its github scope. INDEPENDENT
             // of the board probe in the sibling slot — it must fire even when the
             // writeback client can't be constructed (no token / base URL), which is
             // exactly the half-configured install where an orphan is most likely.
-            if (! isset($ctx->writebackEmittingScopes[$repo])) {
+            if (! isset($ctx->writebackEmittingScopes[$scope])) {
                 // card#5698: the map is accumulated only by agents that got past both
                 // per-agent aborts, so on a run where one did not, ORPHANED and "the agent
                 // that drives it was never read" are the same value. Naming the orphan
                 // there sends the operator to add an agent for a fault a line above already
                 // attributed to the agent they have.
-                if ($ctx->agentScopeCoverage->mayCover((string) $repo)) {
-                    yield Finding::unvalidated("writeback: could NOT determine whether the mapping for {$repo} is orphaned — ".$ctx->agentScopeCoverage->gapClause((string) $repo).", so an agent this run never finished reading could be the one running a writeback-emitting classifier (App\\Bridge\\Contracts\\EmitsWritebackReactions) on github:{$repo}. Fix the error(s) above and re-run; until then this says nothing about whether the mapping is inert.");
+                if ($ctx->agentScopeCoverage->mayCover($scope)) {
+                    yield Finding::unvalidated("writeback: could NOT determine whether the mapping for {$repo} is orphaned — ".$ctx->agentScopeCoverage->gapClause($scope).", so an agent this run never finished reading could be the one running a writeback-emitting classifier (App\\Bridge\\Contracts\\EmitsWritebackReactions) on github:{$repo}. Fix the error(s) above and re-run; until then this says nothing about whether the mapping is inert.");
                 } else {
                     yield Finding::warn("writeback: mapping for {$repo} is ORPHANED — no agent runs a writeback-emitting classifier (App\\Bridge\\Contracts\\EmitsWritebackReactions) subscribed to github:{$repo}; the mapping is inert (no card will ever move) until an agent subscribes to it with that classifier");
                 }
+            }
+            // ⛔ card#7124 review — THE SPELLING SPLIT, and the reason canonicalizing the
+            // compare above is not the whole answer. The writeback matches a repo by
+            // IDENTITY since DL-293; the DISPATCHER does not. `SubscriptionRegistry::
+            // subscribedTo` compares `$sub->scopeId === $scopeId` raw against the
+            // delivery's scope, so an agent subscribed as `pupfuzz/x` receives NOTHING for
+            // a delivery spelled `PupFuzz/x` — no dispatch, no log, no alert. Left
+            // unreported, the canonicalization above would have turned that install's
+            // ORPHANED warn into SILENCE: every delivery reaching no agent at all, and
+            // `bridge:check` exiting 0 (the DL-265 shape — a leg that examined nothing
+            // stops reporting `ok`, re-minted by the fix meant to close a silent-failure
+            // class).
+            //
+            // Strictly MORE informative than the ORPHANED warn it replaces here: that one
+            // said "add an agent" for an install that HAS one. This names both spellings
+            // and the layer that still splits them. It is scoped to a genuine divergence —
+            // same repo, different spelling — so an install whose two files agree stays
+            // quiet, which is every install that has not hit this.
+            $divergent = array_values(array_unique(array_filter(
+                $ctx->githubScopeSpellings[$scope] ?? [],
+                fn (string $spelling): bool => $spelling !== (string) $repo,
+            )));
+            if ($divergent !== []) {
+                yield Finding::warn(
+                    "writeback: github scope SPELLING SPLIT for {$repo} — writeback.json keys it \"{$repo}\" while an agent subscribes to \""
+                    .implode('", "', $divergent).'" (same repo; GitHub owner/repo is case-insensitive). The WRITEBACK matches these as one repo '
+                    .'(DL-293), but the DISPATCHER does not: it matches a subscription by EXACT spelling, so a delivery is dispatched only when '
+                    .'its `repository.full_name` matches the SUBSCRIPTION byte-for-byte — and every other spelling reaches NO agent at all, with '
+                    .'no log, no finding and no alert. Spell the agent YAML `scopes:` entry and the writeback.json mapping key the same way GitHub '
+                    .'sends them, or this install is one webhook away from silently dispatching nothing.'
+                );
             }
             // #2652: the DL-160 branch-create `started` trigger is fail-closed — it needs
             // BOTH `stages.started` AND `started_from_stages`. With exactly one set the
@@ -128,7 +173,7 @@ final class WritebackMappingConfigCheck implements Check
             // An install that enabled the family but never set the terminal gets
             // issues.closed/reopened classified with NO card move — silent-inert. Scoped
             // to family-enabled scopes so a pure PR-writeback mapping stays quiet.
-            if (isset($ctx->coordCardMoveScopes[$repo]) && $mapping->coordCardTerminalStageId === null) {
+            if (isset($ctx->coordCardMoveScopes[$scope]) && $mapping->coordCardTerminalStageId === null) {
                 yield Finding::warn("writeback: github:{$repo} enables the coord-card-move family but its writeback mapping has no coord_card_terminal_stage_id — the real-time coord-issue close/reopen → card move (DL-200) is INERT (issues.closed/reopened are classified but no card moves). Set coord_card_terminal_stage_id (the fleet default activates the leg where it is present), or remove coord-card-move from classifier.config.families if the move leg is not wanted.");
             }
             // NO card#5698 DISCLOSURE ON THE ARM ABOVE, and the omission is a ruling rather
@@ -146,15 +191,51 @@ final class WritebackMappingConfigCheck implements Check
             // the handler-side gate is on, but the classifier never emits a move to hand
             // it. This is the DL-204 adoption path ("set the terminal, no flag needed")
             // dying when the operator sets the terminal but never enables the family.
-            if ($mapping->moveCoordCards && ! isset($ctx->coordCardMoveScopes[$repo]) && $ctx->agentScopeCoverage->mayCover((string) $repo)) {
+            if ($mapping->moveCoordCards && ! isset($ctx->coordCardMoveScopes[$scope]) && $ctx->agentScopeCoverage->mayCover($scope)) {
                 // card#5698: same map, opposite direction. "No agent enables the family" is
                 // the accusation, and an unread agent is indistinguishable from an absent
                 // one — so the operator would be sent to edit a families list that may
                 // already be correct in the config that failed to load.
-                yield Finding::unvalidated("writeback: could NOT determine whether any agent enables the coord-card-move family on github:{$repo} — ".$ctx->agentScopeCoverage->gapClause((string) $repo).'. This mapping has coord_card_terminal_stage_id set (the move leg is on), so if none does, the leg cannot fire. Fix the error(s) above and re-run.');
-            } elseif ($mapping->moveCoordCards && ! isset($ctx->coordCardMoveScopes[$repo])) {
+                yield Finding::unvalidated("writeback: could NOT determine whether any agent enables the coord-card-move family on github:{$repo} — ".$ctx->agentScopeCoverage->gapClause($scope).'. This mapping has coord_card_terminal_stage_id set (the move leg is on), so if none does, the leg cannot fire. Fix the error(s) above and re-run.');
+            } elseif ($mapping->moveCoordCards && ! isset($ctx->coordCardMoveScopes[$scope])) {
                 yield Finding::warn("writeback: github:{$repo} has coord_card_terminal_stage_id set (the move leg is on — explicitly or by the DL-204 default) but no agent enables the coord-card-move family on that scope — the leg cannot fire (nothing classifies issues.closed/reopened into a move). Add coord-card-move to the serving agent's classifier.config.families, or remove coord_card_terminal_stage_id to disable the move leg.");
             }
+            // card#6393: the coord-card-relane family's silent-inert shape, the DL-204 pair
+            // above one family over. The relane leg needs gate 1 (the family) AND BOTH keys
+            // of gate 2 — `move_coord_cards` (a relane IS the bridge moving a coord card)
+            // and a `coord_card_lane_stage_ids` lane model to move it INTO. With either
+            // missing the classifier emits nothing at all, so this install is silent in a
+            // way none of the legs above reports: no config error (a lane-less mapping is
+            // valid for every other leg), no board write, and nothing even classified.
+            // Missing keys are collected rather than reported one per run (the DL-195 shape)
+            // — an operator who set neither should be told so once.
+            if (isset($ctx->coordCardRelaneScopes[$scope])) {
+                $missingRelane = [];
+                if (! $mapping->moveCoordCards) {
+                    $missingRelane[] = 'move_coord_cards';
+                }
+                if ($mapping->coordCardLaneStageIds === null) {
+                    $missingRelane[] = 'coord_card_lane_stage_ids';
+                }
+                if ($missingRelane !== []) {
+                    yield Finding::warn("writeback: github:{$repo} enables the coord-card-relane family but its writeback mapping has no ".implode(' / ', $missingRelane).' — the label-driven coord-card re-lane (card#6393) is INERT: issues.labeled arrives, nothing is classified and no card moves. Set '.implode(' and ', $missingRelane).' (a relane needs both the permission to move a coord card and a lane model to move it into), or remove coord-card-relane from classifier.config.families if the relane leg is not wanted.');
+                }
+            }
+            // NO card#5698 DISCLOSURE, and NO MIRROR ARM, for the leg above — both omissions
+            // are rulings. The disclosure: it is family-scoped exactly like the DL-204 arm it
+            // mirrors, so an absent scope asserts nothing and an unread agent costs it no
+            // false claim — the DL-204 arm's own no-disclosure ruling above owns that
+            // reasoning and this arm inherits it unchanged. The mirror:
+            // the DL-204 pair has a second direction because `coord_card_terminal_stage_id`
+            // means the move leg and nothing else, so setting it declares an intent the
+            // missing family contradicts. Nothing here carries that meaning —
+            // `coord_card_lane_stage_ids` is read by every coord-card write (create since
+            // card#6371, revive and relane since card#6393) and, since DL-294, is accepted
+            // by EITHER family, so it declares no family in particular — a lane
+            // model without the relane family is the normal, intended shape of every
+            // lane-model install. A "lane ids set but no relane family" warn would fire on
+            // all of them, including the reference install, for a family that is opt-in by
+            // design.
             // DL-207: promote-on-release health. WritebackConfig::load already fails
             // closed on a missing shipped/released stage, so this catches the two
             // silent-inert shapes load cannot: both stages mapped to ONE column (the
@@ -176,9 +257,48 @@ final class WritebackMappingConfigCheck implements Check
                     yield Finding::warn("writeback: mapping for {$repo} sets promote_on_release but no GitHub read token resolves from a FILE (<secret_dir>/github/token, or providers.github.token_path) — the promote leg runs in the FPM webhook runtime where GH_TOKEN is absent and the credential-store helper is CLI-only, so a store/GH_TOKEN-only token (usable by bridge:reconcile) leaves the promote leg INERT at runtime with no reconcile backstop. Place a read-only token file (chmod 600).");
                 }
             }
+            // card#7348 / DL-305: the MENTION-vs-CLOSURE semantics, said at setup time.
+            // The only leg here that speaks about a mapping which is entirely CORRECT —
+            // and it earns the line because what it reports is not in the operator's file.
+            // `writeback.json` says which stage a merge lands on; it cannot say that since
+            // DL-305 a merge lands there only when something CLAIMS the card is done. A
+            // peer wired a brand-new board into this classifier hours before the defect
+            // surfaced and nothing in the setup path told them what they were inheriting;
+            // this is that sentence, on the surface that actually runs.
+            //
+            // ⚠ DL-308 GAVE THE CLAIM A SECOND ROUTE, and this line is the reason the
+            // sentence is composed at `PrOutcome::describeClosure()` rather than here: the
+            // text that stood here said the TITLE was the only thing that could move a
+            // card, which an operator would read as a rule the structural route violates.
+            // A restated accept-set on a surface whose job is telling operators what they
+            // inherited is the DL-239 defect on the worst possible surface.
+            //
+            // SCOPED TO MAPPINGS THAT HAVE A MERGE LEG AT ALL, so a started/opened-only
+            // mapping stays silent — the emptiness there is the operator's own config
+            // (Severity corollary (B)) and the gate has nothing to describe. The mapped
+            // outcomes are NAMED rather than counted, so an install that maps only one of
+            // the two is told which one.
+            // The gated set is READ from the authority, never re-listed: `PrOutcome` decides
+            // which outcomes require a closing form, and a literal pair here would be a
+            // second copy free to disagree with the runtime the day the set moves — which is
+            // precisely the failure mode this check exists to report on other people's
+            // config.
+            $gated = [];
+            foreach (PrOutcome::MERGE_OUTCOMES as $mergeOutcome) {
+                if ($mapping->stageFor($mergeOutcome) !== null) {
+                    $gated[] = "stages.{$mergeOutcome} (".$mapping->stageFor($mergeOutcome).')';
+                }
+            }
+            if ($gated !== []) {
+                yield Finding::ok("writeback: mapping for {$repo} moves a card on MERGE only when the merge CLAIMS that card is done — "
+                    .implode(' and ', $gated).' '.(count($gated) === 1 ? 'is' : 'are')
+                    .' gated this way (card#7348 / DL-305, widened DL-308). A PR that merely MENTIONS a card#/DL token is a NO-OP for the stage: the card is left exactly where it is, never moved back — so nothing needs backfilling, and a missing claim costs an UNDER-promoted card you can move by hand. '
+                    .'Accepted: '.PrOutcome::describeClosureAccepted()
+                    .'. The token still selects WHICH card; the claim is what says the merge finishes it. (The REJECTED side of BOTH sets — the branch shapes that name no card, and the title shapes that name a card without claiming it done — is rendered by the runtime warning at the moment one is seen, where it is diagnostic rather than noise.)');
+            }
         }
 
-        yield Silence::because('every mapping has a subscribed writeback-emitting classifier and no half-configured optional leg — each of the legs above speaks only when a key is set without the key it needs');
+        yield Silence::because('no mapping maps a merge outcome (so the mention-vs-closure line has nothing to describe), every mapping has a subscribed writeback-emitting classifier spelled as the mapping spells it, and no half-configured optional leg — each of the WARNING legs above speaks only when a key is set without the key it needs, or when two files spell one repo two ways');
     }
 
     /**

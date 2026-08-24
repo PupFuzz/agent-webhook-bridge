@@ -10,9 +10,11 @@ use App\Bridge\Support\ExternalReferenceNormalizer;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
+use App\Bridge\Writeback\WritebackMapping;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -121,20 +123,27 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             // confirm — it attributes each card by its pr_url and drops any
             // foreign-repo card a bare-number match surfaced.
             $sourceRepo = $writeback->boardIsShared($mapping->boardId) ? $repo : null;
-            $cards = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber, $sourceRepo), $repo);
+            $cards = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber, $sourceRepo), $repo, $mapping, $prNumber);
 
             // Closed-unmerged dependabot PR → RETIRE the card(s) (DL-161). Archive,
             // not move: routine dependabot churn shouldn't linger in any column, and
             // archiving needs no stage mapping. A repo+PR may map to >1 card (a create
             // race) — archive them all. Empty (never tracked) → nothing to do.
             if ($outcome === 'closed_unmerged') {
-                foreach (array_keys($cards) as $cardId) {
+                foreach ($cards as $cardId => $card) {
                     if ($client->archiveCard($cardId)) {
-                        Log::info('kanban_dependabot_card: archived (closed-unmerged)', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber]);
+                        // ⭐ A GROUP-B write (card#7211): this id came out of a board-scoped
+                        // SEARCH, so unlike the token-path arms the card's board here is not
+                        // implied by anything upstream. `cardsForRepo` re-checks it (DL-298),
+                        // and that gate is not a substitute for this record — a gate emits
+                        // evidence only when it REFUSES. Recording BOTH boards is what makes a
+                        // landed cross-board write distinguishable from a correct one after the
+                        // fact (card#7212).
+                        Log::info('kanban_dependabot_card: archived (closed-unmerged)', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
                     } else {
                         // 200 but not archived = wrong-verb / kanban contract change.
                         // Deterministic ⇒ permanent: log LOUD + no-op, never 5xx-storm it (DL-020 posture).
-                        Log::error('kanban_dependabot_card: archive returned 200 but the card is not archived (archived_at null) — kanban _action:archive contract may have changed; NOT retrying', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber]);
+                        Log::error('kanban_dependabot_card: archive returned 200 but the card is not archived (archived_at null) — kanban _action:archive contract may have changed; NOT retrying', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
                     }
                 }
 
@@ -151,10 +160,12 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 // >1 card for one repo+PR is a create-race artifact (see collapseDuplicates):
                 // retire the extras and move only the survivor. Self-heals duplicates minted
                 // before this guard shipped, on the PR's next event.
-                $survivor = $this->collapseDuplicates($client, $cards, $repo, $prNumber);
+                $survivor = $this->collapseDuplicates($client, $cards, $mapping, $repo, $prNumber);
                 if (($survivor['workflow_stage_id'] ?? null) !== $stageId) {
                     $client->moveCard((int) $survivor['id'], $stageId);
-                    Log::info('kanban_dependabot_card: moved', ['card_id' => $survivor['id'], 'stage' => $stageId, 'outcome' => $outcome, 'pr' => $prNumber]);
+                    // Group-B, as the archive arm above (card#7211/card#7212): the survivor was
+                    // resolved by search, not by a token, so its own board is recorded here.
+                    Log::info('kanban_dependabot_card: moved', ['card_id' => $survivor['id'], 'stage' => $stageId, 'outcome' => $outcome, 'pr' => $prNumber] + MappedBoardGuard::boardContext($survivor, $mapping));
                 }
 
                 return;
@@ -166,7 +177,14 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             $payload = array_combine(self::CREATE_PAYLOAD_KEYS, [$prNumber, $url, 'dependabot']);
             $tags = ['dependencies', 'triaged'];
             if ($mapping->cardIdTagTemplate !== null) {
-                array_unshift($tags, $this->renderIdTag($mapping->cardIdTagTemplate, $prNumber, $repo));
+                // The CONFIGURED spelling (card#7124 review), for the same reason the
+                // promote leg's token probe uses it: `{repo}` renders into a persisted
+                // `id:` tag an external tag-keyed reader correlates on, and a tag is text
+                // the operator declared — not a spelling the payload happened to carry.
+                // Until DL-293 the two were equal on every reachable path, so this keeps
+                // the tag byte-identical wherever the two files agree and uses the
+                // operator's own spelling where they do not.
+                array_unshift($tags, $this->renderIdTag($mapping->cardIdTagTemplate, $prNumber, $writeback->configuredRepoFor($repo) ?? $repo));
             }
             $newId = $client->createCard($mapping->boardId, $stageId, $title, $payload, $tags, $mapping->swimlaneId);
             Log::info('kanban_dependabot_card: created', ['card_id' => $newId, 'board' => $mapping->boardId, 'stage' => $stageId, 'swimlane' => $mapping->swimlaneId, 'outcome' => $outcome, 'pr' => $prNumber]);
@@ -179,9 +197,9 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             // at the kanban TaskMutator chokepoint, so a racer's card is now visible too)
             // and collapse any duplicate. A re-read failure flows through the same
             // transient/permanent split below; the move-path guard self-heals it next event.
-            $live = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber, $sourceRepo), $repo);
+            $live = $this->cardsForRepo($client, $client->correlatePr($mapping->boardId, $prNumber, $sourceRepo), $repo, $mapping, $prNumber);
             if (count($live) > 1) {
-                $this->collapseDuplicates($client, $live, $repo, $prNumber);
+                $this->collapseDuplicates($client, $live, $mapping, $repo, $prNumber);
             }
         } catch (RequestException $e) {
             // A kanban 4xx is permanent (alert + log + no-op); a 5xx / timeout is transient (throw → redelivery retries).
@@ -202,8 +220,21 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
     }
 
     /**
-     * Fetch the correlated cards and keep only those belonging to $repo, as an
-     * `id => card` map. correlatePr is repo-qualified at the source in `ref` mode
+     * Fetch the correlated cards and keep only those on the mapped BOARD and belonging
+     * to $repo, as an `id => card` map — the one place every write this handler makes
+     * (archive on closed-unmerged, the collapse's archive, the survivor's move) draws
+     * its card set from, which is why both gates live here rather than at each write.
+     *
+     * The BOARD gate (DL-298, card#7211) re-tests the row kanban actually handed back
+     * against the mapped board, through the same `MappedBoardGuard` the token-path
+     * handlers use — never a second copy of the compare. It refuses nothing today
+     * (`correlatePr` is board-scoped by the by-ref URL PATH in `ref` mode and by the
+     * `q=board_id=<b>` board read in `scan` mode, and that scoping is measured to be
+     * honoured), and that is the design intent: the scope becomes a property of the
+     * RESULT, so a call-construction change cannot silently widen it. It costs no extra
+     * request — the row is already read here for the repo attribution below.
+     *
+     * The REPO gate: correlatePr is repo-qualified at the source in `ref` mode
      * (DL-167 → kanban `source`, DL-163), so this is a confirm there; in `scan`
      * mode it's the actual cross-repo guard. Attribution is by the
      * `github.com/<repo>/pull/` segment of a card's stored `pr_url`; a card whose
@@ -212,13 +243,19 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
      * @param  list<int>  $cardIds
      * @return array<int, array<string, mixed>>
      */
-    private function cardsForRepo(KanbanClient $client, array $cardIds, string $repo): array
+    private function cardsForRepo(KanbanClient $client, array $cardIds, string $repo, WritebackMapping $mapping, int $prNumber): array
     {
         $refs = new ExternalReferenceNormalizer;
         $wantRepo = $refs->canonicalizeSource($repo);   // canon-compare: GitHub owner/repo is case-insensitive
         $cards = [];
         foreach ($cardIds as $id) {
             $card = $client->getCard($id);
+            // The board gate runs BEFORE the repo gate, and the order is the point: a
+            // foreign-board card that ALSO fails the repo test would be dropped silently,
+            // and the board is the one boundary whose breach must never be a quiet drop.
+            if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_dependabot_card', $id, $repo, self::ALERT_OUTCOME, $prNumber)) {
+                continue;
+            }
             if ($this->cardRepo($refs, $card) === $wantRepo) {
                 $cards[$id] = $card;
             }
@@ -255,9 +292,9 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
      * @param  non-empty-array<int, array<string, mixed>>  $cards  id => card
      * @return array<string, mixed>
      */
-    private function collapseDuplicates(KanbanClient $client, array $cards, string $repo, int $prNumber): array
+    private function collapseDuplicates(KanbanClient $client, array $cards, WritebackMapping $mapping, string $repo, int $prNumber): array
     {
-        return CardCollapse::toSurvivor($client, $cards, 'kanban_dependabot_card', ['repo' => $repo, 'pr' => $prNumber]);
+        return CardCollapse::toSurvivor($client, $cards, 'kanban_dependabot_card', ['repo' => $repo, 'pr' => $prNumber], $mapping);
     }
 
     /**

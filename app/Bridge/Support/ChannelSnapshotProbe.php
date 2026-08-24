@@ -300,10 +300,10 @@ final class ChannelSnapshotProbe
         }
 
         // The BUNDLED manifest is this checkout's own file and deliberately does NOT
-        // go through visibleOrUnverified: an unreadable one already lands on the
-        // `unvalidated` finding below, which names its own cause and carries no
-        // destructive remediation — whereas the guard's message would talk about the
-        // AGENT's deployed directory while naming a checkout file.
+        // go through PathVisibility::unverifiedUnlessVisible(): an unreadable one
+        // already lands on the `unvalidated` finding below, which names its own cause
+        // and carries no destructive remediation — whereas the guard's message would
+        // talk about the AGENT's deployed directory while naming a checkout file.
         $bundled = self::readManifest($bundledDir.'/package.json');
         if ($bundled['status'] !== 'ok') {
             // The action is SPELLED OUT. It was found silent while its sibling — the

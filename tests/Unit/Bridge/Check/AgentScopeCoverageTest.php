@@ -121,4 +121,20 @@ class AgentScopeCoverageTest extends TestCase
             $coverage->unreadAgents(),
         );
     }
+
+    public function test_a_recorded_scope_covers_a_differently_cased_spelling_of_the_same_repo(): void
+    {
+        // DL-293: the recorded scope is the agent YAML's spelling and the caller asks with
+        // writeback.json's, which for one repo may differ. A raw compare would answer
+        // "nothing unread covers this scope" for an agent that subscribes to exactly it —
+        // turning a CANNOT-VERIFY back into the confident accusation card#5698 removed.
+        $coverage = new AgentScopeCoverage;
+        $coverage->recordUnread('alpha', ['Owner/Repo']);
+
+        $this->assertSame(['alpha'], $coverage->unreadCovering('owner/repo'));
+        $this->assertTrue($coverage->mayCover('OWNER/REPO'));
+        $this->assertFalse($coverage->mayCover('owner/other'));
+        // The RECORDED spelling is untouched — it is rendered verbatim in the JSON ledger.
+        $this->assertSame([['agent' => 'alpha', 'scopes' => ['Owner/Repo']]], $coverage->unreadAgents());
+    }
 }

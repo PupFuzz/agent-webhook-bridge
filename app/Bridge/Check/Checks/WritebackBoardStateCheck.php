@@ -188,10 +188,12 @@ final class WritebackBoardStateCheck implements Check
                 if ($mapping->coordCardTerminalStageId !== null) {
                     $targets[] = $mapping->coordCardTerminalStageId;
                 }
-                // card#6371: the priority-lane create stages — same class once more,
-                // and worse to miss: a typo'd lane id 422s the create for exactly the
-                // issues whose priority the label states, which is the population this
-                // leg exists to place correctly.
+                // card#6371: the priority-lane stage ids — same class once more, and
+                // worse to miss: a typo'd lane id 422s the write for exactly the issues
+                // whose priority the label states, which is the population this leg
+                // exists to place correctly. Since card#6393 that is three writes, not
+                // one (create, revive, relane), so the blast radius of a typo grew while
+                // this comparison did not have to.
                 foreach ($mapping->coordCardLaneStageIds ?? [] as $laneStageId) {
                     $targets[] = $laneStageId;
                 }
@@ -233,16 +235,18 @@ final class WritebackBoardStateCheck implements Check
                 // move_coord_cards can resolve true from terminal-presence alone, so
                 // without this gate the compare would verify a terminal for a leg that
                 // cannot fire (family off) and read as though the leg were live.
-                if (isset($ctx->coordCardMoveScopes[$repo])) {
+                // Keyed by repo IDENTITY, not spelling (DL-293) — {@see CheckContext::canonicalScope}.
+                $scope = CheckContext::canonicalScope((string) $repo);
+                if (isset($ctx->coordCardMoveScopes[$scope])) {
                     yield from $this->coordTerminalAgreement((string) $repo, $mapping, $client);
-                } elseif ($mapping->moveCoordCards && $mapping->coordCardTerminalStageId !== null && $ctx->agentScopeCoverage->mayCover((string) $repo)) {
+                } elseif ($mapping->moveCoordCards && $mapping->coordCardTerminalStageId !== null && $ctx->agentScopeCoverage->mayCover($scope)) {
                     // card#5698: the gate resolves from a map an aborted agent never
                     // reached, so an unread agent SKIPS a preflight this check's own
                     // docblock calls MANDATORY — silently, and on the exact axis (b)
                     // forbids: a missing input is not evidence of agreement. The two inner
                     // conditions mirror coordTerminalAgreement()'s own early return, so
                     // this speaks only where the compare would otherwise have run.
-                    yield Finding::unvalidated("writeback: move_coord_cards ({$repo}, board {$mapping->boardId}): CANNOT VERIFY the terminal against the coordination config — ".$ctx->agentScopeCoverage->gapClause((string) $repo).', so whether any agent enables the coord-card-move family on that scope (the gate this MANDATORY preflight runs behind) could not be resolved. Until this is verified the two movers may disagree about which column is terminal and fight every cycle. Fix the error(s) above and re-run.');
+                    yield Finding::unvalidated("writeback: move_coord_cards ({$repo}, board {$mapping->boardId}): CANNOT VERIFY the terminal against the coordination config — ".$ctx->agentScopeCoverage->gapClause($scope).', so whether any agent enables the coord-card-move family on that scope (the gate this MANDATORY preflight runs behind) could not be resolved. Until this is verified the two movers may disagree about which column is terminal and fight every cycle. Fix the error(s) above and re-run.');
                 }
             } catch (Throwable $e) {
                 yield Finding::unvalidated("writeback: could not read board {$mapping->boardId} ({$repo}) with the writeback token — ".$e->getMessage());

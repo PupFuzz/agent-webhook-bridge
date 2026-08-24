@@ -26,8 +26,9 @@ use App\Bridge\Tools\SshTransportProbe;
  *
  * THE DL-225 ADVISORY IS DELIBERATELY NOT HERE. It reads these findings' severities but
  * emits AFTER the whole loop, so folding it in would either reorder output or make this
- * check stateful across agents. It stays inline in `checkSshTransport()`, reading the
- * severities off this check's report — a stage-2-7 unit, not stage 1's.
+ * check stateful across agents. It is {@see BoardToolsSshDefaultAdvisoryCheck}, registered
+ * into its own {@see CheckSlot::BoardToolsSshAdvisory} and run by a SECOND per-agent pass
+ * in `CheckCommand::handle()` — a stage-7b unit, not stage 1's.
  */
 final class SshPinnedLineCheck implements PerAgentCheck
 {

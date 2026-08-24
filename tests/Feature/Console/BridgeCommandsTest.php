@@ -18,6 +18,8 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\UnreadableDeclarationClassifier;
+use Tests\Support\ConsoleTable;
+use Tests\Support\PreloadStub;
 use Tests\TestCase;
 
 class BridgeCommandsTest extends TestCase
@@ -73,6 +75,34 @@ class BridgeCommandsTest extends TestCase
     {
         File::put($this->dir.'/prod-agent.yml', "identity:\n  kanban_user_id: 137\n"
             ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n");
+    }
+
+    /**
+     * The board stage order `WritebackBoardStateCheck` reads for EVERY mapping, from
+     * `/boards/{board}/preload.json`.
+     *
+     * ⚑ Leaving it unstubbed does NOT just make that one leg quieter. The whole
+     * per-mapping block sits inside one `catch (Throwable)`, so the unstubbed read
+     * replaces every later line the block would have produced with a single
+     * `could not read board … with the writeback token` — and a test asserting on one of
+     * those later lines then passes over a block that never ran (card#7300). Before
+     * `Http::preventStrayRequests()` the read also LEFT THE PROCESS, so the verdict was a
+     * function of whether the runner could resolve the fixture host.
+     *
+     * The stage set is what the cases routed through here need present for the
+     * stage-existence leg to run its HEALTHY arm; the body shape and the bound on reading it
+     * as a real board belong to {@see PreloadStub}. A case that needs an id to be MISSING from
+     * the board stubs its own preload, which the `$stubs + $this->fakePreload()` order keeps
+     * ahead of this one (CLAUDE_GOTCHAS.md G-020).
+     *
+     * ⚑ `swimlanes` is present and EMPTY, which is not the same as absent: absent is what
+     * `WritebackBoardStateCheck` reports as "carried no swimlane collection at all".
+     *
+     * @return array<string, mixed>
+     */
+    private function fakePreload(int $boardId = 8): array
+    {
+        return PreloadStub::stub($boardId, [21 => 1, 49 => 2, 50 => 3, 52 => 4, 53 => 5], swimlanes: []);
     }
 
     private function event(): WebhookEvent
@@ -577,7 +607,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => []]),
             'https://api.github.com/*' => Http::response(['message' => 'Bad credentials'], 401),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('token from token file')
@@ -598,7 +628,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => []]),
             'https://api.github.com/*' => Http::response(['message' => 'Bad credentials'], 401),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('HTTP 401 (token expired/revoked)')
@@ -614,7 +644,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => []]),
             'https://api.github.com/*' => Http::response(['message' => 'Forbidden'], 403),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('HTTP 403 (token lacks access to this private repo — needs `repo` scope)')
@@ -646,7 +676,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => []]),
             'https://api.github.com/*' => Http::response(['full_name' => 'owner/repo']),
-        ]);
+        ] + $this->fakePreload());
     }
 
     public function test_check_warns_when_promote_on_release_lacks_a_github_token_file(): void
@@ -686,7 +716,7 @@ class BridgeCommandsTest extends TestCase
         // board member / wrong board_id). bridge:check must surface it LOUDLY at
         // config time, but stay a warning (exit 0) — an empty new board is legit.
         $this->writeWritebackWithToken();
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('sees 0 cards on board 8')
@@ -697,7 +727,7 @@ class BridgeCommandsTest extends TestCase
     {
         $this->writeWritebackWithToken();
         // DL-029: the visibility probe reads the DL-146 pagination meta.total.
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 2]])]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 2]])] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('sees 2 card(s) on board 8')
@@ -712,7 +742,7 @@ class BridgeCommandsTest extends TestCase
         // there's no need to fake thousands of rows.
         $this->writeWritebackWithToken();
         $over = KanbanClient::SEARCH_LIMIT * KanbanClient::MAX_PAGES + 1;
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => $over]])]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => $over]])] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('beyond the scan ceiling')
@@ -737,7 +767,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/by-ref.json*' => Http::response(['data' => []]),                       // route exists
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('by-ref reachable')
@@ -753,7 +783,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/by-ref.json*' => Http::response(['message' => 'Not Found'], 404),       // route missing
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('by-ref returned 404')
@@ -772,7 +802,7 @@ class BridgeCommandsTest extends TestCase
                 'data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9001']]],   // no pr_url → source=null
                 'meta' => ['total' => 1],
             ]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('card 7 (DL DL-9001)')
@@ -791,7 +821,7 @@ class BridgeCommandsTest extends TestCase
                 'data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9001']]],
                 'meta' => ['total' => 1],
             ]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->doesntExpectOutputToContain('source=null')
@@ -810,7 +840,7 @@ class BridgeCommandsTest extends TestCase
                 'data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9001', 'pr_url' => 'https://github.com/owner/repo/pull/0']]],
                 'meta' => ['total' => 1],
             ]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->doesntExpectOutputToContain('source=null')
@@ -829,7 +859,7 @@ class BridgeCommandsTest extends TestCase
                 'data' => [['id' => 7, 'payload' => ['dl_number' => 'DL-9001', 'repo' => 'owner/repo']]],
                 'meta' => ['total' => 1],
             ]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->doesntExpectOutputToContain('source=null')
@@ -842,7 +872,7 @@ class BridgeCommandsTest extends TestCase
         // classifier subscribed to its github scope is inert — warn (exit 0). The
         // default writeAgent() only subscribes to kanban, so owner/repo is orphaned.
         $this->writeWritebackWithToken();
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('mapping for owner/repo is ORPHANED')
@@ -886,10 +916,46 @@ class BridgeCommandsTest extends TestCase
             'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
             'bridge.writeback.correlation' => 'scan',
         ]);
-        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->doesntExpectOutputToContain('ORPHANED')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_no_orphan_warning_when_the_agent_scope_and_the_mapping_differ_only_in_case(): void
+    {
+        // DL-293 + the card#7124 review, end to end (the agent YAML's scope AND the
+        // writeback.json key, through the real CheckCommand derivation). TWO assertions,
+        // and the second is the load-bearing one:
+        //   (a) the ORPHANED accusation is GONE — the writeback resolves this mapping, so
+        //       "no agent drives it" was a config accusation against an install that works;
+        //   (b) ⛔ and it is replaced by the SPELLING SPLIT warn, never by SILENCE. The
+        //       dispatcher still matches a subscription by exact spelling
+        //       (SubscriptionRegistry::subscribedTo), so on this very install every
+        //       delivery reaches NO agent. An exit-0 run with nothing said would certify
+        //       that healthy — strictly worse than the wrong warn it replaced, and the
+        //       DL-265 shape re-minted by the fix meant to close a silent-failure class.
+        File::put($this->dir.'/wb-agent.yml',
+            "identity:\n  github_user_id: 41000\n"
+            ."subscriptions:\n  - provider: github\n    scopes: [\"Owner/Repo\"]\n"
+            ."classifier:\n  class: App\\Bridge\\Classifiers\\GitHubPrCardMoveClassifier\n");
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['merged' => 52]]],
+        ]));
+        File::ensureDirectoryExists($this->dir.'/kanban');
+        File::put($this->dir.'/kanban/writeback-token', 'wb');
+        chmod($this->dir.'/kanban/writeback-token', 0o600);
+        config([
+            'bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3',
+            'bridge.writeback.correlation' => 'scan',
+        ]);
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 1]])] + $this->fakePreload());
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('ORPHANED')
+            ->expectsOutputToContain('SPELLING SPLIT for owner/repo')
             ->assertExitCode(0);
     }
 
@@ -1172,7 +1238,7 @@ class BridgeCommandsTest extends TestCase
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             // Board has pr_number + origin but NOT pr_url.
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'pr_number'], ['key' => 'origin']]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('create_dependabot_cards is on for owner/repo but board 8 is MISSING the custom field(s) pr_url')
@@ -1196,7 +1262,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'pr_number'], ['key' => 'pr_url'], ['key' => 'origin']]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('create_dependabot_cards custom fields ok on board 8')
@@ -1233,7 +1299,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'dl_number']]]),   // no issue_number
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain("issue_population=all for owner/repo but board 8 does not register the 'issue_number' custom field")
@@ -1246,7 +1312,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'issue_number'], ['key' => 'issue_url']]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('issue_number custom field registered on board 8')
@@ -1263,7 +1329,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'issue_number']]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('DISAGREE on issue_population')
@@ -1278,7 +1344,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'issue_number']]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('coord config agrees')
@@ -1294,7 +1360,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['error' => 'boom'], 500),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain("could NOT read board 8's custom fields to verify issue_number")
@@ -1324,7 +1390,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'dl_number']]]),   // no issue_number
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain("board 8 does not register the 'issue_number' custom field")
@@ -1338,7 +1404,7 @@ class BridgeCommandsTest extends TestCase
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
             '*/boards/8/custom_fields.json' => Http::response(['data' => [['key' => 'issue_number']]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->expectsOutputToContain('BRIDGE_WRITEBACK_CORRELATION is not `ref`')
@@ -1363,7 +1429,7 @@ class BridgeCommandsTest extends TestCase
         ]);
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 1, 'payload' => []]]]),
-        ]);
+        ] + $this->fakePreload());
 
         $this->artisan('bridge:check')
             ->doesntExpectOutputToContain('create_dependabot_cards custom fields')
@@ -1730,6 +1796,78 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(0);
     }
 
+    // ---- card#6393: the coord-card-relane family's silent-inert shape ----
+
+    public function test_check_warns_when_the_coord_card_relane_family_is_enabled_but_the_lane_model_is_missing(): void
+    {
+        // Gate 1 (the coord-card-relane family) on, gate 2 half-configured: `move_coord_cards`
+        // is on but no `coord_card_lane_stage_ids`, so there is no lane to move a card into
+        // and the classifier emits nothing at all. No other leg reports that silence — a
+        // lane-less mapping is valid for every one of them.
+        $this->writeGithubAgent('prod-agent', 'App\Bridge\Classifiers\CoordinationClassifier', 'coord-message, coord-card-move, coord-card-relane');
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'coord_card_stage_id' => 50, 'coord_card_terminal_stage_id' => 53]],
+        ]));
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('enables the coord-card-relane family but its writeback mapping has no coord_card_lane_stage_ids')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_names_both_missing_keys_when_the_relane_family_has_neither(): void
+    {
+        // A mapping with neither key: the operator is told both once, not one per run.
+        // `move_coord_cards` resolves FALSE here through the DL-204 default (no terminal).
+        $this->writeGithubAgent('prod-agent', 'App\Bridge\Classifiers\CoordinationClassifier', 'coord-message, coord-card-relane');
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50]]],
+        ]));
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('has no move_coord_cards / coord_card_lane_stage_ids')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_does_not_nudge_the_relane_leg_when_the_family_is_not_enabled(): void
+    {
+        // The negative the warn above needs to mean anything: the SAME lane-less mapping,
+        // with only the move family enabled. The relane advisory is family-scoped, so an
+        // install that never opted in gets no relane noise — while the DL-204 arm still
+        // speaks, which is the witness that the check reached this mapping at all.
+        $this->writeGithubAgent('prod-agent', 'App\Bridge\Classifiers\CoordinationClassifier', 'coord-message, coord-card-move');
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'coord_card_stage_id' => 50]],
+        ]));
+
+        $this->artisan('bridge:check')
+            ->expectsOutputToContain('enables the coord-card-move family but its writeback mapping has no coord_card_terminal_stage_id')
+            ->doesntExpectOutputToContain('coord-card-relane family')
+            ->assertExitCode(0);
+    }
+
+    public function test_check_is_silent_about_the_relane_leg_when_both_of_its_keys_are_set(): void
+    {
+        // The other direction of the same gate: a fully configured relane install draws no
+        // advisory. Without this leg a check that warned unconditionally would satisfy the
+        // two above.
+        $this->writeGithubAgent('prod-agent', 'App\Bridge\Classifiers\CoordinationClassifier', 'coord-message, coord-card-move, coord-card-relane');
+        File::put($this->dir.'/writeback.json', (string) json_encode([
+            'identity_id' => 4242,
+            'mappings' => ['owner/repo' => ['board_id' => 8, 'stages' => ['opened' => 50],
+                'create_coord_cards' => true, 'coord_card_stage_id' => 50, 'coord_card_terminal_stage_id' => 53,
+                'coord_card_lane_stage_ids' => ['now' => 40, 'next' => 41, 'later' => 42, 'maybe' => 43]]],
+        ]));
+
+        $this->artisan('bridge:check')
+            ->doesntExpectOutputToContain('coord-card-relane family')
+            ->assertExitCode(0);
+    }
+
     public function test_check_skips_the_terminal_compare_when_the_move_family_is_not_enabled(): void
     {
         // Finding-1 gate: after the DL-204 flip move_coord_cards can resolve true from
@@ -1813,9 +1951,14 @@ class BridgeCommandsTest extends TestCase
             json_encode(['id' => 'e:agent:0', 'ts' => 1.0, 'kind' => 'new_card', 'summary' => 'dup'])."\n",
         );
 
-        $this->artisan('bridge:inbox', ['--hook-format' => 'plain'])
-            ->expectsOutputToContain('new_card')
-            ->assertExitCode(0);
+        // ⛔ ASSERT THE OCCURRENCE COUNT, not that the output mentions the kind. Neither
+        // of the two assertions below can distinguish one rendering from two: the cursor
+        // advance array_unique()s its ids, so it records ONE id either way, and
+        // expectsOutputToContain() is satisfied by a doubled line. Measured by mutation —
+        // drop the `isset($ids[$id])` collapse from BridgePaths::unseenInboxLines() and
+        // this test passed, which is what made it a name rather than a guard (card#7332).
+        $this->assertSame(0, Artisan::call('bridge:inbox', ['--hook-format' => 'plain']));
+        $this->assertSame(1, substr_count(Artisan::output(), 'new_card'), 'a duplicate id must be surfaced ONCE');
 
         // Surfaced once → cursor records exactly one id; a second run is silent.
         $this->assertSame(['e:agent:0'], json_decode((string) File::get($this->dir.'/state/inbox-seen.json'), true));
@@ -2125,7 +2268,48 @@ class BridgeCommandsTest extends TestCase
         AgentDispatch::create(['webhook_event_id' => $event->id, 'agent_name' => 'a', 'processed_at' => now()]);
         AgentDispatch::create(['webhook_event_id' => $event->id, 'agent_name' => 'b', 'error_message' => 'boom']);
 
-        $this->artisan('bridge:stats')->assertExitCode(0);
+        // ⛔ THE COUNTS, which `assertExitCode(0)` alone said nothing about: this test was named
+        // for the numbers and asserted only that the command did not crash, so a `bridge:stats`
+        // that printed an empty table passed it (card#7471). The fixture is built so the four
+        // cells are mutually DISCRIMINATING — a processed row and an errored row, which land in
+        // different buckets and sum to a third — rather than four readings of one number.
+        $this->assertSame(0, Artisan::call('bridge:stats'));
+        $out = Artisan::output();
+        ConsoleTable::assertRow($out, 'webhook_events', '1');
+        ConsoleTable::assertRow($out, 'agent_dispatches', '2');
+        ConsoleTable::assertRow($out, 'processed', '1');
+        ConsoleTable::assertRow($out, 'errored (replayable)', '1');
+    }
+
+    public function test_stats_still_reports_its_other_counts_when_the_divergence_table_is_absent(): void
+    {
+        // The install shape this arm exists for: upgraded to the card#7212 release, has not run
+        // `php artisan migrate`. Every other table is there; that one is not. Before the arm,
+        // the missing table took the WHOLE report down through guardDatabase() — exit 1, no
+        // counts at all, and a message blaming DB_HOST for a database that answered fine.
+        //
+        // ⚑ The table is really dropped, through the migration's own `down()`, and restored in
+        // `finally` — a `Schema::drop` open-coded here would be a second spelling of the DDL,
+        // and DDL commits the RefreshDatabase transaction, so an unrestored drop takes the
+        // table away from every later test in the run.
+        $this->event();
+        $file = glob(database_path('migrations/*_create_writeback_board_divergences_table.php'));
+        $this->assertCount(1, $file, 'the divergence migration has been renamed or split');
+        $migration = require $file[0];
+
+        $migration->down();
+        try {
+            $this->assertSame(0, Artisan::call('bridge:stats'));
+            $out = Artisan::output();
+        } finally {
+            $migration->up();
+        }
+
+        $this->assertStringContainsString('webhook_events', $out);
+        // NOT the zero: an absent table is a third state, and printing 0 for it would assert
+        // that nothing has ever diverged here — which is precisely what nobody measured.
+        $this->assertStringContainsString('NOT MEASURED', $out);
+        $this->assertStringContainsString('php artisan migrate', $out);
     }
 
     public function test_inspect_shows_event_or_fails(): void
@@ -2253,9 +2437,17 @@ class BridgeCommandsTest extends TestCase
         AgentDispatch::create(['webhook_event_id' => $event->id, 'agent_name' => 'pm', 'processed_at' => now()]);
         AgentDispatch::create(['webhook_event_id' => $event->id, 'agent_name' => 'backend', 'error_message' => 'boom']);
 
-        $this->artisan('bridge:stats', ['--agent' => 'pm'])
-            ->expectsOutputToContain('[pm]')
-            ->assertExitCode(0);
+        // ⛔ THE SCOPING, not the label. `expectsOutputToContain('[pm]')` matched the row's
+        // CAPTION — which the command interpolates from the flag and would print whether or not
+        // it filtered anything — so dropping the `where('agent_name', …)` left this green
+        // (card#7471). backend's row is the discriminator: it is the ERRORED one, so an
+        // unscoped run reads 2/1/1 where a scoped one reads 1/1/0.
+        $this->assertSame(0, Artisan::call('bridge:stats', ['--agent' => 'pm']));
+        $out = Artisan::output();
+        ConsoleTable::assertRow($out, 'webhook_events', '1', 'the event count is deliberately NOT agent-scoped');
+        ConsoleTable::assertRow($out, 'agent_dispatches [pm]', '1', "backend's dispatch must not be counted");
+        ConsoleTable::assertRow($out, 'processed', '1');
+        ConsoleTable::assertRow($out, 'errored (replayable)', '0', "backend's error must not be counted");
     }
 
     public function test_inbox_build_output_envelope_logic(): void
@@ -2318,12 +2510,23 @@ class BridgeCommandsTest extends TestCase
             'webhook_event_id' => $event->id, 'agent_name' => 'prod-agent',
             'processed_at' => now(), 'outcome' => AgentDispatch::OUTCOME_DROPPED, 'reason' => 'echo',
         ]);
+        // ⛔ AND A PROCESSED ROW THAT WAS *NOT* DROPPED, which is what makes the two counts
+        // different numbers. With only the row above, skipped and gate-dropped are both 1 and
+        // the "counts gate drops" half of this test's name could not be measured at all
+        // (card#7471) — the bare `'gate-DROPPED'` matched a caption, and any count assertion
+        // over a one-row fixture would have been a second reading of the same figure.
+        AgentDispatch::create([
+            'webhook_event_id' => $event->id, 'agent_name' => 'other-agent',
+            'processed_at' => now(), 'outcome' => AgentDispatch::OUTCOME_DELIVERED,
+        ]);
 
         $code = Artisan::call('bridge:replay', ['id' => $event->id]);
         $out = Artisan::output();
         $this->assertSame(0, $code);
-        $this->assertStringContainsString('skipping 1 already-processed', $out);
-        $this->assertStringContainsString('gate-DROPPED', $out);   // names the recoverable class
+        $this->assertStringContainsString('skipping 2 already-processed', $out);
+        // The DROPPED subset, not the skipped total: a `$dropped` that lost its outcome filter
+        // prints 2 here and the caption alone would not notice.
+        $this->assertStringContainsString('1 were gate-DROPPED', $out);
         $this->assertStringContainsString('--force', $out);
     }
 
@@ -2408,34 +2611,39 @@ class BridgeCommandsTest extends TestCase
         $this->assertStringContainsString('bind-FAILURE marker', $out);
     }
 
+    /**
+     * THE LISTENER IS BOUND IN THIS PROCESS AND HELD OPEN ACROSS THE WHOLE RUN, so its
+     * lifetime is this method's control flow rather than a wall clock the `bridge:check`
+     * below has to beat (card#7209). The previous shape forked a child that held the bind
+     * for a hardcoded 3-second `stream_socket_accept()` window while the parent ran an
+     * unbounded check inside it — so a parent that took longer than the window probed a
+     * socket whose listener had already gone, the check CORRECTLY reported it dead, and
+     * the assertion red on a race the test did not control. Widening the child's window
+     * only moves that boundary; the parent was the unbounded half.
+     *
+     * NO FORK IS NEEDED, for the reason the HTTP twin below states: a bound listening
+     * socket completes the connect handshake from the kernel's backlog with no
+     * `accept()` at all, and the probe only connects and closes. That property is
+     * asserted against a real host by
+     * `SystemChannelProbeEnvironmentTest::test_a_live_unix_socket_answers_connected_with_no_error`.
+     * Dropping the fork also drops the `pcntl` skip (this leg now runs everywhere) and
+     * with it the shutdown-over-fork hazard the child's `SIGKILL` existed to dodge — a
+     * graceful child exit sent COM_QUIT on the fork-inherited DB connection, surfacing in
+     * the PARENT as "MySQL server has gone away" under a real MariaDB driver.
+     */
     public function test_check_reports_channel_socket_live_when_a_session_listens(): void
     {
-        if (! function_exists('pcntl_fork')) {
-            $this->markTestSkipped('pcntl required for the UDS liveness listener');
-        }
         $sock = $this->dir.'/live.sock';
-        $pid = pcntl_fork();
-        if ($pid === 0) {
-            $server = @stream_socket_server('unix://'.$sock, $errno, $errstr);
-            if ($server !== false) {
-                @stream_socket_accept($server, 3); // accept the liveness probe
-            }
-            // Hard-exit: a graceful exit runs PHP's shutdown, which closes the DB
-            // connection inherited over fork by sending COM_QUIT on the shared
-            // socket — the PARENT then errors "MySQL server has gone away" under a
-            // real MySQL/MariaDB driver (CI), though it's invisible under the local
-            // SQLite-in-memory driver.
-            posix_kill(posix_getpid(), SIGKILL);
-        }
-        $deadline = microtime(true) + 3.0;
-        while (! file_exists($sock) && microtime(true) < $deadline) {
-            usleep(20_000);
-        }
+        $server = @stream_socket_server('unix://'.$sock, $errno, $errstr);
+        $this->assertNotFalse($server, "could not bind unix://{$sock}: {$errstr}");
         $this->writeAgentWithChannelSocket($sock);
 
-        $code = Artisan::call('bridge:check');
-        $out = Artisan::output();
-        pcntl_waitpid($pid, $status);
+        try {
+            $code = Artisan::call('bridge:check');
+            $out = Artisan::output();
+        } finally {
+            fclose($server);
+        }
 
         $this->assertSame(0, $code);
         $this->assertStringContainsString('channel socket live', $out);
@@ -3284,7 +3492,7 @@ class BridgeCommandsTest extends TestCase
             ->assertExitCode(1);
     }
 
-    public function test_check_probe_tools_isolation_mismatch_fails(): void
+    public function test_check_probe_tools_identity_mismatch_fails(): void
     {
         $endpoint = 'http://127.0.0.1/agent-tools/call';
         config(['bridge.providers.kanban.api_base_url' => 'https://kanban.example.com/api/v3']);
@@ -3296,7 +3504,7 @@ class BridgeCommandsTest extends TestCase
         ]]);
 
         $this->artisan('bridge:check', ['--probe-tools' => $endpoint])
-            ->expectsOutputToContain('ISOLATION MISMATCH')
+            ->expectsOutputToContain('IDENTITY MISMATCH')
             ->assertExitCode(1);
     }
 
@@ -3382,10 +3590,22 @@ class BridgeCommandsTest extends TestCase
         $tokenPath = $this->dir.'/impl-board-tools-token';
         $this->writeToolsAgentYaml('impl', $tokenPath);
 
-        $this->artisan('bridge:provision-tools')->assertExitCode(0);
-
+        // ⛔ THE MINT RUN IS THE ONE THAT CAN LEAK, and it was the one this test did not read
+        // (card#7471). The value does not exist until the mint prints, so the fluent
+        // `doesntExpectOutputToContain($value)` could only ever be pointed at the SECOND,
+        // already-minted run — whose branch does not hold the secret at all. Captured output
+        // has no such ordering problem: mint, then read the buffer and the file, then compare.
+        $this->assertSame(0, Artisan::call('bridge:provision-tools'));
+        $mintOutput = Artisan::output();
         $value = trim((string) file_get_contents($tokenPath));
-        // The minted value must never appear in the artisan buffer.
+
+        // POSITIVE CONTROL: without it an absence over an empty buffer certifies a command that
+        // printed nothing — or never minted — as discreet.
+        $this->assertSame(64, strlen($value), 'no bearer was minted, so there is no value to look for');
+        $this->assertStringContainsString('MINTED', $mintOutput);
+        $this->assertStringNotContainsString($value, $mintOutput);
+
+        // …and the already-minted run, whose message names the same path a second time.
         $this->artisan('bridge:provision-tools')
             ->doesntExpectOutputToContain($value)
             ->assertExitCode(0);

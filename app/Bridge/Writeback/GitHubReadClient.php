@@ -59,13 +59,32 @@ final class GitHubReadClient
      * so a consumer must gate on `merged === true` before trusting it, never on
      * emptiness (it is rarely empty).
      *
-     * @return array{state: string, merged: bool, base_ref: string, html_url: string, merge_commit_sha: string}
+     * `title` is the CLOSURE surface (card#7348 / DL-305): the reconciler recomputes the
+     * same merge decision the event path makes, so it must read the same closing form out
+     * of the same field, or the backstop would re-apply on a later pass exactly the move
+     * the event path had just declined — the defect reintroduced through the leg that
+     * exists to repair it. It is projected here rather than derived at the call site
+     * because this is the only place that knows the GitHub response shape. An absent
+     * title reads as `''`, which carries no closing form: the safe direction.
+     *
+     * `head_ref` is the SECOND closure surface (card#7348 / DL-308) and is projected for
+     * the same lockstep reason: the event path reads `pull_request.head.ref` off the
+     * webhook body, so the reconciler must read the same field out of the REST object or
+     * the backstop would re-plan on a schedule exactly the move the event path allowed —
+     * or, worse here, decline one the event path made. GitHub retains `head.ref` on the PR
+     * record after the branch is DELETED (which is the normal post-merge state of every PR
+     * this leg reads), so it is available on the whole population; `head.repo` is the field
+     * that goes null on a deleted fork, and nothing here reads it. An absent ref reads as
+     * `''`, which names no card: the safe direction, and the same one the title takes.
+     *
+     * @return array{state: string, merged: bool, base_ref: string, html_url: string, merge_commit_sha: string, title: string, head_ref: string}
      */
     public function getPull(string $repo, int $number): array
     {
         $pr = $this->http()->get(self::API_BASE."/repos/{$repo}/pulls/{$number}")->throw()->json();
         $pr = is_array($pr) ? $pr : [];
         $base = is_array($pr['base'] ?? null) ? ($pr['base']['ref'] ?? '') : '';
+        $head = is_array($pr['head'] ?? null) ? ($pr['head']['ref'] ?? '') : '';
 
         return [
             'state' => is_string($pr['state'] ?? null) ? $pr['state'] : '',
@@ -73,6 +92,8 @@ final class GitHubReadClient
             'base_ref' => is_string($base) ? $base : '',
             'html_url' => is_string($pr['html_url'] ?? null) ? $pr['html_url'] : '',
             'merge_commit_sha' => is_string($pr['merge_commit_sha'] ?? null) ? $pr['merge_commit_sha'] : '',
+            'title' => is_string($pr['title'] ?? null) ? $pr['title'] : '',
+            'head_ref' => is_string($head) ? $head : '',
         ];
     }
 

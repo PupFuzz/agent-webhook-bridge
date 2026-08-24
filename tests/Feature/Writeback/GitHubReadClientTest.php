@@ -20,7 +20,7 @@ class GitHubReadClientTest extends TestCase
     {
         Http::fake(['https://api.github.com/*' => Http::response([
             'state' => 'closed', 'merged' => true, 'base' => ['ref' => 'main'], 'html_url' => 'https://github.com/o/r/pull/7',
-            'merge_commit_sha' => 'abc123def456',
+            'merge_commit_sha' => 'abc123def456', 'head' => ['ref' => 'card-4811-widget'], 'title' => 'work, follows card#4811',
         ])]);
 
         $pr = (new GitHubReadClient('ghp_x'))->getPull('o/r', 7);
@@ -28,6 +28,11 @@ class GitHubReadClientTest extends TestCase
         $this->assertSame('closed', $pr['state']);
         $this->assertTrue($pr['merged']);
         $this->assertSame('main', $pr['base_ref']);
+        // The two CLOSURE surfaces (card#7348 — DL-305 the title, DL-308 the head ref).
+        // The reconciler must read the same two fields the event path reads off the
+        // webhook body, and this is the only place that knows the GitHub response shape.
+        $this->assertSame('work, follows card#4811', $pr['title']);
+        $this->assertSame('card-4811-widget', $pr['head_ref']);
         $this->assertSame('https://github.com/o/r/pull/7', $pr['html_url']);
         $this->assertSame('abc123def456', $pr['merge_commit_sha']);
 
@@ -46,6 +51,11 @@ class GitHubReadClientTest extends TestCase
 
         $this->assertFalse($pr['merged']);
         $this->assertSame('', $pr['merge_commit_sha']);
+        // An absent head/title reads as '' — which names no card and carries no closing
+        // form, so a malformed response withholds a move rather than authorizing one on a
+        // field nobody sent. The SAFE direction, asserted rather than assumed.
+        $this->assertSame('', $pr['head_ref']);
+        $this->assertSame('', $pr['title']);
     }
 
     public function test_compare_status_reads_status_and_builds_the_triple_dot_range(): void

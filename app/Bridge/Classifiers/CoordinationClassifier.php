@@ -11,6 +11,7 @@ use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\RecipientAddressing;
+use App\Bridge\Writeback\CoordLaneStages;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
 
@@ -92,6 +93,15 @@ use App\Bridge\Writeback\WritebackMapping;
  *     `move_coord_cards`, NOT `create_coord_cards`). On `issues.reopened` BOTH
  *     families fire — create-if-absent vs revive-if-present resolve by each
  *     handler's tag lookup, so exactly one acts.
+ *   - `coord-card-relane` — github `issues.labeled` on the coord repo, filtered to
+ *     the delivery's own top-level label naming a lane the model knows —
+ *     {@see CoordLaneStages::isLaneLabel} (card#6393): emits ONE
+ *     `kanban_coord_card_move` target with `disposition: relane`, so a `[TASK]`
+ *     labelled AFTER it was carded is moved to the lane the label declares instead
+ *     of having that label converged back by the consumer's lane→label writeback.
+ *     Opt-in (not a default) and additionally gated on `move_coord_cards` AND a
+ *     configured `coord_card_lane_stage_ids` (with no lane model there is no lane
+ *     to write).
  *
  * SCOPE-AGNOSTIC: never branches on `$ctx->scopeId` for routing — it keys on the
  * addressing labels + `$agent->agentName` — so the same instance serves a coord
@@ -165,6 +175,14 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
 
     private const COORD_CARD_MOVE_ACTIONS = ['closed', 'reopened'];
 
+    /**
+     * The issue action the `coord-card-relane` family acts on (card#6393). ONLY
+     * `labeled`: `unlabeled` is deliberately absent — removing a `stage:*` label states
+     * no lane, and re-deriving on it would move the card to the `later` DEFAULT_LANE,
+     * inventing a sequencing decision nobody made.
+     */
+    private const COORD_CARD_RELANE_ACTIONS = ['labeled'];
+
     /** Families run when `classifier.config.families` is unset — the pre-#8 behavior. */
     private const DEFAULT_FAMILIES = ['coord-message'];
 
@@ -205,6 +223,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'kanban-triage' => $this->kanbanTriageFamily($ctx, $base),
                 'coord-card-create' => $this->coordCardCreateFamily($ctx),
                 'coord-card-move' => $this->coordCardMoveFamily($ctx),
+                'coord-card-relane' => $this->coordCardRelaneFamily($ctx),
                 default => null,   // unknown family: ignore (forward-compat; bridge:check can warn)
             };
             if ($result === null) {
@@ -237,7 +256,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
      * source of truth the classify pipeline uses so the two can't drift:
      * coord-message from {@see HANDLED}, impl-ci-wake from
      * {@see IMPL_CI_WAKE_EVENT_TYPES}, coord-card-create → `issues` (DL-198),
-     * coord-card-move → `issues` (DL-200).
+     * coord-card-move → `issues` (DL-200), coord-card-relane → `issues` (card#6393).
      * kanban-triage (and any unknown family) is a kanban-provider family that
      * consumes NO GitHub event type → contributes nothing. Pure `$cfg` → map, no
      * class-loading (the HARD CONTRACT on {@see DeclaresConsumedEvents}).
@@ -259,6 +278,7 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'impl-ci-wake' => self::IMPL_CI_WAKE_EVENT_TYPES,
                 'coord-card-create' => self::qualify('issues.', self::COORD_CARD_CREATE_ACTIONS),   // DL-198
                 'coord-card-move' => self::qualify('issues.', self::COORD_CARD_MOVE_ACTIONS),       // DL-200
+                'coord-card-relane' => self::qualify('issues.', self::COORD_CARD_RELANE_ACTIONS), // card#6393
                 default => [],   // kanban-triage (kanban provider) + unknown families: no github event type
             }];
         }
@@ -1077,6 +1097,127 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'issue_number' => $num,
                 'sid' => $sid,
                 'disposition' => $disposition,
+                // The lane inputs (card#6393). A REVIVE writes a stage, and on a
+                // lane-model board writing the fixed one rewrites the issue's `stage:*`
+                // label through the consumer's lane→label pass — so the revive needs the
+                // same title + labels the create leg derives from. `issues.reopened` and
+                // `issues.closed` both carry `issue.title` and `issue.labels`, so this
+                // costs no API read; the terminal leg ignores both.
+                'title' => $title,
+                'labels' => $this->labels($ctx->eventType, $ctx->payload),
+            ]),
+        ]);
+    }
+
+    // =====================================================================
+    // Family: coord-card-relane (card#6393 — a `stage:*` label added after the card exists)
+    // =====================================================================
+    //
+    // The create leg fires at `issues.opened` and derives the lane from the labels THAT
+    // delivery carried. A `[TASK]` opened unlabelled is therefore carded in the `later`
+    // default, and when it is labelled `stage:now` a moment later the consumer's
+    // lane→label writeback converges the issue's brand-new label BACK to `later` — the
+    // bridge silently overriding a written sequencing ruling. Closing that needs a MOVE:
+    // re-running the create family on `issues.labeled` would hit its `id:<sid>` tag
+    // pre-check, find the card, and skip.
+    //
+    // OPT-IN, never a default: it is the only family that reacts to a label edit, and on
+    // a live coord repo `issues.labeled` is a high-volume action — 641 such deliveries
+    // had ALREADY arrived on the reference install and been dropped as action-undeclared
+    // (operator measurement, last delivery 2026-08-20 15:31:53 UTC), so enabling this
+    // family needs no subscription change and turns a stream that already exists into
+    // board writes. Only the lane-naming labels among them mean anything here, which is
+    // what makes the trigger filter the load-bearing part. Gated on the mapping's
+    // `move_coord_cards` as well — a relane IS the bridge moving a coord card, and that
+    // flag is where an operator says the bridge may — and on a lane model existing at
+    // all, since without one there is no lane to write.
+    //
+    // Emits ONE writeback target with `disposition: relane`, NO intent, NO wake.
+
+    private function coordCardRelaneFamily(ClassifyContext $ctx): ?ClassifyResult
+    {
+        if ($ctx->provider !== 'github') {
+            return null; // coordination issues are GitHub-only
+        }
+        if (! in_array($ctx->eventType, self::qualify('issues.', self::COORD_CARD_RELANE_ACTIONS), true)) {
+            return null;
+        }
+        // The TRIGGER filter, and the only permissive-direction risk this family has: it
+        // runs on a live `issues.labeled` stream, so a filter that is too wide does not
+        // misfire once, it misfires on every delivery it should have declined.
+        //
+        // Read from the delivery's OWN top-level `label` — the one label this event
+        // announces — not from the issue's label set, which cannot say which one changed;
+        // filtering on "the issue HAS a stage label" would re-lane on every unrelated
+        // edit to an already-sequenced issue.
+        //
+        // And the label must NAME A LANE, not merely sit in the `stage:` namespace. Every
+        // other label an issue gains — `from:`/`to:` addressing, topic labels, an
+        // install's own `stage:`-prefixed vocabulary — leaves the sequencing ruling
+        // untouched. `CoordLaneStages` owns that vocabulary; see its `isLaneLabel` for
+        // why the prefix alone is the wrong question on a MOVE.
+        $label = is_array($ctx->payload['label'] ?? null) ? $ctx->payload['label'] : [];
+        $labelName = is_string($label['name'] ?? null) ? strtolower($label['name']) : '';
+        if (! CoordLaneStages::isLaneLabel($labelName)) {
+            return null;
+        }
+        $issue = is_array($ctx->payload['issue'] ?? null) ? $ctx->payload['issue'] : null;
+        if ($issue === null || ! is_numeric($issue['number'] ?? null)) {
+            return null;
+        }
+        $num = (int) $issue['number'];
+        $title = is_string($issue['title'] ?? null) ? $issue['title'] : '';
+
+        // The relane-set is a subset of the create-set, by the same key: a card that was
+        // never created under this key cannot be correlated by it.
+        $sid = $this->stableId($title, $num);
+
+        $writeback = WritebackConfig::loadDefault();
+        $mapping = $writeback?->mappingFor($ctx->scopeId);
+        // Both handler-side gates, tested HERE because a target emitted for an inert leg is
+        // not free: the handler pays a cardsByTag search plus a getCard per correlated card
+        // before it can discover there is no lane to write. On `issues.labeled` — the
+        // high-volume stream this family opts into — that is two kanban reads per delivery,
+        // permanently, for no board write. The lane map is already in hand, so asking here
+        // costs nothing. The handler keeps its own lane test (it does not author the targets
+        // it is handed); this one keeps the common path from reaching it.
+        if ($mapping === null || ! $mapping->moveCoordCards || $mapping->coordCardLaneStageIds === null) {
+            return null;
+        }
+        if ($sid === null && $mapping->issuePopulation !== WritebackMapping::POPULATION_ALL) {
+            return null; // un-prefixed / PROPOSAL / unrecognized → never carded → nothing to re-lane
+        }
+
+        // The lane is derived from the issue's labels UNIONED with the one this delivery
+        // announces. Whether `issue.labels` on a `labeled` delivery already reflects the
+        // just-added label is UNVERIFIED here — no delivery corpus was reachable from this
+        // branch to measure it on, and nothing was read that states it either way. The
+        // union settles the ADD direction and only that one: a `labeled` event's label set
+        // IS "the issue's labels, including the one being announced", and the trigger label
+        // is already in hand from the filter above, so stating it costs nothing. Both
+        // shapes — snapshot carrying the announced label, snapshot missing it — are
+        // exercised in CoordinationCardRelaneClassifierTest.
+        //
+        // THE REMOVE DIRECTION STILL RIDES THAT UNPINNED SNAPSHOT, and this is a BOUND, not
+        // a closure. A relabel (`stage:now` off, `stage:later` on) delivers `unlabeled` —
+        // which this family deliberately does not consume — and `labeled` separately; if
+        // the `labeled` delivery's `issue.labels` still lists the removed `stage:now`, the
+        // set resolves to `now` by LANES order and the operator's demotion is dropped. A
+        // union cannot subtract, so nothing here fixes that; it is the same unpinned
+        // ordering, in the direction the union does not reach.
+        $labels = $this->labels($ctx->eventType, $ctx->payload);
+        if (! in_array($labelName, $labels, true)) {
+            $labels[] = $labelName;
+        }
+
+        return new ClassifyResult(targets: [
+            ReactionTarget::make('kanban_coord_card_move', "issue-{$num}", payload: [
+                'repo' => $ctx->scopeId,
+                'issue_number' => $num,
+                'sid' => $sid,
+                'disposition' => 'relane',
+                'title' => $title,
+                'labels' => $labels,
             ]),
         ]);
     }

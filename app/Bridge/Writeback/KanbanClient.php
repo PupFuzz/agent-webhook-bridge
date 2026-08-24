@@ -19,6 +19,20 @@ use Illuminate\Support\Facades\Log;
  * logs": the read is the single choke-point where a degraded-but-not-erroring
  * board response is observable, so the 0-card / page-cap WARNINGs live HERE
  * (see correlationCards) rather than being duplicated across every caller (DL-026).
+ *
+ * ⛔ EVERY `/tasks/search.json` FILTER RIDES INSIDE THE `q=` STRING, never as a top-level
+ * query parameter: an unrecognised one is dropped SILENTLY and the read comes back
+ * unfiltered, 200, indistinguishable from a scoped one. `board_id` is recognised top-level
+ * too, which is what makes the hoist look equivalent when it is tested.
+ *
+ * A FILTER is what narrows the result set by caller-supplied data (board, tags, swimlane,
+ * custom fields, free text). The complete top-level set is `q` plus the three MEASURED
+ * SWITCHES — `limit`/`page` (DL-146 pagination) and `archived` (DL-296: the archive axis has
+ * no both-sides mode, so it is reachable only as a top-level parameter; see
+ * {@see cardRowsByTag}). A switch is not an exception to the invariant, it is the other side
+ * of it, and adding one is a claim about what the server recognises. The invariant and its
+ * measurements are owned by `docs/kanban-integration-contract.md` §3;
+ * `BoardScopedReadConstructionTest` pins the construction (card#7211).
  */
 final class KanbanClient
 {
@@ -87,6 +101,22 @@ final class KanbanClient
     }
 
     /**
+     * Post a comment on a card — the card-VISIBLE record channel (kanban
+     * `POST /tasks/{id}/comments.json`, strict-keyed on `content`, max 65535 chars).
+     * The one write verb here that adds a ROW instead of setting a field: it records
+     * something about a card without touching a value any correlation reader keys on,
+     * which is what makes it usable to report a write the writeback deliberately did
+     * NOT make. APPEND-ONLY — the caller owns idempotency (the card's own `comments`
+     * come back on {@see getCard}, so a re-record check costs no extra read). Throws
+     * on non-2xx; a 403 here is the narrower comment-create permission, not the card
+     * write scope, so it must not be read as "the token cannot write this card".
+     */
+    public function addComment(int $cardId, string $content): void
+    {
+        $this->http()->post("/tasks/{$cardId}/comments.json", ['content' => $content])->throw();
+    }
+
+    /**
      * Archive (retire) a card via the kanban lifecycle verb (DL-161). Archiving
      * is a TOP-LEVEL `_action`, NOT a field write: a flat `{"archived_at":…}` PATCH
      * returns 200 but silently no-ops, so we send `{"_action":"archive"}`. (`_action`
@@ -99,8 +129,11 @@ final class KanbanClient
      * event for ~11 days (the DL-020 / DispatchService anti-pattern) — the caller
      * treats it as permanent (log + no-op). A real HTTP error still throws via
      * `->throw()` (transient 5xx → retry, 4xx → permanent), as the move path does.
-     * Caller idempotency: an already-archived card is excluded from by-ref/search
-     * correlation, so it is never re-presented here on a redelivered close.
+     * Caller idempotency: an already-archived card is excluded from the by-ref and
+     * live-search correlations THIS method's callers use, so it is never re-presented
+     * here on a redelivered close. (Since DL-296 the archive side is readable — by an
+     * explicit `archivedOnly` search — but only the coord create leg asks, and it
+     * refuses rather than writing.)
      */
     public function archiveCard(int $cardId): bool
     {
@@ -242,6 +275,30 @@ final class KanbanClient
      * probe catches that at preflight, and the shared `id:` tag lets the reconcile
      * orphan-adoption collapse any duplicate a blind read minted.
      *
+     * ⚠ THE PROJECTION TO IDS IS WHAT DISCARDS THE BOARD (DL-298, card#7211). The search
+     * answers with full task rows carrying their own `board_id`; this method keeps only the
+     * ids, so a caller that WRITES to what comes back has nothing left to re-check the
+     * scope against and is trusting the `q=board_id=` term alone. That term IS honoured
+     * (measured, rt#327) — but `board_id` is also recognised as a bare top-level parameter
+     * and filters correctly there, so the hoist that would break the scope reviews as
+     * equivalent, and an unrecognised top-level parameter is dropped in silence. A caller
+     * whose result feeds a WRITE therefore takes {@see cardRowsByTag} — the same one GET,
+     * rows instead of ids — and re-checks each row through `MappedBoardGuard`. A caller
+     * whose result only feeds a READ decision (an existence pre-check) does not need to.
+     *
+     * LIVE cards only, and that is the contract, not an oversight (DL-296): kanban
+     * excludes archived rows unless `?archived` is passed. A caller that needs the
+     * archived side asks for it explicitly via {@see cardRowsByTag}'s `$archivedOnly`.
+     *
+     * ⚠ Live-only is RIGHT for a post-create collapse (it reduces the LIVE set to one
+     * survivor; seeing archived rows would re-archive an already-retired card) and for
+     * a move correlation (it would RESURRECT a retired card into a stage). It is NOT
+     * right for a CREATE decision. `BoardCreateCardTool`'s `idem:` pre-check WAS such a
+     * caller — re-using a key whose card was archived read as un-carded and minted a
+     * second card — and DL-297 (card#7222 M2) closed it by reading the archive axis
+     * separately and REFUSING the create. Its siblings stay open on card#7222; do not
+     * read this docblock as certifying every caller.
+     *
      * @return list<int>
      */
     public function cardsByTag(int $boardId, string $tag): array
@@ -298,13 +355,28 @@ final class KanbanClient
      * — the row-returning twin of {@see cardsByTag} (which projects to ids). One
      * exact `q=board_id=<b> tags:"<tag>"` search; board-scoped so no `source`
      * qualifier is needed. Used to fetch coordination cards addressed to an agent
-     * via its configured address_tags.
+     * via its configured address_tags, and — since DL-298 — by every caller whose
+     * result feeds a WRITE, because the rows carry the `board_id` the ids-only
+     * {@see cardsByTag} projects away and the writer re-checks (card#7211).
+     *
+     * `$archivedOnly` selects the OTHER side of kanban's archive axis (DL-296):
+     * `TasksController::search` applies `whereNull('archived_at')` unless
+     * `?archived` is passed and `whereNotNull('archived_at')` when it is — the
+     * parameter is a SWITCH, not a widening, and the endpoint offers no both-sides
+     * mode. So an archived twin is only ever visible to a SECOND call, and the
+     * default (`false`) is byte-identical to every read this method served before:
+     * no `archived` key reaches the query string at all, which is what keeps a
+     * pre-DL-296 kanban answering the live search identically.
      *
      * @return list<array<string, mixed>>
      */
-    public function cardRowsByTag(int $boardId, string $tag): array
+    public function cardRowsByTag(int $boardId, string $tag, bool $archivedOnly = false): array
     {
-        $data = $this->http()->get('/tasks/search.json', ['q' => "board_id={$boardId} tags:\"{$tag}\"", 'limit' => self::SEARCH_LIMIT])->throw()->json('data');
+        $query = ['q' => "board_id={$boardId} tags:\"{$tag}\"", 'limit' => self::SEARCH_LIMIT];
+        if ($archivedOnly) {
+            $query['archived'] = 1;
+        }
+        $data = $this->http()->get('/tasks/search.json', $query)->throw()->json('data');
 
         $cards = [];
         foreach (is_array($data) ? $data : [] as $row) {

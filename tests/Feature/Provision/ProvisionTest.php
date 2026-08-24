@@ -86,8 +86,16 @@ class ProvisionTest extends TestCase
         File::put($this->dir.'/gh-agent.yml', "subscriptions:\n  - provider: github\n    scopes: [acme-corp/widget]\n");
         Http::fake(['*' => Http::response(['data' => []])]);
 
-        // gh-agent's github sub is skipped (non-zero), prod-agent's kanban sub still provisions.
-        $this->artisan('bridge:provision')->assertExitCode(1);
+        // BOTH HALVES, because the exit code cannot tell them apart (card#7471). `1` is equally
+        // what an abort-on-the-first-unprovisionable-provider prints, and that reading is the
+        // failure mode worth guarding: a fleet install with one github sub would then silently
+        // stop provisioning every kanban sub behind it. So the skip is named…
+        $this->artisan('bridge:provision')
+            ->expectsOutputToContain("SKIP — provider 'github' is not API-provisionable")
+            ->assertExitCode(1);
+        // …and prod-agent's kanban sub is witnessed to have provisioned anyway.
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST'
+            && str_contains($r->url(), '/boards/5/webhooks.json'));
     }
 
     public function test_missing_token_is_skipped_with_failure_exit(): void
@@ -167,7 +175,14 @@ class ProvisionTest extends TestCase
             : Http::response(['data' => ['id' => 9]]));
 
         $this->artisan('bridge:provision', ['--reconcile' => true])->assertExitCode(0);
-        Http::assertSent(fn (Request $r) => $r->method() === 'DELETE');
+        // BOTH STEPS. "Fixes" is delete-THEN-recreate, and the DELETE alone is the half that
+        // does harm: a reconcile that removed the drifted subscription and never recreated it
+        // leaves the board with no webhook at all, and this test was green for it (card#7471).
+        // The secret is reused, not rotated — the same pairing the inactive-drift leg asserts.
+        Http::assertSent(fn (Request $r) => $r->method() === 'DELETE' && str_contains($r->url(), '/webhooks/3.json'));
+        Http::assertSent(fn (Request $r) => $r->method() === 'POST'
+            && str_contains($r->url(), '/boards/5/webhooks.json')
+            && $r['secret'] === 'existing-secret-value');
     }
 
     public function test_dry_run_reconcile_previews_without_changing_anything(): void

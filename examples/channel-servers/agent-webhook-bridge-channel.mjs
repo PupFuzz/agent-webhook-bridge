@@ -208,7 +208,12 @@ const TOOL_DEFINITIONS = [
     description:
       'Create a card in YOUR OWN swimlane (the swimlane is forced from your bridge ' +
       'identity — you cannot target another lane). The card is born untriaged and ' +
-      'surfaces to the triage pass. Pass an idempotency_key to make retries safe.',
+      'surfaces to the triage pass. Pass an idempotency_key to make retries safe. ' +
+      'The returned board_id/swimlane_id are READ BACK from the card and can differ ' +
+      'from the scope you are configured for, which is returned beside them as ' +
+      'configured_board_id/configured_swimlane_id. placement_observed: false means ' +
+      'the bridge could not read the placement — both ids are then null and the ' +
+      'response claims none; the card still exists and card_id is still the answer.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -225,7 +230,9 @@ const TOOL_DEFINITIONS = [
           type: 'string',
           description:
             'Optional but recommended: [A-Za-z0-9.-]{1,64}. Re-using it returns the ' +
-            'same card instead of creating a duplicate.',
+            'same LIVE card instead of creating a duplicate. If that card was ARCHIVED ' +
+            'the call is REFUSED (422) naming the card to unarchive — an archived card ' +
+            'is a retire, so no replacement is created; pass a NEW key for new work.',
         },
       },
       required: ['title'],
