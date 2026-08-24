@@ -10,6 +10,33 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ### Fixed
 
+- **card#7564 (DL-311)** — **the remaining three sites that answered "which pull request does this
+  value name" with a bare `(int)` now ask the normalizer, and the question has ONE implementation.**
+  DL-309 closed the two sites its investigation named; it did not close the shape. A card storing
+  `'1.5'` still read as PR **1** — a real, unrelated pull request — in:
+  **(1) `CardTokenCorroboration::tracksPr`**, the predicate gating an **uncorroborated title-only
+  `card#` write**. ⚠ This one is **permissive, not fail-closed**: the gate refuses when the card does
+  NOT track the event's PR, so a false "same PR" **allowed** a title-only move/`block_reason` write
+  onto a card the pull request had nothing to do with. Reachable on the default configuration; the
+  docblock's fail-closed claim was true only of NON-numeric values, and `'1.5'` is numeric.
+  **(2) `KanbanClient::correlatePr` and (3) `correlateIssue`**, `scan`-mode only — the legacy
+  correlation fallback (`BRIDGE_WRITEBACK_CORRELATION=scan`, kept and unchanged in every other
+  respect), where the same value matched PR/issue 1 while `ref` mode asks the kanban server, which
+  has refused it since kanban DL-251. **Two modes of one correlation now answer one card
+  identically.**
+  **One predicate, not four spellings of it (canon #5):** the positive-bare-number ADMISSION and the
+  normalizer DERIVATION are hoisted into `BareRefNumber` and shared by all three sites plus
+  `TrackedCardRef`, whose behavior is unchanged (its inline form was byte-equivalent; DL-309's
+  admission mutants still red it).
+  ⚠ **Consumer-visible delta, in the fail-closed direction only:** an uncorroborated title-only
+  `card#` naming a card whose `pr_number` names no single pull request is now REFUSED (alert +
+  card note) instead of written, and `scan` mode no longer correlates such a card. **Nothing widened**
+  — `85`, `85.0`, `'085'` and `'148'` corroborate and correlate exactly as before, and `-5` / `'#85'`
+  still name no PR here even though the kanban server indexes the refs they canonicalize to.
+  Sibling sweep (card#7564's open axis, now closed): no other `(int)` cast in `app/` reads a
+  caller-supplied correlation value — the rest cast kanban/GitHub server-generated ids.
+  `KanbanMoveCardHandler`'s `stamp_pr` stays out of the class (a GitHub delivery's own PR number).
+
 - **card#7536 (DL-309)** — **a correlation value that is not a single decorated integer now derives
   NO ref, matching the kanban server.** kanban-board ruled that in its own **DL-251** and the bridge's
   deliberate 1:1 mirror of `ExternalReferenceNormalizer` did not move with it, so one stored value
