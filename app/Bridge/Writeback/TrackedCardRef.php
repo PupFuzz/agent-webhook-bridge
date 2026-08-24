@@ -61,16 +61,13 @@ final class TrackedCardRef
         // value, two authorities, two answers, and PR 1 is a real, unrelated pull
         // request the reconcile would then read and move the card from.
         //
-        // The ADMISSION test does not move: a POSITIVE BARE number, exactly as
-        // before (`> 0` on the raw value, so a negative keeps naming no PR rather
-        // than acquiring the ref its digits canonicalize to; a decorated `#85`,
-        // which the server does index, has never been tracked here and is not
-        // widened in either). The only behavior change is the refusal of an
-        // admitted number that names no single integer.
-        $pn = $payload['pr_number'] ?? null;
-        $ref = is_numeric($pn) && (float) $pn > 0
-            ? $refs->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, $pn)
-            : null;
+        // Both halves — the POSITIVE-BARE-number admission and the derivation —
+        // now live on {@see BareRefNumber}, shared with the corroboration gate and
+        // both scan correlations (DL-311). The admission is unchanged from the
+        // inline form this replaced, and that is the point of hoisting it rather
+        // than re-spelling it: it is what keeps `-5` and `'#85'` naming no PR here,
+        // though the server indexes the refs they canonicalize to.
+        $ref = BareRefNumber::canonical(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, $payload['pr_number'] ?? null, $refs);
         if ($ref !== null) {
             return $isShared
                 ? new self(TrackedRefKind::Ambiguous, prNumber: (int) $ref)
