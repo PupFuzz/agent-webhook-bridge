@@ -53,11 +53,28 @@ final class TrackedCardRef
         }
 
         // (2) pr_number — repo-unqualified; usable only on a 1:1 board.
+        //
+        // WHICH pull request the value names is the normalizer's answer, never a
+        // local cast (DL-309): a bare `(int)` truncates, so `1.5` named PR 1 while
+        // the kanban server — which derives the card's `github_pr` ref from this
+        // same key — derives NO ref at all since its DL-251. One card, one stored
+        // value, two authorities, two answers, and PR 1 is a real, unrelated pull
+        // request the reconcile would then read and move the card from.
+        //
+        // The ADMISSION test does not move: a POSITIVE BARE number, exactly as
+        // before (`> 0` on the raw value, so a negative keeps naming no PR rather
+        // than acquiring the ref its digits canonicalize to; a decorated `#85`,
+        // which the server does index, has never been tracked here and is not
+        // widened in either). The only behavior change is the refusal of an
+        // admitted number that names no single integer.
         $pn = $payload['pr_number'] ?? null;
-        if (is_numeric($pn) && (int) $pn > 0) {
+        $ref = is_numeric($pn) && (float) $pn > 0
+            ? $refs->canonicalize(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, $pn)
+            : null;
+        if ($ref !== null) {
             return $isShared
-                ? new self(TrackedRefKind::Ambiguous, prNumber: (int) $pn)
-                : new self(TrackedRefKind::PrNumber, prNumber: (int) $pn);
+                ? new self(TrackedRefKind::Ambiguous, prNumber: (int) $ref)
+                : new self(TrackedRefKind::PrNumber, prNumber: (int) $ref);
         }
 
         // (3) dl_number only — no PR reference.

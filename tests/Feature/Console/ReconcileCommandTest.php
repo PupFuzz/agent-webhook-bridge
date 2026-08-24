@@ -243,6 +243,30 @@ class ReconcileCommandTest extends TestCase
         Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/pulls/'));
     }
 
+    /**
+     * DL-309, on the real surface: a `pr_number` that names no single integer must not
+     * reach GitHub at all. Before the fix the float `1.5` truncated to PR 1 — a real,
+     * unrelated pull request — and this card drifted forward on its state, while the
+     * kanban server derives NO `github_pr` ref from the same stored value (its DL-251).
+     */
+    public function test_a_non_integer_pr_number_is_not_a_tracked_card_and_reaches_no_pull_request(): void
+    {
+        $this->writeWriteback();
+        // PR 1 is fixtured merged-and-closing card 5: if the value truncates, the card
+        // moves 50 → 52. The assertions below are what "it named no PR" looks like.
+        $this->fake([$this->card(5, 50, ['pr_number' => 1.5])], [1 => $this->mergedToDevPr()]);
+
+        // The COUNTS are asserted, not just the absence of traffic: pre-fix this run
+        // reported `1 forward drift (1 moved)`, so a matcher on the summary reds on its
+        // own rather than leaning entirely on the two request assertions below.
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->expectsOutputToContain('Summary: 0 forward drift (0 moved), 0 backward/unorderable, 0 in sync, 0 skipped, 0 terminal.')
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => str_contains($r->url(), '/pulls/'));
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
     public function test_truncated_board_read_aborts_that_board(): void
     {
         $this->writeWriteback();
