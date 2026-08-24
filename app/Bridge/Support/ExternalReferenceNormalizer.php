@@ -15,6 +15,12 @@ namespace App\Bridge\Support;
  * so a future drift is caught by a 1:1 diff against the upstream file. Do not
  * "improve" it locally — change the kanban authority, then re-mirror here.
  *
+ * **Mirrored through kanban DL-251** (bridge DL-309 — a drift that had already SHIPPED
+ * on both sides is what that pair is: for a while the two authorities answered a
+ * malformed value differently and nothing reported it). ⚠ A `DL-NNN` in this file names
+ * a KANBAN decision unless it says otherwise — this repo's log has its own DL-163 and DL-251,
+ * neither of which is the one above.
+ *
  *   1. PAYLOAD_KEY_TO_SYSTEM — which display custom-field key derives which
  *      machine `system`.
  *   2. per-system canonicalization — `"DL-028"` / `"DL-28"` / `"28"` → `"28"`.
@@ -41,8 +47,11 @@ class ExternalReferenceNormalizer
     private const SOURCE_URL_KEYS = ['pr_url', 'issue_url', 'html_url'];
 
     /**
-     * Systems whose ref is a pure integer identifier: strip every non-digit and
-     * leading zeros so "DL-028", "DL-28", "28", "#28" all canonicalize equal.
+     * Systems whose ref is a pure integer identifier: ONE integer, optionally
+     * decorated, with leading zeros stripped — so "DL-028", "DL-28", "28", "#28"
+     * all canonicalize equal. A value carrying anything other than one integer
+     * (no digits, or several digit runs) names no identifier and canonicalizes
+     * to null (kanban DL-251).
      */
     private const NUMERIC_SYSTEMS = [
         self::SYSTEM_DL,
@@ -131,21 +140,39 @@ class ExternalReferenceNormalizer
     /**
      * Canonicalize a raw ref value for a system. Returns the canonical string,
      * or null when the value carries no usable identifier for a numeric system
-     * (e.g. a `dl_number` with no digits) — the caller then derives no ref row
-     * (a malformed display field must not become a correlatable key, nor 422 the
-     * task write). Unknown systems are stored/compared verbatim (trimmed, capped).
+     * — the caller then derives no ref row (a malformed display field must not
+     * become a correlatable key, nor 422 the task write). Unknown systems are
+     * stored/compared verbatim (trimmed, capped).
+     *
+     * A numeric system's ref is ONE decorated integer (kanban DL-251). A value
+     * carrying no digits ("TBD") or SEVERAL digit runs ("1.5", "2026-08-23") names
+     * no single identifier, so it derives nothing rather than the concatenation of
+     * its runs — which would be a real, DIFFERENT pull request or decision.
      */
-    public function canonicalize(string $system, int|string $value): ?string
+    public function canonicalize(string $system, float|int|string $value): ?string
     {
+        // A number-typed correlation field stores a JSON number, so a float
+        // reaches here. Naming it in the signature is what stops PHP's weak-mode
+        // coercion truncating 1.5 to 1 before the value is read, and rendering it
+        // faithfully — ahead of the system branch, so a non-numeric system is not
+        // truncated either — makes the derived ref a property of the VALUE rather
+        // than of the JSON type it happened to arrive as. A plain (string) cast is
+        // not faithful: PHP renders 1.0e15 as "1.0E+15" despite it being an exact
+        // integer, so an in-range whole number goes through int.
+        if (is_float($value)) {
+            $value = (is_finite($value) && fmod($value, 1.0) === 0.0 && abs($value) < (float) PHP_INT_MAX)
+                ? (string) (int) $value
+                : (string) $value;
+        }
+
         $value = trim((string) $value);
 
         if (in_array($system, self::NUMERIC_SYSTEMS, true)) {
-            $digits = preg_replace('/\D+/', '', $value) ?? '';
-            if ($digits === '') {
+            if (preg_match('/^\D*(\d+)\D*$/', $value, $m) !== 1) {
                 return null;
             }
             // Strip leading zeros, keeping at least one digit.
-            $canonical = ltrim($digits, '0');
+            $canonical = ltrim($m[1], '0');
 
             return $canonical === '' ? '0' : $canonical;
         }

@@ -8,6 +8,32 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#7536 (DL-309)** — **a correlation value that is not a single decorated integer now derives
+  NO ref, matching the kanban server.** kanban-board ruled that in its own **DL-251** and the bridge's
+  deliberate 1:1 mirror of `ExternalReferenceNormalizer` did not move with it, so one stored value
+  answered two ways: `'1.5'` derived PR **15** here and **nothing** there; `'2026-08-23'` derived
+  **20260823**; `'PR 12 of 34'` derived **1234**. Each fabricated ref names a **real, unrelated**
+  pull request or decision, and neither system reports the mismatch. Well-formed values are
+  **byte-identical** before and after — `'DL-028'`, `'#85'`, `'85'`, `85` and the integral float
+  `85.0` all canonicalize exactly as they did.
+  **Two halves, because either alone leaves the harm:** `canonicalize()` takes `float|int|string` and
+  renders a float faithfully ahead of the system branch (nothing truncated, and a non-numeric system's
+  verbatim contract survives a numeric value), and a numeric system's ref must be **one** digit run
+  rather than the concatenation of every run found. `TrackedCardRef::fromPayload` — which was doing
+  its own `(int)` on `pr_number` **outside** the normalizer — now asks it which pull request the value
+  names, so `bridge:reconcile` and the DL-207 promote sweep no longer read a GitHub PR the card never
+  named. Measured: with the normalizer alone fixed, three of the new tests stay red.
+  ⚠ **Consumer-visible delta: an absent correlation where a wrong one used to be.** A card carrying a
+  malformed `pr_number` is no longer a tracked card at all — no GitHub read, no move, and no skip
+  line (it names no PR, so it is not a skipped card). A card carrying a malformed `dl_number` no
+  longer false-matches a DL token in `scan`-mode correlation or in the reconcile's closure compare.
+  ⚠ **What deliberately did NOT widen:** the `pr_number` leg still admits a **positive bare** number
+  only. `-5` and `'#85'` canonicalize to refs the kanban server does index (`"5"`, `"85"`), and
+  letting them in here would have started driving outward moves off values nobody meant as a PR
+  number — a separate ruling, pinned by tests rather than by prose.
+
 ## [0.75.0] - 2026-08-23
 
 ### Added
