@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.75.1] - 2026-08-24
+
 ### Fixed
 
 - **card#7564 (DL-311)** — **the remaining three sites that answered "which pull request does this
