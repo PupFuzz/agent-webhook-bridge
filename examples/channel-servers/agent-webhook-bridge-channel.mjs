@@ -90,6 +90,11 @@ const TOOLS_SSH_PORT = process.env.BRIDGE_TOOLS_SSH_PORT || '';
 // indefinitely or leak the child. Mirrors the PHP probe posture
 // (SystemSshProbeEnvironment::sshRoundTrip: ConnectTimeout=10 + a 30s process timeout).
 const TOOLS_SSH_DEADLINE_MS = 60000;
+// How much of a failing ssh leg's stderr is held for the tool result (card#7709).
+// Above `scrubSnippet`'s own 500-char bound so a credential line that starts inside
+// the capture is still whole when the scrub anchors on it; the relay is what decides
+// how much of it a caller finally sees.
+const SSH_STDERR_CAPTURE_LIMIT = 2000;
 
 // Bearer precedence (pinned): explicit BRIDGE_TOOLS_TOKEN (non-empty), else the
 // explicit BRIDGE_TOOLS_TOKEN_FILE (non-empty path) — and a configured-but-unreadable
@@ -446,14 +451,25 @@ async function callToolOverSsh(payload) {
       );
     }, TOOLS_SSH_DEADLINE_MS);
     let stdout = '';
+    // The HEAD of the child's stderr, bounded, kept for the non-zero-exit path
+    // (card#7709). `console.error` below reaches the MCP client's server log, which is
+    // not a surface the calling agent reads, so `Permission denied (publickey)` /
+    // `Connection refused` / `Host key verification failed` used to reach nobody who
+    // could act on it. HEAD and not tail: a tail slice can cut an `Authorization:` line
+    // in half and leave the token past the anchor `scrubSnippet` redacts from, and ssh
+    // states its diagnosis first. The relay scrubs this before any of it is returned.
+    let stderrHead = '';
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString();
     });
     child.stderr.on('data', (chunk) => {
-      // Diagnostics only — never mixed into the tool result.
-      console.error(
-        `[${SERVER_NAME}] ssh ${TOOLS_SSH_TARGET} stderr: ${chunk.toString().trimEnd()}`,
-      );
+      const text = chunk.toString();
+      if (stderrHead.length < SSH_STDERR_CAPTURE_LIMIT) {
+        stderrHead = (stderrHead + text).slice(0, SSH_STDERR_CAPTURE_LIMIT);
+      }
+      // The RAW stream stays diagnostics-only — never mixed into the tool result; only
+      // the scrubbed, bounded head above can reach a caller, and only on a failed leg.
+      console.error(`[${SERVER_NAME}] ssh ${TOOLS_SSH_TARGET} stderr: ${text.trimEnd()}`);
     });
     child.on('error', (err) => {
       clearTimeout(deadline);
@@ -461,9 +477,22 @@ async function callToolOverSsh(payload) {
         `ssh to ${TOOLS_SSH_TARGET} failed: ${err && err.message ? err.message : err}`,
       );
     });
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       clearTimeout(deadline);
-      resolve(relayBridgeResponse(stdout, code === 0, `ssh ${TOOLS_SSH_TARGET}`));
+      const captured = stderrHead.trim();
+      // `code` is null when the child died on a signal, so it is reported as one
+      // rather than as `exited null` (a wrong-but-specific cause is worse than an
+      // honest one). Our own deadline kill lands here too, but that path already
+      // resolved with its own message and this resolve is a no-op.
+      const how = code === null ? `ssh was killed by ${signal}` : `ssh exited ${code}`;
+      resolve(
+        relayBridgeResponse(
+          stdout,
+          code === 0,
+          `ssh ${TOOLS_SSH_TARGET}`,
+          code === 0 ? '' : `${how}${captured ? `: ${captured}` : ' and wrote nothing to stderr'}`,
+        ),
+      );
     });
     child.stdin.write(payload);
     child.stdin.end();
