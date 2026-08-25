@@ -8,6 +8,38 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+### Fixed
+
+- **card#7597** — **the PR-title correlation-key lint subscribes to `synchronize`, so a PR that got
+  no first run can recover.** GitHub creates **no workflow runs at all** for a PR whose merge ref it
+  cannot compute (the base moved and the PR is conflicting), and the conflict is then cleared by a
+  push — a `synchronize`, the one event `pr-title-lint.yml` omitted by design. A PR opened while
+  conflicting therefore never got a first run of the title lint, and **no later ordinary event gave
+  it one**: every recovery left was a human act (edit the title or body to fire `edited`, close and
+  reopen to fire `reopened`) that nothing prompts anyone to perform. Ported from kanban-board PR
+  #653, which measured it on its PR #651 — this file carried that repo's trigger list *and its
+  justifying comment word for word*, which is why it carried the same hole. The omission's stated
+  reason is **correct about what a push CHANGES** (a push cannot move the PR title or the head
+  branch name, this gate's only two inputs) **and wrong about what a push RESTORES**; the comment now
+  says both, so the redundant runs read as the accepted price of the recovery path rather than as
+  waste to optimise back out. The trigger list is now **asserted** in `PrTitleLintTest` — each entry
+  carries the reason it is load-bearing, and `synchronize`'s reason is recovery, not inputs, which is
+  the exact claim that makes it look removable.
+  **CI-only — nothing about an installed bridge changes**: no `app/` file, no migration, no config,
+  no `.env.example`, no token scope, and the gate's accept-set (which titles and branches pass) is
+  byte-untouched. What changes is *when the gate runs*, in the strictly-more direction.
+  ⚠ **The header's "it always runs" claim was FALSE and is corrected in the same change** — that is
+  the belief this defect disproves. `dev` branch protection requires the test and secret-scan
+  contexts, not this one.
+  ⛔ **The class is NOT closed.** `synchronize` closes the *recovery* hole for this one workflow; a
+  check that never ran still produces no row, no annotation and no conclusion, so nothing
+  distinguishes it from one that passed (DL-283 owns that property). It is **worse here than in
+  kanban-board**, because this repo has **path-filtered** workflows (`channel-server-supply-chain`,
+  `provision-tools-python`) where zero runs is the *normal, correct* state — so "never ran",
+  "correctly skipped" and "passed" are one reading, and no count-the-runs check separates them
+  without also computing the path match. **UNMEASURED:** whether any merged bridge PR ever passed
+  through this hole — the absence leaves no trace, so it is not answerable after the fact.
+
 ## [0.75.1] - 2026-08-24
 
 ### Fixed

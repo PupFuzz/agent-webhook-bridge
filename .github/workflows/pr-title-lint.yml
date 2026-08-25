@@ -40,9 +40,18 @@ name: PR title correlation-key lint
 #     e.g. #3765 itself) passes this lint but still will not auto-move —
 #     correlation is deliberately board-scoped 1:1 per repo (DL-174). This checks
 #     the convention, not end-to-end card movement.
-#   - NOT a required status check: it always runs, but the enforcement teeth are
-#     the all-workflows-green dev-PR merge rule (CLAUDE.md rule 5), consistent
-#     with the drift-gate.
+#   - NOT a required status check — and NOT one that "always runs", which is what
+#     this line claimed until card#7597 disproved it. Branch protection on `dev`
+#     requires the test and secret-scan contexts, not this one, so the enforcement
+#     teeth are the all-workflows-green dev-PR merge rule (CLAUDE.md rule 5),
+#     consistent with the drift-gate. That rule reads the runs that EXIST, and a
+#     check that never ran produces no row, no annotation and no conclusion, so
+#     nothing distinguishes it from a check that passed — DL-283 owns that property
+#     and this gate is a second instance of it. The `synchronize` trigger below
+#     closes the one recovery hole this gate had; it does NOT close that class, and
+#     it is worse for the PATH-FILTERED workflows in this repo, where zero runs is
+#     the normal correct state and "never ran", "correctly skipped" and "passed"
+#     are one reading.
 #
 # SECURITY: PR title and branch name are PR-author-controlled. They reach the
 # script ONLY via the env: block and are used quoted ("$TITLE"/"$BRANCH") — never
@@ -51,9 +60,30 @@ name: PR title correlation-key lint
 
 on:
   pull_request:
-    # "edited" is load-bearing: a title fix must re-run the check. "synchronize"
-    # cannot change the title or branch name, so it is intentionally omitted.
-    types: [opened, edited, reopened]
+    # "edited" is load-bearing: the title is an INPUT, and a title fix fires only
+    # this event.
+    #
+    # "synchronize" is here for RECOVERY, not for its inputs, and that distinction is
+    # the whole reason it reads as removable. A push provably cannot change the title
+    # or the head branch name — the only two things this gate reads — so every
+    # synchronize run re-answers a question whose inputs did not move, and on exactly
+    # that reasoning it was originally omitted. The reasoning is correct about what a
+    # push CHANGES and wrong about what a push RESTORES: GitHub creates NO workflow
+    # runs at all for a PR whose merge ref it cannot compute (the base moved and the
+    # PR is conflicting), and the conflict is then cleared by a push — i.e. by a
+    # synchronize. Without it, a PR opened while conflicting never gets a FIRST run of
+    # this gate and no later ordinary event gives it one; every recovery left is a
+    # HUMAN act (edit the title or body to fire "edited"; close and reopen to fire
+    # "reopened"), and nothing prompts anyone to perform one. Measured on kanban-board
+    # PR #651: zero runs on the first head, not a slow queue — this file carried that
+    # repo's trigger list and its justifying comment word for word, which is why it
+    # carried the same hole (card#7597, ported from kanban-board PR #653). The
+    # redundant runs are the accepted price of the recovery path — do not optimise
+    # this back out.
+    #
+    # Asserted in tests/Feature/Workflows/PrTitleLintTest.php so removing an entry
+    # reds rather than silently reopening the hole.
+    types: [opened, edited, reopened, synchronize]
 
 permissions:
   contents: read
