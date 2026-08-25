@@ -48,6 +48,42 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   without also computing the path match. **UNMEASURED:** whether any merged bridge PR ever passed
   through this hole — the absence leaves no trace, so it is not answerable after the fact.
 
+- **card#7709 (DL-312)** — **a dead ssh board-tools leg now names the exit code and the stderr that
+  explains it, instead of relaying an empty line.** The ssh call site computed `code === 0` and
+  passed it to the shared relay as the leg signal, but `relayBridgeResponse` ran `JSON.parse` FIRST
+  and returned its non-JSON-snippet arm **before** ever reading that signal — dead on exactly the
+  branch where the transport had failed, and in breach of the contract its own header states
+  (*"the success signal is LEG-SUPPLIED, NEVER inferred from the body"*). With the transport down
+  the body is empty and `scrubSnippet('')` is `''`, so what reached the agent was
+  `non-JSON response from the bridge (ssh <target>):` and **nothing after the colon**. The stderr
+  that names the cause (`Permission denied (publickey)`, `Connection refused`, `Host key
+  verification failed`) went only to `console.error` — the MCP client's server log, which is not a
+  surface an agent reads. **Measured at the reporting install: `board_my_cards` was dead for 10
+  days** after a host wipe destroyed both halves of the ssh door, and the seat holding the failure
+  the whole time could not name it; the cause was eventually found bridge-side from `bridge:check`.
+  **Keeping the two states APART is the whole of the fix.** A failed leg that carries a diagnostic
+  now reports `the ssh <target> leg FAILED: ssh exited <N>: <stderr>` plus any partial output; a
+  HEALTHY leg whose body is garbage keeps the original snippet message **byte for byte**, because
+  there the body IS the diagnosis and folding a transport note into it would re-mint this defect
+  pointing the other way. That preservation is pinned by a test that reds against exactly that
+  wrong fix. The HTTP leg passes no diagnostic and is byte-unchanged, including its non-ok-with-a-
+  body case. **One shipped-surface error-reporting change (hard-gate class, standing dev
+  authorization); no `app/` file, no migration, no config key, no token scope, no receiver
+  accept/reject change.**
+  Everything relayed is `scrubSnippet`-ed and length-bounded — stderr is unvetted text — and the
+  capture keeps the **head** of that stream, not the tail: a tail slice can cut an `Authorization:`
+  line in half and leave its token past the anchor the scrub redacts from, and ssh states its
+  diagnosis first. Fixed **once**, in the relay both transports share (`channel-lib.mjs`, optional
+  fourth `legDiagnostic` argument), not per transport. New `tests/ssh-transport-failure.test.mjs`
+  drives the REAL server over stdio against a fake `ssh` (7 cases: exit≠0 with empty / non-JSON /
+  JSON stdout, exit 0 with non-JSON / JSON, a credential in stderr, a flooding stderr) alongside 7
+  new relay units; the stdio spawn harness is extracted to `tests/mcp-harness.mjs` at its second
+  caller. **Seen to fail in three configurations** — both files pre-fix (8 of the 14 new tests red,
+  the other 6 green because they pin what this change preserves), the relay fixed with the call site
+  still pre-fix (the 4 end-to-end cases still red, so neither half is decoration), and the two
+  wrong-fix mutants; DL-312 records each. Node suite 47/47, PHPUnit 2599/2599 (no PHP touched).
+  Channel-server snapshot `0.9.7 → 0.9.8` (DL-038).
+
 ## [0.75.1] - 2026-08-24
 
 ### Fixed
