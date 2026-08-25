@@ -79,8 +79,10 @@ on:
     # repo's trigger list and its justifying comment word for word, which is why it
     # carried the same hole (card#7597, ported from kanban-board PR #653). Measured HERE
     # too, on the old list: PR #574's push-created head 8623d5fa produced SIX
-    # pull_request runs and no title-lint row at all, while every other gate on the PR
-    # ran — the absence is this trigger, not a queue. The redundant runs are the
+    # pull_request runs and no title-lint row at all — six of the seven OTHER
+    # pull_request gates ran, and the seventh (channel-server-supply-chain) is
+    # path-filtered and correctly did not match that diff. The absence of this one is
+    # this trigger, not a queue and not a path. The redundant runs are the
     # accepted price of the recovery path — do not optimise this back out.
     #
     # Asserted in tests/Feature/Workflows/PrTitleLintTest.php so removing an entry

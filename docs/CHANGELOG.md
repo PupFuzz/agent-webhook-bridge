@@ -26,8 +26,9 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   carries the reason it is load-bearing, and `synchronize`'s reason is recovery, not inputs, which is
   the exact claim that makes it look removable.
   **Measured in this repo, on the old list:** PR #574's push-created head `8623d5fa` produced **six**
-  `pull_request` runs and **no title-lint row at all**, while every other gate on that PR ran — the
-  absence is the trigger, not a queue.
+  `pull_request` runs and **no title-lint row at all** — six of the seven *other* `pull_request`
+  gates ran, and the seventh (`channel-server-supply-chain`) is path-filtered and correctly did not
+  match that diff. The absence of this one is the trigger, not a queue and not a path.
   **CI-only — nothing about an installed bridge changes**: no `app/` file, no migration, no config,
   no `.env.example`, no token scope, and the gate's accept-set (which titles and branches pass) is
   byte-untouched. What changes is *when the gate runs*, in the strictly-more direction.
