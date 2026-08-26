@@ -16,9 +16,12 @@ use Tests\TestCase;
  * THE CLAIM THIS CLOSES, quoted because it was believed for seven stages: *"`CheckRunnerTest`
  * pins the registered set."* It does not — it pins the runner's PROPERTIES using synthetic
  * checks. Nothing asserted what `CheckCommand` registers, so a check deleted from the
- * registration list was caught only if its absence changed golden output. 26 of the 37
- * registered checks yield nothing on at least one install shape and most are silent on the
- * baseline, so for most of them the answer was: it would not have been caught.
+ * registration list was caught only if its absence changed golden output. At the stage-8
+ * measurement, 26 of the 37 checks then registered yielded nothing on at least one install
+ * shape and most were silent on the baseline, so for most of them the answer was: it would
+ * not have been caught. (The counts are that measurement, not a running total — the
+ * registered set has grown since, and re-stating a number nobody re-measured is how a
+ * historical fact turns into a false present-tense claim.)
  *
  * IT READS THE COMMAND'S OWN REGISTRATION rather than rebuilding the list, via reflection
  * on the private builder. A test that constructed its own registry would be asserting a
@@ -83,6 +86,10 @@ class CheckCommandRegistrationTest extends TestCase
         'board_tools.suppressed',
         'board_tools.bearer',
         'board_tools.board_state',
+        // card#7756 / DL-313 — the one leg on this plane whose subject is the CALLING SEAT
+        // rather than the bridge. Registered after the board-STATE plane and before the ssh
+        // one, which is where its output lands.
+        'board_tools.client_half',
         'board_tools.ssh_pinned_line',
         'board_tools.ssh_flipped_default',
         // the two opt-in probes (stage 1)

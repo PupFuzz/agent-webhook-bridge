@@ -45,11 +45,13 @@ use InvalidArgumentException;
  *
  * WHAT THE STAGE ROW SAID, AND WHY IT IS NOT WHAT SHIPPED. The row read *"every
  * registered check emits >= 1 finding"*. Measured before any code was written, that is
- * false on every install shape the corpus covers: on the baseline install 13 of 37 checks
- * are never invoked, 13 more run and report nothing, and 2 opt-in probes are never asked
- * to look — 9 of 37 emit anything (the four figures are the four
- * {@see CheckDisposition} cases, and they sum to the registered total by construction).
- * Enforcing it literally would
+ * false on every install shape the corpus covers: as stage 8 measured it, on the baseline
+ * install 13 of 37 checks were never invoked, 13 more ran and reported nothing, and 2
+ * opt-in probes were never asked to look — 9 of 37 emitted anything (the four figures are
+ * the four {@see CheckDisposition} cases, and they sum to the registered total by
+ * construction). They are that measurement and are deliberately not re-derived by hand as
+ * the registered set grows; the committed `minimal` golden file states the current run's
+ * inventory. Enforcing it literally would
  * have meant dissolving the conditional envelopes stages 3a and 7b preserved as BEHAVIOR.
  * The enforceable invariant is that every registered check is ACCOUNTED FOR on every run
  * that completes. See the stage 8 result in `docs/CHECK-REGISTRY-PLAN.md`.

@@ -3,6 +3,7 @@
 namespace Tests\Feature\AgentTools;
 
 use App\Bridge\Tools\ToolsCallStdio;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -17,6 +18,13 @@ use Tests\TestCase;
  */
 class ToolsCallCommandTest extends TestCase
 {
+    // card#7756: a SUCCESSFUL dispatch now writes one durable row (ClientHalfLedger), so
+    // this class touches the database transitively where it did not before. Without the
+    // trait those rows COMMIT on the MariaDB legs and outlive the test — invisible on
+    // SQLite `:memory:`, where the insert finds no table and the ledger swallows it. The
+    // isolation guard in Tests\TestCase names both halves.
+    use RefreshDatabase;
+
     private string $dir;
 
     protected function setUp(): void

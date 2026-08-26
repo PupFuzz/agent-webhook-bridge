@@ -370,6 +370,33 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   `bridge:check --probe-tools=<endpoint>` exercises
   the REAL HTTP loopback+bearer path; `bridge:check --probe-tools-ssh=<user@host>`
   the REAL ssh round-trip (see the runbook below).
+- **⭐ The CLIENT half is reported too, and only the seat can report it (DL-313).**
+  Everything above observes the **bridge** side of the door. The **calling seat's** half —
+  its keypair, its seeded `known_hosts`, the `BRIDGE_TOOLS_*` entries in its own
+  `.mcp.json`, its deployed channel server — lives in files the bridge **may not read**
+  (an account may only read its own; the same rule that makes `channel.server_path` an
+  operator declaration rather than an inference). So the seat **reports by calling**:
+  a successful board-tools call stamps one row per agent, and `bridge:check` reports its
+  **age** — `board_tools: agent X: client half REPORTED — a successful board-tools call for
+  this agent was recorded 3h ago, over ssh`. **No new tool and nothing to run on the seat
+  beyond a normal call.**
+  ⚠ **The row names the agent the door opened FOR, not the caller — and the green line says
+  so.** `bridge:check --probe-tools`, `provision-board-tools.py --self-cert` and a hand-run
+  `bridge:tools-call --agent=X` on the bridge host all reach the same success point and
+  stamp the same row, with none of the seat's own files involved. **Step 6 of the
+  enablement runbook below is one of them, and it runs BEFORE step 7 restarts the channel
+  server** — so a `REPORTED` line straight after enablement may be the bridge's own call,
+  for a seat that has no `.mcp.json` entry yet. Read it as *the door opened*, and confirm
+  the seat by having the seat itself call.
+  ⛔ **There are TWO verdicts, not three, and the missing one is deliberate.** A seat that
+  can report is by definition wired, so *"never wired"* is **not observable from the
+  bridge** — it is the same absence as *"wired, and quiet"*. No record, or one older than
+  `BRIDGE_BOARD_TOOLS_CLIENT_HALF_TTL` (default 7 days), reports **`client half
+  UNREPORTED`** as **`unvalidated`** — plain text, **never a warn, never a fail, and the
+  exit code does not move**. ⚠ **UNREPORTED is not evidence the seat is unwired.** The
+  remedy is to **ask the seat to make one call** (`board_my_cards`) and re-run
+  `bridge:check` — **not** to re-provision it. Acting on a bridge-side absence as if it
+  were a client-side fault is the incident this leg exists to prevent.
 
 ### Which spelling the probe read — and when the version-skew fallback can go
 
@@ -544,6 +571,14 @@ step-1 trap; 401 → bearer mismatch/collision; connection refused → wrong
 vhost/endpoint). Non-2xx or a scope mismatch exits non-zero. Every finding also names WHICH
 spelling the responder answered the header under, which is how a version skew stops reading as
 an identity fault — see **Which spelling the probe read** above.
+
+⚠ **This step STAMPS the client-half ledger (DL-313), and step 7 has not run yet.**
+`--probe-tools` POSTs a real `board_my_cards` with that agent's own bearer, so it reaches
+`BoardToolDispatcher`'s success point exactly as the seat would and writes the same row.
+`bridge:check` will therefore print `client half REPORTED` for the agent from here on —
+**including for a seat whose channel server is not running and whose `.mcp.json` has no
+`BRIDGE_TOOLS_*` entry at all.** Do not read that line as the seat's half being wired until
+the seat has made a call of its own; the line states the bound itself.
 
 ### 7. Restart the channel server
 

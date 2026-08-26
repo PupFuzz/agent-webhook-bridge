@@ -4,6 +4,19 @@
 > Measured against `app/Console/Commands/Bridge/CheckCommand.php` over the
 > 49 branch predicates in `handle()`, in 39 minutes. Decision record: **DL-242**.
 
+> ⚠ **STALE — the counts below are NOT this branch's, and this banner is the only
+> hand-edit this file may carry.** `handle()` no longer holds the number of branch
+> predicates that run measured (re-derive it in a second with `php
+> bin/check-golden-predicates.php`), so the observed / UNOBSERVED split and the named gaps
+> below describe an OLDER source: a predicate added since is enumerated nowhere here, and
+> absence from the gap list says nothing about it in either direction. Re-measuring means a
+> ~40-minute mutation run (`php bin/check-golden-mutate.php`) and is deliberately deferred
+> rather than done in the PR that noticed — but the false number is not deferred, which is
+> what this banner is for. `tests/Feature/Console/Check/CheckGoldenCoverageCurrencyTest.php`
+> reds when the header's number and the live predicate count disagree in EITHER direction,
+> so a regeneration that makes them agree must also drop this banner (the generator drops it
+> for you — it rewrites the whole file).
+
 The DL-242 plan holds stages 0-7 to a byte-identical output contract, enforced by
 `tests/Feature/Console/Check/CheckGoldenTest.php`. The plan also requires that the bound on
 that contract be stated rather than implied: *"no operator-visible change" holds only over

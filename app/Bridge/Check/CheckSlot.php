@@ -172,6 +172,20 @@ enum CheckSlot: string
      */
     case BoardToolsState = 'board-tools-state';
 
+    /**
+     * The per-agent CLIENT-half report (DL-313): has this agent's seat ever successfully
+     * reached the board-tools dispatcher, and how long ago.
+     *
+     * PER-AGENT AND OUTSIDE EVERY ENVELOPE ABOVE, and the pairing is the point — the same
+     * one DL-275 drew for the ssh plane. It reads one row of this bridge's OWN database and
+     * nothing the board-tools kanban client produces, so an absent writeback token must not
+     * decide whether the client half gets reported; its loop runs over the enabled subset
+     * whether or not {@see CheckContext::$boardToolsClient} was constructed. It stays INSIDE
+     * the enabled-subset guard because that dependency is real: an agent with no enabled
+     * block has no client half to ask about.
+     */
+    case BoardToolsClientHalf = 'board-tools-client-half';
+
     /** Inside the board-tools ssh-agent iteration, before the DL-225 advisory. */
     case BoardToolsSsh = 'board-tools-ssh';
 
