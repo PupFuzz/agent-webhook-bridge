@@ -28,19 +28,36 @@ export function scrubSnippet(body) {
 // 200 (or exit 0) with a php-warning-prepended body is a CORRUPT result, so it is
 // isError:true, not a silently-broken isError:false. On parse failure a truncated,
 // credential-scrubbed snippet keeps a non-JSON 502 page diagnosable.
-export function relayBridgeResponse(rawBody, legSuccess, sourceLabel) {
+//
+// `legDiagnostic` (card#7709) is the leg's own account of WHY it failed — the ssh exit
+// code plus its stderr — and it is what makes the leg signal reachable on the
+// parse-failure branch, which until now returned the snippet before ever reading
+// `legSuccess`. That collapsed two different failures into one string, and for the
+// case that actually happens (transport down: non-zero exit, empty stdout) the string
+// was `non-JSON response from the bridge (ssh <target>):` with nothing after the colon,
+// because `scrubSnippet('')` is `''`. The agent holding the failure could not name it;
+// measured cost at one install was a board tool dead for 10 days.
+//
+// The two states stay SEPARATE, deliberately:
+//   - failed leg WITH a diagnostic  ⇒ name the diagnostic (+ any partial output).
+//   - clean leg, or a failed leg with no diagnostic to give (an HTTP non-ok that DID
+//     return a body) ⇒ the original snippet message, unchanged. There the body IS the
+//     diagnosis, so folding a transport note into it would only re-mint this defect
+//     pointing the other way.
+// Both arms scrub: a leg diagnostic is unvetted operator-facing text, same as a body.
+export function relayBridgeResponse(rawBody, legSuccess, sourceLabel, legDiagnostic = '') {
   try {
     JSON.parse(rawBody);
   } catch {
-    return {
-      isError: true,
-      content: [
-        {
-          type: 'text',
-          text: `non-JSON response from the bridge (${sourceLabel}): ${scrubSnippet(rawBody)}`,
-        },
-      ],
-    };
+    const transportFailed = !legSuccess && Boolean(legDiagnostic);
+    // A leg that died before writing anything usually leaves an empty or
+    // whitespace-only body; appending it as "partial output" would be noise.
+    const partial = String(rawBody).trim();
+    const text = transportFailed
+      ? `the ${sourceLabel} leg FAILED: ${scrubSnippet(legDiagnostic)}` +
+        (partial ? ` | partial output: ${scrubSnippet(partial)}` : '')
+      : `non-JSON response from the bridge (${sourceLabel}): ${scrubSnippet(rawBody)}`;
+    return { isError: true, content: [{ type: 'text', text }] };
   }
   return {
     isError: !legSuccess,

@@ -8,7 +8,115 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.76.0] - 2026-08-25
+
+### Changed
+
+- **Framework orientation block re-synced to coord v0.43.0** (`/coord:update` area 4). Docs-only: the managed `coord:solo-orientation` block gains the note that only `## Who you are` and `## Read at session start` are auto-surfaced to a session, so a standing rule written elsewhere in the doc silently never loads. No executable line changes; the project addendum below the block is untouched.
+- **Framework orientation block re-synced to coord v0.44.0** (`/coord:update` area 4). Docs-only, wholly inside the managed `coord:solo-orientation` markers; no executable line changes. The block gains **`coord:install-rules`** — a marker pair inside `## Read at session start` that is the one span of the doc both AUTO-LOADED into a session and PRESERVED across `orientation-sync`, which is what makes an install standing rule survivable (elsewhere in the managed block a rule is erased by the next sync; below the `PROJECT ADDENDUM` divider it survives but never loads). It also gains two session-end/context rules: the handoff step ends at a **verdict, not at the write** — `handoff-check.py --auto` reds when a handoff claim contradicts live `gh`/`kbcard`/`git` state, and `handoff-write-check.py` now fires on whichever tool call changed the file — and a **dispatched subagent in flight does not hold a `/clear`**, provided the handoff enumerates the running subagents, since subagents survive the clear and their completions land in the next session.
+
 ### Fixed
+
+- **card#7597** — **the PR-title correlation-key lint subscribes to `synchronize`, so a PR that got
+  no first run can recover.** GitHub creates **no workflow runs at all** for a PR whose merge ref it
+  cannot compute (the base moved and the PR is conflicting), and the conflict is then cleared by a
+  push — a `synchronize`, the one event `pr-title-lint.yml` omitted by design. A PR opened while
+  conflicting therefore never got a first run of the title lint, and **no later ordinary event gave
+  it one**: every recovery left was a human act (edit the title or body to fire `edited`, close and
+  reopen to fire `reopened`) that nothing prompts anyone to perform. Ported from kanban-board PR
+  #653, which measured it on its PR #651 — this file carried that repo's trigger list *and its
+  justifying comment word for word*, which is why it carried the same hole. The omission's stated
+  reason is **correct about what a push CHANGES** (a push cannot move the PR title or the head
+  branch name, this gate's only two inputs) **and wrong about what a push RESTORES**; the comment now
+  says both, so the redundant runs read as the accepted price of the recovery path rather than as
+  waste to optimise back out. The trigger list is now **asserted** in `PrTitleLintTest` — each entry
+  carries the reason it is load-bearing, and `synchronize`'s reason is recovery, not inputs, which is
+  the exact claim that makes it look removable.
+  **Measured in this repo, on the old list:** PR #574's push-created head `8623d5fa` produced **six**
+  `pull_request` runs and **no title-lint row at all** — six of the seven *other* `pull_request`
+  gates ran, and the seventh (`channel-server-supply-chain`) is path-filtered and correctly did not
+  match that diff. The absence of this one is the trigger, not a queue and not a path.
+  **CI-only — nothing about an installed bridge changes**: no `app/` file, no migration, no config,
+  no `.env.example`, no token scope, and the gate's accept-set (which titles and branches pass) is
+  byte-untouched. What changes is *when the gate runs*, in the strictly-more direction.
+  ⚠ **The header's "it always runs" claim was FALSE and is corrected in the same change** — that is
+  the belief this defect disproves. `dev` branch protection requires the test and secret-scan
+  contexts, not this one.
+  ⛔ **The class is NOT closed.** `synchronize` closes the *recovery* hole for this one workflow; a
+  check that never ran still produces no row, no annotation and no conclusion, so nothing
+  distinguishes it from one that passed (DL-283 owns that property). It is **worse here than in
+  kanban-board**, because this repo has **path-filtered** workflows (`channel-server-supply-chain`,
+  `provision-tools-python`) where zero runs is the *normal, correct* state — so "never ran",
+  "correctly skipped" and "passed" are one reading, and no count-the-runs check separates them
+  without also computing the path match. **UNMEASURED:** whether any merged bridge PR ever passed
+  through this hole — the absence leaves no trace, so it is not answerable after the fact.
+
+- **card#7709 (DL-312)** — **a dead ssh board-tools leg now names the exit code and the stderr that
+  explains it, instead of relaying an empty line.** The ssh call site computed `code === 0` and
+  passed it to the shared relay as the leg signal, but `relayBridgeResponse` ran `JSON.parse` FIRST
+  and returned its non-JSON-snippet arm **before** ever reading that signal — dead on exactly the
+  branch where the transport had failed, and in breach of the contract its own header states
+  (*"the success signal is LEG-SUPPLIED, NEVER inferred from the body"*). With the transport down
+  the body is empty and `scrubSnippet('')` is `''`, so what reached the agent was
+  `non-JSON response from the bridge (ssh <target>):` and **nothing after the colon**. The stderr
+  that names the cause (`Permission denied (publickey)`, `Connection refused`, `Host key
+  verification failed`) went only to `console.error` — the MCP client's server log, which is not a
+  surface an agent reads. **Measured at the reporting install: `board_my_cards` was dead for 10
+  days** after a host wipe destroyed both halves of the ssh door, and the seat holding the failure
+  the whole time could not name it; the cause was eventually found bridge-side from `bridge:check`.
+  **Keeping the two states APART is the whole of the fix.** A failed leg that carries a diagnostic
+  now reports `the ssh <target> leg FAILED: ssh exited <N>: <stderr>` plus any partial output; a
+  HEALTHY leg whose body is garbage keeps the original snippet message **byte for byte**, because
+  there the body IS the diagnosis and folding a transport note into it would re-mint this defect
+  pointing the other way. That preservation is pinned by a test that reds against exactly that
+  wrong fix. The HTTP leg passes no diagnostic and is byte-unchanged, including its non-ok-with-a-
+  body case. **One shipped-surface error-reporting change (hard-gate class, standing dev
+  authorization); no `app/` file, no migration, no config key, no token scope, no receiver
+  accept/reject change.**
+  Everything relayed is `scrubSnippet`-ed and length-bounded — stderr is unvetted text — and the
+  capture keeps the **head** of that stream, not the tail: a tail slice can cut an `Authorization:`
+  line in half and leave its token past the anchor the scrub redacts from, and ssh states its
+  diagnosis first. Fixed **once**, in the relay both transports share (`channel-lib.mjs`, optional
+  fourth `legDiagnostic` argument), not per transport. New `tests/ssh-transport-failure.test.mjs`
+  drives the REAL server over stdio against a fake `ssh` (7 cases: exit≠0 with empty / non-JSON /
+  JSON stdout, exit 0 with non-JSON / JSON, a credential in stderr, a flooding stderr) alongside 7
+  new relay units; the stdio spawn harness is extracted to `tests/mcp-harness.mjs` at its second
+  caller. **Seen to fail in three configurations** — both files pre-fix (8 of the 14 new tests red,
+  the other 6 green because they pin what this change preserves), the relay fixed with the call site
+  still pre-fix (the 4 end-to-end cases still red, so neither half is decoration), and the two
+  wrong-fix mutants; DL-312 records each. Node suite 47/47, PHPUnit 2599/2599 (no PHP touched).
+  Channel-server snapshot `0.9.7 → 0.9.8` (DL-038).
+
+## [0.75.1] - 2026-08-24
+
+### Fixed
+
+- **card#7564 (DL-311)** — **the remaining three sites that answered "which pull request does this
+  value name" with a bare `(int)` now ask the normalizer, and the question has ONE implementation.**
+  DL-309 closed the two sites its investigation named; it did not close the shape. A card storing
+  `'1.5'` still read as PR **1** — a real, unrelated pull request — in:
+  **(1) `CardTokenCorroboration::tracksPr`**, the predicate gating an **uncorroborated title-only
+  `card#` write**. ⚠ This one is **permissive, not fail-closed**: the gate refuses when the card does
+  NOT track the event's PR, so a false "same PR" **allowed** a title-only move/`block_reason` write
+  onto a card the pull request had nothing to do with. Reachable on the default configuration; the
+  docblock's fail-closed claim was true only of NON-numeric values, and `'1.5'` is numeric.
+  **(2) `KanbanClient::correlatePr` and (3) `correlateIssue`**, `scan`-mode only — the legacy
+  correlation fallback (`BRIDGE_WRITEBACK_CORRELATION=scan`, kept and unchanged in every other
+  respect), where the same value matched PR/issue 1 while `ref` mode asks the kanban server, which
+  has refused it since kanban DL-251. **Two modes of one correlation now answer one card
+  identically.**
+  **One predicate, not four spellings of it (canon #5):** the positive-bare-number ADMISSION and the
+  normalizer DERIVATION are hoisted into `BareRefNumber` and shared by all three sites plus
+  `TrackedCardRef`, whose behavior is unchanged (its inline form was byte-equivalent; DL-309's
+  admission mutants still red it).
+  ⚠ **Consumer-visible delta, in the fail-closed direction only:** an uncorroborated title-only
+  `card#` naming a card whose `pr_number` names no single pull request is now REFUSED (alert +
+  card note) instead of written, and `scan` mode no longer correlates such a card. **Nothing widened**
+  — `85`, `85.0`, `'085'` and `'148'` corroborate and correlate exactly as before, and `-5` / `'#85'`
+  still name no PR here even though the kanban server indexes the refs they canonicalize to.
+  Sibling sweep (card#7564's open axis, now closed): no other `(int)` cast in `app/` reads a
+  caller-supplied correlation value — the rest cast kanban/GitHub server-generated ids.
+  `KanbanMoveCardHandler`'s `stamp_pr` stays out of the class (a GitHub delivery's own PR number).
 
 - **card#7536 (DL-309)** — **a correlation value that is not a single decorated integer now derives
   NO ref, matching the kanban server.** kanban-board ruled that in its own **DL-251** and the bridge's

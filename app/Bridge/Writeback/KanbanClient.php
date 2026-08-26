@@ -196,10 +196,18 @@ final class KanbanClient
         // scan (legacy): no server-side `source`; the bare PR-number match is
         // repo-disambiguated downstream (KanbanDependabotCardHandler's cardsForRepo
         // guard). `ref` is the default and the only mode AIMLA/Sola run.
+        //
+        // WHICH pull request the card's stored value names is {@see BareRefNumber}'s
+        // answer, never a local cast (DL-311): a bare `(int)` matched `'1.5'` to PR 1,
+        // while `ref` mode — which asks the server, and the server derives the ref from
+        // this same payload key — has refused that value since kanban DL-251. Two modes
+        // of one correlation must not answer one card differently.
+        $refs = new ExternalReferenceNormalizer;
         $ids = [];
         foreach ($this->correlationCards($boardId) as $card) {
             $pr = $card['payload']['pr_number'] ?? null;
-            if (is_numeric($pr) && (int) $pr === $prNumber && isset($card['id']) && is_numeric($card['id'])) {
+            if (BareRefNumber::namesSame(ExternalReferenceNormalizer::SYSTEM_GITHUB_PR, $pr, $prNumber, $refs)
+                && isset($card['id']) && is_numeric($card['id'])) {
                 $ids[] = (int) $card['id'];
             }
         }
@@ -229,10 +237,15 @@ final class KanbanClient
         // correlate the wrong repo's issue #N. `ref` (the default, and the only mode the
         // coord-card adopters run) passes canonSource($repo) and is correct; bridge:check
         // warns if population=all is paired with scan.
+        //
+        // The same one authority as {@see correlatePr} over the `github_issue` system
+        // (DL-311) — the issue key carried the identical `(int)` truncation.
+        $refs = new ExternalReferenceNormalizer;
         $ids = [];
         foreach ($this->correlationCards($boardId) as $card) {
             $issue = $card['payload']['issue_number'] ?? null;
-            if (is_numeric($issue) && (int) $issue === $issueNumber && isset($card['id']) && is_numeric($card['id'])) {
+            if (BareRefNumber::namesSame(ExternalReferenceNormalizer::SYSTEM_GITHUB_ISSUE, $issue, $issueNumber, $refs)
+                && isset($card['id']) && is_numeric($card['id'])) {
                 $ids[] = (int) $card['id'];
             }
         }
