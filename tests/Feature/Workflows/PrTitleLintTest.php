@@ -426,6 +426,52 @@ class PrTitleLintTest extends TestCase
     }
 
     // ---------------------------------------------------------------------
+    // THE TRIGGER LIST — whether the gate RUNS AT ALL
+    // ---------------------------------------------------------------------
+
+    /**
+     * A RECOVERY property, which is a different question from every other leg in
+     * this file. Those ask what the gate ANSWERS once it has run; this asks whether
+     * it gets to run at all.
+     *
+     * `opened`/`reopened`/`edited` are the gate's INPUT events: the title and the
+     * head branch name are all it reads, and `edited` is the only event a title fix
+     * fires. `synchronize` is NOT an input event — a push provably cannot change
+     * either input — and it is asserted here anyway, because GitHub creates NO
+     * workflow runs at all for a PR whose merge ref it cannot compute, and the push
+     * that clears the conflict IS the `synchronize`. Without it a PR opened while
+     * conflicting never gets a first run and every recovery left is a human act —
+     * fire `edited` or `reopened` by hand, with nothing prompting anyone to
+     * (card#7597; measured on kanban-board PR #651, whose copy of this workflow
+     * carried the identical trigger list). Deleting `synchronize` as a redundant run
+     * is therefore a correct-in-isolation edit that reopens the hole, which is what
+     * this leg exists to red.
+     *
+     * NOT CLAIMED: this reads the COMMITTED trigger list. It does not measure
+     * GitHub's dispatch, and nothing in this suite can — see the workflow header for
+     * the residual (a check that never ran still looks like one that passed).
+     */
+    public function test_the_trigger_list_keeps_both_the_input_events_and_the_recovery_event(): void
+    {
+        $wf = Yaml::parseFile(base_path('.github/workflows/pr-title-lint.yml'));
+        $types = $wf['on']['pull_request']['types'] ?? null;
+        $this->assertIsArray($types, 'pr-title-lint.yml has no on.pull_request.types list to read');
+
+        $required = [
+            'opened' => 'the gate must run when the PR is first created',
+            'reopened' => 'a reopened PR is a fresh merge decision and must be re-gated',
+            'edited' => 'the title is an INPUT, and a title fix fires only `edited`',
+            'synchronize' => 'RECOVERY: a PR opened while conflicting gets no runs at all, and the push that '
+                .'clears the conflict is the only NON-HUMAN event left that can give this gate its first one '
+                .'(card#7597)',
+        ];
+
+        foreach ($required as $type => $why) {
+            $this->assertContains($type, $types, "on.pull_request.types has no '{$type}': {$why}");
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // TIED — the warn step's accepted grammar vs the authority
     // ---------------------------------------------------------------------
 

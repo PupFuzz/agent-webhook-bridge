@@ -1,5 +1,13 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.41.0) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.43.0) -->
 # Agent Board Framework — solo agent orientation
+
+> **⚠ Only two sections of this file reach a session automatically: `## Who you are` and
+> `## Read at session start`.** Everything else is reference a session must OPEN this file
+> to read, so a standing rule written anywhere else **silently never loads** — and nothing
+> warns you.
+> **⇒ Put standing rules INSIDE one of those two sections**; reference and rationale can go
+> anywhere. Mechanism: `CONFIG.md` (§ Field reference — `ritual_load`); `/coord:tidy` reports
+> rules it finds outside the two.
 
 > **What this is.** The solo-agent orientation generated from the Agent Board Framework
 > (`coord` plugin → `templates/solo-CLAUDE.md`), placed by `coord:init-solo` into each repo
