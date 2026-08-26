@@ -24,24 +24,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-
-const SERVER = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '..',
-  'agent-webhook-bridge-channel.mjs',
-);
-
-// A temp scratch dir that is cleaned up when the test ends.
-function scratch(t, prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  return dir;
-}
+import { scratch, connectServer } from './mcp-harness.mjs';
 
 // Drop an executable fake `clear-agent.sh` into `binDir` that records its own
 // pid/ppid/pgid to $SENTINEL_FILE (inherited from the server's env). A detached child
@@ -80,29 +64,9 @@ function recordingBridge(t) {
   });
 }
 
-// Spawn the real channel server and connect an MCP client to it over stdio. `env` is
-// merged over a minimal base that gives the server a resolvable unix channel socket
-// (so it does not refuse-and-exit before the MCP handshake). The client + server are
-// torn down when the test ends.
-async function connectServer(t, env) {
-  const runtime = scratch(t, 'clearctx-rt-');
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [SERVER],
-    stderr: 'ignore',
-    env: {
-      PATH: process.env.PATH,
-      BRIDGE_CHANNEL_TRANSPORT: 'unix',
-      BRIDGE_CHANNEL_SOCKET: path.join(runtime, 'chan.sock'),
-      BRIDGE_CHANNEL_NAME: 'clearctx-test',
-      ...env,
-    },
-  });
-  const client = new Client({ name: 'clearctx-test-client', version: '1.0.0' }, { capabilities: {} });
-  await client.connect(transport);
-  t.after(() => client.close());
-  return client;
-}
+// The server spawn + MCP client handshake lives in ./mcp-harness.mjs (shared with
+// ssh-transport-failure.test.mjs); this suite only pins its own channel name.
+const serverOpts = { name: 'clearctx-test', runtimePrefix: 'clearctx-rt-' };
 
 // Build the PATH-and-$STY armed environment: a fresh bin dir holding the fake helper,
 // prepended to PATH, with $STY set and a sentinel path the helper writes to.
@@ -135,7 +99,7 @@ async function pollExists(file, timeoutMs = 3000) {
 // (a) Advertised in tools/list when armed ($STY set AND clear-agent.sh on PATH).
 test('clear_context is advertised in tools/list when armed', async (t) => {
   const { env } = armedEnv(t);
-  const client = await connectServer(t, env);
+  const client = await connectServer(t, env, serverOpts);
   const { tools } = await client.listTools();
   const names = tools.map((x) => x.name);
   assert.ok(names.includes('clear_context'), `expected clear_context in ${JSON.stringify(names)}`);
@@ -154,7 +118,7 @@ test('clear_context is ABSENT from tools/list when $STY is unset', async (t) => 
     BRIDGE_TOOLS_TOKEN: 'test-bearer',
   });
   delete env.STY; // disarm clear_context; board tools remain on
-  const client = await connectServer(t, env);
+  const client = await connectServer(t, env, serverOpts);
   const { tools } = await client.listTools();
   const names = tools.map((x) => x.name);
   assert.ok(!names.includes('clear_context'), `clear_context must be absent, got ${JSON.stringify(names)}`);
@@ -164,7 +128,7 @@ test('clear_context is ABSENT from tools/list when $STY is unset', async (t) => 
 // Orthogonality the other way: clear_context is advertised even with board tools OFF.
 test('clear_context is advertised even when board tools are OFF', async (t) => {
   const { env } = armedEnv(t); // no BRIDGE_TOOLS_* → board tools off
-  const client = await connectServer(t, env);
+  const client = await connectServer(t, env, serverOpts);
   const { tools } = await client.listTools();
   const names = tools.map((x) => x.name);
   assert.deepEqual(names, ['clear_context'], `only clear_context should be advertised, got ${JSON.stringify(names)}`);
@@ -178,7 +142,7 @@ test('calling clear_context spawns the detached helper and does NOT proxy to the
     BRIDGE_TOOLS_ENDPOINT: bridge.url,
     BRIDGE_TOOLS_TOKEN: 'test-bearer',
   });
-  const client = await connectServer(t, env);
+  const client = await connectServer(t, env, serverOpts);
 
   const res = await client.callTool({ name: 'clear_context', arguments: {} });
   assert.notEqual(res.isError, true, `clear_context should succeed: ${JSON.stringify(res)}`);
@@ -203,7 +167,7 @@ test('calling clear_context when not armed returns a structured MCP error', asyn
     BRIDGE_TOOLS_TOKEN: 'test-bearer',
   });
   delete env.STY;
-  const client = await connectServer(t, env);
+  const client = await connectServer(t, env, serverOpts);
   const res = await client.callTool({ name: 'clear_context', arguments: {} });
   assert.equal(res.isError, true, `expected an error result, got ${JSON.stringify(res)}`);
   assert.match(res.content[0].text, /not armed/);

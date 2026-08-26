@@ -238,6 +238,51 @@ class KanbanMoveCardHandlerTest extends TestCase
             && str_contains((string) $r['content'], 'carrying no pull-request number'));
     }
 
+    public function test_uncorroborated_title_only_token_is_refused_when_the_cards_pr_number_names_no_pull_request(): void
+    {
+        // card#7564 / DL-311 — the sharp end of the truncation class, at the real
+        // surface. Card 5 stores `pr_number: '1.5'`, which names NO pull request (kanban
+        // DL-251, mirrored here by DL-309), and this event is PR 1. The gate compared
+        // `(int) '1.5' === (int) 1`, read "the card already tracks THIS PR" and let the
+        // title-only token move a card the event has nothing to do with — the truncation
+        // ALLOWS the write here rather than refusing it.
+        // (Restore the `(int)` compare in tracksPr ⇒ a PATCH is sent ⇒ RED.)
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5/comments.json' => Http::response(['data' => ['id' => 9]], 201),   // card#7064 card note
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => '1.5'],
+            ]]),
+        ]);
+        Log::spy();
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 1]));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'REFUSED')
+            && str_contains((string) $msg, 'only in the PR title'))->once();
+    }
+
+    public function test_uncorroborated_title_only_token_still_moves_on_a_leading_zero_pr_number(): void
+    {
+        // CONTROL for the test above: the refusal is scoped to values naming no single
+        // pull request, NOT to every spelling of one. `'0148'` and 148 are one PR to the
+        // kanban server and were one PR to the old cast; they must stay one here.
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake([
+            '*/tasks/5.json' => Http::sequence()
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'payload' => ['pr_number' => '0148']]])
+                ->push(['data' => ['id' => 5]]),
+        ] + $this->fakePreload());
+
+        $this->handle($this->payload(['card_token_uncorroborated' => true, 'stamp_pr' => 148]));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
+
     // --- card#6027 / DL-287: the near-miss card-token refusal ---
 
     public function test_a_near_miss_flagged_target_is_refused_before_any_read(): void

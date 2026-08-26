@@ -228,6 +228,43 @@ class KanbanClientTest extends TestCase
         Log::shouldNotHaveReceived('warning');
     }
 
+    /**
+     * card#7564 / DL-311 — the same truncation class as correlateDl's, on the PR and issue
+     * keys: `(int) '1.5' === 1` matched card 7 to PR 1 (and to issue 1), a real and
+     * unrelated one, while `ref` mode asks the kanban server, which has derived no ref
+     * from such a value since its DL-251. Two modes of one correlation must not answer one
+     * card differently. Card 11 is the control — `'01'` is one spelling of 1 and must keep
+     * matching, so the refusal is scoped to values naming no single number.
+     * (Restore the `(int)` compares ⇒ card 7 comes back too ⇒ RED, each arm on its own.)
+     *
+     * ⚠ SYNTHETIC ARM, not a live-path witness: `scan` is unreachable on every configured
+     * install here (`BRIDGE_WRITEBACK_CORRELATION` defaults to `ref`, which is the only
+     * mode this fleet and the multi-repo adopters run), so the mode is constructed
+     * explicitly rather than exercised. That is why the card ranks this instance
+     * present-but-not-reachable.
+     */
+    private function fakeTruncatingCorrelationCards(): void
+    {
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 7, 'payload' => ['pr_number' => '1.5', 'issue_number' => 1.5]],
+            ['id' => 11, 'payload' => ['pr_number' => '01', 'issue_number' => '01']],
+        ]])]);
+    }
+
+    public function test_scan_correlate_pr_refuses_a_card_value_naming_no_single_number(): void
+    {
+        $this->fakeTruncatingCorrelationCards();
+
+        $this->assertSame([11], $this->client()->correlatePr(8, 1));
+    }
+
+    public function test_scan_correlate_issue_refuses_a_card_value_naming_no_single_number(): void
+    {
+        $this->fakeTruncatingCorrelationCards();
+
+        $this->assertSame([11], $this->client()->correlateIssue(8, 1));
+    }
+
     // ---- ref mode (DL-029 cutover) ----
 
     public function test_ref_correlate_dl_queries_by_ref_and_returns_collection(): void
