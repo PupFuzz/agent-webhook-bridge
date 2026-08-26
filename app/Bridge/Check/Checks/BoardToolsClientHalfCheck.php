@@ -28,16 +28,24 @@ use Throwable;
  * obvious mechanism and is refused: an account may only read its own files. It is the same
  * rule that keeps `channel.server_path` an operator DECLARATION rather than an inference
  * off the agent's MCP config (DL-229), and the same one that stops `bridge:check` executing
- * the seat's channel server (DL-237). So the seat SELF-REPORTS — and it already does,
+ * the seat's channel server (DL-237). So the seat REPORTS BY CALLING — and it already does,
  * without a new tool or a single seat-side change: a successful board-tools call is the
- * report ({@see ClientHalfLedger}).
+ * report ({@see ClientHalfLedger}). ⚠ What the ledger records is that the DOOR opened for
+ * this agent, and it cannot tell a seat's call from one the bridge itself made with that
+ * agent's bearer or pinned key; the `ok` arm below says so in its own text.
  *
  * ⭐ TWO OUTCOMES, NOT THREE, AND "NEVER WIRED" IS NOT ONE OF THEM. A seat that can report
  * is BY DEFINITION wired, so "never wired" is unobservable from here — it is the same
  * absence as "wired, and quiet". The leg therefore reports:
- *   - a fresh successful call ⇒ `ok`. POSITIVE PROOF: reaching {@see BoardToolDispatcher}
- *     requires the entire client chain, so the row is evidence rather than an inference
- *     from config.
+ *   - a fresh successful call ⇒ `ok`, and the line claims ONLY what the row carries: a
+ *     successful call was recorded for this agent, at that time, over that transport.
+ *     ⛔ THE ROW IS EVIDENCE ABOUT THE CALL, NOT ABOUT THE CALLER. `bridge:check
+ *     --probe-tools`, `bin/provision-board-tools.py --self-cert` and a hand-run
+ *     `bridge:tools-call --agent=X` on this host all reach {@see BoardToolDispatcher}'s
+ *     success point and stamp the same row, and the enablement runbook has the operator
+ *     run the first of those BEFORE the seat's channel server is even restarted — so a
+ *     green line straight after enablement may be the bridge's own call. The message
+ *     names those three rather than leaving the reader to infer a seat behind the row.
  *   - no record, or one older than the freshness window ⇒ `unvalidated`. The leg did not
  *     answer its own question ({@see Severity} limb (a)/(c)) and NOTHING here
  *     distinguishes never-wired from merely-idle.
@@ -118,7 +126,7 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
             return;
         }
 
-        yield Finding::ok("board_tools: agent {$name}: client half WIRED — the seat's last successful board-tools call was ".self::humanAge($age).' ago, over '.$row->transport.'. Reaching this bridge takes the seat\'s whole client chain (keypair, known_hosts, BRIDGE_TOOLS_* in its .mcp.json, a deployed channel server, and on ssh the pinned forced command), so the call is proof rather than an inference.');
+        yield Finding::ok("board_tools: agent {$name}: client half REPORTED — a successful board-tools call for this agent was recorded ".self::humanAge($age).' ago, over '.$row->transport.". THAT IS THE CALL, NOT THE CALLER: `bridge:check --probe-tools`, `provision-board-tools.py --self-cert` and a hand-run `bridge:tools-call --agent={$name}` on this host stamp the same row, so a recorded call means the door OPENED — not necessarily that the seat opened it.");
     }
 
     /**

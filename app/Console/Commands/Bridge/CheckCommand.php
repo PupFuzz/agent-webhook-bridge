@@ -567,7 +567,8 @@ class CheckCommand extends BridgeCommand
             // The CLIENT-half report (card#7756 / DL-313). Every plane above and below
             // observes the BRIDGE side of the door; this is the only leg that says
             // anything about the CALLING SEAT — and it can, only because the seat already
-            // self-reports by calling.
+            // reports by calling. (What the row proves is bounded: the leg's own ok line
+            // names the other things that stamp it.)
             //
             // ITS OWN LOOP, OUTSIDE THE CLIENT GUARD ABOVE, for the DL-275 reason: it reads
             // one row of this bridge's own database and nothing the board-tools kanban

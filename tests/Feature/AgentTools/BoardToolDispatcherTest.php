@@ -6,12 +6,10 @@ use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
 use App\Models\BoardToolsClientCall;
-use Illuminate\Database\ConnectionInterface;
-use Illuminate\Database\ConnectionResolverInterface;
-use Illuminate\Database\DatabaseManager;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\UsesUnmigratedDatabase;
 use Tests\TestCase;
 
 /**
@@ -28,6 +26,7 @@ class BoardToolDispatcherTest extends TestCase
     // SQLite `:memory:`, where the insert finds no table and the ledger swallows it. The
     // isolation guard in Tests\TestCase names both halves.
     use RefreshDatabase;
+    use UsesUnmigratedDatabase;
 
     private string $dir;
 
@@ -138,12 +137,14 @@ class BoardToolDispatcherTest extends TestCase
     }
 
     /**
-     * ⭐ THE SEAT'S SELF-REPORT (card#7756 / DL-313). A call that reaches this point has
-     * already exercised the CALLING SEAT's whole client chain, so the success point is the
-     * only place the bridge can honestly learn that the seat's half works — it may not read
-     * the seat's own files to find out.
+     * ⭐ THE SEAT'S REPORT-BY-CALLING (card#7756 / DL-313). A SEAT reaching this point has
+     * already exercised its whole client chain, so the success point is the only place the
+     * bridge can honestly learn anything about that half — it may not read the seat's own
+     * files to find out. The row records that the door OPENED for the agent and cannot name
+     * the caller (`--probe-tools` and a hand-run `bridge:tools-call` stamp it too), which is
+     * why the reading check bounds its `ok` line rather than claiming a wired seat.
      */
-    public function test_a_successful_call_records_the_seats_client_half(): void
+    public function test_a_successful_call_records_the_client_half_row(): void
     {
         Http::fake([
             '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => []]]]]),
@@ -215,45 +216,5 @@ class BoardToolDispatcherTest extends TestCase
         // …and nothing was recorded, which is what makes the sabotage the cause rather
         // than something the harness merely hoped for.
         $this->assertSame(0, BoardToolsClientCall::query()->count());
-    }
-
-    /**
-     * Run `$body` with the ledger's model resolving to a REAL SQLite connection that has
-     * never been migrated.
-     *
-     * ⚑ `RefreshDatabase`'s transaction is unaffected: it resolves through the CONTAINER
-     * while Eloquent resolves through the static resolver swapped here, and the swap is
-     * undone in a `finally` regardless of what `$body` does.
-     */
-    private function withUnmigratedDatabase(callable $body): mixed
-    {
-        config(['database.connections.unmigrated' => ['driver' => 'sqlite', 'database' => ':memory:', 'prefix' => '']]);
-
-        /** @var DatabaseManager $manager */
-        $manager = $this->app->make('db');
-        $original = BoardToolsClientCall::getConnectionResolver();
-
-        BoardToolsClientCall::setConnectionResolver(new class($manager) implements ConnectionResolverInterface
-        {
-            public function __construct(private DatabaseManager $manager) {}
-
-            public function connection($name = null): ConnectionInterface
-            {
-                return $this->manager->connection('unmigrated');
-            }
-
-            public function getDefaultConnection(): string
-            {
-                return 'unmigrated';
-            }
-
-            public function setDefaultConnection($name): void {}
-        });
-
-        try {
-            return $body();
-        } finally {
-            BoardToolsClientCall::setConnectionResolver($original);
-        }
     }
 }

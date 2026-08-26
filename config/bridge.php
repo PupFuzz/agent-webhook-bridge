@@ -201,9 +201,11 @@ return [
     | Every board-tools plane in `bridge:check` observes the BRIDGE side of the
     | door. The CALLING SEAT's half — its keypair, known_hosts, .mcp.json entries
     | and deployed channel server — lives in files the bridge may not read (an
-    | account may only read its own), so the seat SELF-REPORTS by calling: a
-    | successful board-tools call stamps `board_tools_client_calls`, and the check
-    | reports the stamp's AGE.
+    | account may only read its own), so the seat REPORTS BY CALLING: a successful
+    | board-tools call stamps `board_tools_client_calls`, and the check reports the
+    | stamp's AGE. ⚠ The row names the agent the door opened FOR, not the caller —
+    | `--probe-tools`, `--self-cert` and a hand-run `bridge:tools-call` stamp it too,
+    | and the leg's ok line says so.
     |
     | client_half_ttl is how old that stamp may be and still read as CURRENT, in
     | seconds (default 7 days). ⚠ It is a display threshold, nothing else: the age

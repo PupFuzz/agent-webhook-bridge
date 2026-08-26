@@ -18,10 +18,14 @@ return new class extends Migration
         // ⛔ THE BRIDGE MAY NOT READ THE SEAT'S OWN FILES to close that gap (an account may
         // only read its own; the same rule that keeps `channel.server_path` an operator
         // DECLARATION rather than an inference off the agent's `.mcp.json` — DL-229). So
-        // the seat SELF-REPORTS, and the report is a successful board-tools call: reaching
-        // `BoardToolDispatcher` at all requires the whole client chain (keypair, seeded
-        // known_hosts, BRIDGE_TOOLS_* in `.mcp.json`, a deployed channel server, the pinned
-        // forced command). One row per agent, written at that success point.
+        // the seat REPORTS BY CALLING, and the report is a successful board-tools call: a
+        // seat reaching `BoardToolDispatcher` has exercised its whole client chain (keypair,
+        // seeded known_hosts, BRIDGE_TOOLS_* in `.mcp.json`, a deployed channel server, the
+        // pinned forced command). One row per agent, written at that success point.
+        //
+        // ⚠ THE ROW NAMES THE AGENT THE DOOR OPENED FOR, NOT THE CALLER: `bridge:check
+        // --probe-tools`, `--self-cert` and a hand-run `bridge:tools-call --agent=X` stamp it
+        // indistinguishably from the seat's own call. The reading check states that bound.
         //
         // ⛔ A DB TABLE AND NOT A STATE-DIR FILE, and the reason is the two front doors'
         // OS users. `bridge:tools-call --agent=X` is spawned by sshd as `board_tools

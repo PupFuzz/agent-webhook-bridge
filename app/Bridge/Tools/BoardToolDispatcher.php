@@ -28,9 +28,11 @@ use Illuminate\Support\Facades\Log;
  * ssh calls are distinguishable in a single log.
  *
  * SINCE card#7756 THE SUCCESS POINT ALSO WRITES A DURABLE ROW ({@see ClientHalfLedger}).
- * A call that gets here has already proven the CALLING SEAT's whole client chain, and that
+ * A call that gets here from a SEAT has exercised that seat's whole client chain, and that
  * is the only evidence the bridge can have about a half it is not entitled to read — so the
- * one place both front doors already share is where it is recorded. It is an observation
+ * one place both front doors already share is where it is recorded. ⚠ The row cannot say
+ * the caller WAS a seat: `bridge:check --probe-tools` and a hand-run `bridge:tools-call`
+ * reach this same point, so the reading check bounds its own line. It is an observation
  * ABOUT the call and never a precondition OF it: the ledger swallows its own failures.
  */
 final class BoardToolDispatcher
@@ -79,9 +81,9 @@ final class BoardToolDispatcher
         }
 
         Log::info('agent-tools: ok', ['agent' => $agentName, 'tool' => $toolName, 'transport' => $transport]);
-        // card#7756: the same success, made DURABLE. The log line answers "is this seat's
-        // client half wired?" only for as long as the log is retained, and only to someone
-        // reading logs; `bridge:check` needs it as a fact. Best-effort by construction —
+        // card#7756: the same success, made DURABLE. The log line answers "did the
+        // board-tools door open for this agent?" only for as long as the log is retained,
+        // and only to someone reading logs; `bridge:check` needs it as a fact. Best-effort by construction —
         // the ledger never throws, because the call has already happened and re-running it
         // to fix an audit row would re-do the board work.
         ClientHalfLedger::record($agentName, $transport);

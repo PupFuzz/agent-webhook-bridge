@@ -7,15 +7,23 @@ use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
- * Record that ONE agent's seat successfully reached the board-tools dispatcher — the
- * durable half of card#7756 / DL-313.
+ * Record that the board-tools door was successfully opened for ONE agent — the durable
+ * half of card#7756 / DL-313.
  *
- * WHAT A RECORD MEANS, and it is the whole design. Nothing reaches
- * {@see BoardToolDispatcher::dispatch()}'s success point without the CALLING SEAT's entire
- * client chain already working: its keypair, its seeded `known_hosts`, the `BRIDGE_TOOLS_*`
- * entries in its own `.mcp.json`, a deployed channel server, and — on the ssh door — the
- * pinned forced command. So a successful call IS the seat's self-report that its half is
- * wired, and it needs no new tool, no new protocol, and nothing at all on the seat side.
+ * WHAT A RECORD MEANS, and it is the whole design. A seat reaching
+ * {@see BoardToolDispatcher::dispatch()}'s success point has exercised its entire client
+ * chain: its keypair, its seeded `known_hosts`, the `BRIDGE_TOOLS_*` entries in its own
+ * `.mcp.json`, a deployed channel server, and — on the ssh door — the pinned forced
+ * command. So a call from the seat IS the seat's self-report that its half is wired, and it
+ * needs no new tool, no new protocol, and nothing at all on the seat side.
+ *
+ * ⛔ WHAT A RECORD DOES NOT MEAN, and this row cannot tell the two apart. A seat is not the
+ * only thing that reaches that success point: `bridge:check --probe-tools` POSTs a real
+ * `board_my_cards` with the agent's own bearer, `bin/provision-board-tools.py --self-cert`
+ * fires a real ssh round-trip, and an operator can run `bridge:tools-call --agent=X` on the
+ * bridge host. Each stamps this row indistinguishably. The row therefore says the DOOR
+ * opened for that agent — never that the SEAT opened it — and the reading check's `ok` line
+ * carries that bound to the operator rather than letting the row imply more than it holds.
  *
  * ⛔ THE BRIDGE CANNOT ASK THE QUESTION ANY OTHER WAY. Reading `~<ssh_account>/.mcp.json`
  * was the obvious mechanism and is refused: an account may only read its own files. That is
@@ -46,10 +54,7 @@ final class ClientHalfLedger
      * supported drivers, which makes the concurrent case a plain UPDATE.
      *
      * ⚑ `last_success_at` IS PASSED EXPLICITLY rather than left to Eloquent. The model has
-     * no `updated_at`, so nothing would maintain it — and the near-miss to avoid is
-     * `updateOrCreate()`, which issues no UPDATE at all when every filled attribute already
-     * matches: a seat calling repeatedly with an unchanged transport would keep its FIRST
-     * stamp forever and age into the check's UNREPORTED arm while calling every hour.
+     * no `updated_at`, so nothing would maintain the stamp unless the write states it.
      */
     public static function record(string $agent, string $transport): void
     {

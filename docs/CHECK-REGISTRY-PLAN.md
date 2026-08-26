@@ -2722,4 +2722,10 @@ the work distinguishes those.
   must execute on a COPY of the repo (it rewrites `CheckCommand.php` in place), so regenerating it
   is its own piece of work — the point recorded here is that a reviewer must not read that file's
   totals as current, and that re-deriving the DENOMINATOR is cheap even when re-deriving the
-  verdicts is not.
+  verdicts is not. ⭐ **Since the card#7756 review that gap is GUARDED rather than merely known:**
+  the file carries a STALE banner under its generated header, and
+  `tests/Feature/Console/Check/CheckGoldenCoverageCurrencyTest.php` compares the header's number
+  against `bin/check-golden-predicates.php` — the same enumerator the generator drives — and reds
+  in EITHER direction, so the banner cannot outlive the staleness it announces and the number
+  cannot drift again in silence. The ~40-minute regeneration stays deferred; the false number does
+  not.

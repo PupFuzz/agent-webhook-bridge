@@ -9,12 +9,10 @@ use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Tools\ClientHalfLedger;
 use App\Models\BoardToolsClientCall;
-use Illuminate\Database\ConnectionInterface;
-use Illuminate\Database\ConnectionResolverInterface;
-use Illuminate\Database\DatabaseManager;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use ReflectionMethod;
 use Tests\Support\MaterializesChecks;
+use Tests\Support\UsesUnmigratedDatabase;
 use Tests\TestCase;
 
 /**
@@ -40,8 +38,9 @@ class BoardToolsClientHalfCheckTest extends TestCase
 {
     use MaterializesChecks;
     use RefreshDatabase;
+    use UsesUnmigratedDatabase;
 
-    public function test_a_fresh_call_is_the_positive_proof_and_names_its_age(): void
+    public function test_a_fresh_call_reports_the_recorded_call_and_names_its_age(): void
     {
         $this->recordCall(ageSeconds: 3 * 3600 + 1800);
 
@@ -49,11 +48,43 @@ class BoardToolsClientHalfCheckTest extends TestCase
 
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Ok, $findings[0]['severity']);
-        $this->assertStringContainsString('board_tools: agent prod-agent: client half WIRED', $findings[0]['message']);
+        $this->assertStringContainsString('board_tools: agent prod-agent: client half REPORTED', $findings[0]['message']);
         // The AGE is on the green line by design: an operator judging "3h" beats a boolean
         // they have to trust, and it is what makes a seat drifting toward silence visible
         // BEFORE it crosses the window.
-        $this->assertStringContainsString('last successful board-tools call was 3h ago, over ssh', $findings[0]['message']);
+        $this->assertStringContainsString('a successful board-tools call for this agent was recorded 3h ago, over ssh', $findings[0]['message']);
+    }
+
+    /**
+     * ⭐ THE GREEN LINE MAY NOT CLAIM A SEAT. Three things stamp this row without the seat's
+     * client chain existing at all: `bridge:check --probe-tools` (a real POST to
+     * `/agent-tools/call` with the agent's own bearer), `provision-board-tools.py
+     * --self-cert`, and an operator running `bridge:tools-call --agent=X` on the bridge
+     * host. The enablement runbook makes that REACHABLE rather than theoretical — its
+     * verify step is `--probe-tools` and its NEXT step restarts the channel server, so the
+     * ledger is stamped before the seat is live and the line would read green for a seat
+     * with no `.mcp.json` entry at all. That is the card's own incident inverted: an
+     * operator reads green and does NOT re-provision the seat that needs it.
+     *
+     * Presence AND absence are pinned together: the absence alone would be satisfied by any
+     * replacement wording, including a differently-worded overclaim.
+     */
+    public function test_the_green_line_names_what_else_stamps_the_row_and_claims_no_more(): void
+    {
+        $this->recordCall(ageSeconds: 60);
+
+        $message = $this->findings()[0]['message'];
+
+        $this->assertStringContainsString('THAT IS THE CALL, NOT THE CALLER', $message);
+        $this->assertStringContainsString('--probe-tools', $message);
+        $this->assertStringContainsString('--self-cert', $message);
+        $this->assertStringContainsString('bridge:tools-call --agent=prod-agent', $message);
+        $this->assertStringContainsString('the door OPENED', $message);
+        // The retired claim, by both of its load-bearing words: the row is not proof of a
+        // wired seat, and enumerating the client chain here presented an inference as a
+        // measurement.
+        $this->assertStringNotContainsString('proof', $message);
+        $this->assertStringNotContainsString('client chain', $message);
     }
 
     public function test_no_record_is_unvalidated_and_says_it_is_not_evidence_of_unwired(): void
@@ -245,47 +276,6 @@ class BoardToolsClientHalfCheckTest extends TestCase
             ['agent' => $agent],
             ['transport' => $transport, 'last_success_at' => now()->subSeconds($ageSeconds)],
         );
-    }
-
-    /**
-     * Run `$body` with every model resolving to a REAL SQLite connection that has never been
-     * migrated, so a query against it fails the way it fails on an install that pulled the
-     * code and did not run `php artisan migrate`.
-     *
-     * ⚑ `RefreshDatabase`'s own transaction is unaffected: it resolves the connection through
-     * the CONTAINER (`$this->app->make('db')`), while Eloquent resolves through the static
-     * resolver swapped here — and the swap is undone in a `finally` regardless.
-     */
-    private function withUnmigratedDatabase(callable $body): mixed
-    {
-        config(['database.connections.unmigrated' => ['driver' => 'sqlite', 'database' => ':memory:', 'prefix' => '']]);
-
-        /** @var DatabaseManager $manager */
-        $manager = $this->app->make('db');
-        $original = BoardToolsClientCall::getConnectionResolver();
-
-        BoardToolsClientCall::setConnectionResolver(new class($manager) implements ConnectionResolverInterface
-        {
-            public function __construct(private DatabaseManager $manager) {}
-
-            public function connection($name = null): ConnectionInterface
-            {
-                return $this->manager->connection('unmigrated');
-            }
-
-            public function getDefaultConnection(): string
-            {
-                return 'unmigrated';
-            }
-
-            public function setDefaultConnection($name): void {}
-        });
-
-        try {
-            return $body();
-        } finally {
-            BoardToolsClientCall::setConnectionResolver($original);
-        }
     }
 
     /**

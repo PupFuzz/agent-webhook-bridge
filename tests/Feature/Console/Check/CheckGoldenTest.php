@@ -655,10 +655,10 @@ class CheckGoldenTest extends TestCase
             // The http plane prints nothing http-SPECIFIC, so the subject is that the plane
             // was reached at all — which is precisely what an aborted agent config denied it.
             'board-tools-http-enabled' => ['board_tools: agent prod-agent:'],
-            // Anchored on the verdict STEM, not the whole sentence: the remediation prose
-            // beside it is operator text and gets reworded, while `WIRED` + the age is the
-            // invariant this fixture exists to reach.
-            'board-tools-client-half-wired' => ['client half WIRED — the seat\'s last successful board-tools call was 3h ago, over http'],
+            // Anchored on the verdict STEM, not the whole sentence: the caveat beside it is
+            // operator text and gets reworded, while `REPORTED` + the age is the invariant
+            // this fixture exists to reach.
+            'board-tools-client-half-wired' => ['client half REPORTED — a successful board-tools call for this agent was recorded 3h ago, over http'],
             'board-tools-ssh-pinned-line' => ['board_tools ssh: the pinned line for agent prod-agent forces bridge:tools-call'],
             'board-tools-ssh-default-transport-advisory' => ['is on ssh by the v0.68.0 default'],
             'board-tools-ssh-live-probe' => ['board_my_cards ok; window scoped to board 10 / swimlane 4'],
