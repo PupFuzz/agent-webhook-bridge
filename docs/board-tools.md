@@ -246,6 +246,23 @@ correct exactly until you needed it. Consequences for a caller:
 | 502 | Upstream kanban error (may be retryable). |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
 
+### What the CALLER sees when the leg itself fails (DL-312)
+
+The statuses above are what the bridge *answers*. A call that never got an answer is a
+different failure, and since the channel server's snapshot **0.9.8** the two no longer
+read alike (card#7709 — before it, a dead ssh door and a bridge answering with garbage
+produced the same string, and for the dead-door case that string was empty):
+
+| What the agent gets back | What happened |
+| --- | --- |
+| `the ssh <target> leg FAILED: ssh exited <N>: <stderr>` (plus ` \| partial output: …` if the far end wrote any) | **The transport failed.** The stderr is the diagnosis — `Permission denied (publickey)` (the key or the `authorized_keys` line is gone), `Connection refused` (sshd down or the wrong port), `Host key verification failed` (the host was rebuilt). Credential-scrubbed and length-bounded, so it can be pasted. |
+| `non-JSON response from the bridge (<label>): <snippet>` | **The transport worked and the bridge answered with something that is not JSON** — typically a PHP warning or an error page prepended to the body. The snippet is the answer; the transport is not the suspect. |
+| `could not spawn ssh to <target>: …` / `ssh to <target> exceeded the <N>ms deadline` | No child, or a leg that connected and then hung. |
+
+A seat on a snapshot older than 0.9.8 gets the second message for **both** of the first two
+rows — see § Staying in sync in [`examples/channel-servers/README.md`](../examples/channel-servers/README.md)
+for reading the deployed version.
+
 ## How it is wired (operator view)
 
 There are **two front doors** into the same dispatch machinery, selected per agent

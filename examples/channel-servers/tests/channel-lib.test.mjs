@@ -99,6 +99,65 @@ test('relayBridgeResponse: non-JSON snippet is truncated to the scrubSnippet 500
 });
 
 // ---------------------------------------------------------------------------
+// relayBridgeResponse — the leg diagnostic on the parse-failure branch (card#7709).
+// The end-to-end pairing with the real ssh call site (exit code + stderr capture) is
+// ssh-transport-failure.test.mjs; these pin the relay contract itself.
+// ---------------------------------------------------------------------------
+
+test('relayBridgeResponse: FAILED leg + a diagnostic + EMPTY body => the diagnostic, not an empty snippet', () => {
+  // The field case (card#7709): before the leg signal was reachable here this returned
+  // `non-JSON response from the bridge (ssh h): ` with nothing after the colon.
+  const r = relayBridgeResponse('', false, 'ssh h', 'ssh exited 255: Permission denied (publickey).');
+  assert.equal(r.isError, true);
+  assert.equal(r.content[0].text, 'the ssh h leg FAILED: ssh exited 255: Permission denied (publickey).');
+});
+
+test('relayBridgeResponse: FAILED leg + a diagnostic + non-JSON body => both the diagnostic and the partial output', () => {
+  const r = relayBridgeResponse('half a line', false, 'ssh h', 'ssh exited 1');
+  assert.equal(r.isError, true);
+  assert.equal(r.content[0].text, 'the ssh h leg FAILED: ssh exited 1 | partial output: half a line');
+});
+
+test('relayBridgeResponse: CLEAN leg + non-JSON body keeps the snippet message even when a diagnostic is passed', () => {
+  // The preserved half of the distinction: a transport that worked and a bridge that
+  // answered with garbage must keep saying what it always said. Only `legSuccess`
+  // opens the diagnostic arm, so a caller that supplies one anyway cannot mislabel a
+  // healthy leg as a dead transport.
+  const r = relayBridgeResponse('<b>Warning</b> not json', true, 'ssh h', 'ssh exited 0');
+  assert.equal(r.content[0].text, 'non-JSON response from the bridge (ssh h): <b>Warning</b> not json');
+});
+
+test('relayBridgeResponse: FAILED leg with NO diagnostic keeps the snippet message (the HTTP non-ok body IS the diagnosis)', () => {
+  const r = relayBridgeResponse('<html>502 Bad Gateway</html>', false, 'http://endpoint');
+  assert.equal(r.isError, true);
+  assert.equal(
+    r.content[0].text,
+    'non-JSON response from the bridge (http://endpoint): <html>502 Bad Gateway</html>',
+  );
+});
+
+test('relayBridgeResponse: a credential in the leg diagnostic is scrubbed', () => {
+  // stderr from a failing transport is unvetted text; it goes through the same scrub
+  // as a body (canon #20).
+  const r = relayBridgeResponse('', false, 'ssh h', 'ssh exited 255: Authorization: Bearer sk-leaked-7709');
+  assert.doesNotMatch(r.content[0].text, /sk-leaked-7709/);
+  assert.match(r.content[0].text, /\[redacted\]/);
+});
+
+test('relayBridgeResponse: the leg diagnostic is truncated to the scrubSnippet 500-char bound', () => {
+  const r = relayBridgeResponse('', false, 'ssh h', 'q'.repeat(2000));
+  assert.ok(r.content[0].text.includes('q'.repeat(500)));
+  assert.ok(!r.content[0].text.includes('q'.repeat(501)));
+});
+
+test('relayBridgeResponse: a diagnostic never reaches a body that PARSED — the leg signal alone decides', () => {
+  const body = '{"error":"forbidden"}';
+  const r = relayBridgeResponse(body, false, 'ssh h', 'ssh exited 3');
+  assert.equal(r.isError, true);
+  assert.deepEqual(r.content, [{ type: 'text', text: body }]);
+});
+
+// ---------------------------------------------------------------------------
 // deriveMeta — envelope parsing, best-effort (never throws)
 // ---------------------------------------------------------------------------
 
