@@ -1,13 +1,16 @@
-<!-- BEGIN coord:solo-orientation (synced from coord v0.43.0) -->
+<!-- BEGIN coord:solo-orientation (synced from coord v0.44.0) -->
 # Agent Board Framework — solo agent orientation
 
 > **⚠ Only two sections of this file reach a session automatically: `## Who you are` and
 > `## Read at session start`.** Everything else is reference a session must OPEN this file
 > to read, so a standing rule written anywhere else **silently never loads** — and nothing
 > warns you.
-> **⇒ Put standing rules INSIDE one of those two sections**; reference and rationale can go
-> anywhere. Mechanism: `CONFIG.md` (§ Field reference — `ritual_load`); `/coord:tidy` reports
-> rules it finds outside the two.
+> **⇒ Writing a standing rule for THIS INSTALL? Put it between the
+> `coord:install-rules` markers in `## Read at session start` § Install standing rules** — the one
+> span that is both auto-loaded AND preserved across `orientation-sync`. Elsewhere inside
+> the managed block is erased by the next sync; below the `PROJECT ADDENDUM` divider never
+> loads. Reference and rationale can go anywhere. Mechanism: `CONFIG.md` (§ Field reference
+> — `ritual_load`); `/coord:tidy` reports rules it finds outside the loaded sections.
 
 > **What this is.** The solo-agent orientation generated from the Agent Board Framework
 > (`coord` plugin → `templates/solo-CLAUDE.md`), placed by `coord:init-solo` into each repo
@@ -91,6 +94,18 @@ between sessions; verify the board state reflects actual PR state before proceed
 skills read these.
 
 ---
+
+### Install standing rules
+
+⚠ **The block below is the ONE span of this doc that is BOTH auto-loaded AND preserved across
+`orientation-sync`.** Elsewhere inside the managed block a rule is ERASED by the next sync; below
+the `PROJECT ADDENDUM` divider it survives but NEVER loads. Write install rules between the
+markers — short (injected verbatim every session), and with no `#`/`##` heading, which would end
+this section and silently un-load the rest.
+
+<!-- BEGIN coord:install-rules -->
+_No install-specific standing rules recorded for this seat._
+<!-- END coord:install-rules -->
 
 ## Your work loop
 
@@ -489,6 +504,19 @@ up.
    `session-end-skip-lint` backstop inspects only in-region lines and WARNs "status-region
    unscanned" if the marker is gone. The skeleton's own header owns the rest of the rule (including
    where not-live material goes); read it there rather than from a list here.
+   **⛔ THE STEP ENDS AT THE VERDICT, NOT AT THE WRITE.** *"Handoff updated ✅"* is confirmed by the
+   file changing; nothing in that confirms it is TRUE. You are authoring from RECALL at the moment
+   recall is worst. So finish by running **`handoff-check.py --auto`** — it queries `gh`/`kbcard`/
+   `git` and REDS when a claim here contradicts live state (a PR you called open that merged, a next
+   action naming a finished thing, a card in a stage it left, a commit you called unpushed that is
+   on a remote), and it prints the live facts to write your judgement AROUND. **A contradiction also
+   REFUSES a self-clear** (`clear-agent.sh`). ⭐ **AND IT NOW RUNS ON THE WRITE WHETHER OR NOT YOU
+   REMEMBER IT** — `hooks/bin/handoff-write-check.py` watches this file's content across the session
+   and fires on the tool call that changed it, whatever wrote it, injecting the verdict there and
+   then. Read that as an enforced CHECK and never as a refusal: the write has already landed when it
+   speaks, so correcting the line is still yours to do, and the line above is still the step. Claim classes, outcomes, `--control` and the honest
+   limits: **`docs/HANDOFF-VERIFICATION.md`** — not restated here.
+
 5. **Save lessons learned to memory.** Durable takeaways from the session — a repo or tooling
    gotcha, a bridge or board mechanics quirk, a reusable pattern — go to your agent memory
    dir (one fact per file, per the memory convention). Memory is for durable knowledge;
@@ -523,6 +551,14 @@ safely: your work must be committed/pushed AND the handoff written (session-end 
 1–4 above). `/clear` discards your in-context memory; only the branch, your board state, and
 your state handoff survive — so an unanswered question a self-clear eats is unrecoverable. Never
 run it with uncommitted work or mid-task.
+
+**A subagent you dispatched and are waiting on is NOT "mid-task" for this test.** Subagents
+**survive your clear** — they keep running and their completions arrive in your next session — so a
+dispatch in flight never holds a clear, *provided* your handoff **ENUMERATES** the running subagents
+(which subagent · what it was dispatched to do · what you owe on its return). Unenumerated, that
+completion returns to a session with no record of commissioning it and it cannot be judged, so the
+listing is the **condition**, not advice. Your OWN unfinished step still holds the clear. Detail +
+what to write: `docs/CONTEXT-RESET.md § Running subagents do not hold the clear`.
 <!-- MIRROR-BEGIN(chat-gate: solo-CLAUDE.md) -->
 Do NOT clear mid-decision, mid-gate, or with an
 unanswered message from your human in front of you. Otherwise clear as the **FINAL ACTION of THIS

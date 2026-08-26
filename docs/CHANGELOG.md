@@ -13,6 +13,7 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 ### Changed
 
 - **Framework orientation block re-synced to coord v0.43.0** (`/coord:update` area 4). Docs-only: the managed `coord:solo-orientation` block gains the note that only `## Who you are` and `## Read at session start` are auto-surfaced to a session, so a standing rule written elsewhere in the doc silently never loads. No executable line changes; the project addendum below the block is untouched.
+- **Framework orientation block re-synced to coord v0.44.0** (`/coord:update` area 4). Docs-only, wholly inside the managed `coord:solo-orientation` markers; no executable line changes. The block gains **`coord:install-rules`** — a marker pair inside `## Read at session start` that is the one span of the doc both AUTO-LOADED into a session and PRESERVED across `orientation-sync`, which is what makes an install standing rule survivable (elsewhere in the managed block a rule is erased by the next sync; below the `PROJECT ADDENDUM` divider it survives but never loads). It also gains two session-end/context rules: the handoff step ends at a **verdict, not at the write** — `handoff-check.py --auto` reds when a handoff claim contradicts live `gh`/`kbcard`/`git` state, and `handoff-write-check.py` now fires on whichever tool call changed the file — and a **dispatched subagent in flight does not hold a `/clear`**, provided the handoff enumerates the running subagents, since subagents survive the clear and their completions land in the next session.
 
 ### Fixed
 
