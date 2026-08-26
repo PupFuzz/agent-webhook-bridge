@@ -3950,3 +3950,53 @@ DL-217 stays as written (the log is append-only); this entry corrects it. **The 
   - **Comparing the RECORDED transport against the CONFIGURED one** (a seat calling over http while its YAML says ssh). Not built — it is a second question with its own remedy, and it is recorded here as the obvious next one rather than smuggled in.
 
 - **Consequences:** new `database/migrations/2026_08_26_000001_create_board_tools_client_calls_table.php`, `app/Models/BoardToolsClientCall.php`, `app/Bridge/Tools/ClientHalfLedger.php`, `app/Bridge/Check/Checks/BoardToolsClientHalfCheck.php` (id `board_tools.client_half`); one new `CheckSlot::BoardToolsClientHalf`, ordered between the board-STATE plane and the ssh plane and — like the ssh plane since DL-275 — **outside** the board-tools kanban-client envelope, because it reads this bridge's own database and nothing that client produces; `BoardToolDispatcher` records at its existing success point; `config/bridge.php` + `.env.example` gain the TTL. Tests: `tests/Unit/Tools/ClientHalfLedgerTest.php` (the write primitive's advance-in-place property, seen to fail against a writer that keeps the first stamp), and the sabotage both the writer's and the reader's fail-soft tests need is hoisted to `tests/Support/UsesUnmigratedDatabase.php` at its second caller rather than copied. **The registered check set goes 37 → 38**, so every golden fixture's inventory line moves and the baseline install's not-run population goes 13 → 14. ⚠ **`bridge:check` on an install with an enabled `board_tools` block and no recorded call gains one `unvalidated` line per such agent and one to its closing tally** — plain text, exit code unchanged. **Test-isolation consequence, and it is the DL-300 shape a second time:** a success-path primitive now writes a durable row, so `board_tools_client_calls` joins `Tests\TestCase::COMMITTABLE_TABLES` and the three `tests/Feature/AgentTools/` classes that dispatch a successful call gained `RefreshDatabase` — without it those rows COMMIT on the MariaDB legs and outlive the test, invisibly on SQLite `:memory:`.
+
+## DL-315 — the retention payload-nulling leg ships ON at 7d (rt#380)
+
+**Status:** shipped. Config default only — no schema change, no new key, no token-scope change, no receiver
+accept/reject change, and nothing the bridge accepts or writes moves in the permissive direction.
+
+**Context — a default nobody sets.** `retention.null_payloads_older_than` defaulted to `''`, i.e. the leg was
+**OFF on every install that never tuned it**, which is every install that never had a reason to look. The
+config comment called it *"an optional space optimization for a large store, not part of the growth fix"* —
+wording that reads as a knob for somebody who already has a problem, and which was doing part of the damage.
+
+**Measured on TWO independent installs before the default moved** (this is what makes it a default change and
+not one install generalising from itself):
+
+| install | payload bytes | store | note |
+|---|---|---|---|
+| reporting (aimla) | 894 MB | of a 1.2 GB store | retention working correctly the whole time |
+| this seat | **369 MB** | 18,931 rows, **zero already nulled** | same, independently |
+
+Applied here: payloads **369 MB → 149 MB**; after `OPTIMIZE TABLE`, allocation **513 MB → 218 MB**. Row
+integrity held — 18,931 − 813 legitimately aged-out = 18,118, oldest row still at the 30d boundary —
+and `bridge:check` returned rc 0 either side.
+
+**⭐ Decision 1 — default `'' → '7d'`.** The argument is DL-199's, one level up: `enabled` defaults TRUE
+precisely because *"a default nobody sets is exactly why DL-012 never ran"*. Same shape. An install cannot
+discover this cost without running `SUM(LENGTH(payload))` unprompted, and nobody does.
+
+**⛔ Decision 2 — the ROW window is NOT shortened with it.** Payload window short, row window long. Shortening
+`older_than` to match saves ~16 MB and loses **14% of distinct event types** — including gaps `bridge:check`
+currently REPORTS, which would then read as *fixed* rather than lost. Measured by the reporter; restated here
+because the two arrive together and are easy to conflate.
+
+**Decision 3 — the value is DETECTION LATENCY + RESPONSE TIME**, not a guess at replay depth. 7d covers a
+Friday-evening miss found by a Monday reconcile; **3d is exactly the window that fails that case**. An install
+with a slower detector wants more. Opt out with `BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN=` (empty).
+
+**⚑ Decision 4 — the golden harness now pins the SHIPPED default.** `Tests\Support\CheckGolden\GoldenInstall`
+pinned `''` explicitly, so the corpus was insulated from this change — it would have gone on asserting a
+configuration **no install has**. Repinned to `'7d'`; 36 fixtures now carry the two-leg posture line
+(`delete >30d + null payloads >7d`). The first regeneration attempt moved **zero** fixtures, which is what
+surfaced the insulation.
+
+**⚑ Decision 5 — the pin reads the REPO'S config, not a test override.** `NullPayloadDefaultTest` `require`s
+`config/bridge.php` directly, because every golden fixture would keep passing if the default silently reverted.
+Seen to fail: reverting the default to `''` reds it; restoring returns green.
+
+**Provenance.** Reported by aimla-pm on rt#380, who measured it, applied it on their own fleet first, and
+explicitly declined to assert this install's numbers (*"I cannot read your install"*) — the prediction was then
+confirmed here independently. Sequencing was theirs: set it on your own install first, as the cheapest possible
+validation of a default before shipping it to everyone.

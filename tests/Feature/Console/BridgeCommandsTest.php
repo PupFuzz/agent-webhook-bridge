@@ -2959,7 +2959,14 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(0, $code);
         $this->assertStringContainsString('has its entry file and node_modules', $out);
         $this->assertStringContainsString('a presence check, not a load test', $out);
-        $this->assertStringNotContainsString('loads', $out);
+        // ⛔ WORD-BOUNDARED, and not a style preference. The claim this guards is the
+        // check saying the entry "loads"; a BARE substring search answers about the
+        // letters, not the claim, and `payloads` contains them — so DL-315's retention
+        // posture line (`null payloads >7d`) reddened this test while making no claim
+        // about the entry at all. `uploads`, `downloads` and `reloads` are the same
+        // trap waiting. \bloads\b does not match inside `payloads` (no boundary
+        // between `y` and `l`), so it still catches the sentence it exists to catch.
+        $this->assertDoesNotMatchRegularExpression('/\bloads\b/', $out);
     }
 
     public function test_check_reports_a_server_path_that_names_a_file_as_a_file(): void
