@@ -160,6 +160,24 @@ class UnvalidatedCallSiteTest extends TestCase
         // leg stays silent there rather than minting a green line corollary (A) forbids.
         'app/Bridge/Check/Checks/RetentionPostureCheck.php' => 2,
         'app/Bridge/Check/Checks/BoardToolsBoardStateCheck.php' => 3,
+        // card#7756 / DL-313 — THREE legs, and the count is the whole design rather than
+        // three incidental disclosures, so it is spelled out here where a maintainer will
+        // read it when the number moves:
+        //   1. the record could not be READ (an unmigrated install) — limb (a), a
+        //      measurement that did not happen. Without it the absence below would be this
+        //      run's own failure wearing the seat's silence.
+        //   2. NO record — the bridge has never been told this seat's client half works.
+        //   3. a record OLDER than the freshness window — the same statement about now.
+        // (2) AND (3) ARE THE POINT, AND NEITHER IS A `warn`. The bridge may not read the
+        // seat's own keypair or `.mcp.json` (an account may only read its own files), so a
+        // seat that was NEVER WIRED and a seat that is merely IDLE are one absence here —
+        // the leg genuinely did not answer its own question, and a `warn` would assert a
+        // fault it cannot establish while a `fail` would exit non-zero over a seat that is
+        // quiet by choice. The only positive verdict this leg can reach is `ok`, off a
+        // fresh successful call, because reaching the dispatcher AT ALL requires the whole
+        // client chain. `BoardToolsClientHalfCheckTest` pins the two-severity set from the
+        // source, so a fourth factory appearing here reds there first.
+        'app/Bridge/Check/Checks/BoardToolsClientHalfCheck.php' => 3,
         'app/Bridge/Check/Checks/ChannelTransportCheck.php' => 1,
         // The repo probe could not reach GitHub, so the token was never validated — the
         // THIRD silent leg, and the one no warn-keyed sweep could have surfaced.

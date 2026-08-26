@@ -195,6 +195,31 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Board tools — client-half freshness (DL-313)
+    |--------------------------------------------------------------------------
+    |
+    | Every board-tools plane in `bridge:check` observes the BRIDGE side of the
+    | door. The CALLING SEAT's half — its keypair, known_hosts, .mcp.json entries
+    | and deployed channel server — lives in files the bridge may not read (an
+    | account may only read its own), so the seat SELF-REPORTS by calling: a
+    | successful board-tools call stamps `board_tools_client_calls`, and the check
+    | reports the stamp's AGE.
+    |
+    | client_half_ttl is how old that stamp may be and still read as CURRENT, in
+    | seconds (default 7 days). ⚠ It is a display threshold, nothing else: the age
+    | is printed on the ok line either way, so an operator judges the number rather
+    | than the boolean, and past the TTL the leg reports `unvalidated` — never
+    | `fail`, never `warn`. An UNREPORTED seat is NOT an unwired seat; the bridge
+    | cannot tell never-wired from merely-idle, and the leg says so in its own text.
+    |
+    */
+
+    'board_tools' => [
+        'client_half_ttl' => (int) env('BRIDGE_BOARD_TOOLS_CLIENT_HALF_TTL', 7 * 86400),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Runtime-state directory
     |--------------------------------------------------------------------------
     |

@@ -17,6 +17,7 @@ use App\Bridge\Check\Checks\AgentTreatAsSignalCheck;
 use App\Bridge\Check\Checks\AgentWebhookSecretCheck;
 use App\Bridge\Check\Checks\BoardToolsBearerCheck;
 use App\Bridge\Check\Checks\BoardToolsBoardStateCheck;
+use App\Bridge\Check\Checks\BoardToolsClientHalfCheck;
 use App\Bridge\Check\Checks\BoardToolsHttpProbeCheck;
 use App\Bridge\Check\Checks\BoardToolsSshDefaultAdvisoryCheck;
 use App\Bridge\Check\Checks\BoardToolsSuppressedCheck;
@@ -563,6 +564,22 @@ class CheckCommand extends BridgeCommand
                 }
             }
 
+            // The CLIENT-half report (card#7756 / DL-313). Every plane above and below
+            // observes the BRIDGE side of the door; this is the only leg that says
+            // anything about the CALLING SEAT — and it can, only because the seat already
+            // self-reports by calling.
+            //
+            // ITS OWN LOOP, OUTSIDE THE CLIENT GUARD ABOVE, for the DL-275 reason: it reads
+            // one row of this bridge's own database and nothing the board-tools kanban
+            // client produces, so a missing writeback token must not decide whether the
+            // client half gets reported. INSIDE the enabled-subset guard, because an agent
+            // with no enabled block has no client half to ask about.
+            foreach ($ctx->boardToolsEnabled as $cfg) {
+                if (! $this->emitReport($runner->runForAgent(CheckSlot::BoardToolsClientHalf, $cfg, $ctx))) {
+                    $ok = false;
+                }
+            }
+
             // The SSH-transport pinned-line probe (card 4952) — offline, runs in the
             // default bridge:check. A present-but-bad forced-command line (grants
             // pty/forwarding), an ambiguous/absent-authoritative line, or a
@@ -633,6 +650,7 @@ class CheckCommand extends BridgeCommand
             $runner
                 ->noteNotRun(CheckSlot::BoardToolsBearer, $noBoardTools)
                 ->noteNotRun(CheckSlot::BoardToolsState, $noBoardTools)
+                ->noteNotRun(CheckSlot::BoardToolsClientHalf, $noBoardTools)
                 ->noteNotRun(CheckSlot::BoardToolsSsh, $noBoardTools)
                 ->noteNotRun(CheckSlot::BoardToolsSshAdvisory, $noBoardTools);
         }
@@ -798,6 +816,7 @@ class CheckCommand extends BridgeCommand
             ->register(CheckSlot::BoardToolsSuppression, new BoardToolsSuppressedCheck)
             ->register(CheckSlot::BoardToolsBearer, new BoardToolsBearerCheck)
             ->registerPerAgent(CheckSlot::BoardToolsState, new BoardToolsBoardStateCheck)
+            ->registerPerAgent(CheckSlot::BoardToolsClientHalf, new BoardToolsClientHalfCheck)
             ->registerPerAgent(CheckSlot::BoardToolsSsh, new SshPinnedLineCheck($sshEnv))
             ->registerPerAgent(CheckSlot::BoardToolsSshAdvisory, new BoardToolsSshDefaultAdvisoryCheck)
             ->register(CheckSlot::ProbeTools, new BoardToolsHttpProbeCheck($probeTools))

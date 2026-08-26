@@ -35,10 +35,12 @@ interface Check
      *
      * YIELDING NOTHING IS LEGAL AND IS RECORDED, NOT LOST. An earlier revision of this
      * docblock required at least one finding and said stage 8 would enforce it. Stage 8
-     * MEASURED that first: 26 of the 37 registered checks yield nothing on at least one
-     * install shape and most are silent on the baseline, because "no identity collisions"
-     * is correctly reported by saying nothing. Enforcing the old wording would have meant
-     * ~37 lines of mostly-`ok` on every run. What is enforced instead is that a run which
+     * MEASURED that first: 26 of the 37 checks registered AT THAT TIME yielded nothing on
+     * at least one install shape and most were silent on the baseline, because "no identity
+     * collisions" is correctly reported by saying nothing. Enforcing the old wording would
+     * have meant a line of mostly-`ok` per registered check on every run. (The figures are
+     * that measurement and are deliberately not re-derived by hand as the registered set
+     * grows; the committed `minimal` golden file states the current run's inventory.) What is enforced instead is that a run which
      * COMPLETES ACCOUNTS for every registered check — see {@see CheckDisposition} — so
      * silence is now counted rather than absent. (A check that throws still aborts the
      * command before anything renders the account; {@see CheckRunner} does not catch.)

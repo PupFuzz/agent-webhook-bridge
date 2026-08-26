@@ -4,6 +4,7 @@ namespace Tests\Feature\Console\Check;
 
 use App\Bridge\Retention\RetentionGate;
 use App\Bridge\Tools\SshProbeEnvironment;
+use App\Models\BoardToolsClientCall;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -363,6 +364,39 @@ class CheckGoldenTest extends TestCase
 
                 return $default;
 
+            case 'board-tools-client-half-wired':
+                // DL-313, the OK arm — and the only fixture that reaches it. Its twin is
+                // `board-tools-http-enabled`, which is the SAME install with no recorded
+                // call: the pair is the whole leg, because the UNREPORTED line and the
+                // WIRED line are the two verdicts and neither is legible without the other.
+                //
+                // ⚑ THE STAMP IS RELATIVE, NOT ABSOLUTE, which is the opposite of what the
+                // event-consumer fixtures do — and deliberately: those print an absolute
+                // last-seen, so a clock read would expire the golden file overnight, while
+                // this leg prints an AGE, so an absolute stamp would expire it instead. The
+                // half-hour of slack is what keeps `3h` floored at 3 for any run of this
+                // suite that finishes inside 30 minutes.
+                $i->boot()
+                    ->agent('prod-agent', "identity:\n  kanban_user_id: 137\n"
+                        ."subscriptions:\n  - provider: kanban\n    scopes: [5]\n"
+                        ."board_tools:\n  transport: http\n  board_id: 10\n  swimlane_id: 4\n  create_stage_id: 55\n"
+                        ."  auth:\n    token_path: ".$i->path('tools-bearer')."\n")
+                    ->secret('tools-bearer', 'bearer-value')
+                    ->secret('kanban/writeback-token', 'wb-token');
+                BoardToolsClientCall::query()->create([
+                    'agent' => 'prod-agent',
+                    'transport' => 'http',
+                    'last_success_at' => now()->subHours(3)->subMinutes(30),
+                ]);
+                Http::fake([
+                    '*/tasks/search.json*' => Http::response(['data' => [], 'meta' => ['total' => 0]]),
+                    '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [
+                        ['id' => 55, 'name' => 'Backlog', 'position' => 1024.0],
+                    ]]], 'swimlanes' => [['id' => 4, 'name' => 'Default']]]]),
+                ]);
+
+                return $default;
+
                 // ---- board_tools over ssh (DL-242 stage 1) ----
                 // Before stage 1 no fixture reached the ssh legs at all, so the golden
                 // suite was green on two of the three call sites that stage migrates.
@@ -508,6 +542,7 @@ class CheckGoldenTest extends TestCase
             'writeback-board-unreadable',
             'writeback-swimlane-collection-absent',
             'board-tools-http-enabled',
+            'board-tools-client-half-wired',
             'board-tools-ssh-pinned-line',
             'board-tools-ssh-default-transport-advisory',
             'board-tools-ssh-live-probe',
@@ -620,6 +655,10 @@ class CheckGoldenTest extends TestCase
             // The http plane prints nothing http-SPECIFIC, so the subject is that the plane
             // was reached at all — which is precisely what an aborted agent config denied it.
             'board-tools-http-enabled' => ['board_tools: agent prod-agent:'],
+            // Anchored on the verdict STEM, not the whole sentence: the remediation prose
+            // beside it is operator text and gets reworded, while `WIRED` + the age is the
+            // invariant this fixture exists to reach.
+            'board-tools-client-half-wired' => ['client half WIRED — the seat\'s last successful board-tools call was 3h ago, over http'],
             'board-tools-ssh-pinned-line' => ['board_tools ssh: the pinned line for agent prod-agent forces bridge:tools-call'],
             'board-tools-ssh-default-transport-advisory' => ['is on ssh by the v0.68.0 default'],
             'board-tools-ssh-live-probe' => ['board_my_cards ok; window scoped to board 10 / swimlane 4'],
@@ -838,7 +877,7 @@ class CheckGoldenTest extends TestCase
         // install shape at once — because a per-fixture spot check would not notice a
         // disposition that leaks on one shape only.
         //
-        // It also pins 37 as the registered total, which the registration test pins BY ID.
+        // It also pins 38 as the registered total, which the registration test pins BY ID.
         // Two independent statements of the same fact on purpose: the id list catches a
         // check being swapped, this catches the operator-facing line disagreeing with it.
         foreach (self::fixtures() as [$name]) {
@@ -864,7 +903,7 @@ class CheckGoldenTest extends TestCase
             // would be matching a string nothing can emit.
             $notRun = preg_match('/(\d+) did not run/', $rest, $dnr) ? (int) $dnr[1] : 0;
 
-            $this->assertSame(37, (int) $registered, "fixture '{$name}': registered total moved");
+            $this->assertSame(38, (int) $registered, "fixture '{$name}': registered total moved");
             $this->assertSame((int) $trailing, (int) $registered, "fixture '{$name}': the trailing total disagrees with the registered count");
             $this->assertSame(
                 (int) $ran,
@@ -897,13 +936,15 @@ class CheckGoldenTest extends TestCase
 
     public function test_the_baseline_install_names_why_each_plane_did_not_run(): void
     {
-        // "13 did not run" without a cause is alarming and un-actionable; with one it is
+        // "14 did not run" without a cause is alarming and un-actionable; with one it is
         // information. These two reasons are the whole writeback plane (9 checks) and the
-        // board-tools plane (4) — measured as 13 of 37 on this shape before the stage was
-        // built, which is what made an exact inventory worth having.
+        // board-tools plane (5, the fifth being DL-313's client-half leg) — the shape was
+        // measured at 13 of 37 before stage 8 was built, which is what made an exact
+        // inventory worth having; the total moves with the registered set, the PROPERTY
+        // (every not-run check names its cause) does not.
         $minimal = $this->goldenFor('minimal');
 
-        $this->assertStringContainsString('13 did not run', $minimal);
+        $this->assertStringContainsString('14 did not run', $minimal);
         $this->assertStringContainsString('no readable writeback.json', $minimal);
         $this->assertStringContainsString('no agent has an enabled board_tools block', $minimal);
         // And never the internal-defect line: every not-run check here has a reason.

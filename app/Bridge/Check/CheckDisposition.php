@@ -21,6 +21,12 @@ namespace App\Bridge\Check;
  * "everything emits" would have meant dissolving envelopes stages 3a and 7b preserved as
  * behavior. See the stage 8 result in `docs/CHECK-REGISTRY-PLAN.md`.
  *
+ * ⚑ EVERY FIGURE ABOVE AND BELOW IS THAT STAGE-8 MEASUREMENT, NEVER A RUNNING TOTAL. The
+ * registered set has grown since (card#7756 made it 38, of which the baseline install now
+ * leaves 14 un-invoked), and the numbers are kept as they were measured rather than
+ * re-derived by hand on each change — a hand-updated census is a fresh chance to mint a
+ * fresh wrong number, and the committed `minimal` golden file states today's.
+ *
  * THE FOUR CASES ARE NOT A SEVERITY, AND DELIBERATELY SO. `Severity` answers "how bad
  * is what this check found"; a disposition answers "did this check get to look at all".
  * Collapsing them would put `not requested` in the severity vocabulary, which the
@@ -74,7 +80,8 @@ enum CheckDisposition: string
      *
      * THIS IS THE CASE THE STAGE EXISTS FOR. `CheckRunner`'s own docblock named it
      * before it was measured — *"A SLOT THAT IS NEVER RUN IS THE SAME HOLE ONE LEVEL
-     * DOWN"* — and it is 13 of 37 checks on the baseline install. It is DERIVED from
+     * DOWN"* — and it was 13 of 37 checks on the baseline install when stage 8 measured
+     * it. It is DERIVED from
      * the registration list rather than reported by the caller, so a slot whose
      * invocation is forgotten cannot go unaccounted; {@see CheckRunner::noteNotRun()}
      * only attaches the human-readable REASON, and a missing reason degrades the
