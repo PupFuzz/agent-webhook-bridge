@@ -8,6 +8,8 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
+## [0.76.0] - 2026-08-25
+
 ### Changed
 
 - **Framework orientation block re-synced to coord v0.43.0** (`/coord:update` area 4). Docs-only: the managed `coord:solo-orientation` block gains the note that only `## Who you are` and `## Read at session start` are auto-surfaced to a session, so a standing rule written elsewhere in the doc silently never loads. No executable line changes; the project addendum below the block is untouched.
