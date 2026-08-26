@@ -154,7 +154,7 @@ class RefusalContextTest extends TestCase
     {
         return [
             'not-found — the card is gone' => [404, 'getcard_404_no_such_card'],
-            'forbidden — exists, not visible to this token' => [403, 'getcard_403_not_visible_to_this_token'],
+            'forbidden — exists; a foreign card id OR this token\'s scope' => [403, 'getcard_403_foreign_card_id_or_token_scope'],
             'unprocessable — catch-all' => [422, 'getcard_4xx'],
             'bad request — catch-all' => [400, 'getcard_4xx'],
         ];
@@ -174,6 +174,24 @@ class RefusalContextTest extends TestCase
         $e = $this->exception('{}', 403);
 
         $this->assertNotSame(RefusalContext::readReason('x', $e), RefusalContext::writeReason('x', $e));
+    }
+
+    public function test_the_read_403_reason_names_both_causes_because_a_403_cannot_choose_between_them(): void
+    {
+        // card#7846 / DL-314. A getCard 403 has two unrelated causes: a FOREIGN install's
+        // card id correlated onto this bridge (kanban ids are global across boards, and
+        // `card#NNNN` is a literal parsed out of author-controlled text), or this token's
+        // scope missing a board of its OWN. Nothing in the response distinguishes them —
+        // only a board-scoped read could, and the bridge deliberately makes none — so the
+        // slug must name both. The previous slug named only the token, and the operator who
+        // hit the foreign-id case live went auditing their own token's scope for a card
+        // that was never theirs. Asserted on the two CAUSES rather than on the literal
+        // (which the data provider above pins): a slug that silently drops one of them
+        // reds here even if someone rewrites the literal in both places.
+        $reason = RefusalContext::readReason('getcard', $this->exception('{}', 403));
+
+        $this->assertStringContainsString('foreign_card_id', $reason, 'the read-403 slug no longer names the foreign-card-id cause');
+        $this->assertStringContainsString('token_scope', $reason, 'the read-403 slug no longer names the token-scope cause');
     }
 
     public function test_the_verb_scopes_the_reason_so_two_arms_of_one_event_do_not_dedup_each_other(): void

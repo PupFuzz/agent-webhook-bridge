@@ -44,7 +44,9 @@ use Throwable;
  *    move is not a delivery failure). The card-not-on-mapped-board case is the
  *    security guard (belongs-to-mapped-board) and is logged as a refusal. Every
  *    permanent refusal here pairs its log with a live signal via one primitive
- *    (WritebackAlertNotifier::warnAndNotify, DL-274) rather than opting in per site.
+ *    (WritebackAlertNotifier::warnAndNotify — or, on the arms that must withhold an
+ *    unverified card id from the push, its identically-pairing twin
+ *    warnAndNotifyCardIdWithheld, DL-314 — rather than opting in per site, DL-274).
  *
  * Payload: card_id (int), repo ("owner/repo"), outcome (one of
  * WritebackConfig::OUTCOMES, PLUS the handler-internal `reopened` — DL-195 — which
@@ -201,16 +203,24 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 // of the card we just failed to read) — so on a 403 this reason string is
                 // the only signal the operator gets for the case that guard exists to
                 // refuse. 404 = no such card; 403 = the card exists and is not ours.
+                //
+                // ⛔ THE CHANNEL COPY CARRIES NO CARD ID (DL-314, card#7846). The read
+                // FAILED, so nothing here has established that this id — parsed as a
+                // literal out of author-controlled text, against a kanban id space that is
+                // GLOBAL across every board on the instance — names a card of THIS
+                // install. The `Log::warning` context keeps it (the local operator needs
+                // it); the push does not, because that is the surface a foreign id can
+                // reach a party it is not about on.
                 $refusal = RefusalContext::from($e);
                 $message = match ($refusal['status']) {
                     404 => 'kanban_move_card: getCard 404 — no such card (deleted, or an id that never existed); ignoring (see `body` for the reason kanban gave)',
-                    403 => 'kanban_move_card: getCard 403 — the card exists but is NOT visible to this writeback token: either a foreign install\'s card id was correlated onto this bridge, or this token\'s scope is missing the card\'s board; ignoring (see `body` for the reason kanban gave)',
+                    403 => 'kanban_move_card: getCard 403 — the card exists and is NOT visible to this writeback token: either a foreign install\'s card id was correlated onto this bridge (kanban card ids are GLOBAL, and `card#NNNN` is parsed out of author-controlled text), or this token\'s scope is missing the card\'s board. A 403 alone cannot tell the two apart — only a board-scoped read could, and this bridge deliberately makes none. Ignoring (see `body` for the reason kanban gave); the card id is in this log line only, never in the alert channel',
                     default => 'kanban_move_card: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)',
                 };
-                $this->alerts->warnAndNotify(
+                $this->alerts->warnAndNotifyCardIdWithheld(
                     $message,
                     ['card_id' => $cardId] + $refusal,
-                    $repo, $outcome, $cardId, RefusalContext::readReason('getcard', $e),
+                    $repo, $outcome, RefusalContext::readReason('getcard', $e),
                 );
 
                 return;

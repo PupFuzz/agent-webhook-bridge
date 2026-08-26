@@ -131,10 +131,15 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
             $card = $client->getCard($cardId);
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
-                $this->alerts->warnAndNotify(
-                    'kanban_block_reason: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)',
+                // ⛔ THE CHANNEL COPY CARRIES NO CARD ID (DL-314, card#7846) — the move
+                // handler's twin arm, and the same reasoning: this overlay's card id is
+                // resolved by the SAME author-controlled `card#`/DL token grammar against
+                // a GLOBAL kanban id space, so a read that failed leaves the id
+                // unestablished as this install's. The log keeps it; the push does not.
+                $this->alerts->warnAndNotifyCardIdWithheld(
+                    'kanban_block_reason: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave); on a 403 the card id may name another install\'s card, so it is in this log line only, never in the alert channel',
                     ['card_id' => $cardId] + RefusalContext::from($e),
-                    $repo, self::ALERT_OUTCOME, $cardId, RefusalContext::readReason('getcard', $e),
+                    $repo, self::ALERT_OUTCOME, RefusalContext::readReason('getcard', $e),
                 );
 
                 return;
