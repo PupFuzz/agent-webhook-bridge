@@ -35,7 +35,7 @@ jobs:
           # version file at both ends and each artifact's contents at head through `git show`,
           # none of which a shallow clone can serve.
           fetch-depth: 0
-      - uses: PupFuzz/agent-board-toolkit/release-artifacts@fd3d507d3ae50fe65551d3ced7bc45633fe60ccd  # v0.28.0
+      - uses: PupFuzz/agent-board-toolkit/release-artifacts@3cc2d7b2f692b0071356c4342bb371ac55dac236  # v0.29.0
         with:
           base-sha: ${{ github.event.pull_request.base.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}
