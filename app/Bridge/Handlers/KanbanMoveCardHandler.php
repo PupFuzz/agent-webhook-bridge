@@ -202,7 +202,10 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 // BEFORE the belongs-to-mapped-board guard below (which reads board_id out
                 // of the card we just failed to read) — so on a 403 this reason string is
                 // the only signal the operator gets for the case that guard exists to
-                // refuse. 404 = no such card; 403 = the card exists and is not ours.
+                // refuse. What each status does and does NOT establish — in particular why
+                // a 403 names two causes rather than one — is owned by
+                // RefusalContext::readReason()'s docblock; read it there rather than from a
+                // second copy that can drift out of step with the message below.
                 //
                 // ⛔ THE CHANNEL COPY CARRIES NO CARD ID (DL-314, card#7846). The read
                 // FAILED, so nothing here has established that this id — parsed as a

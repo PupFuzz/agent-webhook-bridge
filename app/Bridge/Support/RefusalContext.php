@@ -82,7 +82,9 @@ final class RefusalContext
 
     /**
      * The alert `reason` for a refused READ. 404 = no such card; 403 = the card exists
-     * and is NOT visible to this token. That is a different operator hypothesis from
+     * and this token could not read it — TWO causes, and a 403 cannot choose between
+     * them; the ⛔ note below is where they are stated, and this sentence deliberately
+     * does not pick one. That is a different operator hypothesis from
      * {@see writeReason}'s 403, which is why the two are separate helpers rather than
      * one status map.
      *

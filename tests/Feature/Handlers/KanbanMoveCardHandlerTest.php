@@ -1006,7 +1006,8 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->assertSame(2, $alertPushes, 'a failed first push must re-arm the signature for the next delivery');
     }
 
-    // --- card#5288: the getCard 4xx refusal splits 404 (no such card) from 403 (exists, not ours) ---
+    // --- card#5288: the getCard 4xx refusal splits 404 from 403 into distinct reasons.
+    //     What each status establishes is owned by RefusalContext::readReason()'s docblock. ---
 
     public function test_getcard_404_and_403_produce_distinct_reasons_and_do_not_collapse_the_dedup(): void
     {
