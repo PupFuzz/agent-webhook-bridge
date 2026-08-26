@@ -15,7 +15,9 @@ use App\Bridge\Support\Finding;
  *
  * A RESULT IS NOT THE INVENTORY, and the difference is what stage 8 turned on. A result
  * exists only for a check that RAN, so the set of results cannot speak for a check whose
- * slot was never invoked — 13 of 37 on the baseline install. {@see CheckRunner::inventory()}
+ * slot was never invoked — 13 of 37 on the baseline install as stage 8 measured it (the
+ * figure is that measurement, not a running count; the committed `minimal` golden file
+ * states the current run's inventory). {@see CheckRunner::inventory()}
  * is the account that covers those, and it is derived from the registration list rather
  * than from these.
  */

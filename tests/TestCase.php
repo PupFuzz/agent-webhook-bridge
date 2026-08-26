@@ -19,8 +19,16 @@ abstract class TestCase extends BaseTestCase
      * side effect of a primitive rather than something the test asks for. Not every table:
      * a census would fail on the ones a test creates on purpose, and this guard's whole
      * value is that its message names a cause.
+     *
+     * ⚑ THE SECOND MEMBER ARRIVED THE SAME WAY THE FIRST DID (card#7756): a success-path
+     * primitive grew a durable row, so every test that dispatches a board-tools call now
+     * touches the database transitively — and, exactly as with `DL-300`, on SQLite
+     * `:memory:` those inserts hit no table, are swallowed by the ledger's never-throw
+     * envelope, and leave the run green while the same inserts COMMIT on a shared MariaDB.
+     * A primitive that starts writing a row is the trigger to add its table here AND to give
+     * its callers an isolation trait, in that same change.
      */
-    private const COMMITTABLE_TABLES = ['writeback_board_divergences'];
+    private const COMMITTABLE_TABLES = ['writeback_board_divergences', 'board_tools_client_calls'];
 
     /**
      * A path that must not exist, so an install-reading check finds nothing rather than

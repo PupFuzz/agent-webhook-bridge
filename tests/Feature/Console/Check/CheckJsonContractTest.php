@@ -377,7 +377,13 @@ class CheckJsonContractTest extends TestCase
 
         $this->assertSame('{', $raw[0]);
         $this->assertNotNull(json_decode($raw, true), 'stdout is not a single JSON document: '.substr($raw, 0, 200));
-        $this->assertStringNotContainsString('checks: 37 registered', $raw, 'the text inventory line leaked into the json stream');
+        // ⚑ MATCHED ON ITS SHAPE, NOT ON TODAY'S TOTAL. This pinned the literal
+        // `checks: 37 registered` until card#7756 registered a 38th check — at which point
+        // the string it forbids became one nothing could emit, and the assertion would have
+        // gone on passing while asserting nothing at all. A negative assertion carrying a
+        // count is a decoration on a timer; the count belongs to
+        // `CheckCommandRegistrationTest`, and what leaks here is the LINE.
+        $this->assertDoesNotMatchRegularExpression('/^checks: \d+ registered/m', $raw, 'the text inventory line leaked into the json stream');
     }
 
     public function test_an_unknown_format_fails_closed_without_emitting_a_report(): void

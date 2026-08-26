@@ -2850,12 +2850,12 @@ class BridgeCommandsTest extends TestCase
         // guarantee. The old wording had to add "no tally line does NOT mean every
         // leg ran", because a missing tally was the operator's ONLY signal and it
         // could not speak for a check that never ran. The inventory line now always
-        // prints and accounts for all 37 registered checks, so that caveat is
+        // prints and accounts for all 38 registered checks, so that caveat is
         // answered by data instead of prose — and the tally is left saying only the
         // one thing it still says. DL-251 narrowed it AGAIN — the `warn` sites are swept, so
         // what survives is that the rule is keyed on what a leg CONCLUDED (card#5291).
-        $this->assertStringContainsString('37 registered', $out);
-        $this->assertStringContainsString('All 37 are accounted for', $out);
+        $this->assertStringContainsString('38 registered', $out);
+        $this->assertStringContainsString('All 38 are accounted for', $out);
     }
 
     public function test_check_prints_no_unvalidated_tally_when_nothing_reported_unvalidated(): void
