@@ -3997,8 +3997,11 @@ DL-217 stays as written (the log is append-only); this entry corrects it. **The 
 
 ## DL-315 — the retention payload-nulling leg ships ON at 7d (rt#380)
 
-**Status:** shipped. Config default only — no schema change, no new key, no token-scope change, no receiver
-accept/reject change, and nothing the bridge accepts or writes moves in the permissive direction.
+**Status:** shipped. No schema change, no new key, no token-scope change, no receiver accept/reject change,
+and nothing the bridge accepts or writes moves in the permissive direction. **⚠ NOT config-only, as an
+adversarial review of the first draft established:** turning this leg on by default makes `bridge:replay`
+FABRICATE on every install that upgrades, so this entry also carries the refusal that closes it (Decision 6)
+and the two operator surfaces that were making a false claim about it (Decisions 7 and 8).
 
 **Context — a default nobody sets.** `retention.null_payloads_older_than` defaulted to `''`, i.e. the leg was
 **OFF on every install that never tuned it**, which is every install that never had a reason to look. The
@@ -4028,7 +4031,16 @@ because the two arrive together and are easy to conflate.
 
 **Decision 3 — the value is DETECTION LATENCY + RESPONSE TIME**, not a guess at replay depth. 7d covers a
 Friday-evening miss found by a Monday reconcile; **3d is exactly the window that fails that case**. An install
-with a slower detector wants more. Opt out with `BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN=` (empty).
+with a slower detector wants more.
+
+⛔ **Opting out takes BOTH halves, and the incomplete instruction is destructive.** Set
+`BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN=` (empty) **before** the upgrade **and re-run
+`php artisan config:cache`**. There is **no grace period to do it in afterwards**: `RetentionGate`'s interval
+marker is a *cache* key (`Cache::has(self::MARKER_KEY)`), so the first inbound webhook after deploy runs a
+pass, and `backlogRemains()` **forgets the marker** on a full batch so the next delivery continues draining —
+the whole >7d payload history can be gone within hours. And a `.env` edit is **inert under `config:cache`**, so
+an operator who edits `.env` and reloads FPM has changed nothing at all. The first draft of this entry and of
+the CHANGELOG said only *"opt out with `…=` (empty)"*, which is true and useless at the moment it is read.
 
 **⚑ Decision 4 — the golden harness now pins the SHIPPED default.** `Tests\Support\CheckGolden\GoldenInstall`
 pinned `''` explicitly, so the corpus was insulated from this change — it would have gone on asserting a
@@ -4036,9 +4048,99 @@ configuration **no install has**. Repinned to `'7d'`; 36 fixtures now carry the 
 (`delete >30d + null payloads >7d`). The first regeneration attempt moved **zero** fixtures, which is what
 surfaced the insulation.
 
-**⚑ Decision 5 — the pin reads the REPO'S config, not a test override.** `NullPayloadDefaultTest` `require`s
-`config/bridge.php` directly, because every golden fixture would keep passing if the default silently reverted.
-Seen to fail: reverting the default to `''` reds it; restoring returns green.
+**⚑ Decision 5 — the pin reads the REPO'S SOURCE TEXT, not a resolved value.** `NullPayloadDefaultTest` exists
+because every golden fixture would keep passing if the default silently reverted (`Tests\Support\CheckGolden\GoldenInstall` pins its
+own retention keys). Its first form `require`d `config/bridge.php` and compared the returned array — which
+**EVALUATES `env('BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN', '7d')`**, so it asserted the value in whatever
+environment ran it, and was broken in **both** directions: on a machine where that variable is set to `7d`,
+reverting the default left it **GREEN** — the exact regression it exists to catch — and an operator who took
+the opt-out advice above got a **FALSE RED** from a correct checkout. It now pins the **literal** with a regex
+over `file_get_contents(base_path('config/bridge.php'))`, `preg_match_all() === 1` so a second divergent copy
+of the default is a failure rather than a satisfied `assertMatchesRegularExpression`. Same for the `30d` row
+window. **Both directions measured:** with the default reverted to `''` **and** the env var exported as `7d`
+— precisely the case that fooled the old form — the new pin still REDS; with the shipped default and the var
+exported empty, `90d`, or `7d`, it stays GREEN in all three. A third leg moves the environment in-process and
+**reads the resolved value back** before asserting the pin held, so environment-independence is measured
+rather than argued — and that control immediately earned itself: a `putenv()`-only first version was
+**silently defeated** by an exported variable, because Laravel's env repository reads `ServerConstAdapter`
+($_ENV/$_SERVER) *before* `PutenvAdapter`, and both a `.env` line and a shell export land in `$_SERVER`.
+
+**⛔ Decision 6 — `bridge:replay` REFUSES a payload-nulled event; the read-time fallback is deleted.** This is
+the blocker the default change created, and it is why this entry is not config-only. `ReplayCommand` did
+`is_array($payload) ? $payload : []` — the canon-#5 read-time fallback for missing data — and **nothing
+downstream throws on `[]`**: `InboxOnlyClassifier` (the canonical default) returns a *valid* Intent with
+`subjectId: null` and `summary: "new card by <who>: <unnamed>"`, `DispatchService` appends that line to the
+agent's **durable `inbox.jsonl`** and on an event-driven seat fires a **live wake carrying fabricated
+content**, `markDelivered` stamps the row and clears its `error_message`, and the command prints
+`replayed event N` at **rc 0**. Reproduced verbatim on a nulled fixture before the guard was written. The
+sibling branch is worse: for an event type the classifier does not match on an empty payload, `markDropped`
+sets `processed_at` **and `error_message => null`**, erasing the record of the original failure and
+permanently skipping the row in every later non-`--force` replay.
+
+  - **The refusal sits ABOVE the `--force` reset**, not merely above the dispatch: `--force` nulls
+    `processed_at`/`outcome`/`reason`/`error_message` as its *first* act, so a guard placed after it would
+    refuse having already destroyed the row's terminal tuple with no re-run to restore it. A dedicated test
+    pins the ordering and reds on exactly that transposition.
+  - **The predicate is `! is_array`, not `=== null`.** The fabrication was never a property of null — it was
+    the FALLBACK, and every non-array the `'array'` cast can yield reaches the same `[]`. The message names
+    which of the two it got; only NULL is retention's doing. (Canon #7: the sibling was found by asking what
+    else the discarded branch swallowed.)
+  - **Strictly MORE conservative**, which is why it ships inside this PR rather than behind the hard gate: it
+    refuses where it used to fabricate, and the newly-refused set was previously served a *wrong answer*, not
+    a right one.
+  - **`bridge:inspect` is the sibling read site** (the only other reader of `webhook_events.payload`, by grep
+    over `app/Console/` and `app/Bridge/`) and is handled **differently on purpose**: it does not refuse. It
+    dispatches nothing and reconstructs nothing, so there is nothing to fabricate, and the row's surviving
+    metadata is what the operator came for. What it stops doing is printing `json_encode(null)`'s bare
+    `null`, which reads as *"the upstream sent nothing"* rather than *"retention removed it"* — this is the
+    surface an operator reaches for immediately after replay turns them away.
+
+**⛔ Decision 7 — `bridge:stats`' `errored (replayable)` was a false claim over part of its own count.** With
+the leg on by default, an errored dispatch pointing at a payload-nulled event is recoverable by **no command
+this bridge has**, and one label over both sends the operator to a command that will refuse them. Split into
+`errored (replayable)` and `errored (NOT replayable — event payload nulled by retention)`, **both printed
+always, zero included** — the same argument DL-300 makes for the divergence zero two rows down. The replayable
+figure is **derived by subtraction** rather than by a second `whereNotNull('payload')` query: the two rows must
+sum to the errored total on every install, and two independent predicates over a table retention mutates
+between them cannot promise that.
+
+**⚑ Decision 8 — the two operator-facing config references said the leg was OFF, and neither carried the
+upgrade warning its own sibling row does.** `docs/config-schema.md` still printed ``` `''` (**leg off**) ```
+plus the retired *"an optional space optimization"* rationale verbatim, and `CLAUDE_DEPLOYMENT.md` said
+*(empty ⇒ leg off)*. Two rows above **each**, `retention.enabled` carries *"Defaults ON — an upgrade starts
+pruning without operator action"*; the identical warning was owed here and was nowhere. Both rows now carry
+it, plus the replay-refusal fact and the two-part opt-out. The `bridge:replay` runbook paragraph and the
+`bridge:stats`-shows-errored diagnose bullet are updated in the same change.
+
+**⚑ Decision 9 — the golden corpus lost the ONE-LEG posture and it is restored as a fixture, not an
+assertion.** After Decision 4 all 36 posture-printing fixtures render two legs, and every assertion over that
+line matched on the **prefix** `retention: on (delete >30d` — true of one leg and of two — so nothing covered
+the single-leg branch of `RetentionConfig::summary()`'s `implode(' + ', …)`. New fixture
+`retention-payload-leg-off` (the install an operator who takes the opt-out above actually has) pins the
+**whole line**, closing parenthesis included, with a paired absent-subject on `null payloads`;
+`minimal-fpm-present`'s subject is tightened from the prefix to the exact two-leg line so both branches are
+pinned. **Proven potent:** a mutation making `summary()` append the payload leg unconditionally reds
+**exactly one** of the 88 tests in that class — the new fixture — while all 37 other goldens and every prefix
+assertion stay green. Registered check set is untouched at 38, so no inventory line moves.
+
+**Not built, recorded here as the obvious next ones rather than smuggled in:**
+
+  - **A `bridge:check` warning when errored dispatches point at payload-nulled events.** Weighed and
+    **declined for this PR.** It is a *lagging* signal about damage already done, it is `bridge:stats`'
+    question and is now answered there, and putting it in the preflight means a **second implementation of
+    the same predicate** (canon #5) plus the first DB read `RetentionPostureCheck` has ever done — and
+    `CheckRunner` deliberately does not isolate, so that read needs its own fail-soft envelope to avoid
+    converting an unreachable database into an aborted `bridge:check`.
+  - **Cross-validating the two windows** — warning when the payload window is a small fraction of an
+    *explicitly widened* row window (an operator who set `BRIDGE_RETENTION_OLDER_THAN=90d` for a longer audit
+    trail now silently loses payloads at 7d). **Declined, and not merely deferred: the ratio is not the
+    signal.** Decision 2 of this very entry rules that a short payload window beside a long row window is the
+    **correct** posture, so a check firing on 7d-vs-90d would warn about the arrangement the same release
+    recommends. The thing that would make it a signal is whether the operator *chose* the 7d value or
+    inherited the moved default — and that provenance is **not derivable from config**: `env()` carries no
+    origin, and reading `.env` for the key's presence answers for a file a `config:cache`d install does not
+    read. The moment that actually matters is **before** the upgrade, so the vehicle is the upgrade note
+    (Decision 8 and the CHANGELOG), not a later preflight.
 
 **Provenance.** Reported by aimla-pm on rt#380, who measured it, applied it on their own fleet first, and
 explicitly declined to assert this install's numbers (*"I cannot read your install"*) — the prediction was then

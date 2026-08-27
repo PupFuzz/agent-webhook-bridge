@@ -14,6 +14,10 @@ use App\Models\WebhookEvent;
  * already-delivered channel_push / spawn_detached. --agent scopes to one agent;
  * --force clears processed_at first so succeeded rows re-run too.
  *
+ * An event whose payload retention has NULLED is REFUSED, not replayed — see the
+ * guard in handleGuarded(). That makes the `null_payloads_older_than` window the
+ * replay window in fact and not only by intent (DL-315).
+ *
  * DispatchService is resolved LAZILY in handle(), NOT constructor-injected — the
  * bind reads every agent YAML, and console bootstrap instantiates every command,
  * so injecting it here would make one malformed YAML crash EVERY artisan command
@@ -35,6 +39,38 @@ class ReplayCommand extends BridgeCommand
         $event = WebhookEvent::query()->find((int) $this->argument('id'));
         if ($event === null) {
             $this->error("no webhook_event with id {$this->argument('id')}");
+
+            return self::FAILURE;
+        }
+
+        // ⛔ REFUSE, NEVER RECONSTRUCT — and BEFORE the --force reset below, so a
+        // refusal touches no ledger row. A nulled payload is MISSING data, not an
+        // empty one, and nothing downstream can tell the difference: the read-time
+        // `is_array($payload) ? $payload : []` this replaces handed `[]` to the
+        // classifier, `InboxOnlyClassifier` does not throw on it (it returns a valid
+        // Intent with a null subject and a `<unnamed>` summary), `DispatchService`
+        // appended that line to the agent's durable inbox.jsonl and fired a live wake
+        // carrying it, and the row was stamped `delivered` with its error_message
+        // cleared — rc 0, `replayed event N`, and nothing anywhere recording that the
+        // content was invented. Measured on this exact input before the guard existed.
+        // Since DL-315 the nulling leg is ON by default, so this is the state of every
+        // event past the payload window on every install that upgrades.
+        //
+        // The predicate is `! is_array`, not `=== null`, because the fabrication was
+        // never a property of null: it was the FALLBACK, and every non-array the
+        // 'array' cast can yield (a JSON scalar in the column) reaches the same `[]`.
+        // The message names which of the two it got — only NULL is retention's doing.
+        $payload = $event->payload;
+        if (! is_array($payload)) {
+            $this->error("event {$event->id}: no replayable payload ("
+                .($payload === null
+                    ? 'NULL — nulled by retention: BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN, default 7d, DL-315'
+                    : 'stored as '.get_debug_type($payload).', which is not an event payload')
+                .'). Replay cannot reconstruct it, and dispatching an empty payload in its place would '
+                .'stage a FABRICATED intent to the agent inbox and wake the seat with it. Nothing was '
+                .'dispatched and no dispatch row was touched — `bridge:inspect` still shows the event '
+                .'row. To keep future payloads replayable, widen the window and re-run '
+                .'`php artisan config:cache` (a .env edit alone is inert under a cached config).');
 
             return self::FAILURE;
         }
@@ -97,8 +133,7 @@ class ReplayCommand extends BridgeCommand
             return self::FAILURE;
         }
 
-        $payload = $event->payload;
-        $dispatcher->dispatch($event->provider, $event->scope_id, $dto, is_array($payload) ? $payload : [], $onlyAgent);
+        $dispatcher->dispatch($event->provider, $event->scope_id, $dto, $payload, $onlyAgent);
 
         $this->info("replayed event {$event->id}".($onlyAgent !== null ? " for agent {$onlyAgent}" : ''));
 

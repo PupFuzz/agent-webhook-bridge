@@ -152,6 +152,13 @@ return [
     | depth. 7d covers a Friday-evening miss found by a Monday reconcile; 3d is
     | exactly the window that fails that case. A slower detector wants more.
     |
+    | ⚠ THIS KEY IS THE REPLAY WINDOW IN FACT, NOT ONLY BY INTENT: `bridge:replay`
+    | REFUSES an event whose payload this leg nulled (it cannot reconstruct one, and
+    | dispatching the empty payload in its place stages a FABRICATED intent to the
+    | agent's durable inbox). Changing it changes what is recoverable. The upgrade
+    | and opt-out mechanics — no grace period, and a .env edit is inert under
+    | `config:cache` — are owned by CLAUDE_DEPLOYMENT.md and docs/config-schema.md.
+    |
     | interval — seconds between passes in the drained steady state (default 24h),
     | so at most one request per day pays anything at all. batch — max rows one
     | pass touches per leg; while a backlog remains the gate keeps draining on

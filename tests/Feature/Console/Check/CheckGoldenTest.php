@@ -124,6 +124,19 @@ class CheckGoldenTest extends TestCase
 
                 return $default;
 
+            case 'retention-payload-leg-off':
+                // THE ONE-LEG BRANCH of `RetentionConfig::summary()`'s
+                // `implode(' + ', $legs)`, which had no coverage at all. Since DL-315
+                // shipped the payload leg ON, all 36 posture-printing fixtures render TWO
+                // legs, and every assertion over that line matched on the PREFIX
+                // `retention: on (delete >30d` — true of one leg and of two, so nothing
+                // discriminated them. This is the install an operator who takes DL-315's
+                // own opt-out actually has, and its subject below is the WHOLE line.
+                $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
+                config(['bridge.retention.null_payloads_older_than' => '']);
+
+                return $default;
+
             case 'retention-last-pass-failed':
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
                 // The ambient-cache input, set deliberately. `at` is a literal, not a
@@ -523,6 +536,7 @@ class CheckGoldenTest extends TestCase
             'default-agent-has-no-config',
             'retention-disabled',
             'retention-misconfigured',
+            'retention-payload-leg-off',
             'retention-last-pass-failed',
             'agent-yaml-malformed',
             'agent-classifier-missing',
@@ -580,7 +594,11 @@ class CheckGoldenTest extends TestCase
         return [
             // ---- the baseline shape, and the one host input that changes it ----
             'minimal' => ['exit: 0', 'agent config ok: prod-agent'],
-            'minimal-fpm-present' => ['retention: on (delete >30d'],
+            // EXACT, not the `retention: on (delete >30d` prefix it used to be: that prefix
+            // is true of the one-leg posture too, so it could not tell the two apart. This
+            // and `retention-payload-leg-off` are the pair that pins both branches of
+            // `RetentionConfig::summary()`'s implode.
+            'minimal-fpm-present' => ['retention: on (delete >30d + null payloads >7d, every 86400s, 500 rows/pass)'],
 
             // ---- the top-of-handle() install shell ----
             // The subject moved with card#5698: `is_dir()` cannot tell an absent dir from an
@@ -595,6 +613,10 @@ class CheckGoldenTest extends TestCase
             // ---- retention: all four postures ----
             'retention-disabled' => ['retention: DISABLED (BRIDGE_RETENTION_ENABLED=false)'],
             'retention-misconfigured' => ['retention: enabled but MISCONFIGURED'],
+            // The WHOLE line, closing parenthesis included: a prefix subject cannot state
+            // an absence, and what this fixture exists to prove is that the second leg is
+            // NOT rendered. See `minimal-fpm-present` for the two-leg half of the pair.
+            'retention-payload-leg-off' => ['retention: on (delete >30d, every 86400s, 500 rows/pass)'],
             'retention-last-pass-failed' => ['retention: the LAST PASS FAILED'],
 
             // ---- per-agent legs ----
@@ -701,6 +723,12 @@ class CheckGoldenTest extends TestCase
             'no-opt-in-probes-requested' => ['board_tools probe:'],
             // A consumer with nothing to report is silent, not reassuring.
             'event-consumer-nothing-arrived' => ['event-consumer:'],
+            // Paired with that fixture's exact-line subject: the positive pins the one-leg
+            // rendering, this pins that the payload leg contributed nothing to it. Without
+            // it a summary() that appended an empty leg (`delete >30d + `) would be caught,
+            // but one that rendered `null payloads >0d` somewhere else in the line
+            // would not.
+            'retention-payload-leg-off' => ['null payloads'],
         ];
     }
 

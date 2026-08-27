@@ -10,11 +10,12 @@ use App\Models\WritebackBoardDivergence;
 use Illuminate\Support\Facades\Schema;
 
 /**
- * Summarise the event/dispatch ledger: totals, processed vs errored, the writeback
- * board-divergence ledger (card#7212/DL-300 — always printed, zero included), and a
- * per-provider event breakdown. --agent scopes the dispatch metrics to one
- * agent and adds its staged-inbox line count (single-install multi-agent
- * visibility, symmetry with bridge:inbox --agent).
+ * Summarise the event/dispatch ledger: totals, processed vs errored — split on whether
+ * `bridge:replay` can actually re-run them, which since DL-315 it cannot for any event
+ * past the payload window — the writeback board-divergence ledger (card#7212/DL-300 —
+ * always printed, zero included), and a per-provider event breakdown. --agent scopes
+ * the dispatch metrics to one agent and adds its staged-inbox line count
+ * (single-install multi-agent visibility, symmetry with bridge:inbox --agent).
  */
 class StatsCommand extends BridgeCommand
 {
@@ -36,11 +37,28 @@ class StatsCommand extends BridgeCommand
             $dispatches->where('agent_name', $agent);
         }
 
+        // ⛔ `errored (replayable)` WAS A FALSE CLAIM FOR PART OF ITS OWN COUNT, and DL-315
+        // made that part the default: `bridge:replay` REFUSES an event whose payload
+        // retention nulled, so an errored row pointing at one is not recoverable by any
+        // command this bridge has. One label over both is the shape that sends an operator
+        // to a command that will turn them away — split it, and print BOTH rows always,
+        // zero included, for the same reason the divergence zero below is printed.
+        $errored = (clone $dispatches)->whereNull('processed_at')->whereNotNull('error_message');
+        $erroredTotal = (clone $errored)->count();
+        $erroredPayloadGone = (clone $errored)
+            ->whereIn('webhook_event_id', WebhookEvent::query()->whereNull('payload')->select('id'))
+            ->count();
+
         $rows = [
             ['webhook_events', WebhookEvent::query()->count()],
             [$agent !== null ? "agent_dispatches [{$agent}]" : 'agent_dispatches', (clone $dispatches)->count()],
             ['  processed', (clone $dispatches)->whereNotNull('processed_at')->count()],
-            ['  errored (replayable)', (clone $dispatches)->whereNull('processed_at')->whereNotNull('error_message')->count()],
+            // DERIVED BY SUBTRACTION, not by a second `whereNotNull('payload')` query: the
+            // two rows have to sum to the errored total on every install, and two
+            // independent predicates over a table retention mutates between them cannot
+            // promise that — a pass landing mid-report would print a table that does not add up.
+            ['  errored (replayable)', $erroredTotal - $erroredPayloadGone],
+            ['  errored (NOT replayable — event payload nulled by retention)', $erroredPayloadGone],
         ];
         if ($agent !== null) {
             $rows[] = ["inbox lines [{$agent}]", $this->agentInboxCount($agent)];

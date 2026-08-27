@@ -6,6 +6,10 @@ use App\Models\WebhookEvent;
 
 /**
  * Pretty-print a single webhook event and its per-agent dispatch ledger.
+ *
+ * It REPORTS a payload retention has nulled rather than refusing the event the way
+ * `bridge:replay` does — inspect neither dispatches nor reconstructs, so there is
+ * nothing here to fabricate, and the row's metadata is what an operator came for.
  */
 class InspectCommand extends BridgeCommand
 {
@@ -38,7 +42,22 @@ class InspectCommand extends BridgeCommand
         ]);
 
         $this->line('payload:');
-        $this->line((string) json_encode($event->payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        // ⛔ NOT `json_encode(null)` — that prints the bare literal `null`, which reads as
+        // "the upstream sent nothing" rather than "retention removed it", and this is the
+        // surface an operator reaches for right after `bridge:replay` refuses. Inspect
+        // deliberately does NOT refuse (unlike replay): it dispatches nothing and fabricates
+        // nothing, and the row's surviving metadata above is exactly what is still worth
+        // reading. Same `! is_array` predicate as the replay guard, for the same reason.
+        if (is_array($event->payload)) {
+            $this->line((string) json_encode($event->payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        } elseif ($event->payload === null) {
+            $this->warn('  (NULL — nulled by retention (BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN, '
+                .'default 7d, DL-315). The event row is intact; `bridge:replay` REFUSES this event '
+                .'because it cannot reconstruct the payload.)');
+        } else {
+            $this->warn('  (stored as '.get_debug_type($event->payload).', not an event payload — '
+                .'`bridge:replay` REFUSES this event.)');
+        }
 
         $agent = $this->strOption('agent');
         $dispatches = $agent !== null
