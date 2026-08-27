@@ -388,6 +388,35 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   server** — so a `REPORTED` line straight after enablement may be the bridge's own call,
   for a seat that has no `.mcp.json` entry yet. Read it as *the door opened*, and confirm
   the seat by having the seat itself call.
+- **⭐ There are TWO green lines since DL-316, and the difference is what they CLAIM — the
+  severity is `ok` on both.** The ssh door records how the serving process was started, so a
+  call that arrived through the pinned forced command reports the stronger of the two:
+  `board_tools: agent X: client half REPORTED **THROUGH THE SSH DOOR** — … the process that
+  served it carried sshd's session environment, had NO CONTROLLING TERMINAL, and carried no
+  SSH_TTY — the shape of the pinned pty-less forced command`. Everything else — an http call, a hand-run, and **any row written before
+  the upgrade** — keeps the `client half REPORTED — …` line above, word for word.
+  ⭐ **The predicate — every term, the reason each is there, what a `sshd` stamp RULES OUT and
+  the two things it does NOT — is owned by `app/Bridge/Tools/CallProvenance.php`'s class
+  docblock. Read it there.** This page states only the operator-facing consequence, and
+  deliberately does not restate the rule: the first cut of this feature carried **eleven**
+  hand-maintained restatements of it across code comments, docs and the decision log, the rule
+  underneath them was then measured **wrong**, and all eleven were wrong together in prose no
+  test reads.
+  ⚠ **The operator-facing consequence, in one line: the stronger line narrows the caller set,
+  it does not close it,** and the line PRINTS its own remainders — a pty-less
+  `ssh <host> '<command>'` (which is exactly what `bridge:check --probe-tools-ssh` and
+  `provision-board-tools.py --self-cert` drive, indistinguishably from the seat), and a
+  hand-run from a context with no controlling terminal that carries `SSH_CONNECTION`.
+  **If either has been run since, the stronger line may be that run** — confirming the seat
+  still means having the seat call.
+  ⚑ **A host that cannot ANSWER the question never prints the stronger line, and that says nothing about the seat.**
+  Each fact behind the verdict is three-valued — measured-true, measured-false, or *unestablishable* — and only a
+  measurement earns the stronger claim, so a run-user `php.ini` carrying an `open_basedir` (which denies the probe
+  both `/dev/tty` and `/proc`) records `not_sshd` and prints the `client half REPORTED — …` line for every call,
+  including a genuine one. Confirming the seat still means having the seat call.
+  ⛔ **Nothing is stored or printed but a NAME.** `SSH_CONNECTION` is a client IP, a client
+  port and this host's own address and port; only its **presence** ever crosses into the row,
+  which `bridge:check` prints verbatim.
   ⛔ **There are TWO verdicts, not three, and the missing one is deliberate.** A seat that
   can report is by definition wired, so *"never wired"* is **not observable from the
   bridge** — it is the same absence as *"wired, and quiet"*. No record, or one older than
@@ -579,6 +608,13 @@ an identity fault — see **Which spelling the probe read** above.
 **including for a seat whose channel server is not running and whose `.mcp.json` has no
 `BRIDGE_TOOLS_*` entry at all.** Do not read that line as the seat's half being wired until
 the seat has made a call of its own; the line states the bound itself.
+⚑ **DL-316 does not rescue this step**, and the reason is worth knowing: `--probe-tools` goes
+through the **HTTP** door, which cannot discriminate at all, so it stamps the weaker
+provenance and gets the weaker line. It is `--probe-tools-**ssh**` that reaches the ssh door
+and stamps the **stronger** one — a pty-less ssh round-trip is one of the two remainders
+`app/Bridge/Tools/CallProvenance.php` names — so on an ssh install the certify step can leave
+the more confident line standing for a seat that has not yet called. Same rule either way:
+confirm the seat by having the seat call.
 
 ### 7. Restart the channel server
 

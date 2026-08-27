@@ -34,6 +34,13 @@ use Illuminate\Support\Facades\Log;
  * the caller WAS a seat: `bridge:check --probe-tools` and a hand-run `bridge:tools-call`
  * reach this same point, so the reading check bounds its own line. It is an observation
  * ABOUT the call and never a precondition OF it: the ledger swallows its own failures.
+ *
+ * ⭐ card#7836 ADDS THE ONE THING THE DOORS DO NOT SHARE: how the serving process was
+ * started ({@see CallProvenance}). It is a PARAMETER and not something this class measures,
+ * because this class is transport-neutral by design and the answer is not — the ssh door
+ * reads sshd's session environment, the http door has nothing to read and says so as a
+ * constant. Threading it keeps the fact next to the door that can establish it, rather than
+ * having the shared body infer a door from `$cfg->transport`.
  */
 final class BoardToolDispatcher
 {
@@ -41,8 +48,11 @@ final class BoardToolDispatcher
 
     /**
      * @param  mixed  $rawArgs  the caller-supplied argument object (already decoded); must be an array/object
+     * @param  CallProvenance  $provenance  how the process serving this call was started, as
+     *                                      the FRONT DOOR establishes it — required, never
+     *                                      defaulted (see {@see ClientHalfLedger::record()})
      */
-    public function dispatch(string $toolName, mixed $rawArgs, BoardToolsConfig $cfg, string $agentName): DispatchOutcome
+    public function dispatch(string $toolName, mixed $rawArgs, BoardToolsConfig $cfg, string $agentName, CallProvenance $provenance): DispatchOutcome
     {
         $transport = $cfg->transport;
 
@@ -86,7 +96,7 @@ final class BoardToolDispatcher
         // and only to someone reading logs; `bridge:check` needs it as a fact. Best-effort by construction —
         // the ledger never throws, because the call has already happened and re-running it
         // to fix an audit row would re-do the board work.
-        ClientHalfLedger::record($agentName, $transport);
+        ClientHalfLedger::record($agentName, $transport, $provenance);
 
         return DispatchOutcome::success($toolName, $result);
     }
