@@ -9,6 +9,7 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\Finding;
 use App\Bridge\Support\Severity;
 use App\Bridge\Tools\BoardToolDispatcher;
+use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientHalfLedger;
 use App\Models\BoardToolsClientCall;
 use Throwable;
@@ -34,7 +35,7 @@ use Throwable;
  * this agent, and it cannot tell a seat's call from one the bridge itself made with that
  * agent's bearer or pinned key; the `ok` arm below says so in its own text.
  *
- * ⭐ TWO OUTCOMES, NOT THREE, AND "NEVER WIRED" IS NOT ONE OF THEM. A seat that can report
+ * ⭐ TWO SEVERITIES, NOT THREE, AND "NEVER WIRED" IS NOT ONE OF THEM. A seat that can report
  * is BY DEFINITION wired, so "never wired" is unobservable from here — it is the same
  * absence as "wired, and quiet". The leg therefore reports:
  *   - a fresh successful call ⇒ `ok`, and the line claims ONLY what the row carries: a
@@ -49,6 +50,33 @@ use Throwable;
  *   - no record, or one older than the freshness window ⇒ `unvalidated`. The leg did not
  *     answer its own question ({@see Severity} limb (a)/(c)) and NOTHING here
  *     distinguishes never-wired from merely-idle.
+ *
+ * ⭐ THE `ok` SEVERITY CARRIES TWO DIFFERENT CLAIMS SINCE card#7836 / DL-316, AND THE
+ * DIFFERENCE IS THE WHOLE CARD. DL-313's caveat above was CORRECT and it was also all the
+ * leg had: an adversarial review reproduced a green line from a process with no keypair, no
+ * `known_hosts`, no `.mcp.json` and no channel server. The ssh door can in fact discriminate
+ * — sshd's session environment is present on the forced command and its `SSH_TTY` is not,
+ * which is a shape an operator's shell does not have — so {@see CallProvenance} is now
+ * recorded at the write site and this leg reports the stronger claim exactly where it is
+ * earned:
+ *   - `call_provenance = sshd` ⇒ the call arrived over a REAL, pty-less ssh connection.
+ *     Excluded by measurement: the `--probe-tools` HTTP probe (that door states `not_sshd`
+ *     as a constant), a hand-run in an INTERACTIVE ssh shell (a pty, so `SSH_TTY`), and a
+ *     hand-run from a local console, cron or systemd unit (neither marker). ⛔ NOT excluded:
+ *     any other PTY-LESS ssh invocation of `bridge:tools-call` — `ssh <host> '<command>'`
+ *     included — which is why the line below names the shape rather than the caller.
+ *   - anything else — `not_sshd`, or NULL for a row written before this column existed —
+ *     keeps DL-313's wording UNCHANGED, to the byte. NULL is not "measured false"; it is a
+ *     row from a writer that never asked, and an absent measurement may not be spent as
+ *     either verdict.
+ * ⛔ THE STRONGER LINE STILL DOES NOT NAME THE CALLER, AND SAYS SO ITSELF. `bridge:check
+ * --probe-tools-ssh` and `provision-board-tools.py --self-cert` each drive a real, pty-less
+ * `ssh` round-trip, so sshd stamps their forced command with the identical environment. The
+ * ambiguity set is NARROWED from four callers to three, not closed, and the only thing that
+ * would close it is a MARKED request from the probe — which changes what a front door
+ * accepts and was not authorised under this card. A line that said "the seat called" would
+ * be false on a host where `--probe-tools-ssh` had just run.
+ *
  * NEVER `fail` AND NEVER `warn`, on both halves of the rule: a `fail` would exit non-zero
  * over a seat that is idle by choice, and a `warn` would tell an operator something is
  * wrong when the honest statement is that this run learned nothing. The MESSAGE carries
@@ -122,6 +150,18 @@ final class BoardToolsClientHalfCheck implements PerAgentCheck
         $age = (int) max(0, $row->last_success_at->diffInSeconds(now()));
         if ($age > $ttl) {
             yield Finding::unvalidated("board_tools: agent {$name}: client half UNREPORTED — the seat's last successful board-tools call was ".self::humanAge($age).' ago (over '.$row->transport.'), older than the '.self::humanAge($ttl)." freshness window, so this run says nothing about whether it still works. THIS IS NOT EVIDENCE THE SEAT IS UNWIRED: {$blind} {$remedy}");
+
+            return;
+        }
+
+        // ⚑ THE PREDICATE IS THE PROVENANCE ALONE, not provenance-AND-transport. Only
+        // `bridge:tools-call` can write `sshd` — the HTTP controller states `NotSshd` as a
+        // constant — and that command refuses any agent whose transport is not `ssh`, so
+        // `transport === 'ssh'` is already implied and re-asserting it here would be a guard
+        // over a state no writer can produce. NULL falls through with `not_sshd`: an
+        // unmeasured row is not a measured negative, and neither is proven.
+        if ($row->call_provenance === CallProvenance::Sshd) {
+            yield Finding::ok("board_tools: agent {$name}: client half REPORTED THROUGH THE SSH DOOR — a successful board-tools call for this agent was recorded ".self::humanAge($age).' ago, over '.$row->transport.", and the process that served it carried sshd's session environment with NO pty, which is the shape of the pinned forced command. THAT RULES OUT what a bare record could not: the `bridge:check --probe-tools` HTTP probe; a hand-run `bridge:tools-call --agent={$name}` in an INTERACTIVE ssh shell, which exports SSH_TTY and passes it to everything it spawns; and one from a local console, cron or systemd unit, which exports neither marker. IT DOES NOT RULE OUT ANY OTHER PTY-LESS ssh INVOCATION of this command, so it STILL DOES NOT NAME THE CALLER: `bridge:check --probe-tools-ssh` and `provision-board-tools.py --self-cert` drive a real pty-less ssh round-trip and are INDISTINGUISHABLE from the seat here — if either has been run since, this line may be that run.");
 
             return;
         }

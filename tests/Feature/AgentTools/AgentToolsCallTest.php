@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Tools\CallProvenance;
+use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -85,6 +87,43 @@ class AgentToolsCallTest extends TestCase
             'CONTENT_TYPE' => 'application/json',
             'HTTP_ACCEPT' => 'application/json',
         ], $server), (string) json_encode($body));
+    }
+
+    // ─── client-half provenance (card#7836 / DL-316) ──────────────────────────
+
+    /**
+     * ⭐ THIS DOOR MUST NEVER STAMP THE STRONG PROVENANCE, AND THE REASON IS NOT THAT IT
+     * FORGOT TO MEASURE. `LoopbackOnly` pins the peer to 127.0.0.1 for the seat and for
+     * `bridge:check --probe-tools` alike, BY CONSTRUCTION, so there is nothing here that
+     * separates them and any "measurement" would be about the SERVER process rather than the
+     * caller. That process can carry an ssh session environment perfectly legitimately —
+     * `php artisan serve` started inside an ssh session is the live case — so an
+     * implementation that read the environment here would mint the stronger `bridge:check`
+     * verdict out of a variable that says nothing about who called.
+     *
+     * The environment is set to the SHAPE that makes the ssh door say `sshd`, so this reds
+     * against exactly that implementation and passes only because the door states a constant.
+     */
+    public function test_the_http_door_stamps_not_sshd_even_inside_an_ssh_session(): void
+    {
+        Http::fake([
+            '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
+            '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
+        ]);
+        [$connection, $tty] = [getenv('SSH_CONNECTION'), getenv('SSH_TTY')];
+        putenv('SSH_CONNECTION=203.0.113.9 53210 198.51.100.4 22');
+        putenv('SSH_TTY');
+
+        try {
+            $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']])->assertStatus(200);
+        } finally {
+            is_string($connection) ? putenv('SSH_CONNECTION='.$connection) : putenv('SSH_CONNECTION');
+            is_string($tty) ? putenv('SSH_TTY='.$tty) : putenv('SSH_TTY');
+        }
+
+        $row = BoardToolsClientCall::query()->where('agent', 'me')->sole();
+        $this->assertSame('http', $row->transport);
+        $this->assertSame(CallProvenance::NotSshd, $row->call_provenance);
     }
 
     // ─── loopback gate ───────────────────────────────────────────────────────

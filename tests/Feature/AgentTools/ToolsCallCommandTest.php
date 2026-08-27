@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ToolsCallStdio;
+use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -64,13 +66,21 @@ class ToolsCallCommandTest extends TestCase
      * Run the command with a seeded STDIN and capture the real streams via a fake
      * bound into the container (method injection resolves it).
      *
-     * @param  array<string, string>  $server
+     * ⚑ THE ENVIRONMENT IS SAVED AND RESTORED, NOT BLANKET-UNSET (card#7836). The command
+     * READS its environment since DL-316, and the suite itself can be running inside an ssh
+     * session — so a `null` here means "this variable is ABSENT for this run", which is a
+     * fixture the caller states rather than an ambient fact it inherits, and the prior value
+     * is put back so one test cannot decide what the next one measures.
+     *
+     * @param  array<string, string|null>  $server  null ⇒ unset for the duration of the run
      * @return array{exit: int, stdout: string, stderr: string}
      */
     private function runCommand(?string $agent, string $stdin, array $server = []): array
     {
+        $saved = [];
         foreach ($server as $k => $v) {
-            putenv("{$k}={$v}");
+            $saved[$k] = getenv($k);
+            $v === null ? putenv($k) : putenv("{$k}={$v}");
         }
         $fake = new FakeToolsCallStdio($stdin);
         $this->app->instance(ToolsCallStdio::class, $fake);
@@ -78,8 +88,8 @@ class ToolsCallCommandTest extends TestCase
         $params = $agent === null ? [] : ['--agent' => $agent];
         $exit = $this->artisan('bridge:tools-call', $params)->run();
 
-        foreach (array_keys($server) as $k) {
-            putenv($k);
+        foreach ($saved as $k => $v) {
+            is_string($v) ? putenv("{$k}={$v}") : putenv($k);
         }
 
         return ['exit' => $exit, 'stdout' => $fake->capturedOut(), 'stderr' => $fake->capturedErr()];
@@ -133,6 +143,86 @@ class ToolsCallCommandTest extends TestCase
         // STDERR, and NONE of it leaked onto fd 1 — stdout is the envelope alone.
         $this->assertStringContainsString('[bridge:tools-call]', $r['stderr']);
         $this->assertStringNotContainsString('[bridge:tools-call]', $r['stdout']);
+    }
+
+    // ─── client-half provenance (card#7836 / DL-316) ──────────────────────────
+
+    /**
+     * ⭐ THIS DOOR IS THE ONLY ONE THAT CAN TELL A REMOTE CALL FROM A LOCAL ONE, and the two
+     * arms here are the whole discrimination: the SAME command, the SAME request, two
+     * environments, two stored provenances. Either arm alone passes against a writer that
+     * stamped a constant.
+     *
+     * The sshd arm is the pinned forced command's shape — sshd's session environment, and no
+     * pty, because the pinned line denies one.
+     */
+    public function test_a_forced_command_environment_stamps_sshd_provenance(): void
+    {
+        $this->fakeHealthyBoard();
+
+        $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']), [
+            'SSH_CONNECTION' => '203.0.113.9 53210 198.51.100.4 22',
+            'SSH_TTY' => null,
+        ]);
+
+        $this->assertSame(0, $r['exit']);
+        $this->assertSame(CallProvenance::Sshd, BoardToolsClientCall::query()->where('agent', 'me')->sole()->call_provenance);
+    }
+
+    /**
+     * ⭐ THE ARM THE CARD WAS SPECIFIED WITHOUT, and the reason the predicate is not
+     * `SSH_CONNECTION` alone. An operator hand-running `php artisan bridge:tools-call
+     * --agent=me` in their own ssh shell on the bridge host inherits that variable verbatim
+     * — that is how sshd works, and it survives into anything the shell spawns, `screen`
+     * included. What separates the two is the pty: the shell has one, the forced command
+     * cannot. Without this arm the leg would print its most confident line over exactly the
+     * call it was built to exclude.
+     */
+    public function test_a_hand_run_inside_an_operator_ssh_shell_stamps_not_sshd(): void
+    {
+        $this->fakeHealthyBoard();
+
+        $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']), [
+            'SSH_CONNECTION' => '203.0.113.9 53210 198.51.100.4 22',
+            'SSH_TTY' => '/dev/pts/7',
+        ]);
+
+        $this->assertSame(0, $r['exit']);
+        $this->assertSame(CallProvenance::NotSshd, BoardToolsClientCall::query()->where('agent', 'me')->sole()->call_provenance);
+    }
+
+    /**
+     * ⛔ THE VALUE IS NOT DISCLOSED ANYWHERE THE CALL CAN REACH. `SSH_CONNECTION` names a
+     * network peer, the row is printed verbatim by `bridge:check`, and this door's stdout is
+     * relayed to the caller — so all three surfaces are checked, not just the column.
+     */
+    public function test_no_ssh_connection_value_reaches_the_row_or_the_envelope(): void
+    {
+        $this->fakeHealthyBoard();
+
+        $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']), [
+            'SSH_CONNECTION' => '203.0.113.9 53210 198.51.100.4 22',
+            'SSH_TTY' => null,
+        ]);
+
+        $row = BoardToolsClientCall::query()->where('agent', 'me')->sole();
+        // Non-vacuous: the variable really was read on this run.
+        $this->assertSame(CallProvenance::Sshd, $row->call_provenance);
+        foreach ([(string) json_encode($row->getAttributes()), $r['stdout'], $r['stderr']] as $surface) {
+            $this->assertStringNotContainsString('203.0.113.9', $surface);
+            $this->assertStringNotContainsString('53210', $surface);
+        }
+    }
+
+    private function fakeHealthyBoard(): void
+    {
+        $this->writeSshAgent();
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+        ]);
     }
 
     // ─── identity / SSH_ORIGINAL_COMMAND ──────────────────────────────────────

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientHalfLedger;
 use Illuminate\Database\Eloquent\Model;
 
@@ -23,6 +24,14 @@ use Illuminate\Database\Eloquent\Model;
  * and the bridge cannot tell them apart without reading files that are not its to read. The
  * check's own text carries both bounds to the operator.
  *
+ * ⭐ `call_provenance` NARROWS THAT — IT DOES NOT CLOSE IT (card#7836 / DL-316). It records
+ * how the SERVING PROCESS was started, which is the one thing the ssh door can observe:
+ * {@see CallProvenance::Sshd} excludes the `--probe-tools` HTTP probe and a hand-run in an
+ * interactive shell or on a local console, and still cannot name WHICH pty-less ssh client
+ * called. ⚑ NULL IS A
+ * THIRD STATE and is not the enum's business: it is a row written before DL-316, carrying
+ * no measurement in either direction, and the check reads it as unproven.
+ *
  * ⛔ NAMES AND TIMESTAMPS ONLY. Nothing on this model may grow a field carrying a secret,
  * a token, or a config VALUE — its whole content is printed by `bridge:check`.
  */
@@ -38,11 +47,20 @@ class BoardToolsClientCall extends Model
     protected $fillable = [
         'agent',
         'transport',
+        'call_provenance',
         'last_success_at',
     ];
 
+    /**
+     * ⚑ THE ENUM CAST IS NULL-PRESERVING, which is the whole point: a pre-DL-316 row
+     * hydrates as `null` and reaches the check as "unmeasured" rather than as either
+     * verdict. A value the enum does not know throws on hydration — the reading check
+     * already wraps its query and reports limb (a), which is the right answer for a row
+     * this build cannot interpret.
+     */
     protected $casts = [
         'created_at' => 'datetime',
+        'call_provenance' => CallProvenance::class,
         'last_success_at' => 'datetime',
     ];
 }
