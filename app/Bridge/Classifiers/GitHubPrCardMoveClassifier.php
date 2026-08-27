@@ -413,8 +413,9 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         // as one guarantee (card#5287 — the sentence that stood here claimed only the
         // board guard, and an auditor who read it stopped there): a card the handler
         // CANNOT READ is refused by the 4xx arm, which returns BEFORE the board guard
-        // ever reads `board_id` — 403 (a card that exists and is another tenant's) and
-        // 404 are split there so the operator gets the right hypothesis (card#5288); a
+        // ever reads `board_id` — 403 and 404 are split there so the operator gets the
+        // right hypothesis (card#5288), and RefusalContext::readReason() owns what each of
+        // those statuses does and does not establish (DL-314, card#7846); a
         // card it CAN read that is not on the mapped board is refused by the
         // belongs-to-mapped-board guard; and a card reached by an UNCORROBORATED
         // title-only token is refused unless the card tracks no PR yet or already

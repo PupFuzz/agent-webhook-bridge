@@ -82,16 +82,33 @@ final class RefusalContext
 
     /**
      * The alert `reason` for a refused READ. 404 = no such card; 403 = the card exists
-     * and is NOT visible to this token (a foreign install's id was correlated here, or
-     * this token's scope is missing the card's board). That is a different operator
-     * hypothesis from {@see writeReason}'s 403, which is why the two are separate
-     * helpers rather than one status map.
+     * and this token could not read it — TWO causes, and a 403 cannot choose between
+     * them; the ⛔ note below is where they are stated, and this sentence deliberately
+     * does not pick one. That is a different operator hypothesis from
+     * {@see writeReason}'s 403, which is why the two are separate helpers rather than
+     * one status map.
+     *
+     * ⛔ THE 403 SLUG NAMES TWO CAUSES BECAUSE THERE ARE TWO, AND A 403 CANNOT CHOOSE
+     * (DL-314, card#7846). It reads `_403_foreign_card_id_or_token_scope`: either (a) a
+     * FOREIGN install's card id was correlated onto this bridge — kanban's card id space
+     * is GLOBAL across every board on a shared instance and `card#NNNN` is parsed as a
+     * literal out of author-controlled text, so an id naming another install's card
+     * reaches the read intact — or (b) this token's scope is missing a board of its OWN
+     * (rotation, lost membership). The prior slug, `_403_not_visible_to_this_token`,
+     * stated only (b): it named the TOKEN as the thing at fault, and the operator who
+     * hit (a) live went looking at their own token's scope for a card that was never
+     * theirs. ⛔ Do NOT "improve" this into one hypothesis: nothing in a 403 response
+     * distinguishes them, and the only thing that could — a BOARD-SCOPED read of the id
+     * against this install's own board — is deliberately not made here (DL-314 records
+     * it as the deferred option). A slug that picks one would be wrong-but-specific,
+     * which this file already rules worse than an honest generic (canon #10, and the
+     * same reasoning that keeps the GitHub reads flat).
      */
     public static function readReason(string $verb, RequestException $e): string
     {
         return match ($e->response->status()) {
             404 => $verb.'_404_no_such_card',
-            403 => $verb.'_403_not_visible_to_this_token',
+            403 => $verb.'_403_foreign_card_id_or_token_scope',
             default => $verb.'_4xx',
         };
     }

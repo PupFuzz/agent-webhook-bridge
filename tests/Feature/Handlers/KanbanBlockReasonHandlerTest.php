@@ -351,13 +351,20 @@ class KanbanBlockReasonHandlerTest extends TestCase
 
         $this->handle('set');
 
+        // ⛔ `card_id` is WITHHELD from the channel on this arm (card#7846 / DL-314), and
+        // that is the move handler's twin rule, not a quirk of this handler: the overlay
+        // resolves its card from the SAME author-controlled `card#`/DL token grammar
+        // against a GLOBAL kanban id space, so an id whose read just failed is not
+        // established as this install's. The log line keeps it (asserted below).
         Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
             && $r['type'] === 'writeback_move_failed'
             && $r['reason'] === 'getcard_404_no_such_card'
             && $r['repo'] === 'owner/repo'
             && $r['outcome'] === 'draft_overlay'
-            && $r['card_id'] === 5);
-        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg) => str_contains($msg, 'getCard refused by kanban'));
+            && $r['card_id'] === null
+            && ($r['card_id_withheld'] ?? false) === true);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'getCard refused by kanban')
+            && ($ctx['card_id'] ?? null) === 5);
     }
 
     public function test_setblockreason_4xx_alerts_with_the_write_reason(): void
