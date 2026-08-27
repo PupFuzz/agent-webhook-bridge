@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Webhook;
 
+use App\Bridge\Adapters\WebhookAdapterFactory;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -360,5 +361,80 @@ class WebhookReceiveTest extends TestCase
         $this->postWebhook('/webhooks/github?b=acme-corp/widget', $body, $headers('uuid-replayed'))->assertStatus(200);
 
         $this->assertSame(1, WebhookEvent::query()->count());
+    }
+
+    /**
+     * A CONTRACT test over a documented EXTENSION POINT, not over the two shipped
+     * adapters — which is why it is derived from `WebhookAdapterFactory::SUPPORTED`
+     * rather than written twice by hand (DL-315 Decision 6).
+     *
+     * `5` and `"x"` are VALID JSON that decode to a non-array. The receiver stores
+     * `json_decode($body, true)` as the event payload with no fallback of its own, and
+     * `DispatchService::dispatch()`'s `array $payload` parameter is the only thing left
+     * underneath — so an adapter that refuses only UNDECODABLE bodies turns this input
+     * into a TypeError → 500 → an upstream redelivering a deterministically-bad body
+     * forever. `WebhookAdapter::parse()`'s docblock states the refusal; this is the
+     * check that the declaration is true of this repo's own code (canon #7 leg 2).
+     *
+     * ⛔ SEEN TO FAIL TWO WAYS, both run, because they prove different things and only
+     * the second is what this test is FOR:
+     *   1. Deleting `decodeJson()`'s `is_array` guard reds at 500 — but the throw is its
+     *      `: array` RETURN TYPE, a TypeError. So that mutation measures the return type,
+     *      not the contract. (It is also the correction to DL-315's original mechanism,
+     *      which named `requireScalar()` throwing `missing_field`: `requireScalar()` is
+     *      `array`-typed too and is never reached, and a TypeError is a 500, not a 400.)
+     *   2. Registering a third adapter in `SUPPORTED` that implements `WebhookAdapter`
+     *      directly and never calls `decodeJson()` — exactly what
+     *      `docs/provider-adapters.md` instructs for a non-`sha256=` provider — reds with
+     *      `Expected response status code [400] but received 500`, the TypeError landing
+     *      on `DispatchService::dispatch()`'s `array $payload` parameter. THAT is the
+     *      state the declaration exists to prevent, and the reason this test is not the
+     *      decoration DL-315 first argued it would be.
+     *
+     * A provider added to `SUPPORTED` with no fixture below reds on the missing key.
+     * That is deliberate: the scalar-body case is owed by every provider, and a
+     * silently-skipped provider is the hole this test exists to close.
+     */
+    public function test_every_supported_provider_refuses_a_scalar_json_body(): void
+    {
+        $fixtures = [
+            'kanban' => [
+                '/webhooks/kanban?b=5',
+                fn (string $body) => ['X-Kanban-Signature' => $this->sign($body, $this->kanbanSecret)],
+            ],
+            'github' => [
+                '/webhooks/github?b=acme-corp/widget',
+                fn (string $body) => [
+                    'X-Hub-Signature-256' => $this->sign($body, 'gh-secret'),
+                    // Present on purpose: with these absent the refusal would be
+                    // `missing_header`, and the test would pass without ever reaching
+                    // the body — a green over the wrong branch.
+                    'X-GitHub-Delivery' => 'gh-scalar-probe',
+                    'X-GitHub-Event' => 'pull_request',
+                ],
+            ],
+        ];
+
+        foreach (WebhookAdapterFactory::SUPPORTED as $provider) {
+            $this->assertArrayHasKey(
+                $provider,
+                $fixtures,
+                "provider `{$provider}` is registered but has no scalar-body fixture here; ".
+                'see WebhookAdapter::parse()\'s docblock for what it owes'
+            );
+            [$uri, $headers] = $fixtures[$provider];
+
+            foreach (['5', '"x"'] as $body) {
+                $this->postWebhook($uri, $body, $headers($body))
+                    ->assertStatus(400)
+                    ->assertSee('invalid_envelope');
+
+                $this->assertSame(
+                    0,
+                    WebhookEvent::query()->count(),
+                    "{$provider} stored an event for the scalar body {$body}"
+                );
+            }
+        }
     }
 }

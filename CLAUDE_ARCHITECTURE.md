@@ -59,7 +59,7 @@ The whole reliability story lives in how `DispatchService` treats the three fail
 
 | Where it throws | Treatment | Why |
 |---|---|---|
-| **(A) classify** | record the error note, leave that agent's dispatch `processed_at` **null** (errored), ack **200** | A classifier bug must not wedge delivery. The raw event is stored and the dispatch stays unfinished; fix the classifier and `bridge:replay <id>` to complete it. |
+| **(A) classify** | record the error note, leave that agent's dispatch `processed_at` **null** (errored), ack **200** | A classifier bug must not wedge delivery. The raw event is stored and the dispatch stays unfinished; fix the classifier and `bridge:replay <id>` to complete it — **while the event still has its payload** (`retention.null_payloads_older_than`, default 7d: replay REFUSES a payload-nulled event, DL-315; see [`CLAUDE_DEPLOYMENT.md`](CLAUDE_DEPLOYMENT.md) § *Retention config (DL-199)*). |
 | **(B) inbox staging** | propagate → **5xx** → kanban-board redelivers | `inbox.jsonl` is the durable pull-backstop. Silently losing a staged intent is the one unacceptable outcome, so we'd rather be re-delivered. |
 | **(C) handler** | mark that agent's dispatch *done-with-note*, continue | Per-agent isolation. One agent's channel server being down must not fail the delivery or the other agents. |
 

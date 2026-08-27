@@ -4069,3 +4069,330 @@ DL-217 stays as written (the log is append-only); this entry corrects it. **The 
   - **A third verdict for a MEASURED non-sshd call on an ssh-transport row** (*"this was provably not the seat"*, which is a real and useful negative). Not built — it is a verdict-set decision with its own severity question, and is recorded here as the obvious next one rather than smuggled into a card scoped to the positive.
 
 - **Consequences:** new `app/Bridge/Tools/CallProvenance.php`, `app/Bridge/Tools/ServingProcessEnvironment.php`, `app/Bridge/Tools/SystemServingProcessEnvironment.php` (bound in `BridgeServiceProvider`) and `database/migrations/2026_08_26_000002_add_call_provenance_to_board_tools_client_calls.php`; `ClientHalfLedger::record()` and `BoardToolDispatcher::dispatch()` each take a **required** `CallProvenance`; `BoardToolsClientCall` gains the column + a null-preserving enum cast; `BoardToolsClientHalfCheck` gains a second `ok` arm and its severity set is **unchanged at two**, so `test_the_leg_can_construct_only_ok_and_unvalidated` still pins `['ok', 'unvalidated']`. **No check is registered, so the 38 stays 38 and no existing golden fixture moved** — one is ADDED, `board-tools-client-half-ssh-proven`, the `board-tools-ssh-pinned-line` install differing in exactly the recorded row. Tests: `tests/Unit/Tools/CallProvenanceTest.php` (the predicate, over all **twenty-seven** input triples — three states per term, through `tests/Support/FakeServingProcessEnvironment.php`), `tests/Unit/Tools/SystemServingProcessEnvironmentTest.php` (the REAL probe, forced THREE ways on real processes — `setsid`, a `script` pty, and a `script` pty under `open_basedir`, the arm that reds against the fail-open probe), plus provenance arms in `ClientHalfLedgerTest`, `BoardToolsClientHalfCheckTest`, `ToolsCallCommandTest` and `AgentToolsCallTest`, and `tests/Feature/Workflows/DecisionLogStructureTest.php` (Decision 6's structural pin on THIS file). ⛔ **One assertion pair was REMOVED rather than kept:** `BoardToolsClientHalfCheckTest`'s leak control asserted a `SSH_CONNECTION`-shaped string was absent from the rendered line under a docblock claiming the row had been written with one — `recordCall()` always writes the enum or null, so the assertions **could not fail**. The docblock now says what the test IS, and names the two places the real leak controls live (`ClientHalfLedgerTest`, `ToolsCallCommandTest`), each of which has the value present in the process at the moment of the write. ⚑ `ToolsCallCommandTest::runCommand()` now **saves and restores** the environment it seeds rather than blanket-unsetting it: the command READS its environment as of this DL, and the suite itself can be running inside an ssh session, so a `null` there is a fixture the caller STATES rather than an ambient fact it inherits.
+## DL-315 — the retention payload-nulling leg ships ON at 7d (rt#380)
+
+**Status:** shipped. No schema change, no new key, no token-scope change, no receiver accept/reject change,
+and nothing the bridge accepts or writes moves in the permissive direction. **⚠ NOT config-only, as an
+adversarial review of the first draft established:** turning this leg on by default makes `bridge:replay`
+FABRICATE on every install that upgrades, so this entry also carries the refusal that closes it (Decision 6)
+and the operator- and consumer-facing surfaces that were making a false claim about it (Decisions 7, 8
+and 11). **A second review pass added Decision 10** — the change flips a preflight from MISCONFIGURED to `on`
+for one config shape, which the first draft did not name — and **narrowed Decision 6's predicate**, whose
+extra arm had re-minted Decision 7's false label one row down.
+
+**Context — a default nobody sets.** `retention.null_payloads_older_than` defaulted to `''`, i.e. the leg was
+**OFF on every install that never tuned it**, which is every install that never had a reason to look. The
+config comment called it *"an optional space optimization for a large store, not part of the growth fix"* —
+wording that reads as a knob for somebody who already has a problem, and which was doing part of the damage.
+
+**Measured on TWO independent installs before the default moved** (this is what makes it a default change and
+not one install generalising from itself):
+
+| install | payload bytes | store | note |
+|---|---|---|---|
+| reporting (aimla) | 894 MB | of a 1.2 GB store | retention working correctly the whole time |
+| this seat | **369 MB** | 18,931 rows, **zero already nulled** | same, independently |
+
+Applied here: payloads **369 MB → 149 MB**; after `OPTIMIZE TABLE`, allocation **513 MB → 218 MB**. Row
+integrity held — 18,931 − 813 legitimately aged-out = 18,118, oldest row still at the 30d boundary —
+and `bridge:check` returned rc 0 either side.
+
+**⭐ Decision 1 — default `'' → '7d'`.** The argument is DL-199's, one level up: `enabled` defaults TRUE
+precisely because *"a default nobody sets is exactly why DL-012 never ran"*. Same shape. An install cannot
+discover this cost without running `SUM(LENGTH(payload))` unprompted, and nobody does.
+
+**⛔ Decision 2 — the ROW window is NOT shortened with it.** Payload window short, row window long. Shortening
+`older_than` to match saves ~16 MB and loses **14% of distinct event types** — including gaps `bridge:check`
+currently REPORTS, which would then read as *fixed* rather than lost. Measured by the reporter; restated here
+because the two arrive together and are easy to conflate.
+
+**Decision 3 — the value is DETECTION LATENCY + RESPONSE TIME**, not a guess at replay depth. 7d covers a
+Friday-evening miss found by a Monday reconcile; **3d is exactly the window that fails that case**. An install
+with a slower detector wants more.
+
+⛔ **Opting out takes BOTH halves, and the incomplete instruction is destructive.** Set
+`BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN=` (empty) **before** the upgrade **and re-run
+`php artisan config:cache`**. There is **no grace period to do it in afterwards**: `RetentionGate`'s interval
+marker is a *cache* key (`Cache::has(self::MARKER_KEY)`), so the first inbound webhook after deploy runs a
+pass, and `backlogRemains()` **forgets the marker** on a full batch so the next delivery continues draining —
+the whole >7d payload history can be gone within hours. And a `.env` edit is **inert under `config:cache`**, so
+an operator who edits `.env` and reloads FPM has changed nothing at all. The first draft of this entry and of
+the CHANGELOG said only *"opt out with `…=` (empty)"*, which is true and useless at the moment it is read.
+
+**⚑ Decision 4 — the golden harness now pins the SHIPPED default.** `Tests\Support\CheckGolden\GoldenInstall`
+pinned `''` explicitly, so the corpus was insulated from this change — it would have gone on asserting a
+configuration **no install has**. Repinned to `'7d'`; 36 fixtures now carry the two-leg posture line
+(`delete >30d + null payloads >7d`). The first regeneration attempt moved **zero** fixtures, which is what
+surfaced the insulation.
+
+**⚑ Decision 5 — the pin reads the REPO'S SOURCE TEXT, not a resolved value.** `NullPayloadDefaultTest` exists
+because every golden fixture would keep passing if the default silently reverted (`Tests\Support\CheckGolden\GoldenInstall` pins its
+own retention keys). Its first form `require`d `config/bridge.php` and compared the returned array — which
+**EVALUATES `env('BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN', '7d')`**, so it asserted the value in whatever
+environment ran it, and was broken in **both** directions: on a machine where that variable is set to `7d`,
+reverting the default left it **GREEN** — the exact regression it exists to catch — and an operator who took
+the opt-out advice above got a **FALSE RED** from a correct checkout. It now pins the **literal** with a regex
+over `file_get_contents(base_path('config/bridge.php'))`, `preg_match_all() === 1` so a second divergent copy
+of the default is a failure rather than a satisfied `assertMatchesRegularExpression`. Same for the `30d` row
+window. **Both directions measured:** with the default reverted to `''` **and** the env var exported as `7d`
+— precisely the case that fooled the old form — the new pin still REDS; with the shipped default and the var
+exported empty, `90d`, or `7d`, it stays GREEN in all three. A third leg moves the environment in-process and
+**reads the resolved value back** before asserting the pin held, so environment-independence is measured
+rather than argued — and that control immediately earned itself: a `putenv()`-only first version was
+**silently defeated** by an exported variable, because Laravel's env repository reads `ServerConstAdapter`
+($_ENV/$_SERVER) *before* `PutenvAdapter`, and both a `.env` line and a shell export land in `$_SERVER`.
+
+**⛔ Decision 6 — `bridge:replay` REFUSES a payload-nulled event; the read-time fallback is deleted.** This is
+the blocker the default change created, and it is why this entry is not config-only. `ReplayCommand` did
+`is_array($payload) ? $payload : []` — the canon-#5 read-time fallback for missing data — and **nothing
+downstream throws on `[]`**: `InboxOnlyClassifier` (the canonical default) returns a *valid* Intent with
+`subjectId: null` and `summary: "new card by <who>: <unnamed>"`, `DispatchService` appends that line to the
+agent's **durable `inbox.jsonl`** and on an event-driven seat fires a **live wake carrying fabricated
+content**, `markDelivered` stamps the row and clears its `error_message`, and the command prints
+`replayed event N` at **rc 0**. Reproduced verbatim on a nulled fixture before the guard was written. The
+sibling branch is worse: for an event type the classifier does not match on an empty payload, `markDropped`
+sets `processed_at` **and `error_message => null`**, erasing the record of the original failure and
+permanently skipping the row in every later non-`--force` replay.
+
+  - **The refusal sits ABOVE the `--force` reset**, not merely above the dispatch: `--force` nulls
+    `processed_at`/`outcome`/`reason`/`error_message` as its *first* act, so a guard placed after it would
+    refuse having already destroyed the row's terminal tuple with no re-run to restore it. A dedicated test
+    pins the ordering and reds on exactly that transposition.
+  - **The predicate is `=== null`, and it is the same fact `bridge:stats` reads.** The first cut used
+    `! is_array`, reasoning that the fabrication was a property of the FALLBACK rather than of null, so every
+    non-array the `'array'` cast can yield should be refused. **A review pass showed that arm bought an
+    unreachable case at the price of a reachable defect.** `bridge:stats` counts the unrecoverable rows with
+    `whereNull('payload')` — SQL has no portable `! is_array` over a JSON column — so a JSON-scalar row was
+    **refused by replay and counted `errored (replayable)`**: exactly the false label Decision 7 exists to
+    remove, re-minted one row down. The scalar state is unreachable through every write path this app has:
+    the only writers of the column are `DispatchService::dispatch()`, whose `array $payload` parameter IS the
+    type check, and retention's `update(['payload' => null])`, which writes SQL NULL. Narrowed to `=== null`
+    in `ReplayCommand` and in `bridge:inspect`'s mirror, so all three surfaces name one population by
+    construction. **The scalar test was deleted, not weakened** — it asserted behaviour over an input no code
+    path can produce, and canon #6 does not want that state defended twice. **Bound, stated because it is the
+    thing that would break:** if a future write path can ever store a non-array, the guard and the stats
+    predicate move together or the divergence returns; a scalar reaching `dispatch()` today hits the
+    parameter's TypeError, which is loud, not a fabrication.
+  - **The receiver's surviving copy of the deleted expression went with it, and Decision 6's stated audit
+    population was WRONG.** This entry originally said the sibling read sites were found "by grep over
+    `app/Console/` and `app/Bridge/`" — a population that **structurally excludes `app/Http/`**, which is
+    where a copy was still standing: `WebhookController::receive()` did `is_array($payload) ? $payload : []`
+    on the value it stores. Not a live defect — `$adapter->parse($request, $body)` two statements above has
+    already decoded the same bytes through `AbstractWebhookAdapter::decodeJson()`, which throws
+    `InvalidEnvelopeException` (400) on any non-array, so a second decode of the same string cannot answer
+    differently — but it is dead defensive code in the file a maintainer greps first after reading this PR,
+    reading as an endorsed pattern. Deleted. The invariant it silently relied on is now **stated where a
+    third-provider author will read it**, on `WebhookAdapter::parse()`'s docblock: an implementation must
+    refuse a body that does not decode to an **array**, not merely one that fails to decode. The correct
+    audit population for "who reads or writes `webhook_events.payload`" is the whole of `app/`.
+
+  - **⛔ CORRECTION — that declaration had a CONTRADICTING COPY, and the mechanism this entry cited for
+    skipping its test was FALSE. Both are fixed here; the paragraph above stands, its two supporting
+    claims did not.** Recorded rather than quietly rewritten, because the first was the exact defect the
+    sentence above congratulates itself on closing.
+      - **The copy.** `docs/provider-adapters.md` reproduced `parse()`'s docblock **in its pre-change
+        form** — *"on undecodable JSON…"* — so the doc's contract PERMITTED exactly the adapter the
+        interface now forbids (`5` and `"x"` are not undecodable). It is not an idle copy: the same file
+        instructs a non-`sha256=` provider to *"implement `WebhookAdapter` directly without extending
+        `AbstractWebhookAdapter`"*, which is the one path that skips `decodeJson()`. So the invariant was
+        stated on the interface and **contradicted on the surface the third-provider author actually
+        reads** — canon #16's restatement defect, sitting on the very surface this decision named as its
+        safety. **Fixed by DELETE + GUARD, canon #16's two remedies, and which one applies is decided
+        per-copy rather than for the file:** the inlined `@throws` reproduction is **deleted** — marked
+        abridged, pointing at the interface as the owner — because nothing is lost by making the reader
+        follow one hop. **One clause survives on purpose** beside the *"implement it directly"*
+        instruction, because that instruction is the single path that skips `decodeJson()` and a bare
+        pointer at the decision point is skippable; a copy that must exist gets the drift check instead,
+        `AdapterContractRestatementTest`, which reds when the two surfaces stop agreeing that the
+        refusal is about not decoding to an ARRAY. **Seen to fail three ways** — the interface dropping
+        the clause (the pointer would lead nowhere), the extension-point instruction being reworded out
+        from under the warning, and the doc reverting to the literal historical defect wording
+        *"undecodable JSON"* — each red with its own message, then restored green. Rewording BOTH
+        surfaces together passes, which is the intended bound: the guard pins that they move as one, not
+        that the words are frozen.
+      - **The mechanism.** *"Removing `decodeJson()`'s guard still leaves `requireScalar()` throwing
+        `missing_field` on a scalar body"* is false. Both `decodeJson(): array` and
+        `requireScalar(array $decoded, …)` are `array`-TYPED, so deleting the `is_array` guard makes
+        `decodeJson()` throw a **TypeError** at its own return — `requireScalar()` is never reached, and
+        a TypeError is a **500**, not the 400 the sentence implies. The refusal IS over-determined, by
+        the **return type**, which is a different fact with a different consequence: the fail-safe here
+        is *crash loudly*, not *refuse cleanly*. A wrong-but-specific cause in the design record is worse
+        than a generic one (canon #10).
+      - **And the conclusion did not follow either — a test EXISTS now.**
+        `WebhookReceiveTest::test_every_supported_provider_refuses_a_scalar_json_body` derives its
+        population from `WebhookAdapterFactory::SUPPORTED` and asserts a scalar body is a 400 that stores
+        no event. Canon #9's *"cannot fail"* is about checks unfalsifiable **by construction**; this is a
+        contract test over a **documented extension point**, and it fails the day a third adapter skips
+        `decodeJson()` — the state the declaration exists to prevent. **Seen to fail TWO ways, both run.**
+        Deleting `decodeJson()`'s `is_array` guard reds at 500, but that measures the `: array` RETURN
+        TYPE rather than the contract — which is the same correction as above, one level down. The leg
+        that measures the contract is the **known positive:** a `ProbeGitlabAdapter` implementing `WebhookAdapter`
+        directly and building its `EventDto` from headers (the doc's own GitLab shape) was registered in
+        `SUPPORTED`, and the test red with `Expected response status code [400] but received 500` —
+        `TypeError: App\Bridge\Dispatch\DispatchService::dispatch(): Argument #4 ($payload) must be of
+        type array, int given`. That is the concrete cost, measured: pre-diff such an adapter got `[]`
+        and a 200; post-diff it gets a 500 the upstream redelivers on a deterministically-bad body
+        forever. Both wrong — the new one louder and more expensive — which is why the declaration needed
+        a check and not only a sentence. The probe was removed; a provider added to `SUPPORTED` with no
+        fixture reds on the missing key, so the population cannot be silently under-covered.
+
+  - **⚑ CHECK GAP, named because it cannot be closed here (canon #7 leg 3).** `phpstan-laravel.neon`
+    analyses `app/Bridge` plus `CheckCommand.php` only, so **`app/Http` is analysed by nothing** — and
+    that is where `WebhookController`'s `/** @var array<mixed> $payload */` assertion over
+    `json_decode($body, true)` lives. Nothing static checks that assertion against the value; the runtime
+    `TypeError` above is the only thing that ever contradicts it, at the far end of a 500. Widening the
+    analysed paths is a change to what CI accepts and is not smuggled into this entry.
+
+  - **⚑ A SECOND guard-population finding, measured rather than assumed.** The phantom
+    `assertDeliveryIdLength` citations fixed alongside this (three sites in `docs/provider-adapters.md`,
+    the same construct `docs/CHANGELOG.md` records being fixed in `CLAUDE_GOTCHAS.md`) were **not**
+    invisible to `bin/check-doc-refs.php` because `docs/` is outside its population — a control proved
+    the opposite: a `Class::member` citation of a missing member planted in that very file REDS, because
+    rule 1b already walks `app` + `tests` + `docs` + `bin` + root `*.md`. They were invisible because of
+    their **FORM**: a backticked `$this->member()` is harvested by no leg and lands in **no census
+    bucket at all** — narrower even than the disclosed `classless_member` remainder, which is scoped to
+    reference-tag payloads. **Widening to resolve that form was measured and DECLINED, with the
+    number:** 27 backticked `$this->member(` citations exist tree-wide; resolving them against "declared
+    anywhere under `app/`" reds **12**, of which **11 are false positives** — `$this->info()`,
+    `$this->line()`, `$this->postJson()`, `$this->artisan()`, `$this->verb()`, all inherited from
+    framework base classes a markdown paragraph has no enclosing class to resolve against. A 1-in-12
+    true-positive rate is the cry-wolf trade this script's own rule docblock already refuses, and the
+    reason is structural, not a tuning problem. **What was done instead is the fix that needs no new
+    gate:** the four helper-table citations were rewritten into the qualified
+    `AbstractWebhookAdapter::decodeJson()` form the guard DOES resolve, moving them from unguarded to
+    guarded (member census 1059 → 1064 examined) — GUARD, in canon #16's sense, by making the citation
+    checkable rather than by widening the checker.
+      - **TWO populations, because the first measurement did not contain the whole defect.** The 27
+        above are BACKTICKED prose citations, which covers the helper-table row and NOT the two
+        copy-paste `parse()` examples — those sit inside fenced code, where there are no backticks and
+        every leg of every guard is blind by construction. That second population was measured
+        separately and is the one that matters for a how-to doc: **21** `$this->member(` calls inside
+        doc code fences, of which **4** name a method declared nowhere under `app/` — all four
+        `$this->postJson()` / `$this->artisan()` in `CLAUDE_TESTING.md`, inherited from Laravel's
+        `TestCase` and correct as written. **Zero phantoms remain in either population.** Both
+        derivations are scripted and re-run, so the denominator is recomputed rather than quoted.
+      - **One citation was examined and DROPPED, on the record so the bar stays falsifiable:**
+        `docs/CHECK-REGISTRY-PLAN.md` cites a `checkEventFollowsConsumer` helper that stage 7a removed.
+        It is a PAST-TENSE clause in a stage-progress narrative, not an instruction, and nobody copies a
+        design record into an adapter — it changes no behaviour and no decision (canon #18). The three
+        `assertDeliveryIdLength` sites were the opposite in kind and that is why they were fixed:
+        present tense, in a COPY-PASTE TEMPLATE, instructing an author to write a fatal call.
+  - **Strictly MORE conservative**, which is why it ships inside this PR rather than behind the hard gate: it
+    refuses where it used to fabricate, and the newly-refused set was previously served a *wrong answer*, not
+    a right one.
+  - **`bridge:inspect` is the sibling READ site in `app/Console/`** (for the corrected population, and the
+    `app/Http/` copy it missed, see the bullet above) and is handled **differently on purpose**: it does not
+    refuse. It
+    dispatches nothing and reconstructs nothing, so there is nothing to fabricate, and the row's surviving
+    metadata is what the operator came for. What it stops doing is printing `json_encode(null)`'s bare
+    `null`, which reads as *"the upstream sent nothing"* rather than *"retention removed it"* — this is the
+    surface an operator reaches for immediately after replay turns them away.
+
+**⛔ Decision 7 — `bridge:stats`' `errored (replayable)` was a false claim over part of its own count.** With
+the leg on by default, an errored dispatch pointing at a payload-nulled event is recoverable by **no command
+this bridge has**, and one label over both sends the operator to a command that will refuse them. Split into
+`errored (replayable)` and `errored (NOT replayable — event payload nulled by retention)`, **both printed
+always, zero included** — the same argument DL-300 makes for the divergence zero two rows down. The replayable
+figure is **derived by subtraction** rather than by a second `whereNotNull('payload')` query: the two rows must
+sum to the errored total on every install, and two independent predicates over a table retention mutates
+between them cannot promise that.
+
+**⚑ Decision 8 — the two operator-facing config references said the leg was OFF, and neither carried the
+upgrade warning its own sibling row does.** `docs/config-schema.md` still printed ``` `''` (**leg off**) ```
+plus the retired *"an optional space optimization"* rationale verbatim, and `CLAUDE_DEPLOYMENT.md` said
+*(empty ⇒ leg off)*. Two rows above **each**, `retention.enabled` carries *"Defaults ON — an upgrade starts
+pruning without operator action"*; the identical warning was owed here and was nowhere. Both rows now carry
+it, plus the replay-refusal fact and the two-part opt-out. The `bridge:replay` runbook paragraph and the
+`bridge:stats`-shows-errored diagnose bullet are updated in the same change.
+
+**⚑ Decision 9 — the golden corpus lost the ONE-LEG posture and BOTH arms are restored as fixtures, not
+assertions.** After Decision 4 all 36 posture-printing fixtures render two legs, and every assertion over that
+line matched on the **prefix** `retention: on (delete >30d` — true of one leg and of two — so nothing covered
+the single-leg branch of `RetentionConfig::summary()`'s `implode(' + ', …)`. `implode` has **two** one-leg
+arms and the first draft pinned only one. `retention-payload-leg-off` (the install an operator who takes the
+opt-out above actually has) and `retention-row-leg-off` (the Decision 10 shape — the arm this change makes
+DEFAULT-REACHABLE; the posture itself was always reachable by setting both keys explicitly, and what the
+change creates is the route into it that nobody chose) each pin the **whole line**, closing parenthesis included, each with a paired absent-subject;
+`retention-row-leg-off` additionally asserts `MISCONFIGURED` is **absent**, which is the preflight verdict
+that same `.env` produced before this release. `minimal-fpm-present`'s subject is tightened from the prefix to
+the exact two-leg line so all three renderings are pinned. **Proven potent:** a mutation making `summary()`
+append the payload leg unconditionally reds `retention-payload-leg-off` and nothing else; a mutation gating
+the new default on `older_than` being set — the Decision 10 alternative — reds `retention-row-leg-off` and
+nothing else. Registered check set is untouched at 38, so no inventory line moves.
+
+**⛔ Decision 10 — the default change ALSO flips a preflight from MISCONFIGURED to `on`, and that second
+upgrade shape is DISCLOSED rather than gated away.** `RetentionConfig::problemWith()` reports MISCONFIGURED
+only when **both** windows are empty. So an install running the documented `BRIDGE_RETENTION_OLDER_THAN=`
+(empty ⇒ row leg off) **with retention enabled** had no usable window at all: `problem !== null`, the
+`! isUsable()` branch, **nothing pruned**, and `bridge:check` printing `retention: enabled but MISCONFIGURED`
+on every run. After this change the same `.env` resolves `nullOlder = 7`, `problem` becomes null, and the
+first inbound webhook starts nulling payloads. **The first draft of this entry and of the CHANGELOG named
+exactly one transition and missed this one** — which is the worse of the two to miss, because an operator of
+such an install reads *"the leg was off for me"* off a preflight that says MISCONFIGURED and concludes the
+release does not apply to them.
+
+  - **Weighed: gate the new default on `older_than` being set. Declined, and the reasons are not
+    cost.** (a) A conditional default couples the two keys whose whole point — **Decision 2 of this very
+    entry** — is that they are *independent* windows, so it would re-mint the conflation this release warns
+    against, at the level of the shipped configuration rather than of prose. (b) It makes the effective
+    default **underivable from `config/bridge.php`**: the file would read `'7d'` while some installs got
+    `''`, and nothing at the read site says which. (c) The state it would preserve is one the preflight
+    **already reported as broken** — an install told, on every `bridge:check`, that its retention is
+    misconfigured and prunes nothing. Freezing that is preserving a defect, not a posture. (d) It changes what
+    the system does, so it would need its own seen-to-fail tests for a behaviour whose only purpose is to keep
+    a broken-looking install broken.
+  - **What is owed instead is disclosure, and it is the same remedy as the main change:** set the value before
+    the upgrade. Named by shape — not merely implied — in `docs/CHANGELOG.md`, in `CLAUDE_DEPLOYMENT.md`
+    § *Retention config (DL-199)* (on the `older_than` row, where an operator with an empty row window
+    actually looks) and in `docs/config-schema.md`'s `BRIDGE_RETENTION_OLDER_THAN` row. All three say the same
+    further thing: if an empty row window was how you kept retention inert, the supported spelling is
+    `BRIDGE_RETENTION_ENABLED=false`, which `bridge:check` warns about rather than reporting as broken.
+  - **Honest residue:** an operator who set an empty row window *intending* no pruning, never read the
+    MISCONFIGURED line, and upgrades without reading the note loses payloads older than 7d irreversibly. That
+    is the same exposure the release already accepts for every untuned install (Decision 1); this shape is a
+    subset of it with a *louder* pre-existing warning, not a new class.
+  - **Covered by `retention-row-leg-off`** (Decision 9), whose golden pins the post-change line and asserts
+    the pre-change `MISCONFIGURED` verdict is gone.
+
+**⚑ Decision 11 — the CONSUMER-facing contract surface said the wrong window and promised a recovery that now
+exits 1.** `docs/consumer-guide.md` is read by agents and repos that **cannot read this repo's code** — the
+DECLARE half of canon #7 — and it stated retention as *"on by default, `older_than` 30d"* and promised
+*"to recover a missed dispatch: `php artisan bridge:replay <N>` … re-runs dispatch"*, unqualified. Both halves
+are now wrong in the same direction: the operative recovery window is the **payload** one (7d), not the row
+one, and replay **REFUSES** past it. Rewritten to state both windows, that they are independent, that replay
+exits 1 on a payload-nulled event, that a row still visible in `bridge:inspect` is not therefore replayable,
+and — because these are per-install operator settings and the guide's readers are not the operator — that a
+consumer should **ask its bridge operator** rather than assume the defaults, and should not design a recovery
+story around replaying later.
+
+  - **The five other unqualified "replay recovers it" claims** (`CLAUDE_ARCHITECTURE.md`,
+    `docs/customization.md` ×2, `docs/multi-agent.md`, `CLAUDE_DEPLOYMENT.md`'s errored-row definition — the
+    ×2 is why the count is five and not four; this entry said "four" over the same list `docs/CHANGELOG.md`
+    called "five", and the two surfaces are now reconciled to the list rather than to each other) get a
+    **bound plus a pointer**, not a restatement. This change had already put three full copies of the refusal
+    narrative into the tree; canon #16's remedy for a restatement is to point at the one doc that owns it, and
+    five more copies of a paragraph nobody re-syncs is the defect, not the fix.
+
+**Not built, recorded here as the obvious next ones rather than smuggled in:**
+
+  - **A `bridge:check` warning when errored dispatches point at payload-nulled events.** Weighed and
+    **declined for this PR.** It is a *lagging* signal about damage already done, it is `bridge:stats`'
+    question and is now answered there, and putting it in the preflight means a **second implementation of
+    the same predicate** (canon #5) plus the first DB read `RetentionPostureCheck` has ever done — and
+    `CheckRunner` deliberately does not isolate, so that read needs its own fail-soft envelope to avoid
+    converting an unreachable database into an aborted `bridge:check`.
+  - **Cross-validating the two windows** — warning when the payload window is a small fraction of an
+    *explicitly widened* row window (an operator who set `BRIDGE_RETENTION_OLDER_THAN=90d` for a longer audit
+    trail now silently loses payloads at 7d). **Declined, and not merely deferred: the ratio is not the
+    signal.** Decision 2 of this very entry rules that a short payload window beside a long row window is the
+    **correct** posture, so a check firing on 7d-vs-90d would warn about the arrangement the same release
+    recommends. The thing that would make it a signal is whether the operator *chose* the 7d value or
+    inherited the moved default — and that provenance is **not derivable from config**: `env()` carries no
+    origin, and reading `.env` for the key's presence answers for a file a `config:cache`d install does not
+    read. The moment that actually matters is **before** the upgrade, so the vehicle is the upgrade note
+    (Decision 8 and the CHANGELOG), not a later preflight.
+
+**Provenance.** Reported by aimla-pm on rt#380, who measured it, applied it on their own fleet first, and
+explicitly declined to assert this install's numbers (*"I cannot read your install"*) — the prediction was then
+confirmed here independently. Sequencing was theirs: set it on your own install first, as the cheapest possible
+validation of a default before shipping it to everyone.

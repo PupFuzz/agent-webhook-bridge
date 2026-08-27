@@ -32,9 +32,12 @@ interface WebhookAdapter
     /**
      * Extract the bridge envelope from the (already verified) request + body.
      *
-     * @throws InvalidEnvelopeException on undecodable JSON, a missing
-     *                                  required field/header, a non-scalar
-     *                                  field, or an over-length delivery_id.
+     * ⛔ ABRIDGED HERE. `App\Bridge\Contracts\WebhookAdapter` owns this contract —
+     * read its `parse()` docblock in the source before implementing. It states what
+     * `parse()` MUST refuse, and that set is WIDER than the "bad JSON" this listing
+     * used to paraphrase.
+     *
+     * @throws InvalidEnvelopeException see the interface
      */
     public function parse(Request $request, string $body): EventDto;
 
@@ -95,14 +98,18 @@ final class AcmeAdapter extends AbstractWebhookAdapter
 
 If your provider uses a different signing scheme (e.g. GitLab's `X-Gitlab-Token`, which carries the raw secret rather than a HMAC), implement `WebhookAdapter` directly without extending `AbstractWebhookAdapter` and write your own `verifySignature` (for an opaque token: a constant-time compare of the header against the on-disk secret).
 
+> ⛔ **Skipping `AbstractWebhookAdapter` means you inherit none of its refusals — including the one the receiver depends on.** `AbstractWebhookAdapter::decodeJson()` is what discharges `parse()`'s obligation to reject a body that **does not decode to an array** — `5` and `"x"` are valid JSON and are NOT an array; an adapter that never calls it must discharge that obligation itself. Read `parse()`'s docblock on the interface for what it costs to get this wrong — it is not a style point, and the failure is a 500 the upstream redelivers forever, not a 400.
+
 The abstract class exposes parse helpers:
+
+Named `Class::member`, not `$this->member()` — that spelling is the one `bin/check-doc-refs.php` resolves, so a helper renamed out from under this table reds CI instead of shipping a copy-paste fatal.
 
 | Helper | What it does |
 |---|---|
-| `$this->decodeJson($body)` | JSON-decode to `array<mixed>`, throws `InvalidEnvelopeException` on failure |
-| `$this->requireScalar($decoded, $key)` | Return a required scalar field as `string`; throws if absent or non-scalar |
-| `$this->optionalScalar($decoded, $key)` | Return a scalar field as `?string`; returns `null` if absent or null |
-| `$this->assertDeliveryIdLength($id)` | Throw if `strlen > 64` (the `webhook_events.delivery_id` column width) |
+| `AbstractWebhookAdapter::decodeJson()` | JSON-decode the body to `array<mixed>`; throws `InvalidEnvelopeException` on anything that is not an array — including a valid JSON scalar like `5` or `"x"` |
+| `AbstractWebhookAdapter::requireScalar()` | Return a required scalar field as `string`; throws if absent or non-scalar |
+| `AbstractWebhookAdapter::optionalScalar()` | Return a scalar field as `?string`; returns `null` if absent or null |
+| `AbstractWebhookAdapter::assertFieldLengths()` | Throw if any of the built `EventDto`'s four fields exceeds its `webhook_events` column width. Call it on the DTO after constructing it, not on a field before |
 
 ## Implementing parse
 
@@ -115,15 +122,15 @@ public function parse(Request $request, string $body): EventDto
 {
     $decoded = $this->decodeJson($body);
 
-    $deliveryId = $this->requireScalar($decoded, 'delivery_id');
-    $this->assertDeliveryIdLength($deliveryId);
-
-    return new EventDto(
-        deliveryId: $deliveryId,
+    $event = new EventDto(
+        deliveryId: $this->requireScalar($decoded, 'delivery_id'),
         scopeId:    $this->requireScalar($decoded, 'project_id'),
         eventType:  $this->requireScalar($decoded, 'event_name'),
         actorId:    $this->optionalScalar($decoded, 'user_username'),
     );
+    $this->assertFieldLengths($event);
+
+    return $event;
 }
 ```
 
@@ -141,18 +148,20 @@ public function parse(Request $request, string $body): EventDto
     if (! is_string($eventName) || $eventName === '') {
         throw new InvalidEnvelopeException('missing_header:X-YourProvider-Event');
     }
-    $this->assertDeliveryIdLength($deliveryId);
 
     $decoded = $this->decodeJson($body);
     $action  = $this->optionalScalar($decoded, 'action');
     $eventType = $action !== null ? "{$eventName}.{$action}" : $eventName;
 
-    return new EventDto(
+    $event = new EventDto(
         deliveryId: $deliveryId,
         scopeId:    $this->requireScalar($decoded, 'project') . '/' . $this->requireScalar($decoded, 'repo'),
         eventType:  $eventType,
         actorId:    $this->optionalScalar($decoded, 'sender'),
     );
+    $this->assertFieldLengths($event);
+
+    return $event;
 }
 ```
 
