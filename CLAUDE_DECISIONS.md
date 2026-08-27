@@ -4001,7 +4001,10 @@ DL-217 stays as written (the log is append-only); this entry corrects it. **The 
 and nothing the bridge accepts or writes moves in the permissive direction. **⚠ NOT config-only, as an
 adversarial review of the first draft established:** turning this leg on by default makes `bridge:replay`
 FABRICATE on every install that upgrades, so this entry also carries the refusal that closes it (Decision 6)
-and the two operator surfaces that were making a false claim about it (Decisions 7 and 8).
+and the operator- and consumer-facing surfaces that were making a false claim about it (Decisions 7, 8
+and 11). **A second review pass added Decision 10** — the change flips a preflight from MISCONFIGURED to `on`
+for one config shape, which the first draft did not name — and **narrowed Decision 6's predicate**, whose
+extra arm had re-minted Decision 7's false label one row down.
 
 **Context — a default nobody sets.** `retention.null_payloads_older_than` defaulted to `''`, i.e. the leg was
 **OFF on every install that never tuned it**, which is every install that never had a reason to look. The
@@ -4081,15 +4084,42 @@ permanently skipping the row in every later non-`--force` replay.
     `processed_at`/`outcome`/`reason`/`error_message` as its *first* act, so a guard placed after it would
     refuse having already destroyed the row's terminal tuple with no re-run to restore it. A dedicated test
     pins the ordering and reds on exactly that transposition.
-  - **The predicate is `! is_array`, not `=== null`.** The fabrication was never a property of null — it was
-    the FALLBACK, and every non-array the `'array'` cast can yield reaches the same `[]`. The message names
-    which of the two it got; only NULL is retention's doing. (Canon #7: the sibling was found by asking what
-    else the discarded branch swallowed.)
+  - **The predicate is `=== null`, and it is the same fact `bridge:stats` reads.** The first cut used
+    `! is_array`, reasoning that the fabrication was a property of the FALLBACK rather than of null, so every
+    non-array the `'array'` cast can yield should be refused. **A review pass showed that arm bought an
+    unreachable case at the price of a reachable defect.** `bridge:stats` counts the unrecoverable rows with
+    `whereNull('payload')` — SQL has no portable `! is_array` over a JSON column — so a JSON-scalar row was
+    **refused by replay and counted `errored (replayable)`**: exactly the false label Decision 7 exists to
+    remove, re-minted one row down. The scalar state is unreachable through every write path this app has:
+    the only writers of the column are `DispatchService::dispatch()`, whose `array $payload` parameter IS the
+    type check, and retention's `update(['payload' => null])`, which writes SQL NULL. Narrowed to `=== null`
+    in `ReplayCommand` and in `bridge:inspect`'s mirror, so all three surfaces name one population by
+    construction. **The scalar test was deleted, not weakened** — it asserted behaviour over an input no code
+    path can produce, and canon #6 does not want that state defended twice. **Bound, stated because it is the
+    thing that would break:** if a future write path can ever store a non-array, the guard and the stats
+    predicate move together or the divergence returns; a scalar reaching `dispatch()` today hits the
+    parameter's TypeError, which is loud, not a fabrication.
+  - **The receiver's surviving copy of the deleted expression went with it, and Decision 6's stated audit
+    population was WRONG.** This entry originally said the sibling read sites were found "by grep over
+    `app/Console/` and `app/Bridge/`" — a population that **structurally excludes `app/Http/`**, which is
+    where a copy was still standing: `WebhookController::receive()` did `is_array($payload) ? $payload : []`
+    on the value it stores. Not a live defect — `$adapter->parse($request, $body)` two statements above has
+    already decoded the same bytes through `AbstractWebhookAdapter::decodeJson()`, which throws
+    `InvalidEnvelopeException` (400) on any non-array, so a second decode of the same string cannot answer
+    differently — but it is dead defensive code in the file a maintainer greps first after reading this PR,
+    reading as an endorsed pattern. Deleted. The invariant it silently relied on is now **stated where a
+    third-provider author will read it**, on `WebhookAdapter::parse()`'s docblock: an implementation must
+    refuse a body that does not decode to an **array**, not merely one that fails to decode. **No test was
+    added, and that is deliberate:** the refusal is over-determined — removing `decodeJson()`'s guard still
+    leaves `requireScalar()` throwing `missing_field` on a scalar body — so a test over that input cannot be
+    made to fail, and canon #9 calls a check that cannot fail a decoration. The correct audit population for
+    "who reads or writes `webhook_events.payload`" is the whole of `app/`.
   - **Strictly MORE conservative**, which is why it ships inside this PR rather than behind the hard gate: it
     refuses where it used to fabricate, and the newly-refused set was previously served a *wrong answer*, not
     a right one.
-  - **`bridge:inspect` is the sibling read site** (the only other reader of `webhook_events.payload`, by grep
-    over `app/Console/` and `app/Bridge/`) and is handled **differently on purpose**: it does not refuse. It
+  - **`bridge:inspect` is the sibling READ site in `app/Console/`** (for the corrected population, and the
+    `app/Http/` copy it missed, see the bullet above) and is handled **differently on purpose**: it does not
+    refuse. It
     dispatches nothing and reconstructs nothing, so there is nothing to fabricate, and the row's surviving
     metadata is what the operator came for. What it stops doing is printing `json_encode(null)`'s bare
     `null`, which reads as *"the upstream sent nothing"* rather than *"retention removed it"* — this is the
@@ -4112,16 +4142,70 @@ pruning without operator action"*; the identical warning was owed here and was n
 it, plus the replay-refusal fact and the two-part opt-out. The `bridge:replay` runbook paragraph and the
 `bridge:stats`-shows-errored diagnose bullet are updated in the same change.
 
-**⚑ Decision 9 — the golden corpus lost the ONE-LEG posture and it is restored as a fixture, not an
-assertion.** After Decision 4 all 36 posture-printing fixtures render two legs, and every assertion over that
+**⚑ Decision 9 — the golden corpus lost the ONE-LEG posture and BOTH arms are restored as fixtures, not
+assertions.** After Decision 4 all 36 posture-printing fixtures render two legs, and every assertion over that
 line matched on the **prefix** `retention: on (delete >30d` — true of one leg and of two — so nothing covered
-the single-leg branch of `RetentionConfig::summary()`'s `implode(' + ', …)`. New fixture
-`retention-payload-leg-off` (the install an operator who takes the opt-out above actually has) pins the
-**whole line**, closing parenthesis included, with a paired absent-subject on `null payloads`;
-`minimal-fpm-present`'s subject is tightened from the prefix to the exact two-leg line so both branches are
-pinned. **Proven potent:** a mutation making `summary()` append the payload leg unconditionally reds
-**exactly one** of the 88 tests in that class — the new fixture — while all 37 other goldens and every prefix
-assertion stay green. Registered check set is untouched at 38, so no inventory line moves.
+the single-leg branch of `RetentionConfig::summary()`'s `implode(' + ', …)`. `implode` has **two** one-leg
+arms and the first draft pinned only one. `retention-payload-leg-off` (the install an operator who takes the
+opt-out above actually has) and `retention-row-leg-off` (the Decision 10 shape — the arm this change
+*creates*) each pin the **whole line**, closing parenthesis included, each with a paired absent-subject;
+`retention-row-leg-off` additionally asserts `MISCONFIGURED` is **absent**, which is the preflight verdict
+that same `.env` produced before this release. `minimal-fpm-present`'s subject is tightened from the prefix to
+the exact two-leg line so all three renderings are pinned. **Proven potent:** a mutation making `summary()`
+append the payload leg unconditionally reds `retention-payload-leg-off` and nothing else; a mutation gating
+the new default on `older_than` being set — the Decision 10 alternative — reds `retention-row-leg-off` and
+nothing else. Registered check set is untouched at 38, so no inventory line moves.
+
+**⛔ Decision 10 — the default change ALSO flips a preflight from MISCONFIGURED to `on`, and that second
+upgrade shape is DISCLOSED rather than gated away.** `RetentionConfig::problemWith()` reports MISCONFIGURED
+only when **both** windows are empty. So an install running the documented `BRIDGE_RETENTION_OLDER_THAN=`
+(empty ⇒ row leg off) **with retention enabled** had no usable window at all: `problem !== null`, the
+`! isUsable()` branch, **nothing pruned**, and `bridge:check` printing `retention: enabled but MISCONFIGURED`
+on every run. After this change the same `.env` resolves `nullOlder = 7`, `problem` becomes null, and the
+first inbound webhook starts nulling payloads. **The first draft of this entry and of the CHANGELOG named
+exactly one transition and missed this one** — which is the worse of the two to miss, because an operator of
+such an install reads *"the leg was off for me"* off a preflight that says MISCONFIGURED and concludes the
+release does not apply to them.
+
+  - **Weighed: gate the new default on `older_than` being set. Declined, and the reasons are not
+    cost.** (a) A conditional default couples the two keys whose whole point — **Decision 2 of this very
+    entry** — is that they are *independent* windows, so it would re-mint the conflation this release warns
+    against, at the level of the shipped configuration rather than of prose. (b) It makes the effective
+    default **underivable from `config/bridge.php`**: the file would read `'7d'` while some installs got
+    `''`, and nothing at the read site says which. (c) The state it would preserve is one the preflight
+    **already reported as broken** — an install told, on every `bridge:check`, that its retention is
+    misconfigured and prunes nothing. Freezing that is preserving a defect, not a posture. (d) It changes what
+    the system does, so it would need its own seen-to-fail tests for a behaviour whose only purpose is to keep
+    a broken-looking install broken.
+  - **What is owed instead is disclosure, and it is the same remedy as the main change:** set the value before
+    the upgrade. Named by shape — not merely implied — in `docs/CHANGELOG.md`, in `CLAUDE_DEPLOYMENT.md`
+    § *Retention config (DL-199)* (on the `older_than` row, where an operator with an empty row window
+    actually looks) and in `docs/config-schema.md`'s `BRIDGE_RETENTION_OLDER_THAN` row. All three say the same
+    further thing: if an empty row window was how you kept retention inert, the supported spelling is
+    `BRIDGE_RETENTION_ENABLED=false`, which `bridge:check` warns about rather than reporting as broken.
+  - **Honest residue:** an operator who set an empty row window *intending* no pruning, never read the
+    MISCONFIGURED line, and upgrades without reading the note loses payloads older than 7d irreversibly. That
+    is the same exposure the release already accepts for every untuned install (Decision 1); this shape is a
+    subset of it with a *louder* pre-existing warning, not a new class.
+  - **Covered by `retention-row-leg-off`** (Decision 9), whose golden pins the post-change line and asserts
+    the pre-change `MISCONFIGURED` verdict is gone.
+
+**⚑ Decision 11 — the CONSUMER-facing contract surface said the wrong window and promised a recovery that now
+exits 1.** `docs/consumer-guide.md` is read by agents and repos that **cannot read this repo's code** — the
+DECLARE half of canon #7 — and it stated retention as *"on by default, `older_than` 30d"* and promised
+*"to recover a missed dispatch: `php artisan bridge:replay <N>` … re-runs dispatch"*, unqualified. Both halves
+are now wrong in the same direction: the operative recovery window is the **payload** one (7d), not the row
+one, and replay **REFUSES** past it. Rewritten to state both windows, that they are independent, that replay
+exits 1 on a payload-nulled event, that a row still visible in `bridge:inspect` is not therefore replayable,
+and — because these are per-install operator settings and the guide's readers are not the operator — that a
+consumer should **ask its bridge operator** rather than assume the defaults, and should not design a recovery
+story around replaying later.
+
+  - **The four other unqualified "replay recovers it" claims** (`CLAUDE_ARCHITECTURE.md`,
+    `docs/customization.md` ×2, `docs/multi-agent.md`, `CLAUDE_DEPLOYMENT.md`'s errored-row definition) get a
+    **bound plus a pointer**, not a restatement. This change had already put three full copies of the refusal
+    narrative into the tree; canon #16's remedy for a restatement is to point at the one doc that owns it, and
+    five more copies of a paragraph nobody re-syncs is the defect, not the fix.
 
 **Not built, recorded here as the obvious next ones rather than smuggled in:**
 

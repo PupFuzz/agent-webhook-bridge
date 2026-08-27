@@ -2433,29 +2433,6 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame('a handler note worth keeping', $d->error_message);
     }
 
-    public function test_replay_refuses_a_payload_that_is_stored_as_a_json_scalar(): void
-    {
-        // ⚑ THE LEG THAT MAKES THE GUARD A CLASS FIX RATHER THAN A NULL CHECK. The
-        // fabrication was never a property of null — it was the FALLBACK, and `'array'`
-        // casts every JSON scalar the column can legally hold (`$table->json()` is
-        // LONGTEXT + json_valid on MariaDB, and `5` is valid JSON) to a non-array that hit
-        // the same `[]`. Written through the query builder, deliberately: the model's cast
-        // would re-encode, and the state under test is what is IN the column.
-        $this->writeAgent();
-        $event = $this->event();
-        WebhookEvent::query()->where('id', $event->id)->update(['payload' => '5']);
-        $this->assertSame(5, $event->fresh()->payload, 'the fixture did not produce a non-array payload');
-
-        $code = Artisan::call('bridge:replay', ['id' => $event->id]);
-        $out = Artisan::output();
-
-        $this->assertSame(ReplayCommand::FAILURE, $code);
-        $this->assertStringContainsString('stored as int', $out);
-        // NOT blamed on retention: this one is a malformed column, and saying otherwise
-        // would send the operator to a knob that has nothing to do with it.
-        $this->assertStringNotContainsString('nulled by retention', $out);
-    }
-
     public function test_inspect_names_a_nulled_payload_instead_of_printing_the_json_literal(): void
     {
         // Inspect does NOT refuse — it dispatches nothing and reconstructs nothing, and the

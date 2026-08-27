@@ -47,16 +47,14 @@ class InspectCommand extends BridgeCommand
         // surface an operator reaches for right after `bridge:replay` refuses. Inspect
         // deliberately does NOT refuse (unlike replay): it dispatches nothing and fabricates
         // nothing, and the row's surviving metadata above is exactly what is still worth
-        // reading. Same `! is_array` predicate as the replay guard, for the same reason.
-        if (is_array($event->payload)) {
-            $this->line((string) json_encode($event->payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-        } elseif ($event->payload === null) {
+        // reading. Same `=== null` predicate as the replay guard and as `bridge:stats`'
+        // `whereNull('payload')`, so all three surfaces name one population.
+        if ($event->payload === null) {
             $this->warn('  (NULL — nulled by retention (BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN, '
                 .'default 7d, DL-315). The event row is intact; `bridge:replay` REFUSES this event '
                 .'because it cannot reconstruct the payload.)');
         } else {
-            $this->warn('  (stored as '.get_debug_type($event->payload).', not an event payload — '
-                .'`bridge:replay` REFUSES this event.)');
+            $this->line((string) json_encode($event->payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         }
 
         $agent = $this->strOption('agent');

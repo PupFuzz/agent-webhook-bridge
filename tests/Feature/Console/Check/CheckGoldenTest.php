@@ -111,7 +111,9 @@ class CheckGoldenTest extends TestCase
 
                 return $default;
 
-                // ---- retention: all four postures ----
+                // ---- retention postures (the count is deliberately NOT restated here: it
+                // said "four" over five entries, and a banner that carries a number is a
+                // second copy of the list directly beneath it) ----
             case 'retention-disabled':
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
                 config(['bridge.retention.enabled' => false]);
@@ -134,6 +136,20 @@ class CheckGoldenTest extends TestCase
                 // own opt-out actually has, and its subject below is the WHOLE line.
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
                 config(['bridge.retention.null_payloads_older_than' => '']);
+
+                return $default;
+
+            case 'retention-row-leg-off':
+                // THE OTHER one-leg arm, and the one DL-315 CREATED. With
+                // `BRIDGE_RETENTION_OLDER_THAN=` empty and retention enabled, both windows
+                // used to be null, so `problemWith()` reported MISCONFIGURED and the
+                // install pruned nothing; moving the payload default to `7d` makes the
+                // same .env USABLE and starts the payload leg. That transition has an
+                // operator-visible preflight line (`MISCONFIGURED` → `on (null payloads
+                // >7d …)`) and had no fixture — the sibling case above pins the arm this
+                // change did not move, which is the easy half.
+                $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
+                config(['bridge.retention.older_than' => '']);
 
                 return $default;
 
@@ -537,6 +553,7 @@ class CheckGoldenTest extends TestCase
             'retention-disabled',
             'retention-misconfigured',
             'retention-payload-leg-off',
+            'retention-row-leg-off',
             'retention-last-pass-failed',
             'agent-yaml-malformed',
             'agent-classifier-missing',
@@ -610,13 +627,18 @@ class CheckGoldenTest extends TestCase
             'bad-receiver-url' => ["bridge.receiver_base_url 'not-a-url' must use http or https"],
             'default-agent-has-no-config' => ["BRIDGE_DEFAULT_AGENT 'ghost-agent' has no matching config"],
 
-            // ---- retention: all four postures ----
+            // ---- retention postures (count deliberately unstated — see buildFixture()) ----
             'retention-disabled' => ['retention: DISABLED (BRIDGE_RETENTION_ENABLED=false)'],
             'retention-misconfigured' => ['retention: enabled but MISCONFIGURED'],
             // The WHOLE line, closing parenthesis included: a prefix subject cannot state
             // an absence, and what this fixture exists to prove is that the second leg is
             // NOT rendered. See `minimal-fpm-present` for the two-leg half of the pair.
             'retention-payload-leg-off' => ['retention: on (delete >30d, every 86400s, 500 rows/pass)'],
+            // The THIRD rendering of the same implode, and the one whose posture DL-315
+            // brought into existence: `BRIDGE_RETENTION_OLDER_THAN=` empty was reported
+            // MISCONFIGURED before the payload default moved. Whole line again, for the
+            // same reason as its sibling — the absence is the subject.
+            'retention-row-leg-off' => ['retention: on (null payloads >7d, every 86400s, 500 rows/pass)'],
             'retention-last-pass-failed' => ['retention: the LAST PASS FAILED'],
 
             // ---- per-agent legs ----
@@ -729,6 +751,10 @@ class CheckGoldenTest extends TestCase
             // but one that rendered `null payloads >0d` somewhere else in the line
             // would not.
             'retention-payload-leg-off' => ['null payloads'],
+            // The mirror of that pairing: this install's row leg is off, so the posture
+            // line must not claim a delete window, and it must not read MISCONFIGURED
+            // (which is what this same .env printed before DL-315 moved the default).
+            'retention-row-leg-off' => ['delete >', 'MISCONFIGURED'],
         ];
     }
 

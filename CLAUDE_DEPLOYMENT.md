@@ -244,7 +244,7 @@ A malformed per-agent YAML is intentionally a `5xx` — the loader fails closed 
 Each `(event, agent)` is one `agent_dispatches` row:
 
 - **done** — `processed_at` set. Intents were staged and handlers ran. If a *handler/push* failed (e.g. channel push to an idle agent — connection refused, which is NORMAL), the row is still **done** with `error_message` recording the note; the intent is already durable in `inbox.jsonl`, read via `bridge:inbox` when the agent returns. The webhook still 200s.
-- **errored** — `processed_at` null, `error_message` set. The classifier threw (a deterministic bug). The webhook still 200s (a 5xx would retry-storm an event that fails identically every time). Fix the classifier, reload FPM, then `bridge:replay <id>`.
+- **errored** — `processed_at` null, `error_message` set. The classifier threw (a deterministic bug). The webhook still 200s (a 5xx would retry-storm an event that fails identically every time). Fix the classifier, reload FPM, then `bridge:replay <id>` — **while the event still has its payload** (default 7d; see § *Retention config (DL-199)* below).
 
 A **delivered** row's `reason` is non-null in exactly one case: **`echo: agent surface suppressed`** (DL-203) — a github event whose actor tripped an echo/signal gate, classified by a writeback-emitting classifier, had its agent-facing surface (inbox intent + channel push) stripped and only the machine writeback handlers ran. `error_message` stays handler-failure-only, and `bridge:replay`'s gate-DROPPED skip count is unaffected (the row is delivered, not dropped).
 
@@ -271,7 +271,7 @@ All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR`
 
 ```bash
 php artisan bridge:check [--probe-tools=<endpoint>]   # validate .env, dirs, DB, agent YAMLs; --probe-tools live-probes the board-tools path (DL-220)
-php artisan bridge:stats                              # event/dispatch counts; errored (replayable) count; writeback board divergences
+php artisan bridge:stats                              # event/dispatch counts; errored split replayable vs NOT (payload nulled); writeback board divergences
 php artisan bridge:inspect {id}                       # one webhook event + its dispatch ledger
 php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an event
 php artisan bridge:inbox [--hook-format=auto|claude-code|plain]              # surface unseen inbox intents
@@ -292,8 +292,8 @@ php artisan bridge:standup [--dry-run]                # PM standup digest (DL-30
 | --- | --- | --- | --- |
 | `retention.enabled` | `BRIDGE_RETENTION_ENABLED` | `true` | Prune after each delivery. **Defaults ON** — an upgrade starts pruning without operator action. |
 | `retention.interval` | `BRIDGE_RETENTION_INTERVAL` | `86400` | Seconds between passes once the store is drained. |
-| `retention.older_than` | `BRIDGE_RETENTION_OLDER_THAN` | `30d` | Delete events/dispatches + trim inbox lines older than this. Same vocabulary as `--older-than`. |
-| `retention.null_payloads_older_than` | `BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN` | **`7d`** | Null payloads past the replay window, keeping the row. **Defaults ON** — an upgrade starts nulling payloads without operator action (DL-315). ⚠ **It IS the replay window:** `bridge:replay` REFUSES a payload-nulled event. **No grace period** — the gate's marker is a cache key, so the first inbound webhook after deploy runs a pass. To opt out (`''`) or widen it, set the value **before** the upgrade and re-run `php artisan config:cache`. |
+| `retention.older_than` | `BRIDGE_RETENTION_OLDER_THAN` | `30d` | Delete events/dispatches + trim inbox lines older than this. Same vocabulary as `--older-than`. Empty ⇒ the ROW leg is off. ⚠ **DL-315 CHANGES WHAT AN EMPTY VALUE DOES.** With both windows empty, retention had no usable window at all: `bridge:check` printed `retention: enabled but MISCONFIGURED`, nothing was pruned, and an operator could be relying on that as an inert state. The payload default below now resolves to `7d`, so the **same `.env`** becomes usable — the preflight flips to `retention: on (null payloads >7d, …)` and **the payload leg starts running on the first inbound webhook after the upgrade**. If an empty row window was how you kept retention inert, set `BRIDGE_RETENTION_ENABLED=false` (the supported way, and the one `bridge:check` warns about) **before** upgrading. |
+| `retention.null_payloads_older_than` | `BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN` | **`7d`** | Null payloads past the replay window, keeping the row. **Defaults ON** — an upgrade starts nulling payloads without operator action (DL-315). ⚠ **It IS the replay window:** `bridge:replay` REFUSES a payload-nulled event. **No grace period** — the gate's marker is a cache key, so the first inbound webhook after deploy runs a pass. To opt out (`''`) or widen it, set the value **before** the upgrade and re-run `php artisan config:cache`. ⚠ **This default moving also changes what an EMPTY `BRIDGE_RETENTION_OLDER_THAN` does** — see that row above; an install with both windows empty was reported MISCONFIGURED and pruned nothing, and now runs this leg. |
 | `retention.batch` | `BRIDGE_RETENTION_BATCH` | `500` | Max rows one pass touches per leg. While a backlog remains the gate keeps draining on successive deliveries rather than waiting out `interval`. |
 
 ### Standup digest config (DL-306)

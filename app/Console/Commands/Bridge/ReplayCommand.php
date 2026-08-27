@@ -56,18 +56,24 @@ class ReplayCommand extends BridgeCommand
         // Since DL-315 the nulling leg is ON by default, so this is the state of every
         // event past the payload window on every install that upgrades.
         //
-        // The predicate is `! is_array`, not `=== null`, because the fabrication was
-        // never a property of null: it was the FALLBACK, and every non-array the
-        // 'array' cast can yield (a JSON scalar in the column) reaches the same `[]`.
-        // The message names which of the two it got — only NULL is retention's doing.
+        // ⛔ `=== null` IS THE WHOLE POPULATION, and it is deliberately the SAME FACT
+        // `bridge:stats` reads as `whereNull('payload')` — one predicate over one column,
+        // so the two surfaces cannot disagree about which rows replay refuses. A wider
+        // `! is_array` also refuses a JSON scalar, which NO write path in this app can
+        // produce: the only writers of the column are `DispatchService::dispatch()`,
+        // whose `array $payload` parameter is the type check, and retention's
+        // `update(['payload' => null])`, which writes SQL NULL. That unreachable arm was
+        // not free — SQL has no portable `! is_array` over a JSON column, so stats kept
+        // the narrow predicate and labelled the row it could not count `replayable`: the
+        // exact false claim DL-315 Decision 7 removes, re-minted one row down. If a
+        // future write path can ever store a non-array, this guard and the stats
+        // predicate move together or the divergence comes back.
         $payload = $event->payload;
-        if (! is_array($payload)) {
-            $this->error("event {$event->id}: no replayable payload ("
-                .($payload === null
-                    ? 'NULL — nulled by retention: BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN, default 7d, DL-315'
-                    : 'stored as '.get_debug_type($payload).', which is not an event payload')
-                .'). Replay cannot reconstruct it, and dispatching an empty payload in its place would '
-                .'stage a FABRICATED intent to the agent inbox and wake the seat with it. Nothing was '
+        if ($payload === null) {
+            $this->error("event {$event->id}: no replayable payload (NULL — nulled by retention: "
+                .'BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN, default 7d, DL-315). Replay cannot '
+                .'reconstruct it, and dispatching an empty payload in its place would stage a '
+                .'FABRICATED intent to the agent inbox and wake the seat with it. Nothing was '
                 .'dispatched and no dispatch row was touched — `bridge:inspect` still shows the event '
                 .'row. To keep future payloads replayable, widen the window and re-run '
                 .'`php artisan config:cache` (a .env edit alone is inert under a cached config).');
