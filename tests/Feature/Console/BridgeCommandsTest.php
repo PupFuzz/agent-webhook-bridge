@@ -2462,11 +2462,21 @@ class BridgeCommandsTest extends TestCase
     public function test_stats_does_not_call_a_payload_nulled_errored_dispatch_replayable(): void
     {
         // `errored (replayable)` was a FALSE CLAIM over part of its own count once the
-        // DL-315 default shipped: replay REFUSES those rows. Two errored rows, one of each
-        // kind, so a label that lost its predicate prints 2 in one row and 0 in the other
-        // and neither number can be read as an accident of a one-row fixture.
+        // DL-315 default shipped: replay REFUSES those rows.
+        //
+        // ⛔ THE ROW COUNTS ARE DELIBERATELY UNEQUAL — 2 replayable, 1 gone. The first
+        // fixture used 1 and 1, which a TRANSPOSITION of the two row values passes green:
+        // the assertions were then a claim about the pair of numbers and not about which
+        // label carries which. Unequal counts make each label's predicate load-bearing,
+        // and still red on the mutation the original was written for (a label that lost
+        // its predicate prints 3 in one row and 0 in the other).
         $this->writeAgent();
         $replayable = $this->event();
+        $replayableTwo = WebhookEvent::create([
+            'delivery_id' => 'evt-3', 'provider' => 'kanban', 'scope_id' => '5',
+            'event_type' => 'task.moved', 'actor_id' => '998',
+            'payload' => ['subject_id' => 44],
+        ]);
         $gone = WebhookEvent::create([
             'delivery_id' => 'evt-2', 'provider' => 'kanban', 'scope_id' => '5',
             'event_type' => 'task.created', 'actor_id' => '999',
@@ -2475,7 +2485,7 @@ class BridgeCommandsTest extends TestCase
         $gone->payload = null;
         $gone->save();
 
-        foreach ([$replayable, $gone] as $event) {
+        foreach ([$replayable, $replayableTwo, $gone] as $event) {
             AgentDispatch::create([
                 'webhook_event_id' => $event->id, 'agent_name' => 'prod-agent', 'error_message' => 'boom',
             ]);
@@ -2484,7 +2494,7 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(0, Artisan::call('bridge:stats'));
         $out = Artisan::output();
 
-        ConsoleTable::assertRow($out, 'errored (replayable)', '1');
+        ConsoleTable::assertRow($out, 'errored (replayable)', '2');
         ConsoleTable::assertRow($out, 'errored (NOT replayable — event payload nulled by retention)', '1');
     }
 

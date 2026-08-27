@@ -57,7 +57,15 @@ class StatsCommand extends BridgeCommand
             // two rows have to sum to the errored total on every install, and two
             // independent predicates over a table retention mutates between them cannot
             // promise that — a pass landing mid-report would print a table that does not add up.
-            ['  errored (replayable)', $erroredTotal - $erroredPayloadGone],
+            //
+            // FLOORED AT ZERO because the two COUNTs are still two reads: a retention pass
+            // nulling the payload of an already-errored event between them grows the second
+            // without growing the first, and the difference goes NEGATIVE — a count of rows
+            // that cannot be negative. The floor does not paper over the race, it picks which
+            // of the two casualties an operator sees: inside that window the sum guarantee is
+            // already unattainable, and the total is not a printed row, so nobody can observe
+            // it break — whereas `errored (replayable): -1` is observable nonsense.
+            ['  errored (replayable)', max(0, $erroredTotal - $erroredPayloadGone)],
             ['  errored (NOT replayable — event payload nulled by retention)', $erroredPayloadGone],
         ];
         if ($agent !== null) {

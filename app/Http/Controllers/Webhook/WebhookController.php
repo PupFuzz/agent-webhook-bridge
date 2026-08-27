@@ -65,11 +65,18 @@ class WebhookController extends Controller
         }
 
         // NO `is_array(...) ? ... : []` FALLBACK (DL-315): `$adapter->parse($request, $body)` above
-        // already decoded THIS SAME STRING through AbstractWebhookAdapter::decodeJson(),
-        // which throws InvalidEnvelopeException — returned as 400 — on any non-array. A
-        // second decode of the same bytes cannot answer differently, so the ternary was a
-        // read-time fallback for a state that has already been refused, and it read as an
+        // has already decoded THIS SAME STRING and is CONTRACTUALLY REQUIRED to have thrown
+        // InvalidEnvelopeException — returned as 400 — on anything that does not decode to an
+        // array. A second decode of the same bytes cannot answer differently, so the ternary was
+        // a read-time fallback for a state that has already been refused, and it read as an
         // endorsed pattern in the file a maintainer greps first.
+        //
+        // The obligation is the INTERFACE's, not AbstractWebhookAdapter's: an adapter may skip
+        // that base class (docs/provider-adapters.md tells a non-sha256= provider to), and one
+        // that also skips the refusal reaches the dispatch call below with a non-array — a
+        // TypeError, i.e. a 500 on a deterministically-bad body the upstream then redelivers
+        // forever. WebhookReceiveTest::test_every_supported_provider_refuses_a_scalar_json_body
+        // is what keeps that contract true of every registered provider.
         /** @var array<mixed> $payload */
         $payload = json_decode($body, true);
         $this->dispatcher->dispatch($provider, $scopeId, $event, $payload);

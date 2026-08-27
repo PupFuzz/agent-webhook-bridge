@@ -4109,11 +4109,100 @@ permanently skipping the row in every later non-`--force` replay.
     differently — but it is dead defensive code in the file a maintainer greps first after reading this PR,
     reading as an endorsed pattern. Deleted. The invariant it silently relied on is now **stated where a
     third-provider author will read it**, on `WebhookAdapter::parse()`'s docblock: an implementation must
-    refuse a body that does not decode to an **array**, not merely one that fails to decode. **No test was
-    added, and that is deliberate:** the refusal is over-determined — removing `decodeJson()`'s guard still
-    leaves `requireScalar()` throwing `missing_field` on a scalar body — so a test over that input cannot be
-    made to fail, and canon #9 calls a check that cannot fail a decoration. The correct audit population for
-    "who reads or writes `webhook_events.payload`" is the whole of `app/`.
+    refuse a body that does not decode to an **array**, not merely one that fails to decode. The correct
+    audit population for "who reads or writes `webhook_events.payload`" is the whole of `app/`.
+
+  - **⛔ CORRECTION — that declaration had a CONTRADICTING COPY, and the mechanism this entry cited for
+    skipping its test was FALSE. Both are fixed here; the paragraph above stands, its two supporting
+    claims did not.** Recorded rather than quietly rewritten, because the first was the exact defect the
+    sentence above congratulates itself on closing.
+      - **The copy.** `docs/provider-adapters.md` reproduced `parse()`'s docblock **in its pre-change
+        form** — *"on undecodable JSON…"* — so the doc's contract PERMITTED exactly the adapter the
+        interface now forbids (`5` and `"x"` are not undecodable). It is not an idle copy: the same file
+        instructs a non-`sha256=` provider to *"implement `WebhookAdapter` directly without extending
+        `AbstractWebhookAdapter`"*, which is the one path that skips `decodeJson()`. So the invariant was
+        stated on the interface and **contradicted on the surface the third-provider author actually
+        reads** — canon #16's restatement defect, sitting on the very surface this decision named as its
+        safety. **Fixed by DELETE + GUARD, canon #16's two remedies, and which one applies is decided
+        per-copy rather than for the file:** the inlined `@throws` reproduction is **deleted** — marked
+        abridged, pointing at the interface as the owner — because nothing is lost by making the reader
+        follow one hop. **One clause survives on purpose** beside the *"implement it directly"*
+        instruction, because that instruction is the single path that skips `decodeJson()` and a bare
+        pointer at the decision point is skippable; a copy that must exist gets the drift check instead,
+        `AdapterContractRestatementTest`, which reds when the two surfaces stop agreeing that the
+        refusal is about not decoding to an ARRAY. **Seen to fail three ways** — the interface dropping
+        the clause (the pointer would lead nowhere), the extension-point instruction being reworded out
+        from under the warning, and the doc reverting to the literal historical defect wording
+        *"undecodable JSON"* — each red with its own message, then restored green. Rewording BOTH
+        surfaces together passes, which is the intended bound: the guard pins that they move as one, not
+        that the words are frozen.
+      - **The mechanism.** *"Removing `decodeJson()`'s guard still leaves `requireScalar()` throwing
+        `missing_field` on a scalar body"* is false. Both `decodeJson(): array` and
+        `requireScalar(array $decoded, …)` are `array`-TYPED, so deleting the `is_array` guard makes
+        `decodeJson()` throw a **TypeError** at its own return — `requireScalar()` is never reached, and
+        a TypeError is a **500**, not the 400 the sentence implies. The refusal IS over-determined, by
+        the **return type**, which is a different fact with a different consequence: the fail-safe here
+        is *crash loudly*, not *refuse cleanly*. A wrong-but-specific cause in the design record is worse
+        than a generic one (canon #10).
+      - **And the conclusion did not follow either — a test EXISTS now.**
+        `WebhookReceiveTest::test_every_supported_provider_refuses_a_scalar_json_body` derives its
+        population from `WebhookAdapterFactory::SUPPORTED` and asserts a scalar body is a 400 that stores
+        no event. Canon #9's *"cannot fail"* is about checks unfalsifiable **by construction**; this is a
+        contract test over a **documented extension point**, and it fails the day a third adapter skips
+        `decodeJson()` — the state the declaration exists to prevent. **Seen to fail TWO ways, both run.**
+        Deleting `decodeJson()`'s `is_array` guard reds at 500, but that measures the `: array` RETURN
+        TYPE rather than the contract — which is the same correction as above, one level down. The leg
+        that measures the contract is the **known positive:** a `ProbeGitlabAdapter` implementing `WebhookAdapter`
+        directly and building its `EventDto` from headers (the doc's own GitLab shape) was registered in
+        `SUPPORTED`, and the test red with `Expected response status code [400] but received 500` —
+        `TypeError: App\Bridge\Dispatch\DispatchService::dispatch(): Argument #4 ($payload) must be of
+        type array, int given`. That is the concrete cost, measured: pre-diff such an adapter got `[]`
+        and a 200; post-diff it gets a 500 the upstream redelivers on a deterministically-bad body
+        forever. Both wrong — the new one louder and more expensive — which is why the declaration needed
+        a check and not only a sentence. The probe was removed; a provider added to `SUPPORTED` with no
+        fixture reds on the missing key, so the population cannot be silently under-covered.
+
+  - **⚑ CHECK GAP, named because it cannot be closed here (canon #7 leg 3).** `phpstan-laravel.neon`
+    analyses `app/Bridge` plus `CheckCommand.php` only, so **`app/Http` is analysed by nothing** — and
+    that is where `WebhookController`'s `/** @var array<mixed> $payload */` assertion over
+    `json_decode($body, true)` lives. Nothing static checks that assertion against the value; the runtime
+    `TypeError` above is the only thing that ever contradicts it, at the far end of a 500. Widening the
+    analysed paths is a change to what CI accepts and is not smuggled into this entry.
+
+  - **⚑ A SECOND guard-population finding, measured rather than assumed.** The phantom
+    `assertDeliveryIdLength` citations fixed alongside this (three sites in `docs/provider-adapters.md`,
+    the same construct `docs/CHANGELOG.md` records being fixed in `CLAUDE_GOTCHAS.md`) were **not**
+    invisible to `bin/check-doc-refs.php` because `docs/` is outside its population — a control proved
+    the opposite: a `Class::member` citation of a missing member planted in that very file REDS, because
+    rule 1b already walks `app` + `tests` + `docs` + `bin` + root `*.md`. They were invisible because of
+    their **FORM**: a backticked `$this->member()` is harvested by no leg and lands in **no census
+    bucket at all** — narrower even than the disclosed `classless_member` remainder, which is scoped to
+    reference-tag payloads. **Widening to resolve that form was measured and DECLINED, with the
+    number:** 27 backticked `$this->member(` citations exist tree-wide; resolving them against "declared
+    anywhere under `app/`" reds **12**, of which **11 are false positives** — `$this->info()`,
+    `$this->line()`, `$this->postJson()`, `$this->artisan()`, `$this->verb()`, all inherited from
+    framework base classes a markdown paragraph has no enclosing class to resolve against. A 1-in-12
+    true-positive rate is the cry-wolf trade this script's own rule docblock already refuses, and the
+    reason is structural, not a tuning problem. **What was done instead is the fix that needs no new
+    gate:** the four helper-table citations were rewritten into the qualified
+    `AbstractWebhookAdapter::decodeJson()` form the guard DOES resolve, moving them from unguarded to
+    guarded (member census 1059 → 1064 examined) — GUARD, in canon #16's sense, by making the citation
+    checkable rather than by widening the checker.
+      - **TWO populations, because the first measurement did not contain the whole defect.** The 27
+        above are BACKTICKED prose citations, which covers the helper-table row and NOT the two
+        copy-paste `parse()` examples — those sit inside fenced code, where there are no backticks and
+        every leg of every guard is blind by construction. That second population was measured
+        separately and is the one that matters for a how-to doc: **21** `$this->member(` calls inside
+        doc code fences, of which **4** name a method declared nowhere under `app/` — all four
+        `$this->postJson()` / `$this->artisan()` in `CLAUDE_TESTING.md`, inherited from Laravel's
+        `TestCase` and correct as written. **Zero phantoms remain in either population.** Both
+        derivations are scripted and re-run, so the denominator is recomputed rather than quoted.
+      - **One citation was examined and DROPPED, on the record so the bar stays falsifiable:**
+        `docs/CHECK-REGISTRY-PLAN.md` cites a `checkEventFollowsConsumer` helper that stage 7a removed.
+        It is a PAST-TENSE clause in a stage-progress narrative, not an instruction, and nobody copies a
+        design record into an adapter — it changes no behaviour and no decision (canon #18). The three
+        `assertDeliveryIdLength` sites were the opposite in kind and that is why they were fixed:
+        present tense, in a COPY-PASTE TEMPLATE, instructing an author to write a fatal call.
   - **Strictly MORE conservative**, which is why it ships inside this PR rather than behind the hard gate: it
     refuses where it used to fabricate, and the newly-refused set was previously served a *wrong answer*, not
     a right one.
@@ -4147,8 +4236,9 @@ assertions.** After Decision 4 all 36 posture-printing fixtures render two legs,
 line matched on the **prefix** `retention: on (delete >30d` — true of one leg and of two — so nothing covered
 the single-leg branch of `RetentionConfig::summary()`'s `implode(' + ', …)`. `implode` has **two** one-leg
 arms and the first draft pinned only one. `retention-payload-leg-off` (the install an operator who takes the
-opt-out above actually has) and `retention-row-leg-off` (the Decision 10 shape — the arm this change
-*creates*) each pin the **whole line**, closing parenthesis included, each with a paired absent-subject;
+opt-out above actually has) and `retention-row-leg-off` (the Decision 10 shape — the arm this change makes
+DEFAULT-REACHABLE; the posture itself was always reachable by setting both keys explicitly, and what the
+change creates is the route into it that nobody chose) each pin the **whole line**, closing parenthesis included, each with a paired absent-subject;
 `retention-row-leg-off` additionally asserts `MISCONFIGURED` is **absent**, which is the preflight verdict
 that same `.env` produced before this release. `minimal-fpm-present`'s subject is tightened from the prefix to
 the exact two-leg line so all three renderings are pinned. **Proven potent:** a mutation making `summary()`
@@ -4201,8 +4291,10 @@ and — because these are per-install operator settings and the guide's readers 
 consumer should **ask its bridge operator** rather than assume the defaults, and should not design a recovery
 story around replaying later.
 
-  - **The four other unqualified "replay recovers it" claims** (`CLAUDE_ARCHITECTURE.md`,
-    `docs/customization.md` ×2, `docs/multi-agent.md`, `CLAUDE_DEPLOYMENT.md`'s errored-row definition) get a
+  - **The five other unqualified "replay recovers it" claims** (`CLAUDE_ARCHITECTURE.md`,
+    `docs/customization.md` ×2, `docs/multi-agent.md`, `CLAUDE_DEPLOYMENT.md`'s errored-row definition — the
+    ×2 is why the count is five and not four; this entry said "four" over the same list `docs/CHANGELOG.md`
+    called "five", and the two surfaces are now reconciled to the list rather than to each other) get a
     **bound plus a pointer**, not a restatement. This change had already put three full copies of the refusal
     narrative into the tree; canon #16's remedy for a restatement is to point at the one doc that owns it, and
     five more copies of a paragraph nobody re-syncs is the defect, not the fix.
