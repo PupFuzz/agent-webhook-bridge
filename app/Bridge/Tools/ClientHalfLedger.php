@@ -40,8 +40,18 @@ use Throwable;
  * \App\Bridge\Writeback\BoardDivergenceLedger} does for its own mid-writeback row, and the
  * caller never learns this happened.
  *
+ * ⭐ SINCE card#7836 THE ROW ALSO CARRIES HOW THE SERVING PROCESS WAS STARTED
+ * ({@see CallProvenance}), which NARROWS the second paragraph without repealing it. ⭐ WHAT
+ * A `sshd` STAMP RULES OUT, AND THE TWO THINGS IT DOES NOT, ARE OWNED BY {@see
+ * CallProvenance} and are not restated here — this class's own subject is the WRITE.
+ * The caller STATES its provenance rather than this class measuring one — the http door has
+ * nothing to measure (`LoopbackOnly` makes probe and seat identical by construction) and
+ * would read an inherited `SSH_CONNECTION` as the seat if it tried.
+ *
  * ⛔ NAMES AND TIMESTAMPS ONLY — never a token, a secret, or a config VALUE. The row is
- * printed verbatim into a `bridge:check` line, so anything stored here is disclosed.
+ * printed verbatim into a `bridge:check` line, so anything stored here is disclosed. That
+ * governs the provenance too: what is written is the enum's NAME, never `SSH_CONNECTION`'s
+ * contents, which are a client IP, a client port and this host's own address and port.
  */
 final class ClientHalfLedger
 {
@@ -55,19 +65,30 @@ final class ClientHalfLedger
      *
      * ⚑ `last_success_at` IS PASSED EXPLICITLY rather than left to Eloquent. The model has
      * no `updated_at`, so nothing would maintain the stamp unless the write states it.
+     *
+     * ⚑ `call_provenance` IS IN THE UPDATE COLUMN LIST, not only the insert row, and both
+     * halves matter. A seat that moves between doors must not leave the OLD door's
+     * provenance standing — a stale `sshd` beside a fresh http call would be the exact
+     * over-read card#7836 exists to remove — and it is written as the enum's `->value`
+     * because `upsert()` is a raw builder write that never runs the model's casts.
+     *
+     * ⛔ THE PARAMETER IS REQUIRED, with no default. A default would make the strong verdict
+     * depend on a caller REMEMBERING to opt in, and the failure mode of forgetting is
+     * silent: the row still writes, the check still reports, and a genuine ssh call reads as
+     * unproven forever. Every door states what it knows.
      */
-    public static function record(string $agent, string $transport): void
+    public static function record(string $agent, string $transport, CallProvenance $provenance): void
     {
         try {
             BoardToolsClientCall::query()->upsert(
-                [['agent' => $agent, 'transport' => $transport, 'last_success_at' => now()]],
+                [['agent' => $agent, 'transport' => $transport, 'call_provenance' => $provenance->value, 'last_success_at' => now()]],
                 ['agent'],
-                ['transport', 'last_success_at'],
+                ['transport', 'call_provenance', 'last_success_at'],
             );
         } catch (Throwable $e) {
             Log::warning(
                 'agent-tools: the successful call could not be recorded — bridge:check will report this seat\'s client half as UNREPORTED until a later call lands',
-                ['agent' => $agent, 'transport' => $transport, 'error' => $e->getMessage()],
+                ['agent' => $agent, 'transport' => $transport, 'call_provenance' => $provenance->value, 'error' => $e->getMessage()],
             );
         }
     }

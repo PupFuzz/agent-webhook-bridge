@@ -3,6 +3,7 @@
 namespace Tests\Feature\Console\Check;
 
 use App\Bridge\Retention\RetentionGate;
+use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Models\BoardToolsClientCall;
 use App\Models\WebhookEvent;
@@ -411,6 +412,30 @@ class CheckGoldenTest extends TestCase
 
                 return $default;
 
+            case 'board-tools-client-half-ssh-proven':
+                // card#7836 / DL-316 — the STRONGER of the leg's two `ok` lines, and the only
+                // fixture that reaches it. Its twin is `board-tools-ssh-pinned-line`
+                // directly above: the SAME install, differing ONLY in the recorded row, so
+                // the diff between the two captures is exactly the provenance claim and
+                // nothing else. Its OTHER twin is `board-tools-client-half-wired`, the same
+                // leg's weaker line — the pair is what makes either legible, because the two
+                // carry the SAME severity and differ only in what they claim.
+                //
+                // ⚑ THE STAMP IS RELATIVE for the reason the http fixture states: this leg
+                // prints an AGE, so an absolute stamp would expire the golden file overnight.
+                $this->sshInstall($i, transport: "  transport: ssh\n");
+                $this->app->instance(SshProbeEnvironment::class, new GoldenSshEnvironment(
+                    authorizedKeys: self::GOOD_PINNED_LINE,
+                ));
+                BoardToolsClientCall::query()->create([
+                    'agent' => 'prod-agent',
+                    'transport' => 'ssh',
+                    'call_provenance' => CallProvenance::Sshd,
+                    'last_success_at' => now()->subHours(3)->subMinutes(30),
+                ]);
+
+                return $default;
+
             case 'board-tools-ssh-default-transport-advisory':
                 // The DL-225 pre-upgrade advisory: no explicit `transport:` key (so the
                 // v0.68.0 flipped default lands the agent on ssh) AND an unverifiable
@@ -544,6 +569,7 @@ class CheckGoldenTest extends TestCase
             'board-tools-http-enabled',
             'board-tools-client-half-wired',
             'board-tools-ssh-pinned-line',
+            'board-tools-client-half-ssh-proven',
             'board-tools-ssh-default-transport-advisory',
             'board-tools-ssh-live-probe',
             'probe-tools-ssh-with-no-ssh-agent',
@@ -659,6 +685,22 @@ class CheckGoldenTest extends TestCase
             // operator text and gets reworded, while `REPORTED` + the age is the invariant
             // this fixture exists to reach.
             'board-tools-client-half-wired' => ['client half REPORTED — a successful board-tools call for this agent was recorded 3h ago, over http'],
+            // The DL-316 arm, anchored on the two halves that make it a DIFFERENT claim from
+            // the line above and not a rewording of it: the verdict stem, and the residual
+            // ambiguity it is obliged to keep printing. Pinning the stem alone would stay
+            // green if the caveat were dropped, which is the only way this line can go wrong.
+            'board-tools-client-half-ssh-proven' => [
+                'client half REPORTED THROUGH THE SSH DOOR',
+                'DOES NOT NAME THE CALLER',
+                // card#7836's re-derivation: the enumeration must be the one the PREDICATE
+                // supports, on the surface an operator actually reads. The wording it
+                // replaced named an interactive shell's SSH_TTY and a cron/systemd unit that
+                // "exports neither marker" — both false, both on the most confident line the
+                // command prints, and a golden fixture that only pinned the headline would
+                // have carried them unchanged through this fix.
+                'EVERY hand-run FROM A TERMINAL',
+                'TWO THINGS IT DOES NOT RULE OUT',
+            ],
             'board-tools-ssh-pinned-line' => ['board_tools ssh: the pinned line for agent prod-agent forces bridge:tools-call'],
             'board-tools-ssh-default-transport-advisory' => ['is on ssh by the v0.68.0 default'],
             'board-tools-ssh-live-probe' => ['board_my_cards ok; window scoped to board 10 / swimlane 4'],
