@@ -11,6 +11,7 @@ use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientHalfLedger;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use ReflectionMethod;
 use Tests\Support\MaterializesChecks;
 use Tests\Support\UsesUnmigratedDatabase;
@@ -263,8 +264,20 @@ class BoardToolsClientHalfCheckTest extends TestCase
         $this->assertCount(1, $findings);
         $this->assertSame(Severity::Ok, $findings[0]['severity']);
         $this->assertStringContainsString('client half REPORTED THROUGH THE SSH DOOR', $findings[0]['message']);
-        $this->assertStringContainsString("carried sshd's session environment with NO pty", $findings[0]['message']);
+        $this->assertStringContainsString("carried sshd's session environment, had NO CONTROLLING TERMINAL, and carried no SSH_TTY", $findings[0]['message']);
         $this->assertStringContainsString('THAT RULES OUT', $findings[0]['message']);
+        // ⭐ THE ENUMERATION IS RE-DERIVED FROM THE PREDICATE, and the tmux regression is why
+        // it had to be. The line it replaced claimed an interactive ssh shell "exports
+        // SSH_TTY and passes it to everything it spawns" and that a local console, cron or
+        // systemd unit "exports neither marker" — both measurably FALSE, and both were the
+        // most confident sentence on the most confident line. What the predicate actually
+        // establishes is the controlling terminal, so that is what the line may name.
+        $this->assertStringContainsString('EVERY hand-run FROM A TERMINAL', $findings[0]['message']);
+        $this->assertStringContainsString('tmux pane', $findings[0]['message']);
+        $this->assertStringContainsString('keeps its controlling terminal even when stdin is a pipe', $findings[0]['message']);
+        // The two retired false clauses, pinned as ABSENCES so neither can come back.
+        $this->assertStringNotContainsString('passes it to everything it spawns', $findings[0]['message']);
+        $this->assertStringNotContainsString('which exports neither marker', $findings[0]['message']);
     }
 
     /**
@@ -288,6 +301,14 @@ class BoardToolsClientHalfCheckTest extends TestCase
         $this->assertStringContainsString('--probe-tools-ssh', $message);
         $this->assertStringContainsString('--self-cert', $message);
         $this->assertStringContainsString('INDISTINGUISHABLE from the seat', $message);
+        // ⭐ THE SECOND REMAINDER, which the controlling-terminal predicate MINTS and the
+        // `SSH_TTY` one did not have: a terminal-less hand-run that carries SSH_CONNECTION.
+        // A systemd USER unit inherits it outright after `systemctl --user
+        // import-environment`, so "cron and systemd export neither marker" was never true
+        // and this line names the case instead of denying it.
+        $this->assertStringContainsString('TWO THINGS IT DOES NOT RULE OUT', $message);
+        $this->assertStringContainsString('TERMINAL-LESS context', $message);
+        $this->assertStringContainsString('systemctl --user import-environment', $message);
         // The claims this line is NOT entitled to make. `proof` and `client chain` are the
         // two DL-313 retired as inference-presented-as-measurement; `the seat called` is the
         // one card#7836 could have minted and did not.
@@ -297,24 +318,59 @@ class BoardToolsClientHalfCheckTest extends TestCase
     }
 
     /**
-     * ⚑ NO ENVIRONMENT VALUE REACHES THE OPERATOR'S SCREEN. The row is rendered verbatim
-     * into this line, and the fact behind the column comes from `SSH_CONNECTION` — a client
-     * IP, a client port, and this host's own address and port. The row is written with a
-     * value-shaped string in the column so the assertion has something to find if the leg
-     * ever printed the column's contents rather than deciding on them.
+     * ⚑ THE STORED VALUE IS A DECISION INPUT, NOT OUTPUT — the line describes the shape in
+     * words and never echoes the column it branched on.
+     *
+     * ⛔ WHAT THIS IS NOT, stated because the version it replaces claimed to be it. It is NOT
+     * a leak control: `recordCall()` writes the ENUM or null, exactly as `ClientHalfLedger`
+     * does, so no environment value is ever in the column and an
+     * `assertStringNotContainsString('203.0.113', …)` here COULD NOT FAIL — a decorative
+     * assertion under a docblock asserting a control is worse than no assertion, because the
+     * next reader stops looking. The real leak controls drive a value that IS present at the
+     * moment of the write: `ClientHalfLedgerTest` for the row and `ToolsCallCommandTest` for
+     * the row, stdout and stderr together.
      */
-    public function test_no_ssh_connection_value_can_reach_the_printed_line(): void
+    public function test_the_printed_line_never_echoes_the_provenance_column(): void
     {
         $this->recordCall(ageSeconds: 60, provenance: CallProvenance::Sshd);
 
         $message = $this->findings()[0]['message'];
 
         $this->assertStringContainsString('REPORTED THROUGH THE SSH DOOR', $message);
-        $this->assertStringNotContainsString('203.0.113', $message);
-        $this->assertStringNotContainsString('/dev/pts', $message);
-        // The stored NAME is a decision input, not output: the line describes the shape in
-        // words and never echoes the column.
         $this->assertStringNotContainsString('not_sshd', $message);
+        $this->assertStringNotContainsString('call_provenance', $message);
+    }
+
+    /**
+     * ⭐ A BACKING VALUE THIS BUILD CANNOT INTERPRET MUST NOT ABORT `bridge:check`, and the
+     * reason this test exists is that the code once believed it could not happen HERE. The
+     * Eloquent enum cast is applied LAZILY, on attribute access — NOT on hydration — so the
+     * `ValueError` lands wherever the attribute is first READ. Read at the branch, that is
+     * OUTSIDE the leg's fail-soft envelope and the whole command dies with an uncaught
+     * exception, taking every other check's output with it; DL-316 recorded the opposite as
+     * a bound and was measurably wrong.
+     *
+     * ⛔ THIS IS NOT A GUARD OVER AN UNREACHABLE STATE (canon #6): nothing is added to defend
+     * against the value, and the leg still has exactly two severities. What is asserted is
+     * that the read happens inside the envelope the leg ALREADY has, so the existing limb (a)
+     * arm answers for it — which is what makes the refusal to guard correct rather than lucky.
+     */
+    public function test_an_uninterpretable_provenance_value_is_reported_and_does_not_abort_the_run(): void
+    {
+        $this->recordCall(ageSeconds: 60, provenance: CallProvenance::Sshd);
+        DB::table('board_tools_client_calls')->where('agent', 'prod-agent')->update(['call_provenance' => 'from-a-future-build']);
+
+        // Non-vacuous: the hydration really does succeed, so the throw really is at the READ
+        // and this test is about the placement rather than about the query.
+        $row = BoardToolsClientCall::query()->where('agent', 'prod-agent')->first();
+        $this->assertNotNull($row, 'the row did not hydrate at all, so this says nothing about where the cast throws');
+
+        $findings = $this->findings();
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(Severity::Unvalidated, $findings[0]['severity']);
+        $this->assertStringContainsString('could NOT read the client-half record', $findings[0]['message']);
+        $this->assertStringNotContainsString('THROUGH THE SSH DOOR', $findings[0]['message']);
     }
 
     /**

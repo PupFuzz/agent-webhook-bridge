@@ -6,6 +6,7 @@ use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientHalfLedger;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Support\FakeServingProcessEnvironment;
 use Tests\TestCase;
 
 /**
@@ -88,14 +89,19 @@ class ClientHalfLedgerTest extends TestCase
      */
     public function test_the_stored_row_carries_a_name_and_no_environment_value(): void
     {
-        // Driven through the REAL measurement, from a real forced-command environment: what
-        // is being asserted is that the value cannot reach the row, so the value has to be
-        // present at the moment the row is written or the test proves nothing.
+        // Driven through the REAL measurement rather than a hand-passed enum case: what is
+        // asserted is that the environment value cannot reach the row, so the value has to
+        // be present in the process at the moment the row is written or the test proves
+        // nothing. The serving-process FACTS are a stated fixture (the suite cannot give
+        // itself, or take from itself, a controlling terminal) while the ambient variable is
+        // seeded for real, which is the string the assertions below hunt for.
         [$connection, $tty] = [getenv('SSH_CONNECTION'), getenv('SSH_TTY')];
         putenv('SSH_CONNECTION=203.0.113.9 53210 198.51.100.4 22');
         putenv('SSH_TTY');
         try {
-            ClientHalfLedger::record('prod-agent', 'ssh', CallProvenance::ofThisProcess());
+            ClientHalfLedger::record('prod-agent', 'ssh', CallProvenance::of(
+                new FakeServingProcessEnvironment(sshSession: true, controllingTerminal: false, ptyMarker: false),
+            ));
         } finally {
             is_string($connection) ? putenv('SSH_CONNECTION='.$connection) : putenv('SSH_CONNECTION');
             is_string($tty) ? putenv('SSH_TTY='.$tty) : putenv('SSH_TTY');

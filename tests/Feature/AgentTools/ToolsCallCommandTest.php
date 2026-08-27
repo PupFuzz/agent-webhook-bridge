@@ -3,11 +3,13 @@
 namespace Tests\Feature\AgentTools;
 
 use App\Bridge\Tools\CallProvenance;
+use App\Bridge\Tools\ServingProcessEnvironment;
 use App\Bridge\Tools\ToolsCallStdio;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\FakeServingProcessEnvironment;
 use Tests\TestCase;
 
 /**
@@ -66,21 +68,30 @@ class ToolsCallCommandTest extends TestCase
      * Run the command with a seeded STDIN and capture the real streams via a fake
      * bound into the container (method injection resolves it).
      *
-     * ⚑ THE ENVIRONMENT IS SAVED AND RESTORED, NOT BLANKET-UNSET (card#7836). The command
-     * READS its environment since DL-316, and the suite itself can be running inside an ssh
-     * session — so a `null` here means "this variable is ABSENT for this run", which is a
-     * fixture the caller states rather than an ambient fact it inherits, and the prior value
-     * is put back so one test cannot decide what the next one measures.
+     * ⚑ THE SERVING PROCESS IS A BOUND FIXTURE, NEVER THE AMBIENT ONE (card#7836). The
+     * command MEASURES its process since DL-316, and one of the three facts it reads — the
+     * controlling terminal — cannot be manufactured by a suite at all: an arm that let the
+     * real one through would be green or red by accident of how the developer launched
+     * phpunit. `$process` binds {@see ServingProcessEnvironment} for the
+     * run; passing none leaves the container default, which no arm below relies on for a
+     * provenance assertion.
+     *
+     * ⚑ THE ENVIRONMENT IS STILL SAVED AND RESTORED for the arms that seed
+     * `SSH_ORIGINAL_COMMAND`: the prior value is put back so one test cannot decide what the
+     * next one measures.
      *
      * @param  array<string, string|null>  $server  null ⇒ unset for the duration of the run
      * @return array{exit: int, stdout: string, stderr: string}
      */
-    private function runCommand(?string $agent, string $stdin, array $server = []): array
+    private function runCommand(?string $agent, string $stdin, array $server = [], ?ServingProcessEnvironment $process = null): array
     {
         $saved = [];
         foreach ($server as $k => $v) {
             $saved[$k] = getenv($k);
             $v === null ? putenv($k) : putenv("{$k}={$v}");
+        }
+        if ($process !== null) {
+            $this->app->instance(ServingProcessEnvironment::class, $process);
         }
         $fake = new FakeToolsCallStdio($stdin);
         $this->app->instance(ToolsCallStdio::class, $fake);
@@ -148,53 +159,63 @@ class ToolsCallCommandTest extends TestCase
     // ─── client-half provenance (card#7836 / DL-316) ──────────────────────────
 
     /**
-     * ⭐ THIS DOOR IS THE ONLY ONE THAT CAN TELL A REMOTE CALL FROM A LOCAL ONE, and the two
-     * arms here are the whole discrimination: the SAME command, the SAME request, two
-     * environments, two stored provenances. Either arm alone passes against a writer that
-     * stamped a constant.
+     * ⭐ THIS DOOR IS THE ONLY ONE THAT CAN TELL A PINNED FORCED COMMAND FROM A HAND-RUN, and
+     * the arms here are the whole discrimination: the SAME command and the SAME request over
+     * different serving processes, producing different stored provenances. Any arm alone
+     * passes against a writer that stamped a constant.
      *
-     * The sshd arm is the pinned forced command's shape — sshd's session environment, and no
-     * pty, because the pinned line denies one.
+     * This is the pinned forced command's shape — sshd's session environment, no controlling
+     * terminal, no pty marker. ⚑ Why that triple IS the forced command's shape, and which
+     * half of it is measured rather than inferred, is owned by
+     * {@see CallProvenance} and is not restated here.
      */
-    public function test_a_forced_command_environment_stamps_sshd_provenance(): void
+    public function test_a_pty_less_forced_command_process_stamps_sshd_provenance(): void
     {
         $this->fakeHealthyBoard();
 
-        $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']), [
-            'SSH_CONNECTION' => '203.0.113.9 53210 198.51.100.4 22',
-            'SSH_TTY' => null,
-        ]);
+        $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']), [], new FakeServingProcessEnvironment(sshSession: true, controllingTerminal: false, ptyMarker: false));
 
         $this->assertSame(0, $r['exit']);
         $this->assertSame(CallProvenance::Sshd, BoardToolsClientCall::query()->where('agent', 'me')->sole()->call_provenance);
     }
 
     /**
-     * ⭐ THE ARM THE CARD WAS SPECIFIED WITHOUT, and the reason the predicate is not
-     * `SSH_CONNECTION` alone. An operator hand-running `php artisan bridge:tools-call
-     * --agent=me` in their own ssh shell on the bridge host inherits that variable verbatim
-     * — that is how sshd works, and it survives into anything the shell spawns, `screen`
-     * included. What separates the two is the pty: the shell has one, the forced command
-     * cannot. Without this arm the leg would print its most confident line over exactly the
-     * call it was built to exclude.
+     * ⭐ THE REGRESSION ARM, END TO END THROUGH THE REAL DOOR. A hand-run in a TMUX PANE
+     * attached over ssh carries `SSH_CONNECTION` and NOT `SSH_TTY` — tmux's
+     * `update-environment` default carries the first and not the second — so the predicate
+     * this replaced stamped it `sshd` and `bridge:check` printed its most confident line over
+     * an operator's own hand-run. The pane has a CONTROLLING TERMINAL, and a pipe on stdin
+     * does not take it away; that is what rejects it here.
      */
-    public function test_a_hand_run_inside_an_operator_ssh_shell_stamps_not_sshd(): void
+    public function test_a_hand_run_in_a_tmux_pane_over_ssh_stamps_not_sshd(): void
     {
         $this->fakeHealthyBoard();
 
-        $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']), [
-            'SSH_CONNECTION' => '203.0.113.9 53210 198.51.100.4 22',
-            'SSH_TTY' => '/dev/pts/7',
-        ]);
+        $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']), [], new FakeServingProcessEnvironment(sshSession: true, controllingTerminal: true, ptyMarker: false));
 
         $this->assertSame(0, $r['exit']);
         $this->assertSame(CallProvenance::NotSshd, BoardToolsClientCall::query()->where('agent', 'me')->sole()->call_provenance);
     }
 
     /**
-     * ⛔ THE VALUE IS NOT DISCLOSED ANYWHERE THE CALL CAN REACH. `SSH_CONNECTION` names a
-     * network peer, the row is printed verbatim by `bridge:check`, and this door's stdout is
-     * relayed to the caller — so all three surfaces are checked, not just the column.
+     * An operator hand-running the command in their own interactive ssh shell — the case the
+     * FIRST predicate was written for, still refused, now on two independent terms.
+     */
+    public function test_a_hand_run_inside_an_operator_ssh_shell_stamps_not_sshd(): void
+    {
+        $this->fakeHealthyBoard();
+
+        $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']), [], new FakeServingProcessEnvironment(sshSession: true, controllingTerminal: true, ptyMarker: true));
+
+        $this->assertSame(0, $r['exit']);
+        $this->assertSame(CallProvenance::NotSshd, BoardToolsClientCall::query()->where('agent', 'me')->sole()->call_provenance);
+    }
+
+    /**
+     * ⛔ THE VALUE IS NOT DISCLOSED ANYWHERE THE CALL CAN REACH. The row is printed verbatim
+     * by `bridge:check` and this door's stdout is relayed to the caller, so all three
+     * surfaces are checked rather than just the column. The real environment is seeded too,
+     * so the string this asserts about is genuinely present in the process while it runs.
      */
     public function test_no_ssh_connection_value_reaches_the_row_or_the_envelope(): void
     {
@@ -202,11 +223,10 @@ class ToolsCallCommandTest extends TestCase
 
         $r = $this->runCommand('me', (string) json_encode(['tool' => 'board_my_cards']), [
             'SSH_CONNECTION' => '203.0.113.9 53210 198.51.100.4 22',
-            'SSH_TTY' => null,
-        ]);
+        ], new FakeServingProcessEnvironment(sshSession: true, controllingTerminal: false, ptyMarker: false));
 
         $row = BoardToolsClientCall::query()->where('agent', 'me')->sole();
-        // Non-vacuous: the variable really was read on this run.
+        // Non-vacuous: the provenance really was measured on this run.
         $this->assertSame(CallProvenance::Sshd, $row->call_provenance);
         foreach ([(string) json_encode($row->getAttributes()), $r['stdout'], $r['stderr']] as $surface) {
             $this->assertStringNotContainsString('203.0.113.9', $surface);

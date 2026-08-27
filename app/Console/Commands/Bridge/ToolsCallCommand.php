@@ -7,6 +7,7 @@ use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ClientHalfLedger;
+use App\Bridge\Tools\ServingProcessEnvironment;
 use App\Bridge\Tools\ToolsCallStdio;
 
 /**
@@ -24,20 +25,15 @@ use App\Bridge\Tools\ToolsCallStdio;
  * SSH_ORIGINAL_COMMAND — which this command NEVER reads (identity is `--agent`,
  * action is STDIN, full stop).
  *
- * ⭐ THIS DOOR IS THE ONE THAT CAN TELL A FORCED COMMAND FROM A HAND-RUN (card#7836 /
+ * ⭐ THIS DOOR IS THE ONE THAT CAN TELL A PINNED FORCED COMMAND FROM A HAND-RUN (card#7836 /
  * DL-316), and it is the only place in the codebase that can — the HTTP door's peer is
- * pinned to loopback for the probe and the seat alike, by construction. sshd puts its
- * session environment on the forced command it spawns and allocates NO pty here (the
- * pinned line denies one), and that PAIR is the signal: ⛔ the connection variable alone
- * is not, because a login shell exports it to every descendant, so an operator running
- * this command inside their own INTERACTIVE ssh session carries it verbatim (the pty is
- * what rejects that lineage; a pty-less `ssh <host> '<command>'` is NOT rejected). The success point stamps
- * the distinction onto the client-half row ({@see ClientHalfLedger}) so `bridge:check`
- * stops reporting the two as one call — bounded, and the reading check prints the bound:
- * `--probe-tools-ssh` and `--self-cert` drive real pty-less ssh round-trips and land here
- * indistinguishably from the seat. ⛔ PRESENCE ONLY — {@see CallProvenance} reduces both
- * variables to a NAME before anything leaves this process; SSH_CONNECTION's contents (a
- * client IP and port, this host's address and port) are never read out, stored, or logged.
+ * pinned to loopback for the probe and the seat alike, by construction. So it MEASURES its
+ * serving process at the dispatch and stamps the answer onto the client-half row
+ * ({@see ClientHalfLedger}), which is what stops `bridge:check` reporting a hand-run and a
+ * seat's call as one thing. ⭐ THE PREDICATE, EVERY TERM'S REASON, WHAT IT RULES OUT AND THE
+ * TWO REMAINDERS IT DOES NOT ARE OWNED BY {@see CallProvenance} — read it there; this
+ * docblock deliberately does not restate them, because eleven hand-maintained restatements
+ * are how the first cut of this feature came to be wrong in eleven places at once.
  *
  * Stdout purity is load-bearing: the ssh channel captures this process's fd 1 as
  * the tool result, so the command writes NOTHING to stdout but the one JSON
@@ -66,7 +62,7 @@ class ToolsCallCommand extends BridgeCommand
     /** A client that opens the channel but never sends EOF must not pin the process. */
     private const STDIN_TIMEOUT_SECS = 30;
 
-    public function handle(BoardToolDispatcher $dispatcher, ToolsCallStdio $io): int
+    public function handle(BoardToolDispatcher $dispatcher, ToolsCallStdio $io, ServingProcessEnvironment $env): int
     {
         // Earliest userland point — keep any post-boot notice off fd 1 (the envelope
         // channel). Cannot cover a true startup error; the client parse is that guard.
@@ -122,9 +118,9 @@ class ToolsCallCommand extends BridgeCommand
         }
         $args = $decoded['args'] ?? [];
 
-        // Read at the dispatch, not at boot: what is being recorded is a fact about the
-        // process that served THIS call, and the read is the whole cost.
-        $outcome = $dispatcher->dispatch($tool, $args, $bt, $agent->agentName, CallProvenance::ofThisProcess());
+        // Measured at the dispatch, not at boot: what is being recorded is a fact about the
+        // process that served THIS call, and the measurement is the whole cost.
+        $outcome = $dispatcher->dispatch($tool, $args, $bt, $agent->agentName, CallProvenance::of($env));
 
         return $this->emit($io, $outcome->body(), $outcome->exitCode());
     }

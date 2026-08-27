@@ -3,12 +3,14 @@
 namespace Tests\Feature\AgentTools;
 
 use App\Bridge\Tools\CallProvenance;
+use App\Bridge\Tools\ServingProcessEnvironment;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\FakeServingProcessEnvironment;
 use Tests\TestCase;
 
 /**
@@ -101,7 +103,12 @@ class AgentToolsCallTest extends TestCase
      * implementation that read the environment here would mint the stronger `bridge:check`
      * verdict out of a variable that says nothing about who called.
      *
-     * The environment is set to the SHAPE that makes the ssh door say `sshd`, so this reds
+     * ⛔ card#7836's controlling-terminal predicate makes this MORE load-bearing, not less: a
+     * PHP-FPM pool or a `php artisan serve` under `nohup` has NO controlling terminal, so on
+     * a host where the serving process inherited `SSH_CONNECTION` the whole predicate would
+     * be satisfied by an http request that came from anywhere at all.
+     *
+     * The process is staged in the SHAPE that makes the ssh door say `sshd`, so this reds
      * against exactly that implementation and passes only because the door states a constant.
      */
     public function test_the_http_door_stamps_not_sshd_even_inside_an_ssh_session(): void
@@ -110,9 +117,14 @@ class AgentToolsCallTest extends TestCase
             '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
             '*/tasks/*.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
         ]);
+        // Both halves of the shape are staged: the real variable, for an implementation that
+        // read `getenv()` directly, AND the bound seam in the PROVEN configuration, for one
+        // that went through CallProvenance. Either way this arm reds against a door that
+        // measures, and passes only because this one states a constant.
         [$connection, $tty] = [getenv('SSH_CONNECTION'), getenv('SSH_TTY')];
         putenv('SSH_CONNECTION=203.0.113.9 53210 198.51.100.4 22');
         putenv('SSH_TTY');
+        $this->app->instance(ServingProcessEnvironment::class, new FakeServingProcessEnvironment(sshSession: true, controllingTerminal: false, ptyMarker: false));
 
         try {
             $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 'x']])->assertStatus(200);

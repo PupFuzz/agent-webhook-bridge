@@ -41,10 +41,9 @@ use Throwable;
  * caller never learns this happened.
  *
  * ⭐ SINCE card#7836 THE ROW ALSO CARRIES HOW THE SERVING PROCESS WAS STARTED
- * ({@see CallProvenance}), which narrows the second paragraph without repealing it: a row
- * stamped {@see CallProvenance::Sshd} cannot be the `--probe-tools` HTTP probe and cannot be
- * a hand-run in an interactive shell or on a local console, and still cannot say WHICH
- * pty-less ssh client called.
+ * ({@see CallProvenance}), which NARROWS the second paragraph without repealing it. ⭐ WHAT
+ * A `sshd` STAMP RULES OUT, AND THE TWO THINGS IT DOES NOT, ARE OWNED BY {@see
+ * CallProvenance} and are not restated here — this class's own subject is the WRITE.
  * The caller STATES its provenance rather than this class measuring one — the http door has
  * nothing to measure (`LoopbackOnly` makes probe and seat identical by construction) and
  * would read an inherited `SSH_CONNECTION` as the seat if it tried.

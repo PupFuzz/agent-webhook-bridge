@@ -392,25 +392,23 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   severity is `ok` on both.** The ssh door records how the serving process was started, so a
   call that arrived through the pinned forced command reports the stronger of the two:
   `board_tools: agent X: client half REPORTED **THROUGH THE SSH DOOR** — … the process that
-  served it carried sshd's session environment with NO pty, which is the shape of the pinned
-  forced command`. Everything else — an http call, a hand-run, and **any row written before
+  served it carried sshd's session environment, had NO CONTROLLING TERMINAL, and carried no
+  SSH_TTY — the shape of the pinned pty-less forced command`. Everything else — an http call, a hand-run, and **any row written before
   the upgrade** — keeps the `client half REPORTED — …` line above, word for word.
-  **What the stronger line rules out:** the `--probe-tools` HTTP probe (that door states its
-  provenance as a constant — `LoopbackOnly` makes the probe and the seat identical there by
-  construction, so there is nothing to measure), a hand-run `bridge:tools-call` in an
-  **interactive** ssh shell, and one from a local console, cron or systemd unit. ⛔ **The predicate is the connection variable AND no `SSH_TTY`, and the
-  pty half is load-bearing:** sshd exports its session variables into the login shell and
-  every descendant inherits them — including anything under a `screen` that outlives the
-  login — so an operator hand-running the command in their own ssh shell carries
-  `SSH_CONNECTION` exactly as the forced command does. The pinned line denies pty and no
-  board-tools client asks for one, which is what makes the two distinguishable at all.
-  ⚠ **What it STILL does not rule out, and the line says so itself: any other pty-less ssh
-  invocation of the command,** `ssh <host> '<command>'` included — and in particular
-  `bridge:check --probe-tools-ssh` and `provision-board-tools.py --self-cert`, which each
-  drive a **real, pty-less ssh round-trip**, so sshd stamps their forced command identically
-  to the seat's. The caller
-  set narrows from four to three; it does not close. **If either has been run since, the
-  stronger line may be that run** — confirming the seat still means having the seat call.
+  ⭐ **The predicate — every term, the reason each is there, what a `sshd` stamp RULES OUT and
+  the two things it does NOT — is owned by `app/Bridge/Tools/CallProvenance.php`'s class
+  docblock. Read it there.** This page states only the operator-facing consequence, and
+  deliberately does not restate the rule: the first cut of this feature carried **eleven**
+  hand-maintained restatements of it across code comments, docs and the decision log, the rule
+  underneath them was then measured **wrong**, and all eleven were wrong together in prose no
+  test reads.
+  ⚠ **The operator-facing consequence, in one line: the stronger line narrows the caller set,
+  it does not close it,** and the line PRINTS its own remainders — a pty-less
+  `ssh <host> '<command>'` (which is exactly what `bridge:check --probe-tools-ssh` and
+  `provision-board-tools.py --self-cert` drive, indistinguishably from the seat), and a
+  hand-run from a context with no controlling terminal that carries `SSH_CONNECTION`.
+  **If either has been run since, the stronger line may be that run** — confirming the seat
+  still means having the seat call.
   ⛔ **Nothing is stored or printed but a NAME.** `SSH_CONNECTION` is a client IP, a client
   port and this host's own address and port; only its **presence** ever crosses into the row,
   which `bridge:check` prints verbatim.
@@ -608,10 +606,10 @@ the seat has made a call of its own; the line states the bound itself.
 ⚑ **DL-316 does not rescue this step**, and the reason is worth knowing: `--probe-tools` goes
 through the **HTTP** door, which cannot discriminate at all, so it stamps the weaker
 provenance and gets the weaker line. It is `--probe-tools-**ssh**` that reaches the ssh door
-and stamps the **stronger** one — a real, pty-less ssh round-trip is indistinguishable from
-the seat's — so on an ssh install the certify step can leave the more confident line standing
-for a seat that has not yet called. Same rule either way: confirm the seat by having the seat
-call.
+and stamps the **stronger** one — a pty-less ssh round-trip is one of the two remainders
+`app/Bridge/Tools/CallProvenance.php` names — so on an ssh install the certify step can leave
+the more confident line standing for a seat that has not yet called. Same rule either way:
+confirm the seat by having the seat call.
 
 ### 7. Restart the channel server
 

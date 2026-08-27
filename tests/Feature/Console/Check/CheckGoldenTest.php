@@ -692,6 +692,14 @@ class CheckGoldenTest extends TestCase
             'board-tools-client-half-ssh-proven' => [
                 'client half REPORTED THROUGH THE SSH DOOR',
                 'DOES NOT NAME THE CALLER',
+                // card#7836's re-derivation: the enumeration must be the one the PREDICATE
+                // supports, on the surface an operator actually reads. The wording it
+                // replaced named an interactive shell's SSH_TTY and a cron/systemd unit that
+                // "exports neither marker" — both false, both on the most confident line the
+                // command prints, and a golden fixture that only pinned the headline would
+                // have carried them unchanged through this fix.
+                'EVERY hand-run FROM A TERMINAL',
+                'TWO THINGS IT DOES NOT RULE OUT',
             ],
             'board-tools-ssh-pinned-line' => ['board_tools ssh: the pinned line for agent prod-agent forces bridge:tools-call'],
             'board-tools-ssh-default-transport-advisory' => ['is on ssh by the v0.68.0 default'],
