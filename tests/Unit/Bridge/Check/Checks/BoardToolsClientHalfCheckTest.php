@@ -358,7 +358,11 @@ class BoardToolsClientHalfCheckTest extends TestCase
     public function test_an_uninterpretable_provenance_value_is_reported_and_does_not_abort_the_run(): void
     {
         $this->recordCall(ageSeconds: 60, provenance: CallProvenance::Sshd);
-        DB::table('board_tools_client_calls')->where('agent', 'prod-agent')->update(['call_provenance' => 'from-a-future-build']);
+        // ⛔ MUST FIT varchar(16) — SQLite ignores the width, MariaDB enforces it (SQLSTATE 22001),
+        // so a longer literal here is green locally and red on both CI database legs. It is also
+        // the more faithful input: a value a FUTURE build wrote had to fit this column too, so an
+        // over-long one tests a state that cannot occur.
+        DB::table('board_tools_client_calls')->where('agent', 'prod-agent')->update(['call_provenance' => 'future-case']);
 
         // Non-vacuous: the hydration really does succeed, so the throw really is at the READ
         // and this test is about the placement rather than about the query.
