@@ -409,6 +409,11 @@ agent session ──MCP tools/call──▶ channel server ──ssh stdin/stdou
   hand-run from a context with no controlling terminal that carries `SSH_CONNECTION`.
   **If either has been run since, the stronger line may be that run** — confirming the seat
   still means having the seat call.
+  ⚑ **A host that cannot ANSWER the question never prints the stronger line, and that says nothing about the seat.**
+  Each fact behind the verdict is three-valued — measured-true, measured-false, or *unestablishable* — and only a
+  measurement earns the stronger claim, so a run-user `php.ini` carrying an `open_basedir` (which denies the probe
+  both `/dev/tty` and `/proc`) records `not_sshd` and prints the `client half REPORTED — …` line for every call,
+  including a genuine one. Confirming the seat still means having the seat call.
   ⛔ **Nothing is stored or printed but a NAME.** `SSH_CONNECTION` is a client IP, a client
   port and this host's own address and port; only its **presence** ever crosses into the row,
   which `bridge:check` prints verbatim.

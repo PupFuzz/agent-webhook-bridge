@@ -3,6 +3,7 @@
 namespace Tests\Unit\Tools;
 
 use App\Bridge\Tools\CallProvenance;
+use App\Bridge\Tools\ServingProcessEnvironment;
 use Tests\Support\FakeServingProcessEnvironment;
 use Tests\TestCase;
 
@@ -34,17 +35,20 @@ use Tests\TestCase;
  * inside an ssh session — an arm that read the real process would be green or red by
  * accident of how the developer launched it, which is how the first predicate's evidence
  * came to be a control that could not fail.
+ *
+ * ⛔ THERE IS NO LEAK CONTROL HERE, AND ITS ABSENCE IS DELIBERATE. One was written and
+ * DELETED: {@see ServingProcessEnvironment} hands this class three `?bool`s —
+ * booleans and nulls, never a string — so no
+ * environment value is ever in reach of it and an `assertStringNotContainsString()` over an
+ * enum's backing value COULD NOT FAIL — the shape removed one file over, in
+ * `BoardToolsClientHalfCheckTest`, for the reason recorded there (a decorative assertion
+ * under a docblock asserting a control is worse than no assertion, because the next reader
+ * stops looking). The real leak controls drive a value that IS present in the process at the
+ * moment of the write: `ClientHalfLedgerTest` for the row, and `ToolsCallCommandTest` for the
+ * row, stdout and stderr together.
  */
 class CallProvenanceTest extends TestCase
 {
-    /**
-     * A value shaped exactly like the real thing (ssh(1): client IP, client port, server IP,
-     * server port) using RFC 5737 documentation addresses. It exists so the boundary test
-     * below asserts about a string that WOULD have appeared had the seam handed back values
-     * rather than booleans.
-     */
-    private const CONNECTION_VALUE = '203.0.113.9 53210 198.51.100.4 22';
-
     public function test_a_pty_less_sshd_forced_command_is_sshd_provenance(): void
     {
         $env = new FakeServingProcessEnvironment(sshSession: true, controllingTerminal: false, ptyMarker: false);
@@ -119,16 +123,43 @@ class CallProvenanceTest extends TestCase
     }
 
     /**
-     * ⛔ EVERY ONE OF THE EIGHT INPUTS, so no combination reaches a verdict by accident and
-     * the arms above are provably the whole surface rather than the cases someone thought
-     * of. Exactly one triple may be `Sshd`.
+     * ⭐ THE THIRD FIXTURE STATE, AND THE ONE THE PREDICATE SHIPPED UNABLE TO SEE. A fact the
+     * serving process could not establish is `null`, not `false` — and this is the shape it
+     * arrives in on a real host: a hand-run from a terminal whose CLI `php.ini` carries an
+     * `open_basedir` line, which denies the probe `/dev/tty` (and `/proc`) while the process
+     * demonstrably HAS a controlling terminal. Measured under a real pty in
+     * {@see SystemServingProcessEnvironmentTest}.
+     *
+     * ⛔ The predicate that read that as "no controlling terminal" called this input PROVEN —
+     * the tmux case of the docblock above, re-minted by a config file. The session and the
+     * missing pty marker are both genuinely present here, so NOTHING else in the triple
+     * rejects it: this arm is discriminating on the null alone.
      */
-    public function test_exactly_one_of_the_eight_input_combinations_is_proven(): void
+    public function test_an_unestablishable_controlling_terminal_is_not_sshd_provenance(): void
+    {
+        $env = new FakeServingProcessEnvironment(sshSession: true, controllingTerminal: null, ptyMarker: false);
+
+        $this->assertSame(CallProvenance::NotSshd, CallProvenance::of($env));
+    }
+
+    /**
+     * ⛔ EVERY ONE OF THE TWENTY-SEVEN INPUTS, so no combination reaches a verdict by accident
+     * and the arms above are provably the whole surface rather than the cases someone thought
+     * of. Exactly one triple may be `Sshd`.
+     *
+     * ⭐ THE POPULATION IS 3³ AND NOT 2³, and that is the pin that survives the defect this
+     * card fixed: each term has THREE states (measured-true, measured-false, unestablishable),
+     * and every `null` must land on the weaker verdict. A predicate written with `!` instead
+     * of `=== false` passes all eight boolean triples and mints the strong verdict on THREE
+     * more — every triple whose session is measured and whose other two terms are `null` or
+     * `false` in any combination (counted, not estimated).
+     */
+    public function test_exactly_one_of_the_twenty_seven_input_combinations_is_proven(): void
     {
         $proven = [];
-        foreach ([true, false] as $session) {
-            foreach ([true, false] as $terminal) {
-                foreach ([true, false] as $pty) {
+        foreach ([true, false, null] as $session) {
+            foreach ([true, false, null] as $terminal) {
+                foreach ([true, false, null] as $pty) {
                     $env = new FakeServingProcessEnvironment($session, $terminal, $pty);
                     if (CallProvenance::of($env) === CallProvenance::Sshd) {
                         $proven[] = [$session, $terminal, $pty];
@@ -138,29 +169,5 @@ class CallProvenanceTest extends TestCase
         }
 
         $this->assertSame([[true, false, false]], $proven, 'the set of input triples that mint the STRONGER verdict has moved — re-read CallProvenance before changing this pin');
-    }
-
-    /**
-     * ⛔ NO ENVIRONMENT VALUE CAN CROSS THE BOUNDARY, AND THE SEAM IS WHY. `SSH_CONNECTION`
-     * is four facts about a network peer and `SSH_TTY` is a device path, and the verdict is
-     * persisted to a row `bridge:check` prints VERBATIM. The seam hands back BOOLEANS, so
-     * there is no string here to leak — this asserts that the whole output surface (both
-     * enum cases, driven non-vacuously) carries none of it.
-     */
-    public function test_no_environment_value_is_ever_carried_out_of_the_measurement(): void
-    {
-        $sshd = CallProvenance::of(new FakeServingProcessEnvironment(true, false, false));
-        $notSshd = CallProvenance::of(new FakeServingProcessEnvironment(true, true, false));
-
-        // Non-vacuous: the two inputs really did produce the two different cases, so this is
-        // checking the whole output surface and not one case twice.
-        $this->assertNotSame($sshd, $notSshd);
-        foreach ([$sshd, $notSshd] as $provenance) {
-            $this->assertContains($provenance->value, ['sshd', 'not_sshd']);
-            $this->assertStringNotContainsString('203.0.113.9', $provenance->value);
-            $this->assertStringNotContainsString('/dev/pts', $provenance->value);
-        }
-        // The fixture value is real enough to have leaked had anything carried it.
-        $this->assertStringContainsString('203.0.113.9', self::CONNECTION_VALUE);
     }
 }

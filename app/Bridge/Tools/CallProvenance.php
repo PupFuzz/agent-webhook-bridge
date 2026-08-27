@@ -26,10 +26,23 @@ use App\Bridge\Check\Checks\BoardToolsClientHalfCheck;
  * and no channel server. This enum is the discrimination that was named and not built.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * ⭐ THE PREDICATE. {@see self::Sshd} iff ALL THREE hold of the serving process:
+ * ⭐ THE PREDICATE. {@see self::Sshd} iff ALL THREE were MEASURED and hold of the serving
+ * process:
  *   (1) sshd's session environment is present (`SSH_CONNECTION`);
  *   (2) the process has NO CONTROLLING TERMINAL;
  *   (3) it carries no pty marker (`SSH_TTY`).
+ *
+ * ⛔ "MEASURED" IS A TERM OF THE PREDICATE AND NOT A CAVEAT ON IT. {@see
+ * ServingProcessEnvironment} answers `?bool`, and {@see self::of()} compares against `true` /
+ * `false` explicitly, so a fact the serving process COULD NOT ESTABLISH (`null`) reaches
+ * {@see self::NotSshd} by the shape of the condition. That is deliberate and load-bearing:
+ * every term but the first contributes to the stronger verdict through its NEGATIVE value, so
+ * a leg that returned a plain `bool` would hand an unestablishable fact to the side that
+ * mints the strong claim. It shipped that way once — `hasControllingTerminal()` read ANY
+ * failed `fopen('/dev/tty')` as "no controlling terminal", so a php.ini `open_basedir` line,
+ * which denies the device to a process that HAS one, resurrected the tmux case below out of a
+ * config file nothing here reads (measured; {@see
+ * SystemServingProcessEnvironment::hasControllingTerminal()} owns the discrimination).
  *
  * ⭐ (2) IS THE DISCRIMINATOR, AND IT IS A PROPERTY OF THE PROCESS RATHER THAN OF A STRING
  * SOMEBODY EXPORTED. Every hand-run FROM A TERMINAL has a controlling terminal — a login
@@ -38,9 +51,11 @@ use App\Bridge\Check\Checks\BoardToolsClientHalfCheck;
  * (`echo '{...}' | php artisan bridge:tools-call --agent=X`). ⛔ `stream_isatty(STDIN)` is
  * therefore NOT the test: stdin is a pipe on both sides of the question. `/dev/tty` is,
  * because that device IS the controlling terminal — {@see
- * SystemServingProcessEnvironment::hasControllingTerminal()} opens it, learns the answer
- * from whether the open succeeded, and closes it without reading a byte. The hand-run half
- * of that is MEASURED (see the tmux paragraph, and `SystemServingProcessEnvironmentTest`).
+ * SystemServingProcessEnvironment::hasControllingTerminal()} opens it and closes it without
+ * reading a byte. ⚑ The OPEN SUCCEEDING is the whole of the POSITIVE half; the open FAILING
+ * is not the negative half, and that method owns why and what settles it instead. The
+ * hand-run half of this is MEASURED (see the tmux paragraph, and
+ * `SystemServingProcessEnvironmentTest`).
  *
  * ⚑ THE OTHER HALF IS INFERRED, NOT MEASURED, AND THE DISTINCTION IS RECORDED RATHER THAN
  * SMOOTHED OVER. That a REAL pty-less sshd forced command has no controlling terminal
@@ -114,8 +129,9 @@ use App\Bridge\Check\Checks\BoardToolsClientHalfCheck;
  * ⛔ THE VALUES ARE NEVER READ OUT, STORED, OR PRINTED. `SSH_CONNECTION` is
  * `<client-ip> <client-port> <server-ip> <server-port>` (ssh(1) ENVIRONMENT) — four facts
  * about a network peer — and `SSH_TTY` is a device path, on a row whose whole content
- * `bridge:check` prints verbatim. {@see ServingProcessEnvironment} hands back BOOLEANS and
- * nothing else, so the reduction is structural rather than a rule this method remembers.
+ * `bridge:check` prints verbatim. {@see ServingProcessEnvironment} hands back a `?bool` and
+ * nothing else — three values, none of them a string — so the reduction is structural rather
+ * than a rule this method remembers.
  *
  * ⛔ THE HTTP DOOR MUST NOT MEASURE, and the reason is not stylistic. `LoopbackOnly` pins the
  * peer to `127.0.0.1` for the probe and the seat alike, so nothing on that door
@@ -151,7 +167,12 @@ enum CallProvenance: string
      */
     public static function of(ServingProcessEnvironment $env): self
     {
-        return $env->hasSshSession() && ! $env->hasControllingTerminal() && ! $env->carriesPtyMarker()
+        // ⛔ The comparisons are STRICT, and `! $env->hasControllingTerminal()` is not the
+        // same condition: `null` is falsy, so the negation form promotes an unestablishable
+        // fact into the term that mints the stronger verdict. See THE PREDICATE above.
+        return $env->hasSshSession() === true
+            && $env->hasControllingTerminal() === false
+            && $env->carriesPtyMarker() === false
             ? self::Sshd
             : self::NotSshd;
     }
