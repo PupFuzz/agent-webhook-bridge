@@ -2758,59 +2758,50 @@ the work distinguishes those.
   DISABLES the accumulation, a no-op on a corpus whose agents enable no relane family, while the
   NEGATION ENABLES it for every agent WITHOUT the family — which is exactly why five captures move.
   The correction is recorded on DL-290 itself.
-  ⚑ **THE RUN WAS REPEATED ON THE MERGED TREE, AND ONE VERDICT MOVED BETWEEN THE
-  TWO RUNS — recorded because it bounds what a single `observed` is worth here.** The first run (54
-  minutes, 38-fixture corpus) scored
-  `! $this->emitReport($runner->run(CheckSlot::ProbeTools, $ctx))` as `observed-via-abort`; the
-  second, after merging the integration branch (57 minutes, 41-fixture corpus), scores it `observed`,
-  and that is the only verdict that differs. The counts above are the SECOND run's, which is what the
-  committed artifacts hold. **The 56 predicate SITES are identical across the two runs** — same ids,
-  kinds, lines, byte offsets and source, so the comparison is sound id-wise — and
-  `CheckCommand.php` is **byte-identical** between the trees they measured, so nothing about the
-  predicate itself moved. ⛔ **The flip is NOT attributable to the corpus growth**: the mutant reds
-  **32** fixtures in the second run, **29 of them pre-existing**, so dropping the three added captures
-  would leave the verdict unchanged — the growth added redundancy, not reach. The rest of the tree
-  the mutant runs against DID move, and by more than an earlier revision of this sentence admitted:
-  **`tests/Feature/Console/Check/CheckGoldenTest.php` itself changed by 102 lines** (99 added, 3
-  removed) — `minimal-fpm-present`'s subject went from a prefix match to the exact full retention
-  line, two `absentSubjects()` pins were added, and three new fixture arms landed — which matters
-  because a mutation verdict here is DEFINED as *did that suite go red*, so the suite's own assertion
-  set is part of the instrument and not part of the background. Also moved:
-  `tests/Support/CheckGolden/GoldenInstall.php`'s retention default; 36 of the 38 pre-existing
-  captures re-captured; one registered check's implementation (`BoardToolsClientHalfCheck`) together
-  with the new `app/Bridge/Tools/CallProvenance.php` it reads, the new `ServingProcessEnvironment` /
-  `SystemServingProcessEnvironment` pair, the changed signature of `ClientHalfLedger::record()` and
-  the `BridgeServiceProvider` binding behind them; one config default; and one migration. (Bounded to
-  what a `bridge:check` golden run reaches — the receiver, classifier and handler files that also
-  moved in that merge are not on this command's path.)
-  ⭐ **BUT THE FLIP IS NOT A FACT ABOUT EITHER TREE — run 1's iteration for this predicate was
-  DEGENERATE, and that is the reading the mechanism supports.** Five things establish it, none of them
-  an inference from the verdict itself. **(1)** The generator's `if` mutation is a NEGATION, not a
-  falsification: `bin/check-golden-mutate.php`'s `$replacement` builder wraps the original condition
-  in `(! ( … ))` for every `if` predicate (a `foreach` gets `[]`).
-  **(2)** The predicate is the `CheckSlot::ProbeTools` arm of `handle()`,
-  `if (! $this->emitReport($runner->run(CheckSlot::ProbeTools, $ctx))) { $ok = false; }`, and
-  `emitReport()` is a pure `bool`-returning loop over `$report->findings()` — so the negation
-  evaluates the very same call and only selects or deselects `$ok = false;`. **This mutant cannot
-  abort the command**; it can move the exit code and the JSON `ok`, and nothing else. **(3)** `observed-via-abort` is recorded only on an
-  abort SIGNATURE, computed by that script's `$runGolden` closure: a
+  ⚑ **THE RUN WAS REPEATED ON THE MERGED TREE, AND ONE VERDICT MOVED.**
+  **1 — THE DELTA.** The **56** predicate SITES are identical across the two runs (ids, kinds, lines,
+  byte offsets, source) and `CheckCommand.php` is **byte-identical** between the two trees measured.
+  **Exactly one verdict differs** — the `CheckSlot::ProbeTools` `emitReport` arm,
+  `observed-via-abort` in run 1 and `observed` in run 2, whose counts are the ones above. That mutant
+  reds **32** captures in run 2, **29** pre-dating run 1, so dropping the three added captures would
+  not move the verdict. **What else moved between the trees is DERIVED, never listed.** Two figures
+  are load-bearing: `tests/Feature/Console/Check/CheckGoldenTest.php` changed by **102** lines (99
+  added, 3 removed) — a verdict here IS *did that suite go red*, so its assertion set is instrument,
+  not background — and **36 of the 38** pre-existing captures were re-captured. For the rest, RUN it:
+  `git diff --numstat` over `app/` between the two measured trees, membership-tested against
+  `app/Bridge/Check/` and `CheckCommand.php`. ⛔ **A symbol grep does not settle that membership, so
+  no exclusion here is complete** — a binding resolved by string, or a class named in an agent's
+  config, is on this path and no grep for the name finds it; the classifier plane, reached live by
+  `AgentClassifierResolvableCheck` through `ClassifierResolver::for()`, is the worked case.
+  **2 — WHAT RUN 1'S RECORD CANNOT HAVE BEEN.** Five things, none an inference from the flipped
+  status alone. **(1)** The `if` mutation is a NEGATION, not a falsification:
+  `bin/check-golden-mutate.php`'s `$replacement` builder wraps the condition in `(! ( … ))` (a
+  `foreach` gets `[]`). **(2)** In
+  `if (! $this->emitReport($runner->run(CheckSlot::ProbeTools, $ctx))) { $ok = false; }` the
+  `emitReport()` call sits INSIDE the negated condition, so both variants evaluate it identically —
+  the load-bearing fact, the call being neither pure nor needing to be — and the mutant's whole
+  effect is whether `$ok = false;` executes, which is read only where the JSON document's `ok` is
+  encoded and where the exit code is returned. **So it can move those two and nothing else; it cannot
+  abort the command.** **(3)** `observed-via-abort` is recorded only on an abort SIGNATURE computed
+  by that script's `$runGolden` closure: a
   `Fatal error|Uncaught|TypeError|ArgumentCountError|Error:` message, `errors > 0` /
-  `result === 'errored'`, or a phpunit report that does not parse. None of those is reachable from
-  (2). **(4)** Run 1's record is `"status": "observed-via-abort", "failing": []` — and across the
-  whole git history of `docs/check-golden-coverage.json` it is the **only** `observed-via-abort`
-  record whose `failing` list is EMPTY. Every other one in that history names 28 to 32 distinguished
-  fixtures — it reds the corpus AND trips the signature; this one distinguished nothing at all.
-  **(5)** The structurally identical adjacent sibling — the `CheckSlot::ProbeToolsSsh` arm,
-  `! $this->emitReport($runner->run(CheckSlot::ProbeToolsSsh, $ctx))` — measured normally in that
-  same run, scoring `observed` over 29 fixtures and rising to 32 in run 2, which is exactly the
-  three added captures.
-  **So run 1's verdict for this predicate is not evidence about the tree it ran on**, and run 2 is a
-  measurement of the predicate rather than a repair of anything. ⛔ **That is a statement about what
-  the recorded status CANNOT have come from, not a diagnosis**: nothing here names what killed that
-  iteration, and run 1 retained nothing that could. **This is DL-267's own class** — *a run that could
-  not apply its mutation is a DESTROYED run, not a measurement* — arriving one predicate at a time.
-  The guard recorded at item 8 above refuses only a whole-run result set that is UNIFORMLY
-  `observed-via-abort` or uniformly `UNOBSERVED`, so **a single degenerate predicate inside an
-  otherwise healthy run passes straight through into a rendered verdict**. That is an open instrument
-  gap, carded separately and deliberately not repaired here. The other 55 verdicts and the 7
-  UNOBSERVED ids are the same in both runs.]
+  `result === 'errored'`, or an unparseable phpunit report — none reachable from (2). **(4)** Run 1's
+  record is `"status": "observed-via-abort", "failing": []`, the only `observed-via-abort` record
+  with an EMPTY `failing` list in the whole history of `docs/check-golden-coverage.json`. ⚑ **The
+  population that contrast runs against is THIN:** the other **18** come from exactly **two**
+  predicates — `! is_dir($configDir)` and the secret-dir guard, both null-guards, the shape that
+  script's header says can abort — over 9 revisions (16 name 32 fixtures, 2 name 28). **(5)** The
+  adjacent structurally identical sibling, the `CheckSlot::ProbeToolsSsh` arm, measured normally in
+  that same run: `observed` over 29 fixtures, rising to 32 in run 2, exactly the three added
+  captures. ⚑ **An UNAPPLIED mutation is ruled out too:** that script's one write primitive throws on
+  a short `file_put_contents`, a loop throw aborts with no artifact, and run 1 committed a full
+  56-record artifact; an unapplied mutation would in any case leave the suite GREEN — `UNOBSERVED`,
+  never a red. What remains is a per-predicate result whose red came from something other than the
+  mutation's semantics. ⛔ **That says what the recorded status CANNOT have come from and is NOT a
+  diagnosis: nothing here names what killed that iteration, and run 1 retained nothing that could.**
+  **3 — THE INSTRUMENT GAP.** The guard at item 8 above refuses only a whole-run result set that is
+  UNIFORMLY `observed-via-abort` or uniformly `UNOBSERVED`; nothing inspects a SINGLE record, so one
+  of these inside an otherwise healthy run passes straight into a rendered verdict. Its detectable
+  signature is `status === 'observed-via-abort'` with an EMPTY `failing` list — that, not any
+  whole-run precondition, is what a guard keys on. Carded separately by that shape; deliberately not
+  repaired here.]
