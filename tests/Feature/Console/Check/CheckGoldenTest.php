@@ -3,6 +3,7 @@
 namespace Tests\Feature\Console\Check;
 
 use App\Bridge\Retention\RetentionGate;
+use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Models\BoardToolsClientCall;
 use App\Models\WebhookEvent;
@@ -111,7 +112,9 @@ class CheckGoldenTest extends TestCase
 
                 return $default;
 
-                // ---- retention: all four postures ----
+                // ---- retention postures (the count is deliberately NOT restated here: it
+                // said "four" over five entries, and a banner that carries a number is a
+                // second copy of the list directly beneath it) ----
             case 'retention-disabled':
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
                 config(['bridge.retention.enabled' => false]);
@@ -121,6 +124,33 @@ class CheckGoldenTest extends TestCase
             case 'retention-misconfigured':
                 $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
                 config(['bridge.retention.older_than' => 'not-a-window']);
+
+                return $default;
+
+            case 'retention-payload-leg-off':
+                // THE ONE-LEG BRANCH of `RetentionConfig::summary()`'s
+                // `implode(' + ', $legs)`, which had no coverage at all. Since DL-315
+                // shipped the payload leg ON, all 36 posture-printing fixtures render TWO
+                // legs, and every assertion over that line matched on the PREFIX
+                // `retention: on (delete >30d` — true of one leg and of two, so nothing
+                // discriminated them. This is the install an operator who takes DL-315's
+                // own opt-out actually has, and its subject below is the WHOLE line.
+                $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
+                config(['bridge.retention.null_payloads_older_than' => '']);
+
+                return $default;
+
+            case 'retention-row-leg-off':
+                // THE OTHER one-leg arm, and the one DL-315 CREATED. With
+                // `BRIDGE_RETENTION_OLDER_THAN=` empty and retention enabled, both windows
+                // used to be null, so `problemWith()` reported MISCONFIGURED and the
+                // install pruned nothing; moving the payload default to `7d` makes the
+                // same .env USABLE and starts the payload leg. That transition has an
+                // operator-visible preflight line (`MISCONFIGURED` → `on (null payloads
+                // >7d …)`) and had no fixture — the sibling case above pins the arm this
+                // change did not move, which is the easy half.
+                $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
+                config(['bridge.retention.older_than' => '']);
 
                 return $default;
 
@@ -411,6 +441,30 @@ class CheckGoldenTest extends TestCase
 
                 return $default;
 
+            case 'board-tools-client-half-ssh-proven':
+                // card#7836 / DL-316 — the STRONGER of the leg's two `ok` lines, and the only
+                // fixture that reaches it. Its twin is `board-tools-ssh-pinned-line`
+                // directly above: the SAME install, differing ONLY in the recorded row, so
+                // the diff between the two captures is exactly the provenance claim and
+                // nothing else. Its OTHER twin is `board-tools-client-half-wired`, the same
+                // leg's weaker line — the pair is what makes either legible, because the two
+                // carry the SAME severity and differ only in what they claim.
+                //
+                // ⚑ THE STAMP IS RELATIVE for the reason the http fixture states: this leg
+                // prints an AGE, so an absolute stamp would expire the golden file overnight.
+                $this->sshInstall($i, transport: "  transport: ssh\n");
+                $this->app->instance(SshProbeEnvironment::class, new GoldenSshEnvironment(
+                    authorizedKeys: self::GOOD_PINNED_LINE,
+                ));
+                BoardToolsClientCall::query()->create([
+                    'agent' => 'prod-agent',
+                    'transport' => 'ssh',
+                    'call_provenance' => CallProvenance::Sshd,
+                    'last_success_at' => now()->subHours(3)->subMinutes(30),
+                ]);
+
+                return $default;
+
             case 'board-tools-ssh-default-transport-advisory':
                 // The DL-225 pre-upgrade advisory: no explicit `transport:` key (so the
                 // v0.68.0 flipped default lands the agent on ssh) AND an unverifiable
@@ -523,6 +577,8 @@ class CheckGoldenTest extends TestCase
             'default-agent-has-no-config',
             'retention-disabled',
             'retention-misconfigured',
+            'retention-payload-leg-off',
+            'retention-row-leg-off',
             'retention-last-pass-failed',
             'agent-yaml-malformed',
             'agent-classifier-missing',
@@ -544,6 +600,7 @@ class CheckGoldenTest extends TestCase
             'board-tools-http-enabled',
             'board-tools-client-half-wired',
             'board-tools-ssh-pinned-line',
+            'board-tools-client-half-ssh-proven',
             'board-tools-ssh-default-transport-advisory',
             'board-tools-ssh-live-probe',
             'probe-tools-ssh-with-no-ssh-agent',
@@ -580,7 +637,11 @@ class CheckGoldenTest extends TestCase
         return [
             // ---- the baseline shape, and the one host input that changes it ----
             'minimal' => ['exit: 0', 'agent config ok: prod-agent'],
-            'minimal-fpm-present' => ['retention: on (delete >30d'],
+            // EXACT, not the `retention: on (delete >30d` prefix it used to be: that prefix
+            // is true of the one-leg posture too, so it could not tell the two apart. This
+            // and `retention-payload-leg-off` are the pair that pins both branches of
+            // `RetentionConfig::summary()`'s implode.
+            'minimal-fpm-present' => ['retention: on (delete >30d + null payloads >7d, every 86400s, 500 rows/pass)'],
 
             // ---- the top-of-handle() install shell ----
             // The subject moved with card#5698: `is_dir()` cannot tell an absent dir from an
@@ -592,9 +653,18 @@ class CheckGoldenTest extends TestCase
             'bad-receiver-url' => ["bridge.receiver_base_url 'not-a-url' must use http or https"],
             'default-agent-has-no-config' => ["BRIDGE_DEFAULT_AGENT 'ghost-agent' has no matching config"],
 
-            // ---- retention: all four postures ----
+            // ---- retention postures (count deliberately unstated — see buildFixture()) ----
             'retention-disabled' => ['retention: DISABLED (BRIDGE_RETENTION_ENABLED=false)'],
             'retention-misconfigured' => ['retention: enabled but MISCONFIGURED'],
+            // The WHOLE line, closing parenthesis included: a prefix subject cannot state
+            // an absence, and what this fixture exists to prove is that the second leg is
+            // NOT rendered. See `minimal-fpm-present` for the two-leg half of the pair.
+            'retention-payload-leg-off' => ['retention: on (delete >30d, every 86400s, 500 rows/pass)'],
+            // The THIRD rendering of the same implode, and the one whose posture DL-315
+            // brought into existence: `BRIDGE_RETENTION_OLDER_THAN=` empty was reported
+            // MISCONFIGURED before the payload default moved. Whole line again, for the
+            // same reason as its sibling — the absence is the subject.
+            'retention-row-leg-off' => ['retention: on (null payloads >7d, every 86400s, 500 rows/pass)'],
             'retention-last-pass-failed' => ['retention: the LAST PASS FAILED'],
 
             // ---- per-agent legs ----
@@ -659,6 +729,22 @@ class CheckGoldenTest extends TestCase
             // operator text and gets reworded, while `REPORTED` + the age is the invariant
             // this fixture exists to reach.
             'board-tools-client-half-wired' => ['client half REPORTED — a successful board-tools call for this agent was recorded 3h ago, over http'],
+            // The DL-316 arm, anchored on the two halves that make it a DIFFERENT claim from
+            // the line above and not a rewording of it: the verdict stem, and the residual
+            // ambiguity it is obliged to keep printing. Pinning the stem alone would stay
+            // green if the caveat were dropped, which is the only way this line can go wrong.
+            'board-tools-client-half-ssh-proven' => [
+                'client half REPORTED THROUGH THE SSH DOOR',
+                'DOES NOT NAME THE CALLER',
+                // card#7836's re-derivation: the enumeration must be the one the PREDICATE
+                // supports, on the surface an operator actually reads. The wording it
+                // replaced named an interactive shell's SSH_TTY and a cron/systemd unit that
+                // "exports neither marker" — both false, both on the most confident line the
+                // command prints, and a golden fixture that only pinned the headline would
+                // have carried them unchanged through this fix.
+                'EVERY hand-run FROM A TERMINAL',
+                'TWO THINGS IT DOES NOT RULE OUT',
+            ],
             'board-tools-ssh-pinned-line' => ['board_tools ssh: the pinned line for agent prod-agent forces bridge:tools-call'],
             'board-tools-ssh-default-transport-advisory' => ['is on ssh by the v0.68.0 default'],
             'board-tools-ssh-live-probe' => ['board_my_cards ok; window scoped to board 10 / swimlane 4'],
@@ -701,6 +787,16 @@ class CheckGoldenTest extends TestCase
             'no-opt-in-probes-requested' => ['board_tools probe:'],
             // A consumer with nothing to report is silent, not reassuring.
             'event-consumer-nothing-arrived' => ['event-consumer:'],
+            // Paired with that fixture's exact-line subject: the positive pins the one-leg
+            // rendering, this pins that the payload leg contributed nothing to it. Without
+            // it a summary() that appended an empty leg (`delete >30d + `) would be caught,
+            // but one that rendered `null payloads >0d` somewhere else in the line
+            // would not.
+            'retention-payload-leg-off' => ['null payloads'],
+            // The mirror of that pairing: this install's row leg is off, so the posture
+            // line must not claim a delete window, and it must not read MISCONFIGURED
+            // (which is what this same .env printed before DL-315 moved the default).
+            'retention-row-leg-off' => ['delete >', 'MISCONFIGURED'],
         ];
     }
 

@@ -2337,6 +2337,167 @@ class BridgeCommandsTest extends TestCase
         $this->assertNull($dispatch->error_message);
     }
 
+    public function test_replay_refuses_an_event_whose_payload_retention_nulled(): void
+    {
+        // ⛔ THE FABRICATION THIS CLOSES, MEASURED ON THIS EXACT FIXTURE BEFORE THE GUARD
+        // EXISTED: `bridge:replay` printed `replayed event 1` at rc 0, appended
+        // `{"kind":"new_card","subject_id":"","summary":"new card by 999: <unnamed>", …}`
+        // to the agent's DURABLE inbox.jsonl (and on an event-driven seat would have woken
+        // it with that), and stamped the errored dispatch `delivered` with its
+        // error_message cleared — erasing the only record of the original failure. Nothing
+        // threw: `InboxOnlyClassifier` builds a perfectly valid Intent from `[]`.
+        //
+        // TWO EVENTS, NOT ONE, and the intact one is not decoration. The load-bearing
+        // assertion here is an ABSENCE (no inbox line), which a fixture that simply never
+        // reaches the inbox would satisfy for the wrong reason. The intact event proves in
+        // the same run that this install DOES stage a line when it has a payload, so the
+        // absence is attributable to the guard.
+        $this->writeAgent();
+        $inbox = $this->dir.'/state/inbox.jsonl';
+
+        $intact = $this->event();
+        $nulled = WebhookEvent::create([
+            'delivery_id' => 'evt-2', 'provider' => 'kanban', 'scope_id' => '5',
+            'event_type' => 'task.created', 'actor_id' => '999',
+            'payload' => ['subject_id' => 43, 'board_id' => 5, 'payload' => ['name' => 'Aged out']],
+        ]);
+        // Through the model, so the column is nulled the way RetentionService nulls it.
+        $nulled->payload = null;
+        $nulled->save();
+        $this->assertNull($nulled->fresh()->payload, 'the fixture did not actually null the payload column');
+
+        foreach ([$intact, $nulled] as $event) {
+            AgentDispatch::create([
+                'webhook_event_id' => $event->id, 'agent_name' => 'prod-agent', 'error_message' => 'old failure',
+            ]);
+        }
+
+        // The positive control, first: an intact payload still replays and still stages.
+        $this->assertSame(0, Artisan::call('bridge:replay', ['id' => $intact->id]));
+        $this->assertStringContainsString('Ship it', (string) file_get_contents($inbox));
+        $staged = substr_count((string) file_get_contents($inbox), "\n");
+
+        $code = Artisan::call('bridge:replay', ['id' => $nulled->id]);
+        $out = Artisan::output();
+
+        $this->assertSame(ReplayCommand::FAILURE, $code, 'a payload-nulled event must REFUSE, not report success');
+        $this->assertStringContainsString('BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN', $out);   // the knob
+        $this->assertStringContainsString('nulled by retention', $out);                          // the cause
+        $this->assertStringNotContainsString('replayed event', $out);
+
+        // Nothing staged, nothing woken: the line count did not move.
+        $this->assertSame($staged, substr_count((string) file_get_contents($inbox), "\n"));
+        $this->assertStringNotContainsString('<unnamed>', (string) file_get_contents($inbox));
+
+        // And NO LEDGER MUTATION — the guard sits above the --force reset for this reason.
+        // The pre-DL-315 path stamped this row `delivered` and cleared `error_message`,
+        // which both loses the original failure and makes the row invisible to a later
+        // non-`--force` replay.
+        $d = AgentDispatch::where('webhook_event_id', $nulled->id)->firstOrFail();
+        $this->assertNull($d->processed_at);
+        $this->assertNull($d->outcome);
+        $this->assertSame('old failure', $d->error_message);
+    }
+
+    public function test_replay_force_does_not_reset_the_ledger_before_refusing_a_nulled_payload(): void
+    {
+        // The refusal has to precede the --force reset, not merely the dispatch: --force
+        // nulls processed_at/outcome/reason/error_message as its FIRST act, so a guard
+        // placed after it would refuse having already destroyed the row's terminal tuple
+        // with no re-run to restore it.
+        $this->writeAgent();
+        $event = $this->event();
+        $event->payload = null;
+        $event->save();
+
+        $done = AgentDispatch::create([
+            'webhook_event_id' => $event->id, 'agent_name' => 'prod-agent',
+            'processed_at' => now()->subDay(), 'outcome' => AgentDispatch::OUTCOME_DELIVERED,
+            'error_message' => 'a handler note worth keeping',
+        ]);
+        $processedAt = $done->processed_at;
+
+        $this->assertSame(ReplayCommand::FAILURE, Artisan::call('bridge:replay', ['id' => $event->id, '--force' => true]));
+
+        // Asserted NOT-NULL first and by name: a guard placed after the reset makes every
+        // line below dereference null, and `Call to a member function on null` names the
+        // language, not the defect.
+        $d = $done->fresh();
+        $this->assertNotNull(
+            $d->processed_at,
+            '--force reset the ledger BEFORE the payload guard refused — the row\'s terminal tuple is '
+            .'destroyed with no re-run to restore it',
+        );
+        $this->assertTrue($d->processed_at->equalTo($processedAt));
+        $this->assertSame(AgentDispatch::OUTCOME_DELIVERED, $d->outcome);
+        $this->assertSame('a handler note worth keeping', $d->error_message);
+    }
+
+    public function test_inspect_names_a_nulled_payload_instead_of_printing_the_json_literal(): void
+    {
+        // Inspect does NOT refuse — it dispatches nothing and reconstructs nothing, and the
+        // row's metadata is what the operator came for. What it must not do is print the
+        // bare literal `null`, which reads as "the upstream sent nothing"; this is the
+        // surface reached right after replay turns the operator away, so it has to name
+        // the cause. The intact case is asserted in the same test as the discriminator.
+        $this->writeAgent();
+        $event = $this->event();
+
+        $this->artisan('bridge:inspect', ['id' => $event->id])
+            ->expectsOutputToContain('Ship it')
+            ->assertExitCode(0);
+
+        $event->payload = null;
+        $event->save();
+
+        $this->assertSame(0, Artisan::call('bridge:inspect', ['id' => $event->id]));
+        $out = Artisan::output();
+        $this->assertStringContainsString('evt-1', $out);                                  // the row still prints
+        $this->assertStringContainsString('nulled by retention', $out);
+        $this->assertStringContainsString('BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN', $out);
+        $this->assertStringContainsString('REFUSES', $out);                                 // names what replay will do
+        $this->assertStringNotContainsString('Ship it', $out);
+    }
+
+    public function test_stats_does_not_call_a_payload_nulled_errored_dispatch_replayable(): void
+    {
+        // `errored (replayable)` was a FALSE CLAIM over part of its own count once the
+        // DL-315 default shipped: replay REFUSES those rows.
+        //
+        // ⛔ THE ROW COUNTS ARE DELIBERATELY UNEQUAL — 2 replayable, 1 gone. The first
+        // fixture used 1 and 1, which a TRANSPOSITION of the two row values passes green:
+        // the assertions were then a claim about the pair of numbers and not about which
+        // label carries which. Unequal counts make each label's predicate load-bearing,
+        // and still red on the mutation the original was written for (a label that lost
+        // its predicate prints 3 in one row and 0 in the other).
+        $this->writeAgent();
+        $replayable = $this->event();
+        $replayableTwo = WebhookEvent::create([
+            'delivery_id' => 'evt-3', 'provider' => 'kanban', 'scope_id' => '5',
+            'event_type' => 'task.moved', 'actor_id' => '998',
+            'payload' => ['subject_id' => 44],
+        ]);
+        $gone = WebhookEvent::create([
+            'delivery_id' => 'evt-2', 'provider' => 'kanban', 'scope_id' => '5',
+            'event_type' => 'task.created', 'actor_id' => '999',
+            'payload' => ['subject_id' => 43],
+        ]);
+        $gone->payload = null;
+        $gone->save();
+
+        foreach ([$replayable, $replayableTwo, $gone] as $event) {
+            AgentDispatch::create([
+                'webhook_event_id' => $event->id, 'agent_name' => 'prod-agent', 'error_message' => 'boom',
+            ]);
+        }
+
+        $this->assertSame(0, Artisan::call('bridge:stats'));
+        $out = Artisan::output();
+
+        ConsoleTable::assertRow($out, 'errored (replayable)', '2');
+        ConsoleTable::assertRow($out, 'errored (NOT replayable — event payload nulled by retention)', '1');
+    }
+
     public function test_replay_force_reruns_succeeded_dispatch(): void
     {
         $this->writeAgent();
@@ -2959,7 +3120,14 @@ class BridgeCommandsTest extends TestCase
         $this->assertSame(0, $code);
         $this->assertStringContainsString('has its entry file and node_modules', $out);
         $this->assertStringContainsString('a presence check, not a load test', $out);
-        $this->assertStringNotContainsString('loads', $out);
+        // ⛔ WORD-BOUNDARED, and not a style preference. The claim this guards is the
+        // check saying the entry "loads"; a BARE substring search answers about the
+        // letters, not the claim, and `payloads` contains them — so DL-315's retention
+        // posture line (`null payloads >7d`) reddened this test while making no claim
+        // about the entry at all. `uploads`, `downloads` and `reloads` are the same
+        // trap waiting. \bloads\b does not match inside `payloads` (no boundary
+        // between `y` and `l`), so it still catches the sentence it exists to catch.
+        $this->assertDoesNotMatchRegularExpression('/\bloads\b/', $out);
     }
 
     public function test_check_reports_a_server_path_that_names_a_file_as_a_file(): void

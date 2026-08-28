@@ -11,7 +11,9 @@ use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Support\SystemChannelProbeEnvironment;
 use App\Bridge\Tools\BoardToolDispatcher;
 use App\Bridge\Tools\BoardToolsRegistry;
+use App\Bridge\Tools\ServingProcessEnvironment;
 use App\Bridge\Tools\SshProbeEnvironment;
+use App\Bridge\Tools\SystemServingProcessEnvironment;
 use App\Bridge\Tools\SystemSshProbeEnvironment;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Support\Facades\Log;
@@ -62,6 +64,13 @@ class BridgeServiceProvider extends ServiceProvider
         // the default reads the real host; a test binds an in-memory fake to drive the
         // root-gated / FIPS / sshd legs.
         $this->app->bind(SshProbeEnvironment::class, SystemSshProbeEnvironment::class);
+
+        // The serving-process seam behind the board-tools client-half provenance
+        // (card#7836 / DL-316) — the default reads the real process; a test binds an
+        // in-memory fake, because a suite cannot manufacture a controlling terminal for
+        // itself and one that measured its own ambient process would be green or red by
+        // accident of how the developer launched it.
+        $this->app->bind(ServingProcessEnvironment::class, SystemServingProcessEnvironment::class);
 
         // The endpoint-liveness seam for the bridge:check channel-transport legs
         // (DL-242 stage 5b) — the default connects for real; a test binds a fake so a

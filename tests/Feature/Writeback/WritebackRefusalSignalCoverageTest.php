@@ -7,7 +7,9 @@ use Tests\TestCase;
 /**
  * The class guard for DL-274/DL-285 (card#5312, card#5968).
  *
- * DL-274 fixed the minting primitive — `WritebackAlertNotifier::warnAndNotify` does the
+ * DL-274 fixed the minting primitive — `WritebackAlertNotifier::warnAndNotify` (and, since
+ * DL-314, its withheld-id twin `warnAndNotifyCardIdWithheld`, which pairs identically and
+ * differs only in what the PUSH carries) does the
  * durable log and the live push in one call, so an arm that uses it cannot log a refusal
  * without alerting on it. What that does NOT prevent is the next arm being written with a
  * bare `Log::warning(...)` and no notifier at all, which is exactly how 11 of 12 arms came
@@ -105,7 +107,7 @@ class WritebackRefusalSignalCoverageTest extends TestCase
         $this->assertSame(
             $allowed,
             $actual,
-            'a Log::warning/Log::error in a writeback handler is not routed through WritebackAlertNotifier::warnAndNotify and is not on the accounted-for list. '
+            'a Log::warning/Log::error in a writeback handler is not routed through a WritebackAlertNotifier pairing method (warnAndNotify / warnAndNotifyCardIdWithheld) and is not on the accounted-for list. '
             .'Either route it (a permanent refusal must emit a live signal — DL-274/DL-285) or add it to ALLOWED with the reason it is deliberately quiet.',
         );
     }

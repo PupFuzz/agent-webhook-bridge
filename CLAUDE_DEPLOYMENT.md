@@ -244,7 +244,7 @@ A malformed per-agent YAML is intentionally a `5xx` — the loader fails closed 
 Each `(event, agent)` is one `agent_dispatches` row:
 
 - **done** — `processed_at` set. Intents were staged and handlers ran. If a *handler/push* failed (e.g. channel push to an idle agent — connection refused, which is NORMAL), the row is still **done** with `error_message` recording the note; the intent is already durable in `inbox.jsonl`, read via `bridge:inbox` when the agent returns. The webhook still 200s.
-- **errored** — `processed_at` null, `error_message` set. The classifier threw (a deterministic bug). The webhook still 200s (a 5xx would retry-storm an event that fails identically every time). Fix the classifier, reload FPM, then `bridge:replay <id>`.
+- **errored** — `processed_at` null, `error_message` set. The classifier threw (a deterministic bug). The webhook still 200s (a 5xx would retry-storm an event that fails identically every time). Fix the classifier, reload FPM, then `bridge:replay <id>` — **while the event still has its payload** (default 7d; see § *Retention config (DL-199)* below).
 
 A **delivered** row's `reason` is non-null in exactly one case: **`echo: agent surface suppressed`** (DL-203) — a github event whose actor tripped an echo/signal gate, classified by a writeback-emitting classifier, had its agent-facing surface (inbox intent + channel push) stripped and only the machine writeback handlers ran. `error_message` stays handler-failure-only, and `bridge:replay`'s gate-DROPPED skip count is unaffected (the row is delivered, not dropped).
 
@@ -271,7 +271,7 @@ All config/secret/state paths live under `BRIDGE_DIR` unless `BRIDGE_CONFIG_DIR`
 
 ```bash
 php artisan bridge:check [--probe-tools=<endpoint>]   # validate .env, dirs, DB, agent YAMLs; --probe-tools live-probes the board-tools path (DL-220)
-php artisan bridge:stats                              # event/dispatch counts; errored (replayable) count; writeback board divergences
+php artisan bridge:stats                              # event/dispatch counts; errored split replayable vs NOT (payload nulled); writeback board divergences
 php artisan bridge:inspect {id}                       # one webhook event + its dispatch ledger
 php artisan bridge:replay {id} [--agent=] [--force]   # re-run dispatch for an event
 php artisan bridge:inbox [--hook-format=auto|claude-code|plain]              # surface unseen inbox intents
@@ -292,8 +292,8 @@ php artisan bridge:standup [--dry-run]                # PM standup digest (DL-30
 | --- | --- | --- | --- |
 | `retention.enabled` | `BRIDGE_RETENTION_ENABLED` | `true` | Prune after each delivery. **Defaults ON** — an upgrade starts pruning without operator action. |
 | `retention.interval` | `BRIDGE_RETENTION_INTERVAL` | `86400` | Seconds between passes once the store is drained. |
-| `retention.older_than` | `BRIDGE_RETENTION_OLDER_THAN` | `30d` | Delete events/dispatches + trim inbox lines older than this. Same vocabulary as `--older-than`. |
-| `retention.null_payloads_older_than` | `BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN` | *(empty ⇒ leg off)* | Null payloads past the replay window, keeping the row. |
+| `retention.older_than` | `BRIDGE_RETENTION_OLDER_THAN` | `30d` | Delete events/dispatches + trim inbox lines older than this. Same vocabulary as `--older-than`. Empty ⇒ the ROW leg is off. ⚠ **DL-315 CHANGES WHAT AN EMPTY VALUE DOES.** With both windows empty, retention had no usable window at all: `bridge:check` printed `retention: enabled but MISCONFIGURED`, nothing was pruned, and an operator could be relying on that as an inert state. The payload default below now resolves to `7d`, so the **same `.env`** becomes usable — the preflight flips to `retention: on (null payloads >7d, …)` and **the payload leg starts running on the first inbound webhook after the upgrade**. If an empty row window was how you kept retention inert, set `BRIDGE_RETENTION_ENABLED=false` (the supported way, and the one `bridge:check` warns about) **before** upgrading. |
+| `retention.null_payloads_older_than` | `BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN` | **`7d`** | Null payloads past the replay window, keeping the row. **Defaults ON** — an upgrade starts nulling payloads without operator action (DL-315). ⚠ **It IS the replay window:** `bridge:replay` REFUSES a payload-nulled event. **No grace period** — the gate's marker is a cache key, so the first inbound webhook after deploy runs a pass. To opt out (`''`) or widen it, set the value **before** the upgrade and re-run `php artisan config:cache`. ⚠ **This default moving also changes what an EMPTY `BRIDGE_RETENTION_OLDER_THAN` does** — see that row above; an install with both windows empty was reported MISCONFIGURED and pruned nothing, and now runs this leg. |
 | `retention.batch` | `BRIDGE_RETENTION_BATCH` | `500` | Max rows one pass touches per leg. While a backlog remains the gate keeps draining on successive deliveries rather than waiting out `interval`. |
 
 ### Standup digest config (DL-306)
@@ -314,6 +314,8 @@ An unparseable window (or a non-positive `interval`/`batch`) prunes **nothing** 
 
 `bridge:replay` re-runs the `processed_at`-guarded dispatch loop: errored rows (`processed_at` null) re-run; **already-succeeded rows are skipped** so a sibling's already-delivered push / `spawn_detached` is never re-fired. `--agent` scopes to one agent. `--force` clears `processed_at` first so done rows (incl. handler-note rows) re-run too — use it to re-attempt a missed channel push once the agent is back.
 
+⛔ **An event whose payload retention has NULLED is REFUSED (exit 1), not replayed** (DL-315). Replay cannot reconstruct a payload, and dispatching the empty one in its place is not a degraded replay — it stages a **fabricated** intent (`new card by <who>: <unnamed>`) to the agent's durable `inbox.jsonl`, wakes an event-driven seat with it, and stamps the errored dispatch `delivered`, erasing the record of the original failure. The refusal happens **before** any ledger write, `--force` included, so a refused run leaves every dispatch row exactly as it found it. `bridge:inspect <id>` still shows the row and names the cause; `bridge:stats` reports those rows as `errored (NOT replayable — event payload nulled by retention)` rather than counting them as replayable. **`retention.null_payloads_older_than` is therefore the replay window** — see the retention table above.
+
 `bridge:reconcile` is the **rerunnable backstop for the event-driven writeback** (DL-183): GitHub delivers each webhook once with no retry, so a bridge outage during a PR event silently strands that card. It recomputes each tracked card's expected stage from GitHub PR ground truth and reports the drift (report-only by default; `--fix` applies the *forward* moves). Its **safety posture** — every guard it reuses, what it refuses, what aborts a board and what caps a run — is enumerated ONCE in [`docs/writeback.md`](docs/writeback.md) § *Reconciliation* and deliberately not restated here: the list stood in three hand-synced copies and the DL-301 refusal reached only one of them. Needs a github read token (the kanban repo is private) — resolved **per repo** from `bridge.providers.github.token_path` (`BRIDGE_GITHUB_TOKEN_PATH`, authoritative when set — point it at a centralized credential like `~/.config/coord/github-pat`), else `<secret_dir>/github/token`, else **store-native** (DL-185: `git-credential-coord` + the store's `[git-credential-map]` → a per-repo least-privilege PAT; `bridge.providers.github.credential_helper` / `BRIDGE_GITHUB_CREDENTIAL_HELPER`, default `git-credential-coord`, empty to disable — needs `HOME`/`COORD_CREDENTIALS` in the reconcile env to find the store), else an ambient `GH_TOKEN`. No new cron — schedule it from host cron or the session-close ritual (start report-only). See [`docs/writeback.md`](docs/writeback.md) § *Reconciliation*.
 
 ## Smoke test
@@ -327,6 +329,7 @@ An unparseable window (or a non-positive `interval`/`batch`) prunes **nothing** 
 
 ## Diagnose
 
+- **`bridge:stats` shows errored dispatches, `NOT replayable`.** Those events are past `retention.null_payloads_older_than` (default 7d) and their payloads are gone; `bridge:replay` refuses them and no command can recover them. Fix the classifier so the class stops recurring, and widen the window (then `php artisan config:cache`) if your detection latency needs it.
 - **`bridge:stats` shows errored dispatches.** A classifier threw. `bridge:inspect <id>` (or `storage/logs/laravel.log`) for detail → fix → `optimize:clear && reload php8.5-fpm` → `bridge:replay <id>`.
 - **Idle agent — channel pushes "failing".** Connection-refused with no Claude Code session up is NORMAL: row is **done with a note**, intent is in `inbox.jsonl` for the next `bridge:inbox`. Not an incident; `--force` re-attempts the push.
 - **A config edit "didn't take".** The optimize trap above — `optimize:clear && optimize && reload php8.5-fpm`.
