@@ -2729,7 +2729,7 @@ the work distinguishes those.
   cannot drift again in silence.
   **[REGENERATED — card#7835. The deferred run has been done, on a throwaway worktree, and the
   banner is gone because the generator rewrites the whole file.** `handle()` now holds **56**
-  predicates and the measured split is **48 observed · 1 observed-via-abort · 7 UNOBSERVED**, against
+  predicates and the measured split is **49 observed · 0 observed-via-abort · 7 UNOBSERVED**, against
   the previous **46 · 0 · 3 over 49**. Compared as a MULTISET on `(kind, source)` and never as a set
   — the stage 3b–7 method note above owns the reason — **7 predicates were added and 0 departed**,
   with `49 − 0 + 7 == 56` as that comparison's own positive control. ⚑ **The gap count's 3 → 7 rise
@@ -2743,11 +2743,22 @@ the work distinguishes those.
   over UNOBSERVED unchanged. **Both of this leg's own predicates scored `observed`**: the
   `CheckSlot::BoardToolsClientHalf` `emitReport` arm is a unique source, and its
   `foreach $ctx->boardToolsEnabled` loop is covered by both instances of that source being
-  `observed`. ⚑ **One pre-existing predicate changed verdict with its source unchanged:**
-  `! $this->emitReport($runner->run(CheckSlot::ProbeTools, $ctx))` moved `observed` →
-  `observed-via-abort`, i.e. the negated mutant now reds the suite by THROWING rather than by the
-  fixture set telling its branches apart, so this run does not establish that a behaviour change
-  confined to that guard would be caught. It is the first non-zero `observed-via-abort` count since
-  that column fell to zero at stage 6 — and unlike stage 6's fall, which was by DEPARTURE, this rise
-  is by a verdict change on a predicate whose source is byte-identical. It narrows what the file
-  claims; it is not a regression in the command.]
+  `observed`. ⚑ **THE RUN WAS REPEATED ON THE MERGED TREE, AND ONE VERDICT MOVED BETWEEN THE
+  TWO RUNS — recorded because it bounds what a single `observed` is worth here.** The first run (54
+  minutes, 38-fixture corpus) scored
+  `! $this->emitReport($runner->run(CheckSlot::ProbeTools, $ctx))` as `observed-via-abort`; the
+  second, after merging the integration branch (57 minutes, 41-fixture corpus), scores it `observed`,
+  and that is the only verdict that differs. The counts above are the SECOND run's, which is what the
+  committed artifacts hold. **The 56 predicate SITES are identical across the two runs** — same ids,
+  kinds, lines, byte offsets and source, so the comparison is sound id-wise — and
+  `CheckCommand.php` is **byte-identical** between the trees they measured, so nothing about the
+  predicate itself moved. ⛔ **The flip is NOT attributable to the corpus growth**: the mutant reds
+  **32** fixtures in the second run, **29 of them pre-existing**, so dropping the three added captures
+  would leave the verdict unchanged — the growth added redundancy, not reach. What did move is the
+  rest of the tree the mutant runs against (36 of the 38 pre-existing captures re-captured, one
+  registered check's implementation changed, one config default and one migration), and this
+  instrument **cannot say which of those the verdict followed** — naming one would be an attribution
+  it has no leg for. Read it as the bound it is: this predicate's verdict is **not stable across trees
+  whose `handle()` is identical**, so its `observed` is weaker evidence than the column suggests, and
+  `observed-via-abort` returning to zero here is a property of the tree measured, not a repair. The
+  other 55 verdicts and the 7 UNOBSERVED ids are the same in both runs.]
