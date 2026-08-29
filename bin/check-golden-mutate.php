@@ -424,6 +424,17 @@ $doc = <<<MD
 > Measured against `app/Console/Commands/Bridge/CheckCommand.php` over the
 > {$total} branch predicates in `handle()`, in {$minutes} minutes. Decision record: **DL-242**.
 
+> ⚑ **WHAT IS GUARDED HERE, AND WHAT IS NOT (card#7992).** Two suite guards keep this file
+> honest about its SUBJECT — the predicate count stated above, and the set of conditions the
+> tables below name. Both are compared against a live enumeration of `handle()` on every suite
+> run, and a disagreement must be declared in a banner under this header, so neither can drift
+> in silence. **The verdicts are NOT guarded.** Nothing re-derives `observed` /
+> `observed-via-abort` / `UNOBSERVED`, because re-deriving them IS this measurement. They are
+> only as current as the mutation run that wrote this file, and a regenerated golden capture, a
+> changed check implementation or a changed config default can move one without any guard going
+> red. A green suite is therefore evidence that this file describes THIS `handle()`, and no
+> evidence at all about how current the three columns are.
+
 The DL-242 plan holds stages 0-7 to a byte-identical output contract, enforced by
 `tests/Feature/Console/Check/CheckGoldenTest.php`. The plan also requires that the bound on
 that contract be stated rather than implied: *"no operator-visible change" holds only over

@@ -2746,6 +2746,37 @@ the work distinguishes those.
   against `bin/check-golden-predicates.php` — the same enumerator the generator drives — and reds
   in EITHER direction, so a STALE banner cannot outlive the staleness it announces and the number
   cannot drift again in silence.
+  ⭐ **THE SUBJECT NOW HAS A SECOND TERM, AND THE VERDICTS ARE DECLINED ON THE RECORD
+  (card#7992).** The count guard is a DENOMINATOR: it cannot see a predicate set that changed
+  IDENTITY while keeping its SIZE. That is not hypothetical — between two regenerations of this
+  artifact one predicate DEPARTED while two arrived, so until the next run the published gap table
+  named a condition (`$configs !== [] && $ctx->configDir !== null`) that existed nowhere in the
+  source; the count moved by one that time and would have caught it by luck, and one departure
+  against one arrival is the same defect with the count standing still.
+  `CheckGoldenCoverageSubjectTest` closes it by comparing the artifact's measured `(kind, source)`
+  MULTISET against the same enumerator — a SEPARATE term with its own banner, not a widened one,
+  because the two must be independently satisfiable: the case it exists for is exactly the one
+  where the count agrees and the currency guard therefore requires ITS banner ABSENT.
+  ⛔ **A cheap guard on the VERDICTS was considered and DECLINED.** The candidate was a fingerprint
+  over the measurement's inputs, stored beside the artifact. The input closure of a verdict is the
+  whole `bridge:check` plane plus its config defaults and the golden corpus, so a fingerprint over
+  any nameable SUBSET carries false negatives it cannot state — the same stated-scope-exceeds-
+  predicate defect one level down — while a fingerprint over the whole closure reds on essentially
+  every check-plane change and, with a ~57-minute run as the only remedy, would leave the banner
+  permanently up: furniture, which is the failure the two-directional design above exists to avoid.
+  ⚑ **The corpus IS a real input, and the measured evidence bounds how it bites.** Between the two
+  runs recorded below, **30 of the 56** predicates changed the SET of fixtures their mutant
+  reddened, and in every one of those 30 the delta was exactly the three captures that window
+  ADDED, with **nothing ever leaving** a failing set. No verdict moved as a consequence — a fixture
+  is an independent data-provider case, so adding one can only ADD red. (The single verdict that
+  DID move between those runs is not a corpus effect at all: run 1 recorded that predicate with an
+  EMPTY failing list under the aborted arm, the signature of a golden run whose report could not be
+  parsed rather than of a mutation semantics. That is card#7994's subject, not this one's.) Corpus
+  GROWTH can therefore turn `UNOBSERVED` into `observed` but never the reverse, which makes the
+  published gap list CONSERVATIVE under it — over-listing a gap costs a reader extra reading, never
+  false reassurance. Capture MODIFICATION and DELETION carry no such argument and are the
+  directions to distrust. What ships in place of the declined instrument is the disclosure now in
+  the artifact's own header.
   **[REGENERATED — card#7835. The deferred run has been done, on a throwaway worktree, and the
   banner is gone because the generator rewrites the whole file.** `handle()` now holds **56**
   predicates and the measured split is **49 observed · 0 observed-via-abort · 7 UNOBSERVED**, against
