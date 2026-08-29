@@ -2593,22 +2593,40 @@ The existing net goes through the command boundary, so an internal refactor keep
    Writes are now checked at one primitive that THROWS (not exits — `exit()` skips the `finally`
    restore and would leave a mutant on disk), a whole-run result set that is uniformly
    `observed-via-abort` or uniformly `UNOBSERVED` is refused as degenerate rather than rendered,
+   **every verdict is read from phpunit's own `--log-junit` log rather than from the suite's
+   stdout** (card#8019 — the JSON report this script used to `json_decode()` exists only while an
+   installed result printer chooses to emit it, so each verdict depended on a property of the
+   SHELL rather than of the mutant. In a shell where nothing emitted it, every red predicate
+   scored `observed-via-abort` naming no fixture and every green one `UNOBSERVED` — two statuses,
+   so the degenerate arm stayed quiet and a full run published pure noise at exit 0, over the
+   DEFAULT path, with the dependency stated in neither the script's header nor any doc. The
+   JUnit log is phpunit's own artifact and cannot drift with the installed printer;
+   `tests/Support/NestedSuite.php` states that rule and is this repo's other caller that follows
+   it. **This changed no verdict**: the migration was measured against the committed artifact
+   over the whole population and every predicate scored identically, in a shell the pre-fix
+   generator refuses outright), **an iteration whose suite wrote no readable log refuses the
+   whole run** (card#8019 — an unmeasured iteration falls into two verdicts and both are false;
+   the silent one is `UNOBSERVED`, which renders as a *disclosed gap*, the strongest claim this
+   document cites that artifact for, off evidence nobody read),
    **a BASELINE CONTROL runs the golden suite ONCE against the unmutated tree before the loop
-   and refuses the whole run unless that run is green AND emitted a decodable report**
-   (card#7994 — every verdict here is read out of a JSON report `vendor/bin/phpunit` emits only
-   under `laravel/pao`, which activates for a detected AI-agent shell or under `PAO_FORCE`; in
-   an ordinary operator shell every red predicate scored `observed-via-abort` naming no fixture
-   and every green one `UNOBSERVED` — two statuses, so the degenerate arm stayed quiet and a
-   full run published pure noise at exit 0, a dependency neither the script's header nor any doc
-   had ever stated), **an `observed-via-abort` verdict that names no failing fixture refuses the
+   and refuses the whole run unless that run is green AND wrote a readable log**
+   (card#7994, with its first leg re-founded by card#8019 — that leg screened for a result
+   printer emitting a report, and the dependency it screened for is now removed rather than
+   detected. What it asks instead is whether the suite wrote a log at all, which is not an
+   environment property and has no forcing remedy; what survives is cause SEPARATION, because
+   every way phpunit fails to finish also exits non-zero, so without it the `red` term reports a
+   healthy corpus as a broken one. The second leg — the corpus is green before any mutation — is
+   untouched), **an `observed-via-abort` verdict that names no failing fixture refuses the
    whole run, at the first such predicate** (card#7994 — and the first wording of this clause
    was WRONG about why. An abort a fail-soft envelope RENDERED does carry a non-empty failing
-   list; an abort that ESCAPES `handle()` propagates out of the test, phpunit records an ERROR
-   rather than a failure, and `laravel/pao` writes the `failures` key only when something FAILED
-   — so that abort is real, provoked by the fixture set, and names nothing. It is refused as a
+   list; an abort that ESCAPES `handle()` propagates out of the test and phpunit records an
+   ERROR rather than a failure, which the JUnit log puts on a `<testcase><error>` while the
+   fixture-name scrape reads `<failure>` only — so that abort is real, provoked by the fixture
+   set, and names nothing. It is refused as a
    RULING, not as an impossibility: the row it would render asserts *reached, and the guard is
    load-bearing* with nothing the fixture set produced behind either half, so the chosen failure
-   mode is to refuse loudly and let the operator read the error and decide by hand), every
+   mode is to refuse loudly and let the operator read the error and decide by hand — now with
+   the errored testcases NAMED in the refusal, which the report it replaced could not do), every
    result record now carries the run's `errors` count so the MIXED shape the refusal
    deliberately does not catch — some fixtures errored while others reached a golden diff — is
    auditable in the artifact rather than invisible, and a narrowed (`--only`/`--limit`) run no
@@ -2818,12 +2836,13 @@ the work distinguishes those.
   retained nothing that could name one** — the argument, its evidence and the resulting instrument
   gap are recorded on **card#7994**. ⚑ **The instrument now REFUSES that shape** rather than
   publishing it (see the refusal arms in the item above): a run in which any predicate scores
-  `observed-via-abort` while naming no failing fixture writes no artifact at all, and a BASELINE
-  CONTROL refuses the run outright when the unmutated tree does not answer green with a decodable
-  report. ⛔ **Neither guard explains run 1, and the tempting explanation is measurably WRONG:**
-  run 1 scored **48 `observed`** rows carrying real fixture lists, so the report emitter was
-  working for the rest of that run and a whole-run environment failure cannot be the cause. What
-  the baseline control closes is a DIFFERENT and larger shape — the run where nothing decodes from
-  the start — while run 1's single iteration is the residue the in-loop refusal now refuses rather
-  than renders. That closes the publication path, not the diagnosis: what killed run 1's iteration
+  `observed-via-abort` while naming no failing fixture writes no artifact at all, a BASELINE
+  CONTROL refuses the run outright when the unmutated tree does not answer green and readable, and
+  card#8019 moved the verdict source off the suite's stdout entirely so no result printer decides
+  what any of this reads. ⛔ **No guard explains run 1, and the tempting explanation is measurably
+  WRONG:** run 1 scored **48 `observed`** rows carrying real fixture lists, so whatever it was
+  reading was working for the rest of that run and a whole-run instrument failure cannot be the
+  cause. What the baseline control closes is a DIFFERENT and larger shape — the run that answers
+  nothing from the start — while run 1's single iteration is the residue the in-loop refusal now
+  refuses rather than renders. That closes the publication path, not the diagnosis: what killed run 1's iteration
   remains unrecoverable, and the general "was this iteration real" term stays open on the card.]

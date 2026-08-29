@@ -42,16 +42,21 @@
  * stdout instead, because the generated header claims to cover every predicate in
  * `handle()` and a narrowed run would make that claim false.
  *
- * IT NEEDS A SHELL THE TEST RUNNER TREATS AS AN AI AGENT'S. Every verdict here is read out
- * of a JSON report on the golden suite's stdout, and `vendor/bin/phpunit` emits that report
- * only under `laravel/pao`, which activates when `laravel/agent-detector` finds an agent
- * environment variable (`CLAUDECODE`, `AI_AGENT`, `CURSOR_AGENT`, …) or when `PAO_FORCE` is
- * set. In an ordinary operator shell phpunit prints its classic text output instead,
- * `json_decode` returns null, and every red predicate scores `observed-via-abort` naming no
- * fixture while every green one scores UNOBSERVED — two distinct statuses, so the
- * degenerate-result-set arm does not fire and a full run publishes an artifact of pure noise
- * at exit 0. That dependency was undeclared until card#7994. Run it as
- * `PAO_FORCE=1 php bin/check-golden-mutate.php`, or read the BASELINE CONTROL's refusal.
+ * THE VERDICT IS READ FROM `--log-junit`, NEVER FROM THE SUITE'S STDOUT (card#8019). The JUnit
+ * log is phpunit's own artifact, so it cannot drift with whichever result printer the tree
+ * happens to have installed — which is the whole reason it is the source here. This script used
+ * to `json_decode()` the suite's stdout, and that JSON exists only while an installed printer
+ * chooses to emit it, so every verdict depended on a property of the SHELL rather than of the
+ * mutant: in an ordinary operator terminal nothing decoded, every red predicate scored
+ * `observed-via-abort` naming no fixture while every green one scored UNOBSERVED — two distinct
+ * statuses, so the degenerate-result-set arm never fired and a full run published an artifact of
+ * pure noise at exit 0. The rule is not invented here; `tests/Support/NestedSuite.php` states it
+ * and is this repo's other caller that follows it.
+ *
+ * A RUN THAT WROTE NO READABLE LOG IS REFUSED, NEVER SCORED — an absent measurement is not a
+ * passing one, and the shape it used to publish is exactly a green predicate scoring UNOBSERVED
+ * off evidence nobody read. The log goes to a temp file OUTSIDE the repo, is deleted before every
+ * run so a stale one cannot be read as this run's verdict, and is removed at exit.
  */
 
 require __DIR__.'/../vendor/autoload.php';
@@ -103,53 +108,132 @@ if (isset($options['limit'])) {
     $predicates = array_slice($predicates, 0, (int) $options['limit']);
 }
 
+// Parse failures are collected rather than printed: an unparseable log is a case this script
+// REPORTS in its own banner, and libxml's own warning stream would put a second, differently
+// shaped message about it on stderr ahead of that.
+libxml_use_internal_errors(true);
+
+// Outside the repo on purpose: this script warns that a commit from the same tree can capture a
+// mutant, and a measurement file inside the working copy is one more thing that run can leave
+// behind. It is created once and reused, so `$runGolden()` owns clearing it.
+$junitLog = tempnam(sys_get_temp_dir(), 'check-golden-junit-');
+if ($junitLog === false) {
+    fwrite(STDERR, "cannot create a temp file for the JUnit log\n");
+    exit(2);
+}
+register_shutdown_function(static function () use ($junitLog): void {
+    @unlink($junitLog);
+});
+
 /**
- * Run the golden suite once.
+ * Run the golden suite once and read its verdict out of phpunit's own JUnit log.
  *
- * `decodable` and `errors` are returned rather than folded into `aborted` because they are
- * what tells the three causes of an abort apart: no report at all (the environment — see the
- * BASELINE CONTROL below), a report whose `errors` count is above zero (the command threw
- * past every fail-soft envelope), or a failure message that tripped the fatal-error regex.
- * Collapsed into one boolean, all three read as the same verdict.
+ * `measured` is FALSE when that log is absent or unparseable — the suite did not complete, so
+ * this run answered nothing. It is returned rather than folded into `aborted` because those are
+ * opposite claims: an abort is a fact about the mutant, an unmeasured run is a fact about the
+ * instrument, and every caller here refuses the second rather than scoring it.
  *
- * @return array{red: bool, failing: list<string>, aborted: bool, decodable: bool, errors: int}
+ * `errors` and `errorDetails` are likewise kept apart from `aborted`, because they tell the two
+ * causes of an abort apart: a testcase phpunit recorded as an ERROR (the command threw past every
+ * fail-soft envelope in `handle()`) or a `<failure>` message that tripped the fatal-error regex.
+ * Collapsed into one boolean, both read as the same verdict.
+ *
+ * @return array{red: bool, code: int, failing: list<string>, aborted: bool, measured: bool, logState: string, errors: int, errorDetails: list<string>}
  */
-$runGolden = function () use ($repo): array {
+$runGolden = function () use ($repo, $junitLog): array {
+    // A stale log from the PREVIOUS predicate would otherwise be read as this one's verdict the
+    // moment phpunit fails to write a new one — the exact laundering this whole card removes.
+    @unlink($junitLog);
+
     $cmd = 'cd '.escapeshellarg($repo).' && vendor/bin/phpunit --filter test_golden_output '
+        .'--log-junit '.escapeshellarg($junitLog).' '
         .'tests/Feature/Console/Check/CheckGoldenTest.php 2>&1';
     exec($cmd, $out, $code);
-    $raw = implode("\n", $out);
-    $decoded = json_decode($raw, true);
+
+    // `logState` is written on every path that fails to produce a document, because the three
+    // ways it can fail take different next steps from the operator and the banner has nothing
+    // else to tell them apart — and it cannot point them at the log, which is a temp file this
+    // run deletes on the way out.
+    $raw = is_file($junitLog) ? file_get_contents($junitLog) : false;
+    $junit = false;
+    $logState = '';
+    if ($raw === false) {
+        $logState = 'the file was never written';
+    } elseif (trim($raw) === '') {
+        $logState = 'the file is empty';
+    } else {
+        libxml_clear_errors();
+        $junit = simplexml_load_string($raw);
+        if (! $junit instanceof SimpleXMLElement) {
+            $parseError = libxml_get_errors()[0] ?? null;
+            $logState = sprintf(
+                '%d bytes that do not parse as XML%s',
+                strlen($raw),
+                $parseError === null ? '' : sprintf(': %s (line %d)', trim($parseError->message), $parseError->line),
+            );
+            libxml_clear_errors();
+        }
+    }
+    if (! $junit instanceof SimpleXMLElement) {
+        return [
+            'red' => $code !== 0,
+            'code' => $code,
+            'failing' => [],
+            'aborted' => false,
+            'measured' => false,
+            'logState' => $logState,
+            'errors' => 0,
+            'errorDetails' => [],
+        ];
+    }
+
     $failing = [];
     $aborted = false;
-    $errors = 0;
-    if (is_array($decoded)) {
-        foreach ($decoded['failures'] ?? [] as $failure) {
-            $message = (string) ($failure['message'] ?? '');
-            if (preg_match("/fixture '([^']+)'/", $message, $m) === 1) {
-                $failing[] = $m[1];
-            }
-            // A mutant that makes the command THROW reds the suite without the fixture
-            // set having distinguished anything — a different result, reported as one.
-            if (preg_match('/\b(Fatal error|Uncaught|TypeError|ArgumentCountError|Error:)/', $message) === 1) {
-                $aborted = true;
-            }
+    foreach ($junit->xpath('//testcase/failure') ?: [] as $failure) {
+        $message = (string) $failure;
+        if (preg_match("/fixture '([^']+)'/", $message, $m) === 1) {
+            $failing[] = $m[1];
         }
-        $errors = (int) ($decoded['errors'] ?? 0);
-        if ($errors > 0 || ($decoded['result'] ?? '') === 'errored') {
+        // A mutant that makes the command THROW reds the suite without the fixture
+        // set having distinguished anything — a different result, reported as one.
+        if (preg_match('/\b(Fatal error|Uncaught|TypeError|ArgumentCountError|Error:)/', $message) === 1) {
             $aborted = true;
         }
-    } elseif ($code !== 0) {
-        // phpunit could not even produce its report (a parse error in the mutant).
+    }
+
+    // `<error>` and `<failure>` are different verdicts, and only `<failure>` carries a fixture
+    // name — same reading `Tests\Support\NestedSuite` makes of the same document. An errored
+    // testcase is the ESCAPED abort shape discussed at the in-loop refusal below.
+    $errorDetails = [];
+    foreach ($junit->xpath('//testcase/error') ?: [] as $error) {
+        // The WHOLE body, whitespace-collapsed and width-bounded — phpunit writes the test's
+        // name on its first line and the message after it, so this carries both and needs no
+        // second lookup for the name. A first-line slice would carry the name and drop the
+        // cause, which is the half the reader does not already have.
+        $errorDetails[] = sprintf(
+            '[%s] %s',
+            (string) $error['type'],
+            mb_strimwidth((string) preg_replace('/\s+/', ' ', trim((string) $error)), 0, 220, '…'),
+        );
+    }
+    if ($errorDetails !== []) {
         $aborted = true;
     }
 
     return [
+        // The PROCESS exit code, deliberately not re-derived from the log. It is phpunit's own
+        // verdict, it never depended on which result printer was installed, and it is therefore
+        // not the term card#8019 was about — re-deriving it would move a verdict this change has
+        // no evidence to move. What the log now owns is everything the substituted printer used
+        // to own: which fixtures failed, what errored, and whether anything aborted.
         'red' => $code !== 0,
+        'code' => $code,
         'failing' => $failing,
         'aborted' => $aborted,
-        'decodable' => is_array($decoded),
-        'errors' => $errors,
+        'measured' => true,
+        'logState' => '',
+        'errors' => count($errorDetails),
+        'errorDetails' => $errorDetails,
     ];
 };
 
@@ -161,10 +245,12 @@ $runGolden = function () use ($repo): array {
 //
 // It buys the separation of three causes that the loop's own refusal used to conflate into
 // one wrong-but-specific message about "the golden harness failing":
-//   NO DECODABLE REPORT — `laravel/pao` is not emitting, because it activates only for a
-//     detected AI-agent shell (see the header). This is the ORDINARY state of an operator's
-//     own terminal, and it is the one that publishes silently: two statuses come out, so the
-//     degenerate arm stays quiet and a full run writes both artifacts at exit 0.
+//   NO JUNIT LOG — the suite did not complete and write one, so nothing was measured. This leg
+//     is NOT the environment screen card#7994 shipped: that one asked whether an installed
+//     result printer was emitting a JSON report, and card#8019 removed the dependency it
+//     screened for rather than detecting it. What survives here is cause SEPARATION — every
+//     way phpunit fails to finish also exits non-zero, so without this leg the `red` term
+//     below would report a healthy corpus as a broken one.
 //   BASELINE ALREADY RED — the golden corpus is broken before any mutation. Every verdict
 //     the run would produce is then contaminated: `red` is `exit != 0`, so every predicate
 //     scores `observed` or `observed-via-abort` off a failure that was already there and
@@ -181,20 +267,20 @@ $runGolden = function () use ($repo): array {
 // all of which exit. Any guard placed after the first `$writeOrThrow($target, $mutant)` must
 // throw instead, or it strands a mutant on disk.
 $baseline = $runGolden();
-if (! $baseline['decodable'] || $baseline['red']) {
+if (! $baseline['measured'] || $baseline['red']) {
     $banner = ["\nBASELINE CONTROL FAILED — no mutation was applied and no artifact was written."];
-    if (! $baseline['decodable']) {
-        $banner[] = '  cause:   the golden suite produced NO DECODABLE REPORT on the unmutated tree.';
-        $banner[] = '           Every verdict this script scores is read out of a JSON report on the';
-        $banner[] = "           suite's stdout, and vendor/bin/phpunit emits that report only under";
-        $banner[] = '           laravel/pao, which activates for a detected AI-agent shell (the';
-        $banner[] = '           laravel/agent-detector probes CLAUDECODE / AI_AGENT / CURSOR_AGENT / …)';
-        $banner[] = '           or when PAO_FORCE is set. In an ordinary shell phpunit prints its';
-        $banner[] = '           classic text output instead, so this run would have scored every red';
-        $banner[] = '           predicate observed-via-abort naming no fixture and every green one';
-        $banner[] = '           UNOBSERVED — a full artifact of noise, at exit 0.';
-        $banner[] = '  remedy:  re-run with PAO_FORCE=1 in the environment, e.g.';
-        $banner[] = '               PAO_FORCE=1 php bin/check-golden-mutate.php';
+    if (! $baseline['measured']) {
+        $banner[] = '  cause:   the golden suite wrote NO JUNIT LOG on the unmutated tree, or wrote';
+        $banner[] = '           one that does not parse. Every verdict this script scores is read out';
+        $banner[] = "           of phpunit's own --log-junit output, so a run without it measured";
+        $banner[] = '           nothing at all — and an absent measurement is not a passing one.';
+        $banner[] = '           This is reported ahead of the corpus because phpunit not finishing';
+        $banner[] = '           also exits non-zero, and blaming the fixtures for it would be a';
+        $banner[] = '           wrong-but-specific cause.';
+        $banner[] = '  found:   '.$baseline['logState'];
+        $banner[] = '  remedy:  run the suite by hand and read what it printed —';
+        $banner[] = '               vendor/bin/phpunit tests/Feature/Console/Check/CheckGoldenTest.php';
+        $banner[] = '           A log that was never written means it did not get that far.';
     } else {
         $banner[] = sprintf(
             '  cause:   the golden suite is ALREADY RED on the unmutated tree (%d failing fixture(s), %d errored).',
@@ -226,6 +312,26 @@ try {
         $writeOrThrow($target, $mutant);
 
         $golden = $runGolden();
+
+        // An iteration whose suite wrote no readable JUnit log measured NOTHING, and the two
+        // verdicts it would otherwise fall into are both false: red with no evidence scores
+        // `observed-via-abort` naming no fixture, and — the shape card#8019 was filed for —
+        // rc 0 with no evidence scores UNOBSERVED, which reads as a disclosed gap and is the
+        // one that publishes silently. It THROWS rather than exits: a mutant is live on disk
+        // at this point and `exit()` skips the `finally` that restores it.
+        if (! $golden['measured']) {
+            throw new RuntimeException(sprintf(
+                '%s produced NO READABLE JUNIT LOG, so this iteration measured nothing. The baseline '
+                .'control ran the same suite against the unmutated tree and got one, so the harness '
+                .'was working when this run started: the suite stopped completing part-way through, '
+                .'which is a fact about this run rather than about the predicate. phpunit exited %d and '
+                .'%s. Re-run the suite by hand with the mutation applied and read what it printed.',
+                $predicate['id'],
+                $golden['code'],
+                $golden['logState'],
+            ));
+        }
+
         $failing = $golden['failing'];
         $status = match (true) {
             $golden['red'] && $golden['aborted'] => 'observed-via-abort',
@@ -249,9 +355,9 @@ try {
         //     try/catch, `GoldenCapture::capture()` calls `Artisan::call` with no catch, and
         //     `Illuminate\Console\Application::call()` runs with `setCatchExceptions(false)`,
         //     so the throwable propagates out of the test and phpunit records an ERROR rather
-        //     than a failure. `laravel/pao` writes the `failures` key only when its failed
-        //     count is above zero, so an all-errors report has no `failures` at all and
-        //     `$failing` is necessarily `[]`. That is a REAL abort the fixture set genuinely
+        //     than a failure. The JUnit log puts that on a `<testcase><error>` and never on a
+        //     `<failure>`, and the fixture-name scrape reads `<failure>` only, so an all-errors
+        //     run leaves `$failing` necessarily `[]`. That is a REAL abort the fixture set genuinely
         //     provoked — exactly what this script's header says `observed-via-abort` is for.
         //     Not reachable on the tree last measured, which is all that can be said: the
         //     committed artifact holds no abort record of EITHER shape, so no predicate in it
@@ -282,9 +388,11 @@ try {
         // to read, and a false verdict is exactly as false there. (Unlike DEGENERATE RESULT
         // SET, this has no n=1 triviality, so it needs no narrow-gate.)
         //
-        // And deliberately NOT closed by scraping `error_details` for fixture names: that
+        // And deliberately NOT closed by scraping `<error>` bodies for fixture names: that
         // would turn this exact case back into a rendered verdict. The bound is that an
-        // errored phpunit run is refused loudly rather than laundered into a measurement.
+        // errored phpunit run is refused loudly rather than laundered into a measurement. What
+        // the JUnit log changes is the REFUSAL, not the ruling — the errored testcases are
+        // named in the message below, where the old JSON report carried nothing to name.
         //
         // THE RESIDUE, stated because this script exists to stop unstated bounds: this catches
         // an abort with NO fixture. The mixed shape — some fixtures errored and others reached
@@ -296,19 +404,21 @@ try {
         if ($status === 'observed-via-abort' && $failing === []) {
             throw new RuntimeException(sprintf(
                 '%s scored observed-via-abort naming NO failing fixture. The baseline control passed '
-                .'before this loop started — the unmutated suite ran green AND emitted a decodable '
-                .'report — so this is not the missing-report environment that control screens for, and '
-                .'it is anomalous rather than routine. This iteration: report %s, errors %d. Candidate '
-                .'causes, none asserted: (a) the mutant threw past every fail-soft envelope in handle(), '
-                .'so phpunit recorded an ERROR and the report carries no `failures` key to scrape a '
-                .'fixture name out of; (b) a failure message tripped the fatal-error regex but did not '
-                ."match the `fixture '<name>'` scrape; (c) the suite stopped producing a decodable "
-                .'report part-way through this run. No golden file was shown to react either way, so '
-                .'there is nothing to publish for this predicate: apply the mutation by hand, read the '
-                .'suite output, and record the verdict rather than letting a rendered row assert it.',
+                .'before this loop started — the unmutated suite ran green AND wrote a readable JUnit '
+                .'log — and this iteration wrote one too, so the harness answered and the answer names '
+                .'no fixture. This iteration: %d errored testcase(s)%s. Candidate causes, none asserted: '
+                .'(a) the mutant threw past every fail-soft envelope in handle(), so phpunit recorded '
+                .'those testcases as ERRORS and an <error> carries no fixture name to scrape; (b) a '
+                .'<failure> message tripped the fatal-error regex but did not match the `fixture '
+                ."'<name>'` scrape. No golden file was shown to react either way, so there is nothing "
+                .'to publish for this predicate: apply the mutation by hand, read the suite output, and '
+                .'record the verdict rather than letting a rendered row assert it.',
                 $predicate['id'],
-                $golden['decodable'] ? 'decodable' : 'NOT decodable',
-                $golden['errors']
+                $golden['errors'],
+                $golden['errorDetails'] === []
+                    ? ''
+                    : ' — '.implode(' · ', array_slice($golden['errorDetails'], 0, 3))
+                        .(count($golden['errorDetails']) > 3 ? sprintf(' (+%d more)', count($golden['errorDetails']) - 3) : ''),
             ));
         }
 
