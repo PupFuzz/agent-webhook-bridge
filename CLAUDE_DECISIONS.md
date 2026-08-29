@@ -4396,3 +4396,67 @@ story around replaying later.
 explicitly declined to assert this install's numbers (*"I cannot read your install"*) — the prediction was then
 confirmed here independently. Sequencing was theirs: set it on your own install first, as the cheapest possible
 validation of a default before shipping it to everyone.
+
+## DL-317 — the coverage artifact gets a SUBJECT guard, and a guard over the VERDICTS is DECLINED on the record (card#7992)
+
+**Context.** `docs/check-golden-coverage.md` states a predicate count and then prints an
+observed / observed-via-abort / UNOBSERVED split under it. `CheckGoldenCoverageCurrencyTest`
+compares the *count* against a live enumeration and reds in both directions. Nothing guarded
+anything else, while the guard's name and its STALE-banner mechanism implied the whole
+measurement was current — a case of this fleet's named class, *a guard's stated scope must
+equal its actual predicate*.
+
+- **⚑ Decision 1 — a fingerprint over the measurement's INPUTS is DECLINED, not deferred.**
+  card#7992 proposed hashing the golden fixture corpus plus the registered check set beside the
+  artifact, raising the STALE banner on disagreement. Four reasons it is the wrong instrument.
+  (a) **The input closure of a verdict is not enumerable to a small set** — the mutation run
+  executes the whole `bridge:check` plane plus its config defaults and the golden corpus, so a
+  fingerprint over any *nameable* subset has false negatives it cannot state. That is the card's
+  own defect class one level down: a guard named *"the inputs moved"* whose predicate is *"two of
+  the many inputs moved"*. (b) **A fingerprint over the whole closure is furniture** — 23 of the
+  last 60 `dev` commits touch `app/`, and with a ~57-minute run as the only remedy the banner
+  would go up on the next check-plane change and never come down, which is precisely what the
+  existing guard's two-directional design exists to prevent. (c) Any term needing a **new field**
+  in the artifact cannot land without a 57-minute regeneration, and a read-time fallback for the
+  missing field is itself a canon-#5 defect. (d) **The card's motivating witness does not support
+  its own inference** — the moved verdict (the `CheckSlot::ProbeTools` `emitReport` arm) recorded
+  `failing: []` with `aborted = true` in run 1, the signature of `json_decode` failing on
+  phpunit's output, i.e. no per-fixture failures were parsed at all. That is card#7994's subject,
+  not an input effect.
+- **⚑ Decision 2 — the corpus IS a real input, on stronger evidence than the card gave, and the
+  disclosed gap list is CONSERVATIVE under growth.** 30 of 56 predicates changed the *set* of
+  fixtures their mutant reddened between the two runs, with **nothing ever leaving** a failing
+  set — the delta being exactly the 3 added captures. Fixture addition is therefore **monotone**:
+  a new data-provider case can only *add* red, so corpus growth can turn `UNOBSERVED` →
+  `observed` but never the reverse. Modification and deletion carry no such argument, and this
+  claim is deliberately scoped to addition.
+- **⚑ Decision 3 — what is built instead is EXACT rather than conservative: a SUBJECT guard.**
+  `CheckGoldenCoverageSubjectTest` compares the `(kind, source)` **multiset** in
+  `docs/check-golden-coverage.json` against the live enumerator. It closes a **measured**
+  historical defect the count guard is structurally blind to: at `f73913b` the published gap
+  table named a condition that had since been edited out of the source, and a count guard is a
+  *denominator* — it cannot see identity change at constant size.
+- **⚑ Decision 4 — MULTISET, not set.** The 56 predicates carry only **44 distinct** condition
+  texts, one appearing 6 times, so a set comparison would hide 12 predicates. Verified against
+  the live enumerator rather than assumed.
+- **⚑ Decision 5 — its own banner string, deliberately not the currency guard's.** `SUBJECT
+  MOVED` is distinct from `STALE`; a shared string would deadlock the pair on exactly the case
+  the second guard exists for. Both banners are independently satisfiable, which was watched
+  rather than argued.
+- **⚑ Decision 6 — the new term STATES what it does not cover, in its own failure message.**
+  It names that it says *nothing* about the observed / observed-via-abort / UNOBSERVED verdicts,
+  that no guard re-derives them, and that a regenerated capture or a changed config default moves
+  a verdict with the term green. The whole point of the card was a guard claiming more than its
+  predicate; a new guard that repeated that would be the same defect wearing a new name.
+- **⛔ Decision 7 — the existing currency test's ASSERTIONS were not touched.** card#7992 forbids
+  closing it by widening that guard, and the constraint is honoured to the letter: its test method
+  and every assertion are byte-unchanged. Only the shared `bin/check-golden-predicates.php`
+  invocation moved, into `Tests\Support\CheckGolden\ReadsGoldenPredicates`, at the second real
+  caller (canon #5) — so the two guards cannot disagree about what *live* means.
+
+**The residue, stated because this instrument exists to stop unstated bounds.** The verdicts stay
+unguarded, and that is now a documented decision rather than an accident: re-deriving them **is**
+the measurement. The generated header says so in the artifact itself, so a reader is told before
+they trust the three columns. Separately, the `.md`/`.json` pair's agreement is asserted nowhere —
+the new term reads the JSON and banners the Markdown, so a disagreeing pair leaves it green about
+the record while the table a reader opens came from an older run. Filed rather than fixed here.
