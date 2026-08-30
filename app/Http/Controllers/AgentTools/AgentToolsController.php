@@ -6,6 +6,7 @@ use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\SubscriptionRegistry;
 use App\Bridge\Tools\BoardToolAgentResolver;
 use App\Bridge\Tools\BoardToolDispatcher;
+use App\Bridge\Tools\CallProvenance;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -54,7 +55,14 @@ final class AgentToolsController
         if (! is_string($toolName)) {
             $toolName = '';
         }
-        $outcome = $dispatcher->dispatch($toolName, $request->input('args', []), $agent->config, $agent->agentName);
+        // ⛔ STATED, NEVER MEASURED (card#7836 / DL-316). This door cannot discriminate and
+        // must not pretend to: `LoopbackOnly` pins the peer to 127.0.0.1 for the seat and
+        // for `bridge:check --probe-tools` alike, BY CONSTRUCTION, so there is no observable
+        // here that separates them. Reading SSH_CONNECTION at this point would be worse than
+        // useless — the PHP process serving this request can inherit one legitimately (an
+        // operator running `php artisan serve` inside an ssh session), which would mint the
+        // STRONGER client-half verdict out of a variable that says nothing about the caller.
+        $outcome = $dispatcher->dispatch($toolName, $request->input('args', []), $agent->config, $agent->agentName, CallProvenance::NotSshd);
 
         return response()->json($outcome->body(), $outcome->status);
     }

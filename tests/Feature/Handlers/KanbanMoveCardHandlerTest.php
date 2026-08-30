@@ -1006,7 +1006,8 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->assertSame(2, $alertPushes, 'a failed first push must re-arm the signature for the next delivery');
     }
 
-    // --- card#5288: the getCard 4xx refusal splits 404 (no such card) from 403 (exists, not ours) ---
+    // --- card#5288: the getCard 4xx refusal splits 404 from 403 into distinct reasons.
+    //     What each status establishes is owned by RefusalContext::readReason()'s docblock. ---
 
     public function test_getcard_404_and_403_produce_distinct_reasons_and_do_not_collapse_the_dedup(): void
     {
@@ -1031,7 +1032,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             ->filter(fn ($pair) => $this->isAlertPush($pair[0]))
             ->map(fn ($pair) => $pair[0]['reason'])
             ->values()->all();
-        $this->assertSame(['getcard_404_no_such_card', 'getcard_403_not_visible_to_this_token'], $reasons);
+        $this->assertSame(['getcard_404_no_such_card', 'getcard_403_foreign_card_id_or_token_scope'], $reasons);
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');   // both still swallow — no move, no 5xx retry
     }
 
@@ -1050,6 +1051,52 @@ class KanbanMoveCardHandlerTest extends TestCase
 
         Http::assertSent(fn (Request $r) => $this->isAlertPush($r) && $r['reason'] === 'getcard_4xx');
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_getcard_403_withholds_the_card_id_from_the_channel_and_keeps_it_in_the_log(): void
+    {
+        // card#7846 / DL-314 — BOTH HALVES OF ONE RULE, which is why they are one test:
+        // the channel event must NOT carry the id, and the log line MUST. Splitting them
+        // would let a "fix" that drops the id from both places pass the half it kept.
+        //
+        // The id reaching this arm was parsed as a literal out of author-controlled text
+        // (`card#NNNN` in a PR title or branch ref) against a kanban id space that is
+        // GLOBAL across every board on the instance, and the read that would have proved
+        // it ours just FAILED — so on a 403 it may name another install's card. Observed
+        // live with exactly this id: a push on one install alerted `card_id: 7756`, a card
+        // on a board another install owns; only the write-side 403 stopped a move. The
+        // local operator legitimately needs the id to diagnose, so it stays in the log.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/7756.json' => Http::response(['message' => 'forbidden'], 403),
+        ]);
+
+        $this->handle($this->payload(['card_id' => 7756]));
+
+        $pushes = collect(Http::recorded())
+            ->filter(fn ($pair) => $this->isAlertPush($pair[0]))
+            ->map(fn ($pair) => $pair[0]->body())
+            ->values()->all();
+
+        $this->assertCount(1, $pushes, 'the 403 arm must still alert — withholding the id is not a reason to go quiet');
+        // The RAW line, not the decoded field: the id must not be recoverable from ANY
+        // key of the body (a future `context`/`message` key would re-leak it while a
+        // `card_id === null` assertion stayed green).
+        $this->assertStringNotContainsString('7756', $pushes[0], 'the alert channel carries a card id this bridge could not read');
+        $body = json_decode($pushes[0], true);
+        // `array_key_exists`, never `??`: the expected VALUE here is null, and `??` cannot
+        // tell a null value from an absent key — it would report a dropped key as correct.
+        $this->assertArrayHasKey('card_id', $body, 'the alert body must still CARRY a card_id key, valued null');
+        $this->assertNull($body['card_id']);
+        $this->assertTrue($body['card_id_withheld'] ?? false, 'a bare null reads as "the arm had no id"; the omission must say it is deliberate');
+        $this->assertSame('getcard_403_foreign_card_id_or_token_scope', $body['reason']);
+
+        // …and the other half: the operator's own surface keeps it.
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => ($ctx['card_id'] ?? null) === 7756);
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');   // still swallowed — no move, no 5xx retry
     }
 
     public function test_getcard_403_log_names_both_hypotheses(): void

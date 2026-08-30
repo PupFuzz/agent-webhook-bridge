@@ -201,7 +201,7 @@ If you can decompose work into disjoint scopes, do that. The overlapping model i
 
 ### Per-agent error isolation
 
-When `pm`'s classifier throws on event N, `pm`'s `agent_dispatches` row records the error (`error_message` set, `processed_at` null). The other agents' rows for the same event are unaffected. Recovery: `php artisan bridge:replay N --agent pm` re-runs the dispatch loop scoped to that agent only.
+When `pm`'s classifier throws on event N, `pm`'s `agent_dispatches` row records the error (`error_message` set, `processed_at` null). The other agents' rows for the same event are unaffected. Recovery: `php artisan bridge:replay N --agent pm` re-runs the dispatch loop scoped to that agent only — **while event N still has its payload** (`retention.null_payloads_older_than`, default 7d: replay REFUSES a payload-nulled event, DL-315; see [`CLAUDE_DEPLOYMENT.md`](../CLAUDE_DEPLOYMENT.md) § *Retention config (DL-199)*).
 
 ### Per-agent observability
 

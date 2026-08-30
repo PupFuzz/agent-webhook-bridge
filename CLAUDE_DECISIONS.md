@@ -1798,7 +1798,7 @@ grant iff  labels contain from:{me}
 **Date:** 2026-07-27
 **Context — the reason string is the DL-009 guard's only voice for the case the guard cannot reach.** `KanbanMoveCardHandler` reads the card, then refuses it if `board_id !== $mapping->boardId` (the belongs-to-mapped-board security guard, DL-009/DL-020). That guard reads `board_id` **out of the `getCard` result**, so it can only fire for a card this writeback token was able to READ. *[Additive annotation, 2026-08-21 (card#7138, DL-292): the SPELLING quoted above is no longer the code — the predicate is now `is_numeric($card['board_id'] ?? null) && (int) $card['board_id'] === $mapping->boardId`, and it lives in `MappedBoardGuard` rather than in `KanbanMoveCardHandler`, shared with the `kanban_block_reason` and `kanban_coord_card_move` arms. It accepts strictly MORE than `!==` did (a numeric-string or float `board_id` naming the mapped board), so DL-292 widened this guard on this handler. **Nothing this entry decides moves**: the guard still reads `board_id` out of the `getCard` result, is still structurally unreachable for a card the token cannot read, and that is still why the 404/403 split below is the operator's only signal for the tenancy case. The original sentence stands as written, per this log's frozen-original convention (DL-277).]* A card on a board the token *cannot* see returns one branch earlier, at the `getCard` 4xx refusal — the guard is structurally unreachable for exactly the tenancy case it exists to refuse. That earlier branch emitted a single reason value, `getcard_4xx`, over two unrelated operator hypotheses: **404** (no such card — deleted, or an id that never existed) and **403** (the card EXISTS and is not ours — a foreign install's card id correlated onto this bridge, or this token's scope missing the card's board). An operator investigating a live cross-install token hijack saw a generic 4xx pointing at nothing. Sourced from roundtable #178 (aimla-pm), second separable defect; card#5288.
 
-**Decision — split the reason by status; leave every other behaviour byte-identical.** `getcard_404_no_such_card`, `getcard_403_not_visible_to_this_token`, and `getcard_4xx` retained as the catch-all for other 4xx. The 403's *operator-facing log line* names both hypotheses explicitly (the reason slug is a key, not an explanation). **Hard-gate approved by the user 2026-07-27** — the vocabulary above is the approved one, verbatim.
+**Decision — split the reason by status; leave every other behaviour byte-identical.** `getcard_404_no_such_card`, `getcard_403_not_visible_to_this_token`, and `getcard_4xx` retained as the catch-all for other 4xx. The 403's *operator-facing log line* names both hypotheses explicitly (the reason slug is a key, not an explanation). **Hard-gate approved by the user 2026-07-27** — the vocabulary above is the approved one, verbatim. **[SUPERSEDED by DL-314 as to the 403 SLUG only: `getcard_403_not_visible_to_this_token` was renamed to `getcard_403_foreign_card_id_or_token_scope` and no longer exists in this tree. The old spelling named the TOKEN as the thing at fault, which is only one of the two causes a 403 cannot choose between — the operator who hit the other one live went auditing their own token's board scope for a card that was never theirs. `getcard_404_no_such_card` and the `getcard_4xx` catch-all are untouched, and everything this decision settles otherwise — the split itself, the byte-identical exit behaviour, the single status read, the log line naming both hypotheses — stands. The original sentence stands as written, per this log's frozen-original convention (DL-277).]**
 
 - **No status-code or exit-behaviour change.** All three are still `RefusalContext::isPermanent` ⇒ log + no-op ⇒ the dispatch acks. Nothing that was swallowed now throws, and nothing that threw now swallows.
 - **Additive on ONE event kind, not a new one.** `WritebackAlertNotifier::notify()` carries `reason` as a *field* of the single `writeback_move_failed` type (DL-171), so new values need no new type and no body-shape change. A consumer switching on `reason` sees two new values; one switching on `type` sees nothing new.
@@ -2665,7 +2665,7 @@ $ BRIDGE_CONFIG_DIR=$T/cfg BRIDGE_SECRET_DIR=/etc/passwd php artisan bridge:chec
 
 **Decision (1) — the root cause is the per-call-site opt-in, so the fix is a paired primitive, not two `notify()` calls.** `WritebackAlertNotifier::warnAndNotify(message, logContext, repo, outcome, cardId, reason)` does the durable `Log::warning` FIRST (the ordering is load-bearing — the log is the record that survives an undeliverable channel) and then the additive push. An arm calling it **cannot log a refusal without alerting on it**. The 10 sites that already had the log+notify pair by hand were migrated onto it in the same change: same behavior, one primitive, and the 13th arm now inherits the pairing instead of re-minting the omission. `notifyUnpark`/`notifyRevive` stay separate — they are conditional overrides with their own gate, not refusals.
 
-**Decision (2) — the reason vocabulary is status-split for kanban WRITES, following card#5288's precedent, and FLAT for GitHub reads.** `RefusalContext::writeReason($verb, $e)` → `{verb}_403_not_writable_by_this_token` / `{verb}_404_no_such_card` / `{verb}_4xx`; `readReason($verb, $e)` → `{verb}_404_no_such_card` / `{verb}_403_not_visible_to_this_token` / `{verb}_4xx`. The two 403s are deliberately different strings: a **write** 403 is the shape a read probe can never reveal (the token reads the card fine, so the `getCard` arm stays quiet, and is refused on the PATCH — read scopes are commonly broader than write scopes). **GitHub reads stay flat** (`promote_getpull_4xx`, `promote_compare_4xx`): GitHub answers **404 for a private repo the token cannot see**, so a named 403/404 hypothesis there would be wrong-but-specific (canon #10) — status and body are already in the log context via `RefusalContext::from`.
+**Decision (2) — the reason vocabulary is status-split for kanban WRITES, following card#5288's precedent, and FLAT for GitHub reads.** `RefusalContext::writeReason($verb, $e)` → `{verb}_403_not_writable_by_this_token` / `{verb}_404_no_such_card` / `{verb}_4xx`; `readReason($verb, $e)` → `{verb}_404_no_such_card` / `{verb}_403_not_visible_to_this_token` / `{verb}_4xx`. The two 403s are deliberately different strings: a **write** 403 is the shape a read probe can never reveal (the token reads the card fine, so the `getCard` arm stays quiet, and is refused on the PATCH — read scopes are commonly broader than write scopes). **GitHub reads stay flat** (`promote_getpull_4xx`, `promote_compare_4xx`): GitHub answers **404 for a private repo the token cannot see**, so a named 403/404 hypothesis there would be wrong-but-specific (canon #10) — status and body are already in the log context via `RefusalContext::from`. **[SUPERSEDED by DL-314 as to ONE literal in the map above: `readReason`'s 403 is now `{verb}_403_foreign_card_id_or_token_scope` — the spelling quoted here was renamed and is declared nowhere in this tree, so do not build a consumer from this sentence. `writeReason`'s three values, `readReason`'s 404 and `_4xx`, the two-403s-are-deliberately-different-strings reasoning and the flat GitHub reads are all untouched; `RefusalContext::readReason()` owns the current read-side vocabulary. The original sentence stands as written, per this log's frozen-original convention (DL-277).]**
 
 **Decision (3) — the `$verb` is load-bearing, and so is the synthetic `outcome`.** Dedup is per `(repo, outcome, reason)`. Two arms of one handler sharing a reason would share one marker and whichever fired second would alert **zero** times — the exact collapse card#5288 found once on `getCard`. The verb separates `movecard_*` from `stamp_*`; the synthetic outcomes separate handlers that have no PR outcome of their own (`promote_on_release`, already precedent; `draft_overlay`, new) — which is what keeps `kanban_block_reason`'s `getcard_*` reasons from silencing `kanban_move_card`'s identical ones on a shared repo.
 
@@ -3950,3 +3950,449 @@ DL-217 stays as written (the log is append-only); this entry corrects it. **The 
   - **Comparing the RECORDED transport against the CONFIGURED one** (a seat calling over http while its YAML says ssh). Not built — it is a second question with its own remedy, and it is recorded here as the obvious next one rather than smuggled in.
 
 - **Consequences:** new `database/migrations/2026_08_26_000001_create_board_tools_client_calls_table.php`, `app/Models/BoardToolsClientCall.php`, `app/Bridge/Tools/ClientHalfLedger.php`, `app/Bridge/Check/Checks/BoardToolsClientHalfCheck.php` (id `board_tools.client_half`); one new `CheckSlot::BoardToolsClientHalf`, ordered between the board-STATE plane and the ssh plane and — like the ssh plane since DL-275 — **outside** the board-tools kanban-client envelope, because it reads this bridge's own database and nothing that client produces; `BoardToolDispatcher` records at its existing success point; `config/bridge.php` + `.env.example` gain the TTL. Tests: `tests/Unit/Tools/ClientHalfLedgerTest.php` (the write primitive's advance-in-place property, seen to fail against a writer that keeps the first stamp), and the sabotage both the writer's and the reader's fail-soft tests need is hoisted to `tests/Support/UsesUnmigratedDatabase.php` at its second caller rather than copied. **The registered check set goes 37 → 38**, so every golden fixture's inventory line moves and the baseline install's not-run population goes 13 → 14. ⚠ **`bridge:check` on an install with an enabled `board_tools` block and no recorded call gains one `unvalidated` line per such agent and one to its closing tally** — plain text, exit code unchanged. **Test-isolation consequence, and it is the DL-300 shape a second time:** a success-path primitive now writes a durable row, so `board_tools_client_calls` joins `Tests\TestCase::COMMITTABLE_TABLES` and the three `tests/Feature/AgentTools/` classes that dispatch a successful call gained `RefreshDatabase` — without it those rows COMMIT on the MariaDB legs and outlive the test, invisibly on SQLite `:memory:`.
+
+---
+
+## DL-314 — the alert channel stops carrying a card id the read REFUSED, and the 403 reason names both causes because a 403 cannot choose between them (card#7846)
+
+- **Date:** 2026-08-26
+- **Status:** implemented (card#7846). **No migration, no config key, no `.env` change, no token-scope change, no receiver accept/reject change.** Strictly more conservative: one field is REMOVED from an outbound signal and one reason string is renamed; nothing the bridge accepts, reads or writes is widened.
+- **The number:** allocated with `python3 bin/decision-log.py next` (DL-295), not derived from this file's max.
+
+- **Context — the boundary's precondition is the thing that leaks.** `payload.card_id` reaches `kanban_move_card` (and the draft overlay's `kanban_block_reason`) as a **literal integer parsed out of author-controlled text**: `CardTokenGrammar::PATTERN` matches `card#NNNN` / `card-NNNN` / `cardNNNN` in a PR title or a branch ref, and the classifier emits it with **no kanban read and no board scope**. `KanbanClient::getCard()` then issues `GET /tasks/{id}.json` — **no board in the path or the query**, a GLOBAL resolve — against a kanban whose card id space is shared by every install on the instance. The DL-009 belongs-to-mapped-board guard that would refuse a foreign card reads `board_id` **out of the row that read returns** (`MappedBoardGuard::belongs()`), so when the read 403s the guard is **structurally unreachable**. ⇒ On this path the tenant boundary's precondition is a **successful cross-tenant read**. It fails closed, which is right — but by the time it does, the foreign id has already been **sent in a request on this install's credential** and then **echoed into this install's alert channel**. Observed live: a push on one install produced `{"repo":"…","outcome":"started","card_id":7756,"reason":"getcard_403_not_visible_to_this_token"}` where card 7756 is on a board another install owns.
+  - ⚑ **Only the bare `card#` path can produce this.** The `DL-NNN` path resolves through `KanbanClient::correlateDl()` → `GET /boards/{board}/tasks/by-ref.json`, which is **board-scoped** and cannot return another install's card. That asymmetry is load-bearing twice below.
+
+- **⭐ Decision 1 — the CHANNEL loses the id; the LOG keeps it.** The two surfaces have different audiences and the fix follows that, rather than dropping the id outright. The arm's `Log::warning` context carries `card_id` verbatim: it is the local operator's own surface and they need the id to diagnose (which PR title carries it, whose board is it on). The **push** is what can reach a party the id is not about, so on the `getCard` refusal arms it carries `card_id: null` plus **`card_id_withheld: true`**.
+  - **The flag is not decoration.** A bare `card_id: null` already MEANS something on this event kind — *the arm had no id at all* — on `card_id_not_int`, `target_id_not_card_id` and every issue-keyed arm (DL-285). Withheld and absent take different next steps, so an operator reading `null` without the flag would be sent to look for a classifier bug that is not there.
+  - **Shaped in ONE place** (canon #5): `notify()` and the new `warnAndNotifyCardIdWithheld()` both delegate to a private `emitMoveFailed()`, so the two bodies cannot drift. The flag is **not** in the dedup tuple — it is a property of the arm, constant per `reason`, so including it could only duplicate the reason.
+
+- **⛔ Decision 2 — the withholding is keyed on THE READ FAILED, not on the status.** A 404 withholds too. The rule *the channel carries a card id only when the bridge confirmed it could read the card* is one sentence and has no per-status carve-out to get wrong; a 403-only rule would additionally turn the PRESENCE of the id into an existence oracle of its own (id present ⇒ 404 ⇒ no such card; id absent ⇒ 403 ⇒ it exists elsewhere).
+
+- **⭐ Decision 3 — the 403 reason names BOTH causes: `getcard_403_not_visible_to_this_token` → `getcard_403_foreign_card_id_or_token_scope`.** The old slug (DL-241) named only the **token**, and it is the slug — not the log line — that reaches the channel and gets read first; the operator who hit the foreign-id case live went auditing their own token's board scope for a card that was never theirs. ⛔ **No discrimination was invented to make the name sharper.** Asked honestly, *can a 403 tell a foreign install's id from this token's own lost board membership?* — **no**, and nothing else on this path can either: the payload carries no provenance marker separating a DL-resolved (board-scoped) id from a `card#`-parsed one, and the classifier emits none. So the slug states the disjunction, the handler's 403 log line says in its own words that a 403 alone cannot tell them apart, and `docs/writeback.md` gives the operator the discriminating question to answer by hand. A slug that picked one cause would be **wrong-but-specific**, which this repo already ranks below an honest generic (canon #10 — the same reasoning that keeps the GitHub reads flat, DL-274(2)).
+  - ⚠ **Operator-visible, twice:** a consumer matching the old literal stops matching, and because dedup keys on `sha1(repo, outcome, reason)` an install already alerted under the old reason alerts **once** more under the new one. `getcard_404_no_such_card` and `getcard_4xx` are untouched, so the rest of DL-241's vocabulary stands.
+
+- **⛔ Decision 4 — the DEFERRED option, named rather than left implicit: a board-scoped membership read.** What would actually decide Decision 3's disjunction — and would stop the id being sent at all — is resolving the parsed id **against this install's own board** before any global read: e.g. a `by-ref`-style or board-scoped lookup that returns nothing for a foreign id, so the bridge refuses locally and never asks kanban about a card it has no business asking about. **Not built here**, deliberately: it adds a kanban call to the hot writeback path, it needs a kanban-side endpoint that answers *"is card N on board B"* without a global read (the current `by-ref` route is keyed on a REF, not on a card id), and its refusal semantics are a change to what the bridge acts on — a hard-gated decision on its own. This card's scope is to stop the disclosure and give the operator the right hypothesis. **Recorded as the open follow-up, with its cost**, not as a thing that was overlooked.
+
+- **Decision 5 — the doc line was FALSE, not merely thin (canon #16).** `docs/writeback.md`'s remediation for this reason told operators to suspect *"a `card#`/**`DL-NNN`** token in a PR title naming another install's card"*. The `DL-NNN` half cannot happen (the ⚑ above) — a **mixed-truth** remediation, which is the dangerous kind: it reads as authoritative and sends the reader hunting the one token that is structurally incapable of the fault. Corrected, with the `by-ref` reason stated so the claim carries its own evidence. **⛔ Sibling audit of the CLAIM — and it REPORTED CLEAN OVER A CLAIM THAT WAS FALSE, recorded here rather than quietly widened.** Four surfaces were re-read for the foreign-install hypothesis — `RefusalContext::readReason()`'s docblock, `KanbanMoveCardHandler`'s 403 arm, `GitHubPrCardMoveClassifier`'s durable-refusal comment, `docs/writeback.md` — and the finding reported was *only the `docs/writeback.md` line names `DL-NNN`*. That finding is true and the audit was **not** clean: it was keyed on the TOKEN that motivated it (`DL-NNN`), so it answered about that token and never asked whether those same surfaces still stated the 403 as a SINGLE cause — the reading Decision 3 was in the act of invalidating. **Three of the four did**, plus a fifth the list did not enumerate at all: `KanbanMoveCardHandler`'s *"403 = the card exists and is not ours"*, twelve lines above the message this change was rewriting to say the opposite; `GitHubPrCardMoveClassifier`'s *"403 (a card that exists and is another tenant's)"*; `KanbanMoveCardHandlerTest`'s card#5288 section header, *"403 (exists, not ours)"* (the unenumerated one); and — worst, because it is the surface the other three are now pointed AT — `readReason()`'s own docblock LEDE, which **this change narrowed**: the parenthetical naming both causes was lifted out of the first sentence into the ⛔ note below it, leaving *"403 = the card exists and is NOT visible to this token"* as the sentence a reader meets first, which is the old slug's framing verbatim. ⚠ **That is the MIRROR of the incident this DL exists for:** a maintainer reading those comments concludes the card is definitively foreign and never audits their own token's board scope — cause **(b)**, the half the old slug over-named and the half these comments erase. Found by the review pass, not by the audit. **Corrected in this same change, by pointer rather than by a third and fourth copy** (canon #16 — delete over restate): the three call-site comments now POINT at `readReason()`'s docblock, which this change made the owner of the rule, and the docblock's lede points down at its own ⛔ note instead of restating one cause of the disjunction. **The transferable lesson, since the fix alone does not carry it:** an audit keyed on the token that motivated it answers about that token; its clean verdict states where the searcher stopped, not the state of the surfaces (canon #19). `docs/CHANGELOG.md`'s DL-241 entry describes what shipped then and is left as the historical record.
+
+- **⚑ Bound, recorded rather than fixed — two arms still push an unverified id.** `kanban_move_card`'s `repo_or_outcome_invalid` and `kanban_block_reason`'s `repo_or_action_invalid` alert with a card id that is equally author-derived and equally unverified. They are **not** fixed here and the disposition is deliberate: those arms send **no kanban request**, so they get no existence answer and disclose strictly less than an id the server has just confirmed exists somewhere. Of the other pre-read arms, `writeback_not_configured` cannot reach a channel at all (no `writeback.json` ⇒ no `alert_channel`), and `card_token_near_miss` fires only on the DL path, whose ids are board-scoped by construction. Anyone widening the rule should widen it to *the channel carries an id only when a read PLACED THE CARD ON THE MAPPED BOARD* — one sentence, all arms. ⛔ **Not *"only when a read SUCCEEDED"*, which is one step short and was the wording first recorded here.** `getCard()` is `GET /tasks/{id}.json`, a GLOBAL resolve: a 200 establishes only that the id is inside the WRITEBACK TOKEN's scope, never that it is inside THIS install's board — which is cause (a) of Decision 3's own disjunction, so the shorter rule licenses the disclosure this DL exists to stop. The longer rule needs no extra kanban call: `MappedBoardGuard` already decides board membership from the row `getCard` returned, and `MappedBoardGuard::refuses()` is today the counter-example — it pushes `$cardId` for a card it has just PROVED is not on the mapped board.
+
+- **Seen to fail (canon #9) — five mutations, each red for its own reason:**
+  1. **The 403 arm restored to `warnAndNotify(..., $cardId, ...)`** ⇒ `test_getcard_403_withholds_the_card_id_from_the_channel_and_keeps_it_in_the_log` red on the RAW body: *"Failed asserting that `{…"card_id":7756…}` does not contain "7756""*. The assertion is on the raw line, not on the decoded field, so a future key that re-leaks the id (a `context`, a rendered `message`) reds too.
+  2. **`card_id_withheld` dropped from the body shape** ⇒ both handlers' pins red.
+  3. **`readReason`'s 403 reverted to the old slug** ⇒ `test_the_read_403_reason_names_both_causes_because_a_403_cannot_choose_between_them` red on the missing `foreign_card_id` cause. That test asserts the two CAUSES rather than the literal (which the data provider pins), so it survives a re-spelling and reds on a dropped hypothesis.
+  4. **`card_id` removed from the 403 arm's LOG context** ⇒ the same test red on the log half. Both halves live in one test on purpose: split, a "fix" that dropped the id from BOTH surfaces would pass the half it kept.
+  5. **The block-reason arm restored to `warnAndNotify`** ⇒ its overlay pin red.
+  - ⚠ **The mutation run caught a defect in the TEST, not the code:** the missing-key guard was first written `assertNull($body['card_id'] ?? 'ABSENT')`, and `??` cannot tell a null VALUE from an absent KEY — it reported the correct body as broken. Replaced with `assertArrayHasKey` + `assertNull`, which is the pair that discriminates.
+
+- **Alternatives considered:**
+  - **Drop the id from the log as well.** Rejected: the log is the local operator's surface and the id is the only handle on which PR title carried the token. The disclosure is a property of the CHANNEL, so the fix belongs there.
+  - **Add a provenance flag to the classifier payload** (`card#`-parsed vs DL-resolved) and split the 403 reason on it. Rejected for now: it threads a new key through three emit sites and both handlers, and the branch it would light up — a 403 on a DL-resolved id — is nearly unreachable, since `correlateDl` and `getCard` use the SAME token and board (a board-scoped read that just succeeded, followed by a 403 on one of its own rows). It would also still not decide Decision 3's disjunction — it decides only whether the foreign case is POSSIBLE. Recorded as the smaller sibling of Decision 4.
+  - **Keep the old slug and put the honesty only in the log line.** Rejected: with the id withheld, the `reason` is the ONLY thing the channel carries about the cause, and the old slug points at the wrong one.
+  - **Redact the id to a hash / a length rather than dropping it.** Rejected: a stable hash of a small integer space is not a redaction, and nothing downstream can use it.
+
+- **Consequences:** `app/Bridge/Writeback/WritebackAlertNotifier.php` (+`warnAndNotifyCardIdWithheld`, +private `emitMoveFailed`; `notify()` delegates, body byte-identical for every existing caller), `app/Bridge/Handlers/KanbanMoveCardHandler.php` (the `getCard` 4xx arm; its 403 message now states the undecidability and that the id is log-only), `app/Bridge/Handlers/KanbanBlockReasonHandler.php` (the twin arm), `app/Bridge/Support/RefusalContext.php` (`readReason`'s 403 + the rule written into its docblock), `docs/writeback.md` (the body shape, a new `card_id_withheld` paragraph, three table rows, the false remediation line, the paired-primitive sentence), `docs/CHANGELOG.md`, `tests/Unit/Support/RefusalContextTest.php` (+1), `tests/Feature/Handlers/KanbanMoveCardHandlerTest.php` (+1), `tests/Feature/Handlers/KanbanBlockReasonHandlerTest.php` (the overlay pin now asserts the withheld shape), `tests/Feature/Writeback/WritebackRefusalSignalCoverageTest.php` (its docblock and red message name both pairing methods — the guard's population is bare `Log::` calls, so the new method needs no scanner change). **What an operator can observe:** on a `getCard` refusal the alert carries no card id and says so, and a 403's `reason` names the foreign-id hypothesis first.
+
+---
+
+## DL-316 — the client-half row records HOW THE SERVING PROCESS WAS STARTED, and the stronger verdict is earned by a pty-less sshd session — not by `SSH_CONNECTION` alone, which an operator's own shell carries (card#7836)
+
+- **Date:** 2026-08-26
+- **Status:** implemented (card#7836, the provenance work DL-313 deferred). **One new column, one new `ok` line.** ⚠ **One migration** (`board_tools_client_calls.call_provenance`, additive, nullable, **no backfill**). No new check, no severity change, no exit-code change, no token-scope change, and ⛔ **nothing about what either front door ACCEPTS** — `POST /agent-tools/call` and `bridge:tools-call` take exactly the requests they took before. `--format=json` `schema` stays **1** (`message` strings were never part of that contract).
+- **The number:** allocated with `python3 bin/decision-log.py next` (DL-315 was already claimed by an open PR).
+
+- **Context — DL-313 shipped the honest WORDING and left the DISCRIMINATION unbuilt.** `board_tools.client_half`'s green line says *"THAT IS THE CALL, NOT THE CALLER"* because three things reach `BoardToolDispatcher`'s success point with no seat behind them: `bridge:check --probe-tools`, `bin/provision-board-tools.py --self-cert`, and an operator hand-running `php artisan bridge:tools-call --agent=X` on the bridge host. That wording was written **because a pre-merge review reproduced a green line from a process with no keypair, no `known_hosts`, no `.mcp.json` and no channel server.** DL-313 recorded `SSH_CONNECTION`-based provenance as a refused follow-up rather than smuggling it in; this is that follow-up.
+
+- **⭐ Decision 1 — the SSH door can discriminate and the HTTP door cannot, so only one of them measures.** sshd exports its session environment into the forced command it spawns; the HTTP door's peer is pinned to `127.0.0.1` by `LoopbackOnly` **for the probe and the seat alike, by construction**, so there is no observable there at all. `CallProvenance` is therefore a **parameter** of `BoardToolDispatcher::dispatch()`, stated by the front door — `ToolsCallCommand` measures, `AgentToolsController` states `NotSshd` as a constant. ⛔ **The HTTP door must not measure**, and the reason is concrete rather than tidy: the PHP process serving that request can carry an inherited `SSH_CONNECTION` perfectly legitimately (`php artisan serve` started inside an ssh session), which would mint the stronger verdict out of a variable that says nothing about the caller. The parameter is **required with no default**, because a default makes the strong verdict depend on a caller remembering to opt in and the failure of forgetting is silent.
+
+- **⛔ Decision 2 — the predicate is the CONTROLLING TERMINAL, and BOTH obvious environment-variable predicates were MEASURED WRONG on this very host.** The card was specified as *"a hand-run `php artisan bridge:tools-call` on the bridge host has neither [marker]"*. **That is false for the ordinary case:** sshd exports its session variables into the **login shell** and every descendant inherits them, so an operator hand-running the command **in their own ssh shell** carries `SSH_CONNECTION` verbatim. The first fix was `SSH_CONNECTION` present **and** `SSH_TTY` absent, on the claim that an interactive ssh shell *"exports SSH_TTY and passes it to everything it spawns"*. ⛔ **That claim is FALSE, and tmux is the counter-example.** tmux's `update-environment` default is `DISPLAY KRB5CCNAME SSH_ASKPASS SSH_AUTH_SOCK SSH_AGENT_PID SSH_CONNECTION WINDOWID XAUTHORITY` — `SSH_CONNECTION` is on it, `SSH_TTY` is **not** — and the connection variable is refreshed on **every attach**. So a tmux server that never had `SSH_TTY` (started from the console, from a systemd unit, by `tmux new -d`, or simply **before** the ssh login), attached over ssh, hands **every new pane** connection-present-and-tty-absent: the exact shape the shipped predicate called proven. **Measured end to end on the development host:** a piped hand-run in such a pane reported `SSH_CONNECTION` set, `SSH_TTY` unset, `stream_isatty(STDIN)` false — and a controlling terminal **PRESENT**.
+  - ⭐ **The replacement is a property of the PROCESS, not of a string somebody exported.** A pty-less sshd forced command descends from a daemon and has **no controlling terminal**; every hand-run from a terminal has one — ssh login shell, tmux pane, `screen` window, local console — and **keeps** it when stdin is a pipe, which is exactly how this door is hand-run (`echo '{...}' | php artisan bridge:tools-call`). ⛔ `stream_isatty(STDIN)` is therefore **not** the test and never was: stdin is a pipe on both sides of the question. `/dev/tty` **is** the controlling terminal, so opening it and closing it without reading a byte IS the measurement.
+  - ⚑ **`SSH_TTY` absent is KEPT as a narrowing term and demoted from discriminator, and its justification is re-derived rather than carried over.** Its ABSENCE establishes nothing (tmux). Its **PRESENCE** is positive evidence of a pty-bearing lineage a pinned forced command can never have, and it survives the loss of a controlling terminal that `setsid`/`nohup`/an agent tool harness performs — **also measured on this host**, where the agent harness this fix was written through carried `SSH_CONNECTION` **and** `SSH_TTY` with **no** controlling terminal. Session-plus-no-terminal alone would have called that hand-run proven, so the term is not decoration.
+  - ⚑ **NAMED AS UNVERIFIED (canon #10).** The hand-run half of the predicate is MEASURED — a tmux pane, an agent harness, a `setsid` child and a `script` pty child, all on the development host. The other half, that a REAL pty-less sshd forced command has **no** controlling terminal, is **INFERRED** from sshd allocating no pty for it and from the daemon it descends from having none; it was **not** driven through a real sshd, because standing one up means writing a key into an `authorized_keys` file, which this card does not authorise. ⭐ **The inference fails SAFE:** if it is wrong, a genuine forced command reads `not_sshd` and the leg prints DL-313's weaker line — a missed strong claim, never a false one. `bridge:check --probe-tools-ssh` / `provision-board-tools.py --self-cert` close it on a provisioned install; if the stronger line never appears there, this is the first thing to check.
+  - ⛔ **THE METHODOLOGICAL ROOT, recorded because the shape recurs.** The measurement behind the false predicate used a detached **`screen`**, which inherits its environment **wholesale** and therefore carries both markers or neither. screen agrees with the wrong predicate in **both** directions — a control that **could not fail in the direction that mattered** (canon #9) — and generalising from it to *"an interactive ssh shell has both"* is the defect, not the arithmetic on top of it. `SystemServingProcessEnvironmentTest` exists so the same cannot happen to the replacement: it forces a child's terminal state **both ways** (`setsid -w` and `script -qec`) on real processes and asserts the two DISAGREE, so a probe stuck on either constant reds.
+  - ⭐ **ONE OWNER, POINTERS EVERYWHERE ELSE.** The rule above lives in **`app/Bridge/Tools/CallProvenance.php`'s class docblock** and nowhere else. It had **eleven** hand-maintained restatements — `BoardToolsClientHalfCheck` ×2, `CallProvenance` ×2, `ClientHalfLedger`, `BoardToolsClientCall`, `ToolsCallCommand`, `docs/board-tools.md`, `docs/config-schema.md`, `docs/CHANGELOG.md`, `CLAUDE.md`, this entry ×2 and the golden fixture — and when the rule was measured wrong **all of them were wrong together**, in prose no test reads. Re-syncing eleven copies by hand was the canon #5/#16 signal; each now points at the owner and states only what its own subject adds. (The golden fixture regenerates from source and needed no rule.)
+  - ⛔ **`SSH_ORIGINAL_COMMAND` is deliberately NOT read**, and it is the obvious-looking mistake. sshd sets it only when the client **requested** a command that the forced command displaced; no board-tools client requests one, so on the real path it is **absent** and keying on it would report every genuine call as non-sshd.
+  - ⛔ **The measurement is INJECTED, not read globally** (`ServingProcessEnvironment`, bound in `BridgeServiceProvider` exactly as `SshProbeEnvironment` is). A suite cannot manufacture a controlling terminal for itself nor take away its own, so a test over the ambient process is green or red by accident of how phpunit was launched — which is precisely the evidentiary failure above. ⚑ **Every method returns `?bool`, and both halves of that type are load-bearing.** A seam handing back the STRINGS — the underlying facts are a network peer and a device path — would put the decision to disclose them one careless caller away; a seam handing back a plain `bool` would put an UNESTABLISHABLE fact on the side that mints the stronger verdict, which is the blocker below.
+  - ⛔ **THE FIRST CUT OF THIS FIX FAILED OPEN, AND THE BLOCKER IS RECORDED HERE RATHER THAN QUIETLY REPAIRED.** `hasControllingTerminal()` returned a plain `bool` and read **any** failed `fopen('/dev/tty')` as *"no controlling terminal"* — conflating **the device does not exist** with **this process may not open it**. Measured on the development host, same process, two php.ini files: under a `script` pty the probe answers `yes`; with a CLI `open_basedir` restricting the run-user to its own tree it answers `no` — `fopen(/dev/tty): … No such device or address` versus `… Operation not permitted`, indistinguishable at the return value. ⭐ **That is the tmux case resurrected by a config file nothing here reads:** a tmux pane carries `SSH_CONNECTION` and no `SSH_TTY`, so the two surviving terms both hold and the pane's own controlling terminal — the term that rejects it — is the one the probe just threw away. ⛔ **The stated mitigation did not hold either:** *"which is why the ssh-session term is required alongside it"* is answered by that exact composition. **The fix follows the sibling seam in the same package** rather than inventing a shape: `SshProbeEnvironment` has been three-valued since DL-259 for this reason, so every leg here returns `?bool` and `CallProvenance::of()` compares against `true`/`false` **strictly** — `! $env->hasControllingTerminal()` would promote `null` straight back into the strong term. The negative is settled by the kernel's own record, `tty_nr` (field 7 of `/proc/self/stat`: `0` with no controlling terminal, `34816` under a pty — measured), and **not** by `error_get_last()`, whose `strerror` text is locale-dependent. ⚑ **The cost is a missed strong claim on a host where neither `/dev/tty` nor `/proc` is reachable** — the leg prints DL-313's weaker line there forever, which is the right side to miss on.
+
+- **⭐ Decision 3 — what the stronger line is entitled to say, and the answer to the card's own question: `--probe-tools-ssh` STILL MINTS A FALSE POSITIVE, and the line says so.** `SshLiveProbeCheck` → `SshTransportProbe::probeLive()` shells out to real `ssh` with **no command** and JSON on stdin, from the bridge host, on whatever key `BRIDGE_TOOLS_SSH_KEY` (or the run-user's default) provides. sshd stamps that forced command with an environment **identical** to the seat's — connection present, no pty — so it is indistinguishable here. `provision-board-tools.py --self-cert` is the same shape from the seat's host. **The ambiguity set narrows from four callers to three; it does not close.** The `ok` arm therefore reports:
+  - **`call_provenance = sshd`** ⇒ *"client half REPORTED **THROUGH THE SSH DOOR**"*. ⭐ **The printed enumeration is RE-DERIVED from what the predicate establishes and is not carried over from the wording it replaces** — that wording claimed an interactive ssh shell *"exports SSH_TTY and passes it to everything it spawns"* and that a local console, cron or systemd unit *"exports neither marker"*, and **both clauses are false**: tmux defeats the first (Decision 2), and a systemd **user** unit inherits `SSH_CONNECTION` outright after `systemctl --user import-environment` while `systemd-run --scope` inherits it too, which defeats the second. They were the most confident sentence on the most confident line the command prints. What the line names now is one clause per term: the HTTP door (which states a constant and never measures), **every hand-run from a terminal** — ssh login shell, tmux pane, screen window, local console — *"because a terminal hand-run keeps its controlling terminal even when stdin is a pipe"*, a lineage still carrying `SSH_TTY`, and anything with no ssh session environment at all.
+  - **The line then names TWO remainders, not one.** ⛔ *any other pty-less ssh invocation of the command,* `ssh <host> '<command>'` included — *"`bridge:check --probe-tools-ssh` and `provision-board-tools.py --self-cert` drive exactly that and are INDISTINGUISHABLE from the seat here, so if either has been run since, this line may be that run"* — and ⛔ **a hand-run from a TERMINAL-LESS context carrying `SSH_CONNECTION`**: a cron entry or systemd user unit after `import-environment`, an agent tool harness, or a `setsid` wrapper. That second remainder is **minted by this predicate** and did not exist under the `SSH_TTY` one; it is disclosed rather than denied, and the `SSH_TTY` term is what keeps the commonest instance of it (a harness that inherits a pty session) out of the set.
+  - **anything else** ⇒ DL-313's line, **byte-identical**. The `unvalidated` arms are untouched.
+  ⛔ **The only complete fix is a MARKED request from the probes** — a field the probe sets so the door can suppress its own stamp — and that **changes what a front door accepts**, which is an ask-first gate at this install and was **not approved under this card**. It is recorded here as the open remainder, not built. A line reading *"the seat called"* would be **false** on any host where `--probe-tools-ssh` had just run, which the enablement runbook makes routine.
+
+- **⚑ Decision 4 — a NULL COLUMN is a third state and is not the enum's business.** ⚑ Distinct from the seam's `null` (Decision 2's blocker), which is a fact the SERVING PROCESS could not establish and is decided before anything is written; this one is a row written before the column existed. The column is additive with **no backfill**, because both available backfills are lies: `not_sshd` asserts a measurement nobody took, and `sshd` silently promotes exactly the historic rows this card exists to stop over-reading. A pre-DL-316 row hydrates as `null`, falls through with `not_sshd`, and keeps the weaker verdict it already had until the seat calls again. The enum has **no `Unknown` case** precisely so the two cannot be collapsed.
+
+- **⛔ Decision 5 — names and booleans only, and the rule is the row's, not this column's.** `SSH_CONNECTION` is `<client-ip> <client-port> <server-ip> <server-port>` (ssh(1) ENVIRONMENT) and `SSH_TTY` is a device path; the row is printed **verbatim** into a `bridge:check` line. `CallProvenance` reduces both to **presence** before anything leaves the reading method, and the stored value is one of two names. The pins are written over the **whole row** and over the **whole rendered line**, not over the provenance column alone: a writer that parked the raw value on some other column would satisfy a column-scoped check and still disclose it. ⚑ **Bound, recorded not guarded — and the FIRST version of this bound was measurably FALSE, which is why the refusal to guard now rests on something true.** It claimed the Eloquent enum cast *"throws on hydration — the reading check already wraps its query"*. **Measured:** Laravel applies an enum cast **LAZILY, on attribute access**, not on hydration. A row carrying an unknown backing value hydrates **cleanly** out of `->first()` and throws a `ValueError` at the first READ of the attribute — which sat **outside** the leg's `try`, so the real behaviour was an **uncaught exception ABORTING `bridge:check`**, taking every other check's output with it, on a diagnostic command whose own comment says it must not abort. **The fix is placement, not a guard:** the provenance is now resolved **inside** the envelope the leg already had, so the existing limb (a) arm answers for it and the refusal to add a guard (canon #6) stands on the true behaviour. `BoardToolsClientHalfCheckTest::test_an_uninterpretable_provenance_value_is_reported_and_does_not_abort_the_run()` drives a real unknown value through the real read and asserts the hydration succeeded first, so it is about the PLACEMENT rather than about the query. The exception message still echoes the offending string into that `unvalidated` line — that half of the bound was right, and is unchanged.
+
+- **⚑ Decision 6 — the correction to Decision 2 was written INTO Decision 2, and the repair is recorded rather than performed silently.** The blocker fix's first cut **prepended** its corrected Decision 2 to the TOP OF THIS FILE and left the superseded predicate (*"`SSH_CONNECTION` PRESENT and `SSH_TTY` ABSENT"*) standing here — and consumed the `# Decision log` H1 doing it, gluing the title to a bullet's tail so ~4,000 lines of log sat under no title, below an untitled fragment. ⛔ **That falsified this entry's own central deliverable** (*one owner, pointers everywhere else*): `CLAUDE.md` names this file as the authority for why anything is the way it is, so a future session would have reconstructed the exact predicate this card removes.
+  - **Why IN PLACE and not the `Correction to DL-NNN` entry this file's convention prescribes.** That convention freezes an entry a reader has SEEN; DL-316 has never reached the integration branch — both its commits are on the card's own branch — so there is no frozen record to correct, and a correction entry would have needed a NEW allocated number for a decision that never shipped. The convention is honoured where it applies: nothing already merged was edited, and the in-place correction is disclosed here rather than left to be inferred from a diff.
+  - **The card#7836 mutation record was also written into DL-001**, between its at-least-once bullet and its alternatives, and DL-001 is restored byte-identical to its pre-branch state. The rounds now sit in this entry, which is what they are about.
+  - **A structural guard was added, and deliberately not as a gate:** `tests/Feature/Workflows/DecisionLogStructureTest` pins that this file's first non-blank line is its title and that exactly one title exists, with a control that reproduces the shape that actually landed. ⛔ It is NOT a new refusal in `bin/decision-log.py` — that command's exit codes are a stated contract with `dl-collision-gate.yml`, and widening what CI REFUSES of a contributor is an ask-first gate at this install (the DL-280 / DL-289 precedent), not a repair to fold into a blocker fix.
+
+- **Seen to fail (canon #9) — FIRST ROUND, ten mutations against the SUPERSEDED `SSH_TTY`-absent predicate, kept as the record of what was measured then and NOT as a description of current code.** ⛔ Its first two mutations name `CallProvenance::hasPty()` and `CallProvenance::ofThisProcess()`, both **removed** by the blocker fix above — `ofThisProcess()` became `of(ServingProcessEnvironment)` and the private environment readers moved to `SystemServingProcessEnvironment`. Mutations 3–10 target behaviour that still exists and still reds. The rounds against the shipped predicate follow it below.
+  Each mutation was applied to the file that produces the string and confirmed landed before the run:
+  1. **drop the `&& ! self::hasPty()` term** (ship the naive predicate) ⇒ **3 red**, including `ToolsCallCommandTest::test_a_hand_run_inside_an_operator_ssh_shell_stamps_not_sshd` — the arm the card was specified without.
+  2. **`ofThisProcess()` → `return self::Sshd`** ⇒ **4 red**.
+  3. **`AgentToolsController` MEASURES instead of stating the constant** ⇒ **1 red**, the http-door-inside-an-ssh-session pin, which exists for exactly this implementation.
+  4. **strong arm `if (true)`** ⇒ **5 red**, including the `board-tools-client-half-wired` golden.
+  5. **strong arm `if (false)`** ⇒ **5 red**, including the new `board-tools-client-half-ssh-proven` golden.
+  6. **delete the residual-ambiguity sentence from the strong line** ⇒ **2 red** — the caveat is pinned as text, because it is the only way this line can go wrong while staying `Severity::Ok`.
+  7. **`=== Sshd` → `!== NotSshd`** (a NULL row reads as proven) ⇒ **4 red**, the pre-upgrade-install case.
+  8. **`call_provenance` dropped from the upsert UPDATE column list** ⇒ **1 red** — a stale `sshd` surviving a later non-ssh call.
+  9. **store `getenv('SSH_CONNECTION')` on the row instead of the name** ⇒ **6 red**.
+  10. **`ToolsCallCommand` states `NotSshd` instead of measuring** ⇒ **2 red**.
+
+- **⭐ Seen to fail — SECOND ROUND, against the CONTROLLING-TERMINAL predicate this entry now records, each mutation applied to the file that produces the string and confirmed landed before the run:**
+  1. **drop the `! $env->hasControllingTerminal()` term** (leave session-plus-no-`SSH_TTY`, the predicate this fix replaces) ⇒ `CallProvenanceTest::test_a_tmux_pane_attached_over_ssh_is_not_sshd_provenance`, the all-combinations pin (`test_exactly_one_of_the_twenty_seven_input_combinations_is_proven`, then eight triples and widened to 27 in the third round) and `ToolsCallCommandTest::test_a_hand_run_in_a_tmux_pane_over_ssh_stamps_not_sshd` all **red** — the regression this fix exists to prevent.
+  2. **drop the `! $env->carriesPtyMarker()` term** (the pure controlling-terminal predicate) ⇒ `CallProvenanceTest::test_a_detached_descendant_of_a_pty_session_is_not_sshd_provenance` and that same pin **red** — the measured agent-harness shape.
+  3. **`hasControllingTerminal()` → `return true`** and **→ `return false`** ⇒ `SystemServingProcessEnvironmentTest` **red** in each direction, on the arm the constant contradicts *and* on the disagreement assertion.
+  4. **move the provenance read back out of the `try`, to the branch** ⇒ `BoardToolsClientHalfCheckTest::test_an_uninterpretable_provenance_value_is_reported_and_does_not_abort_the_run` **red with an uncaught `ValueError`**, which is the shipped behaviour this entry previously described as caught.
+  5. **restore either retired false clause in the printed line** ⇒ the strong-line arm and the `board-tools-client-half-ssh-proven` golden **red**, because both clauses are pinned as ABSENCES beside the presences that replaced them.
+
+- **⭐ Seen to fail — THIRD ROUND, against the FAIL-OPEN blocker and the file-structure repair. Each mutation was applied to the file that produces the string and confirmed landed before the run; the filter was `CallProvenanceTest|SystemServingProcessEnvironmentTest` (1–6) and `DecisionLogStructureTest` (7–8), so the counts are that population and not the whole suite:**
+  1. **`CallProvenance::of()` compares with `!` instead of `=== false`** (an unestablishable fact promoted back into the strong terms) ⇒ `CallProvenanceTest::test_an_unestablishable_controlling_terminal_is_not_sshd_provenance` and `test_exactly_one_of_the_twenty_seven_input_combinations_is_proven` **red**. ⛔ All EIGHT boolean triples still pass under it — the 3³ population is what makes the mutation visible at all.
+  2. **`hasControllingTerminal()` fails OPEN again** (any failed `fopen` reads as no controlling terminal — the shipped defect) ⇒ the `open_basedir`-under-a-pty arm and the `/proc`-only arm **red**.
+  3. **`/proc/self/stat` never read** ⇒ the `setsid` arm and the `/proc`-only arm **red**: with the device unopenable and the kernel record unread, a real absence becomes `unknown` and the stronger verdict can never be minted.
+  4. **`tty_nr` parsed and then ignored** (`return false`) ⇒ the `/proc`-only arm **red** — the leg is a constant, and only an arm that denies the device while allowing `/proc` can see it.
+  5. **`tty_nr` read at the WRONG field offset** (session id instead of the controlling terminal) ⇒ the `setsid` arm and the `/proc`-only arm **red**; the neighbouring field is non-zero for both children, so a probe that fabricates a terminal is what this catches.
+  6. **the `getenv` capability guard dropped** ⇒ `test_an_environment_the_process_cannot_read_is_unknown_and_not_absent` **red** under `disable_functions=getenv`, where `SSH_TTY` IS set and was reported absent.
+  7. **`DecisionLogStructureTest`'s predicate returns no defect** ⇒ both control arms **red** — the class asserts an ABSENCE on the real file, so without them it would certify whatever replaced the predicate.
+  8. **this file's own `# Decision log` H1 glued to a prepended bullet** (the shape commit `75ba43a` landed) ⇒ `test_the_decision_log_keeps_its_title_as_its_first_line` **red**. That is the check the four green gates did not have: `pint`, `phpstan`, `check-doc-refs` and `decision-log.py check` all passed over the broken file, the last by design — it validates NUMBERING.
+
+- **Alternatives considered:**
+  - **`SSH_CONNECTION` alone, as specified.** Rejected on Decision 2's measurement. This is the whole finding.
+  - **Deriving loopback-vs-remote from `SSH_CONNECTION`'s client IP** (without storing it) to separate `--probe-tools-ssh` from a seat. Rejected as **unsound here**: seats on this fleet are accounts on the **same box** as the bridge, so a genuine seat call and the probe both arrive from loopback and the split would mint a confident wrong answer for the seats it most concerns.
+  - **A marked request so the probes suppress their own stamp.** The only complete fix, and **not built** — it changes what a front door accepts (Decision 3).
+  - **Reading `SSH_ORIGINAL_COMMAND`.** Rejected — absent on the real path (Decision 2).
+  - **Inspecting the process ancestry for `sshd`.** Rejected: sshd runs a forced command through the account's shell, so the tree shape is not a contract, and it is unreadable on a host without `/proc` or with hidepid.
+  - **A third verdict for a MEASURED non-sshd call on an ssh-transport row** (*"this was provably not the seat"*, which is a real and useful negative). Not built — it is a verdict-set decision with its own severity question, and is recorded here as the obvious next one rather than smuggled into a card scoped to the positive.
+
+- **Consequences:** new `app/Bridge/Tools/CallProvenance.php`, `app/Bridge/Tools/ServingProcessEnvironment.php`, `app/Bridge/Tools/SystemServingProcessEnvironment.php` (bound in `BridgeServiceProvider`) and `database/migrations/2026_08_26_000002_add_call_provenance_to_board_tools_client_calls.php`; `ClientHalfLedger::record()` and `BoardToolDispatcher::dispatch()` each take a **required** `CallProvenance`; `BoardToolsClientCall` gains the column + a null-preserving enum cast; `BoardToolsClientHalfCheck` gains a second `ok` arm and its severity set is **unchanged at two**, so `test_the_leg_can_construct_only_ok_and_unvalidated` still pins `['ok', 'unvalidated']`. **No check is registered, so the 38 stays 38 and no existing golden fixture moved** — one is ADDED, `board-tools-client-half-ssh-proven`, the `board-tools-ssh-pinned-line` install differing in exactly the recorded row. Tests: `tests/Unit/Tools/CallProvenanceTest.php` (the predicate, over all **twenty-seven** input triples — three states per term, through `tests/Support/FakeServingProcessEnvironment.php`), `tests/Unit/Tools/SystemServingProcessEnvironmentTest.php` (the REAL probe, forced THREE ways on real processes — `setsid`, a `script` pty, and a `script` pty under `open_basedir`, the arm that reds against the fail-open probe), plus provenance arms in `ClientHalfLedgerTest`, `BoardToolsClientHalfCheckTest`, `ToolsCallCommandTest` and `AgentToolsCallTest`, and `tests/Feature/Workflows/DecisionLogStructureTest.php` (Decision 6's structural pin on THIS file). ⛔ **One assertion pair was REMOVED rather than kept:** `BoardToolsClientHalfCheckTest`'s leak control asserted a `SSH_CONNECTION`-shaped string was absent from the rendered line under a docblock claiming the row had been written with one — `recordCall()` always writes the enum or null, so the assertions **could not fail**. The docblock now says what the test IS, and names the two places the real leak controls live (`ClientHalfLedgerTest`, `ToolsCallCommandTest`), each of which has the value present in the process at the moment of the write. ⚑ `ToolsCallCommandTest::runCommand()` now **saves and restores** the environment it seeds rather than blanket-unsetting it: the command READS its environment as of this DL, and the suite itself can be running inside an ssh session, so a `null` there is a fixture the caller STATES rather than an ambient fact it inherits.
+## DL-315 — the retention payload-nulling leg ships ON at 7d (rt#380)
+
+**Status:** shipped. No schema change, no new key, no token-scope change, no receiver accept/reject change,
+and nothing the bridge accepts or writes moves in the permissive direction. **⚠ NOT config-only, as an
+adversarial review of the first draft established:** turning this leg on by default makes `bridge:replay`
+FABRICATE on every install that upgrades, so this entry also carries the refusal that closes it (Decision 6)
+and the operator- and consumer-facing surfaces that were making a false claim about it (Decisions 7, 8
+and 11). **A second review pass added Decision 10** — the change flips a preflight from MISCONFIGURED to `on`
+for one config shape, which the first draft did not name — and **narrowed Decision 6's predicate**, whose
+extra arm had re-minted Decision 7's false label one row down.
+
+**Context — a default nobody sets.** `retention.null_payloads_older_than` defaulted to `''`, i.e. the leg was
+**OFF on every install that never tuned it**, which is every install that never had a reason to look. The
+config comment called it *"an optional space optimization for a large store, not part of the growth fix"* —
+wording that reads as a knob for somebody who already has a problem, and which was doing part of the damage.
+
+**Measured on TWO independent installs before the default moved** (this is what makes it a default change and
+not one install generalising from itself):
+
+| install | payload bytes | store | note |
+|---|---|---|---|
+| reporting (aimla) | 894 MB | of a 1.2 GB store | retention working correctly the whole time |
+| this seat | **369 MB** | 18,931 rows, **zero already nulled** | same, independently |
+
+Applied here: payloads **369 MB → 149 MB**; after `OPTIMIZE TABLE`, allocation **513 MB → 218 MB**. Row
+integrity held — 18,931 − 813 legitimately aged-out = 18,118, oldest row still at the 30d boundary —
+and `bridge:check` returned rc 0 either side.
+
+**⭐ Decision 1 — default `'' → '7d'`.** The argument is DL-199's, one level up: `enabled` defaults TRUE
+precisely because *"a default nobody sets is exactly why DL-012 never ran"*. Same shape. An install cannot
+discover this cost without running `SUM(LENGTH(payload))` unprompted, and nobody does.
+
+**⛔ Decision 2 — the ROW window is NOT shortened with it.** Payload window short, row window long. Shortening
+`older_than` to match saves ~16 MB and loses **14% of distinct event types** — including gaps `bridge:check`
+currently REPORTS, which would then read as *fixed* rather than lost. Measured by the reporter; restated here
+because the two arrive together and are easy to conflate.
+
+**Decision 3 — the value is DETECTION LATENCY + RESPONSE TIME**, not a guess at replay depth. 7d covers a
+Friday-evening miss found by a Monday reconcile; **3d is exactly the window that fails that case**. An install
+with a slower detector wants more.
+
+⛔ **Opting out takes BOTH halves, and the incomplete instruction is destructive.** Set
+`BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN=` (empty) **before** the upgrade **and re-run
+`php artisan config:cache`**. There is **no grace period to do it in afterwards**: `RetentionGate`'s interval
+marker is a *cache* key (`Cache::has(self::MARKER_KEY)`), so the first inbound webhook after deploy runs a
+pass, and `backlogRemains()` **forgets the marker** on a full batch so the next delivery continues draining —
+the whole >7d payload history can be gone within hours. And a `.env` edit is **inert under `config:cache`**, so
+an operator who edits `.env` and reloads FPM has changed nothing at all. The first draft of this entry and of
+the CHANGELOG said only *"opt out with `…=` (empty)"*, which is true and useless at the moment it is read.
+
+**⚑ Decision 4 — the golden harness now pins the SHIPPED default.** `Tests\Support\CheckGolden\GoldenInstall`
+pinned `''` explicitly, so the corpus was insulated from this change — it would have gone on asserting a
+configuration **no install has**. Repinned to `'7d'`; 36 fixtures now carry the two-leg posture line
+(`delete >30d + null payloads >7d`). The first regeneration attempt moved **zero** fixtures, which is what
+surfaced the insulation.
+
+**⚑ Decision 5 — the pin reads the REPO'S SOURCE TEXT, not a resolved value.** `NullPayloadDefaultTest` exists
+because every golden fixture would keep passing if the default silently reverted (`Tests\Support\CheckGolden\GoldenInstall` pins its
+own retention keys). Its first form `require`d `config/bridge.php` and compared the returned array — which
+**EVALUATES `env('BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN', '7d')`**, so it asserted the value in whatever
+environment ran it, and was broken in **both** directions: on a machine where that variable is set to `7d`,
+reverting the default left it **GREEN** — the exact regression it exists to catch — and an operator who took
+the opt-out advice above got a **FALSE RED** from a correct checkout. It now pins the **literal** with a regex
+over `file_get_contents(base_path('config/bridge.php'))`, `preg_match_all() === 1` so a second divergent copy
+of the default is a failure rather than a satisfied `assertMatchesRegularExpression`. Same for the `30d` row
+window. **Both directions measured:** with the default reverted to `''` **and** the env var exported as `7d`
+— precisely the case that fooled the old form — the new pin still REDS; with the shipped default and the var
+exported empty, `90d`, or `7d`, it stays GREEN in all three. A third leg moves the environment in-process and
+**reads the resolved value back** before asserting the pin held, so environment-independence is measured
+rather than argued — and that control immediately earned itself: a `putenv()`-only first version was
+**silently defeated** by an exported variable, because Laravel's env repository reads `ServerConstAdapter`
+($_ENV/$_SERVER) *before* `PutenvAdapter`, and both a `.env` line and a shell export land in `$_SERVER`.
+
+**⛔ Decision 6 — `bridge:replay` REFUSES a payload-nulled event; the read-time fallback is deleted.** This is
+the blocker the default change created, and it is why this entry is not config-only. `ReplayCommand` did
+`is_array($payload) ? $payload : []` — the canon-#5 read-time fallback for missing data — and **nothing
+downstream throws on `[]`**: `InboxOnlyClassifier` (the canonical default) returns a *valid* Intent with
+`subjectId: null` and `summary: "new card by <who>: <unnamed>"`, `DispatchService` appends that line to the
+agent's **durable `inbox.jsonl`** and on an event-driven seat fires a **live wake carrying fabricated
+content**, `markDelivered` stamps the row and clears its `error_message`, and the command prints
+`replayed event N` at **rc 0**. Reproduced verbatim on a nulled fixture before the guard was written. The
+sibling branch is worse: for an event type the classifier does not match on an empty payload, `markDropped`
+sets `processed_at` **and `error_message => null`**, erasing the record of the original failure and
+permanently skipping the row in every later non-`--force` replay.
+
+  - **The refusal sits ABOVE the `--force` reset**, not merely above the dispatch: `--force` nulls
+    `processed_at`/`outcome`/`reason`/`error_message` as its *first* act, so a guard placed after it would
+    refuse having already destroyed the row's terminal tuple with no re-run to restore it. A dedicated test
+    pins the ordering and reds on exactly that transposition.
+  - **The predicate is `=== null`, and it is the same fact `bridge:stats` reads.** The first cut used
+    `! is_array`, reasoning that the fabrication was a property of the FALLBACK rather than of null, so every
+    non-array the `'array'` cast can yield should be refused. **A review pass showed that arm bought an
+    unreachable case at the price of a reachable defect.** `bridge:stats` counts the unrecoverable rows with
+    `whereNull('payload')` — SQL has no portable `! is_array` over a JSON column — so a JSON-scalar row was
+    **refused by replay and counted `errored (replayable)`**: exactly the false label Decision 7 exists to
+    remove, re-minted one row down. The scalar state is unreachable through every write path this app has:
+    the only writers of the column are `DispatchService::dispatch()`, whose `array $payload` parameter IS the
+    type check, and retention's `update(['payload' => null])`, which writes SQL NULL. Narrowed to `=== null`
+    in `ReplayCommand` and in `bridge:inspect`'s mirror, so all three surfaces name one population by
+    construction. **The scalar test was deleted, not weakened** — it asserted behaviour over an input no code
+    path can produce, and canon #6 does not want that state defended twice. **Bound, stated because it is the
+    thing that would break:** if a future write path can ever store a non-array, the guard and the stats
+    predicate move together or the divergence returns; a scalar reaching `dispatch()` today hits the
+    parameter's TypeError, which is loud, not a fabrication.
+  - **The receiver's surviving copy of the deleted expression went with it, and Decision 6's stated audit
+    population was WRONG.** This entry originally said the sibling read sites were found "by grep over
+    `app/Console/` and `app/Bridge/`" — a population that **structurally excludes `app/Http/`**, which is
+    where a copy was still standing: `WebhookController::receive()` did `is_array($payload) ? $payload : []`
+    on the value it stores. Not a live defect — `$adapter->parse($request, $body)` two statements above has
+    already decoded the same bytes through `AbstractWebhookAdapter::decodeJson()`, which throws
+    `InvalidEnvelopeException` (400) on any non-array, so a second decode of the same string cannot answer
+    differently — but it is dead defensive code in the file a maintainer greps first after reading this PR,
+    reading as an endorsed pattern. Deleted. The invariant it silently relied on is now **stated where a
+    third-provider author will read it**, on `WebhookAdapter::parse()`'s docblock: an implementation must
+    refuse a body that does not decode to an **array**, not merely one that fails to decode. The correct
+    audit population for "who reads or writes `webhook_events.payload`" is the whole of `app/`.
+
+  - **⛔ CORRECTION — that declaration had a CONTRADICTING COPY, and the mechanism this entry cited for
+    skipping its test was FALSE. Both are fixed here; the paragraph above stands, its two supporting
+    claims did not.** Recorded rather than quietly rewritten, because the first was the exact defect the
+    sentence above congratulates itself on closing.
+      - **The copy.** `docs/provider-adapters.md` reproduced `parse()`'s docblock **in its pre-change
+        form** — *"on undecodable JSON…"* — so the doc's contract PERMITTED exactly the adapter the
+        interface now forbids (`5` and `"x"` are not undecodable). It is not an idle copy: the same file
+        instructs a non-`sha256=` provider to *"implement `WebhookAdapter` directly without extending
+        `AbstractWebhookAdapter`"*, which is the one path that skips `decodeJson()`. So the invariant was
+        stated on the interface and **contradicted on the surface the third-provider author actually
+        reads** — canon #16's restatement defect, sitting on the very surface this decision named as its
+        safety. **Fixed by DELETE + GUARD, canon #16's two remedies, and which one applies is decided
+        per-copy rather than for the file:** the inlined `@throws` reproduction is **deleted** — marked
+        abridged, pointing at the interface as the owner — because nothing is lost by making the reader
+        follow one hop. **One clause survives on purpose** beside the *"implement it directly"*
+        instruction, because that instruction is the single path that skips `decodeJson()` and a bare
+        pointer at the decision point is skippable; a copy that must exist gets the drift check instead,
+        `AdapterContractRestatementTest`, which reds when the two surfaces stop agreeing that the
+        refusal is about not decoding to an ARRAY. **Seen to fail three ways** — the interface dropping
+        the clause (the pointer would lead nowhere), the extension-point instruction being reworded out
+        from under the warning, and the doc reverting to the literal historical defect wording
+        *"undecodable JSON"* — each red with its own message, then restored green. Rewording BOTH
+        surfaces together passes, which is the intended bound: the guard pins that they move as one, not
+        that the words are frozen.
+      - **The mechanism.** *"Removing `decodeJson()`'s guard still leaves `requireScalar()` throwing
+        `missing_field` on a scalar body"* is false. Both `decodeJson(): array` and
+        `requireScalar(array $decoded, …)` are `array`-TYPED, so deleting the `is_array` guard makes
+        `decodeJson()` throw a **TypeError** at its own return — `requireScalar()` is never reached, and
+        a TypeError is a **500**, not the 400 the sentence implies. The refusal IS over-determined, by
+        the **return type**, which is a different fact with a different consequence: the fail-safe here
+        is *crash loudly*, not *refuse cleanly*. A wrong-but-specific cause in the design record is worse
+        than a generic one (canon #10).
+      - **And the conclusion did not follow either — a test EXISTS now.**
+        `WebhookReceiveTest::test_every_supported_provider_refuses_a_scalar_json_body` derives its
+        population from `WebhookAdapterFactory::SUPPORTED` and asserts a scalar body is a 400 that stores
+        no event. Canon #9's *"cannot fail"* is about checks unfalsifiable **by construction**; this is a
+        contract test over a **documented extension point**, and it fails the day a third adapter skips
+        `decodeJson()` — the state the declaration exists to prevent. **Seen to fail TWO ways, both run.**
+        Deleting `decodeJson()`'s `is_array` guard reds at 500, but that measures the `: array` RETURN
+        TYPE rather than the contract — which is the same correction as above, one level down. The leg
+        that measures the contract is the **known positive:** a `ProbeGitlabAdapter` implementing `WebhookAdapter`
+        directly and building its `EventDto` from headers (the doc's own GitLab shape) was registered in
+        `SUPPORTED`, and the test red with `Expected response status code [400] but received 500` —
+        `TypeError: App\Bridge\Dispatch\DispatchService::dispatch(): Argument #4 ($payload) must be of
+        type array, int given`. That is the concrete cost, measured: pre-diff such an adapter got `[]`
+        and a 200; post-diff it gets a 500 the upstream redelivers on a deterministically-bad body
+        forever. Both wrong — the new one louder and more expensive — which is why the declaration needed
+        a check and not only a sentence. The probe was removed; a provider added to `SUPPORTED` with no
+        fixture reds on the missing key, so the population cannot be silently under-covered.
+
+  - **⚑ CHECK GAP, named because it cannot be closed here (canon #7 leg 3).** `phpstan-laravel.neon`
+    analyses `app/Bridge` plus `CheckCommand.php` only, so **`app/Http` is analysed by nothing** — and
+    that is where `WebhookController`'s `/** @var array<mixed> $payload */` assertion over
+    `json_decode($body, true)` lives. Nothing static checks that assertion against the value; the runtime
+    `TypeError` above is the only thing that ever contradicts it, at the far end of a 500. Widening the
+    analysed paths is a change to what CI accepts and is not smuggled into this entry.
+
+  - **⚑ A SECOND guard-population finding, measured rather than assumed.** The phantom
+    `assertDeliveryIdLength` citations fixed alongside this (three sites in `docs/provider-adapters.md`,
+    the same construct `docs/CHANGELOG.md` records being fixed in `CLAUDE_GOTCHAS.md`) were **not**
+    invisible to `bin/check-doc-refs.php` because `docs/` is outside its population — a control proved
+    the opposite: a `Class::member` citation of a missing member planted in that very file REDS, because
+    rule 1b already walks `app` + `tests` + `docs` + `bin` + root `*.md`. They were invisible because of
+    their **FORM**: a backticked `$this->member()` is harvested by no leg and lands in **no census
+    bucket at all** — narrower even than the disclosed `classless_member` remainder, which is scoped to
+    reference-tag payloads. **Widening to resolve that form was measured and DECLINED, with the
+    number:** 27 backticked `$this->member(` citations exist tree-wide; resolving them against "declared
+    anywhere under `app/`" reds **12**, of which **11 are false positives** — `$this->info()`,
+    `$this->line()`, `$this->postJson()`, `$this->artisan()`, `$this->verb()`, all inherited from
+    framework base classes a markdown paragraph has no enclosing class to resolve against. A 1-in-12
+    true-positive rate is the cry-wolf trade this script's own rule docblock already refuses, and the
+    reason is structural, not a tuning problem. **What was done instead is the fix that needs no new
+    gate:** the four helper-table citations were rewritten into the qualified
+    `AbstractWebhookAdapter::decodeJson()` form the guard DOES resolve, moving them from unguarded to
+    guarded (member census 1059 → 1064 examined) — GUARD, in canon #16's sense, by making the citation
+    checkable rather than by widening the checker.
+      - **TWO populations, because the first measurement did not contain the whole defect.** The 27
+        above are BACKTICKED prose citations, which covers the helper-table row and NOT the two
+        copy-paste `parse()` examples — those sit inside fenced code, where there are no backticks and
+        every leg of every guard is blind by construction. That second population was measured
+        separately and is the one that matters for a how-to doc: **21** `$this->member(` calls inside
+        doc code fences, of which **4** name a method declared nowhere under `app/` — all four
+        `$this->postJson()` / `$this->artisan()` in `CLAUDE_TESTING.md`, inherited from Laravel's
+        `TestCase` and correct as written. **Zero phantoms remain in either population.** Both
+        derivations are scripted and re-run, so the denominator is recomputed rather than quoted.
+      - **One citation was examined and DROPPED, on the record so the bar stays falsifiable:**
+        `docs/CHECK-REGISTRY-PLAN.md` cites a `checkEventFollowsConsumer` helper that stage 7a removed.
+        It is a PAST-TENSE clause in a stage-progress narrative, not an instruction, and nobody copies a
+        design record into an adapter — it changes no behaviour and no decision (canon #18). The three
+        `assertDeliveryIdLength` sites were the opposite in kind and that is why they were fixed:
+        present tense, in a COPY-PASTE TEMPLATE, instructing an author to write a fatal call.
+  - **Strictly MORE conservative**, which is why it ships inside this PR rather than behind the hard gate: it
+    refuses where it used to fabricate, and the newly-refused set was previously served a *wrong answer*, not
+    a right one.
+  - **`bridge:inspect` is the sibling READ site in `app/Console/`** (for the corrected population, and the
+    `app/Http/` copy it missed, see the bullet above) and is handled **differently on purpose**: it does not
+    refuse. It
+    dispatches nothing and reconstructs nothing, so there is nothing to fabricate, and the row's surviving
+    metadata is what the operator came for. What it stops doing is printing `json_encode(null)`'s bare
+    `null`, which reads as *"the upstream sent nothing"* rather than *"retention removed it"* — this is the
+    surface an operator reaches for immediately after replay turns them away.
+
+**⛔ Decision 7 — `bridge:stats`' `errored (replayable)` was a false claim over part of its own count.** With
+the leg on by default, an errored dispatch pointing at a payload-nulled event is recoverable by **no command
+this bridge has**, and one label over both sends the operator to a command that will refuse them. Split into
+`errored (replayable)` and `errored (NOT replayable — event payload nulled by retention)`, **both printed
+always, zero included** — the same argument DL-300 makes for the divergence zero two rows down. The replayable
+figure is **derived by subtraction** rather than by a second `whereNotNull('payload')` query: the two rows must
+sum to the errored total on every install, and two independent predicates over a table retention mutates
+between them cannot promise that.
+
+**⚑ Decision 8 — the two operator-facing config references said the leg was OFF, and neither carried the
+upgrade warning its own sibling row does.** `docs/config-schema.md` still printed ``` `''` (**leg off**) ```
+plus the retired *"an optional space optimization"* rationale verbatim, and `CLAUDE_DEPLOYMENT.md` said
+*(empty ⇒ leg off)*. Two rows above **each**, `retention.enabled` carries *"Defaults ON — an upgrade starts
+pruning without operator action"*; the identical warning was owed here and was nowhere. Both rows now carry
+it, plus the replay-refusal fact and the two-part opt-out. The `bridge:replay` runbook paragraph and the
+`bridge:stats`-shows-errored diagnose bullet are updated in the same change.
+
+**⚑ Decision 9 — the golden corpus lost the ONE-LEG posture and BOTH arms are restored as fixtures, not
+assertions.** After Decision 4 all 36 posture-printing fixtures render two legs, and every assertion over that
+line matched on the **prefix** `retention: on (delete >30d` — true of one leg and of two — so nothing covered
+the single-leg branch of `RetentionConfig::summary()`'s `implode(' + ', …)`. `implode` has **two** one-leg
+arms and the first draft pinned only one. `retention-payload-leg-off` (the install an operator who takes the
+opt-out above actually has) and `retention-row-leg-off` (the Decision 10 shape — the arm this change makes
+DEFAULT-REACHABLE; the posture itself was always reachable by setting both keys explicitly, and what the
+change creates is the route into it that nobody chose) each pin the **whole line**, closing parenthesis included, each with a paired absent-subject;
+`retention-row-leg-off` additionally asserts `MISCONFIGURED` is **absent**, which is the preflight verdict
+that same `.env` produced before this release. `minimal-fpm-present`'s subject is tightened from the prefix to
+the exact two-leg line so all three renderings are pinned. **Proven potent:** a mutation making `summary()`
+append the payload leg unconditionally reds `retention-payload-leg-off` and nothing else; a mutation gating
+the new default on `older_than` being set — the Decision 10 alternative — reds `retention-row-leg-off` and
+nothing else. Registered check set is untouched at 38, so no inventory line moves.
+
+**⛔ Decision 10 — the default change ALSO flips a preflight from MISCONFIGURED to `on`, and that second
+upgrade shape is DISCLOSED rather than gated away.** `RetentionConfig::problemWith()` reports MISCONFIGURED
+only when **both** windows are empty. So an install running the documented `BRIDGE_RETENTION_OLDER_THAN=`
+(empty ⇒ row leg off) **with retention enabled** had no usable window at all: `problem !== null`, the
+`! isUsable()` branch, **nothing pruned**, and `bridge:check` printing `retention: enabled but MISCONFIGURED`
+on every run. After this change the same `.env` resolves `nullOlder = 7`, `problem` becomes null, and the
+first inbound webhook starts nulling payloads. **The first draft of this entry and of the CHANGELOG named
+exactly one transition and missed this one** — which is the worse of the two to miss, because an operator of
+such an install reads *"the leg was off for me"* off a preflight that says MISCONFIGURED and concludes the
+release does not apply to them.
+
+  - **Weighed: gate the new default on `older_than` being set. Declined, and the reasons are not
+    cost.** (a) A conditional default couples the two keys whose whole point — **Decision 2 of this very
+    entry** — is that they are *independent* windows, so it would re-mint the conflation this release warns
+    against, at the level of the shipped configuration rather than of prose. (b) It makes the effective
+    default **underivable from `config/bridge.php`**: the file would read `'7d'` while some installs got
+    `''`, and nothing at the read site says which. (c) The state it would preserve is one the preflight
+    **already reported as broken** — an install told, on every `bridge:check`, that its retention is
+    misconfigured and prunes nothing. Freezing that is preserving a defect, not a posture. (d) It changes what
+    the system does, so it would need its own seen-to-fail tests for a behaviour whose only purpose is to keep
+    a broken-looking install broken.
+  - **What is owed instead is disclosure, and it is the same remedy as the main change:** set the value before
+    the upgrade. Named by shape — not merely implied — in `docs/CHANGELOG.md`, in `CLAUDE_DEPLOYMENT.md`
+    § *Retention config (DL-199)* (on the `older_than` row, where an operator with an empty row window
+    actually looks) and in `docs/config-schema.md`'s `BRIDGE_RETENTION_OLDER_THAN` row. All three say the same
+    further thing: if an empty row window was how you kept retention inert, the supported spelling is
+    `BRIDGE_RETENTION_ENABLED=false`, which `bridge:check` warns about rather than reporting as broken.
+  - **Honest residue:** an operator who set an empty row window *intending* no pruning, never read the
+    MISCONFIGURED line, and upgrades without reading the note loses payloads older than 7d irreversibly. That
+    is the same exposure the release already accepts for every untuned install (Decision 1); this shape is a
+    subset of it with a *louder* pre-existing warning, not a new class.
+  - **Covered by `retention-row-leg-off`** (Decision 9), whose golden pins the post-change line and asserts
+    the pre-change `MISCONFIGURED` verdict is gone.
+
+**⚑ Decision 11 — the CONSUMER-facing contract surface said the wrong window and promised a recovery that now
+exits 1.** `docs/consumer-guide.md` is read by agents and repos that **cannot read this repo's code** — the
+DECLARE half of canon #7 — and it stated retention as *"on by default, `older_than` 30d"* and promised
+*"to recover a missed dispatch: `php artisan bridge:replay <N>` … re-runs dispatch"*, unqualified. Both halves
+are now wrong in the same direction: the operative recovery window is the **payload** one (7d), not the row
+one, and replay **REFUSES** past it. Rewritten to state both windows, that they are independent, that replay
+exits 1 on a payload-nulled event, that a row still visible in `bridge:inspect` is not therefore replayable,
+and — because these are per-install operator settings and the guide's readers are not the operator — that a
+consumer should **ask its bridge operator** rather than assume the defaults, and should not design a recovery
+story around replaying later.
+
+  - **The five other unqualified "replay recovers it" claims** (`CLAUDE_ARCHITECTURE.md`,
+    `docs/customization.md` ×2, `docs/multi-agent.md`, `CLAUDE_DEPLOYMENT.md`'s errored-row definition — the
+    ×2 is why the count is five and not four; this entry said "four" over the same list `docs/CHANGELOG.md`
+    called "five", and the two surfaces are now reconciled to the list rather than to each other) get a
+    **bound plus a pointer**, not a restatement. This change had already put three full copies of the refusal
+    narrative into the tree; canon #16's remedy for a restatement is to point at the one doc that owns it, and
+    five more copies of a paragraph nobody re-syncs is the defect, not the fix.
+
+**Not built, recorded here as the obvious next ones rather than smuggled in:**
+
+  - **A `bridge:check` warning when errored dispatches point at payload-nulled events.** Weighed and
+    **declined for this PR.** It is a *lagging* signal about damage already done, it is `bridge:stats`'
+    question and is now answered there, and putting it in the preflight means a **second implementation of
+    the same predicate** (canon #5) plus the first DB read `RetentionPostureCheck` has ever done — and
+    `CheckRunner` deliberately does not isolate, so that read needs its own fail-soft envelope to avoid
+    converting an unreachable database into an aborted `bridge:check`.
+  - **Cross-validating the two windows** — warning when the payload window is a small fraction of an
+    *explicitly widened* row window (an operator who set `BRIDGE_RETENTION_OLDER_THAN=90d` for a longer audit
+    trail now silently loses payloads at 7d). **Declined, and not merely deferred: the ratio is not the
+    signal.** Decision 2 of this very entry rules that a short payload window beside a long row window is the
+    **correct** posture, so a check firing on 7d-vs-90d would warn about the arrangement the same release
+    recommends. The thing that would make it a signal is whether the operator *chose* the 7d value or
+    inherited the moved default — and that provenance is **not derivable from config**: `env()` carries no
+    origin, and reading `.env` for the key's presence answers for a file a `config:cache`d install does not
+    read. The moment that actually matters is **before** the upgrade, so the vehicle is the upgrade note
+    (Decision 8 and the CHANGELOG), not a later preflight.
+
+**Provenance.** Reported by aimla-pm on rt#380, who measured it, applied it on their own fleet first, and
+explicitly declined to assert this install's numbers (*"I cannot read your install"*) — the prediction was then
+confirmed here independently. Sequencing was theirs: set it on your own install first, as the cheapest possible
+validation of a default before shipping it to everyone.

@@ -59,7 +59,7 @@ final class GoldenInstall
             'bridge.retention.enabled' => true,
             'bridge.retention.interval' => 86400,
             'bridge.retention.older_than' => '30d',
-            'bridge.retention.null_payloads_older_than' => '',
+            'bridge.retention.null_payloads_older_than' => '7d',
             'bridge.retention.batch' => 500,
             'bridge.inbox_layout' => 'shared',
             'bridge.state_dir' => null,

@@ -49,25 +49,67 @@ final class WritebackAlertNotifier
      */
     public function notify(string $repo, string $outcome, ?int $cardId, string $reason, ?int $issueNumber = null): void
     {
-        // Deduped per (repo, outcome, reason) so one recurring permanent move-failure
-        // wakes the operator once, not per redelivery. The raw signature tuple (NOT a
-        // pre-hashed key) is handed to emit → claimSignature, which hashes it exactly
-        // once — byte-identical to the pre-refactor sha1 input.
+        $this->emitMoveFailed($repo, $outcome, $reason, $cardId, $issueNumber, withheld: false);
+    }
+
+    /**
+     * The {@see notify} variant for a refusal whose card id the bridge NEVER VERIFIED as
+     * its own — DL-314, card#7846. `card_id` reaches this handler as a literal integer
+     * parsed out of AUTHOR-CONTROLLED text (a `card#NNNN` token in a PR title or branch
+     * ref, `CardTokenGrammar`), and kanban's card id space is GLOBAL across every board
+     * on the instance — so until a read of that card SUCCEEDS, the id may name a card
+     * belonging to another install on the same shared kanban. A refusal arm that returns
+     * because the read FAILED holds exactly such an id, and pushing it put a foreign
+     * card id into this install's alert channel (observed live: a repo event on one
+     * install alerted with `card_id: 7756`, a card on a board another install owns).
+     *
+     * So the channel event carries NO id here — `card_id_withheld: true` says the
+     * omission is deliberate, because a bare `card_id: null` reads as "the arm had no
+     * id" (which is what the malformed-payload arms mean by it) and would send the
+     * operator looking for a bug in the wrong place. THE ID IS NOT LOST: the caller's
+     * `Log::warning` context carries it verbatim, and the log is the local operator's
+     * own surface — the channel is the one that can reach a party the id is not about.
+     *
+     * ⛔ This is NOT the arm for "the id is null": pass `notify`/`warnAndNotify` a null
+     * $cardId for that. This one asserts an id EXISTED and was withheld.
+     *
+     * @param  array<string, mixed>  $logContext  carries `card_id` — the operator's copy
+     */
+    public function warnAndNotifyCardIdWithheld(string $message, array $logContext, string $repo, string $outcome, string $reason): void
+    {
+        Log::warning($message, $logContext);
+        $this->emitMoveFailed($repo, $outcome, $reason, null, null, withheld: true);
+    }
+
+    /**
+     * The one place the `writeback_move_failed` body is shaped, so the withheld-id arm
+     * cannot drift from the ordinary one (canon #5).
+     *
+     * Deduped per (repo, outcome, reason) so one recurring permanent move-failure wakes
+     * the operator once, not per redelivery. The raw signature tuple (NOT a pre-hashed
+     * key) is handed to emit → claimSignature, which hashes it exactly once —
+     * byte-identical to the pre-refactor sha1 input. $withheld is NOT in the tuple: it is
+     * a property of the arm, constant per reason, so it could only ever duplicate it.
+     */
+    private function emitMoveFailed(string $repo, string $outcome, string $reason, ?int $cardId, ?int $issueNumber, bool $withheld): void
+    {
         $this->emit('writeback_move_failed', $repo."\x00".$outcome."\x00".$reason, [
             'repo' => $repo,
             'outcome' => $outcome,
             'card_id' => $cardId,
             'issue_number' => $issueNumber,
             'reason' => $reason,
-        ]);
+        ] + ($withheld ? ['card_id_withheld' => true] : []));
     }
 
     /**
      * The PAIRED form of {@see notify}: the durable `Log::warning` FIRST (the record
      * that survives an undeliverable channel), then the additive live push. Every
-     * permanent-refusal arm that signals goes through this one method, so an arm
-     * cannot log a refusal without alerting on it — the per-call-site opt-in was the
-     * omission that left 11 of 12 refusal arms live-silent (card#5312 / DL-274).
+     * permanent-refusal arm that signals goes through this method or its withheld-id
+     * twin {@see warnAndNotifyCardIdWithheld} (DL-314) — pairing is the property, and
+     * both have it — so an arm cannot log a refusal without alerting on it; the
+     * per-call-site opt-in was the omission that left 11 of 12 refusal arms live-silent
+     * (card#5312 / DL-274).
      *
      * @param  array<string, mixed>  $logContext
      */

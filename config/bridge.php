@@ -133,8 +133,31 @@ return [
     | permissive fallback here would mean deleting on a fat-fingered value);
     | `bridge:check` reports it at preflight.
     |
-    | null_payloads_older_than defaults empty ⇒ that leg is OFF: it is an optional
-    | space optimization for a large store, not part of the growth fix.
+    | null_payloads_older_than defaults 7d ⇒ that leg is ON. It is NOT an optional
+    | space optimization: payloads are ~95% of this store's bytes, and only REPLAY
+    | needs them — only recently. Two installs measured it independently (rt#380):
+    | 894 MB of a 1.2 GB store on one, 369 MB of 18,931 rows on the other, both
+    | under a retention that was working correctly the whole time. Neither install
+    | could discover that without going and running SUM(LENGTH(payload)), which
+    | nobody does unprompted — which is exactly the DL-199 argument for `enabled`
+    | defaulting TRUE, one level up: a default nobody sets is why DL-012 never ran.
+    |
+    | ⛔ THIS IS THE PAYLOAD WINDOW, NOT THE ROW WINDOW, and they must not be
+    | conflated. Shortening `older_than` to match saves ~16 MB and loses 14% of
+    | distinct event types — including gaps `bridge:check` currently REPORTS, which
+    | would then read as fixed rather than lost (rt#380, measured). Payload window
+    | short; row window long.
+    |
+    | The right value is DETECTION LATENCY + RESPONSE TIME, not a guess at replay
+    | depth. 7d covers a Friday-evening miss found by a Monday reconcile; 3d is
+    | exactly the window that fails that case. A slower detector wants more.
+    |
+    | ⚠ THIS KEY IS THE REPLAY WINDOW IN FACT, NOT ONLY BY INTENT: `bridge:replay`
+    | REFUSES an event whose payload this leg nulled (it cannot reconstruct one, and
+    | dispatching the empty payload in its place stages a FABRICATED intent to the
+    | agent's durable inbox). Changing it changes what is recoverable. The upgrade
+    | and opt-out mechanics — no grace period, and a .env edit is inert under
+    | `config:cache` — are owned by CLAUDE_DEPLOYMENT.md and docs/config-schema.md.
     |
     | interval — seconds between passes in the drained steady state (default 24h),
     | so at most one request per day pays anything at all. batch — max rows one
@@ -154,7 +177,7 @@ return [
         // plausible here precisely because the sibling key above IS one. Uncast, a
         // non-string reaches RetentionConfig and is refused as a type error.
         'older_than' => env('BRIDGE_RETENTION_OLDER_THAN', '30d'),
-        'null_payloads_older_than' => env('BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN', ''),
+        'null_payloads_older_than' => env('BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN', '7d'),
         'batch' => (int) env('BRIDGE_RETENTION_BATCH', 500),
     ],
 
