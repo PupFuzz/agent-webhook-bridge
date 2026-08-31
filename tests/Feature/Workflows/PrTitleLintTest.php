@@ -3,7 +3,9 @@
 namespace Tests\Feature\Workflows;
 
 use App\Bridge\Support\CardTokenGrammar;
+use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\DlTokenGrammar;
+use App\Bridge\Writeback\PrOutcome;
 use Symfony\Component\Yaml\Yaml;
 use Tests\TestCase;
 
@@ -216,7 +218,7 @@ class PrTitleLintTest extends TestCase
      * @param  list<string>  $subjects
      * @return list<string>
      */
-    private function grepMatchesAll(string $regex, array $subjects): array
+    private function grepMatchesAll(string $regex, array $subjects, ?string $locale = null): array
     {
         $this->assertNotEmpty($subjects, 'a batched grep over nothing would report every regex as matching nothing');
         $this->assertSame([], array_values(array_filter($subjects, fn (string $s) => str_contains($s, "\n"))),
@@ -227,7 +229,13 @@ class PrTitleLintTest extends TestCase
             ." | tr '[:upper:]' '[:lower:]' | grep -nE ".escapeshellarg($regex);
         $rc = 0;
         $out = [];
-        exec('bash -c '.escapeshellarg($pipeline).' 2>/dev/null', $out, $rc);
+        // `$locale` pins LC_ALL for the same reason {@see runStep()} takes one, and on
+        // a second class: grep resolves a `[[:space:]]` bracket expression from locale
+        // data, so a leg asking whether the lint and the grammar agree on separators
+        // is asking a question with a different answer per locale. Null inherits, which
+        // is what every leg over an ASCII corpus wants.
+        exec(($locale === null ? '' : 'LC_ALL='.escapeshellarg($locale).' ')
+            .'bash -c '.escapeshellarg($pipeline).' 2>/dev/null', $out, $rc);
 
         $matched = [];
         foreach ($out as $line) {
@@ -292,9 +300,9 @@ class PrTitleLintTest extends TestCase
      * other leg wants: measured across `C`, `C.UTF-8` and `en_US.UTF-8`, they return
      * identical answers, so only the legs that pass a locale are sensitive to it.
      */
-    private function runStep(string $namePrefix, string $title, string $branch, ?string $locale = null): array
+    private function runStep(string $namePrefix, string $title, string $branch, ?string $locale = null, string $base = 'dev'): array
     {
-        return $this->runScriptText($this->stepScript($namePrefix), $title, $branch, $locale);
+        return $this->runScriptText($this->stepScript($namePrefix), $title, $branch, $locale, $base);
     }
 
     /**
@@ -304,7 +312,7 @@ class PrTitleLintTest extends TestCase
      *
      * @return array{0:int,1:string}
      */
-    private function runScriptText(string $script, string $title, string $branch, ?string $locale = null): array
+    private function runScriptText(string $script, string $title, string $branch, ?string $locale = null, string $base = 'dev'): array
     {
         // No `.sh` suffix: appending one would name a DIFFERENT path than tempnam()
         // created, leaking the original empty file on every one of the ~150 runs a
@@ -315,6 +323,12 @@ class PrTitleLintTest extends TestCase
         $out = [];
         exec(($locale === null ? '' : 'LC_ALL='.escapeshellarg($locale).' ')
             .'TITLE='.escapeshellarg($title).' BRANCH='.escapeshellarg($branch)
+            // Every step is run with a BASE in the environment even though only the
+            // closure step reads one: `set -u` makes an absent variable a hard error,
+            // so the harness must supply what the `env:` block supplies. The default
+            // is the INTEGRATION base — the one every dev-targeted PR carries, and the
+            // one under which the structural route is live.
+            .' BASE='.escapeshellarg($base)
             .' bash '.escapeshellarg($tmp).' 2>&1', $out, $rc);
         @unlink($tmp);
 
@@ -1339,5 +1353,494 @@ class PrTitleLintTest extends TestCase
             $this->assertSame('skip:no-id', $this->requireStepVerdict($branch, $unfolded),
                 "'{$branch}' must go unreachable without the fold, or the fold is not what carries the answer");
         }
+    }
+    // ---------------------------------------------------------------------
+    // THE CLOSURE STEP (card#8294) — a correlated card with no closure claim
+    // ---------------------------------------------------------------------
+
+    /**
+     * The step name prefix, once. Every leg below reaches the step through this, so
+     * a rename is one edit and cannot leave half the legs silently measuring nothing
+     * (`stepScript()` FAILS on an unknown prefix rather than skipping, which is what
+     * makes that true).
+     */
+    private const CLOSURE_STEP = 'Require a closure claim';
+
+    /** The closure step's exit code: 0 = this merge will claim the card it names. */
+    private function runClosureStep(string $title, string $branch): int
+    {
+        return $this->runStep(self::CLOSURE_STEP, $title, $branch)[0];
+    }
+
+    /**
+     * The corpus the whole-step tie below is driven over: (title, branch) pairs
+     * spanning both closure routes, both their misses, and the shapes that carry no
+     * closure question at all. Real head branches and real titles from this repo's
+     * merged PRs wherever a row has one — the `<type>/<id>-slug` rows ARE the measured
+     * defect (card#8294 counted 8 in a row), and the `card-<id>-slug` rows are the
+     * convention that worked before it.
+     *
+     * @return list<array{0:string,1:string}>
+     */
+    private static function closureCorpus(): array
+    {
+        $rows = [];
+        foreach ([
+            'ci/8286-release-tag-check',
+            'feat/8290-lane-model-check-warn',
+            'chore/8142-regenerate-coverage-artifact',
+            'card-8286-release-tag-check',
+            'fix/card8286-release-tag-check',
+            'card-security-sleep',
+            'fix/decouple-check-name-from-runtime',
+            // A branch naming a DIFFERENT card than the title correlates — the only
+            // shape that distinguishes "the ref names a card" from "the ref names
+            // THIS card". Without it, deleting the structural id comparison leaves
+            // the whole suite green (measured).
+            'card-1234-other-work',
+        ] as $branch) {
+            foreach ([
+                'ci: gate release-promote behind the tag it asserts (card#8286)',
+                'ci: gate release-promote behind the tag it asserts (closes card#8286)',
+                'ci: gate release-promote (fixes card#8286)',
+                'ci: gate release-promote (resolved card#8286)',
+                'ci: gate release-promote (closes: card#8286)',
+                'ci: closes the bug in card#8286',
+                'ci: gate (unfixes card#8286)',
+                'ci: gate (closes card#1234) (card#8286)',
+                // The mirror of the row above, and the only shape that distinguishes
+                // "some card is closed" from "THIS card is closed": the correlated
+                // card is 8286 (leftmost) and the closing form names 1234, so the
+                // bridge refuses. Without it, deleting the id comparison in the step
+                // leaves the whole suite green (measured).
+                'ci: gate (card#8286) (closes card#1234)',
+                'ci: gate (closes card#82860)',
+                'ci: bump both toolkit action pins to v0.31.0',
+                'feat: two (closes card#8286, closes card#8290)',
+                'feat: two (closes card#8286 and card#8290)',
+            ] as $title) {
+                $rows[] = [$title, $branch];
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * ⭐ THE WHOLE-STEP TIE, and the only leg here that measures what the gate is FOR.
+     * Every other tie compares one regex to one grammar; this compares the STEP's
+     * verdict to the BRIDGE's — `ClosureGrammar::closesCard()` OR
+     * {@see PrOutcome::mergeClosesCard()}, over the card the classifier would select
+     * ({@see CardTokenGrammar::parse()} on the title, leftmost-only). Neither side
+     * carries a copy of the other's answer.
+     *
+     * That is the property the gate exists to hold: CI reds exactly the PRs whose
+     * merge the writeback will refuse. A leg comparing the bash to a hand-written
+     * expectation would have stayed green through the convention flip that caused
+     * card#8294, because the expectation would have been written from the same wrong
+     * mental model as the convention.
+     *
+     * The `merged` outcome is passed rather than `merged_to_main` because the step
+     * exempts `release/*` — the only head that reaches a `main` base — so the base
+     * ref it cannot see is pinned by the exemption, not assumed away.
+     */
+    public function test_the_closure_step_and_the_runtime_predicate_return_the_same_verdict(): void
+    {
+        $agreed = $reds = 0;
+        foreach (self::closureCorpus() as [$title, $branch]) {
+            $id = CardTokenGrammar::parse($title);
+            $runtime = $id !== null
+                && ! (ClosureGrammar::closesCard($title, $id)
+                    || PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, $id));
+            $this->assertSame($runtime, $this->runClosureStep($title, $branch) !== 0,
+                "the gate and the bridge disagree on '{$title}' / '{$branch}': the bridge "
+                .($runtime ? 'REFUSES' : 'moves').' the card');
+            $agreed++;
+            $reds += $runtime ? 1 : 0;
+        }
+
+        // A corpus the gate never reds would make every row above pass by agreeing
+        // that nothing is wrong, which is the shape of a check that cannot fail.
+        $this->assertGreaterThan(0, $reds, 'the corpus contains no PR the bridge would refuse — the tie measured nothing');
+        $this->assertLessThan($agreed, $reds, 'the corpus contains no PR the bridge would move — the tie measured nothing');
+    }
+
+    /**
+     * SEEN TO FAIL (canon: a pass is evidence only if failure was possible). The four
+     * head branches here are real merged PRs of this repo whose cards did NOT move,
+     * and the titles are theirs: this leg is the check watching the exact incident
+     * card#8294 was filed for.
+     */
+    public function test_the_closure_step_reds_the_measured_defect(): void
+    {
+        foreach ([
+            'ci: gate release-promote behind the tag it asserts (card#8286)' => 'ci/8286-release-tag-check',
+            'feat(check): report the race a half-adopted lane model leaves open (card#8290)' => 'feat/8290-lane-model-check-warn',
+            'docs(check): regenerate the golden coverage artifact against current dev (card#8142)' => 'chore/8142-regenerate-coverage-artifact',
+            'test(security): the shell-injection assertion waits for the child (card#7233)' => 'card-security-sleep',
+        ] as $title => $branch) {
+            [$rc, $out] = $this->runStep(self::CLOSURE_STEP, $title, $branch);
+            $this->assertSame(1, $rc, "'{$title}' must red — its merge moves nothing");
+            $this->assertStringContainsString('::error::', $out);
+            $this->assertStringContainsString((string) CardTokenGrammar::parse($title), $out,
+                'the error must name the card the author has to act on');
+        }
+    }
+
+    /**
+     * The passing shapes, watched to pass — one per verb the grammar accepts, plus
+     * both structural spellings. Driven off {@see ClosureGrammar::accepted()} so a
+     * verb added to the grammar is exercised here without an edit.
+     */
+    public function test_the_closure_step_passes_every_closing_form_the_grammar_accepts(): void
+    {
+        $forms = array_values(array_filter(ClosureGrammar::accepted(),
+            fn (string $v) => ClosureGrammar::closesCard($v, 123)));
+        $this->assertNotEmpty($forms, 'no card-closing vectors to drive — this leg would measure nothing');
+
+        foreach ($forms as $form) {
+            $title = 'ci: gate release-promote ('.str_replace('123', '8286', $form).')';
+            $this->assertSame(0, $this->runClosureStep($title, 'ci/8286-release-tag-check'),
+                "'{$title}' carries a closing form the grammar accepts and must pass");
+        }
+
+        foreach (['card-8286-slug', 'fix/card8286-slug', 'fix/card#8286-slug'] as $branch) {
+            $this->assertSame(0, $this->runClosureStep('ci: gate release-promote (card#8286)', $branch),
+                "'{$branch}' names the card structurally and must pass");
+        }
+    }
+
+    /**
+     * THE OPT-OUT, with its control. A PR that cites a card it deliberately does not
+     * finish must have a way to say so, or this gate builds the OVER-promotion defect
+     * it was designed to avoid. The control is the same title with the marker
+     * removed: without it the row reds, so the marker is what carries the answer and
+     * not some other property of the title.
+     */
+    public function test_the_no_close_marker_is_what_passes_a_deliberate_non_closure(): void
+    {
+        $marker = '[no-close]';
+        foreach ([$marker, strtoupper($marker)] as $spelling) {
+            $this->assertSame(0, $this->runClosureStep("docs: cite the prior ruling {$spelling} (card#8286)", 'docs/8286-context'),
+                "'{$spelling}' must declare a deliberate non-closure");
+        }
+        $this->assertSame(1, $this->runClosureStep('docs: cite the prior ruling (card#8286)', 'docs/8286-context'),
+            'without the marker the same title must red, or the marker is not what passes it');
+        $this->assertSame(1, $this->runClosureStep('docs: cite the prior ruling, no close intended (card#8286)', 'docs/8286-context'),
+            'prose resembling the marker must not pass — the opt-out is a literal, not a grammar');
+    }
+
+    /**
+     * The exemption block, with the mutation that proves it carries the answer: an
+     * exempt branch whose title correlates a card and closes nothing must pass, and
+     * must RED once the `case` block is deleted. Without this leg the exemption is
+     * indistinguishable from every one of those branches simply carrying no token.
+     *
+     * The revert row is the one that matters: GitHub mints a revert title by quoting
+     * the original's, so it arrives correlating the card the reverted work closed.
+     *
+     * ⚠ The row deliberately quotes a BARE-MENTION title. A revert of a PR that
+     * closed its card quotes the CLOSING FORM too, and would pass this step on the
+     * lexical route with the exemption deleted — so it cannot serve as this control.
+     * That is not a defect in the gate; it is a disclosed property of the RUNTIME
+     * predicate, which reads the quoted verb the same way and would move the card on
+     * a merge that UNDOES its work. Changing that is a change to what the writeback
+     * acts on and belongs to its own decision, not to this one.
+     */
+    public function test_the_exemption_block_is_what_passes_an_exempt_branch(): void
+    {
+        $script = $this->stepScript(self::CLOSURE_STEP);
+        $stripped = preg_replace('/^case "\$BRANCH" in\n.*?^esac\n/ms', '', $script, 1, $count);
+        $this->assertSame(1, $count, 'the exemption `case` block is gone or reshaped — this control measures nothing');
+        $this->assertIsString($stripped);
+
+        foreach ([
+            'Revert "ci: gate release-promote (card#8286)"' => 'revert-608-ci/8286-release-tag-check',
+            'chore(release): v0.79.0 (card#8286)' => 'release/v0.79.0',
+            'chore: sync main to dev (card#8286)' => 'sync/main-to-dev-post-v0.79.0',
+        ] as $title => $branch) {
+            $this->assertSame(0, $this->runClosureStep($title, $branch), "'{$branch}' is exempt and must pass");
+            $this->assertSame(1, $this->runScriptText($stripped, $title, $branch)[0],
+                "'{$branch}' must red without the exemption, or the exemption is not what passes it");
+        }
+    }
+
+    /**
+     * TIED — the step's `closure=` regex is a SECOND implementation of
+     * {@see ClosureGrammar}'s card arm, in a second language, and this compares the
+     * two answer sets over the grammar's own vectors. The authority is
+     * `closedCardIds() !== []` and NOT `hasClosure()`: the bash arm deliberately does
+     * not implement the DL half (the step's own comment discloses why), so tying it
+     * to `hasClosure()` would red on `Closes DL-239` and report a disclosed scope
+     * bound as a defect.
+     *
+     * Three renderings because the leading boundary differs — `(^|[^0-9a-z_])` here,
+     * `\b` there — so they must agree at the start of the subject, mid-prose, and
+     * inside the parenthetical this repo's titles actually use.
+     */
+    public function test_the_closure_steps_grammar_and_the_authority_return_the_same_answer_set(): void
+    {
+        $closure = $this->stepRegex(self::CLOSURE_STEP, 'closure');
+
+        $cardClosers = array_values(array_filter(ClosureGrammar::VECTORS,
+            fn (string $v) => ClosureGrammar::closedCardIds($v) !== []));
+        $others = array_values(array_filter(ClosureGrammar::VECTORS,
+            fn (string $v) => ClosureGrammar::closedCardIds($v) === []));
+        $this->assertNotEmpty($cardClosers, 'the tie needs card-closing vectors to compare');
+        $this->assertNotEmpty($others, 'the tie needs non-closing vectors to compare');
+
+        foreach (['%s', 'ci: gate a thing %s', 'ci: gate a thing (%s)'] as $shape) {
+            $accepts = $rejects = [];
+            foreach (ClosureGrammar::VECTORS as $vector) {
+                if ($this->grepMatches($closure, sprintf($shape, $vector))) {
+                    $accepts[] = $vector;
+                } else {
+                    $rejects[] = $vector;
+                }
+            }
+            $this->assertSame($cardClosers, $accepts, "rendered as '{$shape}': the lint closes a different set than the grammar does");
+            $this->assertSame($others, $rejects, "rendered as '{$shape}': the lint withholds a different set than the grammar does");
+        }
+    }
+
+    /**
+     * The same tie over the SEPARATOR domain the verb bridge spans — `closes<c>card#123`
+     * for every printable ASCII `c`, plus the glued spelling. Built the way
+     * {@see singleCharacterSeparatorVectors()} is and for the same reason: the vector
+     * list above is curated and finite, so on its own it cannot see a bash character
+     * class that admits one separator the PHP `[\s:]+` does not (or the reverse).
+     */
+    public function test_the_closure_steps_verb_bridge_and_the_authority_agree_over_every_separator(): void
+    {
+        $closure = $this->stepRegex(self::CLOSURE_STEP, 'closure');
+
+        $vectors = ['closescard#123'];
+        for ($code = 0x20; $code <= 0x7E; $code++) {
+            $vectors[] = 'closes'.chr($code).'card#123';
+        }
+
+        $authority = array_values(array_filter($vectors, fn (string $v) => ClosureGrammar::closesCard($v, 123)));
+        $this->assertNotEmpty($authority, 'no separator closes — the tie measured nothing');
+        $this->assertNotSame($vectors, $authority, 'every separator closes — the tie measured nothing');
+        $this->assertSame($authority, $this->grepMatchesAll($closure, $vectors),
+            'the lint and the grammar admit different separators between the verb and the token');
+    }
+
+    /**
+     * TIED — the step's `token=` regex vs {@see CardTokenGrammar}, the same shape as
+     * the warn step's `good=` tie. It exists as a second regex in this file because
+     * this step needs the id CAPTURED and `good=` does not; the leg below is what
+     * stops the two from disagreeing.
+     */
+    public function test_the_closure_steps_token_and_the_authority_return_the_same_answer_set(): void
+    {
+        $token = $this->stepRegex(self::CLOSURE_STEP, 'token');
+
+        foreach (['%s', 'fix a thing %s', 'ci: gate a thing (%s)'] as $shape) {
+            $accepts = $rejects = [];
+            foreach (CardTokenGrammar::VECTORS as $vector) {
+                if ($this->grepMatches($token, sprintf($shape, $vector))) {
+                    $accepts[] = $vector;
+                } else {
+                    $rejects[] = $vector;
+                }
+            }
+            $this->assertSame(CardTokenGrammar::accepted(), $accepts, "rendered as '{$shape}': the closure step accepts a different set than the grammar does");
+            $this->assertSame(CardTokenGrammar::rejected(), $rejects, "rendered as '{$shape}': the closure step rejects a different set than the grammar does");
+        }
+    }
+
+    /**
+     * The two card-token regexes THIS FILE now carries — the warn step's `good=` and
+     * the closure step's `token=` — compared to each other over the separator domain.
+     * Each is independently tied to {@see CardTokenGrammar} above, which already makes
+     * a silent divergence impossible; this states the property directly, so a reader
+     * asking "are there two accept-sets in this workflow?" gets an assertion rather
+     * than an argument from two other tests.
+     */
+    public function test_the_two_card_token_regexes_in_this_workflow_answer_identically(): void
+    {
+        $vectors = array_merge(CardTokenGrammar::VECTORS, self::singleCharacterSeparatorVectors());
+        $this->assertSame(
+            $this->grepMatchesAll($this->stepRegex('Warn on a card or DL token', 'good'), $vectors),
+            $this->grepMatchesAll($this->stepRegex(self::CLOSURE_STEP, 'token'), $vectors),
+            'this workflow holds two card-token regexes that answer differently');
+    }
+
+    /**
+     * EXTRACTION TIED TO THE PREDICATE — the card#6822 trap, on the new step. A
+     * predicate that fires and then names an id the grammar would not have selected
+     * sends the author to close the wrong card, which is worse than the skip it
+     * replaced. The id is observable through the error text, which is exactly what
+     * makes it assertable at all.
+     */
+    public function test_the_closure_step_names_the_card_the_grammar_would_select(): void
+    {
+        foreach ([
+            'ci: gate a thing (card#8286)',
+            'ci: gate a thing (card-8286)',
+            'ci: gate a thing card8286 rework',
+            'ci: gate (closes card#1234) (card#8286)',
+            'ci: gate a thing (card#08286)',
+        ] as $title) {
+            $id = CardTokenGrammar::parse($title);
+            $this->assertNotNull($id, "'{$title}' must correlate, or this row measures nothing");
+            [, $out] = $this->runStep(self::CLOSURE_STEP, $title, 'ci/nothing-slug');
+            $this->assertMatchesRegularExpression('/\bcard '.$id.'\b/', $out,
+                "'{$title}': the step must name the id CardTokenGrammar selects");
+        }
+    }
+
+    /**
+     * THE MESSAGE, tied in both directions — the failure this repo has paid for three
+     * times is operator-facing text naming a NARROWER or simply wrong accept-set than
+     * the code enforces (DL-239). The step cannot render {@see ClosureGrammar::describe()}
+     * (the job has no checkout, by design), so the quoted list is pinned instead:
+     *
+     *  - every form it quotes must be one the grammar ACCEPTS and the step's own
+     *    regex matches — so the message can never advertise a form that does nothing;
+     *  - every verb stem the grammar accepts must APPEAR in the list — derived from
+     *    {@see ClosureGrammar::accepted()}, never enumerated here — so a verb added to
+     *    the grammar reds this leg instead of going unmentioned for two releases.
+     */
+    public function test_the_closure_steps_quoted_forms_agree_with_the_grammar(): void
+    {
+        $forms = $this->stepRegex(self::CLOSURE_STEP, 'forms');
+        $closure = $this->stepRegex(self::CLOSURE_STEP, 'closure');
+
+        $quoted = array_map('trim', explode(',', str_replace('ID', '123', $forms)));
+        $this->assertNotEmpty($quoted);
+        foreach ($quoted as $form) {
+            $this->assertTrue(ClosureGrammar::closesCard($form, 123),
+                "the message quotes '{$form}', which the grammar does not accept as a closure");
+            $this->assertTrue($this->grepMatches($closure, $form),
+                "the message quotes '{$form}', which the step's own regex does not match");
+        }
+
+        $stems = [];
+        foreach (ClosureGrammar::accepted() as $vector) {
+            $stems[strtolower(rtrim(explode(' ', $vector)[0], ':'))] = true;
+        }
+        $this->assertNotEmpty($stems, 'no verb stems derived — this leg would measure nothing');
+        foreach (array_keys($stems) as $stem) {
+            $this->assertStringContainsString($stem.' card#', $forms,
+                "the grammar accepts '{$stem}' and the operator-facing list does not name it");
+        }
+    }
+
+    /**
+     * THE SECOND CONJUNCT of the structural route, and its control. A release merge
+     * takes that route NOT AT ALL ({@see PrOutcome::mergeClosesCard()} requires
+     * {@see PrOutcome::INTEGRATION_MERGE}), so the identical PR passes against the
+     * integration base and must red against the release base — otherwise the step
+     * mirrors the predicate minus a conjunct and the whole-step tie above is
+     * measuring under an assumption instead of a value.
+     *
+     * The base name is not spelled here: it is read from the step and compared to the
+     * authority's own constant, so a rename moves both or reds.
+     */
+    public function test_the_structural_route_is_withheld_from_a_release_merge(): void
+    {
+        $this->assertSame(PrOutcome::RELEASE_BASE, $this->stepRegex(self::CLOSURE_STEP, 'release_base'),
+            'the step and the writeback disagree about which base is the release base');
+
+        $title = 'ci: gate release-promote (card#8286)';
+        $branch = 'card-8286-release-tag-check';
+        $this->assertFalse(PrOutcome::mergeClosesCard(PrOutcome::RELEASE_MERGE, $branch, 8286),
+            'the authority must withhold the structural route here, or this leg measures nothing');
+        $this->assertTrue(PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, 8286));
+
+        $this->assertSame(0, $this->runStep(self::CLOSURE_STEP, $title, $branch, null, 'dev')[0],
+            'the integration base must take the structural route');
+        $this->assertSame(1, $this->runStep(self::CLOSURE_STEP, $title, $branch, null, PrOutcome::RELEASE_BASE)[0],
+            'the release base must NOT take the structural route');
+        $this->assertSame(0, $this->runStep(self::CLOSURE_STEP, 'ci: gate (closes card#8286)', $branch, null, PrOutcome::RELEASE_BASE)[0],
+            'the LEXICAL route is untouched by the base — a release merge still closes on a closing form');
+    }
+
+    /**
+     * ⛔ THE SEPARATOR CLASS, and why the step does not write `[[:space:]]` — DL-272's
+     * ruling re-derived on a second bracket expression, with the measurement rather
+     * than the analogy.
+     *
+     * grep resolves `[[:space:]]` from LOCALE DATA. Measured here with the runner's
+     * own tool (GNU grep, not this shell's Unicode-aware shim — the instrument is the
+     * finding): under `C.UTF-8` (the Actions default) and `en_US.UTF-8` it admits
+     * U+1680, U+2000, U+205F and U+3000, none of which {@see ClosureGrammar} accepts;
+     * under plain `C` it agrees. A title separated by one of those four would have
+     * PASSED this gate and been REFUSED by the writeback — the false green this whole
+     * step exists to delete.
+     *
+     * THREE LEGS, and the middle one is the control: the divergence is re-measured (so
+     * the day glibc or the default locale changes, this says so instead of quietly
+     * guarding nothing), the enumeration is shown to answer IDENTICALLY to the grammar
+     * in every locale, and the price is pinned — TAB closes at runtime and reds here,
+     * the false-RED direction, accepted rather than repaired with an invisible
+     * character in the YAML.
+     */
+    public function test_the_enumerated_separator_answers_the_same_in_every_locale(): void
+    {
+        $closure = $this->stepRegex(self::CLOSURE_STEP, 'closure');
+        $separators = ["\t", "\v", "\f", "\r", ' ', "\u{0085}", "\u{00a0}", "\u{1680}",
+            "\u{2000}", "\u{2007}", "\u{202f}", "\u{205f}", "\u{3000}"];
+        $vectors = array_map(fn (string $c) => 'closes'.$c.'card#123', $separators);
+        $authority = array_values(array_filter($vectors, fn (string $v) => ClosureGrammar::closesCard($v, 123)));
+
+        $this->assertNotEmpty($authority, 'no separator closes — this leg would measure nothing');
+        $this->assertNotSame($vectors, $authority, 'every separator closes — this leg would measure nothing');
+
+        // THE CONTROL: the class the step deliberately does NOT use, on the locale the
+        // runner actually sets. If this stops over-matching, the enumeration below is
+        // no longer protecting anything and the step's comment overstates its case.
+        $overMatched = array_values(array_diff(
+            $this->grepMatchesAll('(^|[^0-9a-z_])closes[[:space:]]card#123', $vectors, 'C.UTF-8'),
+            $authority));
+        $this->assertCount(4, $overMatched,
+            'the locale-resolved [[:space:]] no longer admits separators the grammar rejects — re-measure before trusting the step comment');
+
+        // THE PROPERTY: the enumerated class reads no locale data, so it returns ONE
+        // answer set — the same one — whatever LC_ALL the runner sets. That is the
+        // whole reason it is written out, and it is asserted as an identity across
+        // locales rather than against the grammar, because it is deliberately NARROWER
+        // than the grammar (the price, pinned below).
+        $answers = [];
+        foreach (['C', 'C.UTF-8', 'en_US.UTF-8'] as $locale) {
+            $answers[$locale] = $this->grepMatchesAll($closure, $vectors, $locale);
+        }
+        $this->assertSame(array_fill_keys(['C', 'C.UTF-8', 'en_US.UTF-8'], $answers['C']), $answers,
+            'the step closes a different set of separators depending on the runner locale');
+
+        // AND IT NEVER OVER-CLOSES: every separator the step accepts is one the bridge
+        // accepts. This is the direction that matters — a subset can only red a PR the
+        // bridge would have moved; a superset greens one it will refuse.
+        $this->assertSame([], array_diff($answers['C'], $authority),
+            'the step closes a separator the grammar rejects — a title that passes CI and moves no card');
+
+        // THE PRICE, pinned by name: `\s` admits TAB/VT/FF/CR and the enumeration does
+        // not, so those four red here and close at runtime. Only TAB can reach a
+        // one-line PR title at all.
+        $this->assertSame(['closes card#123'], $answers['C'],
+            'the accepted separator set moved — re-derive the price the step comment states');
+        $this->assertSame(["closes\tcard#123", "closes\vcard#123", "closes\fcard#123", "closes\rcard#123"],
+            array_values(array_diff($authority, $answers['C'])),
+            'the pinned false-RED set moved — the step comment now misstates the price');
+        $this->assertSame(1, $this->runClosureStep("ci: gate closes\tcard#123", 'ci/123-x'),
+            'end to end, a tab-separated closing form reds — the accepted false-RED direction');
+    }
+
+    /**
+     * The opt-out marker must be inert everywhere else in this workflow: it names no
+     * card and no DL, so it can neither suppress nor trigger the near-miss warnings,
+     * and it must not itself read as a closing form. Asserted rather than assumed —
+     * `[no-close]` contains the verb `close`, one character away from a bridge.
+     */
+    public function test_the_opt_out_marker_is_inert_in_every_other_grammar(): void
+    {
+        $this->assertFalse(ClosureGrammar::hasClosure('docs: a thing [no-close]'),
+            'the opt-out marker reads as a closing form to the runtime grammar');
+        $this->assertFalse($this->warned('docs: a thing [no-close]', 'docs/context'),
+            'the opt-out marker trips the near-miss warning');
+        $this->assertSame(0, $this->runRequireStep('docs: a thing [no-close] (card#8286)', 'docs/8286-context'),
+            'the opt-out marker breaks the correlation-token step');
     }
 }
