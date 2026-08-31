@@ -183,8 +183,9 @@ final class WritebackMappingConfigCheck implements Check
             // NO card#5698 DISCLOSURE ON THE ARM ABOVE, and the omission is a ruling rather
             // than an oversight (the sibling arm below and `WritebackBoardStateCheck`'s
             // gate both carry one). It is a map-fed leg that asserts NOTHING when the scope
-            // is absent — the coord-card-relane family arm below is the other, and inherits
-            // this ruling by name. NO COUNT IS STATED for that set: the map-fed legs here
+            // is absent — EVERY arm below whose map term is a POSITIVE is of that shape and
+            // inherits this ruling. NO COUNT AND NO LIST IS STATED for that set: the criterion
+            // above re-derives it, which a naming does not. The map-fed legs here
             // have grown twice since this paragraph was written (card#6393, card#8292), and
             // a number in a comment is a second copy of a list nothing re-derives. The arm
             // is scoped to family-enabled scopes precisely so a pure PR-writeback mapping
