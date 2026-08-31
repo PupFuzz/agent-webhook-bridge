@@ -76,6 +76,27 @@ class PrOutcomeTest extends TestCase
         $this->assertFalse(PrOutcome::mergeClosesCard('merged', '', 4811));
     }
 
+    public function test_a_github_revert_ref_takes_no_structural_route(): void
+    {
+        // ⛔ card#8306 — THE HALF THAT WOULD HAVE BEEN LEFT OPEN by repairing only the
+        // quoted title. GitHub wraps the original's branch as `revert-<n>-<original ref>`,
+        // so the reverted branch's own card token rides along inside it and the structural
+        // term fired on every revert of a card branch spelled the way `board-card-start`
+        // spells them. Measured, not reasoned: the token STILL PARSES out of that ref —
+        // which is deliberate, because correlation must survive — and only the closure
+        // authorization is refused. (Drop the RevertGrammar conjunct ⇒ this reds.)
+        $this->assertSame(4811, CardTokenGrammar::parse('revert-611-card-4811-widget'));
+        $this->assertFalse(PrOutcome::mergeClosesCard('merged', 'revert-611-card-4811-widget', 4811));
+        // Nesting does not re-authorize it — the ruling, stated rather than derived.
+        $this->assertFalse(PrOutcome::mergeClosesCard('merged', 'revert-612-revert-611-card-4811-widget', 4811));
+        // The control that makes the row above evidence: the same branch WITHOUT GitHub's
+        // wrapper still closes, so this refuses a revert rather than refusing card 4811.
+        $this->assertTrue(PrOutcome::mergeClosesCard('merged', 'card-4811-widget', 4811));
+        // …and a human branch that merely starts with the word keeps its route. `RevertGrammar`
+        // owns why (the anchor + the required PR number); this pins that the gate consults it.
+        $this->assertTrue(PrOutcome::mergeClosesCard('merged', 'revert/card-4811-widget', 4811));
+    }
+
     public function test_only_the_integration_merge_takes_the_structural_route(): void
     {
         // A release merge still needs a closing form, and no ungated outcome can reach the

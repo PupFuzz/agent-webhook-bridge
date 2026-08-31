@@ -5,6 +5,7 @@ namespace App\Console\Commands\Bridge;
 use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\ExternalReferenceNormalizer;
+use App\Bridge\Support\RevertGrammar;
 use App\Bridge\Writeback\GitHubRepoProbe;
 use App\Bridge\Writeback\GitHubRepoProbeKind;
 use App\Bridge\Writeback\KanbanClient;
@@ -393,7 +394,15 @@ class ReconcileCommand extends BridgeCommand
         // `PrOutcome::requiresClosure()` still owns WHICH outcomes are gated — this
         // placement narrows where the answer can matter, never what the answer is.
         if (PrOutcome::requiresClosure($outcome) && ! $this->closes($pr['title'], $pr['head_ref'], $outcome, $cardId, $payload, $refs)) {
-            $this->line("card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but neither its head branch ref ('{$pr['head_ref']}') nor a closing form in its title names this card — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305/DL-308) — skipped");
+            // The REVERT arm exists because the default sentence is FALSE about a revert
+            // (card#8306): GitHub quotes the original title and wraps the original ref, so
+            // the ref usually DOES name this card and the title usually DOES carry a
+            // closing form — an operator told otherwise goes and rewrites correct prose.
+            // The sentence is `RevertGrammar`'s so the classifier's withheld-merge warning
+            // renders the identical one; only the surrounding line shape differs.
+            $this->line(RevertGrammar::isRevert($pr['title'], $pr['head_ref'])
+                ? "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but takes NEITHER closure route: no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".RevertGrammar::describeRefusal()
+                : "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but neither its head branch ref ('{$pr['head_ref']}') nor a closing form in its title names this card — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305/DL-308) — skipped");
             $this->skipped++;
 
             return;

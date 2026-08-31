@@ -2041,6 +2041,123 @@ class GitHubPrCardMoveClassifierTest extends TestCase
             && str_contains((string) $msg, 'card#4811'))->once();
     }
 
+    // --- card#8306: a revert takes NEITHER route ---
+    //
+    // ⛔ THE FIXTURES ARE OBSERVED. No revert PR exists on any repo this shop owns (1,607
+    // PRs scanned, zero), so the two shapes were read off GitHub's own mint on public
+    // repositories: `laravel/framework#61330` is titled `Revert "<the original's title>"`
+    // on `revert-61320-fix/contains-strict-comparison`, and #61262 shows the
+    // branch-deleted `revert-<n>` form. GitHub's docs state neither format; the API does.
+    //
+    // Each witness below differs from witness 4 (the accepted structural case) in exactly
+    // one thing — the wrapper GitHub adds — so nothing else can explain the difference.
+
+    public function test_witness_7_a_github_revert_moves_nothing_on_either_route(): void
+    {
+        // ⛔ WITNESS 7 — THE DEFECT card#8294 MINTED. Before this change this exact event
+        // emitted one `kanban_move_card` to the `merged` stage (52) for card 4811, on a PR
+        // that took card 4811's work OUT. Both routes fired at once and either alone was
+        // sufficient: the title inherits `(Closes card#4811)` by quotation, and the ref
+        // carries `card-4811` inside GitHub's `revert-<n>-` wrapper. Measured end-to-end on
+        // this fixture before the fix — MOVES card#4811 to outcome merged — and the same
+        // vector with the lexical half alone, and with the structural half alone, each
+        // moved it too. (Delete either conjunct ⇒ RED.)
+        Http::fake();
+        Log::spy();
+
+        $r = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'Revert "feat: widget rework (Closes card#4811)"',
+            'revert-611-card-4811-widget',
+        ));
+
+        $this->assertSame([], $this->targetsNamed($r, 'kanban_move_card'));
+        $this->assertSame([], $r->targets);
+        // NEVER A SILENT NO-OP — and the line must not be the DEFAULT one, which is FALSE
+        // here: on a revert the ref DOES name the card and the title DOES carry a closing
+        // form, so a message asserting otherwise sends the operator to rewrite correct
+        // prose. It names the revert, the card, and the way out.
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'mention-vs-closure')
+            && str_contains((string) $msg, '4811')
+            && str_contains((string) $msg, 'NO stage move')
+            && str_contains((string) $msg, 'REVERT')
+            && str_contains((string) $msg, 'card#8306')
+            && str_contains((string) $msg, 'OUTSIDE')
+            && ! str_contains((string) $msg, 'the HEAD BRANCH REF does not name'))->once();
+    }
+
+    public function test_witness_8_each_revert_route_is_refused_on_its_own(): void
+    {
+        // ⛔ WITNESS 8 — the two halves SEPARATED, because witness 7 is over-determined and
+        // a fix to one half alone would leave it green. Row 1 is the LEXICAL half: the
+        // post-2026-08-29 house branch (`fix/<id>-slug`) carries no card token, so only the
+        // quoted title could close. Row 2 is the STRUCTURAL half: the title carries no
+        // closing form at all, so only the wrapped ref could. Each must move nothing.
+        Http::fake();
+
+        $lexical = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'Revert "feat: widget rework (Closes card#4811)"', 'revert-611-fix/4811-widget'));
+        $this->assertSame([], $this->targetsNamed($lexical, 'kanban_move_card'), 'the quoted closing form must not close');
+
+        $structural = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'Revert "feat: widget rework (card#4811)"', 'revert-611-card-4811-widget'));
+        $this->assertSame([], $this->targetsNamed($structural, 'kanban_move_card'), 'the wrapped ref must not close');
+
+        // NESTED — ruled, not left to fall out of the regex. A revert of a revert re-applies
+        // the work and STILL does not close: the depth is unparseable (GitHub does not
+        // escape the inner quotes) and the card never moved back in the first place, so
+        // there is nothing to promote.
+        $nested = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'Revert "Revert "feat: widget rework (Closes card#4811)""', 'revert-612-revert-611-card-4811-widget'));
+        $this->assertSame([], $this->targetsNamed($nested, 'kanban_move_card'), 'a revert of a revert does not close either');
+    }
+
+    public function test_witness_9_the_controls_that_discriminate(): void
+    {
+        // ⛔ WITHOUT THESE, every revert witness above is satisfied by a gate that refuses
+        // everything — the DL-305 failure mode exactly (a gate nothing satisfies freezes the
+        // board it guards, quietly). Three controls, each one variable away from a witness:
+        //
+        //  (a) the ordinary lexical PR still closes  — witness 8 row 1 minus the wrapper;
+        //  (b) the ordinary structural PR still closes — witness 8 row 2 minus the wrapper;
+        //  (c) a revert of a NON-closing original is UNCHANGED — it did not move before
+        //      this change either, so it proves the refusal is not what produced (a)/(b)'s
+        //      siblings and that nothing regressed on the bare-mention path.
+        Http::fake();
+
+        $a = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'feat: widget rework (Closes card#4811)', 'fix/4811-widget'));
+        $this->assertSame([4811], array_map(fn ($t) => $t->payload['card_id'], $this->targetsNamed($a, 'kanban_move_card')));
+
+        $b = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'feat: widget rework (card#4811)', 'card-4811-widget'));
+        $this->assertSame([4811], array_map(fn ($t) => $t->payload['card_id'], $this->targetsNamed($b, 'kanban_move_card')));
+
+        $c = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'Revert "feat: widget rework (card#4811)"', 'revert-611-fix/4811-widget'));
+        $this->assertSame([], $this->targetsNamed($c, 'kanban_move_card'));
+
+        // …and the ESCAPE HATCH is reachable end-to-end: a revert whose author writes their
+        // OWN closing form outside the quotes closes the card, deliberately. Positional, so
+        // it cannot fire by accident — GitHub never writes outside the quotes — and it needs
+        // no new vocabulary (card#8294's `[no-close]` stays the CI-only inverse it was).
+        //
+        // ⚠ IT RE-CLOSES THE CORRELATED CARD; IT DOES NOT REDIRECT THE MOVE. Closure only
+        // FILTERS what correlation already selected, and on a GitHub revert the head ref is
+        // authoritative (card#5287) and names the REVERTED card — so a `Closes card#9999`
+        // added to this title selects nothing and moves nothing, which the second row pins.
+        // Closing a different card from a revert needs a branch that names it, exactly as
+        // every other PR here does.
+        $hatch = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'Revert "feat: widget rework (Closes card#4811)" — deliberate, this completes it (Closes card#4811)',
+            'revert-611-card-4811-widget'));
+        $this->assertSame([4811], array_map(fn ($t) => $t->payload['card_id'], $this->targetsNamed($hatch, 'kanban_move_card')));
+
+        $redirect = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'Revert "feat: widget rework (Closes card#4811)" — back it out (Closes card#9999)',
+            'revert-611-card-4811-widget'));
+        $this->assertSame([], $this->targetsNamed($redirect, 'kanban_move_card'), 'a title cannot redirect the move off the branch\'s card');
+    }
+
     public function test_the_structural_route_closes_only_the_bundled_card_its_branch_names(): void
     {
         // PER CARD, not per event. A branch ref names ONE card, so a bundled DL resolving

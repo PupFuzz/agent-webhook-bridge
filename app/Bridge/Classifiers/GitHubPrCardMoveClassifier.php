@@ -12,6 +12,7 @@ use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\DlTokenGrammar;
+use App\Bridge\Support\RevertGrammar;
 use App\Bridge\Writeback\CardTokenVerdict;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -82,6 +83,14 @@ use Illuminate\Support\Facades\Log;
  * that a human ruled this card does not close on this commit. The durable fix is
  * card-side (a hold/pin marker the writeback refuses to move past whatever the grammar
  * concludes) and is deliberately NOT built here; it is named in DL-308 as the follow-up.
+ *
+ * ⚠ AND NEITHER ROUTE SURVIVES A REVERT (card#8306). Once PR titles carry `(closes
+ * card#N)`, GitHub's revert — which QUOTES the original's title and WRAPS its branch —
+ * inherits a closing form and a card token for work it UNDOES, so both routes fired and
+ * the card moved FORWARD on a merge that took the work out. `pr-title-lint` already
+ * exempted `revert-*` branches, but that governs what CI DEMANDS, not what the writeback
+ * READS. {@see RevertGrammar} owns both shapes and the ruling; the two authorities apply
+ * it, so the reconciler gets it for free.
  *
  * {@see PrOutcome::requiresClosure()} owns which outcomes are gated and why the others
  * are not.
@@ -612,6 +621,15 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      *      - `Closes card#<id>` — closes exactly the card it names, which is why the set
      *        is FILTERED rather than accepted or rejected whole.
      *
+     * ⛔ A REVERT TAKES NEITHER ROUTE (card#8306), and this filter is deliberately NOT
+     * where that is decided. The refusal lives inside the two authorities the line below
+     * ORs together — {@see ClosureGrammar} subtracts the quoted original title,
+     * {@see PrOutcome::mergeClosesCard()} refuses GitHub's `revert-<n>-` ref — because
+     * `bridge:reconcile` re-derives the same proposition from the same two fields on a
+     * schedule, and a term added here alone would let the backstop re-plan an hour later
+     * exactly the move this gate declined. That lockstep is DL-305 §6 / DL-308's ruling,
+     * and it is why the classifier gains no revert code at all beyond the WARNING's text.
+     *
      * THE STRUCTURAL TERM WIDENS THE ACCEPT-SET; IT REPLACES NOTHING. Both routes close,
      * and the upstream foreign-mention discrimination is untouched — a title citing a card
      * the branch does not name never reaches this filter with that card in the set, which
@@ -662,6 +680,14 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * the title would send them to rewrite prose when the actual answer is that their
      * branch is called `fix/streaming-timeout`.
      *
+     * IT NAMES THE REVERT WHEN THAT IS THE REASON (card#8306), because otherwise this line
+     * is FALSE about exactly the subject the revert refusal creates. Its two clauses assert
+     * that the ref does not name the card and the title carries no closing form — on a
+     * revert both are usually untrue: GitHub quotes the original's title and wraps the
+     * original's ref, so the operator would be sent to rewrite prose that already reads
+     * correctly. {@see RevertGrammar::describeRefusal()} owns the sentence so
+     * `bridge:reconcile`'s skip line renders the same one rather than spelling a second.
+     *
      * ONE LINE PER EVENT, not per card: a bundled DL resolving to several cards withholds
      * them as one set for one reason, and N lines would be N copies of one sentence.
      *
@@ -678,12 +704,24 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         $pr = $this->prNumber($payload);
         $where = $pr !== null ? "PR #{$pr}" : 'PR';
         $them = count($cardIds) === 1 ? 'that card' : 'them';
+        $title = $this->prTitle($payload);
+        $head = $this->prHead($payload);
+        // The non-revert line is BYTE-IDENTICAL to the one DL-305/DL-308 shipped, which is
+        // why the reason is spliced as a clause and the revert paragraph is appended after
+        // the machine-readable tag rather than in place of it: this change adds a case, it
+        // does not restyle an operator-facing line every install already greps.
+        $isRevert = RevertGrammar::isRevert($title, $head);
+        $why = $isRevert
+            ? 'this merge takes NEITHER closure route'
+            : 'nothing in this merge claims that work is done: the HEAD BRANCH REF does not name '
+                .$them.' and the TITLE carries no closing form naming '.$them
+                .', so this PR MENTIONS the card rather than claiming its work is done';
         Log::warning("kanban_move_card: {$where} merged (outcome '{$outcome}') and correlates card(s) "
-            .implode(',', $cardIds).' — but nothing in this merge claims that work is done: the HEAD BRANCH REF does not name '
-            .$them.' and the TITLE carries no closing form naming '.$them
-            .', so this PR MENTIONS the card rather than claiming its work is done: NO stage move (mention-vs-closure, DL-305/DL-308). '
+            .implode(',', $cardIds).' — but '.$why
+            .': NO stage move (mention-vs-closure, DL-305/DL-308). '
+            .($isRevert ? RevertGrammar::describeRefusal().' ' : '')
             .'A merge moves a card on '.PrOutcome::describeClosure().'. '
-            ."The card is left where it is, never moved back. Title: {$this->prTitle($payload)} — head ref: {$this->prHead($payload)}");
+            ."The card is left where it is, never moved back. Title: {$title} — head ref: {$head}");
     }
 
     /**
