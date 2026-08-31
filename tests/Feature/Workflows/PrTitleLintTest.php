@@ -1459,7 +1459,7 @@ class PrTitleLintTest extends TestCase
             $id = CardTokenGrammar::parse($title);
             $runtime = $id !== null
                 && ! (ClosureGrammar::closesCard($title, $id)
-                    || PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, $id));
+                    || PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, $id, $title));
             $this->assertSame($runtime, $this->runClosureStep($title, $branch) !== 0,
                 "the gate and the bridge disagree on '{$title}' / '{$branch}': the bridge "
                 .($runtime ? 'REFUSES' : 'moves').' the card');
@@ -1754,9 +1754,9 @@ class PrTitleLintTest extends TestCase
 
         $title = 'ci: gate release-promote (card#8286)';
         $branch = 'card-8286-release-tag-check';
-        $this->assertFalse(PrOutcome::mergeClosesCard(PrOutcome::RELEASE_MERGE, $branch, 8286),
+        $this->assertFalse(PrOutcome::mergeClosesCard(PrOutcome::RELEASE_MERGE, $branch, 8286, $title),
             'the authority must withhold the structural route here, or this leg measures nothing');
-        $this->assertTrue(PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, 8286));
+        $this->assertTrue(PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, 8286, $title));
 
         $this->assertSame(0, $this->runStep(self::CLOSURE_STEP, $title, $branch, null, 'dev')[0],
             'the integration base must take the structural route');

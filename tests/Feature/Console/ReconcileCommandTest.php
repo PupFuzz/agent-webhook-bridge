@@ -758,4 +758,76 @@ class ReconcileCommandTest extends TestCase
 
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
+
+    // --- card#8306: the revert refusal, in lockstep on the backstop ---
+
+    public function test_the_backstop_refuses_a_github_revert_on_both_routes(): void
+    {
+        // ⛔ THE LOCKSTEP THAT MATTERS MOST HERE, because this leg runs on a schedule with
+        // nobody watching: the classifier declines the revert at merge time, and without
+        // the same term the backstop would PATCH the card forward an hour later with a
+        // CLI's name on it — the DL-305 §6 failure, re-minted through the revert door. Both
+        // routes are live in this one fixture (the title quotes `Closes card#5`, the ref
+        // wraps `card-5`), and the term lives on the two shared authorities so neither path
+        // spells it. (Delete either conjunct ⇒ card 5 is PATCHed to stage 52 by a cron.)
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => [
+            'state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x',
+            'title' => 'Revert "work (Closes card#5)"', 'head' => ['ref' => 'revert-611-card-5-widget'],
+        ]]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            // The skip line must NAME the revert rather than assert the default sentence,
+            // which is false here on both of its clauses — the ref does name card 5 and the
+            // title does carry a closing form. One matcher, because the first consumes the
+            // line (the constraint the negative above already records).
+            ->expectsOutputToContain('takes NEITHER closure route')
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_the_backstop_refuses_a_hand_made_revert_on_an_ordinary_branch(): void
+    {
+        // ⛔ THE HALF THE FIRST REVISION LEFT UNTESTED HERE, and a mutation caught it: with
+        // this leg absent, passing a BLANK title into the backstop's structural gate left
+        // the suite GREEN — because the only revert fixture above rides a `revert-<n>-` ref
+        // that `isRevertRef()` catches whatever the title says. A HAND-MADE `git revert`
+        // wraps no ref, so the title is the only surface that can refuse it, and this is
+        // the leg that proves the backstop reads it. Same lockstep, other direction: if the
+        // classifier declines this at merge time and the cron does not, the cron wins an
+        // hour later. `card-5-widget` is the spelling `board-card-start` mints.
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => [
+            'state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x',
+            'title' => 'Revert "work (Closes card#5)"', 'head' => ['ref' => 'card-5-widget'],
+        ]]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->expectsOutputToContain('takes NEITHER closure route')
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_the_backstop_still_reconciles_the_reverted_original(): void
+    {
+        // ⛔ THE CONTROL, one variable away: the SAME title and the SAME branch without
+        // GitHub's two wrappers. It reconciles exactly as it did before, so the test above
+        // is evidence about the revert and not about a backstop that stopped closing
+        // anything — the DL-305 failure mode this whole area exists to avoid.
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => [
+            'state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x',
+            'title' => 'work (Closes card#5)', 'head' => ['ref' => 'card-5-widget'],
+        ]]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->doesntExpectOutputToContain('a MENTION, not a closure claim')
+            ->assertExitCode(0);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && str_contains($r->url(), '/tasks/5.json')
+            && $r->data() === ['workflow_stage_id' => 52]);
+    }
 }
