@@ -23,10 +23,18 @@
 > and find nothing, or match a predicate that was never measured.
 > `tests/Feature/Console/Check/CheckGoldenCoverageSubjectTest.php` names the exact
 > arrivals and departures when it reds; run it to see them rather than diffing by eye.
-> ⛔ **Both banners here were added by card#8292**, which put a new coord-card-family scope
-> map into the per-agent loop (`coord-card-create`, the gate-1 half of the DL-198 create
-> leg) — three arrivals, no departures. That is a real widening of `handle()`, not a
-> renumbering, so the deferral above is a cost decision and not a claim that nothing moved.
+> ⛔ **Both banners here were added by card#8292** (a new coord-card-family scope map in the
+> per-agent loop — three arrivals, no departures), **and card#8305 has since moved the
+> subject again: 56 measured, 49 live.** Against the measurement below that is **8
+> departures and 1 arrival** — the three coord-card family→scope-map blocks were three
+> copies of one shape and are now a single `CheckContext::recordCoordCardFamilies()` call,
+> with the subscription walk they shared behind `CheckContext::githubScopes()`.
+> ⚠ **Read those departures as UNMEASURED, never as gaps CLOSED.** This file is bounded to
+> `handle()`, so a predicate hoisted into a helper leaves the enumeration altogether — and
+> that includes one of the `foreach $cfg->subscriptions` / `if $sub->provider === 'github'`
+> pairs named in the disclosed-gap table below, whose row now identifies a predicate this
+> source does not hold at that site. Neither move is a renumbering, so the deferral above
+> stays a cost decision and not a claim that nothing moved.
 
 > ⚑ **WHAT IS GUARDED HERE, AND WHAT IS NOT (card#7992).** Two suite guards keep this file
 > honest about its SUBJECT — the predicate count stated above, and the set of conditions the

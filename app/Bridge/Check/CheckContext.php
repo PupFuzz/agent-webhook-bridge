@@ -34,6 +34,12 @@ use App\Bridge\Writeback\WritebackConfig;
  * become readonly and set once — the target design's "built ONCE, before any check
  * runs."
  *
+ * ONE DERIVATION LIVES HERE RATHER THAN IN `handle()`, and the exception is stated so the
+ * rule above is not read as broken: {@see self::recordCoordCardFamilies} owns the shape
+ * the three coord-card family maps share, because handle() held that shape three times
+ * over (card#8305). It is not a check and asserts nothing — it is the FILL of fields this
+ * class already documents, in the key form this class already owns.
+ *
  * FIELDS ARE ADDED PER STAGE, as the checks that read them migrate. Each one is a
  * derivation some migrating check was MEASURED to need, never a guess at what checks
  * will want — which is why this paragraph states the rule and carries no count of the
@@ -242,6 +248,77 @@ final class CheckContext
     public static function canonicalScope(string $scopeId): string
     {
         return (new ExternalReferenceNormalizer)->canonicalizeSource($scopeId) ?? $scopeId;
+    }
+
+    /**
+     * The github scopes $cfg subscribes to, in the key form above — the walk every scope
+     * map keyed by identity is filled by.
+     *
+     * ⛔ NOT THE SPELLINGS. {@see self::$githubScopeSpellings} needs the RAW
+     * `subscriptions[].scope_id` and is deliberately not built on this: the whole point of
+     * that map is that the dispatcher does NOT share this canonicalization, so a walk that
+     * canonicalized on the way in could not report a split.
+     *
+     * @return list<string>
+     */
+    public static function githubScopes(AgentConfig $cfg): array
+    {
+        $scopes = [];
+        foreach ($cfg->subscriptions as $sub) {
+            if ($sub->provider === 'github') {
+                $scopes[] = self::canonicalScope($sub->scopeId);
+            }
+        }
+
+        return $scopes;
+    }
+
+    /**
+     * Record every coord-card family $cfg enables, against every github scope it
+     * subscribes to — the ONE owner of the three maps' derivation (card#8305).
+     *
+     * THE DERIVATION IS HERE AND NOT IN `CheckCommand::handle()`, against this class's
+     * general rule that handle() populates it: what was hoisted is not a check, it is the
+     * SHAPE those three maps share. handle() held it three times over — the raw-config
+     * family test, the subscription walk, the provider filter and the DL-293 key form,
+     * byte-near-identical and differing only in a string and a field — and the third copy
+     * is what made a fourth leg easy to forget: the create family shipped with only one of
+     * its two `bridge:check` legs (card#8305 half 1). Three copies of one shape is where
+     * the primitive belongs beside the fields it fills, not at the one call site.
+     *
+     * WHAT REMAINS BELOW IS THE FAMILY ↔ MAP BINDING, WHICH IS DATA AND NOT DUPLICATION.
+     * The three maps are separate on purpose ({@see self::$coordCardRelaneScopes}) — the
+     * families are independently enabled, and one map keyed by family would still need
+     * three consumers to name three keys while making each family's finding able to speak
+     * for another's absence.
+     *
+     * THE MEMBERSHIP TEST IS RAW CONFIG, NEVER THE RESOLVED FAMILY LIST, and that IS the
+     * resolved answer for all three: none of them is in `DEFAULT_FAMILIES`, so an unset
+     * `families` defaults to [coord-message] and can never contain one.
+     */
+    public function recordCoordCardFamilies(AgentConfig $cfg): void
+    {
+        // `+=` is the accumulate the three inline blocks performed, spelled as the union it
+        // is: a key another agent already contributed keeps its value, and `true` is the
+        // only value any of these maps ever holds.
+        $this->coordCardCreateScopes += self::familyScopes($cfg, 'coord-card-create');
+        $this->coordCardMoveScopes += self::familyScopes($cfg, 'coord-card-move');
+        $this->coordCardRelaneScopes += self::familyScopes($cfg, 'coord-card-relane');
+    }
+
+    /**
+     * $cfg's github scopes as a scope map, or an empty one where it does not enable
+     * $family.
+     *
+     * @return array<string, true>
+     */
+    private static function familyScopes(AgentConfig $cfg, string $family): array
+    {
+        if (! in_array($family, $cfg->classifierConfig->strings('families'), true)) {
+            return [];
+        }
+
+        return array_fill_keys(self::githubScopes($cfg), true);
     }
 
     /**
