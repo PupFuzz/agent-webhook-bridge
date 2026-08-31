@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console\Check;
 
+use Tests\Support\CheckGolden\ReadsGoldenPredicates;
 use Tests\TestCase;
 
 /**
@@ -42,6 +43,8 @@ use Tests\TestCase;
  */
 class CheckGoldenCoverageCurrencyTest extends TestCase
 {
+    use ReadsGoldenPredicates;
+
     private const DOC = 'docs/check-golden-coverage.md';
 
     private const STALE_BANNER = '> ⚠ **STALE — the counts below are NOT this branch\'s';
@@ -77,20 +80,12 @@ class CheckGoldenCoverageCurrencyTest extends TestCase
     /**
      * The count the generator itself would use, obtained by running the enumerator.
      *
-     * Non-vacuous by construction: a script that fails to run, or prints something that is
-     * not a JSON list, fails the test here rather than returning a plausible zero that would
-     * make the comparison above pass by accident on some branch.
+     * Non-vacuous by construction, in {@see ReadsGoldenPredicates}: a script that fails to
+     * run, or prints something that is not a JSON list, fails there rather than returning a
+     * plausible zero that would make the comparison above pass by accident on some branch.
      */
     private function livePredicateCount(): int
     {
-        $cmd = escapeshellarg(PHP_BINARY).' '.escapeshellarg(base_path('bin/check-golden-predicates.php')).' --json 2>/dev/null';
-        exec($cmd, $lines, $code);
-
-        $this->assertSame(0, $code, 'bin/check-golden-predicates.php did not exit 0, so this run measured nothing about the doc.');
-        $decoded = json_decode(implode("\n", $lines), true);
-        $this->assertIsArray($decoded, 'bin/check-golden-predicates.php --json did not produce a list.');
-        $this->assertNotEmpty($decoded, 'the predicate enumeration came back EMPTY — an empty result is a measurement that never happened.');
-
-        return count($decoded);
+        return count($this->livePredicates());
     }
 }

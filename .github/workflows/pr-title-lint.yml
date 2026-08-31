@@ -1,9 +1,20 @@
 name: PR title correlation-key lint
 
-# A PR whose head branch NAMES a card id MUST carry a card token or a
-# `DL-<number>` token in its title. That token is the ONLY key the card-movement
-# writeback has to correlate a merged PR back to its tracking card; without it the
-# card silently never moves.
+# TWO REQUIREMENTS, one per half of the writeback contract, and they are different
+# propositions — which is the whole reason the second one exists:
+#
+#   CORRELATION — a PR whose head branch NAMES a card id MUST carry a card token or
+#   a `DL-<number>` token in its title. That token is the ONLY key the card-movement
+#   writeback has to correlate a merged PR back to its tracking card; without it the
+#   card silently never moves.
+#
+#   CLOSURE (card#8294) — a PR that CORRELATES a card must also CLAIM that merging
+#   it finishes that card, on one of the two routes DL-305/DL-308 accept. Correlation
+#   never implied closure and nothing checked for it, so the house convention drifted
+#   into satisfying the first requirement and neither route of the second: 8
+#   consecutive merges moved nothing. `CLAUDE_CONVENTIONS.md` § *PR titles* states the
+#   convention; the closure step at the bottom of this file enforces it; and
+#   `docs/writeback.md` § *Mention vs closure* owns the runtime rule both defer to.
 #
 # WHICH branch spellings name a card id is owned by the require step's own
 # predicate and is deliberately NOT restated here — for the same reason the token
@@ -279,4 +290,189 @@ jobs:
           echo "Branch '$BRANCH' targets card $card_id, but the title carries neither 'card-$card_id' (nor 'card#$card_id') nor a 'DL-<number>' token."
           echo "The writeback uses this token as its ONLY key to move the tracking card; without it the card silently never moves."
           echo "Fix: add 'card-$card_id' or the relevant 'DL-<number>' to the PR title, then re-save (the 'edited' event re-runs this check)."
+          exit 1
+
+      - name: Require a closure claim on a card-correlating PR
+        # THE OTHER HALF OF THE WRITEBACK CONTRACT (card#8294). The step above proves
+        # a correlation token is PRESENT; this one proves the merge will actually
+        # CLAIM the card's work is done. They are different propositions and only the
+        # first had a check, so the second broke silently and stayed broken.
+        #
+        # WHAT WENT WRONG, measured: since DL-305/DL-308 a merge moves a card only on
+        # CLOSURE evidence — the head ref names the card (structural) or the title
+        # carries a closing form naming it (lexical). Neither is implied by the
+        # correlation token this file already required. The house branch convention
+        # flipped from `card-<id>-slug` to `<type>/<id>-slug` on 2026-08-29, which
+        # silently removed the structural route from every PR, and the titles carried
+        # a bare `(card#<id>)` — a CORRELATION, never a closure (DL-305). Result:
+        # every merge logged `mention-vs-closure, DL-305/DL-308` and moved nothing,
+        # 8 PRs in a row, each card corrected by hand. A THIRD spelling
+        # (`card-sign-kbcard` — the `card` token with no digits) shows the same
+        # refusal predates that flip. The dependency was declared nowhere and checked
+        # nowhere; THAT is the root cause, and this step is the fix for it. The
+        # convention itself is stated in CLAUDE_CONVENTIONS.md § Git / PR conventions.
+        #
+        # WHY A TITLE FORM RATHER THAN RENAMING THE BRANCHES BACK: the title is the
+        # surface an author states intent on, it is already gated here, and it does
+        # not strengthen branch-as-authority — which is the vector behind the
+        # OPPOSITE defect a peer measured (a context branch necessarily names the card
+        # it cites, so a context PR promoted work it did not do). Both routes stay
+        # accepted; this only makes one of them checkable.
+        #
+        # ⚠ SCOPE, disclosed rather than discovered — this leg covers the CARD route
+        # only. A title naming a `DL-<n>` that resolves to cards can be refused at
+        # merge for exactly the same reason, and this step stays silent about it. That
+        # is deliberate, not an oversight: measured over 120 merged PRs, 2 titles
+        # carried a DL and no card token, BOTH on `card-*` branches (already closed
+        # structurally), while the shape a DL arm would have to red — `(card#N,
+        # DL-M)`, the DL cited as provenance beside the work's own card — occurs 4
+        # times and closes nothing about the DL. A DL arm cannot tell those apart from
+        # the title alone, so it would trade a silent miss for a false red on a
+        # population of zero. `Closes DL-<n>` still closes at runtime; nothing here
+        # asks for it.
+        #
+        # SECURITY: same posture as the steps above — TITLE and BRANCH are
+        # PR-author-controlled, reach the script ONLY via the env: block, and are used
+        # quoted. Never interpolated as ${{ }} inside run:. See DL-182.
+        shell: bash
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          # The third input, and the only one the steps above do not read: the
+          # structural route is a property of the MERGE, not only of the ref, so
+          # without it this step would mirror `PrOutcome::mergeClosesCard()` minus a
+          # conjunct and call the difference an assumption. Not author-controlled in
+          # the way the other two are — GitHub sets it from the PR's target — but it
+          # is quoted on exactly the same terms.
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+
+          # The require step's exemption set, and here it earns a THIRD reason:
+          # GitHub mints a revert PR's title by QUOTING the original's, so
+          # `Revert "feat: x (closes card#1)"` carries a closing form for work this PR
+          # UNDOES. This step must not demand one there.
+          #
+          # ⚠ DISCLOSED, not fixed here: the RUNTIME predicate reads that quoted verb
+          # the same way, so merging such a revert MOVES the card its work undid. The
+          # exemption keeps CI from manufacturing more of them; it cannot stop the one
+          # GitHub writes by itself. Repairing that changes what the writeback acts on
+          # (card#8294 raised it; it is its own decision).
+          case "$BRANCH" in
+            dependabot/*|release/*|sync/*|revert-*)
+              echo "Branch '$BRANCH' is exempt (automation/release/revert) — skipping."
+              exit 0
+              ;;
+          esac
+
+          # Folded once, like both steps above: the runtime grammars are /i, so a
+          # title this step reds must be one the bridge would also have refused.
+          title_lc=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]')
+          branch_lc=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]')
+
+          # THE OPT-OUT, and the reason it must exist: a PR that cites a card for
+          # CONTEXT and deliberately does not finish it is legitimate — demanding a
+          # closure claim there would build the exact over-promotion defect this
+          # design avoids, just with CI doing the pushing. A literal, unmistakable
+          # marker in the title says so.
+          #
+          # ⛔ IT SUPPRESSES THIS CHECK, IT DOES NOT INSTRUCT THE BRIDGE. Nothing at
+          # runtime reads it; a PR carrying it merges and moves whatever its two
+          # closure routes would have moved anyway (normally nothing, which is the
+          # point). Stated because a marker that LOOKS like a directive invites the
+          # reading that it disables a move, and it cannot.
+          optout='[no-close]'
+          if grep -qF "$optout" <<<"$title_lc"; then
+            echo "Title carries ${optout} — this PR declares it does not finish the card it names. Skipping."
+            exit 0
+          fi
+
+          # WHICH card this PR correlates, read the way the classifier reads it:
+          # CardTokenGrammar::parse() is LEFTMOST-ONLY, so the first token in the
+          # TITLE is the one that selects. Keyed on the title and not on the branch
+          # shape deliberately — the branch-shape predicate belongs to the step above
+          # and a second copy of it here is the restatement this file keeps paying for;
+          # and it is the title that catches the `card-sign-kbcard` spelling, where the
+          # branch names no id at all yet the title still correlates a card.
+          #
+          # A title with no card token correlates nothing, so no merge can withhold a
+          # move: docs chores, dependabot bumps and every tokenless PR pass here
+          # untouched.
+          #
+          # NOT kept in lockstep with CardTokenGrammar by discipline — PrTitleLintTest
+          # extracts this line, compares its ANSWER SET against that grammar's, and
+          # separately against the warn step's `good=`, so this file cannot hold two
+          # card-token regexes that disagree.
+          token='(^|[^0-9a-z_])card([-#]([0123456789]+)|([0123456789][0123456789]+))'
+          if [[ ! "$title_lc" =~ $token ]]; then
+            echo "Title names no card — nothing correlates, so no merge can withhold a move. Skipping."
+            exit 0
+          fi
+          # Exactly one of the two arms captured; leading zeros fold, as the grammar's
+          # own (int) cast folds them.
+          card_id=$((10#${BASH_REMATCH[3]}${BASH_REMATCH[4]}))
+
+          # ROUTE 1 — STRUCTURAL (DL-308): the HEAD REF itself names that card AND
+          # the merge lands on the INTEGRATION branch. Both conjuncts, because
+          # `PrOutcome::mergeClosesCard()` has both: a release merge takes this route
+          # NOT AT ALL, so a card-token head targeting the release base closes nothing
+          # and its author must be told, not silently passed. Pinned against
+          # `PrOutcome::RELEASE_BASE` in PrTitleLintTest so the name cannot drift.
+          release_base='main'
+          if [ "$BASE" != "$release_base" ] \
+            && [[ "$branch_lc" =~ $token ]] \
+            && [ "$((10#${BASH_REMATCH[3]}${BASH_REMATCH[4]}))" -eq "$card_id" ]; then
+            echo "OK: head branch '$BRANCH' names card $card_id — the merge closes it structurally."
+            exit 0
+          fi
+
+          # ROUTE 2 — LEXICAL (DL-305): a closing verb with the token FLUSH against
+          # it. This is ClosureGrammar::BRIDGE composed with
+          # CardTokenGrammar::parseAnchored, in bash — a second implementation, tied
+          # to the authority by answer set in PrTitleLintTest and not by discipline.
+          # The adjacency is the whole predicate: `closes the bug in card#1` closes
+          # nothing, here and at runtime, because the verb's object is not the token.
+          # Matches are extracted rather than tested, so `closes card#1, closes
+          # card#2` is read as the grammar reads it — one verb, one token, twice.
+          #
+          # ⛔ THE SEPARATOR IS ENUMERATED, NOT `[[:space:]]` — DL-272's ruling, on a
+          # second bracket expression, for the same measured reason. GNU grep resolves
+          # `[[:space:]]` from LOCALE DATA, and a runner's locale is not the C locale:
+          # under `C.UTF-8` (the Actions default) and `en_US.UTF-8` it admits FOUR
+          # separators the authority's `\s` rejects (PCRE without `/u`, DL-231) —
+          # U+1680, U+2000, U+205F and U+3000 — while agreeing under plain `C`. So
+          # `closes<U+3000>card#1` would have PASSED this gate and been REFUSED by the
+          # bridge: a false green, in the one check whose entire purpose is to delete a
+          # silent no-move. An enumerated class reads no locale data at all and cannot
+          # acquire a fifth.
+          #
+          # ⚠ THE PRICE, measured and pinned rather than discovered: `\s` also admits
+          # TAB/VT/FF/CR and this does not, so a TAB-separated closing form reds here
+          # and closes at runtime. That is the FALSE-RED direction — loud, one retitle
+          # away, and pinned in PrTitleLintTest so it cannot drift unobserved; VT/FF/CR
+          # cannot reach a one-line PR title at all. A literal tab inside this YAML
+          # scalar is the alternative, and it is an invisible character one editor away
+          # from silently narrowing the gate.
+          closure='(^|[^0-9a-z_])(close[sd]?|fix(e[sd])?|resolve[sd]?)[ :]+card([-#]([0123456789]+)|([0123456789][0123456789]+))'
+          # The spellings quoted to the author. NOT a free restatement: PrTitleLintTest
+          # requires ClosureGrammar to accept every form here AND `closure` above to
+          # match each, and requires this list to name every verb stem the grammar
+          # accepts — so a grammar move that adds or drops a verb reds the suite.
+          forms='closes card#ID, closed card#ID, close card#ID, fixes card#ID, fixed card#ID, fix card#ID, resolves card#ID, resolved card#ID, closes: card#ID'
+          while read -r hit; do
+            hit_id=$(grep -oE '[0123456789]+$' <<<"$hit") || continue
+            if [ "$((10#$hit_id))" -eq "$card_id" ]; then
+              echo "OK: the title carries a closing form naming card $card_id."
+              exit 0
+            fi
+          done < <(grep -oE "$closure" <<<"$title_lc" || true)
+
+          echo "::error::This PR correlates card ${card_id}, but nothing in it claims that work is DONE — merging it will move NOTHING."
+          echo "The bridge refuses the stage move and logs 'mention-vs-closure (DL-305/DL-308)': the card keeps its pr stamp, sits in In Review, and never advances. That happened on 8 consecutive PRs before this check existed (card#8294)."
+          echo "⚠ A bare '(card#${card_id})' in the title is a CORRELATION, never a closure — it is exactly the shape that fails."
+          echo "A merge closes a card by EITHER route:"
+          echo "  LEXICAL    — a closing form in the TITLE, the token flush against the verb: ${forms//ID/$card_id}"
+          echo "  STRUCTURAL — the HEAD BRANCH REF itself names the card (card-${card_id}-slug, glued card${card_id}-slug), merged to the integration branch — this PR targets '${BASE}'"
+          echo "Fix: retitle to '<type>(<scope>): <subject> (closes card#${card_id})', then re-save (the 'edited' event re-runs this check)."
+          echo "Deliberately NOT finishing this card (you cite it for context)? Put the literal ${optout} in the title. It suppresses THIS CHECK and nothing else — no part of the bridge reads it."
           exit 1

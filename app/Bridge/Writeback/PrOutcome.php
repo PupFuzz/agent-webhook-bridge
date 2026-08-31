@@ -138,11 +138,17 @@ final class PrOutcome
      * the stated grounds that it "only ever RELAXES a guard ... and never widens what can
      * be selected". That justification does not survive being moved here, where the
      * predicate AUTHORIZES A TERMINAL-STAGE MOVE. The measured price of the strict reading
-     * is the legacy `<type>/<id>-slug` branch spelling, which carries the id but no token:
-     * on the current convention it costs 1 of 59 recent merged PRs (55 → 56 with the loose
-     * reading, against a ceiling of 56), and those miss LOUDLY — the withheld-merge warning
-     * fires and the lexical `Closes card#N` route is still open. Under-promotion is
-     * recoverable by hand; the terminal move is not.
+     * is the legacy `<type>/<id>-slug` branch spelling, which carries the id but no token.
+     * That price was measured at 1 of 59 recent merged PRs (55 → 56 with the loose reading,
+     * against a ceiling of 56) while the house convention was `card-<id>-slug`; the
+     * convention has since flipped TO `<type>/<id>-slug`, which took the same reading to 8
+     * of 8 (card#8294). ⚠ Read that figure as a measurement of a convention, not a property
+     * of this predicate — nothing here changed. The misses are LOUD (the withheld-merge
+     * warning fires) and the lexical `Closes card#N` route is still open; under-promotion is
+     * recoverable by hand, the terminal move is not. What the incident actually exposed is
+     * that the dependency was declared nowhere and checked nowhere: `CLAUDE_CONVENTIONS.md`
+     * § *PR titles* now states it and `.github/workflows/pr-title-lint.yml` now reds a PR
+     * that correlates a card and closes it on neither route.
      *
      * ⚠ A KNOWN DIVERGENCE, filed rather than repaired here: `.github/workflows/pr-title-lint.yml`
      * answers "does this branch name a card id" with its own wider predicate

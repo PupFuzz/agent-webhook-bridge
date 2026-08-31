@@ -2588,16 +2588,53 @@ The existing net goes through the command boundary, so an internal refactor keep
    (DL-267, card#5548). Every figure this plan quotes as measured comes from
    `bin/check-golden-mutate.php`, and a failed `file_put_contents` there used to be laundered
    into a verdict: no mutant reached the file, the golden run aborted for the unrelated reason,
-   and the run printed `observed-via-abort N · UNOBSERVED 0` at **exit 0** — the strongest-looking
-   outcome this document can carry, produced by a run that measured nothing. Writes are now
-   checked at one primitive that THROWS (not exits — `exit()` skips the `finally` restore and
-   would leave a mutant on disk), a whole-run result set that is uniformly `observed-via-abort`
-   or uniformly `UNOBSERVED` is refused as degenerate rather than rendered, and a narrowed
-   (`--only`/`--limit`) run no longer overwrites the artifacts with a partial population — their
-   header claims to cover every predicate in `handle()`. **This changes no measurement already
-   recorded here**; it changes whether a future one can be fabricated. The standing bound is
-   unchanged and is the reason this item is worth stating: a figure in this document is only as
-   good as the run that produced it, and until now nothing in the run could tell you it had died.
+   and the run printed `observed-via-abort N · UNOBSERVED 0` at **exit 0** — the
+   strongest-looking outcome this document can carry, produced by a run that measured nothing.
+   Writes are now checked at one primitive that THROWS (not exits — `exit()` skips the `finally`
+   restore and would leave a mutant on disk), a whole-run result set that is uniformly
+   `observed-via-abort` or uniformly `UNOBSERVED` is refused as degenerate rather than rendered,
+   **every verdict is read from phpunit's own `--log-junit` log rather than from the suite's
+   stdout** (card#8019 — the JSON report this script used to `json_decode()` exists only while an
+   installed result printer chooses to emit it, so each verdict depended on a property of the
+   SHELL rather than of the mutant. In a shell where nothing emitted it, every red predicate
+   scored `observed-via-abort` naming no fixture and every green one `UNOBSERVED` — two statuses,
+   so the degenerate arm stayed quiet and a full run published pure noise at exit 0, over the
+   DEFAULT path, with the dependency stated in neither the script's header nor any doc. The
+   JUnit log is phpunit's own artifact and cannot drift with the installed printer;
+   `tests/Support/NestedSuite.php` states that rule and is this repo's other caller that follows
+   it. **This changed no verdict**: the migration was measured against the committed artifact
+   over the whole population and every predicate scored identically, in a shell the pre-fix
+   generator refuses outright), **an iteration whose suite wrote no readable log refuses the
+   whole run** (card#8019 — an unmeasured iteration falls into two verdicts and both are false;
+   the silent one is `UNOBSERVED`, which renders as a *disclosed gap*, the strongest claim this
+   document cites that artifact for, off evidence nobody read),
+   **a BASELINE CONTROL runs the golden suite ONCE against the unmutated tree before the loop
+   and refuses the whole run unless that run is green AND wrote a readable log**
+   (card#7994, with its first leg re-founded by card#8019 — that leg screened for a result
+   printer emitting a report, and the dependency it screened for is now removed rather than
+   detected. What it asks instead is whether the suite wrote a log at all, which is not an
+   environment property and has no forcing remedy; what survives is cause SEPARATION, because
+   every way phpunit fails to finish also exits non-zero, so without it the `red` term reports a
+   healthy corpus as a broken one. The second leg — the corpus is green before any mutation — is
+   untouched), **an `observed-via-abort` verdict that names no failing fixture refuses the
+   whole run, at the first such predicate** (card#7994 — and the first wording of this clause
+   was WRONG about why. An abort a fail-soft envelope RENDERED does carry a non-empty failing
+   list; an abort that ESCAPES `handle()` propagates out of the test and phpunit records an
+   ERROR rather than a failure, which the JUnit log puts on a `<testcase><error>` while the
+   fixture-name scrape reads `<failure>` only — so that abort is real, provoked by the fixture
+   set, and names nothing. It is refused as a
+   RULING, not as an impossibility: the row it would render asserts *reached, and the guard is
+   load-bearing* with nothing the fixture set produced behind either half, so the chosen failure
+   mode is to refuse loudly and let the operator read the error and decide by hand — now with
+   the errored testcases NAMED in the refusal, which the report it replaced could not do), every
+   result record now carries the run's `errors` count so the MIXED shape the refusal
+   deliberately does not catch — some fixtures errored while others reached a golden diff — is
+   auditable in the artifact rather than invisible, and a narrowed (`--only`/`--limit`) run no
+   longer overwrites the artifacts with a partial population — their header claims to cover
+   every predicate in `handle()`. **This changes no measurement already recorded here**; it
+   changes whether a future one can be fabricated. The standing bound is unchanged and is the
+   reason this item is worth stating: a figure in this document is only as good as the run that
+   produced it, and until now nothing in the run could tell you it had died.
 
 ## Disproved claims — do not restate
 
@@ -2714,18 +2751,98 @@ the work distinguishes those.
   the tripwire, and the new entry has to be argued, not pasted), and a **`checks: 37 registered`
   literal inside a NEGATIVE assertion** in `CheckJsonContractTest` went silently vacuous rather than
   red, which is why it now matches the line's SHAPE. ⚑ **Two new predicates in `handle()`** (the new
-  loop and its `emitReport` arm), which `docs/check-golden-coverage.md` does not cover. ⛔ **That
-  file was ALREADY stale before this leg, and by more than this leg adds** — re-deriving with
-  `php bin/check-golden-predicates.php --json` against the pre-change command returns **54**
-  predicates where the generated header claims **49**, so its `46 observed / 3 UNOBSERVED` split
-  describes a `handle()` five predicates ago. It is generated by a ~40-minute mutation run that
+  loop and its `emitReport` arm), which `docs/check-golden-coverage.md` did not cover at the time.
+  ⛔ **That file was ALREADY stale before this leg, and by more than this leg adds** — re-deriving
+  with `php bin/check-golden-predicates.php --json` against the pre-change command returned **54**
+  predicates where the generated header claimed **49**, so its `46 observed / 3 UNOBSERVED` split
+  described a `handle()` five predicates ago. It is generated by a ~40-minute mutation run that
   must execute on a COPY of the repo (it rewrites `CheckCommand.php` in place), so regenerating it
-  is its own piece of work — the point recorded here is that a reviewer must not read that file's
+  was its own piece of work — the point recorded here is that a reviewer must not read that file's
   totals as current, and that re-deriving the DENOMINATOR is cheap even when re-deriving the
   verdicts is not. ⭐ **Since the card#7756 review that gap is GUARDED rather than merely known:**
-  the file carries a STALE banner under its generated header, and
   `tests/Feature/Console/Check/CheckGoldenCoverageCurrencyTest.php` compares the header's number
   against `bin/check-golden-predicates.php` — the same enumerator the generator drives — and reds
-  in EITHER direction, so the banner cannot outlive the staleness it announces and the number
-  cannot drift again in silence. The ~40-minute regeneration stays deferred; the false number does
-  not.
+  in EITHER direction, so a STALE banner cannot outlive the staleness it announces and the number
+  cannot drift again in silence.
+  ⭐ **THE SUBJECT NOW HAS A SECOND TERM, AND THE VERDICTS ARE DECLINED ON THE RECORD
+  (card#7992).** The count guard is a DENOMINATOR: it cannot see a predicate set that changed
+  IDENTITY while keeping its SIZE. That is not hypothetical — between two regenerations of this
+  artifact one predicate DEPARTED while two arrived, so until the next run the published gap table
+  named a condition (`$configs !== [] && $ctx->configDir !== null`) that existed nowhere in the
+  source; the count moved by one that time and would have caught it by luck, and one departure
+  against one arrival is the same defect with the count standing still.
+  `CheckGoldenCoverageSubjectTest` closes it by comparing the artifact's measured `(kind, source)`
+  MULTISET against the same enumerator — a SEPARATE term with its own banner, not a widened one,
+  because the two must be independently satisfiable: the case it exists for is exactly the one
+  where the count agrees and the currency guard therefore requires ITS banner ABSENT.
+  ⛔ **A cheap guard on the VERDICTS was considered and DECLINED.** The candidate was a fingerprint
+  over the measurement's inputs, stored beside the artifact. The input closure of a verdict is the
+  whole `bridge:check` plane plus its config defaults and the golden corpus, so a fingerprint over
+  any nameable SUBSET carries false negatives it cannot state — the same stated-scope-exceeds-
+  predicate defect one level down — while a fingerprint over the whole closure reds on essentially
+  every check-plane change and, with a ~57-minute run as the only remedy, would leave the banner
+  permanently up: furniture, which is the failure the two-directional design above exists to avoid.
+  ⚑ **The corpus IS a real input, and the measured evidence bounds how it bites.** Between the two
+  runs recorded below, **30 of the 56** predicates changed the SET of fixtures their mutant
+  reddened, and in every one of those 30 the delta was exactly the three captures that window
+  ADDED, with **nothing ever leaving** a failing set. No verdict moved as a consequence — a fixture
+  is an independent data-provider case, so adding one can only ADD red. (The single verdict that
+  DID move between those runs is not a corpus effect at all: run 1 recorded that predicate with an
+  EMPTY failing list under the aborted arm, the signature of a golden run whose report could not be
+  parsed rather than of a mutation semantics. That is card#7994's subject, not this one's.) Corpus
+  GROWTH can therefore turn `UNOBSERVED` into `observed` but never the reverse, which makes the
+  published gap list CONSERVATIVE under it — over-listing a gap costs a reader extra reading, never
+  false reassurance. Capture MODIFICATION and DELETION carry no such argument and are the
+  directions to distrust. What ships in place of the declined instrument is the disclosure now in
+  the artifact's own header.
+  **[REGENERATED — card#7835. The deferred run has been done, on a throwaway worktree, and the
+  banner is gone because the generator rewrites the whole file.** `handle()` now holds **56**
+  predicates and the measured split is **49 observed · 0 observed-via-abort · 7 UNOBSERVED**, against
+  the previous **46 · 0 · 3 over 49**. Compared as a MULTISET on `(kind, source)` and never as a set
+  — the stage 3b–7 method note above owns the reason — **7 predicates were added and 0 departed**,
+  with `49 − 0 + 7 == 56` as that comparison's own positive control. ⚑ **The gap count's 3 → 7 rise
+  is BOUNDED, not attributed.** Six of the seven gaps are `foreach $cfg->subscriptions` /
+  `$sub->provider === 'github'` pairs whose `(kind, source)` is identical across every instance, so
+  the diff cannot say which instance is which. What it does establish about that family: the
+  `observed` count is unchanged at 3 of each, and the `UNOBSERVED` count rose by exactly the 4
+  predicates added there. **Reading that as "the four new gaps ARE the four new predicates" is an
+  inference this instrument cannot make** — the same multiset bound the stage 3b–7 note records,
+  reached from the other side. The seventh gap, `if $configs !== []`, is a unique source and carries
+  over UNOBSERVED unchanged. **Both of this leg's own predicates scored `observed`**: the
+  `CheckSlot::BoardToolsClientHalf` `emitReport` arm is a unique source, and its
+  `foreach $ctx->boardToolsEnabled` loop is covered by both instances of that source being
+  `observed`. ⭐ **THE SEVENTH ADDED PREDICATE IS THE DL-290 RELANE-SCOPE ACCUMULATION** — named here
+  because the walk above otherwise reaches 7 only by arithmetic. Its condition text — the key the
+  coverage diff compares on — is
+  `in_array('coord-card-relane', $cfg->classifierConfig->strings('families'), true)`; it is absent
+  from the previous artifact's 49, and **`observed`** in this one, reddening five captures:
+  `writeback-move-leg-coord-config-unset`, `writeback-move-leg-coord-config-unreadable`,
+  `writeback-move-leg-coord-config-agrees`, `writeback-board-unreadable` and
+  `writeback-swimlane-collection-absent`. ⛔ **DL-290 predicted an
+  UNOBSERVED row**, on the strength of flipping the predicate to `if (false)` and watching the golden
+  suite stay green. That is a different mutant from the one this instrument applies, and it turns on
+  the distinction disproved-claim 8 above already draws — `observed` is a distinguishability claim
+  under **the instrument's own negation**, never a claim about what the fixtures reach. `if (false)`
+  DISABLES the accumulation, a no-op on a corpus whose agents enable no relane family, while the
+  NEGATION ENABLES it for every agent WITHOUT the family — which is exactly why five captures move.
+  The correction is recorded on DL-290 itself.
+  ⚑ **THE RUN WAS REPEATED ON THE MERGED TREE, AND ONE VERDICT MOVED.** The counts recorded above
+  are the SECOND run's. The predicate SITES are identical across the two runs (ids, kinds, lines,
+  byte offsets, source), and `CheckCommand.php` is **byte-identical** between the two trees measured.
+  **The UNOBSERVED ids are the same in both runs** — the disclosed-gap list this document exists to
+  publish did not move. **Exactly one verdict differs**: the `CheckSlot::ProbeTools` `emitReport`
+  arm, `observed-via-abort` in run 1 and `observed` in run 2. ⛔ **Run 1's record for that predicate
+  cannot have come from the mutation's semantics, and no cause is named here because the instrument
+  retained nothing that could name one** — the argument, its evidence and the resulting instrument
+  gap are recorded on **card#7994**. ⚑ **The instrument now REFUSES that shape** rather than
+  publishing it (see the refusal arms in the item above): a run in which any predicate scores
+  `observed-via-abort` while naming no failing fixture writes no artifact at all, a BASELINE
+  CONTROL refuses the run outright when the unmutated tree does not answer green and readable, and
+  card#8019 moved the verdict source off the suite's stdout entirely so no result printer decides
+  what any of this reads. ⛔ **No guard explains run 1, and the tempting explanation is measurably
+  WRONG:** run 1 scored **48 `observed`** rows carrying real fixture lists, so whatever it was
+  reading was working for the rest of that run and a whole-run instrument failure cannot be the
+  cause. What the baseline control closes is a DIFFERENT and larger shape — the run that answers
+  nothing from the start — while run 1's single iteration is the residue the in-loop refusal now
+  refuses rather than renders. That closes the publication path, not the diagnosis: what killed run 1's iteration
+  remains unrecoverable, and the general "was this iteration real" term stays open on the card.]

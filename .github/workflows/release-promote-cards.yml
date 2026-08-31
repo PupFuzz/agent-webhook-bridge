@@ -7,7 +7,12 @@ name: Promote released cards on merge to main
 # composite action (uses: .../promote@<sha>; docs/INSTALL.md §6a in that repo).
 # No copy is vendored here — the pin is bumped by dependabot. Closes the gap
 # where a bundled release PR carries no single DL token. Board/stage/api come
-# from .release-pr.json (.promote). Isolated so a card hiccup never blocks the release.
+# from .release-pr.json (.promote). Isolated so a card HICCUP never blocks the
+# release — but NOT isolated from whether the release was actually TAGGED
+# (card#8286): this workflow and `auto-tag-version.yml` share the `push: main`
+# trigger with no `needs:` between them, so this one wins the race on EVERY
+# release and used to stamp cards "Released to main" before the tag existed. The
+# gate step below waits for the tag and refuses to promote if it never appears.
 #
 # workflow_dispatch lets an operator exercise the path on demand — dry-run by
 # default, so it moves nothing.
@@ -44,6 +49,50 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # ⛔ ORDER IS THE POINT — this gate runs BEFORE anything that reports the release. A gate
+      # placed after the promote step refuses a release the board has already been told shipped,
+      # so the red run is about a state that now needs repairing by hand.
+      #
+      # WHY IT EXISTS. `auto-tag-version.yml` fires on the same `push: main` as an INDEPENDENT
+      # run, so promote wins the race on every release and reported "Released to main" without
+      # ever checking the tag. Measured in agent-board-toolkit on its v0.28.0 merge: auto-tag's
+      # push took a 403, the tag never arrived, and its board asserted a shipped release for
+      # 17m27s until a human re-ran the job (toolkit card#6579; adopted here as card#8286).
+      #
+      # WAIT-THEN-REFUSE, NOT REFUSE-ON-SIGHT. Because the two runs start together the tag is
+      # legitimately absent for the first seconds of EVERY release; an immediate hard-refuse
+      # would red them all. The bound, why it is what it is, and what happens when it is reached
+      # are stated in the toolkit's `bin/release-tag-check` header and are deliberately NOT
+      # restated here — they moved once already and every copy of them did not.
+      #
+      # A NON-RELEASE PUSH TO main ASSERTS NOTHING and exits 0 saying so: the gate delegates
+      # "is this range a release" to `release-artifacts-check --classify-only`, which decides it
+      # from .release-pr.json's version_file/version_regex read at BOTH ends of the range. Only a
+      # push that moves VERSION is gated, so a direct docs push to main is not deadlocked.
+      #
+      # PRECONDITIONS, all already met above: the checkout's `fetch-depth: 0` (the classification
+      # reads both ends of the range and refuses a shallow clone rather than reading it as "not a
+      # release"), and the job's `permissions: contents: read`, which is UNCHANGED and sufficient
+      # — the gate polls refs with `git ls-remote` and writes nothing. This repo leaves
+      # .release-pr.json's `tag_format` unset, so the gate waits for `v<version>`, which is
+      # exactly what auto-tag-version.yml creates; the two must move together if either changes.
+      - name: Refuse to promote an untagged release
+        # A workflow_dispatch run carries no before-ref, so it has no range to classify. That
+        # path is operator-driven and dry-run by default, so it is skipped rather than gated.
+        if: github.event_name == 'push'
+        # A BACKSTOP, sized ABOVE the tool's own bound so the TOOL's bound fires first and the
+        # job reports `failure`. A timeout-minutes kill reports `cancelled`, and a cancelled run
+        # is not a refused release. ⇒ Do not tighten this from a figure written here — read the
+        # worst case in `bin/release-tag-check`'s own header first.
+        timeout-minutes: 10
+        uses: PupFuzz/agent-board-toolkit/release-tag-check@d792a821537a3fbdd05a54357c2669626b1d627a  # v0.31.0
+        with:
+          before-sha: ${{ github.event.before }}
+          after-sha: ${{ github.sha }}
+          # config / remote / timeout / interval / read-timeout are left blank on purpose: blank
+          # means the tool's own defaults, which is the one place those numbers are argued
+          # (toolkit docs/INSTALL.md §6d). Setting one here would mint a copy free to drift.
+
       # Preflight the required repo variables (out-of-band from the PR-editable
       # .release-pr.json) so the failure is a clear ::error:: rather than the
       # action's script fail-closing on an empty value. The promote step itself
@@ -64,7 +113,7 @@ jobs:
           fi
 
       - name: Promote tracking cards
-        uses: PupFuzz/agent-board-toolkit/promote@3cc2d7b2f692b0071356c4342bb371ac55dac236  # v0.29.0
+        uses: PupFuzz/agent-board-toolkit/promote@d792a821537a3fbdd05a54357c2669626b1d627a  # v0.31.0
         with:
           writeback-token: ${{ secrets.KANBAN_WRITEBACK_TOKEN }}
           expected-host: ${{ vars.KANBAN_EXPECTED_HOST }}

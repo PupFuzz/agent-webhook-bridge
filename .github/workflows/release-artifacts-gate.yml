@@ -35,7 +35,10 @@ jobs:
           # version file at both ends and each artifact's contents at head through `git show`,
           # none of which a shallow clone can serve.
           fetch-depth: 0
-      - uses: PupFuzz/agent-board-toolkit/release-artifacts@3cc2d7b2f692b0071356c4342bb371ac55dac236  # v0.29.0
+      # Pin maintained by dependabot's github-actions ecosystem (see .github/dependabot.yml)
+      # — it has opened a bump PR for this action on the weekly cadence since adoption, so a
+      # pin behind the toolkit's newest tag is a between-runs lag, not an unmaintained pin.
+      - uses: PupFuzz/agent-board-toolkit/release-artifacts@d792a821537a3fbdd05a54357c2669626b1d627a  # v0.31.0
         with:
           base-sha: ${{ github.event.pull_request.base.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}

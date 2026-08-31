@@ -87,7 +87,7 @@ class WritebackMappingConfigCheckTest extends TestCase
     {
         config(['bridge.writeback.coord_config_path' => $this->coordConfig(['all'])]);
 
-        $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_ALL));
+        $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
         $this->assertCount(2, $findings, 'expected the #4553 warn plus the agreement line, nothing else');
         $this->assertSame(Severity::Warn, $findings[0]['severity']);
@@ -105,7 +105,7 @@ class WritebackMappingConfigCheckTest extends TestCase
 
         // Orphaned on purpose: its warn witnesses that the check reached the mapping loop,
         // so the absence below is evidence rather than a check that never ran.
-        $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_PREFIXED), emitting: false);
+        $findings = $this->populationFindings(WritebackMapping::POPULATION_PREFIXED, emitting: false);
 
         $this->assertCount(1, $this->warnings($findings));
         $this->assertStringContainsString('is ORPHANED', $findings[0]['message']);
@@ -119,7 +119,7 @@ class WritebackMappingConfigCheckTest extends TestCase
             'bridge.writeback.coord_config_path' => $this->coordConfig(['all']),
         ]);
 
-        $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_ALL));
+        $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
         $this->assertCount(3, $findings);
         $this->assertSame(Severity::Warn, $findings[1]['severity']);
@@ -136,7 +136,7 @@ class WritebackMappingConfigCheckTest extends TestCase
     {
         config(['bridge.writeback.coord_config_path' => $this->coordConfig(['all'])]);
 
-        $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_ALL));
+        $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
         $this->assertSame(Severity::Ok, $findings[1]['severity']);
         $this->assertStringContainsString(
@@ -149,7 +149,7 @@ class WritebackMappingConfigCheckTest extends TestCase
     {
         config(['bridge.writeback.coord_config_path' => $this->coordConfig(['prefixed'])]);
 
-        $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_ALL));
+        $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
         $this->assertSame(Severity::Warn, $findings[1]['severity']);
         $this->assertStringContainsString('the two movers DISAGREE on issue_population', $findings[1]['message']);
@@ -159,7 +159,7 @@ class WritebackMappingConfigCheckTest extends TestCase
     public function test_an_unset_coord_config_is_cannot_verify_not_agreement(): void
     {
         // Both channels dark: no configured path, no ambient $COORD_CONFIG.
-        $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_ALL));
+        $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
         $this->assertSame(Severity::Unvalidated, $findings[1]['severity']);
         $this->assertStringContainsString('CANNOT VERIFY', $findings[1]['message']);
@@ -171,7 +171,7 @@ class WritebackMappingConfigCheckTest extends TestCase
         $missing = $this->dir.'/no-such-coordination.config.json';
         config(['bridge.writeback.coord_config_path' => $missing]);
 
-        $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_ALL));
+        $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
         $this->assertStringContainsString(
             "the coordination config at {$missing} is absent, unreadable, or malformed",
@@ -185,7 +185,7 @@ class WritebackMappingConfigCheckTest extends TestCase
         File::put($path, 'not json at all');
         config(['bridge.writeback.coord_config_path' => $path]);
 
-        $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_ALL));
+        $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
         $this->assertStringContainsString('is absent, unreadable, or malformed', $findings[1]['message']);
     }
@@ -199,7 +199,7 @@ class WritebackMappingConfigCheckTest extends TestCase
     {
         putenv('COORD_CONFIG='.$this->coordConfig(['all']));
 
-        $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_ALL));
+        $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
         $this->assertSame(Severity::Ok, $findings[1]['severity']);
         $this->assertStringContainsString('coord config agrees', $findings[1]['message']);
@@ -211,7 +211,7 @@ class WritebackMappingConfigCheckTest extends TestCase
         File::put($path, (string) json_encode(['kanban' => ['boards' => [['board_id' => 999, 'issue_population' => 'all']]]]));
         config(['bridge.writeback.coord_config_path' => $path]);
 
-        $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_ALL));
+        $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
         $this->assertSame(Severity::Unvalidated, $findings[1]['severity']);
         $this->assertStringContainsString(
@@ -224,7 +224,7 @@ class WritebackMappingConfigCheckTest extends TestCase
     {
         config(['bridge.writeback.coord_config_path' => $this->coordConfig(['all', 'prefixed'])]);
 
-        $findings = $this->findings($this->coordMapping(WritebackMapping::POPULATION_ALL));
+        $findings = $this->populationFindings(WritebackMapping::POPULATION_ALL);
 
         $this->assertSame(Severity::Unvalidated, $findings[1]['severity']);
         $this->assertStringContainsString(
@@ -367,7 +367,179 @@ class WritebackMappingConfigCheckTest extends TestCase
         $this->assertStringNotContainsString('closing form', $this->joined($findings));
     }
 
+    // ---- card#8290: the lane model whose post-birth race no family closes ----
+
+    public function test_a_lane_model_with_no_relane_family_names_the_race_nothing_closes(): void
+    {
+        $findings = $this->findings($this->laneMapping(), families: ['coord-card-create', 'coord-card-move']);
+
+        // ⛔ NOT A WARNING, and that is the whole ruling this leg carries: the install is
+        // correctly configured and every leg it configured fires. What it cannot know from
+        // its own `writeback.json` is that a SECOND family exists which closes a race the
+        // lane model leaves open — the card#7348 / DL-305 shape, hence that shape's severity.
+        $this->assertSame([], $this->warnings($findings), 'a lane model without the relane family is a VALID config — no leg may accuse it');
+        $this->assertCount(2, $findings, 'the advisory, plus the DL-305 line that witnesses the loop ran to the end');
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $message = $findings[0]['message'];
+        // Both halves the operator has to reconcile, spelled the way their own files spell them.
+        $this->assertStringContainsString('coord_card_lane_stage_ids', $message);
+        $this->assertStringContainsString('coord-card-relane', $message);
+        $this->assertStringContainsString('classifier.config.families', $message);
+        // The MECHANISM, which is what makes this a diagnosis rather than a feature advert.
+        $this->assertStringContainsString('never when a `stage:*` label arrives afterwards', $message);
+        // The remediation string is a doc surface, so the section it sends the operator to is
+        // asserted by CONTENT — a leg that names no section sends them to a 700-line file.
+        $this->assertStringContainsString('docs/writeback.md § Following a label added after the card exists', $message);
+        // `move_coord_cards` is already on here, so the line must NOT ask for it.
+        $this->assertStringNotContainsString('move_coord_cards', $message);
+    }
+
+    public function test_a_fully_adopted_lane_model_is_told_nothing_about_the_relane_family(): void
+    {
+        // THE CONTROL, and the measurement the card#6393 decline turned on: the SAME mapping
+        // with the family enabled must draw no line at all. A leg that fired here would be
+        // the "warns on every lane-model install" that decline refused.
+        $findings = $this->findings($this->laneMapping(), families: ['coord-card-create', 'coord-card-move', 'coord-card-relane']);
+
+        $this->assertCount(1, $findings, 'only the DL-305 witness — the advisory must be silent on a fully adopted install');
+        $this->assertStringContainsString('moves a card on MERGE only when', $findings[0]['message']);
+        $this->assertStringNotContainsString('coord-card-relane', $this->joined($findings));
+    }
+
+    public function test_a_create_only_lane_model_is_told_the_relane_family_needs_move_coord_cards_too(): void
+    {
+        // DL-294 makes `coord_card_lane_stage_ids` valid with the CREATE family alone, and
+        // the relane family additionally requires `move_coord_cards` — so on this shape the
+        // advisory is not one families-list entry away, and saying otherwise would send the
+        // operator to a config that still classifies nothing.
+        $findings = $this->findings($this->laneMapping(move: false), families: ['coord-card-create']);
+
+        $this->assertSame([], $this->warnings($findings));
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $this->assertStringContainsString('and set move_coord_cards', $findings[0]['message']);
+    }
+
+    public function test_an_unread_agent_makes_the_relane_advisory_a_disclosure_not_a_claim(): void
+    {
+        // card#5698: the leg asserts that NO agent enables the family, and an agent this run
+        // never finished reading is indistinguishable from an absent one — so the advisory
+        // would tell an operator to adopt a family they may already run.
+        $findings = $this->findings($this->laneMapping(), families: ['coord-card-create', 'coord-card-move'], unreadAgent: 'prod-agent');
+
+        $this->assertSame(Severity::Unvalidated, $findings[0]['severity']);
+        $this->assertStringContainsString('could NOT determine whether any agent enables the coord-card-relane family', $findings[0]['message']);
+        $this->assertStringContainsString('agent prod-agent was not read to completion this run', $findings[0]['message']);
+        // A disclosure, not a remediation: it must not send anyone to edit a families list
+        // whose real content this run could not read.
+        $this->assertStringNotContainsString('classifier.config.families', $findings[0]['message']);
+    }
+
+    // ---- card#8292: create_coord_cards with no agent enabling coord-card-create ----
+
+    public function test_create_coord_cards_with_no_create_family_is_warned_as_an_inert_leg(): void
+    {
+        $findings = $this->findings($this->createMapping());
+
+        // ⚠ A WARNING, where its lane-model neighbour above is an `ok` — the contrast IS the
+        // ruling. There the install is correct and every leg it configured fires; here a leg
+        // the operator explicitly turned on is dead, which is the condition this check's
+        // WARNING family is defined by.
+        $this->assertCount(1, $this->warnings($findings));
+        $this->assertSame(Severity::Warn, $findings[0]['severity']);
+        $message = $findings[0]['message'];
+        // Both gates, spelled the way the operator's own two files spell them.
+        $this->assertStringContainsString('create_coord_cards', $message);
+        $this->assertStringContainsString('coord-card-create', $message);
+        $this->assertStringContainsString('classifier.config.families', $message);
+        // The MECHANISM — what is actually dead, not merely that something is.
+        $this->assertStringContainsString('nothing is classified and no card is ever created', $message);
+        // The remediation string is a doc surface, so the section it sends the operator to is
+        // asserted by CONTENT — a leg naming no section sends them to a 950-line file.
+        $this->assertStringContainsString('docs/writeback.md § Optional: real-time coordination issue → card (DL-198)', $message);
+    }
+
+    public function test_a_mapping_whose_agent_enables_the_create_family_is_told_nothing(): void
+    {
+        // THE CONTROL. The SAME mapping with the family enabled must draw no line at all —
+        // a leg that fired here would accuse every correctly configured coord-card install.
+        $findings = $this->findings($this->createMapping(), families: ['coord-card-create']);
+
+        $this->assertCount(1, $findings, 'only the DL-305 witness — the warn must be silent on a fully configured install');
+        $this->assertStringContainsString('moves a card on MERGE only when', $findings[0]['message']);
+        $this->assertStringNotContainsString('coord-card-create', $this->joined($findings));
+    }
+
+    public function test_an_unread_agent_makes_the_create_family_warn_a_disclosure_not_a_claim(): void
+    {
+        // card#5698: the warn's accusation IS that no agent enables the family, and an agent
+        // this run never finished reading is indistinguishable from an absent one — so the
+        // line would send an operator to edit a families list that may already be correct in
+        // the config that failed to load.
+        $findings = $this->findings($this->createMapping(), unreadAgent: 'prod-agent');
+
+        $this->assertSame(Severity::Unvalidated, $findings[0]['severity']);
+        $this->assertStringContainsString('could NOT determine whether any agent enables the coord-card-create family', $findings[0]['message']);
+        $this->assertStringContainsString('agent prod-agent was not read to completion this run', $findings[0]['message']);
+        // A disclosure, not a remediation.
+        $this->assertStringNotContainsString('classifier.config.families', $findings[0]['message']);
+        $this->assertStringNotContainsString('docs/writeback.md', $findings[0]['message']);
+    }
+
     // ---- helpers ----
+
+    /**
+     * A create-leg coord-card mapping (card#8292), with `move_coord_cards` and the lane model
+     * both off so the DL-204 and card#8290 legs add no noise. The merge stage is the same
+     * DL-305 witness the lane helper below carries.
+     */
+    private function createMapping(): WritebackMapping
+    {
+        return new WritebackMapping(
+            boardId: self::BOARD,
+            stages: ['merged' => 52],
+            createCoordCards: true,
+            coordCardStageId: 21,
+        );
+    }
+
+    /**
+     * A lane-model coord-card mapping (card#8290). The merge stage is deliberate: the DL-305
+     * `ok` line it produces is the WITNESS that the mapping loop ran to the end, which is
+     * what the silence assertions above are measured against.
+     *
+     * It sets `create_coord_cards`, so every caller enables `coord-card-create` (card#8292)
+     * — otherwise the create-family-inert warn would fire on a shape whose subject is the
+     * relane family, and each of those assertions would be a count of two things with one
+     * subject.
+     */
+    private function laneMapping(bool $move = true): WritebackMapping
+    {
+        return new WritebackMapping(
+            boardId: self::BOARD,
+            stages: ['merged' => 52],
+            createCoordCards: true,
+            coordCardStageId: 21,
+            moveCoordCards: $move,
+            coordCardTerminalStageId: $move ? 53 : null,
+            coordCardLaneStageIds: ['now' => 40, 'next' => 41, 'later' => 42, 'maybe' => 43],
+        );
+    }
+
+    /**
+     * The findings for a coord-card mapping in the requested population, on an install whose
+     * serving agent DOES enable `coord-card-create`.
+     *
+     * THE FAMILY IS ENABLED DELIBERATELY (card#8292). These mappings set
+     * `create_coord_cards`, so without it every run here would also carry the
+     * create-family-inert warn and each population assertion would be a count of two things
+     * with one subject — the same reason `warnings()` drops the DL-305 `ok` below.
+     *
+     * @return list<array{severity: Severity, message: string}>
+     */
+    private function populationFindings(string $population, bool $emitting = true): array
+    {
+        return $this->findings($this->coordMapping($population), emitting: $emitting, families: ['coord-card-create']);
+    }
 
     /**
      * A coord-card mapping in the requested population. `move_coord_cards` stays off so
@@ -490,13 +662,32 @@ class WritebackMappingConfigCheckTest extends TestCase
         return new WritebackMapping(8, ['merged' => 52]);
     }
 
-    /** @return list<array{severity: Severity, message: string}> */
-    private function findings(WritebackMapping $mapping, bool $emitting = true): array
+    /**
+     * @param  list<string>  $families  the coord-card families some agent enables on this
+     *                                  scope — the three `CheckContext` maps `CheckCommand`'s
+     *                                  per-agent loop fills from `classifier.config.families`
+     * @param  ?string  $unreadAgent  an agent whose config never reached those maps, so a
+     *                                negative taken from them is not evidence (card#5698)
+     * @return list<array{severity: Severity, message: string}>
+     */
+    private function findings(WritebackMapping $mapping, bool $emitting = true, array $families = [], ?string $unreadAgent = null): array
     {
         $ctx = new CheckContext;
         $ctx->writeback = new WritebackConfig(7, [self::REPO => $mapping]);
         if ($emitting) {
             $ctx->writebackEmittingScopes = [self::REPO => true];
+        }
+        if (in_array('coord-card-create', $families, true)) {
+            $ctx->coordCardCreateScopes = [self::REPO => true];
+        }
+        if (in_array('coord-card-move', $families, true)) {
+            $ctx->coordCardMoveScopes = [self::REPO => true];
+        }
+        if (in_array('coord-card-relane', $families, true)) {
+            $ctx->coordCardRelaneScopes = [self::REPO => true];
+        }
+        if ($unreadAgent !== null) {
+            $ctx->agentScopeCoverage->recordUnread($unreadAgent, [self::REPO]);
         }
 
         return array_map(
