@@ -125,9 +125,11 @@ class UnvalidatedCallSiteTest extends TestCase
         //     leaves it with nothing to say. The card#8290 one is the only site here whose
         //     answered arm is an `ok` rather than a warn, and that is the reason IT needs a
         //     site at all: corollary (A) forbids a green line disclosing its own blindness,
-        //     so the disclosure has to BE the finding. A map-fed arm that ASSERTS NOTHING on
-        //     an absent scope (family-on, terminal missing) reads the same map and
-        //     deliberately has NO site here — see its comment for why.
+        //     so the disclosure has to BE the finding. A map-fed arm whose map term is a
+        //     POSITIVE asserts NOTHING on an absent scope, reads the same map and
+        //     deliberately has NO site here — the DL-204 family-on/terminal-missing arm and
+        //     (card#8305) the create family-on/`create_coord_cards`-missing arm are both of
+        //     that shape; the DL-204 one carries the ruling and the other inherits it.
         // PLUS the card#5698 idList() slice's three sites — again ONE shape, not three
         // decisions, and a DIFFERENT shape from the scope-map ones above. Each reads a
         // kanban collection whose ABSENCE the parser used to render as an empty list, so

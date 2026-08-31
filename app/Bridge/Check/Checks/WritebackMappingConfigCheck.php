@@ -238,6 +238,35 @@ final class WritebackMappingConfigCheck implements Check
                     yield Finding::warn("writeback: github:{$repo} sets create_coord_cards but no agent enables the coord-card-create family on that scope — the real-time coordination issue → card create (DL-198) is INERT: issues.opened/reopened arrive, nothing is classified and no card is ever created. Where a periodic reconcile runs it still backstops the PREFIXED set (not in real time), and under issue_population=all the non-prefixed set is carded by nothing at all. Add coord-card-create to the serving agent's classifier.config.families, or remove create_coord_cards from the mapping if the create leg is not wanted. See docs/writeback.md § Optional: real-time coordination issue → card (DL-198).");
                 }
             }
+            // card#8305: the create family's OTHER silent-inert direction, and the cell the
+            // gate1/gate2 matrix was missing — gate 1 ON (an agent enables coord-card-create
+            // on this scope) with gate 2 OFF (the mapping does not set create_coord_cards).
+            // `CoordinationClassifier::coordCardCreateFamily()` dispatches on the family and
+            // then returns null at its own mapping gate, so issues.opened/reopened are
+            // delivered, the family classifies nothing, and no coordination issue on this
+            // repo is carded in real time. Its two neighbours already report the same
+            // deadness from the opposite side (the mirror above; the DL-204 pair for the
+            // move family), which is why the asymmetry was an omission and not a ruling.
+            //
+            // ⚠ IT CAN ACCUSE A MULTI-SCOPE AGENT'S OTHER REPOS, and that exposure is not
+            // new here: `classifier.config.families` is per AGENT, so an agent serving two
+            // repos enables the family on BOTH, and a mapping that deliberately cards no
+            // coord issues draws this line. The DL-204 arm above carries exactly that and
+            // its ruling settled it — the remediation names the scope, so an operator who
+            // wants the leg off on one repo is told which config says so.
+            //
+            // NO card#5698 DISCLOSURE, INHERITED BY NAME from the DL-204 arm's ruling above
+            // rather than re-argued: this is a map-fed leg whose map term is a POSITIVE, so
+            // an unread agent cannot make it speak — it can only leave it SILENT, which is
+            // the same silence it keeps for every install that does not enable the family.
+            // Both terms of a line it does print are established facts: the family is in a
+            // config this run read to completion, and `create_coord_cards` is absent from a
+            // `writeback.json` that parsed. A disclosure here would need a NEGATIVE map read
+            // it does not perform, and would print on every mapping that does not card coord
+            // issues — the majority — on any run with one unreadable agent config.
+            if (isset($ctx->coordCardCreateScopes[$scope]) && ! $mapping->createCoordCards) {
+                yield Finding::warn("writeback: github:{$repo} enables the coord-card-create family but its writeback mapping does not set create_coord_cards — the real-time coordination issue → card create (DL-198) is INERT: issues.opened/reopened are delivered, the create family returns at its own mapping gate, and no coordination issue on this repo is ever carded in real time. Set create_coord_cards (with coord_card_stage_id, which the config refuses to load without it), or remove coord-card-create from the serving agent's classifier.config.families if the create leg is not wanted on this scope. See docs/writeback.md § Optional: real-time coordination issue → card (DL-198).");
+            }
             // card#6393: the coord-card-relane family's silent-inert shape, the DL-204 pair
             // above one family over. The relane leg needs gate 1 (the family) AND BOTH keys
             // of gate 2 — `move_coord_cards` (a relane IS the bridge moving a coord card)
@@ -362,7 +391,7 @@ final class WritebackMappingConfigCheck implements Check
             }
         }
 
-        yield Silence::because('no mapping maps a merge outcome (so the mention-vs-closure line has nothing to describe), every mapping has a subscribed writeback-emitting classifier spelled as the mapping spells it, and no half-configured optional leg — each of the WARNING legs above speaks only when a key is set without the key it needs, or when two files spell one repo two ways');
+        yield Silence::because('no mapping maps a merge outcome (so the mention-vs-closure line has nothing to describe), every mapping has a subscribed writeback-emitting classifier spelled as the mapping spells it, and no half-configured optional leg — each of the WARNING legs above speaks only when a key is set without the key it needs, when a coord-card family is enabled without the mapping keys that family reads, or when two files spell one repo two ways');
     }
 
     /**
