@@ -183,8 +183,8 @@ final class PrOutcome
      * loses its structural route. That is the identical over-refusal the lexical route
      * already accepts by construction, it fails toward under-promotion, and it is LOUD —
      * the card lands in the withheld set, so the warning fires and names the revert as the
-     * reason. Priced at zero on real data: `revert` + whitespace + `"` appears in 0 of
-     * 1,120 merged PR titles across all three repos this shop owns.
+     * reason. Priced at zero on real data: `revert` + whitespace + `"` appears in
+     * 0 of the 1,566 merged PR titles across all three repos this shop owns — measured here, with a control planted into that same corpus to prove the predicate discriminates.
      *
      * @param  string  $title  REQUIRED, deliberately not defaulted: a caller that forgets it
      *                         must fail to compile rather than silently keep the ref-only

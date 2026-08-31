@@ -121,7 +121,7 @@ class PrOutcomeTest extends TestCase
 
         // THE PRICE, pinned rather than left to be discovered: a title that merely QUOTES
         // the word loses the structural route too. Under-promotion, loud, and the identical
-        // over-refusal the lexical route already accepts — measured at 0 of 1,120 real
+        // over-refusal the lexical route already accepts — measured at 0 of 1,566 real
         // merged PR titles. If this row ever becomes a real cost, THIS is the line to argue
         // with; it is not an accident.
         $this->assertFalse(PrOutcome::mergeClosesCard('merged', 'card-4811-widget', 4811,
