@@ -426,10 +426,15 @@ delivery to discover it has nowhere to move anything.
 - **`bridge:check`.** Warns when an agent enables `coord-card-relane` on a scope whose mapping is
   missing `move_coord_cards` or `coord_card_lane_stage_ids`, naming the missing key(s) — that
   install classifies nothing and moves nothing, and no other check leg reports it (a mapping with
-  no lane model is perfectly valid for every other leg). The reverse is **not** warned: a lane
-  model without this family is the normal shape of every lane-model install — the key is read by
-  every coord-card write and accepted with either family, so it declares no intent this one
-  family contradicts.
+  no lane model is perfectly valid for every other leg). **The reverse direction is REPORTED, and
+  deliberately NOT as a warning** (card#8290): a lane model with no agent enabling this family
+  draws a green setup-time line naming the race above. The install is CORRECT — the key is read by
+  every coord-card write and accepted with either family, so it declares no intent this one family
+  contradicts, and leaving the family off stays a valid choice; what an operator cannot learn from
+  their own `writeback.json` is that the family exists at all. The line names `move_coord_cards`
+  too where the mapping does not set it (the family needs it, and a create-only lane model is valid
+  since DL-294), stays silent on a fully adopted install, and degrades to a cannot-verify
+  disclosure when an agent config this run could not read might be the one enabling the family.
 
 ## Optional: card non-prefixed issues too (`issue_population`, #4553)
 

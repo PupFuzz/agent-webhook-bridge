@@ -118,10 +118,15 @@ class UnvalidatedCallSiteTest extends TestCase
         // NEGATIVE is not evidence — limb (c) of the rule, with the unresolved comparand
         // being the run's own agent roster rather than a foreign config.
         //   WritebackBoardStateCheck:  the coord-terminal preflight's family gate.
-        //   WritebackMappingConfigCheck: the orphaned mapping, and the terminal-set-but-
-        //     family-off mirror. A FOURTH map-fed arm (family-on, terminal missing) reads
-        //     the same map and deliberately has NO site here — see its comment for why the
-        //     one arm that asserts nothing gets no disclosure.
+        //   WritebackMappingConfigCheck: the orphaned mapping, the terminal-set-but-
+        //     family-off mirror, and (card#8290) the lane-model-without-the-relane-family
+        //     advisory — whose whole predicate is that no agent enables that family, so an
+        //     unread agent leaves it with nothing to say. It is the FIRST site here whose
+        //     answered arm is an `ok` rather than a warn, and that is the reason it needs a
+        //     site at all: corollary (A) forbids a green line disclosing its own blindness,
+        //     so the disclosure has to BE the finding. A FOURTH map-fed arm (family-on,
+        //     terminal missing) reads the same map and deliberately has NO site here — see
+        //     its comment for why the one arm that asserts nothing gets no disclosure.
         // PLUS the card#5698 idList() slice's three sites — again ONE shape, not three
         // decisions, and a DIFFERENT shape from the scope-map ones above. Each reads a
         // kanban collection whose ABSENCE the parser used to render as an empty list, so
@@ -135,7 +140,7 @@ class UnvalidatedCallSiteTest extends TestCase
         // here and must not be: it stays `fail`, because an unverifiable board could
         // silently double-card. Only its message stopped over-claiming.
         'app/Bridge/Check/Checks/WritebackBoardStateCheck.php' => 10,
-        'app/Bridge/Check/Checks/WritebackMappingConfigCheck.php' => 5,
+        'app/Bridge/Check/Checks/WritebackMappingConfigCheck.php' => 6,
         // Board / cache / channel reads that did not complete (DL-251 (a)). The THIRD site on
         // the source-coverage leg is card#5701 / DL-258 and is a different limb from its two
         // neighbours: they are reads that FAILED (a throw, a page ceiling), while this one
