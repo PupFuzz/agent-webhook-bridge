@@ -64,7 +64,7 @@ jobs:
           fi
 
       - name: Promote tracking cards
-        uses: PupFuzz/agent-board-toolkit/promote@3cc2d7b2f692b0071356c4342bb371ac55dac236  # v0.29.0
+        uses: PupFuzz/agent-board-toolkit/promote@d792a821537a3fbdd05a54357c2669626b1d627a  # v0.31.0
         with:
           writeback-token: ${{ secrets.KANBAN_WRITEBACK_TOKEN }}
           expected-host: ${{ vars.KANBAN_EXPECTED_HOST }}
