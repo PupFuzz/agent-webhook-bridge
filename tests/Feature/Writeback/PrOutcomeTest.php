@@ -48,7 +48,12 @@ class PrOutcomeTest extends TestCase
         // The positive, in every branch-ref spelling the ONE card-token authority accepts —
         // derived from that authority rather than retyped, so a grammar move lands here as
         // a red test instead of as a silently narrower gate. This is the shape
-        // `board-card-start` mints and the shape 92% of this shop's recent merged PRs carry.
+        // `board-card-start` mints. ⚠ It is no longer the shape most of this shop's recent
+        // PRs carry — the 92% this comment used to claim was measured under the
+        // `card-<id>-slug` convention, which flipped to `<type>/<id>-slug` on 2026-08-29
+        // and took the structural route to 0 for 8 consecutive PRs (card#8294). The
+        // predicate below did not move; its REACH did, which is why the figure is stated
+        // as history here and enforced nowhere.
         foreach (['card-4811-widget', 'card#4811-widget', 'card4811-widget', 'fix/card-4811-widget'] as $ref) {
             $this->assertTrue(PrOutcome::mergeClosesCard('merged', $ref, 4811), "'{$ref}' names card 4811");
         }

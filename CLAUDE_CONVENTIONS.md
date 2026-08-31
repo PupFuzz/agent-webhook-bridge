@@ -150,9 +150,17 @@ Bridge code uses Laravel's `Log::warning(...)` / `Log::error(...)` facade for di
 
 ### Branch naming
 
-`feature/<short-slug>` for new work. `fix/<short-slug>` for bugfix-only PRs. `chore/<short-slug>` for process/tooling work. `refactor/<short-slug>` for behavior-preserving restructures.
+`<type>/<card-id>-<short-slug>` for card-backed work — `feat` for new work, `fix` for bugfix-only PRs, `chore` for process/tooling, `refactor` for behavior-preserving restructures, plus `ci`, `docs`, `test`. Drop the id where there is no card. The older `card-<id>-<short-slug>` spelling is still accepted everywhere, and — unlike the id-only shape — a ref carrying a `card` TOKEN is one that ALSO closes the card on merge (which spellings qualify is [`docs/writeback.md`](docs/writeback.md) § *Mention vs closure*'s to say, not this section's). Read **PR titles** below before choosing: the difference is not cosmetic.
 
 **Base branch:** owned by [`CLAUDE.md`](CLAUDE.md) standing rule 4 (the two-branch model — deliberately not restated here).
+
+### PR titles
+
+`<type>(<scope>): <subject> (closes card#<id>)` for card-backed work. The type/scope half matches the commit-subject convention below; the trailing token is the writeback's correlation key.
+
+⛔ **The `closes` is load-bearing, and leaving it out fails SILENTLY.** A merge promotes a card only on **closure evidence**, never on correlation — [`docs/writeback.md`](docs/writeback.md) § *Mention vs closure* owns that rule and the two routes that satisfy it, and this section deliberately does not restate either. What matters here is the interaction the two conventions have with each other: a bare `(card#<id>)` is a correlation and never a closure, and a `<type>/<id>-slug` branch carries the card's **digits** but not the `card` **token** the structural route reads. A PR written to both conventions therefore satisfies **neither route** — it merges green, the bridge logs `mention-vs-closure (DL-305/DL-308)`, and the card sits in In Review with its PR stamp forever. That ran for **8 consecutive PRs** before anyone noticed, because the dependency between the branch convention and card promotion was written down nowhere and checked nowhere (card#8294). Writing it here is half the fix; the other half is that it is now checked.
+
+**The check.** [`.github/workflows/pr-title-lint.yml`](.github/workflows/pr-title-lint.yml) § *Require a closure claim on a card-correlating PR* reds any PR that correlates a card and claims closure on neither route, and renders the accepted spellings into its own failure output rather than asking you back here. A PR that cites a card it **deliberately does not finish** — the context-PR case, which must stay possible or the gate becomes an over-promotion machine — declares that with the literal `[no-close]` in the title. That marker suppresses the CHECK only; nothing at runtime reads it.
 
 ### Commit messages
 
