@@ -43,7 +43,7 @@ use App\Bridge\Writeback\WritebackConfig;
 final class CheckContext
 {
     /**
-     * `$agentScopeCoverage` — which agents never reached the three scope maps below, and
+     * `$agentScopeCoverage` — which agents never reached the scope maps below, and
      * therefore whether an absence in any of them is evidence (card#5698). READ IT BEFORE
      * CONCLUDING ANYTHING FROM A SCOPE BEING ABSENT: the maps are accumulated only by agents
      * that got past both of `CheckCommand`'s per-agent aborts, so on a run where one did
@@ -79,10 +79,10 @@ final class CheckContext
      * (the bridge dispatches to all of them), so this is a list per scope and the
      * consumed set is their union (card#4183 / DL-196).
      *
-     * ACCUMULATED *DURING* THE PER-AGENT LOOP, NOT AFTER IT — one of the FOUR fields
+     * ACCUMULATED *DURING* THE PER-AGENT LOOP, NOT AFTER IT — one of the fields
      * here whose trap is PARTIAL rather than EMPTY ({@see self::$writebackEmittingScopes},
-     * {@see self::$coordCardMoveScopes} and {@see self::$coordCardRelaneScopes} are the
-     * others; the two groups are separated
+     * {@see self::$coordCardCreateScopes}, {@see self::$coordCardMoveScopes} and
+     * {@see self::$coordCardRelaneScopes} are the others; the two groups are separated
      * below). {@see self::$configs} is assigned once the loop has finished, so a check
      * reading it too early sees nothing at all; this one grows an entry per agent, so a
      * check reading it from a slot INSIDE the loop would see the agents processed so far
@@ -139,6 +139,25 @@ final class CheckContext
     public array $writebackEmittingScopes = [];
 
     /**
+     * github scopes where an agent enables the coord-card-create family (card#8292) —
+     * gate 1 of the DL-198 real-time coord-issue → card create, exactly as
+     * {@see self::$coordCardMoveScopes} is for the DL-200 close/reopen move. Gate 2 is
+     * the mapping's `create_coord_cards`; with the family off the classifier never even
+     * reaches that gate, so an install carrying only gate 2 creates nothing at all.
+     *
+     * SEPARATE FROM the two maps below for the reason stated on the relane one: the three
+     * families are independently enabled, and one map would make each family's finding
+     * speak for another's absence.
+     *
+     * Same accumulation timing and the same two traps as its siblings (PARTIAL, not empty,
+     * inside the per-agent loop; short by any aborted agent — consult
+     * {@see self::$agentScopeCoverage}).
+     *
+     * @var array<string, true>
+     */
+    public array $coordCardCreateScopes = [];
+
+    /**
      * github scopes where an agent enables the coord-card-move family — gate 1 of the
      * DL-204 move leg (gate 2 is the mapping's `move_coord_cards`). Scopes the
      * fleet-default nudges to where the leg can actually fire.
@@ -165,9 +184,9 @@ final class CheckContext
      * PLUS a configured `coord_card_lane_stage_ids`; with either missing the classifier
      * emits nothing at all, which is a silence no other leg reports.
      *
-     * SEPARATE FROM the move map rather than folded into it, because the two families are
-     * independently enabled: an install can run either without the other, and one map
-     * would make each family's advisory speak for the other's absence.
+     * SEPARATE FROM the create and move maps rather than folded into them, because the
+     * three families are independently enabled: an install can run any of them without the
+     * others, and one map would make each family's advisory speak for another's absence.
      *
      * Same accumulation timing and the same two traps as the sibling above (PARTIAL, not
      * empty, inside the per-agent loop; short by any aborted agent — consult
@@ -179,7 +198,7 @@ final class CheckContext
 
     /**
      * Every SPELLING each github scope was subscribed with, keyed by its canonical form
-     * (card#7124 review). The three maps above are keyed by identity so they cannot report
+     * (card#7124 review). The four maps above are keyed by identity so they cannot report
      * a working install as ORPHANED; this is what keeps that canonicalization from
      * ANSWERING FOR the dispatcher, which does not share it.
      *
@@ -197,7 +216,7 @@ final class CheckContext
      *
      * ACCUMULATED UNCONDITIONALLY for every github subscription of every agent that
      * parsed — the dispatch consequence is classifier-independent, so it must not inherit
-     * the writeback-emitting / family gates the three maps above carry. It carries the
+     * the writeback-emitting / family gates the four maps above carry. It carries the
      * same abort trap as they do: an agent that never parsed contributes no spelling.
      *
      * @var array<string, list<string>>
@@ -205,7 +224,7 @@ final class CheckContext
     public array $githubScopeSpellings = [];
 
     /**
-     * The key form of the three github scope maps above, and the form to look one up
+     * The key form of the four github scope maps above, and the form to look one up
      * with (DL-293).
      *
      * BOTH SIDES OF THAT COMPARE ARE OPERATOR-WRITTEN AND NAME THE SAME THING: the key is

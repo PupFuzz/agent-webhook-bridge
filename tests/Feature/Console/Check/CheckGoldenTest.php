@@ -708,6 +708,11 @@ class CheckGoldenTest extends TestCase
                 'sets stages.started but not started_from_stages',
                 'sets revive_on_reopen but not stages.opened',
                 'sets create_coord_cards but writeback.json has no identity_id',
+                // card#8292. The same fixture's agent is kanban-only, so no agent enables
+                // the create family on this scope and the create leg is dead — the one
+                // golden shape that reaches it, and the reason the leg is measured at the
+                // real command surface rather than only in a hand-built context.
+                'no agent enables the coord-card-create family',
             ],
             'writeback-malformed' => ['is not a valid JSON object'],
 
