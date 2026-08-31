@@ -12,6 +12,7 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\PreloadStub;
 use Tests\TestCase;
 
@@ -705,6 +706,156 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => 49]);
     }
 
+    // --- card#8289: the pin is consulted on EVERY outcome, not just `started` ---
+
+    public function test_merged_move_refused_when_card_is_pinned(): void
+    {
+        // THE card#8289 defect: the pin consult sat inside `if ($outcome === 'started')`,
+        // so a merge PATCHed a human-pinned card straight to the shipped stage. Every
+        // guard above this one passes (card on the mapped board, forward move, no
+        // corroboration doubt), which is exactly why two correct consumers kept the
+        // guard reading as working. Revert the hoist => a PATCH is sent => RED.
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(49, ['block_reason' => 'waiting on upstream', 'tags' => ['triaged', 'no-automove']]);
+
+        $this->handle($this->payload(['outcome' => 'merged']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_merged_move_refused_when_card_carries_only_a_no_automove_tag(): void
+    {
+        // The tag half of the predicate on the merge path — the `started` arm has had
+        // both halves covered since PR #113; the merge path had neither.
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(49, ['tags' => ['triaged', 'no-automove']]);
+
+        $this->handle($this->payload(['outcome' => 'merged']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * The ruling this fix encodes: a pin holds the card's STAGE against every outcome,
+     * not a subset. A pin honoured on some moves and not others is the same defect one
+     * layer down, so all four config outcomes are covered rather than one
+     * representative. `closed_unmerged` is in the set deliberately: it is the lone
+     * legitimately-BACKWARD outcome, and a hold holds in both directions.
+     *
+     * A DATA PROVIDER rather than a loop, because `Http::fake()` MERGES its stubs and
+     * the FIRST matching one answers — a second `fake()` in one test body cannot replace
+     * the card the first one stubbed, so a looped control/subject pair silently reuses
+     * the control's unpinned card. One case per test instance is the only clean reset.
+     *
+     * @return array<string, array{string, int, int}> outcome, current stage, target stage
+     */
+    public static function pinnedOutcomes(): array
+    {
+        // Current stages are chosen so the DL-163 no-regression guard passes every case:
+        // 49 is behind 50/52/53, and `closed_unmerged` — the backward outcome — runs from
+        // 50 down to 49. Neither 49 nor 50 is terminal, so nothing here is guard-refused.
+        return [
+            'opened' => ['opened', 49, 50],
+            'merged' => ['merged', 49, 52],
+            'merged_to_main' => ['merged_to_main', 49, 53],
+            'closed_unmerged' => ['closed_unmerged', 50, 49],
+        ];
+    }
+
+    #[DataProvider('pinnedOutcomes')]
+    public function test_an_unpinned_card_moves_on_this_outcome(string $outcome, int $from, int $target): void
+    {
+        // The CONTROL for the case below. `assertNotSent` is satisfied by ANY refusal,
+        // and the DL-163 guard sits two statements past the pin consult — so without a
+        // control that moves, the subject's silence is not evidence about the PIN.
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard($from);
+
+        $this->handle($this->payload(['outcome' => $outcome]));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => $target]);
+    }
+
+    #[DataProvider('pinnedOutcomes')]
+    public function test_a_pinned_card_does_not_move_on_this_outcome(string $outcome, int $from, int $target): void
+    {
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard($from, ['block_reason' => 'parked by hand']);
+
+        $this->handle($this->payload(['outcome' => $outcome]));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && $r->data() === ['workflow_stage_id' => $target]);
+    }
+
+    public function test_non_revival_reopened_refuses_a_pinned_card(): void
+    {
+        // `reopened` is the outcome with an operator-ruled pin OVERRIDE (DL-195), but
+        // that override is scoped to the REVIVAL — a card sitting in the mapped
+        // `closed_unmerged` abandon stage. Elsewhere DL-195 says a `reopened` behaves
+        // exactly like `opened`, so here it is held exactly like one. The companion
+        // `test_reopened_pinned_card_is_revived_and_alerts` pins the override arm; this
+        // pins the boundary between them.
+        $this->writeReviveConfig();
+        $this->fakeReviveStageOrderAndCard(49, ['tags' => ['no-automove']]);   // 49 is not the abandon stage (77)
+
+        $this->handle($this->payload(['outcome' => 'reopened']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
+    public function test_pinned_merge_refusal_alerts(): void
+    {
+        // A hold nobody can see fire is a hold nobody can debug: the refusal pairs its
+        // durable log with a live signal through the one primitive every permanent
+        // refusal here uses (DL-274), under the reason the `started` arm already used.
+        $this->writeWritebackWithAlert(['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49]);
+        $this->writeToken();
+        Log::spy();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['id' => 11, 'stages' => [
+                ['id' => 49, 'position' => 3072.0],
+                ['id' => 52, 'position' => 5120.0],
+            ]]]]]),
+            '*/tasks/5.json' => Http::response(['data' => [
+                'id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'tags' => ['no-automove'],
+            ]]),
+        ]);
+
+        $this->handle($this->payload(['outcome' => 'merged']));
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'pinned_no_automove'
+            && $r['repo'] === 'owner/repo'
+            && $r['card_id'] === 5);
+        Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'move refused')
+            && str_contains((string) $msg, 'pinned'))->once();
+    }
+
+    public function test_pinned_merge_still_stamps_the_correlation_refs_it_refuses_to_move_on(): void
+    {
+        // The ruling on the second half: the pin governs the card's STAGE, not its
+        // correlation refs. Dropping the stamp too would strand the card OUTSIDE
+        // `bridge:reconcile`'s population — the reconciler only reconciles a card that
+        // carries a resolvable (repo, PR) — so the backstop could never repair the move
+        // once the human lifted the pin, and GitHub delivers the merge exactly once.
+        // Stamping keeps the hold a PAUSE instead of a severance.
+        $this->writeAllOutcomes();
+        $this->fakeStageOrderAndCard(49, ['tags' => ['no-automove'], 'payload' => []]);
+
+        $this->handle($this->payload([
+            'outcome' => 'merged',
+            'stamp_pr' => 148,
+            'stamp_pr_url' => 'https://github.com/owner/repo/pull/148',
+        ]));
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['payload' => ['pr_number' => 148, 'pr_url' => 'https://github.com/owner/repo/pull/148']]);
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && array_key_exists('workflow_stage_id', $r->data()));
+    }
+
     public function test_payload_board_id_is_ignored_config_is_authoritative(): void
     {
         // A payload board_id that disagrees with config must NOT change the
@@ -731,8 +882,12 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->writeToken();
     }
 
-    /** Board-8 order for the guard: In-Progress 49 < In-Review 50 < Shipped 52 < Released 53. */
-    private function fakeStageOrderAndCard(int $currentStage): void
+    /**
+     * Board-8 order for the guard: In-Progress 49 < In-Review 50 < Shipped 52 < Released 53.
+     *
+     * @param  array<string, mixed>  $cardExtra  extra card fields (block_reason / tags / payload)
+     */
+    private function fakeStageOrderAndCard(int $currentStage, array $cardExtra = []): void
     {
         Http::fake([
             '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['id' => 11, 'stages' => [
@@ -741,7 +896,7 @@ class KanbanMoveCardHandlerTest extends TestCase
                 ['id' => 52, 'position' => 5120.0],
                 ['id' => 53, 'position' => 6144.0],
             ]]]]]),
-            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => $currentStage]]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => $currentStage] + $cardExtra]),
         ]);
     }
 
