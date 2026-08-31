@@ -30,7 +30,14 @@ use Tests\TestCase;
  *    reaching it needs both an `all` mapping AND an ambient coordination config, and a
  *    golden fixture pins the ambient host precisely so it does NOT depend on one;
  *  - the two `promote_on_release` legs (same-stage no-op, and the file-token
- *    requirement), whose outcome depends on the host's token resolution.
+ *    requirement), whose outcome depends on the host's token resolution;
+ *  - every coord-card FAMILY leg except the DL-204 pair — the create legs (card#8292 and
+ *    card#8305) and the relane legs (card#6393 and card#8290). No golden fixture enables
+ *    `coord-card-create` or `coord-card-relane` in an agent's `classifier.config.families`,
+ *    so the corpus cannot reach either family's gate-1 half in either direction. Stated as
+ *    a PROPERTY of the corpus rather than as four named legs: a fifth family leg lands in
+ *    the same position, and a list of legs here would go stale the way a list of fixtures
+ *    would.
  *
  * EVERY ABSENCE ASSERTION HERE CARRIES A WITNESS that the check ran and reached the
  * mapping loop — either another expected finding from the same run, or a deliberately
@@ -460,11 +467,15 @@ class WritebackMappingConfigCheckTest extends TestCase
 
     public function test_a_mapping_whose_agent_enables_the_create_family_is_told_nothing(): void
     {
-        // THE CONTROL. The SAME mapping with the family enabled must draw no line at all —
-        // a leg that fired here would accuse every correctly configured coord-card install.
+        // THE CONTROL, and since card#8305 it discriminates in BOTH directions. The SAME
+        // mapping with the family enabled must draw no line at all — a leg that fired here
+        // would accuse every correctly configured coord-card install. Until card#8305 only
+        // ONE leg could have broken it, so it also passed for every install shape that had
+        // no second leg; now it is the fully-configured cell of a two-by-two, and a
+        // family-enabled leg that forgot its `create_coord_cards` term reds here.
         $findings = $this->findings($this->createMapping(), families: ['coord-card-create']);
 
-        $this->assertCount(1, $findings, 'only the DL-305 witness — the warn must be silent on a fully configured install');
+        $this->assertCount(1, $findings, 'only the DL-305 witness — neither create leg may speak on a fully configured install');
         $this->assertStringContainsString('moves a card on MERGE only when', $findings[0]['message']);
         $this->assertStringNotContainsString('coord-card-create', $this->joined($findings));
     }
@@ -483,6 +494,55 @@ class WritebackMappingConfigCheckTest extends TestCase
         // A disclosure, not a remediation.
         $this->assertStringNotContainsString('classifier.config.families', $findings[0]['message']);
         $this->assertStringNotContainsString('docs/writeback.md', $findings[0]['message']);
+    }
+
+    // ---- card#8305: the create family enabled on a mapping that never opted in ----
+
+    public function test_the_create_family_on_a_mapping_that_never_opted_in_is_warned_as_an_inert_leg(): void
+    {
+        // The cell the gate1/gate2 matrix was missing. `coordCardCreateFamily()` dispatches
+        // on the family and then returns null at its own mapping gate, so the family runs
+        // and cards nothing — the same deadness the mirror above reports from the other
+        // side, and the same deadness the DL-204 pair reports for the move family.
+        $findings = $this->findings($this->mapping(), families: ['coord-card-create']);
+
+        $this->assertCount(1, $this->warnings($findings));
+        $this->assertSame(Severity::Warn, $findings[0]['severity'], 'a leg the operator turned on is dead — the condition this check\'s WARNING family is defined by');
+        $message = $findings[0]['message'];
+        // Both gates, spelled the way the operator's own two files spell them.
+        $this->assertStringContainsString('coord-card-create', $message);
+        $this->assertStringContainsString('create_coord_cards', $message);
+        $this->assertStringContainsString('classifier.config.families', $message);
+        // The MECHANISM — WHERE it dies, not merely that something is dead. A line saying
+        // only "the create leg is off" would describe a mapping with no family enabled too.
+        $this->assertStringContainsString('the create family returns at its own mapping gate', $message);
+        // The remediation names the SECOND key the opt-in direction needs: `WritebackConfig`
+        // refuses to load a mapping with create_coord_cards and no coord_card_stage_id, so a
+        // line asking only for the first sends the operator to a config that fails closed.
+        $this->assertStringContainsString('coord_card_stage_id', $message);
+        // The remediation string is a doc surface, so the section it sends the operator to is
+        // asserted by CONTENT — a leg naming no section sends them to a 950-line file.
+        $this->assertStringContainsString('docs/writeback.md § Optional: real-time coordination issue → card (DL-198)', $message);
+        // ⛔ THE TWO CREATE LEGS MUST BE DISTINGUISHABLE. They accuse opposite configs and
+        // carry opposite remediations, so an operator reading one must not be able to act on
+        // the other's instruction.
+        $this->assertStringNotContainsString('sets create_coord_cards but no agent enables', $message);
+    }
+
+    public function test_an_unread_agent_leaves_the_family_enabled_create_leg_silent_rather_than_disclosing(): void
+    {
+        // ⛔ NOT A DISCLOSURE, AND THAT IS A RULING THIS PINS RATHER THAN A GAP. card#5698
+        // applies to a leg whose accusation IS an absence; this leg's map term is a
+        // POSITIVE (`isset`), so an unread agent cannot make it speak falsely — it can only
+        // leave it silent, which is the same silence it keeps for every install that does
+        // not enable the family. A disclosure here would print on every mapping that cards
+        // no coord issues — the majority — on any run with one unreadable agent config,
+        // which is exactly what the DL-204 arm's own no-disclosure ruling refused.
+        $findings = $this->findings($this->mapping(), unreadAgent: 'prod-agent');
+
+        $this->assertSame([], $this->warnings($findings), 'an unread agent must not turn a positive-map leg into a line of any severity');
+        $this->assertCount(1, $findings, 'only the DL-305 witness, which is what proves the loop ran to the end rather than yielding nothing');
+        $this->assertStringNotContainsString('coord-card-create', $this->joined($findings));
     }
 
     // ---- helpers ----
@@ -664,8 +724,10 @@ class WritebackMappingConfigCheckTest extends TestCase
 
     /**
      * @param  list<string>  $families  the coord-card families some agent enables on this
-     *                                  scope — the three `CheckContext` maps `CheckCommand`'s
-     *                                  per-agent loop fills from `classifier.config.families`
+     *                                  scope — the three `CheckContext` maps
+     *                                  `CheckContext::recordCoordCardFamilies()` fills from
+     *                                  `classifier.config.families` (card#8305; the
+     *                                  per-agent loop in `CheckCommand::handle()` calls it)
      * @param  ?string  $unreadAgent  an agent whose config never reached those maps, so a
      *                                negative taken from them is not evidence (card#5698)
      * @return list<array{severity: Severity, message: string}>
