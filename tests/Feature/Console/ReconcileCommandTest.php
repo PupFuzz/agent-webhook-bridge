@@ -787,6 +787,29 @@ class ReconcileCommandTest extends TestCase
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 
+    public function test_the_backstop_refuses_a_hand_made_revert_on_an_ordinary_branch(): void
+    {
+        // ⛔ THE HALF THE FIRST REVISION LEFT UNTESTED HERE, and a mutation caught it: with
+        // this leg absent, passing a BLANK title into the backstop's structural gate left
+        // the suite GREEN — because the only revert fixture above rides a `revert-<n>-` ref
+        // that `isRevertRef()` catches whatever the title says. A HAND-MADE `git revert`
+        // wraps no ref, so the title is the only surface that can refuse it, and this is
+        // the leg that proves the backstop reads it. Same lockstep, other direction: if the
+        // classifier declines this at merge time and the cron does not, the cron wins an
+        // hour later. `card-5-widget` is the spelling `board-card-start` mints.
+        $this->writeWriteback();
+        $this->fake([$this->card(5, 50, ['pr_url' => $this->prUrl(5)])], [5 => [
+            'state' => 'closed', 'merged' => true, 'base' => ['ref' => 'dev'], 'html_url' => 'x',
+            'title' => 'Revert "work (Closes card#5)"', 'head' => ['ref' => 'card-5-widget'],
+        ]]);
+
+        $this->artisan('bridge:reconcile', ['--fix' => true])
+            ->expectsOutputToContain('takes NEITHER closure route')
+            ->assertExitCode(0);
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
     public function test_the_backstop_still_reconciles_the_reverted_original(): void
     {
         // ⛔ THE CONTROL, one variable away: the SAME title and the SAME branch without

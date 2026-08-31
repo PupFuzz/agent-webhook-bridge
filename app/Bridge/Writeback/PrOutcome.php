@@ -158,23 +158,42 @@ final class PrOutcome
      * drift shape this repo keeps paying for; consolidating them is a change to what a CI
      * gate accepts and belongs to its own decision, not to this one.
      *
-     * ⛔ A GITHUB REVERT REF TAKES NO STRUCTURAL ROUTE (card#8306), and it is this
-     * predicate's own premise that refuses it rather than a special case bolted on.
-     * Everything above rests on the ref being the CARD's branch, minted by this install's
-     * own tooling. GitHub mints a revert's branch as `revert-<n>-<original ref>` — a
-     * wrapper carrying a COPY of the original's name — so the token in
-     * `revert-611-card-8294-slug` is the REVERTED branch's, and reading it as a completion
-     * claim moves a card FORWARD for work that was just undone. Measured, not reasoned:
-     * {@see CardTokenGrammar::parse()} returns 8294 for that ref, so before this clause
-     * the structural route fired on every revert of a card branch spelled the way
-     * `board-card-start` spells them — which was this shop's convention until
-     * 2026-08-29 and is still what the toolkit mints. {@see RevertGrammar} owns the shape,
-     * the nesting ruling, and why correlation is deliberately left intact.
+     * ⛔ A REVERT TAKES NO STRUCTURAL ROUTE (card#8306), and it is this predicate's own
+     * premise that refuses it rather than a special case bolted on. Everything above rests
+     * on the ref being the CARD's branch, carrying the card's work. A revert's branch
+     * carries the card's work UNDONE, so the same ref means the opposite thing, and reading
+     * it as a completion claim moves a card FORWARD for work that was just taken out.
+     *
+     * IT ASKS {@see RevertGrammar::isRevert()} — BOTH SURFACES, not the ref alone, and the
+     * ref alone was measured INSUFFICIENT before this line was written this way. GitHub's
+     * own revert wraps the ref (`revert-<n>-<original ref>`), so a ref-only test catches
+     * GitHub's mint — but a HAND-MADE revert (`git revert`, pushed to an ordinary branch)
+     * announces itself only in the TITLE, and its branch is whatever the author typed.
+     * Measured on the shipped predicates, card 4811, title `Revert "feat: widget (closes
+     * card#4811)"`: `revert-611-card-4811-widget` was refused, while `card-4811-widget`,
+     * `revert/card-4811-widget` and `revert-card-4811-widget` all still CLOSED the card —
+     * `isRevert()` returning true on every one of them, consulted by nothing. And
+     * `card-<id>-slug` is the spelling `board-card-start` mints, so that was the COMMON
+     * branch shape, not an exotic one. Worse, it was SILENT: the card reached the closing
+     * set, so the withheld-merge warning never fired. Asking both surfaces here is what
+     * makes "a revert closes nothing on either route" true rather than nearly true.
+     *
+     * THE FALSE-NEGATIVE IT BUYS, priced rather than asserted away: a PR whose title merely
+     * QUOTES the word revert (`fix: revert "the streaming change" and re-land it`) now
+     * loses its structural route. That is the identical over-refusal the lexical route
+     * already accepts by construction, it fails toward under-promotion, and it is LOUD —
+     * the card lands in the withheld set, so the warning fires and names the revert as the
+     * reason. Priced at zero on real data: `revert` + whitespace + `"` appears in 0 of
+     * 1,120 merged PR titles across all three repos this shop owns.
+     *
+     * @param  string  $title  REQUIRED, deliberately not defaulted: a caller that forgets it
+     *                         must fail to compile rather than silently keep the ref-only
+     *                         reading this clause exists to replace.
      */
-    public static function mergeClosesCard(string $outcome, string $headRef, int $cardId): bool
+    public static function mergeClosesCard(string $outcome, string $headRef, int $cardId, string $title): bool
     {
         return $outcome === self::INTEGRATION_MERGE
-            && ! RevertGrammar::isRevertRef($headRef)
+            && ! RevertGrammar::isRevert($title, $headRef)
             && CardTokenGrammar::parse($headRef) === $cardId;
     }
 

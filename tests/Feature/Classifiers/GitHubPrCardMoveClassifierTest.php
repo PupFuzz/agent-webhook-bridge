@@ -2111,6 +2111,48 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame([], $this->targetsNamed($nested, 'kanban_move_card'), 'a revert of a revert does not close either');
     }
 
+    public function test_witness_9b_a_hand_made_revert_on_an_ordinary_branch_moves_nothing(): void
+    {
+        // ⛔ WITNESS 9b — THE HALF THE FIRST REVISION OF THIS CHANGE LEFT OPEN, and the
+        // reason it is a witness rather than a note. `git revert` pushed to an ordinary
+        // branch wraps NO ref: the revert exists only in the title. While the structural
+        // route asked the ref alone, every row below was MEASURED still moving card 4811 —
+        // and `card-4811-widget` is the spelling `board-card-start` mints, so this was the
+        // COMMON branch shape, not an exotic one.
+        //
+        // It was also SILENT, which is why the warning assertion below is not optional:
+        // the card reached the CLOSING set, so `warnMentionWithoutClosure()` — which fires
+        // only for withheld cards — never ran. The board asserted the work was done and
+        // nothing anywhere said otherwise. (Revert the `isRevert` conjunct in
+        // `mergeClosesCard()` to `isRevertRef` ⇒ every row here goes RED.)
+        Http::fake();
+        Log::spy();
+
+        // ⚠ ONE spy for the whole loop, and each assertion anchored on `head ref: <branch>`
+        // rather than on the shared text. `Log::spy()` re-invoked mid-test does NOT reset
+        // what the facade has already recorded — measured here: a per-iteration spy with
+        // `->once()` saw 1, then 2, then 3 matches for three events that each emitted
+        // exactly one line. The anchor makes every assertion match a single distinct
+        // message, so `->once()` stays exact and stays per-branch. The `head ref: ` prefix
+        // is load-bearing: `card-4811-widget` is a substring of the other two branches.
+        foreach (['card-4811-widget', 'revert/card-4811-widget', 'revert-card-4811-widget'] as $branch) {
+            $r = $this->classify('pull_request.closed', $this->mergedPrTitled(
+                'Revert "feat: widget rework (Closes card#4811)"', $branch));
+
+            $this->assertSame([], $this->targetsNamed($r, 'kanban_move_card'), "'{$branch}' must move nothing");
+            Log::shouldHaveReceived('warning')->withArgs(fn ($msg) => str_contains((string) $msg, 'mention-vs-closure')
+                && str_contains((string) $msg, '4811')
+                && str_contains((string) $msg, 'REVERT')
+                && str_contains((string) $msg, "head ref: {$branch}"))->once();
+        }
+
+        // THE CONTROL, one variable away: the SAME ordinary branch under an ordinary title
+        // still closes, so the rows above turn on the revert and not on the branch.
+        $ok = $this->classify('pull_request.closed', $this->mergedPrTitled(
+            'feat: widget rework (Closes card#4811)', 'card-4811-widget'));
+        $this->assertSame([4811], array_map(fn ($t) => $t->payload['card_id'], $this->targetsNamed($ok, 'kanban_move_card')));
+    }
+
     public function test_witness_9_the_controls_that_discriminate(): void
     {
         // ⛔ WITHOUT THESE, every revert witness above is satisfied by a gate that refuses

@@ -624,7 +624,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * ⛔ A REVERT TAKES NEITHER ROUTE (card#8306), and this filter is deliberately NOT
      * where that is decided. The refusal lives inside the two authorities the line below
      * ORs together — {@see ClosureGrammar} subtracts the quoted original title,
-     * {@see PrOutcome::mergeClosesCard()} refuses GitHub's `revert-<n>-` ref — because
+     * {@see PrOutcome::mergeClosesCard()} refuses a revert on BOTH surfaces — because
      * `bridge:reconcile` re-derives the same proposition from the same two fields on a
      * schedule, and a term added here alone would let the backstop re-plan an hour later
      * exactly the move this gate declined. That lockstep is DL-305 §6 / DL-308's ruling,
@@ -659,7 +659,7 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         return array_values(array_filter(
             $cardIds,
             fn (int $id) => ClosureGrammar::closesCard($title, $id)
-                || PrOutcome::mergeClosesCard($outcome, $headRef, $id),
+                || PrOutcome::mergeClosesCard($outcome, $headRef, $id, $title),
         ));
     }
 

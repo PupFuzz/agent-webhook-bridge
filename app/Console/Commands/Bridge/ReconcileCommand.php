@@ -401,7 +401,7 @@ class ReconcileCommand extends BridgeCommand
             // The sentence is `RevertGrammar`'s so the classifier's withheld-merge warning
             // renders the identical one; only the surrounding line shape differs.
             $this->line(RevertGrammar::isRevert($pr['title'], $pr['head_ref'])
-                ? "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but takes NEITHER closure route: no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".RevertGrammar::describeRefusal()
+                ? "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but takes NEITHER closure route (head branch ref '{$pr['head_ref']}'): no expected stage (mention-vs-closure, DL-305/DL-308) — skipped. ".RevertGrammar::describeRefusal()
                 : "card {$cardId} ({$cardRepo}#{$prNumber}): PR is merged but neither its head branch ref ('{$pr['head_ref']}') nor a closing form in its title names this card — a MENTION, not a closure claim; no expected stage (mention-vs-closure, DL-305/DL-308) — skipped");
             $this->skipped++;
 
@@ -538,7 +538,7 @@ class ReconcileCommand extends BridgeCommand
      */
     private function closes(string $title, string $headRef, string $outcome, int $cardId, array $payload, ExternalReferenceNormalizer $refs): bool
     {
-        if (PrOutcome::mergeClosesCard($outcome, $headRef, $cardId)) {
+        if (PrOutcome::mergeClosesCard($outcome, $headRef, $cardId, $title)) {
             return true;
         }
         if (ClosureGrammar::closesCard($title, $cardId)) {
