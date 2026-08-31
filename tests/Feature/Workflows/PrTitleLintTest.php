@@ -1434,11 +1434,19 @@ class PrTitleLintTest extends TestCase
      * ({@see CardTokenGrammar::parse()} on the title, leftmost-only). Neither side
      * carries a copy of the other's answer.
      *
-     * That is the property the gate exists to hold: CI reds exactly the PRs whose
-     * merge the writeback will refuse. A leg comparing the bash to a hand-written
-     * expectation would have stayed green through the convention flip that caused
-     * card#8294, because the expectation would have been written from the same wrong
-     * mental model as the convention.
+     * That is the property the gate exists to hold. A leg comparing the bash to a
+     * hand-written expectation would have stayed green through the convention flip
+     * that caused card#8294, because the expectation would have been written from the
+     * same wrong mental model as the convention.
+     *
+     * ⚠ THE SCOPE OF THE TIE IS THE CLOSURE PREDICATE, NOT THE WRITEBACK. This does
+     * NOT establish that CI reds exactly the PRs whose merge the writeback refuses,
+     * and the wording that claimed so is corrected here: a merge is refused for
+     * several reasons no PR title can express — an unmapped repo, a card the token
+     * cannot read, the mapped-board guard, a near-miss hijack, and a PINNED card on
+     * every outcome (card#8289). All are downstream of this gate and invisible to it.
+     * What is established is the biconditional on THIS predicate, the only one a title
+     * and a branch can decide.
      *
      * The `merged` outcome is passed rather than `merged_to_main` because the step
      * exempts `release/*` — the only head that reaches a `main` base — so the base
