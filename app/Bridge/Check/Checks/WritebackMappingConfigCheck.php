@@ -182,15 +182,18 @@ final class WritebackMappingConfigCheck implements Check
             }
             // NO card#5698 DISCLOSURE ON THE ARM ABOVE, and the omission is a ruling rather
             // than an oversight (the sibling arm below and `WritebackBoardStateCheck`'s
-            // gate both carry one). It is the only one of the four map-fed legs that
-            // asserts NOTHING when the scope is absent: it is scoped to family-enabled
-            // scopes precisely so a pure PR-writeback mapping stays quiet, so an unread
-            // agent costs it no false claim — only the same silence it already keeps for
-            // every install that does not use coord cards. A disclosure here would print on
-            // EVERY mapping of every run with an unreadable agent config, including the
-            // majority that carry no coord-card config at all. That is the silent-LEG
-            // class (DL-251 stage 10), whose members answered nothing while their siblings
-            // answered; this arm has no answering sibling.
+            // gate both carry one). It is a map-fed leg that asserts NOTHING when the scope
+            // is absent — the coord-card-relane family arm below is the other, and inherits
+            // this ruling by name. NO COUNT IS STATED for that set: the map-fed legs here
+            // have grown twice since this paragraph was written (card#6393, card#8292), and
+            // a number in a comment is a second copy of a list nothing re-derives. The arm
+            // is scoped to family-enabled scopes precisely so a pure PR-writeback mapping
+            // stays quiet, so an unread agent costs it no false claim — only the same
+            // silence it already keeps for every install that does not use coord cards. A
+            // disclosure here would print on EVERY mapping of every run with an unreadable
+            // agent config, including the majority that carry no coord-card config at all.
+            // That is the silent-LEG class (DL-251 stage 10), whose members answered nothing
+            // while their siblings answered; this arm has no answering sibling.
             // DL-204 MIRROR: the other silent-inert direction. Gate 2 on but gate 1 off —
             // the handler-side gate is on, but the classifier never emits a move to hand
             // it. This is the DL-204 adoption path ("set the terminal, no flag needed")
@@ -203,6 +206,37 @@ final class WritebackMappingConfigCheck implements Check
                 yield Finding::unvalidated("writeback: could NOT determine whether any agent enables the coord-card-move family on github:{$repo} — ".$ctx->agentScopeCoverage->gapClause($scope).'. This mapping has coord_card_terminal_stage_id set (the move leg is on), so if none does, the leg cannot fire. Fix the error(s) above and re-run.');
             } elseif ($mapping->moveCoordCards && ! isset($ctx->coordCardMoveScopes[$scope])) {
                 yield Finding::warn("writeback: github:{$repo} has coord_card_terminal_stage_id set (the move leg is on — explicitly or by the DL-204 default) but no agent enables the coord-card-move family on that scope — the leg cannot fire (nothing classifies issues.closed/reopened into a move). Add coord-card-move to the serving agent's classifier.config.families, or remove coord_card_terminal_stage_id to disable the move leg.");
+            }
+            // card#8292: the DL-204 mirror one family EARLIER — `create_coord_cards` set
+            // (gate 2) while no agent enables coord-card-create (gate 1). The classifier
+            // dispatches on the family before it ever reads the mapping, so this install
+            // classifies nothing: issues.opened/reopened are delivered, the create family
+            // never runs, and no coordination issue on the repo is carded in real time.
+            //
+            // ⚠ A `warn`, WHERE ITS TWO NEIGHBOURS ARE `ok`, AND THE DIFFERENCE IS THE WHOLE
+            // POINT — read this before copying either shape. card#8290's lane-model line
+            // below and the card#7348 / DL-305 line at the end of the loop are `ok` because
+            // NOTHING THE OPERATOR CONFIGURED IS DEAD there: a lane model with no relane
+            // family is a valid, fully-firing install that merely cannot learn from its own
+            // `writeback.json` that a second opt-in family exists. Here a leg the operator
+            // explicitly turned on is INERT, which is exactly the condition this check's
+            // WARNING family is defined by (see the class docblock), so a warn accuses
+            // nothing correct. The severity follows the deadness of the leg, never the
+            // interestingness of the fact.
+            //
+            // NOT gated on `issue_population`: both populations are carded by this family
+            // and by nothing else in the bridge, so the leg is equally dead under either.
+            if ($mapping->createCoordCards && ! isset($ctx->coordCardCreateScopes[$scope])) {
+                // card#5698, and the same limb as the DL-204 mirror above: "no agent enables
+                // the family" IS the accusation, so an agent this run never finished reading
+                // is indistinguishable from an absent one and the operator would be sent to
+                // edit a families list that may already be correct in the config that failed
+                // to load. A disclosure, therefore, and deliberately carrying no remediation.
+                if ($ctx->agentScopeCoverage->mayCover($scope)) {
+                    yield Finding::unvalidated("writeback: could NOT determine whether any agent enables the coord-card-create family on github:{$repo} — ".$ctx->agentScopeCoverage->gapClause($scope).'. This mapping sets create_coord_cards, so if none does, no coordination issue on this repo is ever carded in real time. Fix the error(s) above and re-run.');
+                } else {
+                    yield Finding::warn("writeback: github:{$repo} sets create_coord_cards but no agent enables the coord-card-create family on that scope — the real-time coordination issue → card create (DL-198) is INERT: issues.opened/reopened arrive, nothing is classified and no card is ever created. Where a periodic reconcile runs it still backstops the PREFIXED set (not in real time), and under issue_population=all the non-prefixed set is carded by nothing at all. Add coord-card-create to the serving agent's classifier.config.families, or remove create_coord_cards from the mapping if the create leg is not wanted. See docs/writeback.md § Optional: real-time coordination issue → card (DL-198).");
+                }
             }
             // card#6393: the coord-card-relane family's silent-inert shape, the DL-204 pair
             // above one family over. The relane leg needs gate 1 (the family) AND BOTH keys
