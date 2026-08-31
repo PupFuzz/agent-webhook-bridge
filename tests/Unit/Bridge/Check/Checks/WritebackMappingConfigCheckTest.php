@@ -367,7 +367,92 @@ class WritebackMappingConfigCheckTest extends TestCase
         $this->assertStringNotContainsString('closing form', $this->joined($findings));
     }
 
+    // ---- card#8290: the lane model whose post-birth race no family closes ----
+
+    public function test_a_lane_model_with_no_relane_family_names_the_race_nothing_closes(): void
+    {
+        $findings = $this->findings($this->laneMapping(), families: ['coord-card-move']);
+
+        // ⛔ NOT A WARNING, and that is the whole ruling this leg carries: the install is
+        // correctly configured and every leg it configured fires. What it cannot know from
+        // its own `writeback.json` is that a SECOND family exists which closes a race the
+        // lane model leaves open — the card#7348 / DL-305 shape, hence that shape's severity.
+        $this->assertSame([], $this->warnings($findings), 'a lane model without the relane family is a VALID config — no leg may accuse it');
+        $this->assertCount(2, $findings, 'the advisory, plus the DL-305 line that witnesses the loop ran to the end');
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $message = $findings[0]['message'];
+        // Both halves the operator has to reconcile, spelled the way their own files spell them.
+        $this->assertStringContainsString('coord_card_lane_stage_ids', $message);
+        $this->assertStringContainsString('coord-card-relane', $message);
+        $this->assertStringContainsString('classifier.config.families', $message);
+        // The MECHANISM, which is what makes this a diagnosis rather than a feature advert.
+        $this->assertStringContainsString('never when a `stage:*` label arrives afterwards', $message);
+        // The remediation string is a doc surface, so the section it sends the operator to is
+        // asserted by CONTENT — a leg that names no section sends them to a 700-line file.
+        $this->assertStringContainsString('docs/writeback.md § Following a label added after the card exists', $message);
+        // `move_coord_cards` is already on here, so the line must NOT ask for it.
+        $this->assertStringNotContainsString('move_coord_cards', $message);
+    }
+
+    public function test_a_fully_adopted_lane_model_is_told_nothing_about_the_relane_family(): void
+    {
+        // THE CONTROL, and the measurement the card#6393 decline turned on: the SAME mapping
+        // with the family enabled must draw no line at all. A leg that fired here would be
+        // the "warns on every lane-model install" that decline refused.
+        $findings = $this->findings($this->laneMapping(), families: ['coord-card-move', 'coord-card-relane']);
+
+        $this->assertCount(1, $findings, 'only the DL-305 witness — the advisory must be silent on a fully adopted install');
+        $this->assertStringContainsString('moves a card on MERGE only when', $findings[0]['message']);
+        $this->assertStringNotContainsString('coord-card-relane', $this->joined($findings));
+    }
+
+    public function test_a_create_only_lane_model_is_told_the_relane_family_needs_move_coord_cards_too(): void
+    {
+        // DL-294 makes `coord_card_lane_stage_ids` valid with the CREATE family alone, and
+        // the relane family additionally requires `move_coord_cards` — so on this shape the
+        // advisory is not one families-list entry away, and saying otherwise would send the
+        // operator to a config that still classifies nothing.
+        $findings = $this->findings($this->laneMapping(move: false));
+
+        $this->assertSame([], $this->warnings($findings));
+        $this->assertSame(Severity::Ok, $findings[0]['severity']);
+        $this->assertStringContainsString('and set move_coord_cards', $findings[0]['message']);
+    }
+
+    public function test_an_unread_agent_makes_the_relane_advisory_a_disclosure_not_a_claim(): void
+    {
+        // card#5698: the leg asserts that NO agent enables the family, and an agent this run
+        // never finished reading is indistinguishable from an absent one — so the advisory
+        // would tell an operator to adopt a family they may already run.
+        $findings = $this->findings($this->laneMapping(), families: ['coord-card-move'], unreadAgent: 'prod-agent');
+
+        $this->assertSame(Severity::Unvalidated, $findings[0]['severity']);
+        $this->assertStringContainsString('could NOT determine whether any agent enables the coord-card-relane family', $findings[0]['message']);
+        $this->assertStringContainsString('agent prod-agent was not read to completion this run', $findings[0]['message']);
+        // A disclosure, not a remediation: it must not send anyone to edit a families list
+        // whose real content this run could not read.
+        $this->assertStringNotContainsString('classifier.config.families', $findings[0]['message']);
+    }
+
     // ---- helpers ----
+
+    /**
+     * A lane-model coord-card mapping (card#8290). The merge stage is deliberate: the DL-305
+     * `ok` line it produces is the WITNESS that the mapping loop ran to the end, which is
+     * what the silence assertions above are measured against.
+     */
+    private function laneMapping(bool $move = true): WritebackMapping
+    {
+        return new WritebackMapping(
+            boardId: self::BOARD,
+            stages: ['merged' => 52],
+            createCoordCards: true,
+            coordCardStageId: 21,
+            moveCoordCards: $move,
+            coordCardTerminalStageId: $move ? 53 : null,
+            coordCardLaneStageIds: ['now' => 40, 'next' => 41, 'later' => 42, 'maybe' => 43],
+        );
+    }
 
     /**
      * A coord-card mapping in the requested population. `move_coord_cards` stays off so
@@ -490,13 +575,29 @@ class WritebackMappingConfigCheckTest extends TestCase
         return new WritebackMapping(8, ['merged' => 52]);
     }
 
-    /** @return list<array{severity: Severity, message: string}> */
-    private function findings(WritebackMapping $mapping, bool $emitting = true): array
+    /**
+     * @param  list<string>  $families  the coord-card families some agent enables on this
+     *                                  scope — the two `CheckContext` maps `CheckCommand`'s
+     *                                  per-agent loop fills from `classifier.config.families`
+     * @param  ?string  $unreadAgent  an agent whose config never reached those maps, so a
+     *                                negative taken from them is not evidence (card#5698)
+     * @return list<array{severity: Severity, message: string}>
+     */
+    private function findings(WritebackMapping $mapping, bool $emitting = true, array $families = [], ?string $unreadAgent = null): array
     {
         $ctx = new CheckContext;
         $ctx->writeback = new WritebackConfig(7, [self::REPO => $mapping]);
         if ($emitting) {
             $ctx->writebackEmittingScopes = [self::REPO => true];
+        }
+        if (in_array('coord-card-move', $families, true)) {
+            $ctx->coordCardMoveScopes = [self::REPO => true];
+        }
+        if (in_array('coord-card-relane', $families, true)) {
+            $ctx->coordCardRelaneScopes = [self::REPO => true];
+        }
+        if ($unreadAgent !== null) {
+            $ctx->agentScopeCoverage->recordUnread($unreadAgent, [self::REPO]);
         }
 
         return array_map(

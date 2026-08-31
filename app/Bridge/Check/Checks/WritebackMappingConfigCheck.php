@@ -20,12 +20,16 @@ use App\Bridge\Writeback\WritebackMapping;
  * probe plane and why they matter most: every condition there makes some writeback leg
  * silently INERT, and an inert leg produces no error, no retry, and no card movement.
  *
- * ONE LEG IS NOT OF THAT FAMILY and is here deliberately (card#7348 / DL-305): the
- * mention-vs-closure `ok` line speaks about a mapping that is entirely correct. It sits
- * with the others because this is the check that walks the mappings at setup time, and
- * because what it reports — that a merge move now needs an explicit closing form — is a
- * property of the CODE the operator is running, which their `writeback.json` cannot tell
- * them however carefully they read it. Its own comment at the site carries the rest.
+ * TWO LEGS ARE NOT OF THAT FAMILY and are here deliberately — the mention-vs-closure line
+ * (card#7348 / DL-305) and the lane-model-without-the-relane-family line (card#8290). Both
+ * speak about a mapping that is entirely CORRECT, both are `ok` rather than `warn` for that
+ * reason, and both sit with the others because this is the check that walks the mappings at
+ * setup time and because what they report — that a merge move now needs an explicit closing
+ * form; that a second, opt-in family exists which closes a race the lane model leaves open —
+ * is a property of the CODE the operator is running, which their `writeback.json` cannot
+ * tell them however carefully they read it. Their own comments at the sites carry the rest.
+ * ⛔ A THIRD SUCH LEG IS NOT AUTOMATICALLY WELCOME: what earns the severity is that the fact
+ * is unobtainable from the operator's own config, not that it is interesting.
  *
  * ONE CHECK, NOT ONE PER LEG, BECAUSE OUTPUT ORDER IS THE CONTRACT. The inline code
  * iterates mappings on the OUTSIDE and legs on the inside, so a per-leg decomposition
@@ -221,21 +225,47 @@ final class WritebackMappingConfigCheck implements Check
                     yield Finding::warn("writeback: github:{$repo} enables the coord-card-relane family but its writeback mapping has no ".implode(' / ', $missingRelane).' — the label-driven coord-card re-lane (card#6393) is INERT: issues.labeled arrives, nothing is classified and no card moves. Set '.implode(' and ', $missingRelane).' (a relane needs both the permission to move a coord card and a lane model to move it into), or remove coord-card-relane from classifier.config.families if the relane leg is not wanted.');
                 }
             }
-            // NO card#5698 DISCLOSURE, and NO MIRROR ARM, for the leg above — both omissions
-            // are rulings. The disclosure: it is family-scoped exactly like the DL-204 arm it
-            // mirrors, so an absent scope asserts nothing and an unread agent costs it no
-            // false claim — the DL-204 arm's own no-disclosure ruling above owns that
-            // reasoning and this arm inherits it unchanged. The mirror:
-            // the DL-204 pair has a second direction because `coord_card_terminal_stage_id`
-            // means the move leg and nothing else, so setting it declares an intent the
-            // missing family contradicts. Nothing here carries that meaning —
-            // `coord_card_lane_stage_ids` is read by every coord-card write (create since
-            // card#6371, revive and relane since card#6393) and, since DL-294, is accepted
-            // by EITHER family, so it declares no family in particular — a lane
-            // model without the relane family is the normal, intended shape of every
-            // lane-model install. A "lane ids set but no relane family" warn would fire on
-            // all of them, including the reference install, for a family that is opt-in by
-            // design.
+            // NO card#5698 DISCLOSURE for the leg above, and that omission is a ruling: it is
+            // family-scoped exactly like the DL-204 arm it mirrors, so an absent scope asserts
+            // nothing and an unread agent costs it no false claim — the DL-204 arm's own
+            // no-disclosure ruling above owns that reasoning and this arm inherits it unchanged.
+            //
+            // card#8290: THE OTHER DIRECTION — a lane model, and no family to close the race it
+            // leaves open. It was declined on card#6393 as a WARN, and THAT HALF OF THE DECLINE
+            // STANDS: `coord_card_lane_stage_ids` is read by every coord-card write (create
+            // since card#6371, revive and relane since card#6393) and, since DL-294, is accepted
+            // with EITHER family, so it declares no family in particular. Nothing here is inert —
+            // every leg this operator configured fires — and every warning in this check means
+            // "something you configured cannot fire", so a warn would accuse a correct config
+            // and would do it on every lane-model install, the reference one included.
+            //
+            // WHAT THE DECLINE WEIGHED WAS THE COST OF THE NOISE; WHAT IT DID NOT WEIGH IS THE
+            // COST OF THE SILENCE, and that one has since been measured on a peer install: an
+            // operator ran the birth half for weeks, watched coord cards keep landing in the
+            // wrong lane, diagnosed it as a missing mechanism and wrote a fix proposal — for a
+            // family this bridge had already shipped and released. Nothing in their own config
+            // could tell them it existed. That is the card#7348 / DL-305 shape exactly (a
+            // property of the CODE they are running which their `writeback.json` cannot state),
+            // so it gets that shape's severity rather than its own: a green setup-time line that
+            // names the race, what closes it, and what closing it costs — never a verdict on a
+            // config that is allowed to stay exactly as it is.
+            if ($mapping->coordCardLaneStageIds !== null && ! isset($ctx->coordCardRelaneScopes[$scope])) {
+                // The absence of the family is the whole predicate, so an agent this run never
+                // read makes the claim unavailable rather than merely doubtful — corollary (A):
+                // an `ok` may disclose what its measurement IMPLIES, never that the measurement
+                // may not have happened.
+                if ($ctx->agentScopeCoverage->mayCover($scope)) {
+                    yield Finding::unvalidated("writeback: could NOT determine whether any agent enables the coord-card-relane family on github:{$repo} — ".$ctx->agentScopeCoverage->gapClause($scope).'. This mapping sets coord_card_lane_stage_ids, so if none does, a `stage:*` label added after a coord card exists moves nothing. Fix the error(s) above and re-run.');
+                } else {
+                    // `move_coord_cards` is named ONLY when it is actually missing: the relane
+                    // family additionally requires it, so on a create-only lane model (valid
+                    // since DL-294) the family alone would still classify nothing, and a line
+                    // that asked only for the family would send the operator to a config that
+                    // stays silent.
+                    $alsoNeeded = $mapping->moveCoordCards ? '' : ' and set move_coord_cards (a relane IS the bridge moving a coord card, and the family classifies nothing without it)';
+                    yield Finding::ok("writeback: github:{$repo} has a lane model (coord_card_lane_stage_ids) but no agent enables the coord-card-relane family on that scope — the lane a coord card sits in is written when the card is CREATED and on a revive, never when a `stage:*` label arrives afterwards. A `[TASK]` labelled after its card exists therefore keeps the lane it was created in (`later` for an issue opened with no lane label), and on an install whose consumer writes a card's lane back onto the issue as a `stage:*` label, the label the operator just set is converged BACK to that lane — the sequencing ruling silently overwritten. Closing that race is the opt-in coord-card-relane family: add it to the serving agent's classifier.config.families".$alsoNeeded.'. Leaving it off stays a valid choice — it is the only family that reacts to a label edit, and issues.labeled is a high-volume action — but it is a choice this mapping cannot show you, which is why this line exists. See docs/writeback.md § Following a label added after the card exists.');
+                }
+            }
             // DL-207: promote-on-release health. WritebackConfig::load already fails
             // closed on a missing shipped/released stage, so this catches the two
             // silent-inert shapes load cannot: both stages mapped to ONE column (the
