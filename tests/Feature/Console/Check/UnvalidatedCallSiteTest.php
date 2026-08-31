@@ -113,20 +113,21 @@ class UnvalidatedCallSiteTest extends TestCase
         // doubt is about what a measured `instanceof` implies, not about whether it ran.
         'app/Bridge/Check/Checks/EventFollowsConsumerCheck.php' => 4,
         // The cross-config compares whose comparand did not resolve (DL-251 (c)), plus the
-        // card#5698 legs below. THE THREE NEW SITES ARE ONE SHAPE, NOT THREE DECISIONS:
+        // card#5698 legs below. THE SCOPE-MAP SITES ARE ONE SHAPE, NOT ONE DECISION EACH:
         // each reads a `CheckContext` scope map that an aborted agent never reached, so its
         // NEGATIVE is not evidence — limb (c) of the rule, with the unresolved comparand
         // being the run's own agent roster rather than a foreign config.
         //   WritebackBoardStateCheck:  the coord-terminal preflight's family gate.
         //   WritebackMappingConfigCheck: the orphaned mapping, the terminal-set-but-
-        //     family-off mirror, and (card#8290) the lane-model-without-the-relane-family
-        //     advisory — whose whole predicate is that no agent enables that family, so an
-        //     unread agent leaves it with nothing to say. It is the FIRST site here whose
-        //     answered arm is an `ok` rather than a warn, and that is the reason it needs a
+        //     family-off mirror, (card#8290) the lane-model-without-the-relane-family
+        //     advisory, and (card#8292) the create_coord_cards-without-the-create-family
+        //     warn. Every one of them ACCUSES an absence of agents, so an unread agent
+        //     leaves it with nothing to say. The card#8290 one is the only site here whose
+        //     answered arm is an `ok` rather than a warn, and that is the reason IT needs a
         //     site at all: corollary (A) forbids a green line disclosing its own blindness,
-        //     so the disclosure has to BE the finding. A FOURTH map-fed arm (family-on,
-        //     terminal missing) reads the same map and deliberately has NO site here — see
-        //     its comment for why the one arm that asserts nothing gets no disclosure.
+        //     so the disclosure has to BE the finding. A map-fed arm that ASSERTS NOTHING on
+        //     an absent scope (family-on, terminal missing) reads the same map and
+        //     deliberately has NO site here — see its comment for why.
         // PLUS the card#5698 idList() slice's three sites — again ONE shape, not three
         // decisions, and a DIFFERENT shape from the scope-map ones above. Each reads a
         // kanban collection whose ABSENCE the parser used to render as an empty list, so
@@ -140,7 +141,7 @@ class UnvalidatedCallSiteTest extends TestCase
         // here and must not be: it stays `fail`, because an unverifiable board could
         // silently double-card. Only its message stopped over-claiming.
         'app/Bridge/Check/Checks/WritebackBoardStateCheck.php' => 10,
-        'app/Bridge/Check/Checks/WritebackMappingConfigCheck.php' => 6,
+        'app/Bridge/Check/Checks/WritebackMappingConfigCheck.php' => 7,
         // Board / cache / channel reads that did not complete (DL-251 (a)). The THIRD site on
         // the source-coverage leg is card#5701 / DL-258 and is a different limb from its two
         // neighbours: they are reads that FAILED (a throw, a page ceiling), while this one

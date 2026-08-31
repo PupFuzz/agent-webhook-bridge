@@ -4,14 +4,14 @@ namespace App\Bridge\Check;
 
 /**
  * Which agents this run never finished reading — the fact that decides whether a
- * scope-keyed NEGATIVE taken from {@see CheckContext}'s four scope maps is evidence
+ * scope-keyed NEGATIVE taken from {@see CheckContext}'s five scope maps is evidence
  * (card#5698).
  *
  * THE DEFECT THIS EXISTS TO REMOVE. `CheckCommand`'s per-agent loop aborts an agent in two
  * places — its YAML did not parse, or its classifier did not resolve — and BOTH `continue`
  * before the agent's subscriptions reach {@see CheckContext::$writebackEmittingScopes},
- * {@see CheckContext::$coordCardMoveScopes}, {@see CheckContext::$coordCardRelaneScopes}
- * or {@see CheckContext::$githubScopeConsumers}.
+ * {@see CheckContext::$coordCardCreateScopes}, {@see CheckContext::$coordCardMoveScopes},
+ * {@see CheckContext::$coordCardRelaneScopes} or {@see CheckContext::$githubScopeConsumers}.
  * Every consumer of those maps then reads "this scope is absent" as "the operator did not
  * enable it" and prints a confident config accusation — telling the operator to add an
  * agent when the agent exists and a line further up already named the real fault. The maps
@@ -88,7 +88,7 @@ final class AgentScopeCoverage
     }
 
     /**
-     * Is a NEGATIVE about $scope taken from one of the three scope maps unproven?
+     * Is a NEGATIVE about $scope taken from one of the scope maps unproven?
      *
      * The question every consumer asks, and the reason none of them index `unread`
      * themselves: an absent scope is evidence only when nothing unread could have supplied

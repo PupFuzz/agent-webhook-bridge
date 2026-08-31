@@ -220,7 +220,7 @@ class CheckCommand extends BridgeCommand
                 }
 
                 // Every SPELLING this agent subscribed a github scope with (card#7124
-                // review). UNCONDITIONAL — unlike the three maps below, which are gated on
+                // review). UNCONDITIONAL — unlike the four maps below, which are gated on
                 // a classifier or a family: the dispatcher's exact-spelling match is
                 // classifier-independent, so the leg that reports a spelling split must not
                 // inherit a gate that would silence it on the very install it is for.
@@ -240,6 +240,18 @@ class CheckCommand extends BridgeCommand
                     foreach ($cfg->subscriptions as $sub) {
                         if ($sub->provider === 'github') {
                             $ctx->writebackEmittingScopes[CheckContext::canonicalScope($sub->scopeId)] = true;
+                        }
+                    }
+                }
+
+                // card#8292: record scopes whose agent enables the coord-card-create family —
+                // gate 1 of the DL-198 real-time card create, and the same raw-config
+                // membership test is the resolved answer for the same reason as its two
+                // siblings below (it is never a default either).
+                if (in_array('coord-card-create', $cfg->classifierConfig->strings('families'), true)) {
+                    foreach ($cfg->subscriptions as $sub) {
+                        if ($sub->provider === 'github') {
+                            $ctx->coordCardCreateScopes[CheckContext::canonicalScope($sub->scopeId)] = true;
                         }
                     }
                 }
