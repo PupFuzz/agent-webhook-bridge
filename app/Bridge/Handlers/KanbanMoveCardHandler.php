@@ -37,7 +37,9 @@ use Throwable;
  *  - TRANSIENT / operator-fixable (missing-or-insecure writeback token, a
  *    kanban API error) → THROW → 5xx → redelivery retries once it's fixed.
  *  - PERMANENT / refused (writeback off, no repo mapping, no stage for the
- *    outcome, the card is NOT on the mapped board, an uncorroborated title-only
+ *    outcome, the card is NOT on the mapped board, the card is PINNED against
+ *    auto-movement on an outcome that is not one of the two operator-ruled overrides
+ *    (DL-178, card#8289 — see the consult in handle()), an uncorroborated title-only
  *    `card#` names a card that already tracks a different PR, or the subject carried
  *    an unreadable card-shaped token naming some other card — DL-287) → alert + log + NO-OP.
  *    These can never succeed, so 5xx-retrying would storm; the dispatch acks (a refused
@@ -286,6 +288,70 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             return;   // idempotent: already in the target stage
         }
 
+        // Auto-unpark (DL-194): from an `unpark_from_stages` stage a branch-cut is an
+        // unambiguous "work has begun" signal, so a `started` move promotes a pinned
+        // card anyway (a compensating alert fires after the move). Computed HERE rather
+        // than inside the `started` block below because it is one of the two exceptions
+        // the pin consult takes — a pure read of the card already in hand, no request.
+        $unparkStages = $mapping->unparkFromStages ?? [];
+        $current = $card['workflow_stage_id'] ?? null;
+        $isUnpark = $outcome === 'started' && in_array($current, $unparkStages, true);
+
+        // Won't-Do-revival (DL-195): a `reopened` PR whose card CURRENTLY sits in the
+        // mapped `closed_unmerged` (abandon) stage is revived to the `opened` (In-Review)
+        // stage — the backward move the DL-163 guard below otherwise refuses. Detected
+        // here so the post-move alert can fire; the guard carve-out is in isRegressiveMove.
+        // Terminal-safe by construction: a Shipped/Released card is never in the abandon
+        // stage (and GitHub can't reopen a merged PR). `reopened` reaches the handler only
+        // when the mapping opted in (the classifier emits `opened` otherwise), so revive-off
+        // is byte-identical. Anywhere else, a `reopened` move behaves exactly like `opened`.
+        $isRevive = false;
+        if ($outcome === 'reopened') {
+            $abandon = $mapping->stageFor('closed_unmerged');
+            $isRevive = is_int($current) && $abandon !== null && $current === $abandon;
+        }
+
+        // Pinned-card opt-out (cross-mover contract, agent-board-framework PR #113 /
+        // DL-178): never auto-move a card a human has parked — a non-empty block_reason
+        // OR a `no-automove` tag. ON EVERY OUTCOME (card#8289): this consult used to sit
+        // INSIDE the `started` block below, so a merge PATCHed a pinned card to the
+        // shipped stage while `bridge:reconcile` (unconditional, all outcomes) and the
+        // release-promote sweep both skipped it — the backstop could not even repair what
+        // the event path had done. The predicate is a property of the CARD, not of the
+        // event, so it is consulted once for all six outcomes the handler can receive
+        // (`started` / `opened` / `merged` / `merged_to_main` / `closed_unmerged`, plus
+        // the handler-internal `reopened`). `closed_unmerged` is included deliberately:
+        // it is the lone legitimately-backward outcome, and a hold holds in both
+        // directions — a pin that blocked forward moves only would be this same defect
+        // one layer down.
+        //
+        // TWO exceptions, both operator-ruled, both alerting after the move they
+        // override: the DL-194 unpark and the DL-195 revive (DL-195 alternative (b),
+        // "respect the pin (refuse + alert)", was REJECTED by the operator in favour of
+        // override+alert — a reopen is a "work resumed" signal). A non-revival `reopened`
+        // is forward-only like `opened` and is held like one.
+        //
+        // The pin governs the card's STAGE, not its correlation refs, so the refusal
+        // STAMPS and returns rather than returning bare. `bridge:reconcile` reconciles
+        // only a card carrying a resolvable (repo, PR); dropping the stamp too would put
+        // the pinned card outside that population, and since GitHub delivers each PR
+        // event exactly once the backstop could never repair the move after the human
+        // lifted the pin — the hold would be a severance, not a pause. This is the one
+        // refusal here that stamps, and it is the one whose reason casts no doubt on
+        // WHICH card the event is about (contrast the DL-270 arm above, which must set no
+        // field at all precisely because card identity is what is in question).
+        // Loud so a refused move stays visible.
+        if (PinGuard::isPinned($card) && ! $isUnpark && ! $isRevive) {
+            $this->alerts->warnAndNotify(
+                "kanban_move_card: {$outcome} move refused — card is pinned (block_reason/no-automove)",
+                ['card_id' => $cardId, 'repo' => $repo, 'current_stage' => $current],
+                $repo, $outcome, $cardId, 'pinned_no_automove',
+            );
+            $this->stampCorrelationRefs($card, $mapping, $payload, $cardId, $client, $repo, $outcome);
+
+            return;
+        }
+
         // No-stage-regression guard for the branch-create `started` outcome
         // (DL-160). A `started` move must only PROMOTE a card from the board's
         // Backlog/Prioritized stages — never drag an already-progressed
@@ -294,29 +360,7 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // allowed source stages are operator config (`started_from_stages`); with
         // none set we can't know what's safe to promote from, so we refuse
         // (fail-closed, mirroring the DL-026 "don't silently do the wrong thing").
-        $isUnpark = false;
         if ($outcome === 'started') {
-            $current = $card['workflow_stage_id'] ?? null;
-            $unparkStages = $mapping->unparkFromStages ?? [];
-            $isUnpark = in_array($current, $unparkStages, true);
-
-            // Pinned-card opt-out (cross-mover contract, agent-board-framework
-            // PR #113 / DL-178): never auto-move a card a human has parked — a
-            // non-empty block_reason OR a `no-automove` tag. REVERSED for the opt-in
-            // `unpark_from_stages` (DL-194): from an unpark stage a branch-cut is an
-            // unambiguous "work has begun" override, so a pinned card IS promoted
-            // (and a compensating alert is emitted after the move). Everywhere else
-            // DL-178 is byte-identical. Loud so a refused promotion stays visible.
-            if (PinGuard::isPinned($card) && ! $isUnpark) {
-                $this->alerts->warnAndNotify(
-                    'kanban_move_card: started move refused — card is pinned (block_reason/no-automove)',
-                    ['card_id' => $cardId, 'repo' => $repo, 'current_stage' => $current],
-                    $repo, $outcome, $cardId, 'pinned_no_automove',
-                );
-
-                return;
-            }
-
             // The promote-from set is the union of the (refuse-if-pinned) started
             // stages and the (move-if-pinned) unpark stages — both null-coalesced to
             // []. Both absent ⇒ [] ⇒ refuse (DL-160 fail-closed preserved).
@@ -329,21 +373,6 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
                 return;
             }
-        }
-
-        // Won't-Do-revival (DL-195): a `reopened` PR whose card CURRENTLY sits in the
-        // mapped `closed_unmerged` (abandon) stage is revived to the `opened` (In-Review)
-        // stage — the backward move the DL-163 guard below otherwise refuses. Detected
-        // here so the post-move alert can fire; the guard carve-out is in isRegressiveMove.
-        // Terminal-safe by construction: a Shipped/Released card is never in the abandon
-        // stage (and GitHub can't reopen a merged PR). `reopened` reaches the handler only
-        // when the mapping opted in (the classifier emits `opened` otherwise), so revive-off
-        // is byte-identical. Anywhere else, a `reopened` move behaves exactly like `opened`.
-        $isRevive = false;
-        if ($outcome === 'reopened') {
-            $current = $card['workflow_stage_id'] ?? null;
-            $abandon = $mapping->stageFor('closed_unmerged');
-            $isRevive = is_int($current) && $abandon !== null && $current === $abandon;
         }
 
         // No-regression guard for the four PR-driven outcomes (#2935), generalizing
@@ -360,7 +389,6 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // Fail-open: when the order can't be read (preload down, or a stage not on the
         // board) the move proceeds as it did pre-guard.
         if (in_array($outcome, ['opened', 'merged', 'merged_to_main', 'closed_unmerged', 'reopened'], true)) {
-            $current = $card['workflow_stage_id'] ?? null;
             if (is_int($current) && $this->isRegressiveMove($outcome, $current, $stageId, $mapping, $client)) {
                 Log::info('kanban_move_card: move skipped — would regress the card to an earlier stage (no regression)', [
                     'card_id' => $cardId, 'repo' => $repo, 'outcome' => $outcome, 'current_stage' => $current, 'target_stage' => $stageId,
