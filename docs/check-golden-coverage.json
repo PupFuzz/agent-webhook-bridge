@@ -49,7 +49,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L142",
@@ -94,7 +95,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L146",
@@ -137,7 +139,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L152",
@@ -180,7 +183,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L156",
@@ -223,7 +227,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L162",
@@ -268,7 +273,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L180",
@@ -319,7 +325,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "foreach-L181",
@@ -370,7 +377,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L205",
@@ -419,7 +427,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "foreach-L212",
@@ -429,7 +438,8 @@
         "end": 11112,
         "source": "$cfg->subscriptions",
         "status": "UNOBSERVED",
-        "failing": []
+        "failing": [],
+        "errors": 0
     },
     {
         "id": "if-L213",
@@ -439,7 +449,8 @@
         "end": 11179,
         "source": "$sub->provider === 'github'",
         "status": "UNOBSERVED",
-        "failing": []
+        "failing": [],
+        "errors": 0
     },
     {
         "id": "foreach-L227",
@@ -449,7 +460,8 @@
         "end": 11917,
         "source": "$cfg->subscriptions",
         "status": "UNOBSERVED",
-        "failing": []
+        "failing": [],
+        "errors": 0
     },
     {
         "id": "if-L228",
@@ -459,7 +471,8 @@
         "end": 11980,
         "source": "$sub->provider === 'github'",
         "status": "UNOBSERVED",
-        "failing": []
+        "failing": [],
+        "errors": 0
     },
     {
         "id": "if-L239",
@@ -475,7 +488,8 @@
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
             "writeback-swimlane-collection-absent"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "foreach-L240",
@@ -491,7 +505,8 @@
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
             "writeback-swimlane-collection-absent"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L241",
@@ -507,7 +522,8 @@
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
             "writeback-swimlane-collection-absent"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L251",
@@ -523,7 +539,8 @@
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
             "writeback-swimlane-collection-absent"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "foreach-L252",
@@ -539,7 +556,8 @@
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
             "writeback-swimlane-collection-absent"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L253",
@@ -555,7 +573,8 @@
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
             "writeback-swimlane-collection-absent"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L263",
@@ -571,7 +590,8 @@
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
             "writeback-swimlane-collection-absent"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "foreach-L264",
@@ -581,7 +601,8 @@
         "end": 14233,
         "source": "$cfg->subscriptions",
         "status": "UNOBSERVED",
-        "failing": []
+        "failing": [],
+        "errors": 0
     },
     {
         "id": "if-L265",
@@ -591,7 +612,8 @@
         "end": 14300,
         "source": "$sub->provider === 'github'",
         "status": "UNOBSERVED",
-        "failing": []
+        "failing": [],
+        "errors": 0
     },
     {
         "id": "if-L294",
@@ -604,7 +626,8 @@
         "failing": [
             "event-consumer-unconsumed-type",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L314",
@@ -647,7 +670,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "foreach-L318",
@@ -660,7 +684,8 @@
         "failing": [
             "event-consumer-unconsumed-type",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L319",
@@ -673,7 +698,8 @@
         "failing": [
             "event-consumer-unconsumed-type",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L337",
@@ -716,7 +742,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L386",
@@ -728,7 +755,8 @@
         "status": "observed",
         "failing": [
             "shared-identities-present"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L389",
@@ -738,7 +766,8 @@
         "end": 22303,
         "source": "$configs !== []",
         "status": "UNOBSERVED",
-        "failing": []
+        "failing": [],
+        "errors": 0
     },
     {
         "id": "if-L400",
@@ -781,7 +810,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L408",
@@ -833,7 +863,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L414",
@@ -851,7 +882,8 @@
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
             "writeback-swimlane-collection-absent"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L426",
@@ -871,7 +903,8 @@
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
             "writeback-swimlane-collection-absent"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L429",
@@ -887,7 +920,8 @@
             "writeback-move-leg-coord-config-agrees",
             "writeback-board-unreadable",
             "writeback-swimlane-collection-absent"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L501",
@@ -930,7 +964,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L522",
@@ -973,7 +1008,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L526",
@@ -1025,7 +1061,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L534",
@@ -1042,7 +1079,8 @@
             "board-tools-client-half-ssh-proven",
             "board-tools-ssh-default-transport-advisory",
             "board-tools-ssh-live-probe"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L559",
@@ -1059,7 +1097,8 @@
             "board-tools-client-half-ssh-proven",
             "board-tools-ssh-default-transport-advisory",
             "board-tools-ssh-live-probe"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "foreach-L560",
@@ -1076,7 +1115,8 @@
             "board-tools-client-half-ssh-proven",
             "board-tools-ssh-default-transport-advisory",
             "board-tools-ssh-live-probe"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L561",
@@ -1093,7 +1133,8 @@
             "board-tools-client-half-ssh-proven",
             "board-tools-ssh-default-transport-advisory",
             "board-tools-ssh-live-probe"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "foreach-L578",
@@ -1110,7 +1151,8 @@
             "board-tools-client-half-ssh-proven",
             "board-tools-ssh-default-transport-advisory",
             "board-tools-ssh-live-probe"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L579",
@@ -1127,7 +1169,8 @@
             "board-tools-client-half-ssh-proven",
             "board-tools-ssh-default-transport-advisory",
             "board-tools-ssh-live-probe"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L607",
@@ -1140,7 +1183,8 @@
         "failing": [
             "board-tools-http-enabled",
             "board-tools-client-half-wired"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "foreach-L614",
@@ -1155,7 +1199,8 @@
             "board-tools-client-half-ssh-proven",
             "board-tools-ssh-default-transport-advisory",
             "board-tools-ssh-live-probe"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "foreach-L621",
@@ -1167,7 +1212,8 @@
         "status": "observed",
         "failing": [
             "board-tools-ssh-default-transport-advisory"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L622",
@@ -1179,7 +1225,8 @@
         "status": "observed",
         "failing": [
             "board-tools-ssh-default-transport-advisory"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "foreach-L625",
@@ -1191,7 +1238,8 @@
         "status": "observed",
         "failing": [
             "board-tools-ssh-default-transport-advisory"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L626",
@@ -1203,7 +1251,8 @@
         "status": "observed",
         "failing": [
             "board-tools-ssh-default-transport-advisory"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L631",
@@ -1218,7 +1267,8 @@
             "board-tools-client-half-ssh-proven",
             "board-tools-ssh-default-transport-advisory",
             "board-tools-ssh-live-probe"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "foreach-L640",
@@ -1233,7 +1283,8 @@
             "board-tools-client-half-ssh-proven",
             "board-tools-ssh-default-transport-advisory",
             "board-tools-ssh-live-probe"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L641",
@@ -1248,7 +1299,8 @@
             "board-tools-client-half-ssh-proven",
             "board-tools-ssh-default-transport-advisory",
             "board-tools-ssh-live-probe"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L666",
@@ -1291,7 +1343,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L675",
@@ -1334,7 +1387,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L687",
@@ -1386,7 +1440,8 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     },
     {
         "id": "if-L742",
@@ -1438,6 +1493,7 @@
             "event-consumer-unconsumed-type",
             "event-consumer-nothing-arrived",
             "event-consumer-declaration-unreadable"
-        ]
+        ],
+        "errors": 0
     }
 ]
