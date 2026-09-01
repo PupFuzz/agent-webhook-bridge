@@ -1197,8 +1197,10 @@ class KanbanMoveCardHandlerTest extends TestCase
         //
         // ⚑ The 403 slug is the NARROWED one (card#8375): the board-scoped check has already
         // read this id back off the mapped board, so a foreign card id is excluded here and
-        // the slug names the one cause left. `kanban_block_reason`, which makes no such
-        // check, still emits the two-cause slug — pinned in its own class.
+        // the slug names the one cause left. Since card#8415 the `kanban_block_reason`
+        // overlay makes the same check and narrows the same way; the two-cause slug now
+        // belongs to no shipped arm and is pinned in `RefusalContextTest` as the honest
+        // answer for an arm that makes no such check.
         $this->writeWritebackWithAlert();
         $this->writeToken();
         Http::fake([
@@ -1297,9 +1299,9 @@ class KanbanMoveCardHandlerTest extends TestCase
         // (DL-314). The board-scoped check now runs BEFORE this read and has already found
         // this id on the mapped board, so the foreign half is ruled out by a measurement and
         // the message must say so: a text still offering both would send the operator hunting
-        // a cause this arm can no longer have. The two-cause wording lives on in
-        // `kanban_block_reason`, which makes no such check — pinned in its own class, so
-        // deleting it here does not retire the assertion that it exists somewhere.
+        // a cause this arm can no longer have. card#8415 wired the same check into the
+        // `kanban_block_reason` overlay, so its text was reversed the same way; what still
+        // pins the two-cause slug's existence is `RefusalContextTest`, not a shipped arm.
         $this->writeWriteback();
         $this->writeToken();
         Log::spy();
