@@ -114,7 +114,7 @@ Filename: `YYYY_MM_DD_NNNNNN_<snake_case_description>.php`. Schema changes that 
 
 **Pint** (Laravel preset) enforces formatting. Run `vendor/bin/pint --test` before opening a PR; `vendor/bin/pint` to apply. The `pint.json` excludes legacy directories (`bin`, `lib`, `receiver`, `examples`).
 
-**PHPStan** (via larastan) at level 7, scoped to `app/Bridge/**` via `phpstan-laravel.neon`. Run `vendor/bin/phpstan analyse -c phpstan-laravel.neon`. PHPDoc `@param` / `@return` annotations are required wherever PHPStan can't infer the generic type (array shapes, list vs. array, generics on Eloquent).
+**PHPStan** (via larastan) at level 7, scoped by `phpstan-laravel.neon` to `app/Bridge/**` **plus a handful of individually named files outside it** — that config is the list, and it says on each one why it earned a place; do not restate the scope elsewhere. Run `vendor/bin/phpstan analyse -c phpstan-laravel.neon`. PHPDoc `@param` / `@return` annotations are required wherever PHPStan can't infer the generic type (array shapes, list vs. array, generics on Eloquent).
 
 No `declare(strict_types=1)` in this codebase — Laravel's own files don't use it uniformly; enforcing it selectively would create a patchwork. PHPStan at level 7 catches the type errors that matter.
 

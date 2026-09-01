@@ -4,8 +4,8 @@ namespace App\Http\Middleware;
 
 use App\Bridge\Adapters\WebhookAdapterFactory;
 use App\Bridge\Http\PlainTextResponse;
-use App\Bridge\Support\SecretFile;
-use App\Bridge\Support\SecretPath;
+use App\Bridge\Support\WebhookSecretFailure;
+use App\Bridge\Support\WebhookSecretResolver;
 use App\Bridge\Validation\ProviderName;
 use App\Bridge\Validation\ScopeId;
 use Closure;
@@ -15,15 +15,20 @@ use Symfony\Component\HttpFoundation\Response;
 /**
  * The receiver's security gate.
  * Resolves the adapter from the {provider} route segment and the scope from
- * the `?b=` query, loads the per-(provider, scope) HMAC secret, and verifies
- * the signature with a constant-time compare — all before the request reaches
- * the controller. Preserves the exact status contract so kanban-board's retry
- * behaviour is unchanged (it retries 5xx/429, not other 4xx):
+ * the `?b=` query, loads the per-(provider, scope) HMAC secret (through
+ * {@see WebhookSecretResolver}, which owns WHERE it lives and
+ * exactly how its bytes are normalized, so a signature PRODUCER can apply the same
+ * rule instead of restating it), and verifies the signature with a constant-time
+ * compare — all before the request reaches the controller. Preserves the exact
+ * status contract so kanban-board's retry behaviour is unchanged (it retries
+ * 5xx/429, not other 4xx):
  *
  *   body_too_large (EnvelopeSizeLimit, BEFORE this)      → 413
  *   invalid_provider / unknown_provider / invalid_scope → 400
- *   unknown_scope (no secret file) / sig_mismatch       → 401
- *   config_secret_dir_* / empty_secret_file             → 500
+ *   unknown_scope (secret file absent or unreadable)    → 401
+ *   sig_mismatch                                        → 401
+ *   config_secret_dir_* / secret_perms_insecure         → 500
+ *   empty_secret_file                                   → 500
  *
  * 413 is a deterministic 4xx (a body over `bridge.max_body_bytes`, 256 KB default
  * — which "covers every real provider" per config/bridge.php). kanban-board does
@@ -52,9 +57,9 @@ class VerifyHmacSignature
             return $this->fail('invalid_scope', 400);
         }
 
-        $secret = $this->loadSecret($provider, $scopeId, $error);
-        if ($secret === null) {
-            return $error;
+        $secret = WebhookSecretResolver::resolve($provider, $scopeId);
+        if ($secret instanceof WebhookSecretFailure) {
+            return $this->failSecret($secret);
         }
 
         $body = $request->getContent();
@@ -72,55 +77,32 @@ class VerifyHmacSignature
     }
 
     /**
-     * Load + trim the per-(provider, scope) secret. Returns the secret on
-     * success, or null with $error set to the response to return. The secret
-     * is keyed on the URL's (provider, scope) — the canonical one-secret-per-
-     * scope umbrella model — never on subscriber identity.
+     * The receiver's HTTP contract over the secret-resolution vocabulary — the mapping
+     * that decides whether kanban-board RETRIES (5xx) or drops (4xx), so it lives here,
+     * beside the status contract this class documents, rather than on the enum that a
+     * CLI reads too. Exhaustive on purpose: a new case must be given a status
+     * deliberately instead of inheriting one from a `default` arm.
+     *
+     * A group/world-readable secret is 500 (not 401) so kanban-board holds and
+     * redelivers once it is fixed, rather than the secret being silently trusted
+     * (DL-010).
+     *
+     * ⛔ `SecretUnreadable` answers `unknown_scope` DELIBERATELY, and the collapse is the
+     * contract rather than an oversight: the caller is unauthenticated, so it learns
+     * nothing about this install's filesystem — and, load-bearing, an OS permission
+     * fault must not flip the upstream's retry decision. `bridge:sign` reads the finer
+     * case and tells the operator which of the two it actually is.
      */
-    private function loadSecret(string $provider, string $scopeId, ?Response &$error): ?string
+    private function failSecret(WebhookSecretFailure $failure): Response
     {
-        $secretDir = config('bridge.secret_dir');
-        if (! is_string($secretDir) || trim($secretDir) === '') {
-            $error = $this->fail('config_secret_dir_missing', 500);
-
-            return null;
-        }
-        if (! str_starts_with($secretDir, '/')) {
-            $error = $this->fail('config_secret_dir_not_absolute', 500);
-
-            return null;
-        }
-
-        // Shared path shape (see SecretPath) — the contract provisioning writes to.
-        $secretPath = SecretPath::for($secretDir, $provider, $scopeId);
-
-        // Fail-closed on a group/world-readable secret (DL-010): a co-tenant who
-        // can read it forges valid signatures, so a leaked-perms secret is no
-        // boundary. 500 (not 401) so kanban-board holds + redelivers once fixed,
-        // rather than the secret being silently trusted. Checked before the read
-        // so an *absent* secret still 401s (unknown_scope) — isInsecure is false
-        // for a missing file.
-        if (SecretFile::isInsecure($secretPath)) {
-            $error = $this->fail('secret_perms_insecure', 500);
-
-            return null;
-        }
-
-        $raw = @file_get_contents($secretPath);
-        if ($raw === false) {
-            $error = $this->fail('unknown_scope', 401);
-
-            return null;
-        }
-
-        $secret = trim($raw);
-        if ($secret === '') {
-            $error = $this->fail('empty_secret_file', 500);
-
-            return null;
-        }
-
-        return $secret;
+        return match ($failure) {
+            WebhookSecretFailure::ConfigSecretDirMissing,
+            WebhookSecretFailure::ConfigSecretDirNotAbsolute,
+            WebhookSecretFailure::SecretPermsInsecure,
+            WebhookSecretFailure::EmptySecretFile => $this->fail($failure->value, 500),
+            WebhookSecretFailure::UnknownScope,
+            WebhookSecretFailure::SecretUnreadable => $this->fail(WebhookSecretFailure::UnknownScope->value, 401),
+        };
     }
 
     private function fail(string $reason, int $code): Response

@@ -15,7 +15,7 @@ php artisan test                                # same as phpunit, with pretty o
 Static analysis and style:
 
 ```bash
-vendor/bin/phpstan analyse -c phpstan-laravel.neon   # level 7 — app/Bridge only
+vendor/bin/phpstan analyse -c phpstan-laravel.neon   # level 7 — app/Bridge + the files that config names
 vendor/bin/pint --test                               # style check (Laravel preset; --test = dry-run)
 vendor/bin/pint                                      # fix in place
 ```

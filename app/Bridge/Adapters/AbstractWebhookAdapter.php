@@ -4,13 +4,18 @@ namespace App\Bridge\Adapters;
 
 use App\Bridge\Contracts\WebhookAdapter;
 use App\Bridge\Exceptions\InvalidEnvelopeException;
+use App\Bridge\Support\HmacSignature;
 use Illuminate\Http\Request;
 
 /**
  * Shared behaviour for the sha256=<hex> HMAC providers (kanban + GitHub use
  * an identical signing convention; only the header name differs). Keeping the
  * single hash_equals path here means there is exactly one constant-time
- * compare to audit. Envelope field lengths are asserted here too
+ * compare to audit. The digest and the scheme prefix it compares against come
+ * from {@see HmacSignature}, which the signature PRODUCER (`bridge:sign`) reads
+ * too — one convention, so a producer cannot drift from this verifier.
+ *
+ * Envelope field lengths are asserted here too
  * (assertFieldLengths): every value written to webhook_events must fit its
  * column, so an over-length field is a deterministic 400 rather than a DB-side
  * "data too long" 5xx the upstream would redeliver forever.
@@ -25,12 +30,12 @@ abstract class AbstractWebhookAdapter implements WebhookAdapter
     public function verifySignature(Request $request, string $body, string $secret): bool
     {
         $header = $request->header($this->signatureHeader());
-        if (! is_string($header) || ! str_starts_with($header, 'sha256=')) {
+        if (! is_string($header) || ! str_starts_with($header, HmacSignature::PREFIX)) {
             return false;
         }
 
-        $provided = substr($header, 7);
-        $expected = hash_hmac('sha256', $body, $secret);
+        $provided = substr($header, strlen(HmacSignature::PREFIX));
+        $expected = HmacSignature::hex($body, $secret);
 
         return hash_equals($expected, $provided);
     }
