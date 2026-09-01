@@ -228,8 +228,9 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
                 // by a measurement rather than by an assumption: the board-scoped check above
                 // has already read this id back off the mapped board, so a 403 here can no
                 // longer mean "somebody else's card". That is what the deferred option in
-                // DL-314 was for, and it is why this arm's 403 slug is narrower than the one
-                // the draft-overlay twin (which makes no such check) still uses.
+                // DL-314 was for. Since card#8415 the draft-overlay twin makes the same check
+                // and narrows the same way, so the two-cause slug names no shipped arm — read
+                // RefusalContext::readReason()'s docblock for what still keeps it.
                 //
                 // ⛔ THE CHANNEL COPY STILL CARRIES NO CARD ID (DL-314, card#7846). The
                 // withholding is keyed on THE READ FAILED, not on the foreign hypothesis:
