@@ -8,6 +8,7 @@ use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Handlers\KanbanDependabotCardHandler;
 use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\ClosureGrammar;
@@ -194,8 +195,13 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         // outcome (converted_to_draft/ready_for_review), so both being null is the
         // "we act on this event neither way" no-op.
         $overlayAction = $this->draftOverlayAction($eventType, $payload);
-        if ($outcome === null && $overlayAction === null) {
-            return new ClassifyResult;   // an action we don't act on (edited, synchronize, …)
+        // RETITLE trigger (DL-328): `pull_request.edited` carrying a real title change.
+        // Non-null ONLY on that action, so it is mutually exclusive with both of the
+        // above by construction — an `edited` event has no move outcome and no draft
+        // action, and every action that has one carries no `changes`.
+        $retitledFrom = $this->retitledFrom($eventType, $payload);
+        if ($outcome === null && $overlayAction === null && $retitledFrom === null) {
+            return new ClassifyResult;   // an action we don't act on (synchronize, labeled, …)
         }
 
         $repo = $scopeId;   // GitHubAdapter sets scope_id = repository.full_name
@@ -203,6 +209,37 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         $mapping = $writeback?->mappingFor($repo);
         if ($mapping === null) {
             return new ClassifyResult;   // repo not configured for writeback
+        }
+
+        // RETITLE of a dependabot PR (DL-328) → a name-restamp target: same handler,
+        // same `pr-{N}` target id, a MOVE-LESS outcome. Dependabot retitles its own PR
+        // in place on a retarget, and a card whose name was stamped at birth then asserts
+        // a version that never shipped. The target carries BOTH sides of the change: the
+        // new title to write, and `name_from` — the title the card's name is compared
+        // against, byte for byte, before anything is written. That comparison is the whole
+        // ownership test, so it is the classifier's job to deliver the evidence rather
+        // than the handler's to infer it. ⛔ The head REF is never a source for either
+        // string: it is frozen at branch creation while the diff is retargeted, so it
+        // names the version the PR no longer bumps (it stays the dependabot DETECTOR,
+        // which is a claim about the author, not about the version).
+        if ($retitledFrom !== null && $mapping->createDependabotCards && $this->isDependabot($payload)) {
+            $prNumber = $this->prNumber($payload);
+            $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
+            $title = $pr['title'] ?? null;
+            if ($prNumber === null || ! is_string($title) || $title === '' || $title === $retitledFrom) {
+                return new ClassifyResult;
+            }
+
+            return new ClassifyResult(targets: [
+                ReactionTarget::make('kanban_dependabot_card', "pr-{$prNumber}", payload: [
+                    'repo' => $repo,
+                    'outcome' => KanbanDependabotCardHandler::RENAMED_OUTCOME,
+                    'pr_number' => $prNumber,
+                    'pr_title' => $title,
+                    'pr_url' => is_string($pr['html_url'] ?? null) ? $pr['html_url'] : '',
+                    'name_from' => $retitledFrom,
+                ]),
+            ]);
         }
 
         // Dependabot PRs carry no DL and have no pre-existing card. When opted in
@@ -1327,6 +1364,34 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         }
 
         return $refs;
+    }
+
+    /**
+     * The PREVIOUS title of a retitled pull request — GitHub's `changes.title.from` on a
+     * `pull_request.edited` action — or null on every other action and on an `edited` that
+     * changed something else (body, base). GitHub sends `changes` with a key per field it
+     * changed, so the KEY's presence is the "the title changed" signal; a `changes.title`
+     * with no usable `from` is not one, and is read as no retitle rather than as an empty
+     * previous title (which would compare equal to no card name and restamp nothing).
+     *
+     * ⭐ This string is EVIDENCE, not decoration: it is the exact name the bridge stamped
+     * on the card it minted for this PR, so a card whose name still equals it byte for byte
+     * has not been touched by anyone since. That is the whole authorship test the restamp
+     * gates on ({@see KanbanDependabotCardHandler}), and it is why the previous title is
+     * carried on the target instead of being recomputed from anything at write time.
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function retitledFrom(string $eventType, array $payload): ?string
+    {
+        if ($eventType !== 'pull_request.edited') {
+            return null;
+        }
+        $changes = is_array($payload['changes'] ?? null) ? $payload['changes'] : [];
+        $title = is_array($changes['title'] ?? null) ? $changes['title'] : [];
+        $from = $title['from'] ?? null;
+
+        return is_string($from) && $from !== '' ? $from : null;
     }
 
     /**
