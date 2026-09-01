@@ -548,6 +548,83 @@ class RedirectionCannotBeFakedFromInsideAQuote(unittest.TestCase):
         self.assertEqual([], self._rules('printf \'%s\' "$SECRET" >> f 2>&1\n'))
 
 
+class AnApostropheInsideDoubleQUOTESIsNotAQuote(unittest.TestCase):
+    """ONE quote-state walk, because eight copies of it did not agree.
+
+    Six of the eight guarded the single-quote toggle with `not in_double`. The two
+    that decide a VERDICT — `_secret_expansions`, which every value-bearing rule is
+    built on, and `_mask_substitutions` — tracked `in_single` alone and toggled on
+    any `\'`, including one inside `"…"` where bash holds it literal. An apostrophe
+    therefore opened a single-quoted region the shell does not have, and everything
+    after it in that token (or, for the masker, in that LOGICAL LINE) went silently
+    green.
+
+    Measured on the pre-fix tool, on the very shape DL-321 removed from
+    `docs/multi-host.md`: `echo "Save this token securely: $BRIDGE_CHANNEL_TOKEN"`
+    reddened and `echo "Don\'t lose it — save this token: $BRIDGE_CHANNEL_TOKEN"`
+    did not. The same silent green covered the argv, log, probe and pipeline-tail
+    rules, and through the masker it reached ACROSS commands: an apostrophe in an
+    earlier command on the line turned off substitution masking for the rest of it.
+    """
+
+    def _rules(self, body: str) -> list[str]:
+        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
+
+    def test_the_apostrophe_is_the_only_variable_between_a_red_and_a_red(self) -> None:
+        """The discriminator, pinned in BOTH directions on one payload: adding an
+        apostrophe inside the double quotes must not change the verdict, and a
+        genuinely single-quoted payload must still be green because the shell
+        expands nothing there."""
+        self.assertEqual(['stdout'], self._rules('echo "it\'s $SECRET"\n'))
+        self.assertEqual(['stdout'], self._rules('echo "its $SECRET"\n'))
+        self.assertEqual([], self._rules('echo \'it"s $SECRET\'\n'))
+
+    def test_the_live_member_reds_with_an_apostrophe_in_the_message(self) -> None:
+        self.assertEqual(['stdout'], self._rules(
+            'echo "Save this token securely: $BRIDGE_CHANNEL_TOKEN"\n'))
+        self.assertEqual(['stdout'], self._rules(
+            'echo "Don\'t lose it — save this token: $BRIDGE_CHANNEL_TOKEN"\n'))
+
+    def test_every_value_bearing_rule_survives_an_apostrophe(self) -> None:
+        """Each of these was measured GREEN before the walk was hoisted, and each
+        is the SAME rule the suite already pins on an apostrophe-free payload."""
+        for rule, body in (
+            ('argv', 'curl -H "it\'s: $BRIDGE_CHANNEL_TOKEN" http://x/\n'),
+            ('log', 'printf \'%s\' "it\'s: $SECRET" >> /var/log/x.log\n'),
+            ('probe', 'echo "it\'s me: ${SECRET:-unset}"\n'),
+            ('stdout', 'printf \'%s\' "don\'t: $SECRET" | base64\n'),
+        ):
+            with self.subTest(rule=rule, body=body.strip()):
+                self.assertEqual([rule], self._rules(body))
+
+    def test_an_apostrophe_in_an_EARLIER_command_does_not_disarm_the_line(self) -> None:
+        """The masker\'s copy ran over the whole logical line, so the damage was not
+        confined to the token that spelled the apostrophe: with masking off, a
+        `$( … )` is never masked, `_sub_is_secret_bearing` is never asked, and a
+        captured secret READ stops being a secret anywhere on that line."""
+        leak = 'curl -H "Bearer $(cat "$TOKEN_FILE")" http://x/\n'
+        self.assertEqual(['argv'], self._rules('echo "its hi" ; ' + leak))
+        self.assertEqual(['argv'], self._rules('echo "it\'s hi" ; ' + leak))
+
+    def test_single_quoting_still_suppresses_what_the_shell_suppresses(self) -> None:
+        """The negative half, which is the reason the walk tracks quoting at all:
+        inside `\'…\'` the shell expands nothing, and a tool that reddened there
+        would red on `awk \'{print $NF}\'`."""
+        self.assertEqual([], self._rules("awk \'{print $NF}\' /etc/hosts\n"))
+        self.assertEqual([], self._rules("echo \'nothing $SECRET here\'\n"))
+
+    def test_the_quote_state_toggle_exists_in_exactly_one_place(self) -> None:
+        """The consolidation, asserted rather than described. A ninth hand-rolled
+        copy would be free to disagree with the other eight exactly as the two that
+        decided the verdict did, and nothing but this would notice."""
+        with open(_TOOL, encoding='utf-8') as fh:
+            source = fh.read()
+        toggles = [ln.strip() for ln in source.split('\n')
+                   if '= not ' in ln and ('in_single' in ln or 'in_double' in ln)]
+        self.assertEqual(['self.in_single = not self.in_single',
+                          'self.in_double = not self.in_double'], toggles)
+
+
 class TheNegativeHalfOfTheVocabulary(unittest.TestCase):
     """The predicates that decide what is NOT a secret. Each of these reddened at
     some point during construction; a lint that reds on ordinary text is one that
@@ -824,12 +901,26 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
                 self.assertEqual(['stdout'], self._rules(body))
 
     def test_a_reader_tail_holding_a_secret_file_still_reports_once(self) -> None:
-        """What the clause was for. `tee` is in READING_COMMANDS and is also a
-        passthrough tail, so both legs fire on one command; the reader diagnosis is
-        the specific one, and two findings for one line is the noise that gets a
-        lint switched off."""
+        """ONE finding, and the one that is TRUE. `tee` is in READING_COMMANDS and
+        is also a passthrough tail, so both legs fire on one command — but its file
+        argument is a WRITE target, and the reader diagnosis therefore named the
+        wrong direction outright: it said `tee` PUTS the contents of the file it is
+        WRITING on stdout, and told the operator to open that file themselves. This
+        assertion pinned that sentence; a wrong test is fixed, not preserved. The
+        line stays red, on the message that describes what actually leaks."""
         findings = _scan('```bash\nprintf \'%s\' "$SECRET" | '
                          'tee /etc/bridge/webhook-secret-scope\n```\n')
+        self.assertEqual(1, len(findings), [f.render() for f in findings])
+        self.assertIn('ends at `tee`', findings[0].message)
+        self.assertIn('not a known stdin SINK', findings[0].message)
+        self.assertNotIn('puts the contents of', findings[0].message)
+
+    def test_a_tail_that_really_READS_a_secret_file_keeps_that_message(self) -> None:
+        """The other side of the same discriminator, so the narrowing cannot swing
+        the whole way: a tail handed a secret file by REDIRECT does read it onto
+        stdout, and that is still the specific diagnosis — still once."""
+        findings = _scan('```bash\nprintf \'%s\' "$SECRET" | '
+                         'cat < "$TOKEN_FILE"\n```\n')
         self.assertEqual(1, len(findings), [f.render() for f in findings])
         self.assertIn('puts the contents of', findings[0].message)
 
@@ -905,11 +996,118 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
         self.assertEqual([], _scan(body, set(lint.RULE_IDS) - {'stdout'}))
 
 
+class AHereStringIsSTDINAndCarriesAValue(unittest.TestCase):
+    """`<<<` was deleted before any value rule could look at it.
+
+    `_read_command` cuts the here-string out of the text before tokenizing — right
+    for the `argv` rule, because a here-string is stdin and never a token in
+    /proc/<pid>/cmdline — and the piece it cut out was then handed to the `history`
+    rule ALONE. So every spelling below was measured GREEN while resolving a secret
+    VALUE onto stdout or into a log, and the module docstring meanwhile claimed the
+    reader "understands … here-strings" (card#8351).
+
+    It is asked through `token_carries_secret`, the same predicate an ARGUMENT goes
+    through — not a second parser, which would be a second place for the answer to
+    drift.
+    """
+
+    def _rules(self, body: str) -> list[str]:
+        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
+
+    def test_a_here_string_onto_stdout_is_a_stdout_leak(self) -> None:
+        for body in (
+            'cat <<<"$BRIDGE_WEBHOOK_SECRET"\n',
+            'base64 <<<"$SECRET"\n',
+            'tr -d "\\n" <<<"$SECRET"\n',
+        ):
+            with self.subTest(body=body.strip()):
+                self.assertEqual(['stdout'], self._rules(body))
+
+    def test_a_here_string_into_a_log_is_a_log_leak(self) -> None:
+        self.assertEqual(['log'], self._rules('cat <<<"$SECRET" >> /var/log/x.log\n'))
+
+    def test_a_captured_secret_READ_in_a_here_string_counts_too(self) -> None:
+        """The value need not be spelled `$SECRET`: a substitution that puts a
+        secret FILE on its stdout is the same act, and the pipeline mark already
+        knew it — the here-string was simply never asked."""
+        self.assertEqual(['stdout'], self._rules('cat <<<"$(cat "$TOKEN_FILE")"\n'))
+
+    def test_a_here_string_marks_the_pipeline_for_the_tail_rule(self) -> None:
+        findings = _scan('```bash\ncat <<<"$SECRET" | base64\n```\n')
+        self.assertEqual(['stdout'], [f.rule for f in findings])
+        self.assertIn('`base64`', findings[0].message)
+
+    def test_a_here_string_into_a_known_SINK_stays_green(self) -> None:
+        """Deny-by-default is about the command's identity, and it is the same
+        list here as for a pipeline tail. `sha256sum <<<"$(cat "$TOKEN_FILE")"` was
+        green before this leg existed and is green after it — measured, not
+        assumed, because a leg that reddens a form the rule PRESCRIBES is how a
+        lint gets switched off."""
+        self.assertEqual([], self._rules('sha256sum <<<"$SECRET"\n'))
+        self.assertEqual([], self._rules('sha256sum <<<"$(cat "$TOKEN_FILE")"\n'))
+
+    def test_a_here_string_holding_a_PATH_is_not_a_value(self) -> None:
+        self.assertEqual([], self._rules('cat <<<"$TOKEN_FILE"\n'))
+
+    def test_it_is_never_reported_as_an_argv_leak(self) -> None:
+        """The reason the here-string is cut out before tokenizing, kept: the
+        parent shell writes it to the child's STDIN, so /proc/<pid>/cmdline carries
+        nothing. A message saying otherwise would be false."""
+        self.assertNotIn('argv', self._rules('cat <<<"$BRIDGE_WEBHOOK_SECRET"\n'))
+        self.assertEqual(['stdout'], self._rules('cat <<<"$BRIDGE_WEBHOOK_SECRET"\n'))
+        # The same value handed over as an ARGUMENT does reach the argument list.
+        self.assertIn('argv', self._rules('cat "$BRIDGE_WEBHOOK_SECRET"\n'))
+
+    def test_a_quoted_LITERAL_that_merely_SPELLS_one_is_not_a_here_string(self) -> None:
+        """`<<<` was located by a regex over the raw text, which cannot tell a
+        here-string from a quoted string that spells one — the class
+        `_REDIRECT_TOKEN_RE` avoids by reading redirects off TOKENS. Harmless while
+        the operand fed only the `history` rule, and a FINDING the moment it fed
+        the value rules: both of these reddened on the intermediate build, against
+        text the shell never expands."""
+        self.assertEqual([], self._rules(
+            'echo \'a <<<"$SECRET" b\' >> /var/log/x.log\n'))
+        self.assertEqual([], self._rules('grep \'<<<"$SECRET"\' f\n'))
+        # The same operator UNQUOTED is a here-string, and does red.
+        self.assertEqual(['log'], self._rules('cat <<<"$SECRET" >> /var/log/x.log\n'))
+
+    def test_the_operand_runs_to_an_unquoted_space_and_the_LAST_one_wins(self) -> None:
+        """Two bounds of the operand read. `<<<"one two $SECRET"` is ONE operand,
+        not the first word of one — cut at the first space, the rest would have
+        been read as ARGUMENTS and reported under `argv`, a surface a here-string
+        never reaches. And where a command carries more than one, the shell feeds
+        it the LAST, so that is the one read."""
+        self.assertEqual(['stdout'], self._rules('cat <<<"one two $SECRET"\n'))
+        self.assertEqual(['stdout'], self._rules('cat <<<"$A" <<<"$SECRET"\n'))
+        self.assertEqual([], self._rules('cat <<<"$SECRET" <<<"$A"\n'))
+
+    def test_the_history_leg_still_owns_the_LITERAL_spelling(self) -> None:
+        """The one leg that already read here-strings, unchanged: a LITERAL payload
+        is a shell-history leak, not a stdout one, and it must not now report as
+        both."""
+        self.assertEqual(
+            ['history'],
+            self._rules('install -m 600 /dev/stdin "$D/kanban/writeback-token" '
+                        "<<<'<the-token>'\n"))
+
+
 class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
-    """A bound named in prose and asserted nowhere is a claim, not a bound. These
-    pin the two the docstring discloses so the disclosure cannot quietly go stale —
-    and so that CLOSING one of them reds here rather than leaving the docs saying it
-    is still open."""
+    """A bound named in prose and asserted nowhere is a claim, not a bound.
+
+    One test per bound the module docstring discloses, NAMED rather than counted —
+    the untracked HEREDOC, the four measured ones (a fence inside a BLOCKQUOTE, a
+    Pandoc / Quarto `{bash}` info string, the absent fd table, a single-quoted
+    `sh -c` operand) and the one-level depth limit on a secret-FILE read inside a
+    nested command substitution. The docstring here said "the two" while asserting
+    one, which is what a count does the moment a bound is added.
+
+    Each pins the CURRENT behaviour, so closing a bound reds this class and forces
+    the disclosure to be rewritten instead of being left saying the bound is still
+    open. A green that only ever passes proves nothing, so each case also carries
+    the payload that DOES red — the same bytes with the blockquote marker removed,
+    the same command with the double-quoted operand — which is what makes the
+    green a measurement of the bound rather than of the fixture.
+    """
 
     def _rules(self, body: str) -> list[str]:
         return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
@@ -926,6 +1124,52 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
         ):
             with self.subTest(body=body.strip()):
                 self.assertEqual(['argv'], self._rules(body))
+
+    def test_a_fence_inside_a_BLOCKQUOTE_is_not_seen_as_a_fence_at_all(self) -> None:
+        """An opener is matched after leading WHITESPACE only, so `> ` in front of
+        the backticks makes the whole body invisible rather than merely unparsed."""
+        self.assertEqual([], [f.rule for f in _scan(
+            '> ```bash\n> echo "$BRIDGE_WEBHOOK_SECRET"\n> ```\n')])
+        self.assertEqual(['stdout'], self._rules('echo "$BRIDGE_WEBHOOK_SECRET"\n'))
+
+    def test_a_pandoc_or_quarto_INFO_STRING_reads_as_a_non_shell_fence(self) -> None:
+        """Braces around the language are not in SHELL_INFO."""
+        for info in ('{bash}', '{.bash}', '{sh}'):
+            with self.subTest(info=info):
+                self.assertEqual([], [f.rule for f in _scan(
+                    f'```{info}\necho "$BRIDGE_WEBHOOK_SECRET"\n```\n')])
+        self.assertEqual(['stdout'], self._rules('echo "$BRIDGE_WEBHOOK_SECRET"\n'))
+
+    def test_there_is_no_fd_TABLE_so_an_opened_secret_file_is_lost(self) -> None:
+        """`exec 3<` a secret file and the reading command's input path is `&3`;
+        nothing carries the opener's path forward to it. Spelled without the fd —
+        the same act — it reds."""
+        self.assertEqual([], self._rules(
+            'exec 3< /etc/bridge/webhook-secret-scope\ncat <&3\n'))
+        self.assertEqual(['stdout'], self._rules(
+            'cat < /etc/bridge/webhook-secret-scope\n'))
+
+    def test_a_single_quoted_sh_c_OPERAND_is_not_recursed_into(self) -> None:
+        """A `-c` string is read as an ordinary argument, exactly as `eval`'s is.
+        The double-quoted twin reds under `argv`, and that is not the bound but the
+        correct answer: the PARENT shell expands it into the child's argv before
+        the child starts."""
+        for body in (
+            'sh -c \'echo "$BRIDGE_WEBHOOK_SECRET"\'\n',
+            'bash -c \'echo "$BRIDGE_WEBHOOK_SECRET"\'\n',
+        ):
+            with self.subTest(body=body.strip()):
+                self.assertEqual([], self._rules(body))
+        self.assertEqual(['argv'], self._rules('sh -c "echo $BRIDGE_WEBHOOK_SECRET"\n'))
+
+    def test_a_NESTED_substitution_is_read_one_level_deep_on_the_FILE_leg(self) -> None:
+        """`$(cat <secret file>)` marks its enclosing command; wrapped one level
+        further it does not. A nested secret VALUE expansion is unaffected — the
+        expansion walk is not depth-limited — which is what makes this a bound on
+        the FILE leg specifically."""
+        self.assertEqual(['stdout'], self._rules('echo "$(cat "$TOKEN_FILE")"\n'))
+        self.assertEqual([], self._rules('echo "$(echo "$(cat "$TOKEN_FILE")")"\n'))
+        self.assertEqual(['stdout'], self._rules('echo "$(echo "$SECRET")"\n'))
 
 
 class AMessageMustNameTextTHEDOCACTUALLYCONTAINS(unittest.TestCase):

@@ -60,11 +60,17 @@ of a bad form in this repo today is prose, and none needed a waiver.
 
 BOUNDS, named rather than left to be discovered. Out of reach by construction:
 markdown INDENTED code blocks (four-space, no fence) and any fence whose info
-string is not in SHELL_INFO; a secret in bare `env` output, which prints the whole
-environment with nothing in argv to read; and every file that is not a `*.md`. The
-shell reader is a heuristic, not a parser: it understands quoting, pipelines,
-command substitution, redirection and here-strings, and it does not understand
-functions, loops, `eval`, aliases, or a value routed through several variables.
+string is not in SHELL_INFO; a secret printed by a command that dumps the WHOLE
+environment with nothing in argv to read — bare `env` or `printenv`, and
+`declare -p` / `typeset -p` / `export -p` / `set` with NO operand, all of which
+resolve the value while naming nothing (given an operand, `declare` and `typeset`
+are read: see NAME_TAKING_PRINTERS); and every file that is not a `*.md`. The shell
+reader is a heuristic, not a parser: it understands quoting, pipelines, command
+substitution, redirection and here-strings, and it does not understand functions,
+loops, `eval`, aliases, or a value routed through several variables. A command
+PREFIX that takes an operand leaves it behind — `COMMAND_PREFIXES`' own comment
+owns that bound with its worked case, and this list deliberately does not restate
+it.
 
 FOUR MORE BOUNDS, each MEASURED on this checkout rather than reasoned about. None
 fires on any doc in this repo today, and closing any of them changes what CI
@@ -135,6 +141,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
+from typing import Iterator, NamedTuple
 
 # --------------------------------------------------------------------------------
 # Vocabulary. Derived from docs/config-schema.md § Handling a secret VALUE and from
@@ -340,6 +347,81 @@ class Chunk:
         return self.lines[min(offset, len(self.lines) - 1)]
 
 
+# --------------------------------------------------------------------------------
+# THE quote-state walk. One implementation, eight consumers.
+# --------------------------------------------------------------------------------
+
+class QuoteChar(NamedTuple):
+    """One character of shell text, with the quoting it sits inside."""
+
+    #: Offset into the walked text.
+    index: int
+    #: The source span: one character, or a backslash ESCAPE PAIR.
+    text: str
+    #: The state the character sits IN — a quote character reports the state it is
+    #: about to leave, so a closing `'` reads as `in_single`.
+    in_single: bool
+    in_double: bool
+    #: `text` is a backslash escape pair. Never shell syntax, whatever it spells.
+    escaped: bool
+
+
+class QuoteWalk:
+    """Every quoting decision this program makes, made in ONE place.
+
+    There were eight hand-rolled copies of this walk and they did not agree. Six
+    guarded the single-quote toggle with `not in_double`; the two that decide a
+    VERDICT — the secret-expansion read and the substitution masker — tracked
+    `in_single` alone and toggled on any `'`. So an apostrophe inside a
+    double-quoted string opened a single-quoted region that bash does not have, and
+    every value-bearing rule went silently GREEN from there to the end of the
+    logical line: `echo "Save this token: $TOKEN"` reddened and
+    `echo "Don't lose it, save this token: $TOKEN"` did not. Eight copies of one
+    predicate is how a security verdict comes to depend on which copy was asked
+    (card#8351) — so the copies are gone rather than corrected in place.
+
+    Consumers differ only in what they DO at each character, which is what makes
+    one walk enough. Those that must skip a region they have already consumed —
+    a matched `$( … )`, an operator's second character — call `jump_to`, and the
+    quoting state carries across the jump exactly as the hand-rolled cursors did.
+    """
+
+    def __init__(self, text: str, in_single: bool = False, in_double: bool = False,
+                 start: int = 0) -> None:
+        self.text = text
+        self.in_single = in_single
+        self.in_double = in_double
+        self.index = start
+
+    def jump_to(self, index: int) -> None:
+        """Resume at `index`. The skipped span is consumed WITHOUT interpreting its
+        quotes — which is the behaviour a masked substitution needs: its body is
+        parsed on its own, not as a continuation of the text around it."""
+        self.index = index
+
+    def __iter__(self) -> Iterator[QuoteChar]:
+        while self.index < len(self.text):
+            i = self.index
+            ch = self.text[i]
+            if ch == '\\' and not self.in_single:
+                # Inside `'…'` a backslash is an ordinary character; everywhere
+                # else it takes the next one out of the shell's hands.
+                event = QuoteChar(i, self.text[i:i + 2], self.in_single,
+                                  self.in_double, True)
+                self.index = i + 2
+                yield event
+                continue
+            event = QuoteChar(i, ch, self.in_single, self.in_double, False)
+            self.index = i + 1
+            # Advance the state BEFORE yielding, so a consumer that calls `jump_to`
+            # cannot be handed a toggle that belongs to a character it skipped.
+            if ch == "'" and not self.in_double:
+                self.in_single = not self.in_single
+            elif ch == '"' and not self.in_single:
+                self.in_double = not self.in_double
+            yield event
+
+
 def _is_secret_value_name(name: str) -> bool:
     """Does this variable NAME hold a secret VALUE (as opposed to a path to one)?"""
     words = [w.lower() for w in re.split(r'[_\-]|(?<=[a-z0-9])(?=[A-Z])', name) if w]
@@ -383,33 +465,22 @@ def _secret_expansions(text: str) -> list[tuple[int, str]]:
     """`(offset, name)` for every `$NAME` / `${NAME...}` naming a secret VALUE.
 
     Single-quoted regions are skipped: `awk '{print $NF}'` expands nothing, and
-    neither does a `'...'` prose fragment that happens to spell a variable.
+    neither does a `'...'` prose fragment that happens to spell a variable. A
+    DOUBLE-quoted one is not skipped and must not be — `"$SECRET"` is the ordinary
+    spelling of the leak, and inside it a `'` is just an apostrophe.
     """
     out = []
-    i, n = 0, len(text)
-    in_single = False
-    while i < n:
-        ch = text[i]
-        if ch == "'" and not in_single:
-            in_single = True
-            i += 1
+    walk = QuoteWalk(text)
+    for ev in walk:
+        if ev.escaped or ev.in_single or ev.text != '$':
             continue
-        if ch == "'" and in_single:
-            in_single = False
-            i += 1
+        m = re.match(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)', text[ev.index:])
+        if not m:
             continue
-        if ch == '\\' and not in_single:
-            i += 2
-            continue
-        if ch == '$' and not in_single:
-            m = re.match(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)', text[i:])
-            if m and _is_secret_value_name(m.group(1)) \
-                    and not _ALTERNATIVE_EXPANSION_RE.match(text[i:]):
-                out.append((i, m.group(1)))
-            if m:
-                i += m.end()
-                continue
-        i += 1
+        if _is_secret_value_name(m.group(1)) \
+                and not _ALTERNATIVE_EXPANSION_RE.match(text[ev.index:]):
+            out.append((ev.index, m.group(1)))
+        walk.jump_to(ev.index + m.end())
     return out
 
 
@@ -457,69 +528,52 @@ def _mask_substitutions(chunk: Chunk) -> tuple[Chunk, list[Chunk]]:
     placeholder, returning the masked chunk and the inner chunks in order."""
     masked = Chunk()
     subs: list[Chunk] = []
-    i, n = 0, len(chunk.text)
-    in_single = False
-    while i < n:
-        ch = chunk.text[i]
-        if ch == '\\' and not in_single and i + 1 < n:
-            masked.append(chunk.text[i:i + 2], chunk.line_at(i))
-            i += 2
-            continue
-        if ch == "'":
-            in_single = not in_single
-            masked.append(ch, chunk.line_at(i))
-            i += 1
-            continue
-        if not in_single and chunk.text.startswith('$(', i):
-            end = _match_paren(chunk.text, i + 1)
-            if end is not None:
-                inner = chunk.slice(i + 2, end)
-                inner_masked, inner_subs = _mask_substitutions(inner)
-                subs.append(inner)
-                subs.extend(inner_subs)
-                masked.append(SUB_OPEN + str(len(subs) - len(inner_subs) - 1) + SUB_CLOSE,
-                              chunk.line_at(i))
-                i = end + 1
-                continue
-        if not in_single and ch == '`':
-            end = chunk.text.find('`', i + 1)
-            if end != -1:
-                inner = chunk.slice(i + 1, end)
-                inner_masked, inner_subs = _mask_substitutions(inner)
-                subs.append(inner)
-                subs.extend(inner_subs)
-                masked.append(SUB_OPEN + str(len(subs) - len(inner_subs) - 1) + SUB_CLOSE,
-                              chunk.line_at(i))
-                i = end + 1
-                continue
-        masked.append(ch, chunk.line_at(i))
-        i += 1
+    walk = QuoteWalk(chunk.text)
+    for ev in walk:
+        i = ev.index
+        if not ev.escaped and not ev.in_single:
+            # A substitution runs inside `"…"` exactly as it does bare, which is
+            # why only `in_single` gates this.
+            if chunk.text.startswith('$(', i):
+                end = _match_paren(chunk.text, i + 1)
+                if end is not None:
+                    inner = chunk.slice(i + 2, end)
+                    inner_masked, inner_subs = _mask_substitutions(inner)
+                    subs.append(inner)
+                    subs.extend(inner_subs)
+                    masked.append(
+                        SUB_OPEN + str(len(subs) - len(inner_subs) - 1) + SUB_CLOSE,
+                        chunk.line_at(i))
+                    walk.jump_to(end + 1)
+                    continue
+            if ev.text == '`':
+                end = chunk.text.find('`', i + 1)
+                if end != -1:
+                    inner = chunk.slice(i + 1, end)
+                    inner_masked, inner_subs = _mask_substitutions(inner)
+                    subs.append(inner)
+                    subs.extend(inner_subs)
+                    masked.append(
+                        SUB_OPEN + str(len(subs) - len(inner_subs) - 1) + SUB_CLOSE,
+                        chunk.line_at(i))
+                    walk.jump_to(end + 1)
+                    continue
+        masked.append(ev.text, chunk.line_at(i))
     return masked, subs
 
 
 def _match_paren(text: str, open_idx: int) -> int | None:
     """Index of the `)` closing the `(` at `open_idx`, quote-aware, or None."""
     depth = 0
-    i, n = open_idx, len(text)
-    in_single = False
-    in_double = False
-    while i < n:
-        ch = text[i]
-        if ch == '\\' and not in_single:
-            i += 2
+    for ev in QuoteWalk(text, start=open_idx):
+        if ev.escaped or ev.in_single or ev.in_double:
             continue
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        elif not in_single and not in_double:
-            if ch == '(':
-                depth += 1
-            elif ch == ')':
-                depth -= 1
-                if depth == 0:
-                    return i
-        i += 1
+        if ev.text == '(':
+            depth += 1
+        elif ev.text == ')':
+            depth -= 1
+            if depth == 0:
+                return ev.index
     return None
 
 
@@ -537,8 +591,6 @@ def _split_segments(chunk: Chunk, captured: bool) -> list[list[Segment]]:
     pipelines: list[list[Segment]] = []
     current: list[Segment] = []
     start = 0
-    i, n = 0, len(chunk.text)
-    in_single = in_double = False
 
     def flush(end: int, piped: bool) -> None:
         nonlocal start, current
@@ -548,40 +600,29 @@ def _split_segments(chunk: Chunk, captured: bool) -> list[list[Segment]]:
                                    pipeline_head=not current))
         start = end
 
-    while i < n:
-        ch = chunk.text[i]
-        if ch == '\\' and not in_single:
-            i += 2
+    n = len(chunk.text)
+    walk = QuoteWalk(chunk.text)
+    for ev in walk:
+        if ev.escaped or ev.in_single or ev.in_double:
             continue
-        if ch == "'" and not in_double:
-            in_single = not in_single
-            i += 1
-            continue
-        if ch == '"' and not in_single:
-            in_double = not in_double
-            i += 1
-            continue
-        if in_single or in_double:
-            i += 1
-            continue
+        i, ch = ev.index, ev.text
         if chunk.text.startswith('||', i):
             flush(i, False)
             pipelines.append(current)
             current = []
-            i += 2
-            start = i
+            walk.jump_to(i + 2)
+            start = i + 2
             continue
         if chunk.text.startswith('&&', i):
             flush(i, False)
             pipelines.append(current)
             current = []
-            i += 2
-            start = i
+            walk.jump_to(i + 2)
+            start = i + 2
             continue
         if ch == '|':
             flush(i, True)
-            i += 1
-            start = i
+            start = i + 1
             continue
         if ch == '\n' and current and current[-1].piped_out \
                 and not chunk.text[start:i].strip():
@@ -590,8 +631,7 @@ def _split_segments(chunk: Chunk, captured: bool) -> list[list[Segment]]:
             # false and the tail rule never runs — so `printf '%s' "$SECRET" |`
             # with `base64` on the following line was green for a spelling reason
             # while the one-line form reddened (card#8351).
-            i += 1
-            start = i
+            start = i + 1
             continue
         # NOT `&`: a bare `&` backgrounds a job, but splitting on it would cut
         # `2>&1` and `>&2` in half and silently drop the redirect — and dropping a
@@ -603,17 +643,14 @@ def _split_segments(chunk: Chunk, captured: bool) -> list[list[Segment]]:
         if ch in '{}' and not (
                 (i == 0 or chunk.text[i - 1].isspace())
                 and (i + 1 == n or chunk.text[i + 1].isspace())):
-            i += 1
             continue
         if ch in ';\n(){}':
             flush(i, False)
             if current:
                 pipelines.append(current)
                 current = []
-            i += 1
-            start = i
+            start = i + 1
             continue
-        i += 1
     flush(n, False)
     if current:
         pipelines.append(current)
@@ -630,39 +667,70 @@ def _split_segments(chunk: Chunk, captured: bool) -> list[list[Segment]]:
 #: over the raw line cannot tell — it would invent a redirect and thereby make a
 #: printed secret look captured, which is the direction that loses a finding.
 _REDIRECT_TOKEN_RE = re.compile(r'^(?P<op>&>>?|[0-9]?>>?&?|[0-9]?<)(?P<rest>.*)$')
-_HERESTRING_RE = re.compile(r'<<<\s*(\S+)')
+
+
+def _split_herestrings(text: str) -> tuple[str, str | None]:
+    """`(text with every here-string cut out, the operand bash would actually use)`.
+
+    Located on the ONE walk, never by a regex over the raw text — the same reason
+    `_REDIRECT_TOKEN_RE` is read off TOKENS. A regex cannot tell a here-string from
+    a quoted literal that merely SPELLS one, and now that the operand feeds the
+    value rules that difference is a FINDING: `echo 'a <<<"$SECRET"' >> x.log`
+    would report a leak against a string the shell never expands.
+
+    The operand ends at the first UNQUOTED whitespace, so `<<<"a b"` is one operand
+    rather than the first half of one. It is cut out before tokenizing because a
+    here-string is STDIN: it must never be read as an argument, which is what the
+    `argv` rule would then report it as. Where a command carries more than one, the
+    LAST wins, because that is what the shell feeds it — reading the first was an
+    accident of the regex this replaced, and it answered about a redirection the
+    command never receives.
+    """
+    operand: str | None = None
+    while True:
+        walk = QuoteWalk(text)
+        start = None
+        for ev in walk:
+            if ev.escaped or ev.in_single or ev.in_double:
+                continue
+            if ev.text == '<' and text.startswith('<<<', ev.index):
+                start = ev.index
+                walk.jump_to(ev.index + 3)
+                break
+        if start is None:
+            return text, operand
+        operand_start = None
+        end = len(text)
+        for ev in walk:
+            unquoted_space = (not ev.escaped and not ev.in_single
+                              and not ev.in_double and ev.text.isspace())
+            if operand_start is None:
+                if unquoted_space:
+                    continue
+                operand_start = ev.index
+            elif unquoted_space:
+                end = ev.index
+                break
+        if operand_start is None:
+            # `<<<` with nothing after it is not a here-string; leave it alone
+            # rather than invent an empty one.
+            return text, operand
+        operand = text[operand_start:end]
+        text = text[:start] + ' ' + text[end:]
 
 
 def _tokenize(text: str) -> list[str]:
     """Whitespace split that keeps quoted runs together."""
     tokens: list[str] = []
     cur = ''
-    i, n = 0, len(text)
-    in_single = in_double = False
-    while i < n:
-        ch = text[i]
-        if ch == '\\' and not in_single and i + 1 < n:
-            cur += text[i:i + 2]
-            i += 2
-            continue
-        if ch == "'" and not in_double:
-            in_single = not in_single
-            cur += ch
-            i += 1
-            continue
-        if ch == '"' and not in_single:
-            in_double = not in_double
-            cur += ch
-            i += 1
-            continue
-        if ch.isspace() and not in_single and not in_double:
+    for ev in QuoteWalk(text):
+        if not ev.escaped and not ev.in_single and not ev.in_double \
+                and ev.text.isspace():
             if cur:
                 tokens.append(cur)
                 cur = ''
-            i += 1
             continue
-        cur += ch
-        i += 1
+        cur += ev.text
     if cur:
         tokens.append(cur)
     return tokens
@@ -700,8 +768,8 @@ _ASSIGN_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=')
 
 
 def _read_command(text: str) -> Command:
-    hs = _HERESTRING_RE.search(text)
-    tokens = _tokenize(_HERESTRING_RE.sub(' ', text))
+    without_herestrings, herestring = _split_herestrings(text)
+    tokens = _tokenize(without_herestrings)
 
     redirects: list[tuple[str, str]] = []
     words: list[str] = []
@@ -722,7 +790,7 @@ def _read_command(text: str) -> Command:
     while words and (_ASSIGN_RE.match(words[0]) or words[0] in COMMAND_PREFIXES):
         words.pop(0)
     return Command(name=words[0] if words else '', args=words[1:], redirects=redirects,
-                   herestring=hs.group(1) if hs else None, text=text)
+                   herestring=herestring, text=text)
 
 
 def _tail_hands_stdin_back(cmd: Command) -> bool:
@@ -858,6 +926,14 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
         arg_secrets = [a for a in cmd.args if token_carries_secret(a)]
         secret_files = _secret_files_on_stdout(cmd)
         printed_names = _printed_secret_names(cmd)
+        # A here-string is STDIN, not an argv token — `_read_command` cuts it out of
+        # the text before tokenizing, which is right for the `argv` rule and was
+        # wrong for every other one: the value-bearing rules never saw it at all, so
+        # `cat <<<"$SECRET"` and `base64 <<<"$SECRET"` printed the value and read as
+        # clean, and `cat <<<"$SECRET" >> x.log` wrote it to a log unreported. Asked
+        # here through the same predicate as an argument, exactly as the name-taking
+        # printers are — not through a second parser (card#8351).
+        herestring_secret = bool(cmd.herestring) and token_carries_secret(cmd.herestring)
         # A stage that puts a secret on ITS stdout makes the whole downstream
         # pipeline carry one. The reader leg is load-bearing and was missing:
         # `cat "$TOKEN_FILE"` names no secret VALUE in its argv — what it is given
@@ -867,7 +943,7 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
         # them out would make `printenv <secret> | base64` green while
         # `printenv <secret>` reds — one pipe stage silencing a leak, which is the
         # defect this whole leg exists to close.
-        if arg_secrets or secret_files or printed_names \
+        if arg_secrets or secret_files or printed_names or herestring_secret \
                 or (idx > 0 and pipeline_carries_secret):
             pipeline_carries_secret = True
 
@@ -888,11 +964,28 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
         # --- stdout -----------------------------------------------------------
         if 'stdout' in enabled and not seg.captured and not seg.piped_out \
                 and _writes_to_a_readable_surface(cmd):
-            # Three independent ways one command reaches stdout. They are NOT an
-            # if/elif chain: `tee` is both a reader and a passthrough tail, and
-            # chaining silently swallowed the tail case behind the reader's empty
-            # result — a branch that could not fire, which is the shape this whole
-            # card is about.
+            # FOUR independent ways one command reaches stdout — it prints its
+            # argument, it reads a secret file, it hands a pipeline's stdin back,
+            # or it hands a here-string back. They are NOT an if/elif chain: `tee`
+            # is both a reader and a passthrough tail, and chaining silently
+            # swallowed the tail case behind the reader's empty result — a branch
+            # that could not fire, which is the shape this whole card is about.
+            #
+            # `tee`'s file arguments are WRITE targets — its stdout is its STDIN.
+            # `_secret_files_on_stdout` cannot tell the two apart from an argv, so
+            # on a passthrough tail of a secret-carrying pipeline the reader
+            # diagnosis names the wrong direction outright: it told the operator
+            # `tee` PUTS the contents of the file it is WRITING on stdout, and to
+            # open that file themselves. The line stays red; the tail message is
+            # the true one, and it is the one that describes what leaks.
+            reads_a_secret_by_redirect = any(
+                _looks_like_secret_path(t) for t in cmd.input_paths())
+            passthrough_tail = (idx == len(pipeline) - 1 and idx > 0
+                                and pipeline_carries_secret
+                                and _tail_hands_stdin_back(cmd))
+            report_as_reader = bool(secret_files) and not (
+                passthrough_tail and not reads_a_secret_by_redirect)
+
             printed = arg_secrets + printed_names
             if cmd.name in PRINTING_COMMANDS and printed:
                 # A name-taking printer was handed a NAME, so the message has to
@@ -906,7 +999,7 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
                     f'stdout — a terminal '
                     f'scrollback, a CI log, or an AI agent\'s session transcript. '
                     f'Test with ${{VAR:+set}}; compare with sha256sum.'))
-            if secret_files:
+            if report_as_reader:
                 findings.append(Finding(
                     path, line, 'stdout', 'stdout',
                     f'`{cmd.name}` puts the contents of '
@@ -914,23 +1007,30 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
                     f'stdout. Open the file yourself, at your own terminal — a '
                     f'value that reaches a transcript is leaked, and the only '
                     f'repair is rotation.'))
-            # `and not secret_files` dedupes ONE case: `tee` is a reader AND a
-            # passthrough tail, so both legs fire on one command and the reader's
-            # diagnosis is the specific one. What makes the bare form safe is the
-            # PREDICATE, not a second condition here: `_secret_files_on_stdout`
-            # answers non-empty only for a command that actually reads. Computed
-            # over any command's argv it disabled the tail rule for any tail whose
-            # arguments merely LOOKED like a secret path, which brought back the
-            # "Compare both values" class DL-321 fixed —
-            # `printf '%s' "$SECRET" | diff - <secret file>` was green.
-            if idx == len(pipeline) - 1 and idx > 0 and pipeline_carries_secret \
-                    and _tail_hands_stdin_back(cmd) \
-                    and not secret_files:
+            # `not report_as_reader` dedupes ONE case: a tail that is ALSO a
+            # reader of a secret file it was given by REDIRECT (`… | cat < f`)
+            # fires both legs on one command, and two findings for one line is the
+            # noise that gets a lint switched off. It is deliberately narrow. The
+            # clause it replaced was `not secret_files`, which disabled the tail
+            # rule for any tail whose arguments merely LOOKED like a secret path
+            # and brought back the "Compare both values" class DL-321 fixed —
+            # `printf '%s' "$SECRET" | diff - <secret file>` was green — and even
+            # scoped to a real reader it kept answering with the WRONG direction
+            # for `tee`.
+            if passthrough_tail and not report_as_reader:
                 findings.append(Finding(
                     path, line, 'stdout', 'stdout',
                     f'this pipeline carries a secret VALUE and ends at `{cmd.name}`, '
                     f'which is not a known stdin SINK — so it hands (some function '
                     f'of) the value straight back to the terminal. Send it to a '
+                    f'file, a digest, or a program that consumes it.'))
+            if herestring_secret and not passthrough_tail \
+                    and _tail_hands_stdin_back(cmd):
+                findings.append(Finding(
+                    path, line, 'stdout', 'stdout',
+                    f'the here-string hands a secret VALUE to `{cmd.name}` on stdin, '
+                    f'and `{cmd.name}` is not a known stdin SINK — so it puts (some '
+                    f'function of) the value straight back on stdout. Send it to a '
                     f'file, a digest, or a program that consumes it.'))
 
         # --- log --------------------------------------------------------------
@@ -979,57 +1079,31 @@ _FENCE_RE = re.compile(r'^(?P<indent>[ \t]*)(?P<marker>`{3,}|~{3,})[ \t]*(?P<inf
 def _strip_comment(line: str) -> tuple[str, str | None]:
     """Return `(code, comment)`, splitting at a `#` that starts a word outside
     quotes. `${VAR#pat}` and a `#` inside quotes are not comments."""
-    i, n = 0, len(line)
-    in_single = in_double = False
-    while i < n:
-        ch = line[i]
-        if ch == '\\' and not in_single:
-            i += 2
+    for ev in QuoteWalk(line):
+        if ev.escaped or ev.in_single or ev.in_double:
             continue
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        elif ch == '#' and not in_single and not in_double:
-            if i == 0 or line[i - 1].isspace():
-                return line[:i], line[i:]
-        i += 1
+        if ev.text == '#' and (ev.index == 0 or line[ev.index - 1].isspace()):
+            return line[:ev.index], line[ev.index:]
     return line, None
 
 
 def _quote_state(text: str, in_single: bool, in_double: bool) -> tuple[bool, bool]:
-    i, n = 0, len(text)
-    while i < n:
-        ch = text[i]
-        if ch == '\\' and not in_single:
-            i += 2
-            continue
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        i += 1
-    return in_single, in_double
+    """The quoting a fence line LEAVES OPEN, so the next line joins the same
+    logical line. The walk carries the state; this only reads it off the end."""
+    walk = QuoteWalk(text, in_single, in_double)
+    for _ in walk:
+        pass
+    return walk.in_single, walk.in_double
 
 
 def _open_paren_depth(text: str, depth: int) -> int:
-    i, n = 0, len(text)
-    in_single = in_double = False
-    while i < n:
-        ch = text[i]
-        if ch == '\\' and not in_single:
-            i += 2
+    for ev in QuoteWalk(text):
+        if ev.escaped or ev.in_single or ev.in_double:
             continue
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        elif not in_single and not in_double:
-            if ch == '(':
-                depth += 1
-            elif ch == ')':
-                depth = max(0, depth - 1)
-        i += 1
+        if ev.text == '(':
+            depth += 1
+        elif ev.text == ')':
+            depth = max(0, depth - 1)
     return depth
 
 
