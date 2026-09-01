@@ -379,14 +379,24 @@ jobs:
           # design avoids, just with CI doing the pushing. A literal, unmistakable
           # marker in the title says so.
           #
-          # ⛔ IT SUPPRESSES THIS CHECK, IT DOES NOT INSTRUCT THE BRIDGE. Nothing at
-          # runtime reads it; a PR carrying it merges and moves whatever its two
-          # closure routes would have moved anyway (normally nothing, which is the
-          # point). Stated because a marker that LOOKS like a directive invites the
-          # reading that it disables a move, and it cannot.
+          # ⛔ SINCE card#8344 / DL-327 THE WRITEBACK READS IT TOO, and the sentence
+          # that stood here — "it suppresses this check, it does not instruct the
+          # bridge; nothing at runtime reads it" — is SUPERSEDED. A PR carrying this
+          # marker now takes NEITHER closure route at merge: the structural one
+          # (`PrOutcome::mergeClosesCard()`) and the lexical one (`ClosureGrammar`)
+          # both refuse it, so the card is correlated and stamped exactly as before
+          # and simply not moved. ⛔ It still cannot INSTRUCT a move — it only ever
+          # withholds one — which is why it is not the accept-surface DL-318 refused.
+          #
+          # ⚠ ONE LITERAL, TWO ENGINES. `App\Bridge\Support\NoCloseGrammar::MARKER`
+          # owns the spelling and `PrTitleLintTest` ties this assignment to it,
+          # comparing the two ANSWER SETS as well as the string: bash cannot read a
+          # PHP constant, so the copy is GUARDED rather than deleted. The fold above
+          # plus `grep -qF` is a fixed ASCII-folded substring test, which is exactly
+          # what `stripos()` is on the PHP side.
           optout='[no-close]'
           if grep -qF "$optout" <<<"$title_lc"; then
-            echo "Title carries ${optout} — this PR declares it does not finish the card it names. Skipping."
+            echo "Title carries ${optout} — this PR declares it does not finish the card it names, and since card#8344 the writeback honours it too (no stage move on merge). Skipping."
             exit 0
           fi
 

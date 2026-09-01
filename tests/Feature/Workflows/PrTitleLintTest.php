@@ -5,6 +5,7 @@ namespace Tests\Feature\Workflows;
 use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\DlTokenGrammar;
+use App\Bridge\Support\NoCloseGrammar;
 use App\Bridge\Writeback\PrOutcome;
 use Symfony\Component\Yaml\Yaml;
 use Tests\TestCase;
@@ -1837,18 +1838,107 @@ class PrTitleLintTest extends TestCase
     }
 
     /**
-     * The opt-out marker must be inert everywhere else in this workflow: it names no
-     * card and no DL, so it can neither suppress nor trigger the near-miss warnings,
-     * and it must not itself read as a closing form. Asserted rather than assumed —
-     * `[no-close]` contains the verb `close`, one character away from a bridge.
+     * The opt-out marker must be inert in the CORRELATION grammars: it names no card and
+     * no DL, so it can neither suppress nor trigger the near-miss warnings.
+     *
+     * ⚠ IT IS NO LONGER INERT AT RUNTIME, and the docblock that said so is superseded
+     * (card#8344 / DL-327): the writeback now reads it and withholds the merge move. What
+     * is asserted here is the narrower property that never changed — the marker does not
+     * SELECT or WARN about anything — plus the two directions the closure grammar now
+     * answers, which are for opposite reasons and must not be confused: `[no-close]`
+     * carries no closing form (it never did — `close]` is a character away from a verb
+     * bridge and does not reach one), AND it now vetoes any closing form beside it.
+     * `NoCloseGrammarTest` owns the second property; the un-vetoed near-spelling below is
+     * what keeps the FIRST one falsifiable, since under the veto the marker itself can no
+     * longer discriminate.
      */
-    public function test_the_opt_out_marker_is_inert_in_every_other_grammar(): void
+    public function test_the_opt_out_marker_is_inert_in_the_correlation_grammars(): void
     {
-        $this->assertFalse(ClosureGrammar::hasClosure('docs: a thing [no-close]'),
-            'the opt-out marker reads as a closing form to the runtime grammar');
         $this->assertFalse($this->warned('docs: a thing [no-close]', 'docs/context'),
             'the opt-out marker trips the near-miss warning');
         $this->assertSame(0, $this->runRequireStep('docs: a thing [no-close] (card#8286)', 'docs/8286-context'),
             'the opt-out marker breaks the correlation-token step');
+        $this->assertFalse(ClosureGrammar::hasClosure('docs: a thing [no-close]'),
+            'the opt-out marker reads as a closing form to the runtime grammar');
+        $this->assertFalse(ClosureGrammar::hasClosure('docs: a thing [no-close!] card#123'),
+            'the bracketed `close` bridges to a token — measured on a near-spelling the veto does not catch');
+    }
+
+    /**
+     * THE MARKER IS ONE LITERAL READ BY TWO ENGINES (card#8344 / DL-327), and this is the
+     * guard that keeps them the same one. `NoCloseGrammar::MARKER` owns the spelling; bash
+     * cannot read a PHP constant, so the workflow's copy is GUARDED rather than deleted —
+     * the DL-239 discipline applied where a pointer is not executable.
+     *
+     * ⛔ THE STRING TIE ALONE WOULD BE THE WEAKER HALF, so the ANSWER SETS are compared
+     * too: the step folds with `tr` and tests `grep -qF`, and the runtime tests
+     * `stripos()`. Both are fixed ASCII-folded substring tests, and this asserts that over
+     * a corpus rather than by reading two implementations.
+     */
+    public function test_the_opt_out_literal_is_the_runtimes_and_both_engines_agree(): void
+    {
+        $this->assertSame(NoCloseGrammar::MARKER, $this->stepRegex(self::CLOSURE_STEP, 'optout'),
+            'the workflow and the writeback would read different markers — a PR could opt out of CI and still be closed');
+
+        $corpus = [
+            'docs: cite the ruling [no-close] (card#8286)',
+            'docs: cite the ruling [NO-CLOSE] (card#8286)',
+            'docs: cite the ruling [No-Close] (card#8286)',
+            '[no-close] docs: cite the ruling (card#8286)',
+            'docs: cite the ruling (card#8286)[no-close]',
+            'docs: cite the ruling (card#8286)',
+            'docs: cite the ruling, no close intended (card#8286)',
+            'docs: cite the ruling [noclose] (card#8286)',
+            'docs: cite the ruling [no_close] (card#8286)',
+            'docs: cite the ruling (no-close) (card#8286)',
+            'docs: cite the ruling [no-close!] (card#8286)',
+        ];
+        $bash = $this->fixedGrepMatchesAll(NoCloseGrammar::MARKER, $corpus);
+        $php = array_values(array_filter($corpus, fn (string $t) => NoCloseGrammar::marks($t)));
+
+        $this->assertSame($bash, $php, 'the CI step and the writeback disagree about which titles carry the marker');
+        // The corpus must SPLIT, or the comparison above is two engines agreeing on nothing.
+        $this->assertNotEmpty($php);
+        $this->assertNotSame(count($corpus), count($php));
+
+        // ⚠ ONE DISCLOSED DIVERGENCE, filed rather than repaired: `NoCloseGrammar` reads the
+        // title with GitHub's quoted revert wrapper subtracted (a quotation is not an
+        // assertion, DL-318) and this step does not. So a hand-made revert QUOTING a marked
+        // title is un-marked to the writeback and marked to CI — CI then DEMANDS nothing,
+        // which is the direction that cannot produce a wrong move, and is what the
+        // `revert-*` exemption already does for GitHub's own mint.
+        $quoted = 'Revert "docs: cite the ruling [no-close] (card#8286)" (closes card#456)';
+        $this->assertSame([$quoted], $this->fixedGrepMatchesAll(NoCloseGrammar::MARKER, [$quoted]));
+        $this->assertFalse(NoCloseGrammar::marks($quoted));
+    }
+
+    /**
+     * The step's fold + `grep -F`, over many subjects in one process — the fixed-string
+     * sibling of {@see grepMatchesAll()}, and separate from it for the reason the two DL /
+     * card vector helpers are separate: they tie different engines over different
+     * authorities, and folding them would be shorter rather than more tied.
+     *
+     * @param  list<string>  $subjects
+     * @return list<string>
+     */
+    private function fixedGrepMatchesAll(string $needle, array $subjects): array
+    {
+        $this->assertNotEmpty($subjects, 'a batched grep over nothing would report every needle as matching nothing');
+        $this->assertSame([], array_values(array_filter($subjects, fn (string $s) => str_contains($s, "\n"))),
+            'a batched subject must be one line — a newline in one shifts every later line number');
+
+        $pipeline = 'printf '.escapeshellarg('%s\n').' '
+            .implode(' ', array_map('escapeshellarg', $subjects))
+            ." | tr '[:upper:]' '[:lower:]' | grep -nF ".escapeshellarg($needle);
+        $rc = 0;
+        $out = [];
+        exec('bash -c '.escapeshellarg($pipeline).' 2>/dev/null', $out, $rc);
+
+        $matched = [];
+        foreach ($out as $line) {
+            $matched[] = $subjects[((int) explode(':', $line, 2)[0]) - 1];
+        }
+
+        return $matched;
     }
 }
