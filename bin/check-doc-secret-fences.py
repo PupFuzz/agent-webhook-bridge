@@ -66,6 +66,23 @@ shell reader is a heuristic, not a parser: it understands quoting, pipelines,
 command substitution, redirection and here-strings, and it does not understand
 functions, loops, `eval`, aliases, or a value routed through several variables.
 
+FOUR MORE BOUNDS, each MEASURED on this checkout rather than reasoned about. None
+fires on any doc in this repo today, and closing any of them changes what CI
+rejects — so each is disclosed here rather than quietly widened:
+  · A fence inside a BLOCKQUOTE (`> ` before the backticks) is not recognised as a
+    fence at all — an opener is matched after leading WHITESPACE only — so the
+    whole body is invisible, not merely unparsed.
+  · A Pandoc / Quarto info string — braces around the language — is not in
+    SHELL_INFO, so such a fence reads as non-executable.
+  · There is no fd table. `exec 3<` a secret file followed by `cat <&3` is green:
+    the reading command's input path is `&3`, and nothing carries the opener's
+    path forward to it.
+  · A `sh -c` / `bash -c` STRING OPERAND is not recursed into, exactly as `eval`'s
+    is not — it is read as an ordinary argument. So a single-quoted body expands
+    nothing here and is GREEN, while a double-quoted one reds under the `argv`
+    rule, which is correct: the PARENT shell expands that one into the child's
+    argv before the child ever starts.
+
 A HEREDOC is not tracked AT ALL, so its body is read as though it were commands: a
 secret expansion inside one reports an `argv` finding against what is really a
 config line. That holds for the QUOTED `<<'EOF'` spelling exactly as for the
@@ -78,7 +95,12 @@ answer if one appears.
 A NESTED command substitution is read one level deep on the secret-FILE leg:
 `$(cat <secret file>)` marks its enclosing command, `$(echo "$(cat <secret file>)")`
 does not and is GREEN. A nested secret VALUE expansion is unaffected — the
-expansion walk is not depth-limited — so `$(echo "$SECRET")` still reds.
+expansion walk is not depth-limited — so `$(echo "$SECRET")` still reds. WITHIN
+that one level every spelling of the read is decided by ONE predicate,
+`_secret_files_on_stdout`, shared with the pipeline reader: `$(cat f)`,
+`$(cat < f)` and bash's `$(<f)` are the same act. They were two divergent copies of
+the question, and the two redirect spellings answered GREEN while the first
+reddened — a redirection character deciding a security verdict.
 
 ONE LEG IS NOT AN ENUMERATION, AND THE DIFFERENCE IS DELIBERATE. Where a pipeline
 carrying a secret VALUE ENDS, the question is decided deny-by-default: the tail
@@ -193,6 +215,13 @@ COMMAND_PREFIXES = {'sudo', 'doas', 'command', 'exec', 'nohup', 'nice', 'ionice'
 #: Commands whose stdout is (some function of) their arguments.
 PRINTING_COMMANDS = {'echo', 'printf', 'env', 'printenv', 'set', 'declare',
                      'typeset'}
+
+#: The printers whose argument is a variable NAME rather than a value. The value
+#: they resolve appears NOWHERE in the source text, so the expansion walk every
+#: other rule is built on has nothing to find — see `_printed_secret_names`. A
+#: member outside PRINTING_COMMANDS would be a leg that cannot fire, so the subset
+#: is asserted by a test rather than left to this comment.
+NAME_TAKING_PRINTERS = {'printenv', 'declare', 'typeset'}
 
 #: Commands whose stdout is (some function of) a file they were given.
 READING_COMMANDS = {'cat', 'head', 'tail', 'less', 'more', 'nl', 'tac', 'rev',
@@ -756,6 +785,46 @@ def _literal_payload(cmd: Command) -> str | None:
 # The rules
 # --------------------------------------------------------------------------------
 
+def _secret_files_on_stdout(cmd: Command) -> list[str]:
+    """Every secret FILE whose contents this command puts on ITS OWN stdout.
+
+    ONE predicate, because there is one act. `cat <secret file>`, `cat < <secret
+    file>` and bash's `$(< <secret file>)` differ only in spelling, and this
+    question had two divergent copies of the answer: the pipeline reader asked over
+    `args + input_paths()` while the substitution reader asked over `args` alone.
+    So the verdict on identical bytes depended on which caller asked —
+    `cat < "$TOKEN_FILE"` reddened on its own line and went GREEN the moment it was
+    captured, a redirection character deciding a security verdict.
+
+    An empty NAME is bash's `$(<file)`, and its only real caller is the
+    substitution one: as a whole command at top level, `< file` opens the file and
+    prints nothing, which is why `_analyse_pipeline` skips a nameless command
+    before it ever asks this.
+    """
+    if cmd.name and cmd.name not in READING_COMMANDS:
+        return []
+    return [t for t in cmd.args + cmd.input_paths() if _looks_like_secret_path(t)]
+
+
+def _printed_secret_names(cmd: Command) -> list[str]:
+    """Bare variable NAMES whose VALUE this command would print.
+
+    `printenv BRIDGE_WEBHOOK_SECRET` and `declare -p BRIDGE_WEBHOOK_SECRET` resolve
+    a secret onto stdout while carrying no `$` anywhere for the expansion walk to
+    find — so the `stdout` arm, which asks for an expansion-bearing argument, could
+    not fire for either, though `_is_secret_value_name` already answered True about
+    the very argument being passed.
+
+    Deliberately NOT fed to the `argv` rule. `printenv` does fork, but what lands
+    in /proc/<pid>/cmdline is the NAME it was asked for; reporting that as an argv
+    leak would print a message that is false.
+    """
+    if cmd.name not in NAME_TAKING_PRINTERS:
+        return []
+    return [a for a in cmd.args
+            if not a.startswith('-') and _is_secret_value_name(a.strip('"\''))]
+
+
 def _sub_is_secret_bearing(sub: Chunk) -> bool:
     """Does this command substitution's stdout carry a secret VALUE?"""
     if _secret_expansions(sub.text):
@@ -763,7 +832,7 @@ def _sub_is_secret_bearing(sub: Chunk) -> bool:
     for pipeline in _split_segments(_mask_substitutions(sub)[0], captured=True):
         for seg in pipeline:
             cmd = _read_command(seg.chunk.text)
-            if cmd.name in READING_COMMANDS and any(_looks_like_secret_path(a) for a in cmd.args):
+            if _secret_files_on_stdout(cmd) or _printed_secret_names(cmd):
                 return True
     return False
 
@@ -787,14 +856,18 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
         if not cmd.name:
             continue
         arg_secrets = [a for a in cmd.args if token_carries_secret(a)]
-        secret_files = [a for a in cmd.args + cmd.input_paths()
-                        if _looks_like_secret_path(a)]
+        secret_files = _secret_files_on_stdout(cmd)
+        printed_names = _printed_secret_names(cmd)
         # A stage that puts a secret on ITS stdout makes the whole downstream
         # pipeline carry one. The reader leg is load-bearing and was missing:
         # `cat "$TOKEN_FILE"` names no secret VALUE in its argv — what it is given
         # is a PATH — so `cat "$TOKEN_FILE" | base64` reached the tail rule with
-        # the pipeline marked clean and every stage individually innocent.
-        if arg_secrets or (cmd.name in READING_COMMANDS and secret_files) \
+        # the pipeline marked clean and every stage individually innocent. The
+        # name-taking printers are here for the same reason and no other: leaving
+        # them out would make `printenv <secret> | base64` green while
+        # `printenv <secret>` reds — one pipe stage silencing a leak, which is the
+        # defect this whole leg exists to close.
+        if arg_secrets or secret_files or printed_names \
                 or (idx > 0 and pipeline_carries_secret):
             pipeline_carries_secret = True
 
@@ -820,14 +893,20 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
             # chaining silently swallowed the tail case behind the reader's empty
             # result — a branch that could not fire, which is the shape this whole
             # card is about.
-            if cmd.name in PRINTING_COMMANDS and arg_secrets:
+            printed = arg_secrets + printed_names
+            if cmd.name in PRINTING_COMMANDS and printed:
+                # A name-taking printer was handed a NAME, so the message has to
+                # say whose VALUE it prints: the token it names is not the secret.
+                subject = _unmask(printed[0], subs)
+                if not arg_secrets:
+                    subject = f'the VALUE of {subject}'
                 findings.append(Finding(
                     path, line, 'stdout', 'stdout',
-                    f'`{cmd.name}` writes {_unmask(arg_secrets[0], subs)} to '
+                    f'`{cmd.name}` writes {subject} to '
                     f'stdout — a terminal '
                     f'scrollback, a CI log, or an AI agent\'s session transcript. '
                     f'Test with ${{VAR:+set}}; compare with sha256sum.'))
-            if cmd.name in READING_COMMANDS and secret_files:
+            if secret_files:
                 findings.append(Finding(
                     path, line, 'stdout', 'stdout',
                     f'`{cmd.name}` puts the contents of '
@@ -835,16 +914,18 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
                     f'stdout. Open the file yourself, at your own terminal — a '
                     f'value that reaches a transcript is leaked, and the only '
                     f'repair is rotation.'))
-            # `and not (cmd.name in READING_COMMANDS and secret_files)` dedupes
-            # ONE case: `tee` is a reader AND a passthrough tail, so both legs fire
-            # on one command and the reader's diagnosis is the specific one. Written
-            # as a bare `and not secret_files` it disabled the tail rule for any
-            # tail whose argv merely LOOKED like a secret path, which brought back
-            # the "Compare both values" class DL-321 fixed:
+            # `and not secret_files` dedupes ONE case: `tee` is a reader AND a
+            # passthrough tail, so both legs fire on one command and the reader's
+            # diagnosis is the specific one. What makes the bare form safe is the
+            # PREDICATE, not a second condition here: `_secret_files_on_stdout`
+            # answers non-empty only for a command that actually reads. Computed
+            # over any command's argv it disabled the tail rule for any tail whose
+            # arguments merely LOOKED like a secret path, which brought back the
+            # "Compare both values" class DL-321 fixed —
             # `printf '%s' "$SECRET" | diff - <secret file>` was green.
             if idx == len(pipeline) - 1 and idx > 0 and pipeline_carries_secret \
                     and _tail_hands_stdin_back(cmd) \
-                    and not (cmd.name in READING_COMMANDS and secret_files):
+                    and not secret_files:
                 findings.append(Finding(
                     path, line, 'stdout', 'stdout',
                     f'this pipeline carries a secret VALUE and ends at `{cmd.name}`, '
@@ -864,9 +945,13 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
         # --- history ----------------------------------------------------------
         if 'history' in enabled:
             store = _redirect_secret_store(cmd)
-            target_is_secret_store = store is not None or any(
-                _looks_like_secret_path(a) for a in cmd.args
-            ) and cmd.name in {'install', 'tee', 'dd'}
+            # Parenthesised as Python already groups it — `A or (B and C)`. Read as
+            # `(A or B) and C` it would be a different rule, and nothing in the
+            # source said which one was meant.
+            target_is_secret_store = store is not None or (
+                any(_looks_like_secret_path(a) for a in cmd.args)
+                and cmd.name in {'install', 'tee', 'dd'}
+            )
             payload = None
             if cmd.herestring and '$' not in cmd.herestring and SUB_OPEN not in cmd.herestring:
                 payload = cmd.herestring.strip('"\'')

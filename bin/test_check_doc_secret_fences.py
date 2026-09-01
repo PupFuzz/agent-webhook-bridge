@@ -359,6 +359,162 @@ class TheOtherSurfacesTheRuleNames(unittest.TestCase):
         self.assertEqual([], self._rules('sha256sum < "$TOKEN_FILE"\n'))
 
 
+class ANameTakingPrinterResolvesTheValueFromABareNAME(unittest.TestCase):
+    """`printenv NAME` / `declare -p NAME` print a VALUE the source text never
+    spells.
+
+    Both sat in `PRINTING_COMMANDS`, but the `stdout` arm asked only whether an
+    argument carried a `$`-expansion — and these two take a bare NAME, so the arm
+    could not fire for them at all while `_is_secret_value_name` already answered
+    True for the very argument being passed. A rule that cannot fire is the shape
+    this whole card is about.
+
+    The NAME is not the VALUE, which is why this feeds the `stdout` arm and NOT the
+    `argv` one: `printenv` does fork, but what reaches `/proc/<pid>/cmdline` is the
+    name it was asked for.
+    """
+
+    def _rules(self, body: str) -> list[str]:
+        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
+
+    def test_printenv_and_declare_on_a_secret_name_are_stdout_leaks(self) -> None:
+        self.assertTrue(lint._is_secret_value_name('BRIDGE_WEBHOOK_SECRET'))
+        for body in (
+            'printenv BRIDGE_WEBHOOK_SECRET\n',
+            'declare -p BRIDGE_WEBHOOK_SECRET\n',
+            'typeset -p BRIDGE_CHANNEL_TOKEN\n',
+        ):
+            with self.subTest(body=body.strip()):
+                self.assertEqual(['stdout'], self._rules(body))
+
+    def test_the_name_is_not_reported_as_an_argv_leak(self) -> None:
+        """`printenv` is not a shell builtin, so widening `arg_secrets` instead of
+        the printer leg would have produced an `argv` finding whose message — "…
+        becomes a token in /proc/<pid>/cmdline" — is FALSE: what is in the argv is
+        the name."""
+        findings = _scan('```bash\nprintenv BRIDGE_WEBHOOK_SECRET\n```\n')
+        self.assertEqual(['stdout'], [f.rule for f in findings])
+        self.assertNotIn('printenv', lint.SHELL_BUILTINS)
+
+    def test_an_ordinary_variable_name_stays_green(self) -> None:
+        """The discriminator: the NAME is the only variable between this and the
+        case above. A printer that reddened on `printenv PATH` would be switched
+        off within a day."""
+        for body in ('printenv PATH\n', 'printenv HOME\n', 'declare -p BRIDGE_DIR\n'):
+            with self.subTest(body=body.strip()):
+                self.assertEqual([], self._rules(body))
+
+    def test_a_name_ending_in_a_path_word_is_still_a_path(self) -> None:
+        """The negative half of the vocabulary is not bypassed by this leg:
+        `TOKEN_FILE` names where the value lives, not the value."""
+        self.assertEqual([], self._rules('printenv TOKEN_FILE\n'))
+        self.assertEqual([], self._rules('printenv BRIDGE_SECRET_DIR\n'))
+
+    def test_a_pipe_stage_does_not_silence_it_either(self) -> None:
+        """The same property the tail rule exists for: marking the pipeline from
+        this leg is what keeps `printenv <secret> | base64` from being green while
+        `printenv <secret>` reds."""
+        self.assertEqual(['stdout'], self._rules('printenv BRIDGE_WEBHOOK_SECRET | base64\n'))
+        self.assertEqual([], self._rules('printenv BRIDGE_WEBHOOK_SECRET | sha256sum\n'))
+
+    def test_capturing_it_does_not_silence_it_either(self) -> None:
+        """And nor does a command substitution: the pipeline reader and the
+        substitution reader must answer this question the same way, which is the
+        property `ASecretFileReachesStdoutHoweverItIsSPELLED` pins for the other
+        half of the same predicate."""
+        self.assertEqual(
+            ['argv'],
+            self._rules('curl -H "Authorization: Bearer $(printenv BRIDGE_CHANNEL_TOKEN)" '
+                        'http://x/\n'))
+
+    def test_every_name_taking_printer_is_reachable_from_the_stdout_arm(self) -> None:
+        """The leg lives inside `cmd.name in PRINTING_COMMANDS`, so a member of
+        `NAME_TAKING_PRINTERS` that is not also a printing command would be a rule
+        that cannot fire — the shape this card exists to remove."""
+        self.assertTrue(lint.NAME_TAKING_PRINTERS <= lint.PRINTING_COMMANDS)
+
+    def test_the_message_says_it_prints_the_VALUE_not_the_name(self) -> None:
+        """A remediation is read by a person: `printenv` writes the VALUE of the
+        name it is handed, and the name itself is not the secret."""
+        findings = _scan('```bash\nprintenv BRIDGE_WEBHOOK_SECRET\n```\n')
+        self.assertIn('the VALUE of BRIDGE_WEBHOOK_SECRET', findings[0].message)
+        expansion = _scan('```bash\necho "$BRIDGE_WEBHOOK_SECRET"\n```\n')
+        self.assertNotIn('the VALUE of', expansion[0].message)
+
+
+class ASecretFileReachesStdoutHoweverItIsSPELLED(unittest.TestCase):
+    """ONE predicate decides "does this command put a secret FILE on stdout".
+
+    It had two divergent copies — `_analyse_pipeline` read `cmd.args +
+    cmd.input_paths()` and `_sub_is_secret_bearing` read `cmd.args` alone — so the
+    verdict on the SAME act depended on which caller asked. Measured on the pre-fix
+    tool: `$(cat "$TOKEN_FILE")` marked its enclosing command and `$(cat <
+    "$TOKEN_FILE")` did not, so `cat < "$TOKEN_FILE"` reddened on its own line and
+    went GREEN the moment it was captured — a redirection character deciding a
+    security verdict, which is the shape of this whole card.
+
+    bash's `$(<file)` is the third spelling of the same act and was never handled at
+    all: the parsed command has an empty NAME and the path only in `input_paths()`.
+    """
+
+    def _rules(self, body: str) -> list[str]:
+        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
+
+    def test_all_three_spellings_of_a_captured_secret_read_are_an_argv_leak(self) -> None:
+        """The twin of `TheFiveKnownMembers`' DL-321 bearer member, once per
+        spelling. The first is the form that already reddened — it is the control:
+        the redirect is the only variable between it and the two that did not."""
+        for body in (
+            'curl -H "Authorization: Bearer $(cat "$TOKEN_FILE")" http://x/\n',
+            'curl -H "Authorization: Bearer $(cat < "$TOKEN_FILE")" http://x/\n',
+            'curl -H "Authorization: Bearer $(<"$TOKEN_FILE")" http://x/\n',
+        ):
+            with self.subTest(body=body.strip()):
+                self.assertEqual(['argv'], self._rules(body))
+
+    def test_a_captured_secret_read_printed_back_is_a_stdout_leak(self) -> None:
+        """`echo "$(cat < f)"` — the same divergence seen through the printing arm
+        rather than the argv one."""
+        for body in (
+            'echo "$(cat "$TOKEN_FILE")"\n',
+            'echo "$(cat < "$TOKEN_FILE")"\n',
+            'echo "$(<"$TOKEN_FILE")"\n',
+        ):
+            with self.subTest(body=body.strip()):
+                self.assertEqual(['stdout'], self._rules(body))
+
+    def test_the_finding_names_the_substitution_the_doc_actually_contains(self) -> None:
+        findings = _scan('```bash\ncurl -H "Authorization: Bearer $(<"$TOKEN_FILE")" '
+                         'http://x/\n```\n')
+        self.assertEqual(['argv'], [f.rule for f in findings])
+        self.assertIn('$(<"$TOKEN_FILE")', findings[0].message)
+
+    def test_reading_a_secret_file_INTO_A_VARIABLE_is_still_the_prescribed_form(self) -> None:
+        """The green control, in all three spellings: `docs/multi-host.md` reads a
+        secret file into a variable ON PURPOSE, and a tool that reddened on that
+        would force a doc to change to satisfy a rule it already follows."""
+        for body in (
+            'export BRIDGE_CHANNEL_TOKEN="$(cat "$TOKEN_FILE")"\n',
+            'export BRIDGE_CHANNEL_TOKEN="$(cat < "$TOKEN_FILE")"\n',
+            'export BRIDGE_CHANNEL_TOKEN="$(<"$TOKEN_FILE")"\n',
+        ):
+            with self.subTest(body=body.strip()):
+                self.assertEqual([], self._rules(body))
+
+    def test_a_captured_DIGEST_of_a_secret_file_stays_green(self) -> None:
+        """The other green control, and it is the one that proves the predicate is
+        about READERS and not about the redirect: `sha256sum` is not a reading
+        command, so the same `< "$TOKEN_FILE"` is the form the rule PRESCRIBES —
+        `docs/config-schema.md` says compare digests, never values."""
+        self.assertEqual([], self._rules('echo "$(sha256sum < "$TOKEN_FILE")"\n'))
+
+    def test_a_bare_input_redirect_outside_a_substitution_prints_nothing(self) -> None:
+        """`$(<f)` reads the file; a bare `< f` as a whole command opens it and
+        prints nothing, so the empty-NAME leg must stay inside the substitution
+        predicate. This is the case that says the leg is not a blanket widening."""
+        self.assertEqual([], self._rules('< "$TOKEN_FILE"\n'))
+
+
 class RedirectionCannotBeFakedFromInsideAQuote(unittest.TestCase):
     """A `>` inside a quoted argument must not read as a redirection.
 
