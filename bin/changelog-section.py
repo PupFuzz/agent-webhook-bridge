@@ -17,7 +17,8 @@ Modes (exit codes are the contract; stdout is the body):
                    pointer to URL, so a release is never left tagged-but-
                    unpublished (card#5972)
   --locate-added   print the LABEL of the released section that a branch's own
-                   new lines have landed in — the pre-fold diagnosis (card#8339)
+                   new lines have landed in — one INPUT to the pre-fold
+                   diagnosis, not the diagnosis (card#8339, DL-329)
 
 Exit codes: 0 ok · 2 usage · 3 no such section / no released section carries a
 branch-introduced line · 4 over limit.
@@ -95,24 +96,23 @@ def locate_added(text: str, added: list[str], baseline: str) -> str | None:
     did this branch's own new changelog lines end up under a version heading
     instead of under `[Unreleased]`?
 
-    That happens with no conflict and no author error whenever a release fold
-    lands while the branch is open: the fold renames `## [Unreleased]` to
-    `## [X.Y.Z]` and opens a fresh empty one above it, the branch side of the
-    text is unchanged, so git's 3-way merge leaves the entry exactly where it
-    sat — which is now BELOW the version heading (card#8339).
+    ⚠ THAT IS A LABEL, NOT THE PRE-FOLD DIAGNOSIS, and the two are not the same
+    claim: a branch that corrects a line inside a long-released section, or that
+    cuts the section itself, also puts a line it introduced under a version
+    heading. Whether a FOLD happened while the branch was open is a fact about
+    the branch's history, not about this file, so the caller establishes it —
+    `changelog-gate.yml` requires the label to exist on the base and NOT at the
+    merge-base before it prints the fold remedy. DL-329 owns the predicate.
 
     A needle already present in the baseline is DROPPED, and that subtraction is
     load-bearing rather than tidiness: every released section here carries
     `### Added` / `### Fixed` heads, so without it a branch adding one of those
-    under `[Unreleased]` would match a released section and be told it had made
-    a mistake it did not make. The residual is the safe direction — a branch
-    line that happens to duplicate an existing one is dropped from the needles,
-    which loses the diagnosis rather than inventing one.
+    under `[Unreleased]` would match a released section and return a label its
+    caller would then have to defend. A branch line duplicating an existing one
+    is dropped with them, which yields no label rather than a wrong one.
     """
     known = set(baseline.splitlines())
     needles = {line for line in added if line.strip() and line not in known}
-    if not needles:
-        return None
     lines = text.splitlines()
     for label, start, end in _sections(lines):
         if label is None or label == UNRELEASED_LABEL:

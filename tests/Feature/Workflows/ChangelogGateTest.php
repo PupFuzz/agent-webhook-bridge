@@ -410,9 +410,13 @@ class ChangelogGateTest extends TestCase
     {
         // [Unreleased] is the only section that counts: a token that appears
         // only under an already-released heading describes shipped work, not
-        // this PR's. The VERDICT is what this leg pins; the branch filed its own
-        // new line inside a released section, so the remedy it is given is the
-        // card#8339 one asserted below rather than "add an entry".
+        // this PR's.
+        //
+        // AND IT IS NOT A FOLD. This branch CUT `## [1.0.0]` itself — the
+        // heading is absent on the base — so "v1.0.0 was cut while this branch
+        // was open" would be false about the one branch that could not have
+        // been surprised by it. The pre-fold text must NOT appear here; the
+        // generic remedy must.
         [$rc, $out] = $this->runFeatureStep(
             ['docs/CHANGELOG.md' => $this->changelog('- old'), 'app/X.php' => 'a'],
             ['docs/CHANGELOG.md' => $this->changelog('- old', "\n## [1.0.0] - 2026-01-01\n\n- shipped (card#1234)\n"), 'app/X.php' => 'b'],
@@ -422,7 +426,8 @@ class ChangelogGateTest extends TestCase
 
         $this->assertSame(1, $rc, $out);
         $this->assertStringContainsString('does not name card 1234', $out);
-        $this->assertStringContainsString('MOVE', $out);
+        $this->assertStringNotContainsString('predates the fold', $out);
+        $this->assertStringContainsString("Fix: add an [Unreleased] entry citing 'card#1234'", $out);
     }
 
     // ------------------------------------------------- the pre-fold shape (card#8339)
@@ -535,6 +540,51 @@ class ChangelogGateTest extends TestCase
         $this->assertSame(1, $rc, $out);
         $this->assertStringContainsString("Fix: add an [Unreleased] entry citing 'card#1234'", $out);
         $this->assertStringNotContainsString('predates the fold', $out);
+    }
+
+    public function test_a_branch_editing_an_already_released_section_is_not_told_a_fold_happened(): void
+    {
+        // THE SECOND DISCRIMINATOR, and the one the label alone cannot supply:
+        // `[0.79.0]` was cut BEFORE this branch forked — it stands at the fork
+        // point AND on the base, and the base never touched the changelog at
+        // all. The branch corrects a line inside that released section (the
+        // stale-fix shape), which puts a line it introduced under a released
+        // heading — everything the label needs, and none of what the sentence
+        // claims. Saying "v0.79.0 was cut while this branch was open" is false,
+        // and telling the author to lift a SHIPPED line out of a release is
+        // worse than the generic remedy it replaced.
+        $forked = "# Changelog\n\n## [Unreleased]\n\n## [0.79.0] - 2026-01-01\n\n- the shipped behaviour (card#1000)\n";
+        $corrected = "# Changelog\n\n## [Unreleased]\n\n## [0.79.0] - 2026-01-01\n\n- the shipped behaviour, described correctly (card#1000)\n";
+
+        $repo = $this->makeForkedRepo(
+            ['docs/CHANGELOG.md' => $forked, 'app/X.php' => 'a'],
+            ['app/Y.php' => 'b'],
+            ['docs/CHANGELOG.md' => $corrected, 'app/X.php' => 'b'],
+        );
+
+        // The fixture is only worth its verdict if the merge really left the
+        // branch's own new line inside the released section.
+        $this->assertStringContainsString(
+            "## [0.79.0] - 2026-01-01\n\n- the shipped behaviour, described correctly (card#1000)\n",
+            (string) file_get_contents($repo['dir'].'/docs/CHANGELOG.md'),
+        );
+
+        [$rc, $out] = $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
+            $repo['dir'],
+            [
+                'BASE' => $repo['base'],
+                'HEAD' => $repo['head'],
+                'TITLE' => 'docs(changelog): correct a shipped line (card#1234)',
+                'HEAD_REF' => 'fix/1234-x',
+            ],
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString('does not name card 1234', $out);
+        $this->assertStringNotContainsString('predates the fold', $out);
+        $this->assertStringNotContainsString('0.79.0', $out);
+        $this->assertStringContainsString("Fix: add an [Unreleased] entry citing 'card#1234'", $out);
     }
 
     public function test_the_pre_fold_remedy_has_exactly_one_spelling_in_the_step(): void

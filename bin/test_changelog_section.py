@@ -131,7 +131,19 @@ class LocateAdded(unittest.TestCase):
 
     def test_a_branch_that_adds_nothing_to_the_changelog_yields_nothing(self):
         self.assertIsNone(cs.locate_added(self.MERGED, [], self.BASELINE))
-        self.assertIsNone(cs.locate_added(self.MERGED, ["", "   "], self.BASELINE))
+
+    def test_a_blank_added_line_is_not_a_needle(self):
+        # The BASELINE cannot be the discriminator here: it carries blank lines
+        # of its own, so a blank needle would be subtracted as "the base already
+        # had it" and this would pass with the whitespace filter deleted. The
+        # baseline is therefore one non-blank line, which leaves the filter as
+        # the only thing standing between a blank diff line — every changelog
+        # edit produces some — and a confident label for the first released
+        # section that happens to contain a blank line.
+        baseline = "# Changelog\n"
+        self.assertNotIn("", baseline.splitlines()[1:])
+        self.assertIn("", self.MERGED.splitlines())
+        self.assertIsNone(cs.locate_added(self.MERGED, ["", "   "], baseline))
 
     def test_the_version_heading_itself_is_not_a_filing(self):
         # A release PR adds `## [1.1.0] - …`; that is the heading, not an entry

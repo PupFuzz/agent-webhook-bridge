@@ -344,15 +344,47 @@ jobs:
           # established", and the remedy for an unestablished diagnosis is the
           # one that was always printed. Naming a cause we cannot verify would
           # be the worse failure.
+          #
+          # THE LABEL IS NOT THE DIAGNOSIS. "A line this branch adds sits in a
+          # released section" is also true of two shapes where the fold sentence
+          # below is FALSE, both measured as fixtures:
+          #
+          #   * the branch CORRECTS a line inside a section released long before
+          #     it forked (the stale-fix shape) — the message would date a fold
+          #     to a window it did not happen in, and would tell the author to
+          #     lift a SHIPPED line out of a release;
+          #   * the branch CUTS the section itself — a PR that adds
+          #     `## [X.Y.Z]` and files under it is told that X.Y.Z "was cut while
+          #     this branch was open" by somebody else.
+          #
+          # So the fold is asserted, not inferred: the heading must exist on the
+          # BASE and must NOT have existed at the MERGE-BASE — i.e. it appeared
+          # during this branch's life, which is what "the branch predates the
+          # fold" means. Both reads go through the same extractor as the label,
+          # never a `grep '## [x]'`: a second carve of the section boundary is
+          # DL-276's defect class one level down.
+          #
+          # RESIDUAL, in the safe direction: a pre-fold branch that has ALREADY
+          # merged the folded base has the fold IN its merge-base, so it gets the
+          # generic message instead of this one. Dropping a true diagnosis costs
+          # a re-read; printing a false one sends the author to edit a release.
+          changelog_has_section() {
+            python3 bin/changelog-section.py --changelog "$1" --section "$2" >/dev/null 2>&1
+          }
+
           prefold_heading() {
-            local dir rc=0 label=''
+            local dir rc=0 label='' mb=''
             dir=$(mktemp -d)
             {
               git -c core.quotepath=false diff --no-color "$BASE...$HEAD" -- docs/CHANGELOG.md \
                 | awk '/^\+\+\+ /{next} /^\+/{print substr($0, 2)}' >"$dir/added" &&
               git show "$BASE:docs/CHANGELOG.md" >"$dir/baseline" &&
               label=$(python3 bin/changelog-section.py --changelog docs/CHANGELOG.md \
-                --locate-added "$dir/added" --baseline "$dir/baseline")
+                --locate-added "$dir/added" --baseline "$dir/baseline" 2>/dev/null) &&
+              mb=$(git merge-base "$BASE" "$HEAD") &&
+              git show "$mb:docs/CHANGELOG.md" >"$dir/mergebase" &&
+              changelog_has_section "$dir/baseline" "$label" &&
+              ! changelog_has_section "$dir/mergebase" "$label"
             } || rc=$?
             rm -rf "$dir"
             [ "$rc" -eq 0 ] || return "$rc"
