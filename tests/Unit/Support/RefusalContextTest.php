@@ -181,17 +181,51 @@ class RefusalContextTest extends TestCase
         // card#7846 / DL-314. A getCard 403 has two unrelated causes: a FOREIGN install's
         // card id correlated onto this bridge (kanban ids are global across boards, and
         // `card#NNNN` is a literal parsed out of author-controlled text), or this token's
-        // scope missing a board of its OWN. Nothing in the response distinguishes them —
-        // only a board-scoped read could, and the bridge deliberately makes none — so the
-        // slug must name both. The previous slug named only the token, and the operator who
-        // hit the foreign-id case live went auditing their own token's scope for a card
-        // that was never theirs. Asserted on the two CAUSES rather than on the literal
-        // (which the data provider above pins): a slug that silently drops one of them
-        // reds here even if someone rewrites the literal in both places.
+        // scope missing a board of its OWN. Nothing IN THE RESPONSE distinguishes them, so
+        // the default slug must name both. The previous slug named only the token, and the
+        // operator who hit the foreign-id case live went auditing their own token's scope
+        // for a card that was never theirs. Asserted on the two CAUSES rather than on the
+        // literal (which the data provider above pins): a slug that silently drops one of
+        // them reds here even if someone rewrites the literal in both places.
+        //
+        // ⚑ WHAT CHANGED WITH card#8375, stated here because DL-314's sentence *"only a
+        // board-scoped read could, and the bridge deliberately makes none"* was true when it
+        // was written and is not any more: the bridge now makes exactly that read on the
+        // `kanban_move_card` arm. It did not make the STATUS informative — it supplied
+        // evidence from OUTSIDE the response, which the caller declares with
+        // `foreignIdExcluded` (the leg below). This default is what every arm that has NOT
+        // established the id still gets, and it is still the honest answer for them.
         $reason = RefusalContext::readReason('getcard', $this->exception('{}', 403));
 
         $this->assertStringContainsString('foreign_card_id', $reason, 'the read-403 slug no longer names the foreign-card-id cause');
         $this->assertStringContainsString('token_scope', $reason, 'the read-403 slug no longer names the token-scope cause');
+    }
+
+    public function test_a_caller_that_established_the_id_on_its_own_board_gets_the_narrowed_403_reason(): void
+    {
+        // card#8375. `foreignIdExcluded` is a claim about the CALL SITE — that a board-scoped
+        // establishment of this id ran first (or that the failing read was itself
+        // board-scoped) — so the foreign-card-id cause cannot be the explanation and naming it
+        // would send the operator after a card that is demonstrably theirs. The 404 and the
+        // catch-all are UNTOUCHED by the flag: it discriminates one status, because it is one
+        // status whose ambiguity it resolves.
+        $e = $this->exception('{}', 403);
+
+        $this->assertSame('getcard_403_token_scope', RefusalContext::readReason('getcard', $e, foreignIdExcluded: true));
+        $this->assertStringNotContainsString('foreign', RefusalContext::readReason('getcard', $e, foreignIdExcluded: true));
+        $this->assertNotSame(
+            RefusalContext::readReason('getcard', $e),
+            RefusalContext::readReason('getcard', $e, foreignIdExcluded: true),
+            'the flag must actually change the slug — a no-op flag would leave every caller naming a cause it has ruled out',
+        );
+        foreach ([404, 422] as $status) {
+            $unchanged = $this->exception('{}', $status);
+            $this->assertSame(
+                RefusalContext::readReason('getcard', $unchanged),
+                RefusalContext::readReason('getcard', $unchanged, foreignIdExcluded: true),
+                'the flag must touch the 403 arm only',
+            );
+        }
     }
 
     public function test_the_verb_scopes_the_reason_so_two_arms_of_one_event_do_not_dedup_each_other(): void

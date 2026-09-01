@@ -5,6 +5,7 @@ namespace Tests\Feature\Support;
 use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\DlTokenGrammar;
+use App\Bridge\Support\RevertGrammar;
 use Tests\TestCase;
 
 /**
@@ -141,5 +142,57 @@ class ClosureGrammarTest extends TestCase
         foreach (['Closes card#123', 'Closes DL-239', 'card#123', 'DL-239', 'Closes the bug in card#123', 'Unfixes card#123'] as $row) {
             $this->assertContains($row, ClosureGrammar::VECTORS, "'{$row}' must stay in the vector set");
         }
+    }
+
+    // --- card#8306: a quoted revert title is not this author's claim ---
+
+    public function test_a_closing_form_inside_a_quoted_revert_closes_nothing(): void
+    {
+        // ⛔ THE SECOND DEFECT ROW OF THIS FILE, and card#8294 is what minted it: once
+        // titles carry `(closes card#N)`, GitHub's revert — which QUOTES the original's
+        // title verbatim — inherits a closing form for work it UNDOES. Read as an
+        // assertion it moved the reverted card FORWARD, so the board said the opposite of
+        // the truth. Both stems, because both are quotable.
+        $this->assertFalse(ClosureGrammar::closesCard('Revert "feat: rework the widget (Closes card#123)"', 123));
+        $this->assertFalse(ClosureGrammar::closesDl('Revert "feat: rework the widget (Closes DL-239)"', 'DL-239'));
+        $this->assertSame([], ClosureGrammar::closedCardIds('Revert "feat: rework the widget (Closes card#123)"'));
+        $this->assertFalse(ClosureGrammar::hasClosure('Revert "feat: rework the widget (Closes card#123)"'));
+        // Correlation is untouched — the token still parses, which is what makes this a
+        // closure ruling and not a grammar one (the same split as the bare-mention row).
+        $this->assertSame(123, CardTokenGrammar::parse('Revert "feat: rework the widget (Closes card#123)"'));
+    }
+
+    public function test_a_closing_form_outside_the_quotes_still_closes(): void
+    {
+        // The control that stops the row above being satisfied by "any title containing the
+        // word Revert closes nothing", and the escape hatch at the same time: a revert that
+        // genuinely completes a card says so in its OWN text. Every public predicate is
+        // asserted, because the subtraction lives in the one private choke point they share
+        // and a leak in any of them would be silent.
+        $hand = 'Revert "feat: widget (Closes card#123)" — back it out (Closes card#456)';
+        $this->assertTrue(ClosureGrammar::closesCard($hand, 456));
+        $this->assertFalse(ClosureGrammar::closesCard($hand, 123));
+        $this->assertSame([456], ClosureGrammar::closedCardIds($hand));
+        $this->assertTrue(ClosureGrammar::hasClosure($hand));
+        $this->assertTrue(ClosureGrammar::closesDl('Revert "feat: widget (Closes DL-239)" — also (Closes DL-42)', 'DL-42'));
+        $this->assertFalse(ClosureGrammar::closesDl('Revert "feat: widget (Closes DL-239)" — also (Closes DL-42)', 'DL-239'));
+    }
+
+    public function test_the_revert_ruling_is_deliberately_not_a_vector_in_this_corpus(): void
+    {
+        // ⛔ THE RULING THIS FILE DOES NOT RENDER, pinned so the next author who reaches for
+        // the obvious DL-239 move learns why it is wrong before the CI tie tells them.
+        // `VECTORS` feeds two ties in `PrTitleLintTest`, and a revert row breaks both by
+        // construction: the answer-set tie compares this grammar against a bash regex whose
+        // revert handling is a `revert-*` BRANCH exemption — a dimension a title-only corpus
+        // cannot express — and the operator-message tie derives a verb stem from each
+        // accepted row's FIRST WORD, which `Revert "…" (Closes card#456)` does not carry.
+        // Both were MEASURED red before the rows were withdrawn (card#8306). The ruling is
+        // rendered on the surfaces an operator meets instead.
+        foreach (ClosureGrammar::VECTORS as $vector) {
+            $this->assertStringNotContainsStringIgnoringCase('revert', $vector,
+                'a revert vector here reds two PrTitleLintTest ties — see the VECTORS docblock');
+        }
+        $this->assertStringContainsString('REVERT', RevertGrammar::describeRefusal());
     }
 }

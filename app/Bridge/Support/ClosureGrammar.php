@@ -43,6 +43,17 @@ namespace App\Bridge\Support;
  * author who already writes PR titles for GitHub's issue-linking needs to learn
  * nothing. Case-insensitive, like both token grammars.
  *
+ * ⛔ A QUOTED REVERT TITLE IS NOT THIS AUTHOR'S CLAIM (card#8306). GitHub composes a
+ * revert PR's title by quoting the original's, so once titles carry `(closes card#N)`
+ * every revert inherits a closing form for work it UNDOES. The wrapper is stripped
+ * before the verb bridge is matched — {@see RevertGrammar::withoutQuotedRevert()} owns
+ * the shape, this class owns only the consequence: text inside `Revert "…"` names no
+ * closure, text outside it is read exactly as it always was. It is subtracted HERE
+ * rather than at either caller because both consumers of this predicate — the
+ * classifier's closure filter and `bridge:reconcile`'s backstop — ask the identical
+ * question about the identical field, and DL-305 §6 / DL-308 ruled that a term on one
+ * path and not the other means the two disagree about which merges close a card.
+ *
  * A BARE MENTION IS A NO-OP, NEVER A DEMOTION — the consumer's rule, stated here
  * because this predicate is what makes it reachable. The writeback re-classifies
  * in-window PRs on EVERY pass, so a rule that returned an earlier stage for a bare
@@ -77,6 +88,20 @@ final class ClosureGrammar
      * ruling, which prose would have to assert. `Unfixes card#123` pins the leading
      * boundary. The set may GROW; `ClosureGrammarTest` pins the ratified rows so it
      * cannot shrink below them.
+     *
+     * ⛔ IT MAY NOT GROW A REVERT ROW, and the reason is a constraint two consumers place
+     * on this corpus that nothing stated until card#8306 measured it. `PrTitleLintTest`
+     * ties this list to `.github/workflows/pr-title-lint.yml` in two ways a revert vector
+     * breaks by construction: (a) the tie asserts the lint's bash regex and this grammar
+     * return the SAME answer set over these rows, and the lint handles reverts by exempting
+     * the `revert-*` BRANCH — a dimension a title-only corpus cannot express, so a revert
+     * row makes the two disagree about a case on which neither is wrong; and (b) the
+     * operator-message tie derives a verb STEM from each accepted row's FIRST WORD, which
+     * assumes every accepted vector opens with its closing verb — false of
+     * `Revert "…" (Closes card#456)`, whose first word is not a verb at all. The revert
+     * ruling is rendered where an operator actually meets it — {@see RevertGrammar::describeRefusal()}
+     * on the withheld-merge warning and `bridge:reconcile`'s skip line — and is asserted
+     * against the predicate in `RevertGrammarTest`, never through this list.
      *
      * @var list<string>
      */
@@ -189,10 +214,18 @@ final class ClosureGrammar
      * The text immediately following each verb bridge — the candidate token positions,
      * and the only positions this grammar will read a token out of.
      *
+     * THE ONE CHOKE POINT, which is why the revert subtraction sits here (card#8306) and
+     * not in the four public predicates above: `closedCardIds()`, `closedDls()` and
+     * everything derived from them read a token out of exactly these positions, so a
+     * quoted revert wrapper removed once cannot be honoured by one predicate and missed
+     * by another. Offsets are taken against the SUBTRACTED text on purpose — the
+     * positions this grammar may read from are the ones the author actually wrote.
+     *
      * @return list<string>
      */
     private static function remainders(string $text): array
     {
+        $text = RevertGrammar::withoutQuotedRevert($text);
         if (preg_match_all(self::BRIDGE, $text, $m, PREG_OFFSET_CAPTURE) < 1) {
             return [];
         }

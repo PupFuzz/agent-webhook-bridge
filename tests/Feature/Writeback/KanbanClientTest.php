@@ -28,6 +28,59 @@ class KanbanClientTest extends TestCase
             && $r->hasHeader('Authorization', 'Bearer wb-token'));
     }
 
+    public function test_card_rows_on_board_sends_both_terms_inside_q_and_returns_the_rows_verbatim(): void
+    {
+        // card#8375. The BOARD and the CARD ID both ride inside `q=` — the endpoint drops an
+        // unrecognised top-level parameter in SILENCE and answers 200 unfiltered, so a term
+        // hoisted out of `q` is a fleet-wide read that reviews as equivalent (rt#327). The rows
+        // come back untouched: this client does not decide membership, it asks the question —
+        // `MappedBoardGuard` re-checks each row's own `id` and `board_id`.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => [
+            ['id' => 5, 'board_id' => 8],
+            'not-an-array-row',
+        ]])]);
+
+        $rows = $this->client()->cardRowsOnBoard(8, 5);
+
+        $this->assertSame([['id' => 5, 'board_id' => 8]], $rows, 'a non-array row is skipped, every array row is passed through');
+        Http::assertSent(function (Request $r) {
+            parse_str((string) parse_url($r->url(), PHP_URL_QUERY), $query);
+
+            return $r->method() === 'GET'
+                && ($query['q'] ?? null) === 'board_id=8 id=5'
+                && ($query['limit'] ?? null) === '1'
+                && ! array_key_exists('archived', $query)   // the live side sends no switch at all
+                && ! array_key_exists('board_id', $query);  // never as a droppable top-level parameter
+        });
+    }
+
+    public function test_card_rows_on_board_reaches_the_archived_side_only_when_asked(): void
+    {
+        // DL-296: the archive axis is a SWITCH with no both-sides mode, so establishing
+        // membership for a card that may be archived is a SECOND call. The default is
+        // byte-identical to the leg above — no `archived` key reaches the query at all.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+
+        $this->client()->cardRowsOnBoard(8, 5, archivedOnly: true);
+
+        Http::assertSent(function (Request $r) {
+            parse_str((string) parse_url($r->url(), PHP_URL_QUERY), $query);
+
+            return ($query['archived'] ?? null) === '1' && ($query['q'] ?? null) === 'board_id=8 id=5';
+        });
+    }
+
+    public function test_card_rows_on_board_throws_on_non_2xx_so_the_caller_can_split_transient_from_permanent(): void
+    {
+        // The scope check must not read a failed request as "no such card on this board" —
+        // that would turn an outage into a silent, permanent-looking refusal. It throws, and
+        // MappedBoardGuard makes the transient/permanent decision.
+        Http::fake(['*/tasks/search.json*' => Http::response('upstream error', 503)]);
+
+        $this->expectException(RequestException::class);
+        $this->client()->cardRowsOnBoard(8, 5);
+    }
+
     public function test_move_card_patches_workflow_stage_only(): void
     {
         Http::fake(['*' => Http::response(['data' => ['id' => 5]])]);

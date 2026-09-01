@@ -353,11 +353,14 @@ jobs:
           # `Revert "feat: x (closes card#1)"` carries a closing form for work this PR
           # UNDOES. This step must not demand one there.
           #
-          # ⚠ DISCLOSED, not fixed here: the RUNTIME predicate reads that quoted verb
-          # the same way, so merging such a revert MOVES the card its work undid. The
-          # exemption keeps CI from manufacturing more of them; it cannot stop the one
-          # GitHub writes by itself. Repairing that changes what the writeback acts on
-          # (card#8294 raised it; it is its own decision).
+          # ⚠ THAT DISCLOSURE IS NOW DISCHARGED (card#8306), and the exemption stays for
+          # its own reason. The runtime predicate used to read the quoted verb the same
+          # way, so merging such a revert MOVED the card its work undid; `RevertGrammar`
+          # now subtracts the quoted title from `ClosureGrammar` and refuses GitHub's
+          # `revert-<n>-` ref in `PrOutcome::mergeClosesCard()`, on both the event path
+          # and `bridge:reconcile`. This exemption never governed that — it governs what
+          # CI DEMANDS — and it is still right: a revert is not required to claim a
+          # closure, and now cannot accidentally make one either.
           case "$BRANCH" in
             dependabot/*|release/*|sync/*|revert-*)
               echo "Branch '$BRANCH' is exempt (automation/release/revert) — skipping."

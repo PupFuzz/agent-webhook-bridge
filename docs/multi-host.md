@@ -48,10 +48,19 @@ If both run on the same host, use the [Unix domain socket transport](../examples
 export BRIDGE_CHANNEL_PORT=8788
 
 # A long-random shared secret. Both .mcp.json (server side) and the bridge's
-# classifier (client side) need this exact value.
-export BRIDGE_CHANNEL_TOKEN="$(openssl rand -base64 48 | tr -d /=+ | head -c 64)"
-echo "Save this token securely: $BRIDGE_CHANNEL_TOKEN"
+# classifier (client side) need this exact value. Generate it straight into a
+# 0600 file you own — never onto stdout. (Same shape as host A's
+# channel.auth.token_path.)
+TOKEN_FILE="$HOME/.config/agent-webhook-bridge/secrets/channel/<agent>-token"
+( umask 077
+  mkdir -p "$(dirname "$TOKEN_FILE")"
+  openssl rand -base64 48 | tr -d /=+ | head -c 64 > "$TOKEN_FILE" )
+
+# For the later steps in THIS shell only (the value never reaches a terminal).
+export BRIDGE_CHANNEL_TOKEN="$(cat "$TOKEN_FILE")"
 ```
+
+> ⛔ **Do not print this token, and do not let an AI agent run this step.** `cat`-ing it — or generating it onto stdout — puts a live token into a scrollback, a shell log, or an agent's session transcript, and the only repair for that is regenerating it. You need the value twice: step 2 pastes it into `.mcp.json` here on B, and host A holds it in a `0600` file of its own (step 5's `channel.auth.token_path`). Read `$TOKEN_FILE` yourself, in an editor at your own terminal, and carry it to A on the channel you already trust for keys. The general rule is [`docs/config-schema.md § Handling a secret VALUE`](config-schema.md#handling-a-secret-value-not-just-its-file).
 
 > **Distinct port per seat on a shared box.** `BRIDGE_CHANNEL_PORT` defaults to `8788`
 > fleet-wide, so a **second** `http`-transport channel server on the same host collides on
@@ -263,11 +272,12 @@ The dispatcher then pushes each intent (best-effort; a down tunnel is a recorded
 Direct tunnel test (bypasses the bridge):
 
 ```bash
-# From host A:
+# From host A. The bearer rides curl's stdin config, NOT its argv: an argument
+# is visible in /proc/<pid>/cmdline to every local account while curl runs.
+printf 'header = "Authorization: Bearer %s"\n' "$BRIDGE_CHANNEL_TOKEN" |
 curl -X POST -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $BRIDGE_CHANNEL_TOKEN" \
   -d '{"intent": {"kind": "smoke_test", "target_id": "manual_curl"}}' \
-  http://127.0.0.1:8788/
+  --config - http://127.0.0.1:8788/
 ```
 
 Expected: `forwarded` (HTTP 202). The Claude Code session on host B receives `<channel source="agent-webhook-bridge" kind="smoke_test" target_id="manual_curl">...</channel>` within seconds.
@@ -277,7 +287,7 @@ Expected: `forwarded` (HTTP 202). The Claude Code session on host B receives `<c
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
 | `curl: connection refused` from host A | SSH tunnel down (autossh restarting, network partition, host B asleep) | Check `systemctl --user status agent-webhook-bridge-tunnel` on B; verify autossh process; restart unit if needed |
-| `curl` returns `401 unauthorized` | `BRIDGE_CHANNEL_TOKEN` mismatch between `.mcp.json` (server) and classifier (client) | Compare both values; regenerate + redeploy if either rotated |
+| `curl` returns `401 unauthorized` | `BRIDGE_CHANNEL_TOKEN` mismatch between `.mcp.json` (server) and classifier (client) | Compare the two **digests** (`sha256sum`), never the values — see [`docs/config-schema.md § Handling a secret VALUE`](config-schema.md#handling-a-secret-value-not-just-its-file); regenerate + redeploy if either rotated |
 | `curl` returns 200 but Claude Code shows nothing | Channel server isn't bound (Claude Code session closed) OR `--dangerously-load-development-channels` flag missing | Run `/mcp` in the Claude Code session; check `~/.claude/debug/<session-id>.txt` for spawn errors |
 | Bridge logs `process_error` constantly | Tunnel is up but channel server crashed | Restart the Claude Code session on B (the server dies and respawns with the session) |
 | `connection refused` only sometimes | Tunnel flapping during autossh reconnect | Standard. The Intent emission still feeds `php artisan bridge:inbox` for next-session catch-up — and the silent-drop guard warns if the classifier ever emits the push WITHOUT that paired Intent |
