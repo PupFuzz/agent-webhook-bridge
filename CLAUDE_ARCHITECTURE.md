@@ -166,6 +166,7 @@ migrated, and what each stage measured, is owned by
 | `bridge:inspect` (`InspectCommand`) | Pretty-print one `webhook_events` row + its `agent_dispatches` ledger |
 | `bridge:replay` (`ReplayCommand`) | Re-run dispatch for a stored event (recovery for errored/missed dispatches) |
 | `bridge:stats` (`StatsCommand`) | Event / dispatch counts, plus the writeback board-divergence counts (DL-300 — printed every run, zero included) |
+| `bridge:sign` (`SignCommand`) | Print the `sha256=<hex>` signature for a raw body read from stdin, resolving the per-(provider, scope) secret from its FILE — so the deployment smoke test never puts the secret in argv (DL-322). Shares `WebhookSecretResolver` + `HmacSignature` with the receiver, so a producer cannot drift from the verifier |
 
 ## Multi-agent mental model
 

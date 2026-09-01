@@ -263,14 +263,18 @@ The dispatcher then pushes each intent (best-effort; a down tunnel is a recorded
 Direct tunnel test (bypasses the bridge):
 
 ```bash
-# From host A:
-curl -X POST -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $BRIDGE_CHANNEL_TOKEN" \
-  -d '{"intent": {"kind": "smoke_test", "target_id": "manual_curl"}}' \
-  http://127.0.0.1:8788/
+# From host A. The bearer is fed to curl ON STDIN (-H @-) rather than in an -H
+# argument: an argv token is readable by every local account out of
+# /proc/<pid>/cmdline for as long as curl runs — the exact thing the token file's
+# chmod 600 exists to prevent (DL-322).
+printf 'Authorization: Bearer %s' "$(cat <token_path>)" \
+  | curl -X POST -H @- \
+      -H "Content-Type: application/json" \
+      -d '{"intent": {"kind": "smoke_test", "target_id": "manual_curl"}}' \
+      http://127.0.0.1:8788/
 ```
 
-Expected: `forwarded` (HTTP 202). The Claude Code session on host B receives `<channel source="agent-webhook-bridge" kind="smoke_test" target_id="manual_curl">...</channel>` within seconds.
+`<token_path>` is this agent's `channel.auth.token_path` from the YAML above. Expected: `forwarded` (HTTP 202). The Claude Code session on host B receives `<channel source="agent-webhook-bridge" kind="smoke_test" target_id="manual_curl">...</channel>` within seconds.
 
 ## Operator action by failure mode
 

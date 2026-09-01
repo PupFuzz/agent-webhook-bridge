@@ -12,7 +12,8 @@ A webhook receiver, classifier framework, and CLI for AI agents (or operators) i
 composer install
 vendor/bin/phpunit                                  # full test suite (SQLite in-memory)
 vendor/bin/pint --test                              # code style (Laravel preset)
-vendor/bin/phpstan analyse -c phpstan-laravel.neon  # static analysis (app/Bridge + CheckCommand, level 7)
+vendor/bin/phpstan analyse -c phpstan-laravel.neon  # static analysis (level 7; app/Bridge + the individual
+                                                    # files that config names — read it, don't restate it)
 python3 bin/decision-log.py next                    # allocate the next DL-NNN before writing an entry
                                                     # (board counter + a veto against every local
                                                     # checkout, never this file's max+1; DL-295 —
@@ -30,6 +31,8 @@ php artisan bridge:replay <N>            # re-dispatch a stored event by id (rec
 php artisan bridge:inspect <N>           # pretty-print one event + its dispatch ledger
 php artisan bridge:stats                 # event / dispatch / board-divergence counts
 php artisan bridge:standup --dry-run     # PM standup digest (DL-306): print what the bridge can derive, push nothing
+php artisan bridge:sign --scope=<scope>  # sign a raw body (on stdin) with this install's HMAC secret — the secret
+                                         # never becomes an argv token (DL-322); used by the deployment smoke test
 
 # Seat-side (run ON the agent's box, AS the agent's own OS user — NOT the bridge's):
 python3 bin/check-channel-snapshot.py <deployed channel-server dir>

@@ -141,17 +141,21 @@ Do this **at a session boundary** (Claude Code not running for that agent): a li
 
 The real-surface post-update check: fire **one signed synthetic delivery** at the live receiver, exercising the actual HMAC → adapt → classify → dispatch path without polluting the upstream board/repo. The signature is over the **raw body** (G-011); the body's scope source **must equal** the `?b=<scope>` query param or the receiver returns `401 scope_mismatch` (G-018) — for GitHub that source is `repository.full_name`, for kanban it's `board_id`.
 
+⛔ **`bridge:sign` produces the signature, and NOTHING here reads the secret into a shell variable** (DL-322). The secret file is `chmod 600` because a co-tenant who can read it forges signed deliveries; a `openssl dgst -hmac "$SECRET"` — which this block used to say — hands that value to every local account through `/proc/<pid>/cmdline` for as long as the process lives, routing around the file's own protection. `bridge:sign` takes the `(provider, scope)` KEY and resolves the secret itself, through the same code the receiver verifies with: same `%2F`-encoded filename, same trimming of the file's bytes, same `sha256=` scheme. A hand-rolled signer that gets any of those three wrong produces a `401 sig_mismatch` that reads as a receiver fault.
+
 ```bash
 SCOPE='<org/repo>'                                 # GitHub: equals repository.full_name AND ?b=
-SECRET=$(cat "<secret_dir>/github/webhook-secret-scope-${SCOPE}")
 BODY='{"action":"created",
        "repository":{"full_name":"'"$SCOPE"'"},
        "issue":{"number":1,"title":"smoke","labels":[]},
        "comment":{"body":"smoke","html_url":"https://example.invalid/x"},
        "sender":{"id":<sender-id>,"login":"x"}}'
-SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -hex | awk '{print $NF}')
+# Run from the install root (the command needs this install's config). It prints the
+# complete header value, `sha256=<hex>`, and nothing else; a failure prints WHY on stderr
+# and exits non-zero, which leaves $SIG empty rather than substituting a diagnostic.
+SIG=$(printf '%s' "$BODY" | php artisan bridge:sign --provider=github --scope="$SCOPE")
 curl -X POST \
-  -H "X-Hub-Signature-256: sha256=$SIG" \
+  -H "X-Hub-Signature-256: $SIG" \
   -H "X-GitHub-Event: issue_comment" \
   -H "X-GitHub-Delivery: smoke-$(date +%s)" \
   --data-binary "$BODY" \
@@ -159,7 +163,7 @@ curl -X POST \
 # then: php artisan bridge:stats   (expect errored=0) ; php artisan bridge:inspect <N>
 ```
 
-A `401 scope_mismatch` almost always means the body omitted (or mismatched) `repository.full_name` vs `?b=` — not an HMAC problem (G-018).
+A `401 scope_mismatch` almost always means the body omitted (or mismatched) `repository.full_name` vs `?b=` — not an HMAC problem (G-018). A `401 unknown_scope` from **`bridge:sign` itself** (it names the path it looked at) means this install has no secret for that scope — the receiver would answer the same way, so fix it before reading anything into the `curl`.
 
 ## The canonical channel launcher (UDS / HTTP / Windows)
 
@@ -280,6 +284,7 @@ php artisan bridge:provision-tools [--dry-run] [--agent=]                    # m
 php artisan bridge:prune --older-than=30d [--null-payloads-older-than=7d] [--dry-run]   # retention, manual/unbounded (the receiver self-prunes — DL-199)
 php artisan bridge:reconcile [--fix] [--repo=owner/repo] [--max-moves=20]     # board-vs-GitHub drift reconciler (report-only unless --fix)
 php artisan bridge:standup [--dry-run]                # PM standup digest (DL-306); --dry-run prints it as JSON and pushes nothing
+php artisan bridge:sign --scope=<scope> [--provider=github] [--body-file=]   # print `sha256=<hex>` for a raw body read from stdin (DL-322)
 ```
 
 `bridge:prune` is the **manual** entry point to retention; since **DL-199** the receiver runs the same shared service automatically after each response, so scheduling this is no longer required (and the design has no cron at all). `--older-than=Nd` deletes `webhook_events` (cascading `agent_dispatches`) and trims `inbox*.jsonl` lines older than the cutoff; `--null-payloads-older-than=Md` (use `M < N`) nulls the stored payload past the replay window while keeping the row's dedup-gate + audit metadata; `--dry-run` reports counts only. Idempotent — safe to re-run alongside the automatic gate. **`writeback_board_divergences` is deliberately outside retention entirely** (DL-300): it exists to outlive the log, so a window on it would be the defect it closes with a longer fuse.
