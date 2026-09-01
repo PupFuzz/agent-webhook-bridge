@@ -37,7 +37,9 @@ use Throwable;
  *  - TRANSIENT / operator-fixable (missing-or-insecure writeback token, a
  *    kanban API error) → THROW → 5xx → redelivery retries once it's fixed.
  *  - PERMANENT / refused (writeback off, no repo mapping, no stage for the
- *    outcome, the card is NOT on the mapped board, the card is PINNED against
+ *    outcome, the card id does not RESOLVE on the mapped board (refused by the board-scoped
+ *    check before the card is read at all — card#8375), the card kanban handed back is NOT on
+ *    the mapped board, the card is PINNED against
  *    auto-movement on an outcome that is not one of the two operator-ruled overrides
  *    (DL-178, card#8289 — see the consult in handle()), an uncorroborated title-only
  *    `card#` names a card that already tracks a different PR, or the subject carried
@@ -193,6 +195,22 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
 
         $client = WritebackClientFactory::make();   // throws (→ 5xx) on a missing/insecure token or base url
 
+        // SECURITY (tenant scope, card#8375): establish that this card id is on the
+        // operator-mapped board BEFORE reading the card at all. `payload.card_id` is a
+        // literal parsed out of author-controlled text against a kanban id space that is
+        // GLOBAL across every board on the instance, and `getCard` below names no board —
+        // so without this the boundary's precondition was a SUCCESSFUL CROSS-TENANT READ,
+        // and what actually stopped a foreign id was whatever the writeback token's scope
+        // happened to be rather than anything in this file. The rule, the board-scoped
+        // lookup and the refusal report live in MappedBoardGuard with the post-read compare
+        // below, which stays: this one decides whether we may READ the card, that one
+        // decides whether we may WRITE the row we got, and only that one can record the
+        // (card board, mapped board) divergence pair — a refusal here never learns the
+        // card's board, which is the point of refusing before the read.
+        if (MappedBoardGuard::refusesCardIdOutsideMappedBoard($this->alerts, $client, $mapping, 'kanban_move_card', $cardId, $repo, $outcome)) {
+            return;
+        }
+
         // A kanban 4xx (deleted card, a stage that doesn't exist on the card's
         // board) is PERMANENT — log + no-op, never 5xx-retry it. Only a 5xx /
         // timeout / connection error is transient (throw → redelivery retries).
@@ -200,32 +218,34 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
             $card = $client->getCard($cardId);
         } catch (RequestException $e) {
             if (RefusalContext::isPermanent($e)) {
-                // 404 and 403 are DIFFERENT operator hypotheses, and this branch returns
-                // BEFORE the belongs-to-mapped-board guard below (which reads board_id out
-                // of the card we just failed to read) — so on a 403 this reason string is
-                // the only signal the operator gets for the case that guard exists to
-                // refuse. What each status does and does NOT establish — in particular why
-                // a 403 names two causes rather than one — is owned by
-                // RefusalContext::readReason()'s docblock; read it there rather than from a
-                // second copy that can drift out of step with the message below.
+                // 404 and 403 are DIFFERENT operator hypotheses. What each status does and
+                // does NOT establish — and what the $foreignIdExcluded argument below is a
+                // claim about — is owned by RefusalContext::readReason()'s docblock; read it
+                // there rather than from a second copy that can drift out of step with the
+                // message below.
                 //
-                // ⛔ THE CHANNEL COPY CARRIES NO CARD ID (DL-314, card#7846). The read
-                // FAILED, so nothing here has established that this id — parsed as a
-                // literal out of author-controlled text, against a kanban id space that is
-                // GLOBAL across every board on the instance — names a card of THIS
-                // install. The `Log::warning` context keeps it (the local operator needs
-                // it); the push does not, because that is the surface a foreign id can
-                // reach a party it is not about on.
+                // ⭐ THE FOREIGN-CARD-ID HYPOTHESIS IS RULED OUT ON THIS ARM (card#8375), and
+                // by a measurement rather than by an assumption: the board-scoped check above
+                // has already read this id back off the mapped board, so a 403 here can no
+                // longer mean "somebody else's card". That is what the deferred option in
+                // DL-314 was for, and it is why this arm's 403 slug is narrower than the one
+                // the draft-overlay twin (which makes no such check) still uses.
+                //
+                // ⛔ THE CHANNEL COPY STILL CARRIES NO CARD ID (DL-314, card#7846). The
+                // withholding is keyed on THE READ FAILED, not on the foreign hypothesis:
+                // this arm holds an id whose card it could not read, and the `Log::warning`
+                // context is the local operator's surface for it while the channel is the one
+                // that can reach a party the id is not about.
                 $refusal = RefusalContext::from($e);
                 $message = match ($refusal['status']) {
                     404 => 'kanban_move_card: getCard 404 — no such card (deleted, or an id that never existed); ignoring (see `body` for the reason kanban gave)',
-                    403 => 'kanban_move_card: getCard 403 — the card exists and is NOT visible to this writeback token: either a foreign install\'s card id was correlated onto this bridge (kanban card ids are GLOBAL, and `card#NNNN` is parsed out of author-controlled text), or this token\'s scope is missing the card\'s board. A 403 alone cannot tell the two apart — only a board-scoped read could, and this bridge deliberately makes none. Ignoring (see `body` for the reason kanban gave); the card id is in this log line only, never in the alert channel',
+                    403 => 'kanban_move_card: getCard 403 — this writeback token could not read a card the board-scoped check above just read back off the mapped board, so a foreign install\'s card id is EXCLUDED here: what is left is this token\'s own access to this card (a per-card authorization the board-scoped search does not apply, or a card that changed board between the two reads). Ignoring (see `body` for the reason kanban gave); the card id is in this log line only, never in the alert channel',
                     default => 'kanban_move_card: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave)',
                 };
                 $this->alerts->warnAndNotifyCardIdWithheld(
                     $message,
                     ['card_id' => $cardId] + $refusal,
-                    $repo, $outcome, RefusalContext::readReason('getcard', $e),
+                    $repo, $outcome, RefusalContext::readReason('getcard', $e, foreignIdExcluded: true),
                 );
 
                 return;
@@ -238,6 +258,10 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // no-op, never retry. The compare AND its report live in one primitive shared
         // with the block-reason and coord-move arms (DL-292, card#7138), so the rule
         // cannot diverge across the three the way its severity once did (card#7133).
+        // NOT redundant with the board-scoped check above (card#8375), and kept for two
+        // reasons: it decides on the ROW ACTUALLY WRITTEN TO rather than on a row read a
+        // request earlier, and it is the only arm that records the (card board, mapped
+        // board) divergence. Its refused set on this path is expected to be EMPTY.
         if (MappedBoardGuard::refuses($this->alerts, $card, $mapping, 'kanban_move_card', $cardId, $repo, $outcome)) {
             return;
         }
