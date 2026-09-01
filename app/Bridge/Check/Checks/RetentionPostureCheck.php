@@ -5,7 +5,9 @@ namespace App\Bridge\Check\Checks;
 use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Retention\RetentionConfig;
+use App\Bridge\Retention\RetentionFootprint;
 use App\Bridge\Retention\RetentionGate;
+use App\Bridge\Retention\RetentionStoreProbe;
 use App\Bridge\Support\Finding;
 use Illuminate\Support\Facades\Cache;
 use Symfony\Component\Process\ExecutableFinder;
@@ -19,6 +21,29 @@ use Throwable;
  * the stores just grow, which is the exact DL-012 failure the gate replaced. This
  * check reports the posture rather than letting it go unnoticed.
  *
+ * IT REPORTS THE COST, NOT ONLY THE SETTING (card#8374, DL-331). `retention: on (…)`
+ * restates the config and nothing else, so a green posture could not tell a bounded
+ * store from the measured case that produced the ask — 894 MB of a 1.2 GB store being
+ * 30 days of full GitHub payloads, under a retention that was working correctly the
+ * whole time. Three legs answer three separate questions, and each is silent about the
+ * others':
+ *
+ *   1. WHAT IS IT HOLDING — the database's size, the payload share of it, and the oldest
+ *      retained row's age against the configured delete window. `warn` when that row is
+ *      PAST the window, because rows the window should have removed are still here.
+ *   2. IS THE ROW LEG OFF — a payload-only install keeps every row for ever.
+ *   3. IS THE PAYLOAD LEG OFF — the expensive half, and the one this card exists for:
+ *      an install printing `on` while nulling is disabled is exactly the 894 MB case.
+ *
+ * Legs 2 and 3 are mutually exclusive by construction: both windows null is the
+ * MISCONFIGURED arm above, which returns before either is reached.
+ *
+ * ⛔ A FIELD THE PROBE COULD NOT SOURCE IS ABSENT FROM THE LINE, never inferred and
+ * never printed as a zero — DL-306's ruling on the standup digest, which governs here
+ * for the same reason. The measurement itself sits behind {@see RetentionStoreProbe}:
+ * its subject is the storage ENGINE, so a golden capture that read it live would print
+ * a different number on the SQLite job and each MariaDB job.
+ *
  * IT NEVER YIELDS `fail`, and that is a property of the subject rather than of this
  * class: every posture it can report is either healthy or an operator-fixable
  * misconfiguration that leaves the receiver serving correctly. The caller still
@@ -27,6 +52,8 @@ use Throwable;
  */
 final class RetentionPostureCheck implements Check
 {
+    public function __construct(private readonly RetentionStoreProbe $store) {}
+
     public function id(): string
     {
         return 'retention.posture';
@@ -52,6 +79,8 @@ final class RetentionPostureCheck implements Check
         }
 
         yield Finding::ok('retention: on ('.$retention->summary().')');
+
+        yield from $this->cost($retention);
 
         // The whole no-latency claim rests on the response being FINISHED before
         // the terminating callback runs. Under PHP-FPM that is
@@ -92,6 +121,129 @@ final class RetentionPostureCheck implements Check
         } catch (Throwable $e) {
             yield Finding::unvalidated('retention: could not read the last-failure marker ('.$e->getMessage().') — the cache backend the retention gate depends on may be unreachable.');
         }
+    }
+
+    /**
+     * The three cost legs, in output order. Reached only from the healthy posture path,
+     * so every window this reads has already been validated.
+     *
+     * ONE `catch`, AT THE TOP, AND NOTHING BELOW IT RUNS. A store measurement that threw
+     * leaves nothing partial worth printing: the row counts are the denominator of every
+     * other clause, so an arm that reported "nulling is off" without them would be the
+     * bare setting again. `CheckRunner` deliberately does not isolate, so an uncaught
+     * throw here would abort the whole command over a database this install's own
+     * connectivity check has already reported on.
+     *
+     * @return iterable<Finding>
+     */
+    private function cost(RetentionConfig $retention): iterable
+    {
+        try {
+            $store = $this->store->measure();
+        } catch (Throwable $e) {
+            yield Finding::unvalidated('retention: could NOT measure what the store is holding ('.$e->getMessage().') — so this run says nothing about how much retention is holding back, and the posture line above is evidence about the CONFIG only.');
+
+            return;
+        }
+
+        yield $this->storeLine($retention, $store);
+
+        if ($retention->olderThanDays === null) {
+            yield Finding::warn('retention: the ROW-DELETE leg is OFF (retention.older_than is empty) — webhook_events rows and their agent_dispatches are NEVER deleted and grow without bound; only the payload leg runs, so an old row keeps its metadata for ever. '
+                .$store->rows.' row(s) retained now. Set BRIDGE_RETENTION_OLDER_THAN (e.g. 30d) and re-run `php artisan config:cache`.');
+        } elseif ($retention->nullPayloadsOlderThanDays === null) {
+            yield Finding::warn('retention: payload NULLING is OFF (retention.null_payloads_older_than is empty) — '
+                .$this->nullingOffCost($retention->olderThanDays, $store)
+                .' Set BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN (the shipped default is 7d) and re-run `php artisan config:cache`; it IS the bridge:replay window, so choose it for how long you may need to replay.');
+        }
+    }
+
+    /**
+     * What the store holds, and whether its oldest row is still inside the delete window.
+     *
+     * ONE LEG, TWO SEVERITIES, because it is one question — *is this store bounded* — and
+     * the age is what answers it. Splitting the age off would print it twice on the only
+     * install shape where it matters.
+     */
+    private function storeLine(RetentionConfig $retention, RetentionFootprint $store): Finding
+    {
+        $size = $store->storeBytes === null
+            ? 'database size not reported by this driver'
+            : 'database '.self::bytes($store->storeBytes);
+
+        // THE EMPTY STORE IS KEYED ON THE AGE, NOT ON THE ROW COUNT, and they are the same
+        // question: `received_at` is NOT NULL, so the probe's `min()` is absent exactly
+        // when there is no row. Asking the age lets the rest of this method read a
+        // non-null age without a fallback that would print a fabricated `0.0d`.
+        $age = $store->oldestRowAgeDays;
+        if ($age === null) {
+            return Finding::ok('retention: '.$size.' · webhook_events is EMPTY ('.$store->rows.' rows) — retention is holding nothing back.');
+        }
+
+        $line = 'retention: '.$size.' · webhook_events '.$store->rows.' rows, '.$this->payloadShare($store)
+            .' · oldest row '.self::days($age);
+
+        if ($retention->olderThanDays === null) {
+            return Finding::ok($line.' old (no delete window — see the line below).');
+        }
+        if ($age <= $retention->olderThanDays) {
+            return Finding::ok($line.' old, inside the '.$retention->olderThanDays.'d delete window.');
+        }
+
+        return Finding::warn($line.' old, PAST the '.$retention->olderThanDays.'d delete window — rows the window should have removed are still here. A pass deletes at most '
+            .$retention->batch.' rows, so a backlog drains over successive deliveries; if this age does not fall between runs the delete leg is not running, and `php artisan bridge:prune --older-than='
+            .$retention->olderThanDays.'d` drains it in one unbounded pass.');
+    }
+
+    /** The payload clause of the store line — the share is dropped, never guessed, when either term is absent. */
+    private function payloadShare(RetentionFootprint $store): string
+    {
+        if ($store->payloadBytes === null) {
+            return $store->rowsWithPayload.' still carry a payload (byte size not measurable on this database driver)';
+        }
+        $held = $store->rowsWithPayload.' still carry a payload holding '.self::bytes($store->payloadBytes);
+
+        return $store->storeBytes === null
+            ? $held
+            : $held.' (~'.(int) round($store->payloadBytes / $store->storeBytes * 100).'% of the database)';
+    }
+
+    /** The cost half of the nulling-OFF warning — the sentence the 894 MB install never got. */
+    private function nullingOffCost(int $rowWindowDays, RetentionFootprint $store): string
+    {
+        $horizon = 'kept until the '.$rowWindowDays.'d row-delete window removes the row.';
+
+        if ($store->rowsWithPayload === 0) {
+            return 'no retained row carries a payload yet, so nothing has accrued — but every payload from the next delivery on is '.$horizon;
+        }
+
+        return $store->rowsWithPayload.' of '.$store->rows.' retained rows still carry a full webhook payload'
+            .($store->payloadBytes === null ? ' (byte size not measurable on this database driver)' : ', holding '.self::bytes($store->payloadBytes))
+            .', and nothing will null them: each is '.$horizon;
+    }
+
+    /**
+     * Bytes in the units an operator's `du -h` prints — 1024-based, and LABELLED as such,
+     * because a `MB` that is really a MiB is the kind of quiet 5% error a capacity
+     * decision is made on.
+     */
+    private static function bytes(int $bytes): string
+    {
+        $units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+        $value = (float) $bytes;
+        $unit = 0;
+        while ($value >= 1024.0 && $unit < count($units) - 1) {
+            $value /= 1024.0;
+            $unit++;
+        }
+
+        return $unit === 0 ? $bytes.' B' : sprintf('%.1f %s', $value, $units[$unit]);
+    }
+
+    /** One decimal, so a store younger than a day reads as an age rather than as `0d`. */
+    private static function days(float $days): string
+    {
+        return sprintf('%.1fd', $days);
     }
 
     /**
