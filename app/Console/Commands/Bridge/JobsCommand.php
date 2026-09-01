@@ -65,7 +65,7 @@ class JobsCommand extends BridgeCommand
 
     public function handle(): int
     {
-        return $this->guardDatabase($this->handleGuarded(...));
+        return $this->guardDatabase($this->handleGuarded(...), $this->stderr());
     }
 
     private function handleGuarded(): int
@@ -164,17 +164,28 @@ class JobsCommand extends BridgeCommand
         $last = $job->last_status === null
             ? '    last: never run'
             : sprintf(
-                '    last: %s at %s%s',
+                '    last: %s at %s%s%s',
                 strtoupper((string) $job->last_status),
                 $job->last_run_at?->toIso8601String() ?? '?',
+                $job->last_duration_ms === null ? '' : ' in '.(int) $job->last_duration_ms.'ms',
                 $job->last_status === ScheduledJob::STATUS_OK
                     ? ' — '.(string) $job->last_summary
                     : ' — '.(string) $job->last_error.' ('.(int) $job->consecutive_failures.' consecutive)',
             );
 
+        // ⭐ `payload` IS PRINTED, and its absence would have falsified this command's own
+        // headline claim. "GET the job list and you have named the entire periodic
+        // population" is a claim about what each row DOES, and the payload is the handler's
+        // input — a row whose input is invisible is a job whose behaviour the audit cannot
+        // see. It is also the column the no-secrets rule is stated over: the rule is only
+        // honest while the value is in fact operator-visible.
+        $payload = $job->payload === null || $job->payload === []
+            ? ''
+            : "\n    payload: ".(string) json_encode($job->payload, JSON_UNESCAPED_SLASHES);
+
         // Last, and on its own line, because it is the line a reader auditing the
         // population is actually there to read.
-        return $head."\n".$last."\n    why periodic: ".(string) $job->justification."\n";
+        return $head."\n".$last.$payload."\n    why periodic: ".(string) $job->justification."\n";
     }
 
     /**
@@ -195,6 +206,8 @@ class JobsCommand extends BridgeCommand
             'next_due_at' => $job->next_due_at?->toIso8601String(),
             'last_summary' => $job->last_summary,
             'last_error' => $job->last_error,
+            'last_duration_ms' => $job->last_duration_ms,
+            'payload' => $job->payload,
             'consecutive_failures' => (int) $job->consecutive_failures,
         ];
     }
@@ -268,10 +281,17 @@ class JobsCommand extends BridgeCommand
         return self::SUCCESS;
     }
 
+    /**
+     * ⚑ IT EXITS NON-ZERO ON A PASS FAULT, exactly as `bridge:tick` does and for the same
+     * reason: an operator (or a script) asking for a pass and getting exit 0 has been told
+     * the registry is fine when nothing ran. An ORDINARY skip — the lock, the interval, a
+     * disabled registry — is still 0; those are answers, not faults.
+     */
     private function runPassNow(): int
     {
-        $this->line($this->scheduler->passSafely(JobPassSource::Manual)->summary());
+        $result = $this->scheduler->passSafely(JobPassSource::Manual);
+        $this->line($result->summary());
 
-        return self::SUCCESS;
+        return $result->passFailed() ? self::FAILURE : self::SUCCESS;
     }
 }

@@ -192,8 +192,13 @@ return [
     | a digest would re-open the DL-012 exception. ⚠ CONSEQUENCE, stated because it
     | changes what the digest means: the pass runs on the first inbound webhook AFTER
     | `interval` has elapsed, so an install receiving nothing pushes nothing. That is
-    | a delivery cadence, not a wall clock — an operator who wants a wall clock runs
-    | `bridge:standup` from their own cron; the two are idempotent.
+    | a delivery cadence, not a wall clock. ⭐ SINCE DL-325 THE WALL CLOCK IS A ROW,
+    | not a second crontab line: the periodic-job registry ships a `standup_digest`
+    | handler driving THIS SAME pass from `bridge:tick`, so an install that adopted
+    | the one tick gets the digest on a clock and still pushes at most one per
+    | `interval` (both ingresses share the marker). `bridge:standup` remains the
+    | manual entry point; scheduling it separately still works and is still
+    | idempotent, but it is the shape the registry exists to make unnecessary.
     |
     | ⛔ THE DIGEST MAY CARRY ONLY WHAT THE BRIDGE MEASURES. It knows DELIVERY, not
     | ACTIVITY: it can say "I pushed an event to this seat at T"; it cannot say the

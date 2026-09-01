@@ -23,9 +23,14 @@ use Illuminate\Support\Carbon;
  * why the event-gated path could not do it. It is friction by intent — see
  * {@see JobSpec} for what that friction does and does not buy.
  *
- * ⛔ NO SECRET, TOKEN OR CONFIG VALUE MAY BE STORED ON THIS MODEL. Every column is printed
- * by `bridge:jobs` and several are summarised by `bridge:check`; `payload` is handler input
- * and is operator-visible for the same reason.
+ * ⛔ NO SECRET, TOKEN OR CONFIG VALUE MAY BE STORED ON THIS MODEL. Every column below is
+ * printed by `bridge:jobs` — both the human listing and `--json`, and `payload` included —
+ * and several are summarised by `bridge:check`. The rule is stated over the columns rather
+ * than over `payload` alone because it is the STORE that is operator-visible, and it is only
+ * honest while the listing really does print what is stored: a column the enumeration omits
+ * is a place a secret could sit unread, which is why omitting one is a defect and not a
+ * formatting choice. (`id` and the framework `created_at`/`updated_at` carry no caller value
+ * and are not printed.)
  *
  * ⚑ `last_status` HAS THREE VALUES AND A NULL, and collapsing them loses the remedy.
  * `ok` / `failed` / `refused` / never-run: a refusal means the scheduler declined to invoke

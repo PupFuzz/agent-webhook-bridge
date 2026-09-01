@@ -6,6 +6,7 @@ use App\Bridge\Check\Check;
 use App\Bridge\Check\CheckContext;
 use App\Bridge\Check\Silence;
 use App\Bridge\Scheduling\JobScheduler;
+use App\Bridge\Scheduling\JobsConfig;
 use App\Bridge\Scheduling\TickRecord;
 use App\Bridge\Scheduling\TickState;
 use App\Bridge\Support\Finding;
@@ -40,6 +41,12 @@ use Throwable;
  * asserted at the moment a seat starts work, which is when it matters. This leg is the
  * preflight's disclosure of the same fact.
  *
+ * ⛔ A MISCONFIGURED CADENCE IS `fail` TOO, and for the same reason: the scheduler refuses a
+ * `min_pass_interval` / `max_per_pass` it cannot act on rather than clamping it to a number
+ * nobody asked for, so an install with one runs NO periodic work at all on EITHER ingress
+ * until an operator fixes the value. That is a broken install, and this is the only surface
+ * that says so at preflight.
+ *
  * ⛔ A REFUSED INSTANCE IS `fail`, and that asymmetry is deliberate. A refusal means the row
  * names a handler this build does not have, or names a state-mutating handler this install
  * never armed — a job that CANNOT run, and will not start running by itself. That is a
@@ -64,7 +71,7 @@ final class JobsPostureCheck implements Check
      */
     public function run(CheckContext $ctx): iterable
     {
-        $enabled = (bool) config('bridge.jobs.enabled', true);
+        $cfg = JobsConfig::fromConfig();
 
         try {
             $jobs = ScheduledJob::query()->orderBy('name')->get();
@@ -75,7 +82,7 @@ final class JobsPostureCheck implements Check
             return;
         }
 
-        if (! $enabled) {
+        if (! $cfg->enabled) {
             if ($jobs->isNotEmpty()) {
                 // The trap this line exists for: the registry ENUMERATES rows that nothing
                 // will ever run. A reader of `bridge:jobs` would see a periodic population;
@@ -91,11 +98,26 @@ final class JobsPostureCheck implements Check
             return;
         }
 
+        // A cadence this install cannot act on stops EVERY pass on BOTH ingresses, and the
+        // scheduler refuses rather than clamping (JobsConfig). Without this line the only
+        // symptom is a registry that enumerates healthy and never runs — DL-012's silent
+        // inertness with a nicer listing. `fail`, not `warn`, and the asymmetry with
+        // retention's `warn` is the subject's: a bad retention window leaves the receiver
+        // serving and one subsystem idle, whereas this is an install whose entire periodic
+        // population is dead and cannot recover by itself.
+        // ⚑ IT DOES NOT RETURN. The cadence is one fault; a refused instance and a failed
+        // pass are others with their own remedies, and suppressing them here would cost the
+        // operator a round trip per fault — fix the cadence, re-run, discover the refusal.
+        if (! $cfg->isUsable()) {
+            yield Finding::fail('jobs: the registry is enabled but MISCONFIGURED — '.(string) $cfg->problem
+                .'. NO pass runs on either ingress until it is fixed (the value is refused, never clamped).');
+        }
+
         yield from $this->tickFindings();
         yield from $this->instanceFindings($jobs);
         yield from $this->passErrorFindings();
 
-        yield Silence::because('the registry is enabled, the tick posture is either unadopted or fresh, and no instance is refused or repeatedly failing');
+        yield Silence::because('the registry is enabled with a usable cadence, the tick posture is either unadopted or fresh, and no instance is refused or repeatedly failing');
     }
 
     /**

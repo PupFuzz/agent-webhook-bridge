@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands\Bridge;
 
+use App\Bridge\Scheduling\JobPassResult;
 use App\Bridge\Scheduling\JobPassSource;
 use App\Bridge\Scheduling\JobScheduler;
 use App\Bridge\Scheduling\TickRecord;
@@ -39,7 +40,21 @@ use App\Bridge\Scheduling\TickRecord;
  * those are recorded on their own rows and reported by `bridge:jobs` / `bridge:check`, and
  * a crontab line that mails the operator on a handler bug trains them to filter the mail
  * that would have carried a dead-clock alarm. Only a fault that stopped the pass from
- * running at all — an unreachable database — is a non-zero exit.
+ * running at all — an unreachable database, an unusable cache backend, a cadence this
+ * install cannot act on — is a non-zero exit.
+ *
+ * ⛔ AN ORDINARY SKIP IS EXIT 0, and the distinction is read off
+ * {@see JobPassResult::passFailed()} rather than off the reason
+ * string. A pass that lost the non-blocking lock, one inside the shared minimum interval,
+ * and one on an install with `BRIDGE_JOBS_ENABLED=false` are the scheduler working as
+ * designed; a crontab line reddening on those would red on most of its runs on a busy
+ * install and the alarm would be filtered within a week.
+ *
+ * ⚑ THERE IS NO `guardDatabase()` HERE, deliberately. `passSafely()` catches every
+ * `Throwable`, so a `QueryException` cannot reach this frame and a guard around the call
+ * would be a branch for a state its own callee excludes. The unreachable-DB case is
+ * reported through the result — which is what makes the exit code above true rather than
+ * documented.
  */
 class TickCommand extends BridgeCommand
 {
@@ -58,11 +73,9 @@ class TickCommand extends BridgeCommand
         // (another one holds the lock) is still a tick that arrived.
         TickRecord::stamp();
 
-        return $this->guardDatabase(function (): int {
-            $result = $this->scheduler->passSafely(JobPassSource::Tick);
-            $this->line($result->summary());
+        $result = $this->scheduler->passSafely(JobPassSource::Tick);
+        $this->line($result->summary());
 
-            return self::SUCCESS;
-        });
+        return $result->passFailed() ? self::FAILURE : self::SUCCESS;
     }
 }

@@ -115,6 +115,36 @@ class JobsPostureCheckTest extends TestCase
         $this->assertStringContainsString("instance 'a-job' was REFUSED", $findings[0]->message);
     }
 
+    /**
+     * ⛔ THE CADENCE TYPO IS A `fail`, and it is the only surface that reports it.
+     * `BRIDGE_JOBS_MIN_PASS_INTERVAL=sixty` resolves to 0 through `config/bridge.php`'s
+     * `(int)` cast; before this leg the scheduler floored it to a ONE-SECOND cadence and
+     * said nothing, so the install ran a registry pass per delivery with no line anywhere
+     * saying why. It now refuses, which means nothing periodic runs at all — a broken
+     * install, not a transient one.
+     */
+    public function test_a_cadence_the_install_cannot_act_on_fails_the_preflight(): void
+    {
+        config(['bridge.jobs.min_pass_interval' => 0]);
+
+        $findings = $this->findingsOf(new JobsPostureCheck);
+
+        $this->assertSame(Severity::Fail, $findings[0]->severity);
+        $this->assertStringContainsString('MISCONFIGURED', $findings[0]->message);
+        $this->assertStringContainsString('min_pass_interval', $findings[0]->message);
+    }
+
+    /**
+     * ⚑ THE CONTROL. The default cadence must stay silent, or the leg's own headline
+     * property — nothing on an install that adopted nothing — is gone.
+     */
+    public function test_the_default_cadence_says_nothing(): void
+    {
+        config(['bridge.jobs.min_pass_interval' => 60, 'bridge.jobs.max_per_pass' => 3]);
+
+        $this->assertSame([], $this->findingsOf(new JobsPostureCheck));
+    }
+
     public function test_a_single_failure_is_not_reported_but_a_streak_is(): void
     {
         $job = $this->row(['last_status' => ScheduledJob::STATUS_FAILED, 'last_error' => 'blip', 'consecutive_failures' => 1]);

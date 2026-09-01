@@ -94,6 +94,17 @@ cache is rebuilt. See `CLAUDE_DEPLOYMENT.md`.
 That is the whole adoption. You never add a second crontab line: everything else is a row in
 the registry.
 
+**What the crontab line's exit code means.** `bridge:tick` exits **0** whenever the pass ran
+— including when jobs inside it FAILED or were REFUSED, which are recorded on their own rows
+and reported by `bridge:jobs` / `bridge:check` — and also on an ORDINARY skip: another pass
+holds the lock, the shared minimum interval has not elapsed, or the registry is switched off.
+It exits **non-zero only when the pass could not run because something is broken**: an
+unreachable database, an unusable cache backend, or a `BRIDGE_JOBS_*` cadence this install
+cannot act on. A line that reddened on ordinary skips would mail its operator on most runs of
+a busy install, and the mail that would have carried a real fault gets filtered within a week.
+⚑ The tick is **stamped before the pass either way**, so a fault does not also read as a dead
+clock — those are two different alarms.
+
 ## Death is the alarm
 
 The tick becomes the single point of failure for every periodic job on an install that
@@ -163,6 +174,10 @@ app(JobRegistry::class)->insert(new JobSpec(
 `insert` is an **upsert by name** — a caller that re-declares its job on every boot
 converges on one row. It **throws** `JobSpecException` rather than returning false: a
 program that ignores a boolean ends up believing it scheduled something it did not.
+⚠ **Re-declaring with a NEW `interval_s` does not re-date the pending run**: `next_due_at`
+was written by the last pass from the OLD interval and is left alone, so the new cadence
+starts from the next time the job actually runs — shortening an interval does not pull the
+pending run forward, and lengthening one does not push it back.
 
 Or by hand:
 
@@ -251,7 +266,7 @@ gets an age and no verdict.
 | key | default | what it does |
 |---|---|---|
 | `BRIDGE_JOBS_ENABLED` | `true` | The registry as a whole. With no rows it costs one indexed query per `min_pass_interval` on delivery. `false` registers no callback at all. |
-| `BRIDGE_JOBS_MIN_PASS_INTERVAL` | `60` | Floor between passes, **shared by both ingresses** (the event gate is evaluated on every delivery). A 5/10/15-minute tick is never affected by it. |
-| `BRIDGE_JOBS_MAX_PER_PASS` | `3` | The bound. A backlog drains across passes; a pass is never unbounded. |
+| `BRIDGE_JOBS_MIN_PASS_INTERVAL` | `60` | Floor between passes, **shared by both ingresses** (the event gate is evaluated on every delivery). A 5/10/15-minute tick is never affected by it. ⚠ A value that is not a positive integer is **REFUSED, never clamped**: no pass runs on either ingress, `bridge:check`'s `jobs.posture` leg **fails**, and `bridge:tick` exits non-zero. (`sixty` reads as `0`; clamping it to 1 would have turned an intended 60-second floor into a pass per second, silently.) |
+| `BRIDGE_JOBS_MAX_PER_PASS` | `3` | The bound. A backlog drains across passes; a pass is never unbounded. ⚠ Refused the same way outside `1…1000`. |
 | `BRIDGE_JOBS_ARMED_MUTATORS` | *(empty)* | Comma-separated handler names this install has armed. The only ask-the-operator gate in the subsystem. |
 | `BRIDGE_JOBS_TICK_EXPECTED_EVERY` | *(unset)* | The tick adoption knob **and** the death-is-the-alarm horizon, in seconds. Unset ⇒ the tick was not adopted and its absence is never reported as a fault. ⚠ A value that is not a positive integer arms **nothing** and reads as unadopted — `bridge:check` warns on one, because that is the only place an operator who set it wrongly finds out. |

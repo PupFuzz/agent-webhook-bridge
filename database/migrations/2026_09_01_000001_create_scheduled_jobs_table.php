@@ -25,9 +25,11 @@ return new class extends Migration
         //    named the entire periodic population of this install" is only true if the list
         //    is durable and single-homed.
         //
-        // ⛔ NO SECRET, TOKEN, OR CONFIG VALUE IS STORED HERE. Every column is printed by
-        // `bridge:jobs` and summarised by `bridge:check`. `payload` is handler input and is
-        // documented as operator-visible for exactly that reason.
+        // ⛔ NO SECRET, TOKEN, OR CONFIG VALUE IS STORED HERE. Every column declared below is
+        // printed by `bridge:jobs` — `payload` included, on both the human listing and
+        // `--json` — and several are summarised by `bridge:check`. The surrogate `id` and the
+        // framework timestamps carry no caller value and are not printed. The rule is over
+        // the STORE, and it is only honest while the enumeration prints what the store holds.
         Schema::create('scheduled_jobs', function (Blueprint $table) {
             $table->id();
 

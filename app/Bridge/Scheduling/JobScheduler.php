@@ -34,7 +34,10 @@ use Throwable;
  *  - **NEVER THROWS PAST THE PASS** — {@see self::passSafely()}. A job failure must not fail
  *    a webhook (a 5xx makes the provider redeliver, compounding whatever broke) and must not
  *    fail the tick (a crontab line that exits non-zero on a handler bug mails the operator
- *    about the wrong thing while the registry keeps the actual record).
+ *    about the wrong thing while the registry keeps the actual record). ⚑ Swallowing the
+ *    THROW is not swallowing the FACT: the result says whether the pass ran, and
+ *    {@see JobPassResult::passFailed()} says whether it did not run because something is
+ *    broken, which is what `bridge:tick`'s exit code is decided by.
  *
  * ⚑ THE MINIMUM PASS INTERVAL IS SHARED BY BOTH INGRESSES, on purpose. The event gate is
  * evaluated on EVERY delivery, so without it a busy install would query the registry once
@@ -89,7 +92,18 @@ final class JobScheduler
     {
         try {
             $result = $this->pass($source);
-            Cache::forget(self::ERROR_KEY);
+
+            // ⛔ ONLY A PASS THAT ACTUALLY RAN MAY CLEAR THE MARKER. Forgetting it on any
+            // non-throwing return erases the last failure the moment ANY later call
+            // returns — and on a busy install the overwhelmingly common return is an
+            // ordinary skip (SKIP_TOO_SOON on every delivery inside the interval,
+            // SKIP_LOCKED on every concurrent one), which happens within seconds of the
+            // failure. The marker would then be gone before anyone read it and
+            // `bridge:check`'s error leg would be dead code. Same rule, same reason, as
+            // RetentionGate/StandupGate, which forget it only after the work completed.
+            if ($result->didRun()) {
+                Cache::forget(self::ERROR_KEY);
+            }
 
             return $result;
         } catch (Throwable $e) {
@@ -105,7 +119,7 @@ final class JobScheduler
                 'error' => $e->getMessage(),
             ]);
 
-            return JobPassResult::skipped($source, 'the pass itself failed: '.$e->getMessage());
+            return JobPassResult::failed($source, 'the pass itself failed: '.$e->getMessage());
         }
     }
 
@@ -116,11 +130,26 @@ final class JobScheduler
      */
     public function pass(JobPassSource $source): JobPassResult
     {
+        $cfg = JobsConfig::fromConfig();
+
         // ONE home for the enabled predicate (canon #5): the gate asks it to decide whether
         // to register a callback at all, and this asks it because the tick and a hand-run
         // pass never go through the gate.
-        if (! JobHandlerRegistry::isEnabled()) {
+        if (! $cfg->enabled) {
             return JobPassResult::skipped($source, JobPassResult::SKIP_DISABLED);
+        }
+
+        // A cadence this install cannot act on is REFUSED, not clamped — see JobsConfig.
+        // It is a FAULT and not an ordinary skip: nothing in the registry will run until
+        // somebody fixes the value, so `bridge:tick` exits non-zero on it and the
+        // `jobs.posture` leg reports it at preflight.
+        if (! $cfg->isUsable()) {
+            Log::warning('the periodic-job registry is enabled but misconfigured; no pass ran', [
+                'source' => $source->value,
+                'problem' => $cfg->problem,
+            ]);
+
+            return JobPassResult::failed($source, 'the registry is MISCONFIGURED and no pass can run: '.$cfg->problem);
         }
 
         // The due-check lives INSIDE the lock, and only there. A cheaper check before the
@@ -132,16 +161,16 @@ final class JobScheduler
         // closure's own return when it was — so the returned TYPE is the discriminator,
         // and no separate "did we acquire" flag (whose disagreement with the result would
         // be an unreachable branch to guard) is needed.
-        $outcome = Cache::lock(self::LOCK_KEY, self::LOCK_TTL)->get(function () use ($source): JobPassResult {
+        $outcome = Cache::lock(self::LOCK_KEY, self::LOCK_TTL)->get(function () use ($source, $cfg): JobPassResult {
             if (Cache::has(self::MARKER_KEY)) {
                 return JobPassResult::skipped($source, JobPassResult::SKIP_TOO_SOON);
             }
 
             // Marked BEFORE the work, so a pass that throws backs off a full interval
             // instead of retrying on every subsequent delivery.
-            Cache::put(self::MARKER_KEY, true, self::minPassInterval());
+            Cache::put(self::MARKER_KEY, true, $cfg->minPassInterval);
 
-            return $this->runDue($source);
+            return $this->runDue($source, $cfg->maxPerPass);
         });
 
         return $outcome instanceof JobPassResult
@@ -149,7 +178,7 @@ final class JobScheduler
             : JobPassResult::skipped($source, JobPassResult::SKIP_LOCKED);
     }
 
-    private function runDue(JobPassSource $source): JobPassResult
+    private function runDue(JobPassSource $source, int $maxPerPass): JobPassResult
     {
         $due = ScheduledJob::query()
             ->where('enabled', true)
@@ -161,7 +190,7 @@ final class JobScheduler
             // than queueing behind every existing one. `id` breaks ties deterministically.
             ->orderBy('next_due_at')
             ->orderBy('id')
-            ->limit(self::maxPerPass())
+            ->limit($maxPerPass)
             ->get();
 
         $ok = $failed = $refused = 0;
@@ -254,13 +283,16 @@ final class JobScheduler
         return $status;
     }
 
+    /**
+     * A TTL FLOOR, and its only caller is the catch arm: the last-error marker must outlive
+     * the pass cadence, or an install with a long interval loses the marker before the next
+     * pass could clear it. ⚑ The `max(1, …)` here is NOT the clamp {@see JobsConfig} exists
+     * to refuse — a TTL has to be a positive number of seconds whatever the config says, and
+     * this runs in the arm where the config may be the very thing that could not be
+     * resolved. Nothing decides a CADENCE from this value.
+     */
     private static function minPassInterval(): int
     {
         return max(1, (int) config('bridge.jobs.min_pass_interval', 60));
-    }
-
-    private static function maxPerPass(): int
-    {
-        return max(1, (int) config('bridge.jobs.max_per_pass', 3));
     }
 }

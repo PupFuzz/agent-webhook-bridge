@@ -115,9 +115,13 @@ final class JobHandlerRegistry
         return $handler;
     }
 
-    /** Whether the periodic-job registry is switched on for this install. */
+    /**
+     * Whether the periodic-job registry is switched on for this install. Delegates to
+     * {@see JobsConfig} rather than reading the key itself — the resolved posture has one
+     * home, and this is the name the gate calls it by.
+     */
     public static function isEnabled(): bool
     {
-        return (bool) config('bridge.jobs.enabled', true);
+        return JobsConfig::fromConfig()->enabled;
     }
 }

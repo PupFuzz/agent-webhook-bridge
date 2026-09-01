@@ -274,6 +274,85 @@ class JobSchedulerTest extends TestCase
         $this->assertNull(Cache::get(JobScheduler::ERROR_KEY));
     }
 
+    /**
+     * ⛔ ONLY A PASS THAT RAN MAY CLEAR THE MARKER — the sibling of the test above, and the
+     * one that matters on a real install. A failing pass leaves the marker AND the shared
+     * interval marker; the very next delivery is inside that interval, so it returns
+     * SKIP_TOO_SOON without touching the registry. Clearing on any non-throwing return
+     * therefore erased the failure within SECONDS on a busy install, leaving
+     * `bridge:check`'s error leg permanently dead — the DL-012 silent inertness this
+     * subsystem exists not to repeat, rebuilt inside its own alarm.
+     */
+    public function test_a_skipped_pass_does_not_erase_the_last_pass_failure(): void
+    {
+        Schema::drop('scheduled_jobs');
+        $this->scheduler()->passSafely(JobPassSource::Tick);
+        $this->assertIsArray(Cache::get(JobScheduler::ERROR_KEY), 'precondition: the failing pass recorded itself');
+
+        $second = $this->scheduler()->passSafely(JobPassSource::EventGate);
+
+        $this->assertSame(JobPassResult::SKIP_TOO_SOON, $second->skipped);
+        $this->assertIsArray(Cache::get(JobScheduler::ERROR_KEY));
+    }
+
+    /** The same rule on the arm that returns BEFORE the lock is ever taken. */
+    public function test_a_disabled_registry_does_not_erase_the_last_pass_failure(): void
+    {
+        Cache::put(JobScheduler::ERROR_KEY, ['at' => 'then', 'exception' => 'X', 'error' => 'y'], 600);
+        config(['bridge.jobs.enabled' => false]);
+
+        $result = $this->scheduler()->passSafely(JobPassSource::EventGate);
+
+        $this->assertSame(JobPassResult::SKIP_DISABLED, $result->skipped);
+        $this->assertIsArray(Cache::get(JobScheduler::ERROR_KEY));
+    }
+
+    /**
+     * ⛔ A CADENCE THIS INSTALL CANNOT ACT ON IS REFUSED, NOT CLAMPED. `BRIDGE_JOBS_MIN_PASS_INTERVAL=sixty`
+     * resolves to 0 through `config/bridge.php`'s `(int)` cast; the old `max(1, …)` turned
+     * that into a ONE-SECOND floor — a pass per second on every delivery, on the one path
+     * DL-001's latency bet is spent — and said nothing. Same direction retention fails in:
+     * an unusable value does nothing rather than picking a number nobody asked for.
+     */
+    public function test_an_unusable_pass_interval_is_refused_rather_than_floored_to_one_second(): void
+    {
+        config(['bridge.jobs.min_pass_interval' => 0]);
+        $this->insert('a');
+
+        $result = $this->scheduler()->passSafely(JobPassSource::Tick);
+
+        $this->assertFalse($result->didRun());
+        $this->assertTrue($result->passFailed(), 'a value nobody can act on is a fault, not an ordinary skip');
+        $this->assertStringContainsString('min_pass_interval', (string) $result->skipped);
+        $this->assertSame([], $this->handler->sources(), 'nothing ran');
+    }
+
+    public function test_an_unusable_pass_bound_is_refused_too(): void
+    {
+        config(['bridge.jobs.max_per_pass' => 0]);
+        $this->insert('a');
+
+        $result = $this->scheduler()->passSafely(JobPassSource::EventGate);
+
+        $this->assertTrue($result->passFailed());
+        $this->assertStringContainsString('max_per_pass', (string) $result->skipped);
+        $this->assertSame([], $this->handler->sources());
+    }
+
+    /**
+     * ⚑ AN ORDINARY SKIP IS NOT A FAULT, and the two must stay distinguishable or
+     * `bridge:tick`'s exit code reddens on most of its runs on a busy install.
+     */
+    public function test_the_ordinary_skips_are_not_reported_as_faults(): void
+    {
+        config(['bridge.jobs.enabled' => false]);
+        $this->assertFalse($this->scheduler()->pass(JobPassSource::Tick)->passFailed());
+
+        config(['bridge.jobs.enabled' => true]);
+        $this->assertFalse($this->scheduler()->pass(JobPassSource::Tick)->passFailed(), 'a clean pass');
+        $this->assertFalse($this->scheduler()->pass(JobPassSource::Tick)->passFailed(), 'and the too-soon skip after it');
+    }
+
     public function test_the_registry_switch_stops_every_pass(): void
     {
         config(['bridge.jobs.enabled' => false]);
