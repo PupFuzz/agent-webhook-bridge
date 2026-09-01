@@ -188,13 +188,16 @@ class RefusalContextTest extends TestCase
         // literal (which the data provider above pins): a slug that silently drops one of
         // them reds here even if someone rewrites the literal in both places.
         //
-        // ⚑ WHAT CHANGED WITH card#8375, stated here because DL-314's sentence *"only a
-        // board-scoped read could, and the bridge deliberately makes none"* was true when it
-        // was written and is not any more: the bridge now makes exactly that read on the
-        // `kanban_move_card` arm. It did not make the STATUS informative — it supplied
-        // evidence from OUTSIDE the response, which the caller declares with
-        // `foreignIdExcluded` (the leg below). This default is what every arm that has NOT
-        // established the id still gets, and it is still the honest answer for them.
+        // ⚑ WHAT CHANGED WITH card#8375 AND card#8415, stated here because DL-314's sentence
+        // *"only a board-scoped read could, and the bridge deliberately makes none"* was true
+        // when it was written and is not any more: BOTH token-resolved arms now make exactly
+        // that read before `getCard` — `kanban_move_card` since card#8375, the
+        // `kanban_block_reason` draft overlay since card#8415. Neither made the STATUS
+        // informative — they supply evidence from OUTSIDE the response, which the caller
+        // declares with `foreignIdExcluded` (the leg below). ⭐ No shipped arm passes the
+        // default today: the two-cause slug is kept, and pinned HERE rather than by a handler
+        // test, because it is the honest answer for an arm that makes no such check, not
+        // because one currently exists.
         $reason = RefusalContext::readReason('getcard', $this->exception('{}', 403));
 
         $this->assertStringContainsString('foreign_card_id', $reason, 'the read-403 slug no longer names the foreign-card-id cause');

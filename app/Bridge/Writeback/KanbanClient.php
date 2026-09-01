@@ -61,9 +61,10 @@ final class KanbanClient
      * this asks another tenant's card for its state as readily as it asks ours, and the
      * answer is what the belongs-to-mapped-board compare then reads. That is fine only
      * where the id has ALREADY been established as this install's — which is what
-     * {@see cardRowsOnBoard} is for, and what `kanban_move_card` now does before it calls
-     * this (card#8375). A new caller reaching this with an author-supplied id and no such
-     * check is the defect that card names, not a shortcut.
+     * {@see cardRowsOnBoard} is for, and what both token-resolved arms — `kanban_move_card`
+     * (card#8375) and the `kanban_block_reason` draft overlay (card#8415) — now do before they
+     * call this. A new caller reaching this with an author-supplied id and no such check is the
+     * defect those cards name, not a shortcut.
      *
      * @return array<string, mixed>
      */

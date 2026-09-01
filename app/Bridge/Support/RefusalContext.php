@@ -105,16 +105,18 @@ final class RefusalContext
      *
      * ⭐ $foreignIdExcluded IS THE OTHER EVIDENCE — and it is precisely the thing DL-314
      * recorded as the deferred option: a BOARD-SCOPED read of the id against this install's
-     * own board. Since card#8375 `kanban_move_card` makes exactly that read BEFORE it calls
+     * own board. Since card#8375 `kanban_move_card` — and since card#8415 the
+     * `kanban_block_reason` draft overlay — makes exactly that read BEFORE it calls
      * `getCard` ({@see MappedBoardGuard::refusesCardIdOutsideMappedBoard}).
-     * By the time its 403 arm fires, cause (a) has been ruled out BY A MEASUREMENT: the same
-     * token read this id back off the mapped board moments earlier. That caller passes true and
-     * gets `{verb}_403_token_scope`, naming the one cause left.
+     * By the time either 403 arm fires, cause (a) has been ruled out BY A MEASUREMENT: the same
+     * token read this id back off the mapped board moments earlier. Those callers pass true and
+     * get `{verb}_403_token_scope`, naming the one cause left.
      * ⛔ THE FLAG IS A CLAIM ABOUT THE CALL SITE, NEVER A PREFERENCE. Pass it only where a
      * board-scoped establishment of THIS id precedes the failing read, or where the failing
      * read is ITSELF board-scoped (a 403 on a query naming our own board says nothing about
-     * whose card the id is). An arm with no such check — `kanban_block_reason`'s draft overlay
-     * today — keeps the default, and the two-cause slug stays true there.
+     * whose card the id is). No shipped arm passes the default today — the two-cause slug is
+     * kept, and pinned in `RefusalContextTest`, because it is the honest answer for an arm
+     * that makes no such check, not because one currently exists.
      */
     public static function readReason(string $verb, RequestException $e, bool $foreignIdExcluded = false): string
     {
