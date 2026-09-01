@@ -291,6 +291,10 @@ class TheSanctionedFormsStayGreen(unittest.TestCase):
             'echo "${BRIDGE_CHANNEL_TOKEN:+set}"\n[ -n "$BRIDGE_CHANNEL_TOKEN" ] && echo ok\n',
         'compare digests, never values':
             'sha256sum < "$TOKEN_FILE"\n',
+        'test for the FILE with test -r, which resolves no value':
+            'test -r "$TOKEN_FILE" && echo present\n',
+        'a LENGTH is not the value':
+            'echo "${#BRIDGE_CHANNEL_TOKEN}"\n',
         'sign through the command that resolves the secret itself':
             'SIG=$(printf \'%s\' "$BODY" | php artisan bridge:sign --provider=github --scope="$SCOPE")\n',
         'a disposable container credential is a literal, not a placed secret':
@@ -451,6 +455,142 @@ class TheWaiver(unittest.TestCase):
                 'echo "$SECRET"\n'
                 '```\n')
         self.assertIn('stdout', sorted(f.rule for f in _scan(body)))
+
+
+class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
+    """The pipeline-TAIL predicate — its members, and (mostly) its DEFAULT.
+
+    Measured on the pre-fix tool: `base64 "$TOKEN_FILE"` reddened while
+    `cat "$TOKEN_FILE" | base64` did not, and nor did `| sed`, `| awk`, `| cut`,
+    `| grep`, `| jq`, `| xxd`, `| fold`. The list enumerated the LEAKING tails, so
+    every command nobody had thought to list read as safe and ONE pipe stage was
+    the whole evasion. `STDIN_SINKS` inverted it: a tail leaks unless it is a known
+    sink. So the cases that matter most here are the ones that name no member at
+    all — an unlisted tail must red, because the gap in an enumeration is what the
+    next author will spell.
+    """
+
+    def _rules(self, body: str) -> list[str]:
+        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
+
+    #: Every one of these was GREEN before the inversion.
+    SILENCED_BY_ONE_PIPE = [
+        'cat "$TOKEN_FILE" | base64\n',
+        'cat "$BRIDGE_DIR/kanban/writeback-token" | grep .\n',
+        'echo "$BRIDGE_SECRET" | base64\n',
+        'printf \'%s\' "$BRIDGE_SECRET" | sed \'s/a/b/\'\n',
+        'printf \'%s\' "$SECRET" | awk \'{print}\'\n',
+        'printf \'%s\' "$SECRET" | cut -c1-8\n',
+        'printf \'%s\' "$SECRET" | jq -R .\n',
+        'printf \'%s\' "$SECRET" | xxd\n',
+        'printf \'%s\' "$SECRET" | fold -w8\n',
+        'cat "$TOKEN_FILE" | head -c 8\n',
+    ]
+
+    def test_every_tail_that_a_pipe_used_to_silence_now_reds(self) -> None:
+        for body in self.SILENCED_BY_ONE_PIPE:
+            with self.subTest(body=body.strip()):
+                self.assertEqual(['stdout'], self._rules(body))
+
+    def test_the_pipe_is_the_only_variable_between_a_red_and_a_green(self) -> None:
+        """The discriminator, pinned on one payload: piping `base64` instead of
+        handing it the path must not change the verdict."""
+        self.assertEqual(['stdout'], self._rules('base64 "$TOKEN_FILE"\n'))
+        self.assertEqual(['stdout'], self._rules('cat "$TOKEN_FILE" | base64\n'))
+
+    def test_a_tail_nobody_enumerated_reds_because_the_default_is_deny(self) -> None:
+        """The PROPERTY, not the members. This name is on no list in the program —
+        under the old positive enumeration that is exactly what made it safe."""
+        self.assertNotIn('zzunlisted-filter', lint.STDIN_SINKS)
+        self.assertNotIn('zzunlisted-filter', lint.SHELL_BUILTINS)
+        self.assertEqual(['stdout'], self._rules('echo "$SECRET" | zzunlisted-filter\n'))
+
+    def test_reading_a_secret_FILE_into_a_pipe_marks_the_pipeline(self) -> None:
+        """`cat "$TOKEN_FILE"` carries no secret VALUE in its argv — what it is
+        handed is a PATH — so nothing marked the pipeline and the tail rule read a
+        secret-bearing pipeline as clean."""
+        self.assertEqual(['stdout'], self._rules('cat "$TOKEN_FILE" | tr -d "\\n"\n'))
+
+    def test_a_trailing_pipe_at_end_of_line_does_not_end_the_pipeline(self) -> None:
+        """A pipeline continues on the next line. The splitter ended it there,
+        handing the tail a pipeline of its own in which `idx > 0` is false — so the
+        one-line form reddened and the wrapped form did not."""
+        self.assertEqual(['stdout'], self._rules('printf \'%s\' "$SECRET" |\nbase64\n'))
+        self.assertEqual(['stdout'], self._rules('printf \'%s\' "$SECRET" \\\n  | base64\n'))
+
+    def test_a_known_stdin_sink_tail_stays_green(self) -> None:
+        """The other direction, and the reason this is not blanket default-deny:
+        each of these is a form `docs/config-schema.md` PRESCRIBES."""
+        for body in (
+            'printf \'%s\' "$SECRET" | sha256sum\n',
+            'printf \'%s\' "$TOKEN" | install -m 600 /dev/stdin "$D/writeback-token"\n',
+            'printf \'header = "Authorization: Bearer %s"\\n\' "$TOKEN" |\n'
+            'curl --config - http://127.0.0.1:8788/\n',
+            'printf \'%s\' "$SECRET" | php artisan bridge:sign --scope=x\n',
+        ):
+            with self.subTest(body=body.strip()):
+                self.assertEqual([], self._rules(body))
+
+    def test_a_capturing_redirect_on_the_tail_is_still_green(self) -> None:
+        """Deny-by-default is about the tail's IDENTITY; a tail whose stdout goes
+        to a file captures the value however unknown the command is."""
+        self.assertEqual([], self._rules('cat "$TOKEN_FILE" | base64 > /run/secrets/x\n'))
+        self.assertEqual(
+            [], self._rules('echo "$SECRET" | zzunlisted-filter > /run/secrets/x\n'))
+
+    def test_the_finding_names_the_tail_that_leaked(self) -> None:
+        findings = _scan('```bash\ncat "$TOKEN_FILE" | base64\n```\n')
+        self.assertEqual(1, len(findings), [f.render() for f in findings])
+        self.assertIn('`base64`', findings[0].message)
+        self.assertIn('SINK', findings[0].message)
+
+    def test_a_secret_FILE_redirected_into_a_log_is_now_caught_too(self) -> None:
+        """A consequence of the same leg, pinned because it changed: `cat` into a
+        log file is captured (so no `stdout` finding) and named no secret VALUE in
+        its argv (so no `log` finding either) — it was green in both directions."""
+        self.assertEqual(
+            ['log'], self._rules('cat "$TOKEN_FILE" >> /var/log/provision.log\n'))
+
+    def test_the_control_disabling_stdout_removes_exactly_this_finding(self) -> None:
+        """Proof the red comes from the stdout rule and not from somewhere else:
+        a case that reds for an unrelated reason would survive this."""
+        body = '```bash\ncat "$TOKEN_FILE" | base64\n```\n'
+        self.assertEqual(['stdout'], [f.rule for f in _scan(body)])
+        self.assertEqual([], _scan(body, set(lint.RULE_IDS) - {'stdout'}))
+
+
+class AMessageMustNameTextTHEDOCACTUALLYCONTAINS(unittest.TestCase):
+    """Findings are read in a CI log, so a message may not carry the private-use
+    placeholders `_mask_substitutions` leaves behind. `Bearer \x010\x02` names
+    nothing an author can search their doc for, and a remediation nobody can locate
+    is noise."""
+
+    def test_the_argv_message_shows_the_substitution_not_its_placeholder(self) -> None:
+        findings = _scan('```bash\ncurl -H "Authorization: Bearer $(cat "$TOKEN_FILE")" '
+                         'http://x/\n```\n')
+        self.assertEqual(['argv'], [f.rule for f in findings])
+        self.assertIn('$(cat "$TOKEN_FILE")', findings[0].message)
+
+    def test_the_reader_message_unmasks_too(self) -> None:
+        """The sibling: the same raw token reached the `stdout` reader message."""
+        findings = _scan('```bash\ncat "$(dirname "$TOKEN_FILE")/writeback-token"\n```\n')
+        self.assertEqual(['stdout'], [f.rule for f in findings])
+        self.assertIn('$(dirname "$TOKEN_FILE")', findings[0].message)
+
+    def test_no_finding_this_suite_can_produce_carries_a_placeholder(self) -> None:
+        """Over a population rather than over two messages: every payload this
+        module reds on, plus the fixture, plus this checkout's own docs."""
+        corpus = [_fixture_text()]
+        corpus += [f'```bash\n{b}```\n' for b in
+                   AddingAPipeStageMustNotSilenceALeak.SILENCED_BY_ONE_PIPE]
+        corpus.append('```bash\ncurl -H "Authorization: Bearer $(cat "$TOKEN_FILE")" '
+                      'http://x/\ncat "$(dirname "$TOKEN_FILE")/token"\n```\n')
+        rendered = [f.render() for text in corpus for f in _scan(text)]
+        self.assertGreater(len(rendered), 10, 'the corpus reddened on nothing')
+        for line in rendered:
+            with self.subTest(line=line):
+                self.assertNotIn(lint.SUB_OPEN, line)
+                self.assertNotIn(lint.SUB_CLOSE, line)
 
 
 class TheCommandLineContract(unittest.TestCase):

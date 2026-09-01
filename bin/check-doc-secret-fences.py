@@ -62,7 +62,23 @@ string is not in SHELL_INFO; a secret in bare `env` output, which prints the who
 environment with nothing in argv to read; and every file that is not a `*.md`. The
 shell reader is a heuristic, not a parser: it understands quoting, pipelines,
 command substitution, redirection and here-strings, and it does not understand
-functions, loops, `eval`, aliases, or a value routed through several variables.
+functions, loops, `eval`, aliases, or a value routed through several variables. A
+HEREDOC body is read as though it were commands, so an unquoted `<<EOF` block
+carrying a secret expansion reports an `argv` finding against a "command" that is
+really a config line — a false positive, and the waiver is the answer to it.
+
+ONE LEG IS NOT AN ENUMERATION, AND THE DIFFERENCE IS DELIBERATE. Where a pipeline
+carrying a secret VALUE ENDS, the question is decided deny-by-default: the tail
+leaks unless it is a known stdin SINK (STDIN_SINKS — a digest, a file write, a
+network send, a program that resolves the value itself). The list this replaced ran
+the other way, naming the LEAKING tails, and its gaps were therefore SILENT: adding
+one pipe stage turned a leak the tool already caught into a clean run
+(`base64 <secret file>` red, `cat <secret file> | base64` green, and the same for
+`| sed`, `| awk`, `| cut`, `| grep`, `| jq`, `| xxd`). Deny-by-default moves that
+leg's gaps to the loud side — an unlisted tail reds and the author waives it with a
+reason — which is the only direction a backstop may be wrong in. It is scoped to
+the tail on purpose: the rest of this program stays a spelling grep, and the top of
+this file still holds.
 
 EXIT CODES
   0  no known shape found. NOT a clean bill of health — see the top of this file.
@@ -157,11 +173,43 @@ PRINTING_COMMANDS = {'echo', 'printf', 'env', 'printenv', 'set', 'declare',
 READING_COMMANDS = {'cat', 'head', 'tail', 'less', 'more', 'nl', 'tac', 'rev',
                     'xxd', 'od', 'strings', 'base64', 'tee'}
 
-#: Pipeline tails that hand their stdin straight back to the terminal. A pipeline
-#: carrying a secret that ENDS here is a stdout leak even though every stage was
-#: individually innocent.
-PASSTHROUGH_TAILS = {'cat', 'tee', 'less', 'more', 'head', 'tail', 'nl', 'tac',
-                     'rev', 'xxd', 'od', 'strings', 'tr'}
+#: Commands that CONSUME a pipeline's stdin without handing it back. A pipeline
+#: carrying a secret VALUE that ENDS anywhere else is a stdout leak, even though
+#: every stage was individually innocent.
+#:
+#: DENY BY DEFAULT, and the inversion is the point (card#8351). This list used to
+#: run the other way — it enumerated the LEAKING tails — so every command nobody
+#: had thought to list read as safe, and adding one pipe stage silenced a leak the
+#: tool already caught: `base64 <secret file>` reddened while `cat <secret file> |
+#: base64` did not, and neither did `| sed`, `| awk`, `| cut`, `| grep`, `| jq`,
+#: `| xxd`. An enumeration whose gaps are SILENT is the shape this whole check
+#: exists to argue against, so the gaps now fall on the loud side: an unlisted tail
+#: reds, and a doc that must show one waives the line with a reason.
+#:
+#: Membership means "this command's stdout is not a function of its stdin" — a
+#: digest, a file write, a network send, a program that resolves the value itself.
+#: `tee` is deliberately absent: it writes the file AND prints. Shell builtins are
+#: not listed and are handled in `_tail_hands_stdin_back` — `read` consumes stdin,
+#: `echo`/`printf` ignore it.
+#:
+#: ⚠ The bound this list buys, named rather than left to be discovered: a member
+#: whose stdout IS a function of its stdin in some other mode is green as a tail.
+#: `openssl` is the worked case — it is here because `dgst` is a form the rule
+#: prescribes, and `| openssl base64` therefore does not red (its argv-borne twin,
+#: the DL-322 member, is caught by the `argv` rule and does not depend on this).
+STDIN_SINKS = {
+    # Compare digests, never values — a form the rule PRESCRIBES.
+    'sha1sum', 'sha224sum', 'sha256sum', 'sha384sum', 'sha512sum', 'shasum',
+    'md5sum', 'b2sum', 'cksum', 'sum',
+    # Take the value on STDIN instead of in argv — the other form it prescribes.
+    'curl', 'wget', 'ssh', 'scp', 'sftp', 'mail', 'mailx', 'sendmail', 'msmtp',
+    'nc', 'socat', 'mysql', 'psql', 'sqlite3',
+    # Write it to a file, or hand it to the program that resolves it.
+    'install', 'dd', 'sponge', 'gpg', 'gpg2', 'age', 'openssl', 'php', 'artisan',
+    'systemd-ask-password', 'chpasswd', 'passwd',
+    # Measure it without printing it.
+    'wc',
+}
 
 #: Redirect targets that are still a readable surface, not a file.
 TERMINAL_TARGETS = {'/dev/stdout', '/dev/stderr', '/dev/tty', '/dev/console',
@@ -318,6 +366,21 @@ def _probe_expansions(chunk: Chunk) -> list[tuple[int, str]]:
 
 SUB_OPEN = '\x01'
 SUB_CLOSE = '\x02'
+_SUB_REF_RE = re.compile(SUB_OPEN + r'(\d+)' + SUB_CLOSE)
+
+
+def _unmask(token: str, subs: list[Chunk]) -> str:
+    """Render a masked token back as the source text an author can search for.
+
+    A finding is read in a CI log, so a message must never carry the control-
+    character placeholders `_mask_substitutions` leaves behind. Rendered raw, a
+    bearer header reads as `Bearer` followed by two unprintable bytes: it names
+    nothing that appears in the doc, and a remediation nobody can locate is noise.
+    """
+    def render(m):
+        i = int(m.group(1))
+        return f'$({subs[i].text})' if i < len(subs) else m.group(0)
+    return _SUB_REF_RE.sub(render, token)
 
 
 def _mask_substitutions(chunk: Chunk) -> tuple[Chunk, list[Chunk]]:
@@ -451,6 +514,16 @@ def _split_segments(chunk: Chunk, captured: bool) -> list[list[Segment]]:
             i += 1
             start = i
             continue
+        if ch == '\n' and current and current[-1].piped_out \
+                and not chunk.text[start:i].strip():
+            # `cmd |` at end of line: the pipeline CONTINUES on the next line.
+            # Ending it here handed the tail its own pipeline, where `idx > 0` is
+            # false and the tail rule never runs — so `printf '%s' "$SECRET" |`
+            # with `base64` on the following line was green for a spelling reason
+            # while the one-line form reddened (card#8351).
+            i += 1
+            start = i
+            continue
         # NOT `&`: a bare `&` backgrounds a job, but splitting on it would cut
         # `2>&1` and `>&2` in half and silently drop the redirect — and dropping a
         # redirect is the direction that makes a leak look captured.
@@ -574,6 +647,18 @@ def _read_command(text: str) -> Command:
                    herestring=hs.group(1) if hs else None, text=text)
 
 
+def _tail_hands_stdin_back(cmd: Command) -> bool:
+    """Does a pipeline TAIL put (some function of) its stdin back on stdout?
+
+    Deny by default: yes, unless the command is a known stdin sink (STDIN_SINKS,
+    which states why the default is this way round) or a shell builtin — `read`
+    consumes stdin and `echo`/`printf` ignore it, so neither hands it back.
+    """
+    if not cmd.name:
+        return False
+    return cmd.name not in STDIN_SINKS and cmd.name not in SHELL_BUILTINS
+
+
 def _writes_to_a_readable_surface(cmd: Command) -> bool:
     """True when this command's stdout is NOT captured into a file."""
     targets = cmd.stdout_targets()
@@ -643,7 +728,7 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
         if _secret_expansions(token):
             return True
         return any(int(m.group(1)) in secret_subs
-                   for m in re.finditer(SUB_OPEN + r'(\d+)' + SUB_CLOSE, token))
+                   for m in _SUB_REF_RE.finditer(token))
 
     pipeline_carries_secret = False
 
@@ -653,7 +738,15 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
         if not cmd.name:
             continue
         arg_secrets = [a for a in cmd.args if token_carries_secret(a)]
-        if arg_secrets or (idx > 0 and pipeline_carries_secret):
+        secret_files = [a for a in cmd.args + cmd.input_paths()
+                        if _looks_like_secret_path(a)]
+        # A stage that puts a secret on ITS stdout makes the whole downstream
+        # pipeline carry one. The reader leg is load-bearing and was missing:
+        # `cat "$TOKEN_FILE"` names no secret VALUE in its argv — what it is given
+        # is a PATH — so `cat "$TOKEN_FILE" | base64` reached the tail rule with
+        # the pipeline marked clean and every stage individually innocent.
+        if arg_secrets or (cmd.name in READING_COMMANDS and secret_files) \
+                or (idx > 0 and pipeline_carries_secret):
             pipeline_carries_secret = True
 
         line = seg.chunk.line_at(0)
@@ -665,7 +758,8 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
         if 'argv' in enabled and arg_secrets and cmd.name not in SHELL_BUILTINS:
             findings.append(Finding(
                 path, line, 'argv', 'argv',
-                f'`{cmd.name}` is not a shell builtin, so {arg_secrets[0]} becomes a '
+                f'`{cmd.name}` is not a shell builtin, so '
+                f'{_unmask(arg_secrets[0], subs)} becomes a '
                 f'token in /proc/<pid>/cmdline, readable by every local account for '
                 f'the life of the process. Pass a PATH, or the value on stdin.'))
 
@@ -677,27 +771,29 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
             # chaining silently swallowed the tail case behind the reader's empty
             # result — a branch that could not fire, which is the shape this whole
             # card is about.
-            secret_files = [a for a in cmd.args + cmd.input_paths()
-                            if _looks_like_secret_path(a)]
             if cmd.name in PRINTING_COMMANDS and arg_secrets:
                 findings.append(Finding(
                     path, line, 'stdout', 'stdout',
-                    f'`{cmd.name}` writes {arg_secrets[0]} to stdout — a terminal '
+                    f'`{cmd.name}` writes {_unmask(arg_secrets[0], subs)} to '
+                    f'stdout — a terminal '
                     f'scrollback, a CI log, or an AI agent\'s session transcript. '
                     f'Test with ${{VAR:+set}}; compare with sha256sum.'))
             if cmd.name in READING_COMMANDS and secret_files:
                 findings.append(Finding(
                     path, line, 'stdout', 'stdout',
-                    f'`{cmd.name}` puts the contents of {secret_files[0]} on '
+                    f'`{cmd.name}` puts the contents of '
+                    f'{_unmask(secret_files[0], subs)} on '
                     f'stdout. Open the file yourself, at your own terminal — a '
                     f'value that reaches a transcript is leaked, and the only '
                     f'repair is rotation.'))
             if idx == len(pipeline) - 1 and idx > 0 and pipeline_carries_secret \
-                    and cmd.name in PASSTHROUGH_TAILS and not secret_files:
+                    and _tail_hands_stdin_back(cmd) and not secret_files:
                 findings.append(Finding(
                     path, line, 'stdout', 'stdout',
                     f'this pipeline carries a secret VALUE and ends at `{cmd.name}`, '
-                    f'which hands its stdin straight back to the terminal.'))
+                    f'which is not a known stdin SINK — so it hands (some function '
+                    f'of) the value straight back to the terminal. Send it to a '
+                    f'file, a digest, or a program that consumes it.'))
 
         # --- log --------------------------------------------------------------
         if 'log' in enabled and (arg_secrets or pipeline_carries_secret):
