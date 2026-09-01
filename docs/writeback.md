@@ -68,8 +68,15 @@ The lexical verbs are GitHub's own linking keywords — `close`/`closes`/`closed
 ### 1. A least-privilege writeback token
 Create a kanban API token scoped to **card moves on the mapped boards** (NOT the broad provisioning token), and place it:
 ```bash
-install -m 600 /dev/stdin "$BRIDGE_DIR/kanban/writeback-token" <<<'<the-token>'
+# `read -rs` keeps the token off the terminal and out of your shell history — a
+# here-string (or any command-line literal) is written to that file verbatim.
+read -rsp 'writeback token: ' TOKEN
+printf '%s' "$TOKEN" | install -m 600 /dev/stdin "$BRIDGE_DIR/kanban/writeback-token"
+unset TOKEN
 ```
+
+`printf` is a shell builtin and `install` reads the value on **stdin**, so the token reaches no argv — see [`docs/config-schema.md § Handling a secret VALUE`](config-schema.md#handling-a-secret-value-not-just-its-file) for the rule this follows.
+
 The writeback also posts a **card comment** when it drops a correlation leg or refuses a move (card#7064), so grant the token **comment-create** on those boards as well. It is not required for the writeback to work: a note the token cannot post fails soft — the drop still reaches the log and the alert channel (`cardnote_403_not_writable_by_this_token`) — but the card itself then shows nothing, which is the silence the note exists to remove. **Not retried within a delivery, but re-attempted on the next event asserting the same drop:** the once-per-note check reads the card's stored comments, so a note that never landed is never "already there" — an install missing the grant re-POSTs (and re-alerts) on every later event carrying that drop rather than going quiet after the first.
 
 > **A note write EMITS a kanban webhook.** `POST /api/v3/tasks/{id}/comments.json` records a `comment.created` changelog event (kanban `CommentMutator::create` → `ChangelogRecorder`), delivered to that board's subscribers — a new event **type** out of a bridge path that previously emitted nothing back. It reaches this bridge only if an agent subscribes to it, and what keeps the writeback from waking on its own comment either way is the global echo set seeded from `writeback.json`'s `identity_id` (suppression is keyed on the ACTOR, not the event type — DL-018/019). `bridge:check` only **warns** when `identity_id` is unset, so confirm it is set.
