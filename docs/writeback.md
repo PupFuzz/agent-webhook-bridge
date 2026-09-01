@@ -244,9 +244,9 @@ By default the writeback only **moves an existing card** correlated by a `DL-NNN
 | any move | already at target | no-op (idempotent) |
 | merged / merged_to_main | no (open was missed) | create at that stage |
 | closed, not merged | no | **skip** — don't mint a card just to close one we never tracked |
-| **retitled** (`edited` with a title change) | yes, **and its name is still byte-identical to the title the bridge stamped** | **restamp the card name** to the new title (DL-328) — no column move |
-| retitled | yes, but the name was changed by a human | **nothing** — the name is not the bridge's to overwrite (DL-328) |
-| retitled | no | **skip** — nothing to restamp, and never a create |
+| **`renamed`** (a `pull_request.edited` that changed the title) | yes, **and its name is still byte-identical to the title the bridge stamped** | **restamp the card name** to the new title (DL-328) — no column move |
+| `renamed` | yes, but the name was changed by a human | **nothing** — the name is not the bridge's to overwrite (DL-328) |
+| `renamed` | no | **skip** — nothing to restamp, and never a create |
 | any | yes, and **PINNED** | **refused** — the lifecycle move and the closed-unmerged archive are both withheld (DL-335, see below). ⚠ NOT the create-race collapse: a pinned DUPLICATE twin is still retired |
 
 **Closed-unmerged dependabot PRs archive the card (DL-161).** Dependabot routinely closes its own PRs (a newer bump supersedes an older one, or a maintainer closes it), so a closed-unmerged dependabot card is dead weight. It is **archived** (retired off the board), not moved to a column — so it needs **no `closed_unmerged` stage mapping** (that key is ignored for the dependabot path). Archiving uses the kanban lifecycle verb (`PATCH {"_action":"archive"}`), and the bridge checks the response confirms it (a field-write `archived_at` PATCH silently no-ops); a 200-that-didn't-archive is logged loudly and skipped (never retried — that failure is deterministic). Idempotent: an archived card is excluded from correlation, so a redelivered close finds nothing and no-ops. (The DL-tracked move path is unchanged — a closed-unmerged *DL* PR still just moves, since work there typically continues.)

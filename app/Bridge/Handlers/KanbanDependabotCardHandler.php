@@ -320,6 +320,14 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
      * point (docs/customization.md): another classifier can emit this target, and the failure
      * this refuses is a card renamed to the WRONG string, which no later event corrects.
      *
+     * ⚑ ON >1 CORRELATED CARD THIS RESTAMPS EVERY MATCHING ONE, and does NOT collapse:
+     * a create-race duplicate carries the same bridge-stamped name as its twin, so restamping
+     * only a survivor would leave the other asserting the version that never shipped — the
+     * exact defect this leg exists to remove — while the collapse itself belongs to the
+     * move path, which is where a duplicate is actually retired (DL-198). The ownership test
+     * is applied per card, so a race pair one of whose cards a human renamed still writes to
+     * the other alone.
+     *
      * @param  array<int, array<string, mixed>>  $cards  id => card, already board- and repo-gated
      */
     private function restampNames(KanbanClient $client, array $cards, mixed $nameFrom, mixed $title, WritebackMapping $mapping, string $repo, int $prNumber): void
@@ -336,10 +344,16 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
         foreach ($cards as $cardId => $card) {
             $name = $card['name'] ?? null;
             if (! is_string($name) || $name !== $nameFrom) {
-                // The card's name is not the one the bridge left there — a human (or another
-                // writer) owns it. Recorded at info because it is the DESIGNED outcome, not a
-                // failure: the card keeps a name the upstream title no longer matches, on purpose.
-                Log::info('kanban_dependabot_card: card name is not the one the bridge stamped; leaving it', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
+                // ⛔ THE RECORD STATES THE FACT AND NAMES NO AUTHOR, because this branch has
+                // more than one innocent history and cannot tell them apart. A human (or
+                // another writer) renaming the card is the case the gate exists for — but a
+                // GitHub REDELIVERY of this same edit reaches here too, as does a retried
+                // partial restamp, and in both of those the name it found is the one THIS
+                // bridge wrote a moment ago. Accusing a writer would be wrong-but-specific on
+                // the redelivery path (DL-314's shape), so the text reports only what was
+                // compared. Info, not warn: on every one of those histories the no-op is the
+                // designed outcome, not a failure.
+                Log::info('kanban_dependabot_card: card name is not `changes.title.from`; not restamped', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
 
                 continue;
             }

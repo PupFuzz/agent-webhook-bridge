@@ -142,6 +142,36 @@ class KanbanDependabotCardHandlerTest extends TestCase
         Http::assertNotSent(fn ($r) => $r->method() === 'POST');
     }
 
+    public function test_retitle_restamps_every_matching_card_of_a_create_race(): void
+    {
+        // ⚑ THE >1-CARD RULING, pinned (DL-328 Decision 5): a create race leaves two cards
+        // carrying the SAME bridge-stamped name, so both are the bridge's and both are
+        // restamped. Restamping only a survivor would leave the twin asserting the version
+        // that never shipped — this leg's whole defect, re-minted on the duplicate — and
+        // this arm deliberately does not collapse: retiring a duplicate belongs to the move
+        // path (DL-198), which is where the survivor is chosen.
+        $from = 'chore(deps): Bump typescript from 5.9.0 to 7.0.2';
+        $to = 'chore(deps): Bump typescript from 5.9.0 to 6.0.3';
+        $row = fn (int $id, string $name) => ['id' => $id, 'board_id' => 8, 'name' => $name, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']];
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 9, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => $row(7, $from)]),
+            '*/tasks/9.json' => Http::response(['data' => $row(9, $from)]),
+        ]);
+
+        $this->handleRename($from, $to);
+
+        foreach ([7, 9] as $id) {
+            Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), "/tasks/{$id}.json")
+                && $r->data() === ['name' => $to]);
+        }
+        // Name-only on BOTH: no collapse rides along, so neither twin is archived here.
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && isset($r['_action']));
+    }
+
     public function test_retitle_leaves_a_human_renamed_card_alone(): void
     {
         // ⭐ THE CONTROL, and without it this change is indistinguishable from the naive
@@ -247,7 +277,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
             'chore(deps): Bump typescript from 5.9.0 to 6.0.3',
         );
 
-        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'not the one the bridge stamped')
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'not `changes.title.from`; not restamped')
             && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
     }
 
