@@ -218,6 +218,80 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Periodic-job registry (DL-325) — jobs are DATA; the tick is OPT-IN
+    |--------------------------------------------------------------------------
+    |
+    | ⛔ READ THIS BEFORE ADDING A JOB. A periodic job is the LAST RESORT in this
+    | design. The bridge's first answer to "this needs to happen regularly" is the
+    | AFTER-RESPONSE EVENT GATE, because the thing that creates the work is usually
+    | the thing that can evaluate the gate (DL-199's symmetry argument: webhook_events
+    | grows only on arrival, and the gate is evaluated on arrival). Reach for a job
+    | only when no such symmetry exists — and say why, in one sentence, at insert
+    | time: `justification` is a REQUIRED field, and every enumeration prints it. The
+    | full decision order is in docs/periodic-jobs.md.
+    |
+    | WHAT THE REGISTRY IS. One row per job INSTANCE, carrying
+    | {name, handler, interval, owner, docs-ref, justification, enabled}. The HANDLER
+    | is code — a job may only reference a handler that exists in this build, so what
+    | a job CAN DO is fixed at code-review time. INSTANCES ARE FREE: any code path may
+    | insert or remove one at runtime, and the crontab line never changes.
+    | `bridge:jobs` enumerates the whole periodic population on demand — the audit
+    | surface no crontab sweep across N accounts could give.
+    |
+    | ⚑ TWO INGRESSES, AND ADOPTING THE SECOND IS OPT-IN. The registry runs from the
+    | inbound webhook's after-response gate (exactly DL-199's shape) on every install,
+    | so an install that adds no crontab line behaves as it does today. An install that
+    | ALSO adds one line — `php artisan bridge:tick`, 5/10/15-minute class, under the
+    | seat-owner account and never root — additionally gets periodic work AT ZERO
+    | TRAFFIC, which is the DL-306 dead end the event gate cannot close by itself
+    | ("an install receiving nothing pushes nothing"). The two cover different blind
+    | spots: the gate covers the busy install, the tick covers the silent one.
+    |
+    | enabled — the registry as a whole. TRUE by default; with no rows it costs one
+    | indexed query per `min_pass_interval` on delivery and does nothing else. Set
+    | BRIDGE_JOBS_ENABLED=false to register no callback at all.
+    |
+    | min_pass_interval — the floor between passes, SHARED by both ingresses (the
+    | event gate is evaluated on every delivery). Default 60s; a 5/10/15-minute tick
+    | is never affected by it.
+    |
+    | max_per_pass — the bound. At most this many instances run per pass, oldest-due
+    | first; a backlog drains across passes. Never unbounded: on the event ingress
+    | this runs inside an FPM worker after the response, and DL-001's latency bet is
+    | what an unbounded pass spends.
+    |
+    | ⭐ armed_mutators — THE GOVERNANCE GATE, and the only ask-the-operator one here.
+    | A handler declaring the state-mutating capability is INERT until this install
+    | names it in this list: it is refused at insert AND at run, loudly, with the row
+    | recording `refused` rather than a silent skip. Read-and-alert handlers
+    | (staleness, wakes, watches, cleanups) need no entry — they exist under normal
+    | code review, which is what makes inserting instances of them free. Comma-
+    | separated handler names.
+    |
+    | ⭐ tick_expected_every — DEATH IS THE ALARM, and this is the declaration that
+    | arms it. Set it to the crontab line's interval in seconds (600 for a ten-minute crontab line). The
+    | bridge records the last tick it received; `bridge:jobs --assert-tick` and
+    | `bridge:check` compare the record against THIS number — the install's own
+    | declaration, never a fleet-wide constant, because only this install knows what
+    | its crontab says. UNSET (the default) means the tick was not adopted, and then
+    | no absence of a tick is ever reported as a fault. An ABSENT record reads as
+    | UNMEASURED, never as death.
+    |
+    */
+
+    'jobs' => [
+        'enabled' => (bool) env('BRIDGE_JOBS_ENABLED', true),
+        'min_pass_interval' => (int) env('BRIDGE_JOBS_MIN_PASS_INTERVAL', 60),
+        'max_per_pass' => (int) env('BRIDGE_JOBS_MAX_PER_PASS', 3),
+        'armed_mutators' => env('BRIDGE_JOBS_ARMED_MUTATORS', ''),
+        // ⚠ Deliberately NOT cast: a null must stay a null. `(int) null` is 0, which
+        // this reads back as "declared, zero seconds" — an install that never adopted
+        // the tick would then be judged against a horizon it never set.
+        'tick_expected_every' => env('BRIDGE_JOBS_TICK_EXPECTED_EVERY'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Board tools — client-half freshness (DL-313)
     |--------------------------------------------------------------------------
     |

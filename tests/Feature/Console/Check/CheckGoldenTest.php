@@ -978,7 +978,7 @@ class CheckGoldenTest extends TestCase
         // install shape at once — because a per-fixture spot check would not notice a
         // disposition that leaks on one shape only.
         //
-        // It also pins 38 as the registered total, which the registration test pins BY ID.
+        // It also pins 39 as the registered total, which the registration test pins BY ID.
         // Two independent statements of the same fact on purpose: the id list catches a
         // check being swapped, this catches the operator-facing line disagreeing with it.
         foreach (self::fixtures() as [$name]) {
@@ -1004,7 +1004,7 @@ class CheckGoldenTest extends TestCase
             // would be matching a string nothing can emit.
             $notRun = preg_match('/(\d+) did not run/', $rest, $dnr) ? (int) $dnr[1] : 0;
 
-            $this->assertSame(38, (int) $registered, "fixture '{$name}': registered total moved");
+            $this->assertSame(39, (int) $registered, "fixture '{$name}': registered total moved");
             $this->assertSame((int) $trailing, (int) $registered, "fixture '{$name}': the trailing total disagrees with the registered count");
             $this->assertSame(
                 (int) $ran,

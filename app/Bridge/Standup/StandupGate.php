@@ -26,6 +26,14 @@ use Illuminate\Support\Facades\Log;
  * needs a wall clock runs `bridge:standup` from their own scheduler — the two are
  * idempotent, and neither infers anything about a seat's state.
  *
+ * ⭐ card#8425 / DL-325 GAVE THAT COST A SECOND ANSWER, and this gate is unchanged by it.
+ * The periodic-job registry ships a `standup_digest` handler
+ * (`App\Bridge\Scheduling\Handlers\StandupDigestJob`) that calls {@see self::runPass()}
+ * from `bridge:tick`, so an install that adopted the tick gets the digest on a wall clock
+ * without a second scheduler and without this gate behaving any differently. Both ingresses
+ * share `MARKER_KEY`, so the digest is still pushed at most once per `standup.interval`
+ * however many things asked.
+ *
  * ⚠ ONE COST THIS GATE PAYS THAT RETENTION'S DOES NOT: a pass makes OUTBOUND HTTP calls
  * (a board read per mapped board, then the channel push). Each is bounded by
  * `KanbanHttpClient::TIMEOUT_SECONDS` and the client's page ceiling, all of it after the
@@ -78,7 +86,7 @@ final class StandupGate
     private function runSafely(): void
     {
         try {
-            $this->run();
+            $this->runPass();
         } catch (\Throwable $e) {
             Cache::put(self::ERROR_KEY, [
                 'at' => now()->toIso8601String(),
@@ -93,7 +101,23 @@ final class StandupGate
         }
     }
 
-    private function run(): void
+    /**
+     * ONE PASS, TWO INGRESSES — public since card#8425/DL-325 so the periodic-job registry's
+     * `standup_digest` handler can drive the SAME pass from `bridge:tick`, rather than a
+     * second copy of it that would push a second digest.
+     *
+     * ⭐ THE INTERVAL MARKER IS WHAT MAKES THAT SAFE, and it is the reason this is the pass
+     * and not the gate that got exposed: whichever ingress arrives first inside an interval
+     * pushes, and the other no-ops on the same `MARKER_KEY`. A tick asking every 10 minutes
+     * and a delivery gate asking on every webhook still produce one digest per
+     * `standup.interval`.
+     *
+     * ⚠ IT THROWS. The caller owns the recording: the gate wraps it in
+     * {@see self::runSafely()} (which records to {@see self::ERROR_KEY}), and the scheduler
+     * records a throw on the job's own registry row instead — a strictly better surface,
+     * because it is enumerable and per-instance.
+     */
+    public function runPass(): void
     {
         // The due-check lives INSIDE the lock and only there: a cheaper pre-lock check
         // buys a race where two receives both read "due" and the loser pushes a second

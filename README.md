@@ -103,6 +103,7 @@ php artisan migrate             # run DB migrations
 - [`docs/customization.md`](docs/customization.md) — Write your own classifier, surface formatter, handlers (PHP)
 - [`docs/provider-adapters.md`](docs/provider-adapters.md) — Add support for a new webhook-emitting upstream
 - [`docs/multi-agent.md`](docs/multi-agent.md) — Run parallel agents on the same bridge
+- [`docs/periodic-jobs.md`](docs/periodic-jobs.md) — The periodic-job registry: why event-driven comes first, and the one opt-in crontab line if it cannot
 - [`docs/consumer-guide.md`](docs/consumer-guide.md) — Build a downstream consumer on the bridge's event stream
 
 ## License

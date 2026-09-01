@@ -43,7 +43,7 @@ BRIDGE_KANBAN_API_BASE_URL=https://kanban.example.com/api/v3   # upstream API ba
 
 The API token is read by convention from `<secret_dir>/<provider>/token` (e.g. `$BRIDGE_DIR/kanban/token`, chmod 600); set a per-agent `api.<provider>.token_path` override in the YAML only when an agent authenticates as a distinct account.
 
-There is **no** queue worker, scheduler, systemd unit, **or cron** to install. Retention runs off the inbound webhook itself since **DL-199** (`bridge.retention.*`, on by default) — the receiver prunes its own stores after the response has been sent, so the append-only tables and `inbox*.jsonl` stay bounded with no periodic job at all. `bridge:prune` remains as the manual/one-off command (see Commands). Set `BRIDGE_RETENTION_ENABLED=false` to opt out — but then nothing prunes unless you schedule `bridge:prune` yourself. The opt-in **PM standup digest** (DL-306, `bridge.standup.*`, **off by default**) rides that same gate for the same reason — so it still installs no cron, at the cost that it fires on the first delivery after its interval rather than on a wall clock. `bridge:standup` is its manual entry point (see Commands).
+There is **no** queue worker, scheduler, systemd unit or cron **required** to install, and that is still true of a default install — ⚠ **DL-325 narrowed this sentence rather than deleting it.** The periodic-job registry ships with an **OPT-IN** second ingress: ONE crontab line running `php artisan bridge:tick` (see *Periodic jobs* below and `docs/periodic-jobs.md`). It is opt-in because the registry ALSO runs off the inbound webhook's after-response gate, so an install that adds nothing behaves exactly as it did; the line buys the one thing an arrival-gated pass cannot — periodic work on an install receiving no webhooks (DL-306's documented dead end). Retention runs off the inbound webhook itself since **DL-199** (`bridge.retention.*`, on by default) — the receiver prunes its own stores after the response has been sent, so the append-only tables and `inbox*.jsonl` stay bounded with no periodic job at all. `bridge:prune` remains as the manual/one-off command (see Commands). Set `BRIDGE_RETENTION_ENABLED=false` to opt out — but then nothing prunes unless you schedule `bridge:prune` yourself. The opt-in **PM standup digest** (DL-306, `bridge.standup.*`, **off by default**) rides that same gate for the same reason — so it still installs no cron, at the cost that it fires on the first delivery after its interval rather than on a wall clock. `bridge:standup` is its manual entry point (see Commands).
 
 ## Pre-flight (per host)
 
@@ -284,6 +284,8 @@ php artisan bridge:provision-tools [--dry-run] [--agent=]                    # m
 php artisan bridge:prune --older-than=30d [--null-payloads-older-than=7d] [--dry-run]   # retention, manual/unbounded (the receiver self-prunes — DL-199)
 php artisan bridge:reconcile [--fix] [--repo=owner/repo] [--max-moves=20]     # board-vs-GitHub drift reconciler (report-only unless --fix)
 php artisan bridge:standup [--dry-run]                # PM standup digest (DL-306); --dry-run prints it as JSON and pushes nothing
+php artisan bridge:jobs [list|add|remove|enable|disable|run] [name] [--json] [--assert-tick]   # the periodic-job registry (DL-325)
+php artisan bridge:tick                               # one bounded pass over that registry — the opt-in crontab ingress (DL-325)
 php artisan bridge:sign --scope=<scope> [--provider=github] [--body-file=]   # print `sha256=<hex>` for a raw body read from stdin (DL-322)
 ```
 
@@ -314,6 +316,31 @@ php artisan bridge:sign --scope=<scope> [--provider=github] [--body-file=]   # p
 ⛔ **The digest carries only what the bridge measures.** Per seat: `last_delivery_at` (a DELIVERY time — the bridge has no per-seat activity or liveness signal, so there is no `last_activity` and no context-%) and `unseen_inbox_intents`. Per board: `now_depth`, and only for a board whose `writeback.json` mapping declares `coord_card_lane_stage_ids`. **A field it cannot source is ABSENT** — a seat with no delivered dispatch carries no `last_delivery_at` key, a board with no Now-lane model produces no row, and a failed or truncated board read produces a row whose depth is absent and whose `now_depth_unavailable` names the cause. Run `bridge:standup --dry-run` to see exactly what this install can answer for.
 
 A misconfigured posture pushes **nothing** and warns once per day, never per delivery; there is no partial digest and no fallback recipient.
+
+### Periodic jobs (DL-325)
+
+⛔ **Read `docs/periodic-jobs.md` before adding a job. A periodic job is the LAST resort here** — the event gate is the first answer, and the registry refuses an instance that does not say, in one sentence, why the work cannot be event-driven.
+
+Jobs are **data**: one row per instance in `scheduled_jobs`, carrying `{name, handler, interval, owner, docs-ref, justification, enabled}`. Handlers are **code** — a job may only reference a handler that exists in this build, so what a job *can do* is fixed at code-review time; a row naming an unknown handler is a **loud refusal**, never a silent skip. Any code path may insert or remove an instance at runtime; `bridge:jobs` enumerates the whole periodic population.
+
+**Two ingresses, and the second is opt-in per install:**
+
+- **Default, no operator action:** the registry runs off the inbound webhook's after-response gate (DL-199's shape) — bounded, non-blocking, never on a client-visible path.
+- **Opt-in:** ONE crontab line, under **the seat-owner account, never root**:
+  ```cron
+  0,10,20,30,40,50 * * * * cd /path/to/bridge && php artisan bridge:tick >> /path/to/bridge/storage/logs/tick.log 2>&1
+  ```
+  then declare the interval so a dead line goes loud: `BRIDGE_JOBS_TICK_EXPECTED_EVERY=600`. ⚠ A `.env` edit is inert under `config:cache` — rebuild it.
+
+**Death is the alarm.** The bridge records the last tick it received and reports its freshness against **this install's own declaration**, never a fleet constant. `php artisan bridge:jobs --assert-tick` exits non-zero **only** when a DECLARED tick is not fresh, which is what a session-start hook should run; `bridge:check`'s `jobs.posture` leg discloses the same fact at preflight. An **absent** record is reported as `unmeasured`, never as death, and an install that declared nothing is never reported as failing.
+
+| Key | Env | Default | Meaning |
+| --- | --- | --- | --- |
+| `jobs.enabled` | `BRIDGE_JOBS_ENABLED` | `true` | The registry as a whole. With no rows it costs one indexed query per `min_pass_interval` on delivery. `false` ⇒ no callback is registered at all. |
+| `jobs.min_pass_interval` | `BRIDGE_JOBS_MIN_PASS_INTERVAL` | `60` | Floor between passes, **shared by both ingresses** (the event gate is evaluated on every delivery). A 5/10/15-minute tick is never affected. |
+| `jobs.max_per_pass` | `BRIDGE_JOBS_MAX_PER_PASS` | `3` | The bound. Oldest-due first; a backlog drains across passes. |
+| `jobs.armed_mutators` | `BRIDGE_JOBS_ARMED_MUTATORS` | *(empty)* | ⭐ The governance gate. A handler declaring the state-mutating capability is INERT until named here — refused at insert **and** at run. Read-and-alert handlers need no entry. |
+| `jobs.tick_expected_every` | `BRIDGE_JOBS_TICK_EXPECTED_EVERY` | *(unset)* | The tick adoption knob **and** the freshness horizon, in seconds. Unset ⇒ the tick was not adopted and its absence is never reported as a fault. |
 
 An unparseable window (or a non-positive `interval`/`batch`) prunes **nothing** and logs a warning once per day — it never falls back to a default cutoff, because that would delete on a typo. `bridge:check` reports the resolved retention posture at preflight.
 

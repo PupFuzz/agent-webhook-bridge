@@ -28,7 +28,9 @@ Upstream system (kanban-board, GitHub, ...)
    │    └─ run each target's Handler                              (C) throws → dispatch done-with-note, continue
    └─ return
    ▼
- RetentionGate::schedule()   registers a terminating callback (no work yet)   ← DL-199
+ RetentionGate::schedule()      registers a terminating callback (no work yet)   ← DL-199
+ StandupGate::schedule()        same shape, opt-in and off by default            ← DL-306
+ JobSchedulerGate::schedule()   same shape, over the periodic-job REGISTRY       ← DL-325
    ▼
  200 "ok"   (only after every subscribed agent is processed)
    ▼
@@ -36,7 +38,9 @@ Upstream system (kanban-board, GitHub, ...)
    ▼
  [terminating] RetentionGate: interval-gated, non-blocking-locked, BOUNDED prune
                of webhook_events (+ cascading agent_dispatches) + inbox*.jsonl.
-               Never throws. Client already has its 200; only the worker is held.
+ [terminating] StandupGate / JobSchedulerGate: the same four properties, over a
+               digest and over the due job instances respectively.
+               None throws. Client already has its 200; only the worker is held.
 ```
 
 ### The terminating stage (DL-199) — the only work that outlives the response
@@ -49,9 +53,11 @@ deliberately the *only* thing allowed to: it holds an FPM worker, so it is inter
 drained), bounded (`retention.batch` rows per leg), guarded by a **non-blocking** `Cache::lock` (a
 blocking one would queue concurrent receives behind the pruner — the exact DL-001 regression), and it
 never throws (a 5xx would make the provider redeliver, compounding the failure). This replaced DL-012's
-cron, which three installs never scheduled — so the design now has **no cron exception at all**.
+cron, which three installs never scheduled.
 
-`webhook_events` is **not** a work-queue — nothing drains it. It is the dedup gate (`UNIQUE(delivery_id)`, so kanban-board retries land idempotently; for GitHub the key is sha256 of the SIGNED body, not the unsigned `X-GitHub-Delivery` header — DL-176, so a replayed signed body dedups too) plus the durable audit/replay store. `agent_dispatches` is the per-agent, per-event outcome ledger (one row per agent that processed an event), enabling per-agent replay + isolation. `writeback_board_divergences` is a THIRD store with a different shape and a different retention posture: it takes a row only when a writeback observes a card whose board disagrees with the repo's mapped board, so it is expected to be empty, its growth is the signal, and retention deliberately never touches it (DL-300). `board_tools_client_calls` is a FOURTH, and is neither a queue nor an audit trail but a **one-row-per-agent stamp**: a successful board-tools call rewrites that agent's row in place, so the table is bounded by the number of board-tools agents rather than by traffic, and retention does not touch it either. It exists because a successful call is the only evidence the bridge can honestly have that the CALLING SEAT's half of the door works — the seat's own keypair and `.mcp.json` are files the bridge may not read (DL-313).
+⚠ **"No cron exception at all" was true of DL-199 and is no longer the whole picture — DL-325 amended it.** Three subsystems now ride this stage with the same four properties (retention, the opt-in standup digest, and the periodic-job registry), and the registry additionally accepts a **second, OPT-IN ingress**: ONE crontab line running `bridge:tick`. It is opt-in because the event-gated path above is complete on its own — an install that adds no line behaves exactly as it did — and it exists because no arrival-gated mechanism can run periodic work on an install receiving NOTHING (DL-306's documented dead end). Job execution is never on a client-visible path on either ingress. See `docs/periodic-jobs.md`; a periodic job is the **last** resort there, and the registry refuses an instance that does not say why the work cannot be event-driven.
+
+`webhook_events` is **not** a work-queue — nothing drains it. It is the dedup gate (`UNIQUE(delivery_id)`, so kanban-board retries land idempotently; for GitHub the key is sha256 of the SIGNED body, not the unsigned `X-GitHub-Delivery` header — DL-176, so a replayed signed body dedups too) plus the durable audit/replay store. `agent_dispatches` is the per-agent, per-event outcome ledger (one row per agent that processed an event), enabling per-agent replay + isolation. `writeback_board_divergences` is a THIRD store with a different shape and a different retention posture: it takes a row only when a writeback observes a card whose board disagrees with the repo's mapped board, so it is expected to be empty, its growth is the signal, and retention deliberately never touches it (DL-300). `board_tools_client_calls` is a FOURTH, and is neither a queue nor an audit trail but a **one-row-per-agent stamp**: a successful board-tools call rewrites that agent's row in place, so the table is bounded by the number of board-tools agents rather than by traffic, and retention does not touch it either. It exists because a successful call is the only evidence the bridge can honestly have that the CALLING SEAT's half of the door works — the seat's own keypair and `.mcp.json` are files the bridge may not read (DL-313). `scheduled_jobs` is a FIFTH, and is a **declaration store**: one row per periodic job INSTANCE, inserted and removed at runtime by any code path (`App\Bridge\Scheduling\JobRegistry`) and bounded by how many jobs this install declares rather than by traffic. Retention does not touch it — a row is the declaration that the job exists, so a window on it would silently unschedule work (DL-325).
 
 ### The three-way failure treatment (load-bearing)
 
