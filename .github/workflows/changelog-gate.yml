@@ -259,6 +259,14 @@ jobs:
           # matched under both). Residual, bounded in DL-281 rather than claimed
           # closed: a path containing `"`, `\`, or a control byte is quoted
           # regardless of this flag.
+          # ⚠ DISCLOSED, NOT FIXED (card#8339, DL-329). This is a TWO-DOT diff, so
+          # on a branch that forked before the base moved it reports the BASE's
+          # own changes as this PR's — measured: a branch touching one file is
+          # classified as touching the base's too, which can pull a PR into the
+          # entry requirement on the strength of somebody else's change. The
+          # three-dot form is what "the files this PR changes" means, but
+          # swapping it CHANGES WHAT CI REJECTS (it also narrows the set), so it
+          # needs its own operator ruling rather than riding a diagnostic fix.
           CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" "$HEAD")
           if ! grep -qE '^(app/|bin/|\.github/workflows/|\.github/actions/)|^(\.release-pr\.json|phpstan-laravel\.neon|pint\.json|phpunit\.xml|composer\.json|composer\.lock|\.env\.example)$' <<<"$CHANGED"; then
             echo "OK: this PR changes no in-scope file ${SCOPE} — no [Unreleased] entry required."
@@ -279,6 +287,93 @@ jobs:
             echo "::error::bin/changelog-section.py exited $rc reading docs/CHANGELOG.md — unexpected."
             exit 1
           fi
+
+          # PRE-FOLD DIAGNOSIS (card#8339). Both failure arms below reach the
+          # SAME verdict for two causes that need opposite remedies, and the
+          # message used to name only one of them:
+          #
+          #   * the entry was never written  -> "add an [Unreleased] entry"
+          #   * the entry was written, and a release fold landed while the
+          #     branch was open -> it is now under `[X.Y.Z]`, and adding a
+          #     SECOND one leaves the released section claiming work it did not
+          #     ship. The remedy is a MOVE, and the old text asked for the
+          #     opposite. Measured on run 33544122079: card#8351's entry was
+          #     standing under `[0.80.0]` while the gate told the author to add
+          #     one citing `card#8351`.
+          #
+          # The fold renames `## [Unreleased]` to `## [X.Y.Z]` and opens a fresh
+          # empty one above it. The branch side of that text is UNCHANGED, so
+          # git's 3-way merge has no reason to move the entry — it stays exactly
+          # where it sat, which is now below the version heading. No conflict,
+          # no author error, and it recurs for every in-flight branch at every
+          # release.
+          #
+          # THIS READS THE MERGED TREE, which is what makes the diagnosis
+          # possible: on a `pull_request` event `actions/checkout` checks out
+          # `refs/pull/<n>/merge` (measured in the same run — `git checkout
+          # --force refs/remotes/pull/628/merge`), so `docs/CHANGELOG.md` in the
+          # working tree is already the merge of base and head. That is the same
+          # file `head_unreleased` above was computed from, deliberately: a
+          # diagnostic carved from a second reading could contradict the verdict
+          # it is explaining.
+          #
+          # The NEEDLES are the lines the BRANCH adds — `$BASE...$HEAD`, whose
+          # merge-base is the fork point, not `$BASE..$HEAD`, which reports the
+          # base's own changes as this branch's (measured on --name-only: a
+          # branch touching one file is reported as touching the base's too).
+          # `--baseline` then drops any needle the base already had, so a shared
+          # `### Fixed` head cannot pass for a misfiled entry.
+          #
+          # ⚠ THE THREE-DOT IS NOT PINNED BY A FIXTURE, and saying so is cheaper
+          # than a leg that cannot fail: swapping it for `..` was mutated in and
+          # the suite stayed GREEN. The two filters make the forms agree on this
+          # predicate — a `..`-only extra needle is a line the base DELETED after
+          # the fork, which the merge then deletes too, so it is never in the
+          # merged section this matches against. Three dots is kept because it is
+          # what "the lines this branch adds" MEANS; the equivalence is an
+          # argument, not a measurement.
+          #
+          # It NEVER changes the verdict — the gate has already decided to fail
+          # when this runs, and every arm below still exits 1. It only chooses
+          # which remedy is printed, so what CI accepts is byte-for-byte what it
+          # accepted before.
+          #
+          # Callers use `heading=$(prefold_heading) || heading=''`, which
+          # collapses EVERY non-zero rc — rc 3 (no released section carries a
+          # branch line) and a tooling failure alike mean "this diagnosis is not
+          # established", and the remedy for an unestablished diagnosis is the
+          # one that was always printed. Naming a cause we cannot verify would
+          # be the worse failure.
+          prefold_heading() {
+            local dir rc=0 label=''
+            dir=$(mktemp -d)
+            {
+              git -c core.quotepath=false diff --no-color "$BASE...$HEAD" -- docs/CHANGELOG.md \
+                | awk '/^\+\+\+ /{next} /^\+/{print substr($0, 2)}' >"$dir/added" &&
+              git show "$BASE:docs/CHANGELOG.md" >"$dir/baseline" &&
+              label=$(python3 bin/changelog-section.py --changelog docs/CHANGELOG.md \
+                --locate-added "$dir/added" --baseline "$dir/baseline")
+            } || rc=$?
+            rm -rf "$dir"
+            [ "$rc" -eq 0 ] || return "$rc"
+            printf '%s\n' "$label"
+          }
+
+          # ONE spelling of the remedy, for both arms below. A guard's
+          # remediation string is a doc surface, so a per-arm copy is two
+          # versions of one instruction free to drift — the same reason `SCOPE`
+          # above is a variable rather than three literals. `$2` is the only
+          # thing the two arms genuinely differ on: the tokened arm can name the
+          # entry, the tokenless one cannot.
+          prefold_remedy() {
+            local heading="$1" what="${2:-your entry}"
+            echo "Your entry is under [${heading}] because the branch predates the fold — move it under [Unreleased]."
+            echo "v${heading} was cut while this branch was open. The fold renamed the [Unreleased] heading your"
+            echo "entry sits under and opened a fresh empty one above it, so merging leaves the entry inside a"
+            echo "RELEASED section — which then claims work that did not ship in it."
+            echo "Fix: merge the base branch, then MOVE ${what} out of [${heading}] and into [Unreleased]."
+            echo "Do NOT write a second entry: that leaves the first one corrupting [${heading}]."
+          }
 
           # The correlation token comes from the PR TITLE, which pr-title-lint
           # requires for any branch that NAMES a card id — so the two gates
@@ -330,6 +425,11 @@ jobs:
               exit 0
             fi
             echo "::error::this PR changes an in-scope file ${SCOPE}, but docs/CHANGELOG.md's [Unreleased] section does not name ${kind} ${id}."
+            heading=$(prefold_heading) || heading=''
+            if [ -n "$heading" ]; then
+              prefold_remedy "$heading" "the '${spelling}' entry"
+              exit 1
+            fi
             echo "Nothing reads the CHANGELOG between PRs, so an omission is invisible until a release is cut:"
             echo "25 of 56 tokened commits reached v0.72.0 undocumented this way (card#5971)."
             echo "Fix: add an [Unreleased] entry citing '${spelling}' describing the change."
@@ -351,6 +451,11 @@ jobs:
             exit 0
           fi
           echo "::error::this PR changes an in-scope file ${SCOPE} and leaves docs/CHANGELOG.md's [Unreleased] section untouched."
+          heading=$(prefold_heading) || heading=''
+          if [ -n "$heading" ]; then
+            prefold_remedy "$heading"
+            exit 1
+          fi
           echo "Its title carries no card#/DL token, so there is nothing to correlate against — the entry"
           echo "is the only signal that this change exists before a release is cut."
           echo "Fix: add an [Unreleased] entry (and, if the work has a card, put its token in the PR title"

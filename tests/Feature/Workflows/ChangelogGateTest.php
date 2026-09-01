@@ -74,6 +74,47 @@ class ChangelogGateTest extends TestCase
         $this->fail("no step named like '{$namePrefix}' in {$workflow}");
     }
 
+    /** A throwaway repo directory, registered for teardown, with git initialised. */
+    private function initRepo(): string
+    {
+        $dir = sys_get_temp_dir().'/changelog-gate-'.bin2hex(random_bytes(6));
+        $this->trees[] = $dir;
+        mkdir($dir, 0o777, true);
+        exec($this->git($dir).'init -q -b main 2>&1');
+
+        return $dir;
+    }
+
+    private function git(string $dir): string
+    {
+        return 'git -C '.escapeshellarg($dir).' -c user.email=t@example.invalid -c user.name=t ';
+    }
+
+    /** @param array<string,string> $files repo-relative path => contents */
+    private function writeFiles(string $dir, array $files): void
+    {
+        foreach ($files as $path => $contents) {
+            $full = $dir.'/'.$path;
+            if (! is_dir(dirname($full))) {
+                mkdir(dirname($full), 0o777, true);
+            }
+            file_put_contents($full, $contents);
+        }
+    }
+
+    /**
+     * The steps invoke the extractor by repo-relative path; give them the real
+     * one. Copied AFTER the last commit on purpose: it must never appear in the
+     * base..head diff, or every fixture would read as touching bin/.
+     */
+    private function installExtractor(string $dir): void
+    {
+        if (! is_dir($dir.'/bin')) {
+            mkdir($dir.'/bin', 0o777, true);
+        }
+        copy(base_path('bin/changelog-section.py'), $dir.'/bin/changelog-section.py');
+    }
+
     /**
      * Materialize a throwaway git repo with a base commit and a head commit.
      *
@@ -83,42 +124,71 @@ class ChangelogGateTest extends TestCase
      */
     private function makeRepo(array $base, array $head, bool $withExtractor = true): array
     {
-        $dir = sys_get_temp_dir().'/changelog-gate-'.bin2hex(random_bytes(6));
-        $this->trees[] = $dir;
-        mkdir($dir, 0o777, true);
+        $dir = $this->initRepo();
+        $git = $this->git($dir);
 
-        $git = 'git -C '.escapeshellarg($dir).' -c user.email=t@example.invalid -c user.name=t ';
-        exec($git.'init -q -b main 2>&1');
-
-        $write = function (array $files) use ($dir) {
-            foreach ($files as $path => $contents) {
-                $full = $dir.'/'.$path;
-                if (! is_dir(dirname($full))) {
-                    mkdir(dirname($full), 0o777, true);
-                }
-                file_put_contents($full, $contents);
-            }
-        };
-
-        $write($base);
+        $this->writeFiles($dir, $base);
         exec($git.'add -A && '.$git.'commit -q -m base 2>&1');
         $baseSha = trim((string) shell_exec($git.'rev-parse HEAD'));
 
         // Only paths named in $head are rewritten; everything else carries over,
         // which is what makes "this PR touched no app/ file" expressible.
-        $write($head);
+        $this->writeFiles($dir, $head);
         exec($git.'add -A && '.$git.'commit -q --allow-empty -m head 2>&1');
         $headSha = trim((string) shell_exec($git.'rev-parse HEAD'));
 
-        // The steps invoke it by repo-relative path; give them the real one.
-        // Committed AFTER the head commit on purpose: it must never appear in
-        // the base..head diff, or every fixture would read as touching bin/.
         if ($withExtractor) {
-            if (! is_dir($dir.'/bin')) {
-                mkdir($dir.'/bin', 0o777, true);
-            }
-            copy(base_path('bin/changelog-section.py'), $dir.'/bin/changelog-section.py');
+            $this->installExtractor($dir);
         }
+
+        return ['dir' => $dir, 'base' => $baseSha, 'head' => $headSha];
+    }
+
+    /**
+     * Materialize the shape `makeRepo` cannot express: a PR branch that FORKED,
+     * with the base branch moving on afterwards, LEFT CHECKED OUT AT THE MERGE.
+     *
+     * That is the shape card#8339 is about — a branch cut before a release fold
+     * — and both halves matter. The fork is what lets base and head each carry
+     * changes the other does not have; the merged working tree is what the gate
+     * actually reads, because `actions/checkout` on a `pull_request` event
+     * checks out `refs/pull/<n>/merge` (measured in run 33544122079). A linear
+     * base→head fixture is a branch that is already up to date with its base,
+     * where merge and head coincide and the defect cannot exist.
+     *
+     * @param  array<string,string>  $fork  files at the fork point
+     * @param  array<string,string>  $base  files as the base branch rewrites them after the fork
+     * @param  array<string,string>  $head  files as the PR branch rewrites them after the fork
+     * @return array{dir:string,base:string,head:string}
+     */
+    private function makeForkedRepo(array $fork, array $base, array $head): array
+    {
+        $dir = $this->initRepo();
+        $git = $this->git($dir);
+
+        $this->writeFiles($dir, $fork);
+        exec($git.'add -A && '.$git.'commit -q -m fork 2>&1');
+
+        exec($git.'checkout -q -b pr 2>&1');
+        $this->writeFiles($dir, $head);
+        exec($git.'add -A && '.$git.'commit -q --allow-empty -m head 2>&1');
+        $headSha = trim((string) shell_exec($git.'rev-parse HEAD'));
+
+        exec($git.'checkout -q main 2>&1');
+        $this->writeFiles($dir, $base);
+        exec($git.'add -A && '.$git.'commit -q --allow-empty -m base 2>&1');
+        $baseSha = trim((string) shell_exec($git.'rev-parse HEAD'));
+
+        // A CONFLICTING pull request gets no merge ref and therefore no workflow
+        // run at all, so a fixture that conflicts is testing nothing GitHub
+        // would ever hand the gate. Assert the merge is clean rather than
+        // discovering it through an unrelated failure downstream.
+        $mergeRc = 0;
+        $mergeOut = [];
+        exec($git.'merge -q --no-edit pr 2>&1', $mergeOut, $mergeRc);
+        $this->assertSame(0, $mergeRc, "the fixture merge must be clean: \n".implode("\n", $mergeOut));
+
+        $this->installExtractor($dir);
 
         return ['dir' => $dir, 'base' => $baseSha, 'head' => $headSha];
     }
@@ -340,7 +410,9 @@ class ChangelogGateTest extends TestCase
     {
         // [Unreleased] is the only section that counts: a token that appears
         // only under an already-released heading describes shipped work, not
-        // this PR's.
+        // this PR's. The VERDICT is what this leg pins; the branch filed its own
+        // new line inside a released section, so the remedy it is given is the
+        // card#8339 one asserted below rather than "add an entry".
         [$rc, $out] = $this->runFeatureStep(
             ['docs/CHANGELOG.md' => $this->changelog('- old'), 'app/X.php' => 'a'],
             ['docs/CHANGELOG.md' => $this->changelog('- old', "\n## [1.0.0] - 2026-01-01\n\n- shipped (card#1234)\n"), 'app/X.php' => 'b'],
@@ -350,6 +422,160 @@ class ChangelogGateTest extends TestCase
 
         $this->assertSame(1, $rc, $out);
         $this->assertStringContainsString('does not name card 1234', $out);
+        $this->assertStringContainsString('MOVE', $out);
+    }
+
+    // ------------------------------------------------- the pre-fold shape (card#8339)
+
+    /**
+     * The changelog at the fork point: one entry, under `[Unreleased]`.
+     */
+    private const PRE_FOLD_CHANGELOG = "# Changelog\n\n## [Unreleased]\n\n- old\n";
+
+    /**
+     * The base branch AFTER the release fold. The fold is an INSERTION — the
+     * `[Unreleased]` heading is renamed to the version and a fresh empty one is
+     * opened above it — which is exactly why nothing conflicts and why a branch
+     * entry stays put while the heading above it changes meaning.
+     */
+    private const FOLDED_CHANGELOG = "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - 2026-01-02\n\n- old\n";
+
+    /** The PR branch, which still sees its entry under `[Unreleased]`. */
+    private const BRANCH_CHANGELOG = "# Changelog\n\n## [Unreleased]\n\n- old\n- the new behaviour (card#1234)\n";
+
+    /**
+     * @param  array<string,string>  $head
+     * @return array{0:int,1:string}
+     */
+    private function runFeatureStepForked(array $head, string $title, string $branch, string $mergedMustContain): array
+    {
+        $repo = $this->makeForkedRepo(
+            ['docs/CHANGELOG.md' => self::PRE_FOLD_CHANGELOG, 'app/X.php' => 'a'],
+            ['docs/CHANGELOG.md' => self::FOLDED_CHANGELOG],
+            $head,
+        );
+
+        // The fixture is only worth its verdict if the MERGE really produced the
+        // shape the card describes. Asserted on the merged file itself, so a
+        // future git whose 3-way resolution differs reds here — where the cause
+        // is legible — instead of silently turning the legs below into a test of
+        // some other shape.
+        $this->assertStringContainsString(
+            $mergedMustContain,
+            (string) file_get_contents($repo['dir'].'/docs/CHANGELOG.md'),
+        );
+
+        return $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
+            $repo['dir'],
+            ['BASE' => $repo['base'], 'HEAD' => $repo['head'], 'TITLE' => $title, 'HEAD_REF' => $branch],
+        );
+    }
+
+    public function test_a_pre_fold_branch_is_told_to_move_its_entry_not_to_add_a_second_one(): void
+    {
+        // card#8339, reproduced end to end: a branch cut before the v1.1.0 fold
+        // merges CLEANLY and lands its entry inside the released section, while
+        // [Unreleased] reads empty. The gate was already red here (measured on
+        // run 33544122079) — what it could not do was say why, and its remedy
+        // asked for a SECOND entry, which leaves the first one standing in
+        // [1.1.0] claiming work that release did not ship.
+        [$rc, $out] = $this->runFeatureStepForked(
+            ['docs/CHANGELOG.md' => self::BRANCH_CHANGELOG, 'app/X.php' => 'b'],
+            'fix(x): the new behaviour (card#1234)',
+            'fix/1234-x',
+            "## [1.1.0] - 2026-01-02\n\n- old\n- the new behaviour (card#1234)\n",
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString('Your entry is under [1.1.0] because the branch predates the fold', $out);
+        $this->assertStringContainsString('move it under [Unreleased]', $out);
+        // The defect was the remedy, so the absence of the wrong one is half the
+        // assertion: an author who follows "add an entry" here files a duplicate
+        // and leaves the released section corrupted.
+        $this->assertStringNotContainsString('add an [Unreleased] entry', $out);
+    }
+
+    public function test_a_tokenless_pre_fold_branch_gets_the_same_diagnosis(): void
+    {
+        // The tokenless arm reaches the same verdict by a different route — the
+        // [Unreleased] section is byte-identical to the base's — and it carried
+        // the same wrong remedy. A fix to one arm and not the other would leave
+        // the class half-closed.
+        [$rc, $out] = $this->runFeatureStepForked(
+            [
+                'docs/CHANGELOG.md' => "# Changelog\n\n## [Unreleased]\n\n- old\n- some untokened work\n",
+                'app/X.php' => 'b',
+            ],
+            'chore: tidy the thing',
+            'chore/tidy',
+            "## [1.1.0] - 2026-01-02\n\n- old\n- some untokened work\n",
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString('leaves docs/CHANGELOG.md\'s [Unreleased] section untouched', $out);
+        $this->assertStringContainsString('Your entry is under [1.1.0] because the branch predates the fold', $out);
+        $this->assertStringNotContainsString('add an [Unreleased] entry', $out);
+    }
+
+    public function test_the_diagnosis_is_not_printed_when_the_branch_wrote_no_entry_at_all(): void
+    {
+        // THE DISCRIMINATOR. Same fork, same fold, same red verdict — the one
+        // variable is whether the branch contributed a changelog line. Without
+        // this leg the new message could be firing on every failure and both
+        // legs above would still pass, which would trade one misleading remedy
+        // for another.
+        [$rc, $out] = $this->runFeatureStepForked(
+            ['app/X.php' => 'b'],
+            'fix(x): the new behaviour (card#1234)',
+            'fix/1234-x',
+            "## [1.1.0] - 2026-01-02\n\n- old\n",
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString("Fix: add an [Unreleased] entry citing 'card#1234'", $out);
+        $this->assertStringNotContainsString('predates the fold', $out);
+    }
+
+    public function test_the_pre_fold_remedy_has_exactly_one_spelling_in_the_step(): void
+    {
+        // A guard's remediation string is a doc surface. Both arms fail for the
+        // same cause and must give the same instruction, so the text is ONE
+        // shell function and each arm calls it — the same rule `SCOPE` above is
+        // held to, and pinned the same way, because a second copy drifts
+        // silently and the two arms are rarely read together.
+        $script = $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP);
+
+        $this->assertSame(
+            1,
+            substr_count($script, 'because the branch predates the fold'),
+            'the pre-fold remedy must appear once, in its function: re-inlining it into an arm mints the drift',
+        );
+        $this->assertSame(
+            2,
+            substr_count($script, 'prefold_remedy "$heading"'),
+            'both failure arms must reach the remedy through that one function',
+        );
+    }
+
+    public function test_the_remedy_the_gate_asks_for_is_the_one_that_turns_it_green(): void
+    {
+        // The GREEN control, and the assertion that the new text is actionable:
+        // the branch has merged the folded base and moved its entry up, which is
+        // literally what the message tells the author to do. A remedy nobody can
+        // execute into a pass is a worse message than the one it replaced.
+        [$rc, $out] = $this->runFeatureStep(
+            ['docs/CHANGELOG.md' => self::FOLDED_CHANGELOG, 'app/X.php' => 'a'],
+            [
+                'docs/CHANGELOG.md' => "# Changelog\n\n## [Unreleased]\n\n- the new behaviour (card#1234)\n\n## [1.1.0] - 2026-01-02\n\n- old\n",
+                'app/X.php' => 'b',
+            ],
+            'fix(x): the new behaviour (card#1234)',
+            'fix/1234-x',
+        );
+
+        $this->assertSame(0, $rc, $out);
+        $this->assertStringContainsString('names this PR\'s card token 1234', $out);
     }
 
     public function test_a_dl_token_matches_its_zero_padded_spelling(): void
