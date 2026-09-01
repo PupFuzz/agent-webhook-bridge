@@ -159,6 +159,8 @@ Every path in the table below holds a value that must never be **resolved onto a
 - **Comparing two copies.** Compare digests — `sha256sum < <path>` at each end — never the values.
 - **Reading one back.** Open the file yourself, at your own terminal. Do not `cat` it in a session an agent or a logger is recording: once a value reaches a transcript it is leaked whether or not anyone reads the file again, and the only repair is rotation.
 
+⚠ **CI carries a BACKSTOP under this section, and a green run of it is not compliance with this section.** `bin/check-doc-secret-fences.py` (workflow `doc-fence secret backstop`, DL-324) parses the **shell code fences** of every `*.md` and fails a PR that resolves a secret VALUE onto one of the four surfaces above. It reads fenced shell only — never inline backticks, never prose, never a `.php`/`.sh`/workflow `run:` block — and only the spellings someone has already seen. It caught 5/5 of the fence-resident members of the class that have actually occurred and produced zero false positives over this repo's whole tag history, which is why it exists; it is still a grep over an enumeration, which is why **this section is the rule and the check is a net underneath it**. The check tells you which surface you reached; it cannot tell you the class is absent, and the next instrument that resolves a secret will not be on its list. If a doc must SHOW a bad form, put it in inline backticks in prose (which the tool never reads) — that is what every explanation of these defects in this repo already does.
+
 ### The files
 
 | Path | Mode | Notes |

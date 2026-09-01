@@ -14,6 +14,11 @@ vendor/bin/phpunit                                  # full test suite (SQLite in
 vendor/bin/pint --test                              # code style (Laravel preset)
 vendor/bin/phpstan analyse -c phpstan-laravel.neon  # static analysis (level 7; app/Bridge + the individual
                                                     # files that config names — read it, don't restate it)
+python3 bin/check-doc-secret-fences.py .            # CI gate: do any *.md SHELL FENCES resolve a secret
+                                                    # VALUE onto stdout / an argv / a log / shell history?
+                                                    # ⚠ a BACKSTOP under docs/config-schema.md § Handling a
+                                                    # secret VALUE, never the rule — a clean run is NOT
+                                                    # evidence the class is absent (DL-324, read its bound)
 python3 bin/decision-log.py next                    # allocate the next DL-NNN before writing an entry
                                                     # (board counter + a veto against every local
                                                     # checkout, never this file's max+1; DL-295 —
