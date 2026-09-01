@@ -8,8 +8,6 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
 
 ## [Unreleased]
 
-## [0.80.0] - 2026-09-01
-
 ### Added
 
 - **card#8425 (DL-325)** — **a periodic-job REGISTRY inside the bridge: jobs are DATA, handlers are CODE, and ONE opt-in tick joins the after-response event gate rather than replacing it.** ⚠ **RUN `php artisan migrate`** — one new table, `scheduled_jobs`. **⚠ THIS ADDS A NEW INGRESS AND NEW PERIODIC EXECUTION**, and **an install that changes nothing behaves exactly as it did**: the registry ships EMPTY, it runs from the inbound webhook's after-response gate (DL-199's shape — bounded, non-blocking, never on a client-visible path), and **adopting the tick is OPT-IN**.
@@ -25,6 +23,11 @@ See [`../VERSIONING.md`](../VERSIONING.md) for the changelog policy — it owns 
   ⭐ **Death is the alarm.** `bridge:tick` stamps a last-tick record before it works, and freshness is judged against **this install's own declaration**, never a fleet-wide constant. `php artisan bridge:jobs --assert-tick` exits non-zero **only** when a DECLARED tick is not fresh — that is what a session-start hook runs — and `bridge:check`'s new `jobs.posture` leg discloses the same fact at preflight. Four states, because a three-way alarm pages the wrong installs: an **absent** record is `unmeasured`, **never death** (and is the ordinary state of every un-adopted install); a record with **no declared horizon** gets an age and **no verdict**; then `fresh` and `stale`. A cache flush degrades to `unmeasured`, never to a false `fresh`.
 
   **New:** `php artisan bridge:jobs [list|add|remove|enable|disable|run] [--json] [--assert-tick]` (the audit surface — it filters nothing, and leads with the justifications), `php artisan bridge:tick`, `App\Bridge\Scheduling\*`, `App\Models\ScheduledJob`, `docs/periodic-jobs.md`, five `BRIDGE_JOBS_*` keys (all with safe defaults), and ONE shipped handler — `standup_digest`, which drives the existing DL-306 digest from the tick through the SAME pass the event gate uses, so both ingresses still push at most one digest per `BRIDGE_STANDUP_INTERVAL`. **No receiver accept/reject change, no token-scope change, no change to any existing handler's behaviour.**
+
+
+## [0.80.0] - 2026-09-01
+
+### Added
 
 - **card#8336 (DL-322)** — **`php artisan bridge:sign --scope=<scope>`: the deployment smoke test's signature, produced without the HMAC secret ever becoming a command-line argument.** Reads the raw body from **stdin** (or `--body-file`), resolves the per-`(provider, scope)` secret from its own file, and prints the complete `sha256=<hex>` header value — **stdout carries that and nothing else**, so `SIG=$(printf '%s' "$BODY" | php artisan bridge:sign --provider=github --scope="$SCOPE")` is safe to paste; every diagnostic goes to **stderr** and names the receiver status the same fault would produce there (`401 unknown_scope`, `500 secret_perms_insecure`, …) so a resolution fault here is not debugged at the receiver. It shares `WebhookSecretResolver` + `HmacSignature` with the middleware that verifies, so the three rules a hand-rolled signer gets wrong — the secret file's **trim**, the `sha256=` prefix, and the `%2F`-encoded filename for a scope containing `/` — cannot drift between producer and verifier. No config key, no migration, **no receiver accept/reject change**.
 
