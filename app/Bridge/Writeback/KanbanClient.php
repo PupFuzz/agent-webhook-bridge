@@ -57,6 +57,14 @@ final class KanbanClient
      * The card's current state (incl. board_id + workflow_stage_id) — read for
      * the belongs-to-mapped-board guard and the idempotent already-in-stage check.
      *
+     * ⛔ UNSCOPED BY CONSTRUCTION: `/tasks/{id}.json` names no board, so on a shared kanban
+     * this asks another tenant's card for its state as readily as it asks ours, and the
+     * answer is what the belongs-to-mapped-board compare then reads. That is fine only
+     * where the id has ALREADY been established as this install's — which is what
+     * {@see cardRowsOnBoard} is for, and what `kanban_move_card` now does before it calls
+     * this (card#8375). A new caller reaching this with an author-supplied id and no such
+     * check is the defect that card names, not a shortcut.
+     *
      * @return array<string, mixed>
      */
     public function getCard(int $cardId): array
@@ -64,6 +72,51 @@ final class KanbanClient
         $data = $this->http()->get("/tasks/{$cardId}.json")->throw()->json('data');
 
         return is_array($data) ? $data : [];
+    }
+
+    /**
+     * The BOARD-SCOPED lookup of ONE card id — `q=board_id=<b> id=<n>` (card#8375).
+     *
+     * ⭐ WHY THIS EXISTS BESIDE {@see getCard}. `getCard` is `GET /tasks/{id}.json`: a GLOBAL
+     * read of an id that reaches the writeback as a literal parsed out of AUTHOR-CONTROLLED
+     * text, against a kanban id space that is global across every board on the instance. It
+     * therefore cannot answer "is this id one of OURS" — it can only be asked and then have
+     * its ANSWER checked, which is a read of another tenant's card that already happened.
+     * This asks the question the other way round: the server is handed the board AND the id,
+     * so a card outside the mapping is not in the result set at all. Both terms ride inside
+     * `q=` (the class docblock's invariant); `id=<digits>` is a `QueryParser` structured
+     * filter (`where('id', '=', N)`), present since kanban's first commit.
+     *
+     * ⛔ THE CALLER MUST STILL CHECK THE ROWS IT GETS BACK, and {@see MappedBoardGuard} does:
+     * an unrecognised term degrades to FREE TEXT rather than erroring, and this endpoint drops
+     * an unrecognised top-level parameter in silence — so "the query was scoped" is never
+     * established by the call alone. A row is this card only if its own `id` names it and its
+     * own `board_id` is the mapped board (DL-298's rule, applied to the same rows).
+     *
+     * `$archivedOnly` selects the other side of kanban's archive SWITCH exactly as
+     * {@see cardRowsByTag} does (DL-296): there is no both-sides mode, so establishing
+     * membership for a card that may be archived takes two calls, and the caller makes the
+     * second one only when the live side misses.
+     *
+     * @return list<array<string, mixed>> the rows the endpoint answered — at most one when the
+     *                                    `id=` term was honoured, and never trusted to be this card
+     */
+    public function cardRowsOnBoard(int $boardId, int $cardId, bool $archivedOnly = false): array
+    {
+        $query = ['q' => "board_id={$boardId} id={$cardId}", 'limit' => 1];
+        if ($archivedOnly) {
+            $query['archived'] = 1;
+        }
+        $data = $this->http()->get('/tasks/search.json', $query)->throw()->json('data');
+
+        $rows = [];
+        foreach (is_array($data) ? $data : [] as $row) {
+            if (is_array($row)) {
+                $rows[] = $row;
+            }
+        }
+
+        return $rows;
     }
 
     /** Move the card to a workflow stage (column-only; never touches payload/other fields). */

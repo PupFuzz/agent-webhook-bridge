@@ -367,6 +367,33 @@ class KanbanBlockReasonHandlerTest extends TestCase
             && ($ctx['card_id'] ?? null) === 5);
     }
 
+    public function test_getcard_403_keeps_the_two_cause_reason_because_this_arm_makes_no_board_scoped_check(): void
+    {
+        // ⚑ THE SIBLING DIFFERENCE, pinned where it can red (card#8375). `kanban_move_card`
+        // now establishes its card id on the mapped board through a board-scoped lookup
+        // BEFORE it reads the card, so its 403 can no longer mean a foreign install's card
+        // id and its slug was narrowed to `getcard_403_token_scope`. THIS arm makes no such
+        // check — its id comes from the same author-controlled token grammar against the same
+        // GLOBAL id space, so both causes are still live here and the two-cause slug is still
+        // the honest one. If the scoped check is ever extended to this handler, this leg is
+        // what says the slug must move with it rather than being left behind as a name for a
+        // cause the code has excluded. Filed as card#8415.
+        $this->writeWritebackWithAlert();
+        $this->writeToken();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/5.json' => Http::response(['message' => 'forbidden'], 403),
+        ]);
+
+        $this->handle('set');
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'getcard_403_foreign_card_id_or_token_scope'
+            && $r['card_id'] === null
+            && ($r['card_id_withheld'] ?? false) === true);
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
+
     public function test_setblockreason_4xx_alerts_with_the_write_reason(): void
     {
         $this->writeWritebackWithAlert();

@@ -420,11 +420,15 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         //
         // What the durable handler REFUSES, stated as the code delivers it rather than
         // as one guarantee (card#5287 — the sentence that stood here claimed only the
-        // board guard, and an auditor who read it stopped there): a card the handler
-        // CANNOT READ is refused by the 4xx arm, which returns BEFORE the board guard
-        // ever reads `board_id` — 403 and 404 are split there so the operator gets the
-        // right hypothesis (card#5288), and RefusalContext::readReason() owns what each of
-        // those statuses does and does not establish (DL-314, card#7846); a
+        // board guard, and an auditor who read it stopped there): an id that does not
+        // RESOLVE on the mapped board is refused before the card is read at all, by the
+        // board-scoped check (card#8375), which is what makes a foreign install's card id
+        // refusable by this bridge's own code rather than by whatever the writeback token
+        // can reach; a card the handler CANNOT READ is then refused by the 4xx arm, which
+        // returns BEFORE the board guard ever reads `board_id` — 403 and 404 are split
+        // there so the operator gets the right hypothesis (card#5288), and
+        // RefusalContext::readReason() owns what each of those statuses does and does not
+        // establish (DL-314, card#7846, narrowed for this arm by card#8375); a
         // card it CAN read that is not on the mapped board is refused by the
         // belongs-to-mapped-board guard; and a card reached by an UNCORROBORATED
         // title-only token is refused unless the card tracks no PR yet or already
