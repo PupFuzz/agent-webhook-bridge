@@ -200,10 +200,17 @@ For API-provisionable providers, `bridge:provision` writes this file before crea
 
 ```bash
 mkdir -p "$BRIDGE_SECRET_DIR/your_provider"
-# generate the same secret you entered in the provider's webhook settings
-echo -n "your-hmac-secret" > "$BRIDGE_SECRET_DIR/your_provider/webhook-secret-scope-<scope>"
+# Paste the same secret you entered in the provider's webhook settings. `read -rs`
+# keeps it off the terminal and out of your shell history — a literal on the command
+# line is written to that file verbatim; `printf` is a builtin, so no argv exists.
+read -rsp 'HMAC secret: ' SECRET
+( umask 077
+  printf '%s' "$SECRET" > "$BRIDGE_SECRET_DIR/your_provider/webhook-secret-scope-<scope>" )
+unset SECRET
 chmod 600 "$BRIDGE_SECRET_DIR/your_provider/webhook-secret-scope-<scope>"
 ```
+
+The general rule for handling a secret VALUE — and why the surface, not the instrument, is what it is stated over — is [`docs/config-schema.md § Handling a secret VALUE`](config-schema.md#handling-a-secret-value-not-just-its-file).
 
 Scope values containing `/` (like GitHub's `org/repo`) are URL-encoded on disk so the secret stays a single-segment filename: `webhook-secret-scope-org%2Frepo`. The middleware and provisioner share `SecretPath::for($secretDir, $provider, $scopeId)` — do not encode manually.
 
