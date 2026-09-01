@@ -5,17 +5,19 @@ agent gets a small, channel-identity-scoped **request/response** surface over th
 same channel that already delivers wake events — so an impl seat with **no kanban
 token and no toolkit** can see and capture its own board work directly.
 
-Two tools ship in v1:
+Three tools ship today (two since DL-217; the correction tool since DL-326):
 
 | Tool | Direction | What it does |
 | --- | --- | --- |
 | `board_my_cards` | read | Return YOUR own cards (your product swimlane grouped by stage, the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured). Read-proxied — the kanban token never leaves the bridge. |
 | `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass. |
+| `board_correct_card` | write | **Correct a card YOU filed** — its `name`, `description` or `tags`. Scoped to cards carrying your own bridge-stamped `created-by:<you>`, on your own board; anything else is **refused, loudly**. |
 
 ## Discovering them
 
-If your channel server advertises tools, your MCP client lists `board_my_cards`
-and `board_create_card`, and the server's own `instructions` string names them.
+If your channel server advertises tools, your MCP client lists `board_my_cards`,
+`board_create_card` and `board_correct_card`, and the server's own `instructions`
+string names them.
 The channel server advertises on a **tri-state** (`BRIDGE_CHANNEL_TOOLS`):
 
 - `=1` → force ON.
@@ -236,13 +238,131 @@ correct exactly until you needed it. Consequences for a caller:
   saw. What a divergence should make the tool *do* is a separate question from
   what it *reports*, and only the report changed here.
 
+## `board_correct_card`
+
+**Correct a card YOU filed** (DL-326, card#8378). Before this the impl seat's whole
+board surface was **create + read**, so the only available response to a wrong card
+was to mint a second one — and duplicates then defeat every downstream instrument
+that keys on one card per subject.
+
+**Arguments:**
+
+| Arg | Required | Notes |
+| --- | --- | --- |
+| `card_id` | yes | A positive **integer** — the `id` `board_my_cards` reports. A decorated string (`"42"`) or a float is refused, never coerced: a coerced id names a different card, and this id selects the row the write lands on. |
+| `name` | no | Non-empty string. There is **no clear form** — a card cannot be left without a name, so a present-but-empty `name` is refused (omit it to leave it alone). |
+| `description` | no | String. **Present-and-empty CLEARS it** (see the present/absent rule below). |
+| `tags` | no | List of strings — **your** tags. The same reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`) and bare `triaged` `board_create_card` refuses are refused here too, case-insensitively, with the same printable-ASCII / no-metacharacter (`"`, `*`, `_`, `%`) charset rule. |
+
+**One rule for every argument: a key that is PRESENT is a correction; a key that is
+ABSENT leaves its field alone.** So `tags: []` means *drop my tags* (it is not the
+same as omitting `tags`), and `description: ""` clears the body.
+
+> ⛔ **`null` and `""` are ONE VALUE here, and that is a measured property of the door
+> rather than a style choice.** Laravel's global `ConvertEmptyStringsToNull` (with
+> `TrimStrings` ahead of it) rewrites `"description": ""` to `null` before the HTTP
+> controller ever reads `args`, while the **ssh** door (`bridge:tools-call`) decodes
+> the body itself and preserves it. Treating them as one value is what keeps this
+> tool's contract identical on both transports. ⚠ This is why `board_create_card`'s
+> rule (a present `null` reads as *absent*) is deliberately **not** copied — there,
+> `null` cannot mean "clear", because a card being born has nothing to clear.
+
+**⭐ Whose card — the scoping rule.**
+
+You may correct **only what you minted**, and the discriminator is the tag the
+bridge already stamps at create: **`created-by:<you>`**. It is caller-unforgeable
+(`created-by:` is a reserved prefix on create and the guard casefolds, so no caller
+can plant any case variant of another agent's stamp), and it is the **only per-seat
+provenance a card carries** — kanban's `actor_type: service` covers the bridge and
+every CLI writer, and `actor_id` names the shared writeback **user**, so neither can
+answer *which seat filed this*.
+
+Two independent narrowings are checked and **both** are required:
+
+1. **Board scope, server-side.** The card is resolved with a board-scoped
+   `GET /tasks/search.json?q=board_id=<your board> id=<card>` — the card#8375 /
+   DL-323 primitive — because your `card_id` is caller-supplied against a kanban id
+   space that is **global across every board on the instance**. The unscoped
+   `GET /tasks/{id}.json` is never called.
+2. **The row's own fields.** A row establishes the card only if its own `id` names
+   it **and** its own `board_id` is your configured board. The endpoint drops a term
+   it does not recognise and still answers 200, so the *call* never establishes the
+   scope — the *rows* do.
+
+**The LANE is deliberately not checked.** A human may re-lane a card legitimately,
+and the mint stamp is what says the card is yours; a lane test would make a re-laned
+card permanently uncorrectable by the seat that filed it. The response therefore
+reports no lane — it reports only what was checked.
+
+**⚠ `tags` is REPLACED WHOLESALE by kanban, so the write re-sends every reserved tag
+the card already carries** (`created-by:`, `idem:`, `id:`, `type:`, `triaged`) and
+lets your list replace only the rest. Without that, correcting your tags would delete
+your own mint stamp (locking you out of your own card), your `idem:` correlation key
+(re-opening duplicate minting under that key), or `triaged`/`type:` (undoing the
+triage pass) — and you could not restore any of them, because you may not supply
+them. `tags_written` in the response is what the PATCH **sent**, which is the only
+channel you have to what was preserved.
+
+**Returns:**
+
+```jsonc
+{ "corrected": true, "card_id": 42, "board_id": 10,
+  "fields": ["name", "tags"],
+  "tags_written": ["your-tag", "created-by:you", "triaged"] }
+```
+
+`board_id` is read off the row that authorized the write, so it is observed by
+construction (a call that got this far proved the card is on that board) — there is
+no `*_observed` flag here, because there is no state in which this tool answers with
+a board it did not read. `tags_written` is present only when the call corrected tags.
+
+**What it REFUSES, and why each is somebody else's:**
+
+| You passed | Refusal |
+| --- | --- |
+| `workflow_stage_id` / `stage` / `column` / `move` | a column move is a **different authority** and is deliberately not exposed here |
+| `swimlane_id` / `board_id` | your write scope is forced from your bridge identity — an argument never names a lane or a board |
+| `payload` / `dl_number` / `pr_number` / `pr_url` / `issue_number` / `issue_url` / `version` / `origin` | correlation refs the **bridge writeback** stamps |
+| `external_id` / `external_link` | the board-unique sync id and the by-ref correlation link — bridge-owned (the bridge does not set `external_id` even at create: a colliding id 422s) |
+| `type` / `card_type_id` / `triaged` | `type:` is a reserved tag prefix and `triaged` is the triage pass's — both refused at create too |
+| `block_reason` | the writeback's pinned-card opt-out (DL-193) |
+| `archived` / `archived_at` / `_action` | a retire is a lifecycle act, not a field write |
+| `priority` / `due_date` / `assigned_user_id` | not part of this tool's contract |
+| anything else | `unknown argument …` — **nothing is silently ignored** |
+
+⛔ **The offered set is deliberately NARROWER than `kbcard patch`'s corrective
+setters** (`--type`, `--external-id`, `--origin` are refused here): **this tool never
+writes a field `board_create_card` would refuse at birth.** A correction authority
+wider than the create authority is a laundering route — mint a clean card, then
+"correct" in the reserved `type:` key, `triaged`, or a payload key the create tool
+rejects outright.
+
+**Card-state refusals** (all 422, all writing **nothing**):
+
+| State | Refusal |
+| --- | --- |
+| The card is not on your board, or carries someone else's stamp, or none | *"card N is not one of yours"* — **one message for all three**: you are never told whether a card you do not own exists. |
+| The card is yours and **ARCHIVED** | Named as the retire it is (*"unarchive it first"*) — the stamp proves the card is yours, so naming it discloses nothing, and the alternative is a guard telling you a card you demonstrably filed is not yours. The archive side is read **only when the live lookup misses**, so a successful call never pays for it. |
+| The lookup answered a row that is not that card on your board | *"a BROKEN READ, not a verdict"* (DL-323 Decision 2) — report it; it is not a statement about the card. |
+| kanban answered **403** on the lookup | The bridge could not read your board to establish the card is yours — an **install fault** (the writeback token's board membership), not something your arguments can fix. |
+| kanban answered **403** on the write | The card is yours but the writeback token may not write it — **install fault**, token scope. |
+| kanban answered **404** on the write | The card stopped existing between the ownership check and the write. **Nothing was written.** |
+
+⚠ **Those board-caused 4xx are reported as 422 refusals, not as the retryable 502**,
+because they fail identically however many times you send them; a 5xx or a timeout
+still answers **502**, which is the one you may retry.
+
+**Cost:** two requests on a successful call (one board-scoped lookup, one PATCH) —
+no card read-back, because the row that authorized the write already carried what the
+response reports. A not-found refusal costs two reads and no write.
+
 ## Errors
 
 | Status | Meaning |
 | --- | --- |
 | 403 | The request did not come from loopback (network gate). |
 | 401 | Missing or unrecognized bearer token. A bearer file that exists but the bridge cannot read, and one belonging to a collided pair, are **deliberately indistinguishable** from an unknown token here — the door never tells an unauthenticated caller that another agent's bearer exists (card#5778; it 500'd on the unreadable case until then). |
-| 422 | A caller-fixable bad request (missing `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive). |
+| 422 | A caller-fixable bad request (missing `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any `board_correct_card` refusal**, including the two the BOARD causes (DL-326: a 403/404 from kanban on the ownership lookup or the write is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments). |
 | 502 | Upstream kanban error (may be retryable). |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
 

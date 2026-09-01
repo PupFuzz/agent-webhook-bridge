@@ -179,7 +179,8 @@ const CLEAR_CONTEXT_ENABLED = shouldAdvertiseClearContext();
 // tool family is advertised — the two gates are independent.
 const ADVERTISE_ANY_TOOL = TOOLS_ENABLED || CLEAR_CONTEXT_ENABLED;
 
-// The v1 tool surface, hard-coded to mirror the bridge contract (DL-217). Kept
+// The tool surface, hard-coded to mirror the bridge contract (DL-217; the
+// correction tool is DL-326). Kept
 // here because tools/list must advertise a schema; the bridge remains the single
 // authority on validation/scoping — this is the MCP surface, not board logic. If
 // the bridge contract changes, update both (a reference example server, by design).
@@ -241,6 +242,54 @@ const TOOL_DEFINITIONS = [
         },
       },
       required: ['title'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'board_correct_card',
+    description:
+      'Correct a card YOU filed — its name, description or tags — instead of ' +
+      'minting a second card to say the first one is wrong. Scoped to cards ' +
+      'carrying your own bridge-stamped created-by: tag on your own board; ' +
+      'anything else is REFUSED, never silently ignored. A PRESENT argument is a ' +
+      'correction and an ABSENT one leaves that field alone, so tags: [] means ' +
+      '"drop my tags" and an empty description clears the body. Column moves, ' +
+      'correlation refs (dl/pr/issue), external ids, card type and block_reason ' +
+      'are NOT correctable here — each is refused by name with the authority that ' +
+      'owns it. Your tag list replaces only YOUR tags: the bridge re-sends the ' +
+      'reserved ones (created-by:, idem:, id:, type:, triaged) because kanban ' +
+      'replaces the tag list wholesale.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        card_id: {
+          type: 'integer',
+          description:
+            'The id of the card to correct, as board_my_cards reports it. Must be ' +
+            'an integer — a decorated string is refused, never coerced.',
+        },
+        name: {
+          type: 'string',
+          description:
+            'Replacement title (non-empty). There is no clear form — omit it to ' +
+            'leave the title alone.',
+        },
+        description: {
+          type: 'string',
+          description:
+            'Replacement body. Present-and-empty CLEARS it; omit it to leave it alone.',
+        },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Your replacement tag list (an empty list drops your tags). The same ' +
+            'reserved prefixes (created-by:, idem:, id:, type:) and the bare tag ' +
+            '"triaged" are refused as at create; the bridge preserves the ones the ' +
+            'card already carries.',
+        },
+      },
+      required: ['card_id'],
       additionalProperties: false,
     },
   },
@@ -379,8 +428,9 @@ const INSTRUCTIONS = [
   ...(TOOLS_ENABLED
     ? [
         'This server ALSO exposes request/response board tools scoped to YOUR channel identity:',
-        'board_my_cards (read your own cards) and board_create_card (create a card in your own swimlane) —',
-        'call them to see or capture board work without a kanban token; the write scope is your own swimlane, forced by the bridge.',
+        'board_my_cards (read your own cards), board_create_card (create a card in your own swimlane) and',
+        'board_correct_card (correct a card YOU filed — never mint a second card to say the first is wrong) —',
+        'call them to see, capture or fix board work without a kanban token; the write scope is your own swimlane, forced by the bridge.',
       ]
     : []),
   ...(CLEAR_CONTEXT_ENABLED

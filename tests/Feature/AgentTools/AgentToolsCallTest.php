@@ -1400,6 +1400,442 @@ class AgentToolsCallTest extends TestCase
         Http::assertNothingSent();
     }
 
+    // ─── board_correct_card: ownership scoping + the refusal table (card#8378) ─
+
+    /**
+     * The whole wire surface of a `board_correct_card` call: the board-scoped
+     * ownership lookup (live and archived are the two sides of kanban's archive
+     * SWITCH — DL-296 — and are told apart by the `archived=1` parameter), and the
+     * PATCH.
+     *
+     * $patchStatus is what the BOARD answers the write with, so a test can stage a
+     * 403/404 without touching the read.
+     *
+     * @param  list<array<string, mixed>>  $live
+     * @param  list<array<string, mixed>>  $archived
+     */
+    private function correctFake(array $live, array $archived = [], int $patchStatus = 200, ?int $lookupStatus = null): \Closure
+    {
+        return function ($request) use ($live, $archived, $patchStatus, $lookupStatus) {
+            $url = urldecode($request->url());
+            if (str_contains($url, '/tasks/search.json')) {
+                if ($lookupStatus !== null) {
+                    return Http::response('nope', $lookupStatus);
+                }
+
+                return Http::response(['data' => str_contains($url, 'archived=1') ? $archived : $live]);
+            }
+
+            if ($patchStatus !== 200) {
+                return Http::response('nope', $patchStatus);
+            }
+
+            return Http::response(['data' => ['id' => 42]]);
+        };
+    }
+
+    /**
+     * A row for card 42 on this agent's board, minted by this agent unless
+     * $overrides says otherwise.
+     *
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function ownCardRow(array $overrides = []): array
+    {
+        return array_merge([
+            'id' => 42, 'board_id' => 10, 'swimlane_id' => 4, 'name' => 'wrong title',
+            'tags' => ['created-by:me', 'priority:high'],
+        ], $overrides);
+    }
+
+    /** @return array<string, mixed>|null the decoded body of the PATCH, or null if none was sent */
+    private function sentPatchBody(): ?array
+    {
+        $body = null;
+        Http::recorded(function ($request) use (&$body) {
+            if ($request->method() === 'PATCH') {
+                $decoded = json_decode((string) $request->body(), true);
+                $body = is_array($decoded) ? $decoded : null;
+            }
+
+            return false;
+        });
+
+        return $body;
+    }
+
+    public function test_correct_writes_the_named_fields_on_a_card_this_agent_filed(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'name' => 'corrected title', 'description' => 'corrected body',
+        ]]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.corrected', true)
+            ->assertJsonPath('result.card_id', 42)
+            ->assertJsonPath('result.board_id', 10)
+            ->assertJsonPath('result.fields', ['name', 'description']);
+        // The ownership lookup is BOARD-SCOPED and rides inside `q=` (card#8375/DL-323):
+        // the id is caller-supplied against a GLOBAL id space, so it is established on
+        // this agent's board before anything reads or writes the card.
+        Http::assertSent(function ($r) {
+            parse_str((string) parse_url($r->url(), PHP_URL_QUERY), $query);
+
+            return $r->method() === 'GET' && str_contains($r->url(), '/tasks/search.json')
+                && ($query['q'] ?? null) === 'board_id=10 id=42';
+        });
+        // `getCard()` is never called — the unscoped `GET /tasks/{id}.json` is exactly
+        // what DL-323 records as the defect for an author-supplied id.
+        Http::assertNotSent(fn ($r) => $r->method() === 'GET' && ! str_contains($r->url(), 'search.json'));
+        $this->assertSame(['name' => 'corrected title', 'description' => 'corrected body'], $this->sentPatchBody());
+        // The live side answered, so the archived probe never runs on a successful call.
+        Http::assertNotSent(fn ($r) => str_contains(urldecode($r->url()), 'archived=1'));
+    }
+
+    public function test_correct_preserves_every_bridge_stamped_tag_when_the_caller_replaces_the_tag_list(): void
+    {
+        // kanban replaces `tags` WHOLESALE, so a tag not re-sent is a tag deleted. The
+        // caller may not supply any of these four, so it could not restore them either:
+        // dropping `created-by:` would lock the seat out of its own card, dropping
+        // `idem:` re-opens duplicate minting under that key, and dropping
+        // `triaged`/`type:` undoes the triage pass.
+        Http::fake($this->correctFake(live: [$this->ownCardRow([
+            'tags' => ['created-by:me', 'idem:me:k1', 'type:feature', 'triaged', 'stale-caller-tag'],
+        ])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'tags' => ['fresh-caller-tag'],
+        ]]);
+
+        $res->assertStatus(200)->assertJsonPath('result.fields', ['tags']);
+        $this->assertSame(
+            ['tags' => ['fresh-caller-tag', 'created-by:me', 'idem:me:k1', 'type:feature', 'triaged']],
+            $this->sentPatchBody(),
+            'the caller list replaces only the caller-owned half; every reserved tag is re-sent'
+        );
+        // The caller's own stale tag IS dropped — that is what a correction is for, and
+        // it is the control that makes the preservation above mean something.
+        $this->assertNotContains('stale-caller-tag', $res->json('result.tags_written'));
+    }
+
+    public function test_correct_refuses_a_card_another_agent_filed_and_writes_nothing(): void
+    {
+        // ⭐ The acceptance criterion on card#8378: the refusal must be SEEN to fire.
+        // Same board, same lane — only the mint stamp differs.
+        Http::fake($this->correctFake(live: [$this->ownCardRow(['tags' => ['created-by:someoneelse']])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'hijacked']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('not one of yours', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_correct_refuses_a_card_carrying_no_mint_stamp_at_all(): void
+    {
+        // A card the seat did not file — minted by the PM, by kbcard, by the reconcile.
+        Http::fake($this->correctFake(live: [$this->ownCardRow(['tags' => ['triaged']])]));
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(422);
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_correct_refuses_a_stamp_that_differs_only_in_case(): void
+    {
+        // Agent names are filesystem-cased config names, so `me` and `ME` can be two
+        // seats; the compare is case-SENSITIVE deliberately. Nothing is lost by being
+        // narrower than the writer — the bridge stamps the exact agent name.
+        Http::fake($this->correctFake(live: [$this->ownCardRow(['tags' => ['created-by:ME']])]));
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(422);
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_correct_refuses_a_card_that_is_not_on_this_agents_board(): void
+    {
+        // The board-scoped lookup answers nothing, and neither does the archive side.
+        Http::fake($this->correctFake(live: [], archived: []));
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(422);
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+        // Both sides of the archive switch were asked before the refusal — a live-only
+        // check would report a retired card of the seat's own as "not yours".
+        Http::assertSent(fn ($r) => str_contains(urldecode($r->url()), 'archived=1'));
+    }
+
+    public function test_correct_refuses_a_lookup_that_answers_a_different_card_as_a_broken_read(): void
+    {
+        // The endpoint drops a term it does not recognise and still answers 200, so the
+        // verdict is read off the ROWS. A row that is not this card is a broken read,
+        // explicitly NOT a verdict about ownership (DL-323 Decision 2).
+        Http::fake($this->correctFake(live: [$this->ownCardRow(['id' => 99])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('BROKEN READ', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_correct_refuses_a_row_whose_own_board_is_not_this_agents(): void
+    {
+        // Same id, foreign board: the row does not establish the card, so it is never
+        // reached as "owned" even though it carries this agent's stamp.
+        Http::fake($this->correctFake(live: [$this->ownCardRow(['board_id' => 999])]));
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(422);
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_correct_refuses_an_owned_archived_card_by_naming_the_retire(): void
+    {
+        // Telling a seat that a card it demonstrably filed is "not one of yours" is a
+        // false statement made by a guard; the stamp proves the card is the caller's, so
+        // naming the retire discloses nothing.
+        Http::fake($this->correctFake(live: [], archived: [$this->ownCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('ARCHIVED', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_correct_does_not_disclose_an_archived_card_another_agent_filed(): void
+    {
+        // The archived arm names the retire only for a card the caller OWNS.
+        Http::fake($this->correctFake(live: [], archived: [$this->ownCardRow(['tags' => ['created-by:someoneelse']])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $res->assertStatus(422);
+        $this->assertStringNotContainsString('ARCHIVED', (string) $res->json('error'));
+    }
+
+    /**
+     * @return list<array{string, mixed}>
+     */
+    public static function bridgeOwnedFieldCases(): array
+    {
+        return [
+            ['workflow_stage_id', 51], ['column', 'shipped'], ['stage', 'in_review'], ['move', 'done'],
+            ['swimlane_id', 9], ['board_id', 999], ['payload', ['origin' => 'x']],
+            ['dl_number', 'DL-1'], ['pr_number', 12], ['pr_url', 'https://example.test/1'],
+            ['issue_number', 3], ['issue_url', 'https://example.test/i/3'], ['version', 'v1.0.0'],
+            ['origin', 'consumer-driven'], ['external_id', '12345'], ['external_link', 'https://example.test'],
+            ['type', 'feature'], ['card_type_id', 3], ['triaged', true], ['block_reason', 'blocked'],
+            ['archived', true], ['archived_at', '2026-09-01'], ['_action', 'archive'],
+            ['priority', 5], ['due_date', '2026-09-30'], ['assigned_user_id', 3],
+        ];
+    }
+
+    #[DataProvider('bridgeOwnedFieldCases')]
+    public function test_correct_refuses_a_bridge_owned_field_by_name_and_reads_nothing(string $key, mixed $value): void
+    {
+        // Refused BY NAME with its owner, and refused BEFORE any request: a silently
+        // ignored argument would leave the seat believing it corrected something it did
+        // not, which is the "never silently no-op" this card was filed on.
+        Http::fake($this->correctFake(live: [$this->ownCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'name' => 'fine', $key => $value,
+        ]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString("`{$key}` is not correctable here", (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    public function test_correct_refuses_a_bridge_owned_field_whatever_its_case(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'Column' => 'shipped']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('not correctable here', (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    public function test_correct_refuses_an_unknown_argument(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'nam' => 'typo']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('unknown argument `nam`', (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    public function test_correct_refuses_a_call_that_names_no_field_to_correct(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('nothing to correct', (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    /**
+     * @return list<array{mixed}>
+     */
+    public static function badCardIdCases(): array
+    {
+        // ⚠ 42.0 is deliberately ABSENT: `json_encode(42.0)` emits `42`, so a float
+        // card id cannot be expressed through this harness's body builder and a case
+        // for it would assert the encoder, not the guard. 42.5 exercises the same
+        // is_int arm and survives the round-trip.
+        return [[null], ['42'], [42.5], [0], [-1], [true], [['42']]];
+    }
+
+    #[DataProvider('badCardIdCases')]
+    public function test_correct_refuses_a_card_id_that_is_not_a_positive_integer(mixed $cardId): void
+    {
+        // A coerced id names a DIFFERENT card, and this id selects the row a write lands
+        // on — so a decorated string or a float is refused, never cast.
+        Http::fake($this->correctFake(live: [$this->ownCardRow()]));
+
+        $args = ['name' => 'x'];
+        if ($cardId !== null) {
+            $args['card_id'] = $cardId;
+        }
+        $this->callTool(['tool' => 'board_correct_card', 'args' => $args])->assertStatus(422);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * @return list<array{string}>
+     */
+    public static function correctReservedTagCases(): array
+    {
+        return [['created-by:someoneelse'], ['idem:me:forged'], ['id:123'], ['type:brief'], ['triaged'], ['IDEM:me:forged'], ['Triaged'], ['bad_tag'], ['ünïcode']];
+    }
+
+    #[DataProvider('correctReservedTagCases')]
+    public function test_correct_refuses_a_reserved_or_out_of_charset_caller_tag(string $tag): void
+    {
+        // The SAME policy the create tool enforces, through the shared owner: a
+        // correction authority wider than the create authority would be the laundering
+        // route around the create guard (mint clean, then "correct" the reserved tag in).
+        Http::fake($this->correctFake(live: [$this->ownCardRow()]));
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'tags' => [$tag]]])
+            ->assertStatus(422);
+        Http::assertNothingSent();
+    }
+
+    public function test_correct_clears_a_description_that_is_present_and_empty(): void
+    {
+        // ONE rule: a PRESENT key is a correction, an ABSENT one leaves the field
+        // alone. `""` and `null` are one value here because Laravel's global
+        // ConvertEmptyStringsToNull rewrites `""` to null before the controller reads
+        // `args` on the HTTP door, while the ssh door preserves it — so treating them
+        // as one value is what keeps the contract identical on both transports.
+        Http::fake($this->correctFake(live: [$this->ownCardRow()]));
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'description' => '']])
+            ->assertStatus(200)->assertJsonPath('result.fields', ['description']);
+        $this->assertSame(['description' => ''], $this->sentPatchBody());
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'description' => null]])
+            ->assertStatus(200);
+        $this->assertSame(['description' => ''], $this->sentPatchBody());
+    }
+
+    public function test_correct_treats_an_empty_tag_list_as_drop_my_tags_not_as_an_omission(): void
+    {
+        // The other half of the same rule, on the field where it bites: `tags: []` is a
+        // real instruction, and it must not collapse into "leave the tags alone" — the
+        // write replaces the list wholesale, so the two answers differ by every
+        // caller-owned tag on the card. The bridge-stamped tags still survive.
+        Http::fake($this->correctFake(live: [$this->ownCardRow([
+            'tags' => ['created-by:me', 'stale-caller-tag'],
+        ])]));
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'tags' => []]])
+            ->assertStatus(200)->assertJsonPath('result.tags_written', ['created-by:me']);
+        $this->assertSame(['tags' => ['created-by:me']], $this->sentPatchBody());
+    }
+
+    public function test_correct_refuses_a_name_that_is_present_and_empty_rather_than_clearing_it(): void
+    {
+        // A card cannot be left without a name, so `name` has no clear form — and the
+        // HTTP door's ConvertEmptyStringsToNull makes `""` arrive as null, which must
+        // reach the same refusal rather than a null write.
+        Http::fake($this->correctFake(live: [$this->ownCardRow()]));
+
+        foreach (['', null] as $empty) {
+            $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => $empty]])
+                ->assertStatus(422);
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_correct_maps_a_403_on_the_ownership_lookup_to_a_named_install_fault(): void
+    {
+        // A 403 here is the writeback token's board membership — not anything the seat
+        // passed, and not retryable. Reporting it as the dispatcher's 502 would invite
+        // the retry loop DL-020 warns about.
+        Http::fake($this->correctFake(live: [], lookupStatus: 403));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('INSTALL fault', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_correct_leaves_a_5xx_on_the_lookup_as_a_retryable_upstream_error(): void
+    {
+        // THE CONTROL for the two mappings above: the 403/404 arms are a NARROWING, not
+        // a blanket that swallows every upstream failure into a permanent refusal. A
+        // 5xx may clear, so it stays the dispatcher's retryable 502.
+        Http::fake($this->correctFake(live: [], lookupStatus: 503));
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(502);
+    }
+
+    public function test_correct_maps_a_403_on_the_write_to_a_named_refusal(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow()], patchStatus: 403));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('403', (string) $res->json('error'));
+        $this->assertStringContainsString('Nothing was written', (string) $res->json('error'));
+    }
+
+    public function test_correct_maps_a_404_on_the_write_to_a_named_refusal(): void
+    {
+        // The card stopped existing between the ownership check and the write.
+        Http::fake($this->correctFake(live: [$this->ownCardRow()], patchStatus: 404));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('no longer exists', (string) $res->json('error'));
+    }
+
+    public function test_correct_leaves_a_5xx_on_the_write_as_a_retryable_upstream_error(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow()], patchStatus: 500));
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
+            ->assertStatus(502);
+    }
+
     // ─── tool + body validation ──────────────────────────────────────────────
 
     public function test_unknown_tool_is_refused(): void
