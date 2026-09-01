@@ -48,7 +48,9 @@ RULES (each names the SURFACE it is about, never the instrument):
            `printf`.
 
 WAIVER. A doc that must show a bad form INSIDE an executable fence writes, on the
-line before it:
+line IMMEDIATELY before it — a blank line drops it, so a waiver at the top of a
+fence cannot silently claim a command further down (an intervening COMMENT line
+does not drop it: comments attach to the command they precede):
 
     # doc-fence-lint: allow <reason, at least 8 characters>
 
@@ -62,10 +64,21 @@ string is not in SHELL_INFO; a secret in bare `env` output, which prints the who
 environment with nothing in argv to read; and every file that is not a `*.md`. The
 shell reader is a heuristic, not a parser: it understands quoting, pipelines,
 command substitution, redirection and here-strings, and it does not understand
-functions, loops, `eval`, aliases, or a value routed through several variables. A
-HEREDOC body is read as though it were commands, so an unquoted `<<EOF` block
-carrying a secret expansion reports an `argv` finding against a "command" that is
-really a config line — a false positive, and the waiver is the answer to it.
+functions, loops, `eval`, aliases, or a value routed through several variables.
+
+A HEREDOC is not tracked AT ALL, so its body is read as though it were commands: a
+secret expansion inside one reports an `argv` finding against what is really a
+config line. That holds for the QUOTED `<<'EOF'` spelling exactly as for the
+unquoted one — and on the quoted form the message is not just a false positive but
+a false STATEMENT, because a quoted heredoc expands nothing and no value ever
+reaches an argv. Wording, not the parser: teaching it heredocs would change what CI
+rejects, and the shape fires on no doc in this repo at any tag. The waiver is the
+answer if one appears.
+
+A NESTED command substitution is read one level deep on the secret-FILE leg:
+`$(cat <secret file>)` marks its enclosing command, `$(echo "$(cat <secret file>)")`
+does not and is GREEN. A nested secret VALUE expansion is unaffected — the
+expansion walk is not depth-limited — so `$(echo "$SECRET")` still reds.
 
 ONE LEG IS NOT AN ENUMERATION, AND THE DIFFERENCE IS DELIBERATE. Where a pipeline
 carrying a secret VALUE ENDS, the question is decided deny-by-default: the tail
@@ -74,11 +87,15 @@ network send, a program that resolves the value itself). The list this replaced 
 the other way, naming the LEAKING tails, and its gaps were therefore SILENT: adding
 one pipe stage turned a leak the tool already caught into a clean run
 (`base64 <secret file>` red, `cat <secret file> | base64` green, and the same for
-`| sed`, `| awk`, `| cut`, `| grep`, `| jq`, `| xxd`). Deny-by-default moves that
-leg's gaps to the loud side — an unlisted tail reds and the author waives it with a
-reason — which is the only direction a backstop may be wrong in. It is scoped to
-the tail on purpose: the rest of this program stays a spelling grep, and the top of
-this file still holds.
+`| sed`, `| awk`, `| cut`, `| grep`, `| jq`, `| xxd`, `| fold`) — this list is the
+one enumeration of that population; DL-324 and `docs/config-schema.md` point here
+rather than keeping copies of it. Deny-by-default moves that leg's gaps to the loud
+side — an unlisted tail reds and the author waives it with a reason — which is the
+only direction a backstop may be wrong in. It is scoped to the tail on purpose: the
+rest of this program stays a spelling grep, and the top of this file still holds.
+STDIN_SINKS' own comment owns what may JOIN that list: an instrument the rule
+prescribes, or one this repo's runbooks use — nothing admitted on plausibility,
+because an invented sink is a silent green.
 
 EXIT CODES
   0  no known shape found. NOT a clean bill of health — see the top of this file.
@@ -160,9 +177,17 @@ SHELL_BUILTINS = {
 
 #: Prefixes that stand in front of the real command. `sudo openssl …` still forks
 #: openssl; `env FOO=x cmd` forks env. `env` is deliberately NOT here — its own
-#: argv carries whatever you hand it.
+#: argv carries whatever you hand it, and `xargs` is absent for exactly the same
+#: reason, only worse: it turns its STDIN into an argv, which is the DL-322 shape.
+#: Stripped as a prefix, `printf '%s' "$SECRET" | xargs curl -H` read as ending at
+#: `curl` — a known stdin sink — and went green while placing the value in
+#: /proc/<pid>/cmdline.
+#:
+#: ⚠ A prefix that takes an OPERAND leaves it behind: `timeout 5 sha256sum` reads
+#: as the command `5`. Named rather than left to be discovered; it fires on no doc
+#: in this repo at any tag.
 COMMAND_PREFIXES = {'sudo', 'doas', 'command', 'exec', 'nohup', 'nice', 'ionice',
-                    'timeout', 'stdbuf', 'xargs', 'builtin', 'then', 'do', 'else',
+                    'timeout', 'stdbuf', 'builtin', 'then', 'do', 'else',
                     'elif', 'time'}
 
 #: Commands whose stdout is (some function of) their arguments.
@@ -192,23 +217,38 @@ READING_COMMANDS = {'cat', 'head', 'tail', 'less', 'more', 'nl', 'tac', 'rev',
 #: not listed and are handled in `_tail_hands_stdin_back` — `read` consumes stdin,
 #: `echo`/`printf` ignore it.
 #:
+#: ⛔ EVERY MEMBER IS ADMITTED BY A STATED REASON, and there are only two: the rule
+#: PRESCRIBES the instrument, or this repo's own runbooks use it. A member admitted
+#: by neither is an invention, and an invented sink is a SILENT green — the one
+#: direction a backstop may not be wrong in. That test removed 22 of the 37 names
+#: an earlier draft listed on plausibility alone, three of them measurably wrong:
+#: `dd` with no `of=` copies stdin to stdout, `gpg -d` writes the plaintext there, and
+#: `ssh host cat` brings it back over the wire, so all three were green while
+#: printing the value. The removals cost false positives, which are loud and
+#: waivable; keeping them cost silent greens, which are neither.
+#: `test_every_sink_is_admitted_by_the_rule_or_by_this_repo_s_own_docs` asserts the
+#: set rather than leaving this paragraph to drift away from it.
+#:
 #: ⚠ The bound this list buys, named rather than left to be discovered: a member
 #: whose stdout IS a function of its stdin in some other mode is green as a tail.
 #: `openssl` is the worked case — it is here because `dgst` is a form the rule
 #: prescribes, and `| openssl base64` therefore does not red (its argv-borne twin,
 #: the DL-322 member, is caught by the `argv` rule and does not depend on this).
 STDIN_SINKS = {
-    # Compare digests, never values — a form the rule PRESCRIBES.
+    # PRESCRIBED — "Comparing two copies. Compare digests … never the values."
+    # The rule names the class and `sha256sum` as its instance; each name here
+    # prints a digest OF its stdin and never stdin, which is decidable by
+    # inspection rather than by having been enumerated.
     'sha1sum', 'sha224sum', 'sha256sum', 'sha384sum', 'sha512sum', 'shasum',
     'md5sum', 'b2sum', 'cksum', 'sum',
-    # Take the value on STDIN instead of in argv — the other form it prescribes.
-    'curl', 'wget', 'ssh', 'scp', 'sftp', 'mail', 'mailx', 'sendmail', 'msmtp',
-    'nc', 'socat', 'mysql', 'psql', 'sqlite3',
-    # Write it to a file, or hand it to the program that resolves it.
-    'install', 'dd', 'sponge', 'gpg', 'gpg2', 'age', 'openssl', 'php', 'artisan',
-    'systemd-ask-password', 'chpasswd', 'passwd',
-    # Measure it without printing it.
-    'wc',
+    # PRESCRIBED — "Passing a value to a program … feed it on stdin", worked in the
+    # rule itself as `printf … | curl --config -`.
+    'curl',
+    # USED BY THIS REPO — `docs/provider-adapters.md` and `docs/writeback.md` place
+    # a value with `install` (DL-321), `CLAUDE_DEPLOYMENT.md` signs with
+    # `php artisan bridge:sign`, which reads the body on stdin (DL-322), and the
+    # `openssl dgst` it replaced is a digest.
+    'install', 'php', 'artisan', 'openssl',
 }
 
 #: Redirect targets that are still a readable surface, not a file.
@@ -527,6 +567,15 @@ def _split_segments(chunk: Chunk, captured: bool) -> list[list[Segment]]:
         # NOT `&`: a bare `&` backgrounds a job, but splitting on it would cut
         # `2>&1` and `>&2` in half and silently drop the redirect — and dropping a
         # redirect is the direction that makes a leak look captured.
+        #
+        # `{`/`}` are the shell's group-command syntax only as STANDALONE words.
+        # Split on unconditionally, `xargs -I{} curl …` reported against a command
+        # called `-I` — a remediation naming text that appears in no doc.
+        if ch in '{}' and not (
+                (i == 0 or chunk.text[i - 1].isspace())
+                and (i + 1 == n or chunk.text[i + 1].isspace())):
+            i += 1
+            continue
         if ch in ';\n(){}':
             flush(i, False)
             if current:
@@ -786,8 +835,16 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
                     f'stdout. Open the file yourself, at your own terminal — a '
                     f'value that reaches a transcript is leaked, and the only '
                     f'repair is rotation.'))
+            # `and not (cmd.name in READING_COMMANDS and secret_files)` dedupes
+            # ONE case: `tee` is a reader AND a passthrough tail, so both legs fire
+            # on one command and the reader's diagnosis is the specific one. Written
+            # as a bare `and not secret_files` it disabled the tail rule for any
+            # tail whose argv merely LOOKED like a secret path, which brought back
+            # the "Compare both values" class DL-321 fixed:
+            # `printf '%s' "$SECRET" | diff - <secret file>` was green.
             if idx == len(pipeline) - 1 and idx > 0 and pipeline_carries_secret \
-                    and _tail_hands_stdin_back(cmd) and not secret_files:
+                    and _tail_hands_stdin_back(cmd) \
+                    and not (cmd.name in READING_COMMANDS and secret_files):
                 findings.append(Finding(
                     path, line, 'stdout', 'stdout',
                     f'this pipeline carries a secret VALUE and ends at `{cmd.name}`, '
@@ -952,6 +1009,11 @@ def scan_text(path: str, text: str, enabled: set[str] | None = None) -> list[Fin
             code = re.sub(r'^\s*[$#]\s+', '', code)
 
             if not buf.text.strip() and not code.strip():
+                # A waiver claims the line BELOW it, which is what its docstring
+                # promises. Carried across a blank line it claimed the first
+                # command however far down the fence — an off-switch whose scope a
+                # reader cannot see from the line it is written on.
+                pending_waiver = False
                 continue
             if buf.text:
                 buf.append('\n', lineno)
@@ -962,7 +1024,15 @@ def scan_text(path: str, text: str, enabled: set[str] | None = None) -> list[Fin
 
             in_single, in_double = _quote_state(code, in_single, in_double)
             depth = _open_paren_depth(code, depth)
-            if in_single or in_double or depth > 0 or _CONTINUES_RE.search(code.rstrip()):
+            # The continuation test reads the accumulated BUFFER, not the physical
+            # line just appended. Read off `code`, a blank or comment-only line
+            # after a trailing `|` matched nothing, flushed the buffer, and handed
+            # the tail its own pipeline where `idx > 0` is false — so
+            # `echo "$SECRET" |`, a blank line, `base64` was green while the
+            # one-line form reddened (card#8351, the same defect the splitter's own
+            # `cmd |` newline case fixed for the adjacent-line spelling).
+            if in_single or in_double or depth > 0 \
+                    or _CONTINUES_RE.search(buf.text.rstrip()):
                 continue
 
             findings.extend(_analyse_chunk(path, buf, enabled, waiver_for_next))

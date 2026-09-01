@@ -446,6 +446,27 @@ class TheWaiver(unittest.TestCase):
         rules = sorted(f.rule for f in _scan(body))
         self.assertIn('waiver-no-reason', rules)
 
+    def test_a_blank_line_drops_the_pending_waiver(self) -> None:
+        """The docstring says the waiver goes on the line BEFORE the command. It
+        survived any number of blank lines, so a waiver at the top of a fence
+        covered the first command however far below it — an off-switch whose scope
+        the reader cannot see from the line it is written on."""
+        body = ('```bash\n'
+                '# doc-fence-lint: allow the pre-DL-322 form, shown to explain the fix\n'
+                '\n'
+                'echo "$SECRET"\n'
+                '```\n')
+        self.assertEqual(['stdout'], [f.rule for f in _scan(body)])
+
+    def test_the_waiver_still_covers_the_line_immediately_below_it(self) -> None:
+        """The control for the line above: the drop must be caused by the BLANK
+        line, not by the waiver having stopped working."""
+        body = ('```bash\n'
+                '# doc-fence-lint: allow the pre-DL-322 form, shown to explain the fix\n'
+                'echo "$SECRET"\n'
+                '```\n')
+        self.assertEqual([], _scan(body))
+
     def test_a_reasonless_waiver_does_not_silently_suppress(self) -> None:
         """The property that matters: an off-switch nobody justified must not
         also WORK. Without this the reasonless case would report a nit and still
@@ -514,9 +535,178 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
     def test_a_trailing_pipe_at_end_of_line_does_not_end_the_pipeline(self) -> None:
         """A pipeline continues on the next line. The splitter ended it there,
         handing the tail a pipeline of its own in which `idx > 0` is false — so the
-        one-line form reddened and the wrapped form did not."""
-        self.assertEqual(['stdout'], self._rules('printf \'%s\' "$SECRET" |\nbase64\n'))
-        self.assertEqual(['stdout'], self._rules('printf \'%s\' "$SECRET" \\\n  | base64\n'))
+        one-line form reddened and the wrapped form did not.
+
+        The SEPARATOR is the second half of the same defect. The continuation test
+        was applied to the CURRENT physical line rather than to the accumulated
+        buffer, so a blank line or a comment line after the trailing `|` matched
+        nothing, flushed the buffer, and handed the tail its own pipeline again —
+        every body below was measured GREEN, and every one of them is real bash
+        that leaks.
+        """
+        for body in (
+            'printf \'%s\' "$SECRET" |\nbase64\n',
+            'printf \'%s\' "$SECRET" \\\n  | base64\n',
+            'printf \'%s\' "$SECRET" |\n\nbase64\n',
+            'printf \'%s\' "$SECRET" |\n# why this pipeline wraps\nbase64\n',
+            'echo "$SECRET" |\n\nbase64\n',
+            'echo "$SECRET" |\n# a comment between the stages\nbase64\n',
+            'cat "$TOKEN_FILE" |\n\nbase64\n',
+            'printf \'%s\' "$SECRET" |\n\nsed \'s/a/b/\'\n',
+            'printf \'%s\' "$SECRET" | tr -d "\\n" |\n\nbase64\n',
+            'printf \'%s\' "$SECRET" \\\n\n  | base64\n',
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(['stdout'], self._rules(body))
+
+    def test_the_continuation_test_reads_the_BUFFER_so_it_covers_and_and(self) -> None:
+        """`_CONTINUES_RE` matches `&&` as well as `|` and `\\`, so the same
+        buffer-vs-line defect spans an `&&` too. `&&` ends the pipeline either way,
+        so no FINDING moves on it — what moves is the extent of the logical line,
+        and the waiver is where that is observable: a waiver claims one logical
+        line, and the flush made the continuation a second one the waiver never
+        covered.
+        """
+        self.assertRegex('cmd &&', lint._CONTINUES_RE)
+        body = ('```bash\n'
+                '# doc-fence-lint: allow the pre-DL-321 form, shown to explain it\n'
+                'umask 077 &&\n'
+                '\n'
+                'echo "$SECRET"\n'
+                '```\n')
+        self.assertEqual([], _scan(body))
+
+    def test_an_and_continuation_still_reds_at_the_line_that_leaked(self) -> None:
+        """The other direction of the same widening: joining more lines into one
+        logical line must not lose the finding, nor misreport WHERE it is — the
+        per-character source map is what makes a joined buffer still name line 4.
+        """
+        findings = _scan('```bash\numask 077 &&\n\necho "$SECRET"\n```\n')
+        self.assertEqual(['stdout'], [f.rule for f in findings])
+        self.assertEqual(4, findings[0].line)
+
+    def test_xargs_is_not_a_command_PREFIX_because_it_builds_an_ARGV(self) -> None:
+        """`xargs` was in `COMMAND_PREFIXES` beside `sudo`/`timeout`, so it was
+        STRIPPED — the tail's name became the wrapped command and the value it
+        carries left the picture. But `xargs` is the DL-322 shape itself: it turns
+        stdin INTO an argv, which is the one surface `/proc/<pid>/cmdline` makes
+        world-readable. All three bodies below were measured GREEN.
+        """
+        self.assertNotIn('xargs', lint.COMMAND_PREFIXES)
+        for body in (
+            'printf \'%s\' "$SECRET" | xargs curl -H\n',
+            'printf \'%s\' "$SECRET" | xargs sha256sum\n',
+            'printf \'%s\' "$SECRET" | xargs php artisan bridge:sign --scope=x\n',
+            'cat "$TOKEN_FILE" | xargs sha256sum\n',
+        ):
+            with self.subTest(body=body.strip()):
+                self.assertEqual(['stdout'], self._rules(body))
+
+    def test_a_real_command_prefix_is_still_stripped(self) -> None:
+        """The control for the line above: removing `xargs` must not have removed
+        the behaviour the set exists for. `sudo sha256sum` still forks sha256sum,
+        and the tail is the digest, not the wrapper.
+
+        ⚠ A prefix that takes an OPERAND is a separate, pre-existing bound and is
+        deliberately not exercised here: `timeout 5 sha256sum` names the command
+        `5`, because the wrapper is dropped and its argument is not."""
+        for body in (
+            'printf \'%s\' "$SECRET" | sudo sha256sum\n',
+            'printf \'%s\' "$SECRET" | command sha256sum\n',
+            'printf \'%s\' "$SECRET" | nohup sha256sum\n',
+        ):
+            with self.subTest(body=body.strip()):
+                self.assertEqual([], self._rules(body))
+
+    def test_the_finding_names_xargs_and_not_a_brace_placeholder(self) -> None:
+        """`-I{}` is not a command group. The splitter treated every `{` and `}` as
+        a separator, so `xargs -I{} curl …` reported against a command called
+        `-I` — a remediation naming text the doc does not contain."""
+        findings = _scan('```bash\nprintf \'%s\' "$SECRET" | '
+                         'xargs -I{} curl -H "Authorization: Bearer {}" http://x/\n```\n')
+        self.assertEqual(['stdout'], [f.rule for f in findings])
+        self.assertIn('`xargs`', findings[0].message)
+
+    def test_an_unquoted_brace_expansion_no_longer_orphans_the_dollar(self) -> None:
+        """A second, unlooked-for silent green the same narrowing closed. Splitting
+        on every `{` cut `echo ${SECRET}` into `echo $` + `SECRET`, so the segment
+        the argv/stdout rules read carried no expansion at all and the line was
+        GREEN — while its quoted twin `echo "${SECRET}"` reddened, the two spellings
+        disagreeing for no reason a reader could see."""
+        self.assertEqual(['stdout'], self._rules('echo ${SECRET}\n'))
+        self.assertEqual(['stdout'], self._rules('echo "${SECRET}"\n'))
+
+    def test_the_prescribed_alternative_expansion_survives_the_narrowing(self) -> None:
+        """The control in the other direction: `${VAR:+set}` is the form the rule
+        PRESCRIBES for testing whether a secret is set, and reading its braces
+        differently must not have made it a finding."""
+        self.assertEqual([], self._rules('if [ -n "${SECRET:+x}" ]; then echo ok; fi\n'))
+        self.assertEqual([], self._rules('cp "$D"/f{,.bak}\n'))
+
+    def test_a_real_brace_group_is_still_a_separator(self) -> None:
+        """The control for the brace narrowing: a STANDALONE `{`/`}` is the shell's
+        group-command syntax and must keep splitting, or `{ echo "$SECRET"; }`
+        reports against a command called `{`."""
+        findings = _scan('```bash\n{ echo "$SECRET"; }\n```\n')
+        self.assertEqual(['stdout'], [f.rule for f in findings])
+        self.assertIn('`echo`', findings[0].message)
+
+    def test_a_tail_that_COMPARES_against_a_secret_file_is_not_exempt(self) -> None:
+        """`and not secret_files` disabled the tail rule for ANY tail whose argv
+        looked like a secret path — so the "Compare both values" class DL-321 fixed
+        came straight back through a pipe. Every body below prints secret-derived
+        bytes and every one was measured GREEN. The clause exists only to dedupe a
+        tail that is ALSO a reader (`tee`), and it is now scoped to that.
+        """
+        for body in (
+            'printf \'%s\' "$SECRET" | diff - /etc/bridge/webhook-secret-scope\n',
+            'printf \'%s\' "$SECRET" | cmp - "$TOKEN_FILE"\n',
+            'printf \'%s\' "$SECRET" | diff - "$TOKEN_FILE"\n',
+            'cat "$TOKEN_FILE" | grep -f /etc/bridge/webhook-secret-scope\n',
+        ):
+            with self.subTest(body=body.strip()):
+                self.assertEqual(['stdout'], self._rules(body))
+
+    def test_a_reader_tail_holding_a_secret_file_still_reports_once(self) -> None:
+        """What the clause was for. `tee` is in READING_COMMANDS and is also a
+        passthrough tail, so both legs fire on one command; the reader diagnosis is
+        the specific one, and two findings for one line is the noise that gets a
+        lint switched off."""
+        findings = _scan('```bash\nprintf \'%s\' "$SECRET" | '
+                         'tee /etc/bridge/webhook-secret-scope\n```\n')
+        self.assertEqual(1, len(findings), [f.render() for f in findings])
+        self.assertIn('puts the contents of', findings[0].message)
+
+    def test_a_sink_whose_stdout_IS_its_stdin_is_not_a_sink(self) -> None:
+        """The membership test is "this command's stdout is not a function of its
+        stdin", and these three failed it while being listed. `dd` with no `of=`
+        copies stdin to stdout; `gpg -d` writes the plaintext there; `ssh host cat`
+        brings it back over the wire. All three were measured GREEN.
+        """
+        for name in ('dd', 'gpg', 'gpg2', 'ssh', 'sqlite3', 'psql', 'sponge',
+                     'socat', 'age', 'systemd-ask-password'):
+            with self.subTest(name=name):
+                self.assertNotIn(name, lint.STDIN_SINKS)
+        for body in (
+            'printf \'%s\' "$SECRET" | dd\n',
+            'cat "$TOKEN_FILE" | gpg -d\n',
+            'printf \'%s\' "$SECRET" | ssh host cat\n',
+        ):
+            with self.subTest(body=body.strip()):
+                self.assertEqual(['stdout'], self._rules(body))
+
+    def test_every_sink_is_admitted_by_the_rule_or_by_this_repo_s_own_docs(self) -> None:
+        """The claim DL-324 makes about this list, asserted rather than restated:
+        every member is either an instrument `docs/config-schema.md` § Handling a
+        secret VALUE prescribes (a digest; a value fed on stdin) or a spelling this
+        repo's own runbooks use. A member admitted by neither is an invention, and
+        an invented sink is a SILENT green — the one direction a backstop may not
+        be wrong in."""
+        digests = {'sha1sum', 'sha224sum', 'sha256sum', 'sha384sum', 'sha512sum',
+                   'shasum', 'md5sum', 'b2sum', 'cksum', 'sum'}
+        prescribed = {'curl'}
+        used_by_this_repo = {'install', 'php', 'artisan', 'openssl'}
+        self.assertEqual(digests | prescribed | used_by_this_repo, lint.STDIN_SINKS)
 
     def test_a_known_stdin_sink_tail_stays_green(self) -> None:
         """The other direction, and the reason this is not blanket default-deny:
@@ -557,6 +747,29 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
         body = '```bash\ncat "$TOKEN_FILE" | base64\n```\n'
         self.assertEqual(['stdout'], [f.rule for f in _scan(body)])
         self.assertEqual([], _scan(body, set(lint.RULE_IDS) - {'stdout'}))
+
+
+class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
+    """A bound named in prose and asserted nowhere is a claim, not a bound. These
+    pin the two the docstring discloses so the disclosure cannot quietly go stale —
+    and so that CLOSING one of them reds here rather than leaving the docs saying it
+    is still open."""
+
+    def _rules(self, body: str) -> list[str]:
+        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
+
+    def test_a_heredoc_body_is_read_as_commands_in_BOTH_quoting_forms(self) -> None:
+        """The docstring used to scope this to an UNQUOTED `<<EOF`. The tool tracks
+        no heredocs at all, so a `<<'EOF'` body — where the shell expands NOTHING —
+        reports the same `argv` finding, and that finding's text is false for the
+        quoted form. Wording, not the parser: fixing the parser changes what CI
+        rejects, and it fires on no doc in this repo at any tag."""
+        for body in (
+            'cat <<EOF > /etc/bridge/app.conf\nsecret = "$BRIDGE_SECRET"\nEOF\n',
+            "cat <<'EOF' > /etc/bridge/app.conf\nsecret = \"$BRIDGE_SECRET\"\nEOF\n",
+        ):
+            with self.subTest(body=body.strip()):
+                self.assertEqual(['argv'], self._rules(body))
 
 
 class AMessageMustNameTextTHEDOCACTUALLYCONTAINS(unittest.TestCase):
