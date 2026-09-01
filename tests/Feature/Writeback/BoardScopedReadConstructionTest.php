@@ -169,6 +169,7 @@ class BoardScopedReadConstructionTest extends TestCase
      * @var list<string>
      */
     private const KNOWN_BOARD_SCOPED_READS = [
+        'cardRowsOnBoard',   // the card#8375 tenant check: (board, card id) → the row, or nothing
         'cardsByTag',        // the 4 writeback sites of card#7211: tag → ids
         'cardRowsByTag',     //   … tag → full rows
         'swimlaneCards',     //   … swimlane rows, paged
@@ -191,6 +192,7 @@ class BoardScopedReadConstructionTest extends TestCase
      * @var list<string>
      */
     private const KNOWN_SEARCH_READERS = [
+        'cardRowsOnBoard',
         'cardsByTag',
         'cardRowsByTag',
         'swimlaneCards',
@@ -401,7 +403,7 @@ class BoardScopedReadConstructionTest extends TestCase
         // than carrying it forward, because a number carried across the passes that falsified it
         // stops living in the loop. It reds when the scan stops FINDING the call sites; a NEW
         // one does not red it, being checked by the loop above.
-        $this->assertGreaterThanOrEqual(5, $callSites,
+        $this->assertGreaterThanOrEqual(6, $callSites,
             'the source scan found fewer '.self::SEARCH_ENDPOINT.' call sites than exist — it is reporting where '
             .'the searcher stopped, not the state of the code');
     }

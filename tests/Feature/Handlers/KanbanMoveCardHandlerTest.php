@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\PreloadStub;
+use Tests\Support\ScopeLookupStub;
 use Tests\TestCase;
 
 class KanbanMoveCardHandlerTest extends TestCase
@@ -54,8 +55,27 @@ class KanbanMoveCardHandlerTest extends TestCase
         chmod($this->dir.'/kanban/writeback-token', 0o600);
     }
 
+    /**
+     * Whether this test has already had the card#8375 board-scope fallback registered.
+     *
+     * ⛔ ONCE PER TEST, and the flag is what makes that true: `Http::fake()` also RESETS the
+     * recorded-request log (G-020), so registering it on a SECOND `handle()` call would erase
+     * the first delivery's requests — which several legs here assert across (the dedup and
+     * re-arm cases call `handle()` twice and count the pushes).
+     */
+    private bool $scopeLookupStubbed = false;
+
     private function handle(array $payload): void
     {
+        // The board-scoped tenant check (card#8375) is made on every delivery that gets as far
+        // as building a client, so every leg below reaches this endpoint. Registered LAST so a
+        // leg that stubs the search itself still wins (G-020: first match wins); see
+        // {@see ScopeLookupStub} for why it is a fixture rather than an assertion.
+        if (! $this->scopeLookupStubbed) {
+            Http::fake(ScopeLookupStub::onMappedBoard(8));
+            $this->scopeLookupStubbed = true;
+        }
+
         (new KanbanMoveCardHandler)->handle(
             ReactionTarget::make('kanban_move_card', '5', payload: $payload),
             AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
@@ -991,7 +1011,10 @@ class KanbanMoveCardHandlerTest extends TestCase
             ]]]]]),
             '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]]),
             '*/tasks/6.json' => Http::response(['data' => ['id' => 6, 'board_id' => 8, 'workflow_stage_id' => 49]]),
-        ]);
+            // This leg dispatches the handler DIRECTLY (it needs one instance across two
+            // targets), so it does not pass through `handle()` and stubs the card#8375
+            // board-scope lookup itself. Both cards are asked about, one request each.
+        ] + ScopeLookupStub::onMappedBoard(8));
 
         $handler = new KanbanMoveCardHandler;
         $agent = AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]);
@@ -1171,6 +1194,11 @@ class KanbanMoveCardHandlerTest extends TestCase
         // the reason string is the operator's ONLY signal for the case that guard exists to
         // refuse. A single collapsed `getcard_4xx` also DEDUPED the two statuses against
         // each other within one (repo, outcome): whichever arrived second alerted zero times.
+        //
+        // ⚑ The 403 slug is the NARROWED one (card#8375): the board-scoped check has already
+        // read this id back off the mapped board, so a foreign card id is excluded here and
+        // the slug names the one cause left. `kanban_block_reason`, which makes no such
+        // check, still emits the two-cause slug — pinned in its own class.
         $this->writeWritebackWithAlert();
         $this->writeToken();
         Http::fake([
@@ -1187,7 +1215,7 @@ class KanbanMoveCardHandlerTest extends TestCase
             ->filter(fn ($pair) => $this->isAlertPush($pair[0]))
             ->map(fn ($pair) => $pair[0]['reason'])
             ->values()->all();
-        $this->assertSame(['getcard_404_no_such_card', 'getcard_403_foreign_card_id_or_token_scope'], $reasons);
+        $this->assertSame(['getcard_404_no_such_card', 'getcard_403_token_scope'], $reasons);
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');   // both still swallow — no move, no 5xx retry
     }
 
@@ -1217,10 +1245,17 @@ class KanbanMoveCardHandlerTest extends TestCase
         // The id reaching this arm was parsed as a literal out of author-controlled text
         // (`card#NNNN` in a PR title or branch ref) against a kanban id space that is
         // GLOBAL across every board on the instance, and the read that would have proved
-        // it ours just FAILED — so on a 403 it may name another install's card. Observed
-        // live with exactly this id: a push on one install alerted `card_id: 7756`, a card
-        // on a board another install owns; only the write-side 403 stopped a move. The
-        // local operator legitimately needs the id to diagnose, so it stays in the log.
+        // it ours just FAILED. Observed live with exactly this id: a push on one install
+        // alerted `card_id: 7756`, a card on a board another install owns; only the
+        // write-side 403 stopped a move. The local operator legitimately needs the id to
+        // diagnose, so it stays in the log.
+        //
+        // ⚑ WHAT THE WITHHOLDING IS KEYED ON DID NOT CHANGE WITH card#8375, and that is the
+        // point of keeping this leg as it stands: it is keyed on THE READ FAILED, not on the
+        // foreign-id hypothesis. Here the scope check PASSED (the fallback stub says 7756 is
+        // on the mapped board) and `getCard` still 403'd, so this bridge holds an id whose
+        // card it could not read — the channel copy stays empty either way. The scope-refused
+        // shape, where the id really is not ours, is `WritebackTenantScopeTest`'s subject.
         $this->writeWritebackWithAlert();
         $this->writeToken();
         Log::spy();
@@ -1247,17 +1282,24 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->assertArrayHasKey('card_id', $body, 'the alert body must still CARRY a card_id key, valued null');
         $this->assertNull($body['card_id']);
         $this->assertTrue($body['card_id_withheld'] ?? false, 'a bare null reads as "the arm had no id"; the omission must say it is deliberate');
-        $this->assertSame('getcard_403_foreign_card_id_or_token_scope', $body['reason']);
+        $this->assertSame('getcard_403_token_scope', $body['reason']);
 
         // …and the other half: the operator's own surface keeps it.
         Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => ($ctx['card_id'] ?? null) === 7756);
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');   // still swallowed — no move, no 5xx retry
     }
 
-    public function test_getcard_403_log_names_both_hypotheses(): void
+    public function test_getcard_403_log_says_the_foreign_card_id_hypothesis_is_excluded_here(): void
     {
-        // The reason slug is diagnostic only if the operator-facing text says WHICH two
-        // causes to check: a foreign install's card id, or this token's board scope.
+        // ⚑ THIS LEG REVERSED WITH card#8375, and the reversal is the deliverable. It used to
+        // require the text to name BOTH causes a 403 could have — a foreign install's card id,
+        // or this token's own scope — because nothing in the status could choose between them
+        // (DL-314). The board-scoped check now runs BEFORE this read and has already found
+        // this id on the mapped board, so the foreign half is ruled out by a measurement and
+        // the message must say so: a text still offering both would send the operator hunting
+        // a cause this arm can no longer have. The two-cause wording lives on in
+        // `kanban_block_reason`, which makes no such check — pinned in its own class, so
+        // deleting it here does not retire the assertion that it exists somewhere.
         $this->writeWriteback();
         $this->writeToken();
         Log::spy();
@@ -1266,8 +1308,9 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->handle($this->payload());
 
         Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'getCard 403')
-            && str_contains($msg, 'foreign install')
-            && str_contains($msg, "token's scope")
+            && str_contains($msg, 'board-scoped check')
+            && str_contains($msg, 'EXCLUDED')
+            && ! str_contains($msg, 'cannot tell the two apart')
             && $ctx['status'] === 403
             && $ctx['card_id'] === 5);
     }
