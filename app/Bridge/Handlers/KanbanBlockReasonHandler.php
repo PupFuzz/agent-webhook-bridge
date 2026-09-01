@@ -136,6 +136,14 @@ final class KanbanBlockReasonHandler implements DurableReaction, Handler
                 // resolved by the SAME author-controlled `card#`/DL token grammar against
                 // a GLOBAL kanban id space, so a read that failed leaves the id
                 // unestablished as this install's. The log keeps it; the push does not.
+                //
+                // ⚑ THE TWO ARMS ARE NO LONGER TWINS ON THE 403, and this one is the WIDER
+                // of the pair: since card#8375 `kanban_move_card` establishes its card id on
+                // the mapped board through a board-scoped lookup BEFORE it reads the card, so
+                // its 403 can no longer mean a foreign card id. This overlay makes no such
+                // check yet — the id here really may be another install's — so it keeps the
+                // default two-cause slug, which stays true of it. Extending the scoped check
+                // to this arm is filed as card#8415, not done here.
                 $this->alerts->warnAndNotifyCardIdWithheld(
                     'kanban_block_reason: getCard refused by kanban (4xx) — ignoring (see `body` for the reason kanban gave); on a 403 the card id may name another install\'s card, so it is in this log line only, never in the alert channel',
                     ['card_id' => $cardId] + RefusalContext::from($e),

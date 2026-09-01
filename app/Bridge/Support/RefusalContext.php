@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Support;
 
+use App\Bridge\Writeback\MappedBoardGuard;
 use Illuminate\Http\Client\RequestException;
 
 /**
@@ -98,17 +99,28 @@ final class RefusalContext
      * stated only (b): it named the TOKEN as the thing at fault, and the operator who
      * hit (a) live went looking at their own token's scope for a card that was never
      * theirs. ⛔ Do NOT "improve" this into one hypothesis: nothing in a 403 response
-     * distinguishes them, and the only thing that could — a BOARD-SCOPED read of the id
-     * against this install's own board — is deliberately not made here (DL-314 records
-     * it as the deferred option). A slug that picks one would be wrong-but-specific,
-     * which this file already rules worse than an honest generic (canon #10, and the
-     * same reasoning that keeps the GitHub reads flat).
+     * distinguishes them. A slug that picked one on the STATUS alone would be
+     * wrong-but-specific, which this file already rules worse than an honest generic
+     * (canon #10, and the same reasoning that keeps the GitHub reads flat).
+     *
+     * ⭐ $foreignIdExcluded IS THE OTHER EVIDENCE — and it is precisely the thing DL-314
+     * recorded as the deferred option: a BOARD-SCOPED read of the id against this install's
+     * own board. Since card#8375 `kanban_move_card` makes exactly that read BEFORE it calls
+     * `getCard` ({@see MappedBoardGuard::refusesCardIdOutsideMappedBoard}).
+     * By the time its 403 arm fires, cause (a) has been ruled out BY A MEASUREMENT: the same
+     * token read this id back off the mapped board moments earlier. That caller passes true and
+     * gets `{verb}_403_token_scope`, naming the one cause left.
+     * ⛔ THE FLAG IS A CLAIM ABOUT THE CALL SITE, NEVER A PREFERENCE. Pass it only where a
+     * board-scoped establishment of THIS id precedes the failing read, or where the failing
+     * read is ITSELF board-scoped (a 403 on a query naming our own board says nothing about
+     * whose card the id is). An arm with no such check — `kanban_block_reason`'s draft overlay
+     * today — keeps the default, and the two-cause slug stays true there.
      */
-    public static function readReason(string $verb, RequestException $e): string
+    public static function readReason(string $verb, RequestException $e, bool $foreignIdExcluded = false): string
     {
         return match ($e->response->status()) {
             404 => $verb.'_404_no_such_card',
-            403 => $verb.'_403_foreign_card_id_or_token_scope',
+            403 => $foreignIdExcluded ? $verb.'_403_token_scope' : $verb.'_403_foreign_card_id_or_token_scope',
             default => $verb.'_4xx',
         };
     }
