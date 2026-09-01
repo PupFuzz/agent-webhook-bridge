@@ -237,48 +237,20 @@ class CheckCommand extends BridgeCommand
                 // after the loop to flag orphaned writeback.json mappings (a mapping no
                 // classifier drives).
                 if (ClassifierResolver::probeImplements($cfg->classifierClass, EmitsWritebackReactions::class)) {
-                    foreach ($cfg->subscriptions as $sub) {
-                        if ($sub->provider === 'github') {
-                            $ctx->writebackEmittingScopes[CheckContext::canonicalScope($sub->scopeId)] = true;
-                        }
+                    foreach (CheckContext::githubScopes($cfg) as $scope) {
+                        $ctx->writebackEmittingScopes[$scope] = true;
                     }
                 }
 
-                // card#8292: record scopes whose agent enables the coord-card-create family —
-                // gate 1 of the DL-198 real-time card create, and the same raw-config
-                // membership test is the resolved answer for the same reason as its two
-                // siblings below (it is never a default either).
-                if (in_array('coord-card-create', $cfg->classifierConfig->strings('families'), true)) {
-                    foreach ($cfg->subscriptions as $sub) {
-                        if ($sub->provider === 'github') {
-                            $ctx->coordCardCreateScopes[CheckContext::canonicalScope($sub->scopeId)] = true;
-                        }
-                    }
-                }
-
-                // DL-204 (#4357): record scopes whose agent enables the coord-card-move family.
-                // coord-card-move is never in DEFAULT_FAMILIES, so a raw-config membership test IS
-                // the resolved answer — an unset families list defaults to [coord-message] and can
-                // never contain it.
-                if (in_array('coord-card-move', $cfg->classifierConfig->strings('families'), true)) {
-                    foreach ($cfg->subscriptions as $sub) {
-                        if ($sub->provider === 'github') {
-                            $ctx->coordCardMoveScopes[CheckContext::canonicalScope($sub->scopeId)] = true;
-                        }
-                    }
-                }
-
-                // card#6393: the same record for the coord-card-relane family, and the same
-                // raw-config membership test is the resolved answer for the same reason (it
-                // is never a default either). Kept separate from the map above because the
-                // two families are independently enabled.
-                if (in_array('coord-card-relane', $cfg->classifierConfig->strings('families'), true)) {
-                    foreach ($cfg->subscriptions as $sub) {
-                        if ($sub->provider === 'github') {
-                            $ctx->coordCardRelaneScopes[CheckContext::canonicalScope($sub->scopeId)] = true;
-                        }
-                    }
-                }
+                // Gate 1 of all three coord-card families — the DL-198 create (card#8292),
+                // the DL-204 move (#4357) and the card#6393 relane legs. ONE derivation
+                // since card#8305: this stood here as three byte-near-identical blocks
+                // differing only in a family string and a target map, and the third copy is
+                // what let the create family ship with only one of its two `bridge:check`
+                // legs. CheckContext owns it, beside the maps it fills — the shape, the
+                // raw-config membership rule and the DL-293 key form are all documented
+                // there, at one site rather than three.
+                $ctx->recordCoordCardFamilies($cfg);
 
                 // card#4183 (DL-196): record the top-level github event types this
                 // agent's classifier CONSUMES per subscribed github scope, for the

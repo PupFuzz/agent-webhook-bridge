@@ -1,7 +1,10 @@
 # PHPStan (larastan) config for the Laravel v0.12 rewrite.
 #
-# Scoped to app/Bridge/** at level 7 per the v0.12 plan, plus the one
-# app/Console file named in `paths` below (DL-238). The framework-magic
+# Scoped to app/Bridge/** at level 7 per the v0.12 plan, plus the individual
+# files named in `paths` below — each one for a stated reason (DL-238, DL-322).
+# ⛔ THIS BLOCK IS THE SCOPE'S ONLY DESCRIPTION. Docs point here rather than
+# restating it: five copies of "app/Bridge + CheckCommand" went stale the day
+# the second file was added. The framework-magic
 # heavy default skeleton classes (app/Models/User, app/Providers/*) are
 # deliberately NOT analysed here — they get pruned/replaced as the rewrite
 # lands its own code in PRs #145-#147.
@@ -27,4 +30,12 @@ parameters:
         # runtime UnhandledMatchError instead of a CI error. Clean at level 7 when
         # added — no baseline, no suppressions.
         - app/Console/Commands/Bridge/CheckCommand.php
+        # Same reason, same rule, two more consumers (card#8336/DL-322): both must stay
+        # exhaustive over `WebhookSecretFailure`. The middleware's match decides the
+        # receiver's STATUS, so an unhandled case would be a 500 on the security gate
+        # instead of a CI error; the command's decides the operator's message. Clean at
+        # level 7 when added — no baseline, no suppressions. Everything else under
+        # app/Http and app/Console remains unanalysed.
+        - app/Http/Middleware/VerifyHmacSignature.php
+        - app/Console/Commands/Bridge/SignCommand.php
     tmpDir: .phpstan-cache-laravel
