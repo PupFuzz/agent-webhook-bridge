@@ -149,6 +149,18 @@ Unknown top-level keys (outside `identity`/`subscriptions`/`echo_suppression`/`s
 
 ## 3. Secrets, tokens & state files
 
+### Handling a secret VALUE (not just its file)
+
+Every path in the table below holds a value that must never be **resolved onto a readable surface**: stdout (a terminal scrollback, a CI log, an AI agent's session transcript), an **argv** (`/proc/<pid>/cmdline` is world-readable, so a value passed as a command-line argument to any non-builtin is readable by every local account for the life of the process), a log line, or the **shell history** file a command-line literal lands in. The instrument does not matter and the list of instruments is never complete — the next thing that resolves a secret has not been enumerated yet — so the rule is stated over the surface instead:
+
+- **Placing a value.** Type it into `read -rs`, then write it with a shell **builtin**: `read -rsp 'value: ' V; printf '%s' "$V" > <path>; unset V`. `read -rs` keeps it off the terminal and out of history; `printf` forks nothing, so there is no argv to read. Create the file under `umask 077` (or `chmod 600` it immediately) — the receiver 500s on a group/world-readable HMAC secret (`secret_perms_insecure`, DL-010) and every token path in the table is read fail-closed.
+- **Passing a value to a program.** Give it the **path**, or feed it on **stdin** — never as an argument. `curl` takes an `Authorization` header on stdin: `printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" | curl --config - …`.
+- **Testing for one.** `${VAR:+set}` or `[ -n "$VAR" ]`. `${VAR:-…}` and `echo "$VAR"` print the value they were meant to test.
+- **Comparing two copies.** Compare digests — `sha256sum < <path>` at each end — never the values.
+- **Reading one back.** Open the file yourself, at your own terminal. Do not `cat` it in a session an agent or a logger is recording: once a value reaches a transcript it is leaked whether or not anyone reads the file again, and the only repair is rotation.
+
+### The files
+
 | Path | Mode | Notes |
 |---|---|---|
 | `<secret_dir>/<provider>/webhook-secret-scope-<scope>` | `0600` | Per-(provider,scope) HMAC secret. Group/world-readable → receiver **500 `secret_perms_insecure`** (DL-010). `<scope>`'s `/` is `%2F`-encoded. |

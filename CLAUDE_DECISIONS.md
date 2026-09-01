@@ -4542,6 +4542,27 @@ The structural hit is `CardTokenGrammar::parse('revert-611-card-8294-slug') === 
 
 **Falsifies:** DL-023's *"isolated from auto-tag"*, annotated there. Independence was true; isolation was not.
 
+---
+
+## DL-321 — a runbook never resolves a secret VALUE onto a readable surface; the rule is stated over the SURFACE, once, and the sites link to it (card#8351)
+
+**Status:** implemented (card#8351). Docs-only — no code, no config key, no migration, no receiver accept/reject change, no token-scope change.
+
+**Context.** Three shipped operator runbooks instructed the reader to put a live secret somewhere readable. `docs/multi-host.md`'s channel-token step ended with `echo "Save this token securely: $BRIDGE_CHANNEL_TOKEN"`; its smoke test passed the same token as a `curl -H` argument; `docs/provider-adapters.md` and `docs/writeback.md` each placed a secret as a command-line literal. None of them is wrong for the reader they were written for — a human at a private terminal must see a freshly generated token to save it — and that is exactly what made the defect durable: the guidance looks correct until the reader is an **AI agent executing the runbook**, at which point the value lands in a session transcript, or until you ask who else on the box can read `/proc/<pid>/cmdline`.
+
+- **⚑ Decision — state the rule over the SURFACE, not over an enumeration of instruments.** `docs/config-schema.md § Handling a secret VALUE (not just its file)` owns it: a secret value must not reach stdout (scrollback, CI log, agent transcript), an **argv**, a log line, or the **shell history** a command-line literal is written to. It names the forms that satisfy it — `read -rs` + a builtin `printf` for placing, a path or stdin for passing (`curl --config -`), `${VAR:+set}` / `[ -n "$VAR" ]` for testing, `sha256sum` for comparing, and *open the file yourself* for reading back. The runbooks **link** to that section rather than restating it, and `CLAUDE_CONVENTIONS.md § Security / secrets conventions` carries the one author-facing line.
+
+- **⛔ Why surface-scoped and not a list of banned commands.** A rule that enumerates instruments is permanently one instrument behind: `echo`, a here-string, `openssl -hmac`, a `${VAR:-…}` probe and a verbose flag are five different tools reaching four different surfaces, and the sixth has not been written yet. Anyone can check *did a value reach a readable surface*; nobody can check *is this command on the list*.
+
+- **⛔ Why the `echo` was replaced rather than deleted.** The token is unrecoverable after generation, so removing the disclosure without giving the operator another way to obtain the value would have traded a leak for a broken runbook. The generation now writes into a `0600` file under `umask 077` and the operator is told to open it themselves — the disclosure survives, on a surface of their choosing.
+
+- **Measured, not argued.** The `curl` change was verified against a local listener with a dummy value: the header arrives identically under `--config -`, and the discriminator is the process's own `cmdline` — 1 match for the value under `-H "Authorization: Bearer $TOKEN"`, 0 under the config-on-stdin form. `printf … | install -m 600 /dev/stdin` and the `umask 077` redirect were both exercised and produce `0600` files with the exact byte count.
+
+**Alternatives considered.**
+- **A CI doc-lint that greps runbook code fences for the shapes.** Not built here: it changes what CI rejects, which is its own operator ruling, and a grep over spellings is the enumeration this entry rejects — it would green on the instrument nobody listed.
+- **A harness-level control** — a PostToolUse redactor over Bash output, or a PreToolUse deny on secret-resolving expansions. Both cover the general class including instruments nobody has thought of, and both change what the harness refuses; they stay on card#8351 for an operator decision and are the reason this entry does not claim the class is closed.
+
+**Consequences.** ⚠ **Nothing enforces this.** The three sites are fixed and the rule has an owner, so a future runbook author has somewhere to look — but a new doc can still mint instance five, and only the gated controls above would stop it. ⚠ **One known member is deliberately untouched:** `CLAUDE_DEPLOYMENT.md`'s GitHub smoke test resolves the per-scope HMAC secret into `openssl dgst -hmac "$SECRET"` — the same argv surface — which is card#8336's, in flight separately.
 
 ## DL-323 — the writeback resolves a card id THROUGH the mapped board, not against it: a foreign card id is now refused by a board-scoped check before any unscoped read (card#8375)
 
