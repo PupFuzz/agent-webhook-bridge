@@ -2,8 +2,10 @@
 
 namespace Tests\Feature\AgentTools;
 
+use App\Bridge\Tools\BoardCallRefusal;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\ServingProcessEnvironment;
+use App\Bridge\Writeback\KanbanFieldLimits;
 use App\Models\BoardToolsClientCall;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
@@ -1838,12 +1840,12 @@ class AgentToolsCallTest extends TestCase
 
     public function test_correct_maps_a_403_on_the_write_to_a_named_refusal(): void
     {
-        // ⛔ TWO INDEPENDENT GATES ANSWER 403 ON `PATCH /api/v3/tasks/{id}.json`, and the
-        // message has to send the operator to BOTH or it sends them to audit half the
-        // cause: the Sanctum per-token ABILITY gate (`EnforceTokenAbilities` — a PATCH
-        // needs `write`) and the board ROLE permission (`task.update`, because a PATCH
-        // carrying anything but `workflow_stage_id` alone authorizes `update`, kanban
-        // DL-204). `task.update` is NEW for this door — the other two board tools need
+        // ⛔ THE MESSAGE HAS TO SEND THE OPERATOR TO EVERY GATE THAT CAN ANSWER 403 ON
+        // `PATCH /api/v3/tasks/{id}.json`, or it sends them to audit part of the cause: the
+        // Sanctum per-token ABILITY gate (`EnforceTokenAbilities` — a PATCH needs `write`),
+        // the board ROLE permission (`task.update`, because a PATCH carrying anything but
+        // `workflow_stage_id` alone authorizes `update`, kanban DL-204), and kanban's board
+        // WRITE GATE. `task.update` is NEW for this door — the other two board tools need
         // only `board.view` / `task.create` — so an install granting exactly those 403s
         // here with a token whose abilities are perfectly fine.
         Http::fake($this->correctFake(live: [$this->ownCardRow()], patchStatus: 403));
@@ -1855,6 +1857,46 @@ class AgentToolsCallTest extends TestCase
         $this->assertStringContainsString('Nothing was written', (string) $res->json('error'));
         $this->assertStringContainsString('`write`', (string) $res->json('error'));
         $this->assertStringContainsString('`task.update`', (string) $res->json('error'));
+    }
+
+    /**
+     * ⭐ THE GATE ENUMERATION IS THE PRIMITIVE'S, AND THIS IS WHAT PINS IT ON BOTH WRITES
+     * (card#8486 R1). Written out longhand per tool it was copied onto `board_create_card`
+     * missing kanban's board WRITE GATE — `BoardWriteGate::check` denies every write to an
+     * ARCHIVED or trashed board with a 403 whatever the token and the role allow (kanban
+     * DL-062; `TasksController::store`/`update` declare it as
+     * `@response 403 scenario="board is archived (write-gate denial …)"`). An operator whose
+     * board was archived audits abilities and role, finds both correct, and never learns —
+     * while the fix is one click. Asserting it on ONE tool would have stayed green through
+     * exactly the divergence that produced the defect, so both writes are named here.
+     *
+     * @return array<string, array{array<string, mixed>}>
+     */
+    public static function writeRefusingTools(): array
+    {
+        return [
+            'board_create_card' => [['tool' => 'board_create_card', 'args' => ['title' => 't']]],
+            'board_correct_card' => [['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $call
+     */
+    #[DataProvider('writeRefusingTools')]
+    public function test_a_write_403_names_kanbans_board_write_gate_on_every_tool(array $call): void
+    {
+        Http::fake($call['tool'] === 'board_correct_card'
+            ? $this->correctFake(live: [$this->ownCardRow()], patchStatus: 403)
+            : ['*/tasks.json' => Http::response('nope', 403)]);
+
+        $res = $this->callTool($call);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('archived or trashed board refuses every write', $error);
+        $this->assertStringContainsString('`write`', $error);
+        $this->assertStringContainsString('A 403 cannot say which of the three refused', $error);
     }
 
     public function test_correct_maps_a_404_on_the_write_to_a_named_refusal(): void
@@ -2142,6 +2184,307 @@ class AgentToolsCallTest extends TestCase
 
         $this->assertSame($foreign, $absent, 'a card-existence oracle: the two arms must answer identically');
         $this->assertStringContainsString('membership of board 10', $foreign);
+    }
+
+    // ─── the board's own 4xx on the OTHER two tools (card#8486) ──────────────
+
+    /**
+     * ⛔ THE DEFECT THIS SECTION CLOSES. DL-326 mapped a permanent board 4xx to a named
+     * refusal on `board_correct_card` ONLY, so its two siblings answered a rotated writeback
+     * token (401) or a narrowed token scope (403) with the dispatcher's `502 upstream board
+     * error` — which is an instruction to RETRY a call kanban's `auth:sanctum` door will
+     * refuse identically forever. The mapping is now {@see BoardCallRefusal}'s
+     * for the whole door, and these are its witnesses on the two migrated tools.
+     *
+     * The needle per status is the CAUSE, not the status code: a test that asserted only 422
+     * would pass on a refusal that named the wrong thing to go and audit, which is the whole
+     * value of the mapping.
+     *
+     * ⛔ AND THE CAUSE IS A PROPERTY OF THE ROUTE, WHICH IS WHY THERE ARE TWO PROVIDERS
+     * (card#8486 R1). These are the causes of a `tasks/search.json` read, which kanban floors
+     * to the caller's own boards; {@see permanentBoardScopedStatuses} carries the causes of a
+     * `boards/{id}/preload.json` read, which kanban authorizes on the BOARD. Each pair carries
+     * the OTHER route's claim as a forbidden needle, because the defect this closes was not a
+     * missing message — it was the right message on the wrong route, ruling the true cause out
+     * by name while the assertion on the status stayed green.
+     *
+     * @return array<string, array{int, string, string}>
+     */
+    public static function permanentBoardSearchStatuses(): array
+    {
+        return [
+            'rotated/revoked token' => [401, 'revoked, rotated', 'membership'],
+            'token scope too narrow' => [403, 'lacks `read`', 'membership of that board'],
+            'api surface fault' => [404, 'the card search itself', 'BOARD ITSELF'],
+        ];
+    }
+
+    /**
+     * The same three statuses on a BOARD-SCOPED read (`boards/{id}/preload.json`). Verified in
+     * kanban's own tree: `BoardsController::preload` runs `$this->authorize('view', $board)`
+     * and declares `403 "not a board member"` and `404 "board not found (or soft-deleted —
+     * this route does not resolve trashed boards)"`, where `TasksController::search` instead
+     * floors to `Board::visibleTo($user)` and answers 200-with-zero-rows. Source-read, not
+     * measured against a live instance — the bound DL-339 states.
+     *
+     * @return array<string, array{int, string, string}>
+     */
+    public static function permanentBoardScopedStatuses(): array
+    {
+        return [
+            'rotated/revoked token' => [401, 'revoked, rotated', 'zero rows'],
+            'token scope or board membership' => [403, 'membership of that board', 'membership does NOT produce a 403'],
+            'board id does not resolve' => [404, 'BOARD ITSELF', 'the card search itself'],
+        ];
+    }
+
+    #[DataProvider('permanentBoardScopedStatuses')]
+    public function test_my_cards_maps_a_permanent_board_4xx_on_a_board_scoped_read_to_a_named_refusal(int $status, string $cause, string $forbidden): void
+    {
+        // This tool's FIRST call is `boardStageNames()` → `boards/{id}/preload.json`, so a
+        // blanket fake exercises the BOARD-SCOPED route.
+        Http::fake(['*' => Http::response('the board said something', $status)]);
+
+        $res = $this->callTool(['tool' => 'board_my_cards']);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString($cause, $error);
+        $this->assertStringNotContainsString($forbidden, $error, 'a search-route claim on a board-scoped read denies the true cause by name');
+        $this->assertStringContainsString('INSTALL fault', $error);
+        // ⭐ AND IT SAYS THE WINDOW IS NOT EMPTY. A seat's next move on "no cards" is to
+        // stop; on "the bridge could not read your board" it is to tell its operator.
+        $this->assertStringContainsString('NO cards were returned', $error);
+        $this->assertStringNotContainsString('the board said something', $error, 'the board\'s own response body must not reach the seat');
+    }
+
+    /**
+     * ⭐ THE DISCRIMINATOR ITSELF: one tool, both kanban route classes, two different causes.
+     * The board-scoped read succeeds here and the card SEARCH is what refuses, so this leg and
+     * the one above cover the same statuses on the same tool and must NOT answer alike. Without
+     * it the route split is unfalsifiable — a primitive that ignored the route and always
+     * emitted the board-scoped cause would keep the test above green.
+     */
+    #[DataProvider('permanentBoardSearchStatuses')]
+    public function test_my_cards_maps_a_permanent_board_4xx_on_a_card_search_to_the_search_cause(int $status, string $cause, string $forbidden): void
+    {
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => Http::response('the board said something', $status),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_my_cards']);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString($cause, $error);
+        $this->assertStringNotContainsString($forbidden, $error, 'a board-scoped claim on a card search names a cause that route cannot produce');
+        $this->assertStringContainsString('NO cards were returned', $error);
+        $this->assertStringNotContainsString('the board said something', $error, 'the board\'s own response body must not reach the seat');
+    }
+
+    public function test_my_cards_leaves_a_5xx_on_a_read_as_a_retryable_upstream_error(): void
+    {
+        // THE CONTROL for the three mappings above: they are a NARROWING, not a blanket
+        // re-label of every upstream failure. A 5xx may clear, so it stays the 502.
+        Http::fake(['*' => Http::response('boom', 503)]);
+
+        $this->callTool(['tool' => 'board_my_cards'])->assertStatus(502);
+    }
+
+    public function test_my_cards_leaves_a_422_on_a_read_as_a_retryable_upstream_error(): void
+    {
+        // ⭐ THE READ/WRITE SPLIT, ASSERTED AS THE DECISION IT IS. A 422 is kanban's own
+        // validator refusing a VALUE the caller SENT — and a read sends none, so on this side
+        // it is a malformed-query/API-surface fault the bridge has no cause to name. It is
+        // mapped on the WRITE arms below and deliberately not here; without this leg the two
+        // status sets would be indistinguishable from one.
+        Http::fake(['*' => Http::response('nope', 422)]);
+
+        $this->callTool(['tool' => 'board_my_cards'])->assertStatus(502);
+    }
+
+    public function test_my_cards_names_the_coord_board_when_that_is_the_leg_the_board_refused(): void
+    {
+        // The own lane reads fine and the COORD board 403s. Naming the board the seat cannot
+        // reach is the point: an operator told only "a board answered 403" audits the wrong
+        // one, and the coord board is the one a seat's own config points elsewhere.
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  coord_board_id: 12\n  address_tags:\n    - repo:me\n");
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/tasks/search.json*' => function ($request) {
+                if (str_contains(urldecode($request->url()), 'tags:"repo:me"')) {
+                    return Http::response('nope', 403);
+                }
+
+                return Http::response(['data' => [
+                    ['id' => 1, 'name' => 'mine', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                        'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10],
+                ]]);
+            },
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_my_cards']);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('coordination board 12', (string) $res->json('error'));
+    }
+
+    /**
+     * ⭐ THE ORDINARY MEMBERSHIP GAP, ON THE BOARD THE INSTALL CONFIGURES SEPARATELY.
+     * `coord_board_id` is a second board id in the seat's own config, so an install can hold
+     * membership of `board_id` and not of it — and the coord STAGE-NAME read is board-scoped,
+     * which is exactly where kanban answers 403 for a non-member. Before the route split this
+     * arm told the operator that membership cannot produce a 403.
+     */
+    public function test_my_cards_names_board_membership_when_the_coord_boards_own_read_is_refused(): void
+    {
+        $this->writeAgent('me', $this->token, [
+            'board_id' => 10, 'swimlane_id' => 4, 'create_stage_id' => 55,
+        ], "  coord_board_id: 12\n  address_tags:\n    - repo:me\n");
+        Http::fake([
+            '*/boards/10/preload.json' => Http::response(['data' => ['workflows' => [
+                ['stages' => [['id' => 50, 'name' => 'Backlog', 'position' => 1]]],
+            ]]]),
+            '*/boards/12/preload.json' => Http::response('nope', 403),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 1, 'name' => 'mine', 'workflow_stage_id' => 50, 'swimlane_id' => 4,
+                    'tags' => [], 'payload' => [], 'updated_at' => '2026-07-20', 'board_id' => 10],
+            ]]),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_my_cards']);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('coordination board 12', $error);
+        $this->assertStringContainsString('membership of that board', $error);
+        $this->assertStringNotContainsString('membership does NOT produce a 403', $error);
+    }
+
+    #[DataProvider('permanentBoardSearchStatuses')]
+    public function test_create_maps_a_permanent_4xx_on_the_idempotency_read_to_a_named_refusal(int $status, string $cause, string $forbidden): void
+    {
+        // The create endpoint is stubbed to SUCCEED, so a tool that ignored the failed read
+        // would answer 200 here — the refusal is what this measures, and the absent POST is
+        // the DL-297 fail-closed half (a card the bridge could not correlate is the duplicate
+        // the probe exists to prevent).
+        Http::fake([
+            '*/tasks/search.json*' => Http::response('the board said something', $status),
+            '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k9']]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString($cause, $error);
+        // Both of this tool's reads are card SEARCHES — it makes no board-scoped read at all —
+        // so the board-scoped claim must never appear on it.
+        $this->assertStringNotContainsString($forbidden, $error);
+        $this->assertStringContainsString('NO card was created', $error);
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST');
+    }
+
+    public function test_create_maps_a_permanent_4xx_on_the_archive_side_probe_too(): void
+    {
+        // The second read DL-297 added. It runs on the last branch before the create, so a
+        // permanent refusal there is the same install fault at a later point — and the same
+        // fail-closed answer.
+        Http::fake(['*/tasks/search.json*' => function ($request) {
+            return str_contains(urldecode($request->url()), 'archived=1')
+                ? Http::response('nope', 401)
+                : Http::response(['data' => []]);
+        }, '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k9']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('revoked, rotated', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST');
+    }
+
+    public function test_create_leaves_a_5xx_on_the_idempotency_read_as_a_retryable_upstream_error(): void
+    {
+        Http::fake(['*/tasks/search.json*' => Http::response('boom', 503)]);
+
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k9']])
+            ->assertStatus(502);
+    }
+
+    /**
+     * The WRITE arms. Every one is deterministic, and the 422 arm is the one that makes the
+     * mirrored caps ({@see KanbanFieldLimits}) safe to go stale — a cap
+     * that narrows upstream degrades the message, never the outcome.
+     *
+     * No `idempotency_key`, so no read runs at all and the POST is the only request: the
+     * status under test is unambiguously the CREATE's.
+     *
+     * @return array<string, array{int, string}>
+     */
+    public static function permanentCreateWriteStatuses(): array
+    {
+        return [
+            'rotated/revoked token' => [401, 'revoked, rotated'],
+            'writeback user cannot create here' => [403, '`task.create`'],
+            'create route missing' => [404, 'API-surface fault'],
+            'kanban validator refused a value' => [422, 'REJECTED the value you sent'],
+        ];
+    }
+
+    #[DataProvider('permanentCreateWriteStatuses')]
+    public function test_create_maps_a_permanent_4xx_on_the_create_itself_to_a_named_refusal(int $status, string $needle): void
+    {
+        Http::fake(['*/tasks.json' => Http::response('{"message":"The name field must not be greater than 255 characters."}', $status)]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString($needle, $error);
+        $this->assertStringContainsString('NO card was created', $error);
+        // ⛔ The message is BRIDGE-AUTHORED — the board's response body is an upstream
+        // artefact this door does not control and never reaches the seat.
+        $this->assertStringNotContainsString('must not be greater', $error);
+    }
+
+    public function test_create_leaves_a_5xx_on_the_create_as_a_retryable_upstream_error(): void
+    {
+        Http::fake(['*/tasks.json' => Http::response('boom', 500)]);
+
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't']])->assertStatus(502);
+    }
+
+    /**
+     * ⛔ THE DEFECT: `title` was UNBOUNDED where the correction tool's `name` was capped, so
+     * an over-long title reached the board, came back 422, and the dispatcher reported it as
+     * `502 upstream board error` — a retryable answer to a request that can never succeed.
+     * It is refused HERE, by name, before anything is read or written.
+     */
+    public function test_create_refuses_a_title_longer_than_kanban_accepts(): void
+    {
+        // The create endpoint is stubbed to SUCCEED, so an unbounded tool answers 200 here;
+        // the read-back the control arm reaches is stubbed beside it (DL-299's placement).
+        Http::fake([
+            '*/tasks/1.json' => Http::response(['data' => ['id' => 1, 'board_id' => 10, 'swimlane_id' => 4]]),
+            '*/tasks.json' => Http::response(['data' => ['id' => 1]], 201),
+        ]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => str_repeat('x', 256)]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('255', (string) $res->json('error'));
+        Http::assertNothingSent();
+        // The CONTROL: the boundary itself is accepted, so the refusal is a bound and not a
+        // blanket. ⚠ No second `Http::fake()` — a second registration STACKS behind the first.
+        $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => str_repeat('x', 255)]])
+            ->assertStatus(200);
     }
 
     // ─── tool + body validation ──────────────────────────────────────────────
