@@ -374,7 +374,9 @@ class RetentionPostureCheckTest extends TestCase
      * withheld, in words, and both byte figures still print.
      *
      * The message is pinned byte-for-byte by `retention-store-off-page-accounting`; what
-     * is here is the severity that capture witnesses nowhere.
+     * is here is the severity that capture witnesses nowhere, and the DENOMINATOR the
+     * tail sends the operator to — a golden capture reds on any tail edit and is
+     * regenerated with `UPDATE_GOLDEN=1`, which is how a wrong one survived a round.
      */
     public function test_an_engine_that_excludes_off_page_payload_bytes_prints_no_share(): void
     {
@@ -386,6 +388,13 @@ class RetentionPostureCheckTest extends TestCase
         $this->assertStringContainsString('11987 still carry a payload holding 894.0 MiB', $line['message']);
         $this->assertStringContainsString('share of the database NOT shown', $line['message']);
         $this->assertStringNotContainsString('% of the database', $line['message']);
+        // ⛔ WITHHOLDING THE SHARE IS ONLY HALF THE LINE — the tail is the operator's next
+        // action, and this line is read standalone. Sent to the data directory instead,
+        // they measure 894 MiB against a figure that also holds redo/undo, binlogs and
+        // every other schema, and UNDER-react: the incident shape this check exists to
+        // end (card#8374, R3). The denominator named must be the TABLE's own file.
+        $this->assertStringContainsString('webhook_events.ibd', $line['message']);
+        $this->assertStringNotContainsString('against the datadir', $line['message']);
         // Withholding a ratio is a measurement-quality fact, not a posture: the store's
         // severity is the age verdict and nothing else.
         $this->assertSame(Severity::Ok, $line['severity']);

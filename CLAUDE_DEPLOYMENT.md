@@ -326,11 +326,13 @@ retention: on (delete >30d + null payloads >7d, every 86400s, 500 rows/pass)
 retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (~73% of the database) · oldest row 12.4d old, inside the 30d delete window.
 ```
 
-⛔ **On MariaDB the `(~73% of the database)` clause is NOT printed** — the line says so instead:
+⛔ **On MariaDB the `(~73% of the database)` clause is NOT printed** — the line withholds the share in words and names what to size the store by instead:
 
 ```
-retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (share of the database NOT shown: this engine reports its size without the payload bytes it stores off-page, so the two figures are not on one basis — compare the payload figure against the datadir itself) · oldest row 12.4d old, inside the 30d delete window.
+retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (share of the database NOT shown: …) · oldest row 12.4d old, inside the 30d delete window.
 ```
+
+⚠ **The elision is deliberate — the withheld-share clause is quoted NOWHERE in this repo's prose.** It is printed verbatim by `App\Bridge\Check\Checks\RetentionPostureCheck::payloadShare()`, read it there; hand copies of it are what let a correction to this section leave the executable copy saying the opposite for a whole review round (card#8374). The bullet below owns the operator procedure the clause points at.
 
 - **The store line** is `ok` while the oldest retained row is inside `older_than`, and **`warn`** once it is past it — naming `batch`, because a backlog draining at that many rows per delivery is the benign reading and has to be distinguishable from a delete leg that is not running. An **empty** store says so (`webhook_events is EMPTY (0 rows)`) rather than printing zeroes.
 - **Either leg being OFF is its own `warn`**, carrying its cost: an empty `older_than` says rows are never deleted; an empty `null_payloads_older_than` names the bytes of payload the install is holding and the row window they are held until. Neither moves the exit code.

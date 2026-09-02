@@ -197,14 +197,19 @@ class DatabaseRetentionStoreProbeTest extends TestCase
      *
      * ⛔ SQLite ONLY, AND THE GATE IS THE ENGINE, NOT A HARNESS LIMITATION. Column types
      * are affinities here, so the integer below survives the write and `min()` returns it
-     * as an integer; MariaDB's strict mode rejects an integer for a `timestamp(3)` column
-     * outright, which is why the matrix skips this rather than asserting a different
-     * thing. The write is an ordinary insert on the live connection — no DDL and no mock.
+     * as an integer. On MariaDB the bound is the COLUMN TYPE rather than one rejected
+     * literal: `received_at` is a genuine `timestamp(3)`, so an integer either fails
+     * strict mode outright (`12345` → `ERROR 1292 Incorrect datetime value`) or, where it
+     * is a valid datetime literal (`20260101120000`), is stored AS a datetime and comes
+     * back from `min()` as a STRING. Nothing MariaDB accepts can reach the consumer as a
+     * non-string, so the state is unwritable there and the matrix skips this rather than
+     * asserting a different thing. The write is an ordinary insert on the live connection
+     * — no DDL and no mock.
      */
     public function test_a_row_count_beside_a_non_string_timestamp_throws(): void
     {
         if (DB::connection()->getDriverName() !== 'sqlite') {
-            $this->markTestSkipped('MariaDB strict mode rejects an integer for a timestamp(3) column, so the non-string min(received_at) state cannot be written on this driver; the throw is exercised on the SQLite job');
+            $this->markTestSkipped('received_at is a genuine temporal type on this driver, so anything it accepts comes back from min() as a string (12345 is rejected by strict mode; 20260101120000 is accepted and returns a datetime string) and the non-string min(received_at) state cannot be written at all; the throw is exercised on the SQLite job');
         }
 
         DB::table((new WebhookEvent)->getTable())->insert([

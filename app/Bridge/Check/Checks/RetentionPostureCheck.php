@@ -230,7 +230,7 @@ final class RetentionPostureCheck implements Check
             return $held;
         }
         if (! $store->storeBytesContainsPayloadBytes) {
-            return $held.' (share of the database NOT shown: this engine reports its size without the payload bytes it stores off-page, so the two figures are not on one basis — compare the payload figure against the datadir itself)';
+            return $held.' (share of the database NOT shown: this engine reports its size without the payload bytes it stores off-page, so the two figures are not on one basis — compare the payload figure against this TABLE\'s own tablespace file, webhook_events.ibd under the default innodb_file_per_table=ON, and not against the whole database directory, which also holds redo/undo, binlogs and every other schema; CLAUDE_DEPLOYMENT.md "What bridge:check reports about retention" covers the shared-tablespace case)';
         }
         // The invariant on the OUTPUT, kept even though the declaration above should make
         // it unreachable: the size is a number an engine hands us, and no share above
