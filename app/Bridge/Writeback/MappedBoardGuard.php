@@ -45,8 +45,9 @@ use Throwable;
  * The report is inside the primitive, not left to the caller, and that is the point:
  * a refusal cannot be minted at some other log level, or with some other reason code,
  * without minting a fourth copy of the compare — and
- * `WritebackRefusalSignalCoverageTest` reds on a handler — or, since DL-301, a bridge
- * command — that reads a card's `board_id` at all. That closure is by KIND and holds at
+ * `WritebackRefusalSignalCoverageTest` reds on a read of a card's `board_id` ANYWHERE in
+ * `app/` that its list does not disposition — a handler, a bridge command, a board tool
+ * (the population was two globs until card#8530). That closure is by KIND and holds at
  * every log level, which the `Log::warning`/`Log::error` population of that test's other
  * leg cannot do.
  *
@@ -182,8 +183,9 @@ final class MappedBoardGuard
      * DL-298 made it six, and six after DL-301 made it seven. If you add a caller, add it here;
      * the reason code is the thing to grep for if you suspect it has drifted again. What is NOT
      * a restatement, and is where a missing arm actually reds, is
-     * `WritebackRefusalSignalCoverageTest`'s KIND leg — which is why DL-301 widened that leg's
-     * population to the bridge CLI rather than only editing this sentence.
+     * `WritebackRefusalSignalCoverageTest`'s KIND leg — which is why that leg's population was
+     * WIDENED, to the bridge CLI (DL-301) and then to the whole of `app/` (card#8530), rather
+     * than only editing this sentence.
      * $issueNumber is passed by the issue/PR-keyed arms only, and adds the `issue` key
      * to the log context (DL-285).
      *

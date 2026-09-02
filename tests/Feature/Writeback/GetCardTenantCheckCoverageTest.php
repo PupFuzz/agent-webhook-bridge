@@ -2,9 +2,7 @@
 
 namespace Tests\Feature\Writeback;
 
-use RecursiveDirectoryIterator;
-use RecursiveIteratorIterator;
-use SplFileInfo;
+use Tests\Support\SourceScan;
 use Tests\TestCase;
 
 /**
@@ -29,8 +27,8 @@ use Tests\TestCase;
  * one call site on card#8415. Two instances of one rule with no guard is how the N+1th copy
  * mints the bug again (canon #7), and the bug here is a CROSS-TENANT READ of a foreign card
  * id before the 403 wall (card#7846's shape). The post-read compare already has its
- * structural enforcer — {@see WritebackRefusalSignalCoverageTest::test_the_belongs_to_mapped_board_guard_lives_in_exactly_one_place}
- * reds on a handler that reads a card's `board_id` outside the primitive. This is the
+ * structural enforcer — {@see WritebackRefusalSignalCoverageTest::test_every_board_id_read_in_app_is_dispositioned}
+ * reds on a read of a card's `board_id` outside the primitive that is not dispositioned. This is the
  * pre-read twin: it reds on a call site that reads a card by id with NEITHER mechanism
  * declared. DL-330's own bound named it as the thing that would hold the enumeration, so
  * that a new unscoped caller reds instead of waiting for the next auditor to repeat it.
@@ -44,6 +42,12 @@ use Tests\TestCase;
  * the offsets") is the same action that absorbs a real new call site without a second
  * thought. The ordinal is what stops a SECOND call in an already-declared method inheriting
  * the first one's declaration.
+ *
+ * ⭐ THE WALK ITSELF IS NOT THIS CLASS'S — it is {@see SourceScan::sitesInApp}, shared with
+ * the post-read enforcer (card#8530). This class owns only the PREDICATE ({@see readSiteAt})
+ * and the two allow-lists; the tree it is asked about is a property of the repo, not of
+ * either class, and while the two ends of one boundary derived two different populations a
+ * site could be — and was — outside both.
  *
  * ⭐ THE TWO ARMS ARE NOT EQUALLY CHECKABLE, AND THE DIFFERENCE IS STATED RATHER THAN BLURRED:
  *  - The GUARDED arm is VERIFIED FOR CONTROL FLOW. {@see ID_GUARDED_BY_PRE_READ_CHECK} is
@@ -101,14 +105,6 @@ class GetCardTenantCheckCoverageTest extends TestCase
     private const READ_METHOD = 'getCard';
 
     /**
-     * The "enclosing function" of a call that has none — a top-level closure, a bare
-     * statement. It is a KEY, not a skip: a read the scanner cannot attribute to a method
-     * must land in the population as an undeclared site. Skipping it was the one shape in
-     * the first draft that failed OPEN, where every other unrecognised shape fails closed.
-     */
-    private const FILE_SCOPE = '(file scope)';
-
-    /**
      * What makes a refusal HONOURED: the token kinds that leave the read unreached.
      *
      * `continue` and `break` are members because two of the six call sites sit inside a
@@ -121,13 +117,6 @@ class GetCardTenantCheckCoverageTest extends TestCase
      * @var list<int>
      */
     private const EXITS = [T_RETURN, T_THROW, T_CONTINUE, T_BREAK];
-
-    /**
-     * The floor on the file population. Not the count — a floor, so a `base_path('app')`
-     * that resolved to the wrong tree reports the derivation broken rather than the repo
-     * clean.
-     */
-    private const MIN_APP_FILES = 50;
 
     /**
      * Call sites whose card id was produced by a BOARD-SCOPED read, so it was never
@@ -254,15 +243,15 @@ class GetCardTenantCheckCoverageTest extends TestCase
     public function test_the_by_id_read_is_declared_in_exactly_one_place(): void
     {
         $declarations = [];
-        foreach (self::appFiles() as $path) {
-            $tokens = self::significantTokens((string) file_get_contents($path));
+        foreach (SourceScan::appFiles() as $path) {
+            $tokens = SourceScan::significantTokens((string) file_get_contents($path));
             foreach ($tokens as $i => $token) {
                 if ($token[0] !== T_FUNCTION) {
                     continue;
                 }
                 $next = $tokens[$i + 1] ?? null;
                 if ($next !== null && $next[0] === T_STRING && $next[1] === self::READ_METHOD) {
-                    $declarations[] = self::relative($path);
+                    $declarations[] = SourceScan::relativeToApp($path);
                 }
             }
         }
@@ -459,135 +448,73 @@ class GetCardTenantCheckCoverageTest extends TestCase
      */
     private static function callSitesInApp(): array
     {
-        $files = self::appFiles();
-        self::assertGreaterThanOrEqual(
-            self::MIN_APP_FILES,
-            count($files),
-            'the app/ file population came back short — the derivation, not the code, is what changed.',
-        );
-
-        $sites = [];
-        foreach ($files as $path) {
-            $sites += self::callSites((string) file_get_contents($path), self::relative($path));
-        }
-
-        return $sites;
-    }
-
-    /** @return list<string> */
-    private static function appFiles(): array
-    {
-        $paths = [];
-        /** @var SplFileInfo $file */
-        foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator(base_path('app'))) as $file) {
-            if ($file->isFile() && $file->getExtension() === 'php') {
-                $paths[] = $file->getPathname();
-            }
-        }
-        sort($paths);
-
-        return $paths;
-    }
-
-    private static function relative(string $path): string
-    {
-        return ltrim(str_replace(base_path('app'), '', $path), '/');
+        return SourceScan::sitesInApp(self::readSiteAt(...));
     }
 
     /**
-     * The scan, on PHP's own tokenizer.
+     * The same predicate over one source string, for the fixture controls.
      *
-     * A regex over the raw text finds a call only in the spelling it was written to match,
-     * and finds every mention of that spelling inside a comment, a docblock or a string —
-     * both errors wearing the same green. The tokenizer answers what a call IS: the method
-     * name reached through `->` or `?->`, with an argument list, outside any comment.
-     *
-     * @return array<string, bool> site key → an honoured pre-read guard precedes it
+     * @return array<string, bool>
      */
     private static function callSites(string $source, string $file): array
     {
-        $tokens = self::significantTokens($source);
-        $sites = [];
-        $function = self::FILE_SCOPE;
-        $ordinals = [];
-        $guarded = false;
-        $depth = 0;
-        $awaitingBody = false;
-        $bodyDepth = null;
+        return SourceScan::sites($source, $file, self::readSiteAt(...));
+    }
 
-        foreach ($tokens as $i => $token) {
-            // Brace tracking is what returns the scope to the FILE once a named body
-            // closes. Without it the last method in a file owns everything after it, and a
-            // trailing closure's read is attributed to a method it is not in — the
-            // misattribution the fixture control below pins.
-            if ($token[1] === '{') {
-                $depth++;
-                if ($awaitingBody) {
-                    $bodyDepth = $depth;
-                    $awaitingBody = false;
-                }
-
-                continue;
-            }
-            if ($token[1] === '}') {
-                $depth--;
-                if ($bodyDepth !== null && $depth < $bodyDepth) {
-                    $function = self::FILE_SCOPE;
-                    $guarded = false;
-                    $bodyDepth = null;
-                }
-
-                continue;
-            }
-            if ($token[1] === ';' && $awaitingBody) {
-                // An abstract or interface declaration has no body to enter.
-                $awaitingBody = false;
-
-                continue;
-            }
-
-            if ($token[0] === T_FUNCTION) {
-                // A named declaration opens a new body; an anonymous `function (` or an
-                // arrow `fn (` does not, so a closure's calls stay attributed to the method
-                // that contains it — which is the body a reviewer reads — or, outside any
-                // method, to the file scope.
-                $next = $tokens[$i + 1] ?? null;
-                if ($next !== null && $next[0] === T_STRING) {
-                    $function = $next[1];
-                    $guarded = false;
-                    $awaitingBody = true;
-                }
-
-                continue;
-            }
-
-            if ($token[0] !== T_STRING) {
-                continue;
-            }
-
-            if ($token[1] === self::PRE_READ_CHECK && self::isHonouredGuard($tokens, $i)) {
-                $guarded = true;
-
-                continue;
-            }
-
-            if ($token[1] !== self::READ_METHOD) {
-                continue;
-            }
-
-            $arrow = $tokens[$i - 1][0] ?? null;
-            $isCall = ($arrow === T_OBJECT_OPERATOR || $arrow === T_NULLSAFE_OBJECT_OPERATOR)
-                && ($tokens[$i + 1][1] ?? null) === '(';
-
-            if (! $isCall) {
-                continue;
-            }
-
-            $ordinals[$function] = ($ordinals[$function] ?? 0) + 1;
-            $sites[$file.'::'.$function.'#'.$ordinals[$function]] = $guarded;
+    /**
+     * The PREDICATE this class owns: is the token at $index a call to the by-id read, and
+     * if so does an HONOURED pre-read guard precede it inside the same body?
+     *
+     * A regex over the raw text would find a call only in the spelling it was written to
+     * match, and would find every mention of that spelling inside a comment, a docblock or
+     * a string — both errors wearing the same green. Asked of TOKENS, the question is what
+     * a call IS: the method name reached through `->` or `?->`, with an argument list.
+     *
+     * ⛔ `false` IS AN ANSWER, not an absence: an unguarded call site is in the population
+     * and keyed `=> false`. Only `null` means "this token is not a call site" — the
+     * contract {@see SourceScan::sites} states.
+     *
+     * @param  list<array{0: int|string, 1: string}>  $tokens
+     * @param  int  $scopeStart  the index at which the enclosing body began
+     */
+    private static function readSiteAt(array $tokens, int $index, int $scopeStart): ?bool
+    {
+        if ($tokens[$index][0] !== T_STRING || $tokens[$index][1] !== self::READ_METHOD) {
+            return null;
         }
 
-        return $sites;
+        $arrow = $tokens[$index - 1][0] ?? null;
+        $isCall = ($arrow === T_OBJECT_OPERATOR || $arrow === T_NULLSAFE_OBJECT_OPERATOR)
+            && ($tokens[$index + 1][1] ?? null) === '(';
+
+        if (! $isCall) {
+            return null;
+        }
+
+        return self::honouredGuardPrecedes($tokens, $scopeStart, $index);
+    }
+
+    /**
+     * Whether an honoured pre-read guard stands between $from (where the enclosing body
+     * began) and $before (the read).
+     *
+     * Looked up rather than accumulated in a flag: a flag has to be RESET on every scope
+     * change, and the reset is what a shared walk would have to know about this predicate.
+     * The answer is identical — the walk hands over the body's start index.
+     *
+     * @param  list<array{0: int|string, 1: string}>  $tokens
+     */
+    private static function honouredGuardPrecedes(array $tokens, int $from, int $before): bool
+    {
+        for ($i = $from; $i < $before; $i++) {
+            if ($tokens[$i][0] === T_STRING
+                && $tokens[$i][1] === self::PRE_READ_CHECK
+                && self::isHonouredGuard($tokens, $i)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -669,30 +596,5 @@ class GetCardTenantCheckCoverageTest extends TestCase
         }
 
         return count($tokens);
-    }
-
-    /**
-     * $source's tokens as `[type, text]`, with whitespace and comments dropped so that
-     * neighbour lookups above are structural rather than layout-dependent. A single-char
-     * token (`(`, `{`, `::` is not one) carries its own text as the type.
-     *
-     * @return list<array{0: int|string, 1: string}>
-     */
-    private static function significantTokens(string $source): array
-    {
-        $out = [];
-        foreach (token_get_all($source) as $token) {
-            if (is_array($token)) {
-                if (in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
-                    continue;
-                }
-                $out[] = [$token[0], $token[1]];
-
-                continue;
-            }
-            $out[] = [$token, $token];
-        }
-
-        return $out;
     }
 }
