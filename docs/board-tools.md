@@ -72,6 +72,11 @@ never silently no-ops.
 }
 ```
 
+⚠ **A board fault this tool cannot read past is a REFUSAL, never an empty window** —
+see [§ A board-caused 4xx is a refusal, on every tool](#a-board-caused-4xx-is-a-refusal-on-every-tool-dl-339).
+The whole call refuses, including when only the **coord** leg failed: a response silently
+missing its coordination cards reads exactly like a board with none.
+
 ### Where these cards are (`board_id` vs `configured_board_id`)
 
 **⚠ `board_id` is WHERE THE ROWS ARE, read off the rows themselves — not where you
@@ -143,7 +148,7 @@ term is efficiency + defense-in-depth, not the boundary.
 
 | Arg | Required | Notes |
 | --- | --- | --- |
-| `title` | yes | Non-empty string. |
+| `title` | yes | Non-empty string, **≤ 255 characters** (kanban's `name => string\|max:255`; an over-long title is **refused** (422) before any request is sent — card#8486, the same bound `board_correct_card` puts on `name`, through the same primitive). |
 | `description` | no | String. |
 | `tags` | no | List of strings, each **≤ 64 characters** (kanban's `tags.* => string\|max:64`; an over-long tag is **refused** (422) before any request is sent). Reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`) and the bare tag `triaged` are **refused** (422), matched **case-insensitively** — `IDEM:`/`Triaged` are rejected too: whether the kanban tag search folds case is a per-driver collation fact, so the guard refuses every case variant rather than betting on the deployed collation. Every tag must also be **printable ASCII with no tag-search metacharacter** (`"`, `*`, `_`, `%`); non-ASCII or metachar tags are refused. Provenance/correlation/adoption tags are bridge-stamped, and `triaged` would defeat born-untriaged. (A non-reserved colon such as `priority:high` is fine.) |
 | `idempotency_key` | no (recommended) | `[A-Za-z0-9.-]{1,64}`. Other characters are refused (they are kanban tag-search metacharacters that could correlate the wrong card). The key is **lowercased** before use, so it correlates case-insensitively (`Report` and `report` are the same key). |
@@ -175,10 +180,12 @@ term is efficiency + defense-in-depth, not the boundary.
     one, since the live read answers first and the archive side is never
     consulted — and a key with no card on either side still creates, at the cost
     of one extra search per card actually minted.
-  - If the archive-side read itself fails upstream, the call fails **502 with no
-    card created** rather than creating one it could not check. Fail-closed is
-    deliberate: the alternative re-mints over a retire, which is the defect this
-    closes.
+  - If either idempotency read itself fails upstream, **no card is created** rather
+    than one the bridge could not check. Fail-closed is deliberate: the alternative
+    re-mints over a retire, which is the defect this closes. ⚠ Since card#8486 the
+    STATUS depends on the cause — a permanent board 4xx is a **422 refusal naming the
+    install fault** and only a fault that may clear is the retryable **502**; see
+    [§ A board-caused 4xx is a refusal, on every tool](#a-board-caused-4xx-is-a-refusal-on-every-tool-dl-339).
 
 **Returns:**
 
@@ -254,7 +261,7 @@ that keys on one card per subject.
 | `description` | no | String, **trimmed**. **Present-and-empty CLEARS it**, and so does whitespace-only (see the present/absent rule below). |
 | `tags` | no | List of strings — **your** tags, each **≤ 64 characters** (kanban's `tags.* => string\|max:64`). The same reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`) and bare `triaged` `board_create_card` refuses are refused here too, case-insensitively, with the same printable-ASCII / no-metacharacter (`"`, `*`, `_`, `%`) charset rule. |
 
-> ⚠ **The two length caps are a MIRROR of rules that live in the kanban repo** (`App\Support\TaskWriteRules`), held in one place here (`KanbanFieldLimits`) and stated as a mirror: they are a **diagnostic**, not the safety. The safety is kanban's own 422 — which the tool maps to a named refusal rather than the retryable 502 — so a cap that goes stale degrades the *message*, never the outcome. `board_create_card` shares the tag cap (one policy, both tools).
+> ⚠ **The two length caps are a MIRROR of rules that live in the kanban repo** (`App\Support\TaskWriteRules`), held in one place here (`KanbanFieldLimits`) and stated as a mirror: they are a **diagnostic**, not the safety. The safety is kanban's own 422 — which the tool maps to a named refusal rather than the retryable 502 — so a cap that goes stale degrades the *message*, never the outcome. `board_create_card` shares both caps (one policy, both tools: `name`/`title` at 255 through `BoardCallRefusal::overLongName()`, every tag at 64 through `CallerTagPolicy`).
 
 **One rule for every argument: a key that is PRESENT is a correction; a key that is
 ABSENT leaves its field alone.** So `tags: []` means *drop my tags* (it is not the
@@ -372,7 +379,10 @@ rejects outright.
 
 ⚠ **Those board-caused 4xx (401/403/404/422) are reported as 422 refusals, not as the
 retryable 502**, because they fail identically however many times you send them; a 5xx
-or a timeout still answers **502**, which is the one you may retry.
+or a timeout still answers **502**, which is the one you may retry. Since card#8486 that
+is the rule for **every** tool on this door, not this one's alone —
+[§ A board-caused 4xx is a refusal, on every tool](#a-board-caused-4xx-is-a-refusal-on-every-tool-dl-339)
+owns it, and the rows above are what it means for a *correction* specifically.
 
 **Cost:** two requests on a successful call (one board-scoped lookup, one PATCH) —
 no card read-back, because the row that authorized the write already carried what the
@@ -384,9 +394,43 @@ response reports. A not-found refusal costs two reads and no write.
 | --- | --- |
 | 403 | The request did not come from loopback (network gate). |
 | 401 | Missing or unrecognized bearer token. A bearer file that exists but the bridge cannot read, and one belonging to a collided pair, are **deliberately indistinguishable** from an unknown token here — the door never tells an unauthenticated caller that another agent's bearer exists (card#5778; it 500'd on the unreadable case until then). |
-| 422 | A caller-fixable bad request (missing `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any `board_correct_card` refusal**, including the two the BOARD causes (DL-326: a 403/404 from kanban on the ownership lookup or the write is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments). |
+| 422 | A caller-fixable bad request (missing/over-long `title`, reserved tag — matched case-insensitively, out-of-charset tag/key, non-boolean `include_description`, unknown tool) — **or a `board_create_card` whose `idempotency_key` correlates only to an ARCHIVED card** (DL-297: a retire suppresses the create; the message names the card ids to unarchive) — **or any refusal a tool makes**, including the ones the BOARD causes on **all three tools** (DL-339, extending DL-326: a permanent 4xx from kanban is reported here rather than as a 502, because it fails identically however many times you send it; the message says when the cause is an install fault rather than your arguments — see the section below). |
 | 502 | Upstream kanban error (may be retryable). |
 | 503 | Board tools are not fully configured on this bridge (e.g. no writeback token). |
+
+### A board-caused 4xx is a refusal, on every tool (DL-339)
+
+**This section OWNS the rule; the tool sections above point at it.** When kanban itself
+refuses a request the bridge made on your behalf, the answer you get depends on whether the
+cause can CLEAR — not on which tool you called:
+
+| kanban answered | You get | Why |
+| --- | --- | --- |
+| **401** on any call | **422 refusal**, "revoked, rotated or replaced" | kanban's v3 API is `auth:sanctum`: a token it no longer knows is refused at the door on every subsequent call. **Install fault** — retrying is the one thing that cannot help. |
+| **403** on a READ | **422 refusal**, naming the token's **abilities** | kanban gates the API per token and a GET needs `read`. ⛔ Deliberately **not** board membership: a board the token is not a member of answers **200 with zero rows**, never 403. |
+| **403** on a WRITE | **422 refusal**, naming **two** gates | the token's abilities *and* the writeback user's board role (`task.create` for a create, `task.update` for a correction). Both need auditing; a 403 cannot say which. |
+| **404** on any call | **422 refusal**, "API-surface fault" | the ROUTE answered 404, which is a statement about the API surface rather than about a card (a card that is simply not yours is a different refusal, with its own message). |
+| **422** on a WRITE | **422 refusal**, bridge-authored | kanban's own validator rejected a VALUE you sent. Deterministic — and this is what keeps the mirrored length caps safe to go stale. ⛔ The board's response **body is never echoed**; the message is the bridge's own. |
+| **422** on a READ | **502** (retryable) | a read sends no value for a validator to reject, so a 422 there is a malformed-query/API-surface fault the bridge has no cause to name. Deliberately NOT in the set above. |
+| **5xx**, a timeout, a rate limit | **502** (retryable) | it may clear. This is the one you may retry. |
+
+⚠ **Every 422 above writes and creates NOTHING** — the refusal is the whole outcome.
+
+⭐ **Why this matters more than the status code:** a `502 upstream board error` is an
+instruction to RETRY. Handing it to a seat for a rotated token or a too-narrow token scope
+puts that seat in a retry loop against a cause no retry can change, with no diagnosis — and
+the operator, who is the only party who *can* fix it, never hears about it. Every refusal
+above names what to go and audit, and says when the cause is an INSTALL fault rather than
+something your arguments can fix. The mapping is `App\Bridge\Tools\BoardCallRefusal`, one
+classifier for the whole door (DL-326 built it inside `board_correct_card`; DL-339 hoisted it
+and migrated `board_my_cards` and `board_create_card`).
+
+⛔ **One deliberate exception, on `board_create_card` only.** The post-create re-read
+(DL-198 leg 2, the duplicate collapse) runs only when you passed an `idempotency_key` — i.e.
+exactly when a retry is idempotent by construction — and the card has **already been
+created** by then, so "permanent, do not retry" would be the wrong instruction. That leg
+keeps the retryable 502: your retry re-enters the correlate-before-create read, which hands
+back the card if the fault cleared and names the install fault if it did not.
 
 ### What the CALLER sees when the leg itself fails (DL-312)
 

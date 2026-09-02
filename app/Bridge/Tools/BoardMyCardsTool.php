@@ -5,6 +5,7 @@ namespace App\Bridge\Tools;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Writeback\KanbanClient;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -36,6 +37,10 @@ use Illuminate\Support\Facades\Log;
  * the DL-302 board keys). The field costs no extra API call —
  * `KanbanClient::swimlaneCards()` already fetches `description` and the
  * projection discarded it.
+ *
+ * ⭐ A PERMANENT 4xx FROM THE BOARD IS A NAMED REFUSAL, NOT THE RETRYABLE 502 (card#8486)
+ * — see {@see readRefusal}. Every read this tool makes is covered, on both the own/shared
+ * and the coord leg.
  */
 final class BoardMyCardsTool implements Tool
 {
@@ -49,12 +54,16 @@ final class BoardMyCardsTool implements Tool
         $descriptionCap = $this->descriptionCap($args, $cfg);
         $boardId = (int) $cfg->boardId;
         $swimlaneId = (int) $cfg->swimlaneId;
-        $stageNames = $client->boardStageNames($boardId);
+        try {
+            $stageNames = $client->boardStageNames($boardId);
 
-        $ownRows = $this->filterSwimlane($client->swimlaneCards($boardId, $swimlaneId), $swimlaneId, $agentName, 'own');
-        $sharedRows = $cfg->sharedSwimlaneId === null
-            ? null
-            : $this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared');
+            $ownRows = $this->filterSwimlane($client->swimlaneCards($boardId, $swimlaneId), $swimlaneId, $agentName, 'own');
+            $sharedRows = $cfg->sharedSwimlaneId === null
+                ? null
+                : $this->filterSwimlane($client->swimlaneCards($boardId, $cfg->sharedSwimlaneId), $cfg->sharedSwimlaneId, $agentName, 'shared');
+        } catch (RequestException $e) {
+            throw $this->readRefusal($e, $agentName, 'own+shared', "your board {$boardId}");
+        }
 
         [$observedBoard, $boardObserved] = $this->observedBoard(array_merge($ownRows, $sharedRows ?? []), $boardId, $agentName, $sharedRows === null ? 'own' : 'own+shared');
         $result = [
@@ -85,6 +94,36 @@ final class BoardMyCardsTool implements Tool
         }
 
         return $result;
+    }
+
+    /**
+     * A 4xx the BOARD answered on one of this tool's reads, mapped to a named refusal;
+     * anything else (5xx, a timeout) is re-thrown for the dispatcher's retryable 502
+     * (card#8486 — the mapping DL-326 built for `board_correct_card`, now
+     * {@see BoardCallRefusal}'s for the whole door).
+     *
+     * ⭐ THIS TOOL IS THE ONE A ROTATED WRITEBACK TOKEN HITS FIRST, and it is the reason the
+     * hoist matters: a seat's first act is usually to read its own cards, and until this a
+     * 401 came back as `502 upstream board error` — an instruction to retry a call that
+     * kanban's `auth:sanctum` door will refuse identically forever.
+     *
+     * ⚠ THE WHOLE CALL REFUSES, INCLUDING WHEN ONLY THE COORD LEG FAILED — unchanged from
+     * the 502 this replaces. A partial window is the one answer this tool must never give:
+     * `board_my_cards` is what a seat reads to decide what work exists, and a response
+     * silently missing its coordination cards reads exactly like a board with none.
+     */
+    private function readRefusal(RequestException $e, string $agentName, string $leg, string $what): \Throwable
+    {
+        $status = BoardCallRefusal::permanentOnRead($e);
+        if ($status === null) {
+            return $e;
+        }
+
+        Log::warning('board_my_cards: the board refused a read', [
+            'agent' => $agentName, 'leg' => $leg, 'status' => $status,
+        ]);
+
+        return BoardCallRefusal::readRefusal($this->name(), $status, $what, 'so NO cards were returned — this is not an empty window');
     }
 
     /**
@@ -239,17 +278,21 @@ final class BoardMyCardsTool implements Tool
     {
         $coordBoardId = (int) $cfg->coordBoardId;
         $byId = [];
-        foreach ($cfg->addressTags as $tag) {
-            foreach ($client->cardRowsByTag($coordBoardId, $tag) as $row) {
-                $id = $row['id'] ?? null;
-                if (is_numeric($id)) {
-                    $byId[(int) $id] = $row;
+        try {
+            foreach ($cfg->addressTags as $tag) {
+                foreach ($client->cardRowsByTag($coordBoardId, $tag) as $row) {
+                    $id = $row['id'] ?? null;
+                    if (is_numeric($id)) {
+                        $byId[(int) $id] = $row;
+                    }
                 }
             }
+            ksort($byId);
+            $rows = array_values($byId);
+            $coordStageNames = $client->boardStageNames($coordBoardId);
+        } catch (RequestException $e) {
+            throw $this->readRefusal($e, $agentName, 'coord', "the coordination board {$coordBoardId} your address tags are on");
         }
-        ksort($byId);
-        $rows = array_values($byId);
-        $coordStageNames = $client->boardStageNames($coordBoardId);
         [$observedBoard, $boardObserved] = $this->observedBoard($rows, $coordBoardId, $agentName, 'coord');
 
         return [
