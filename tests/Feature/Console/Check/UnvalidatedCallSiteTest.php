@@ -166,7 +166,13 @@ class UnvalidatedCallSiteTest extends TestCase
         //   The SIBLING state — a binary WAS found — is deliberately not a second site and
         // not an `ok`: finding it does not establish the receiver's SAPI either, so the
         // leg stays silent there rather than minting a green line corollary (A) forbids.
-        'app/Bridge/Check/Checks/RetentionPostureCheck.php' => 2,
+        //   A THIRD since card#8374: the store measurement threw. Limb (a) — a query that
+        // did not complete — and it is the whole cost leg's only failure mode, because the
+        // row counts are the denominator of every clause below it. It is `unvalidated`
+        // rather than `warn` for the reason this class exists to keep straight: an
+        // unreadable store is not a store with nothing in it, and the empty arm one line
+        // away is an `ok` saying exactly that.
+        'app/Bridge/Check/Checks/RetentionPostureCheck.php' => 3,
         'app/Bridge/Check/Checks/BoardToolsBoardStateCheck.php' => 3,
         // card#7756 / DL-313 — THREE legs, and the count is the whole design rather than
         // three incidental disclosures, so it is spelled out here where a maintainer will
