@@ -29,6 +29,30 @@ name: CHANGELOG gate
 # SECURITY: the PR title and head branch are author-controlled. They reach the
 # scripts ONLY via `env:` and are used quoted — never interpolated as ${{ }}
 # inside a `run:` body (the Actions script-injection class; DL-182).
+#
+# THE BASE SNAPSHOT IS DERIVED, NOT TAKEN FROM THE PAYLOAD (card#8527). `$BASE`
+# is `HEAD^1` — the base commit the merge actions/checkout leaves in the work
+# tree RECORDS — read by `bin/pr-base-snapshot.sh`.
+# `github.event.pull_request.base.sha` is NOT that commit: GitHub does not
+# refresh it on every `synchronize`, and it was measured lagging by one merge on
+# PR #640 (run 33598959720, 2026-09-02), which made dl-collision-gate.yml refuse
+# an innocent PR. A SCOPE diff's two ends must be ONE snapshot or the verdict is
+# about a tree nobody pushed, so both scope diffs run `$BASE` -> the WORK TREE.
+#
+# That derivation is also what CLOSES card#8441 — whether the two scope
+# predicates should be three-dot — for BOTH steps, rather than a change of
+# spelling: `HEAD^1` is an ancestor of `HEAD`, so `...` is a no-op on this
+# pairing. The FEATURE step's predicate comment owns that ruling and the one
+# cell where a branch-tip three-dot range would differ; DL-295's card#8527
+# amendment owns the direction and the operator approval.
+#
+# `$HEAD` — the PR BRANCH TIP — is still an input, and is a different question,
+# not a second spelling of the same one. The pre-fold diagnosis asks where the
+# branch STARTED and what the branch ADDS to the base's text; both are
+# properties of the branch's own history, which the merge commit's first-parent
+# chain does not carry. It is also the leg `bin/pr-base-snapshot.sh` checks the
+# derivation against: HEAD^2 must BE `$HEAD`, or the work tree is not this PR's
+# merge and no verdict is reported at all.
 
 on:
   pull_request:
@@ -46,17 +70,30 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # REQUIRED: both steps diff base..head, and the feature-PR step also
-          # reads the changelog AT THE BASE. A shallow clone has neither.
+          # REQUIRED, and by more than one reader, so a later "speed up the
+          # checkout" has to answer all of them: both steps diff the DERIVED base
+          # (`HEAD^1`) against the work tree, so a clone shallow enough to
+          # truncate the merge's first parent has no base at all; the feature
+          # step also reads the changelog AT THAT BASE through `git show`, and
+          # its pre-fold diagnosis walks the PR BRANCH's own history for the fork
+          # point. A shallow clone has none of the three.
           fetch-depth: 0
 
       - name: Release PR — VERSION has a CHANGELOG section that fits the release-body limit
         shell: bash
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+
+          # ONE SNAPSHOT, BOTH ENDS (card#8527). `HEAD` — the git revision, not
+          # `$HEAD` — is the merge commit actions/checkout left here, and `$BASE`
+          # is that merge's own first parent, so `$BASE` -> `HEAD` is exactly
+          # what this PR adds to the base branch. NOT
+          # `github.event.pull_request.base.sha`: it lags (measured on PR #640 —
+          # see the file header), and a base that is not this head's own parent
+          # makes the base branch's post-fork changes read as this PR's.
+          BASE=$(bin/pr-base-snapshot.sh "$HEAD")
 
           # Classified by "does this PR move VERSION?", NOT by the base ref.
           # That is circular for the guard that asks whether a feature PR
@@ -82,7 +119,7 @@ jobs:
           # moves next. Scoped to this guard: NOT a claim that every path-list
           # read in the repo wants the flag — DL-281's sibling audit found one
           # that provably does not.
-          CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" "$HEAD")
+          CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" HEAD)
           if ! grep -qxF VERSION <<<"$CHANGED"; then
             echo "OK: this PR does not move VERSION — no release section to assert."
             exit 0
@@ -125,12 +162,19 @@ jobs:
       - name: Feature PR — the change is named in the CHANGELOG [Unreleased] section
         shell: bash
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           TITLE: ${{ github.event.pull_request.title }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
+
+          # ONE SNAPSHOT, BOTH ENDS — the release step above owns the reason.
+          # This step uses `$BASE` three ways: the scope diff and the `git show`
+          # of the base's own [Unreleased] section pair it with the WORK TREE,
+          # while the pre-fold diagnosis pairs it with `$HEAD`, the branch tip,
+          # because it asks about the BRANCH's history rather than about this
+          # PR's net change. The file header owns which question is which.
+          BASE=$(bin/pr-base-snapshot.sh "$HEAD")
 
           # Same exemption set as pr-title-lint.yml, for the same reasons:
           # dependabot and revert PRs carry no card, and release/sync PRs are
@@ -259,15 +303,26 @@ jobs:
           # matched under both). Residual, bounded in DL-281 rather than claimed
           # closed: a path containing `"`, `\`, or a control byte is quoted
           # regardless of this flag.
-          # ⚠ DISCLOSED, NOT FIXED (card#8339, DL-329). This is a TWO-DOT diff, so
-          # on a branch that forked before the base moved it reports the BASE's
-          # own changes as this PR's — measured: a branch touching one file is
-          # classified as touching the base's too, which can pull a PR into the
-          # entry requirement on the strength of somebody else's change. The
-          # three-dot form is what "the files this PR changes" means, but
-          # swapping it CHANGES WHAT CI REJECTS (it also narrows the set), so it
-          # needs its own operator ruling rather than riding a diagnostic fix.
-          CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" "$HEAD")
+          # THE SCOPE SET IS THE MERGE'S OWN DELTA (card#8527; closes card#8441).
+          # DL-329 disclosed that this diff, taken as `"$BASE" "$HEAD"` — two
+          # commits sourced independently, neither containing the other —
+          # reported the BASE's post-fork changes as this PR's on any branch not
+          # up to date with its base. Both ends are now ONE snapshot: `$BASE` is
+          # `HEAD`'s own first parent, so the base's post-fork work is on both
+          # sides and drops out.
+          #
+          # ⛔ NOT THREE-DOT, AND DELIBERATELY: `HEAD^1` is an ancestor of `HEAD`,
+          # so `"$BASE...HEAD"` ≡ `"$BASE..HEAD"` here — three dots would be a
+          # no-op spelling. Against the BRANCH TIP (`"$BASE...$HEAD"`) it is not
+          # a no-op, and the one cell where it differs from this delta decides
+          # for this delta: a branch that made the same edit the base already
+          # shipped is in that range and lands NOTHING on the base, so no entry
+          # is owed. Containment: merge delta ⊆ branch-tip three-dot ⊆ retired
+          # two-dot, so this can only stop the gate firing, never start it.
+          # Pinned in `ChangelogGateTest` (three forked cells; the three-dot
+          # spelling watched red on the identical-change one). DL-295's
+          # card#8527 amendment owns the ruling.
+          CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" HEAD)
           if ! grep -qE '^(app/|bin/|\.github/workflows/|\.github/actions/)|^(\.release-pr\.json|phpstan-laravel\.neon|pint\.json|phpunit\.xml|composer\.json|composer\.lock|\.env\.example)$' <<<"$CHANGED"; then
             echo "OK: this PR changes no in-scope file ${SCOPE} — no [Unreleased] entry required."
             exit 0
