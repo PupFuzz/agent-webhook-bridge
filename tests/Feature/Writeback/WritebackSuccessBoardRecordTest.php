@@ -175,6 +175,15 @@ class WritebackSuccessBoardRecordTest extends TestCase
             'sites' => 1,
             'record' => 'PAIRED — Group-B, as the archive arm; the survivor row carries its own board.',
         ],
+        'KanbanDependabotCardHandler.php:patchCard' => [
+            'sites' => 1,
+            'record' => 'PAIRED — the DL-328 name restamp on an upstream retitle. Group-B, as the archive '
+                .'and move arms beside it: the id came from the same board-scoped correlate, so the row is '
+                .'the only reading of where the write landed. `restamped name from the upstream retitle` '
+                .'carries the pair — and so does the arm that writes NOTHING because the name is not the '
+                .'one the bridge stamped, which is deliberate: it names a card this delivery READ and '
+                .'decided about, and a no-write is not a refusal by kanban.',
+        ],
         'KanbanDependabotCardHandler.php:createCard' => [
             'sites' => 1,
             'record' => 'CREATE — see the coord-card create above.',

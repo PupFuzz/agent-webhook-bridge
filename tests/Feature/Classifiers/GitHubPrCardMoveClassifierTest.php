@@ -7,6 +7,7 @@ use App\Bridge\Dispatch\Actor;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Handlers\KanbanDependabotCardHandler;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClassifierConfig;
@@ -54,12 +55,16 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         parent::tearDown();
     }
 
-    /** @param array<mixed> $pr */
-    private function classify(string $eventType, array $pr, string $repo = 'owner/repo'): ClassifyResult
+    /**
+     * @param  array<mixed>  $pr
+     * @param  array<string, mixed>  $extra  merged at the TOP level of the webhook payload
+     *                                       (GitHub puts `changes` there, beside `pull_request`)
+     */
+    private function classify(string $eventType, array $pr, string $repo = 'owner/repo', array $extra = []): ClassifyResult
     {
         return (new GitHubPrCardMoveClassifier)->classify(new ClassifyContext(
             $eventType,
-            ['pull_request' => $pr, 'repository' => ['full_name' => $repo]],
+            ['pull_request' => $pr, 'repository' => ['full_name' => $repo]] + $extra,
             new Actor('999'),
             'github',
             $repo,
@@ -397,6 +402,101 @@ class GitHubPrCardMoveClassifierTest extends TestCase
         $this->assertSame('opened', $t->payload['outcome']);
         $this->assertSame(77, $t->payload['pr_number']);
         Http::assertNothingSent();   // create/move decided by the durable handler, not here
+    }
+
+    /**
+     * DL-328. The retitle target carries BOTH sides of the change: the new title to write
+     * and `name_from`, the title as it stood BEFORE the edit — which is the string the
+     * bridge stamped on the card at birth and therefore the only evidence the handler can
+     * gate the write on. A retitle emits NO move: `edited` has no outcome.
+     */
+    public function test_dependabot_retitle_emits_a_rename_target_carrying_the_previous_title(): void
+    {
+        $this->enableDependabot();
+        Http::fake();
+
+        $r = $this->classify('pull_request.edited', [
+            'title' => 'chore(deps): Bump typescript from 5.9.0 to 6.0.3',
+            'number' => 77,
+            'head' => ['ref' => 'dependabot/npm_and_yarn/typescript-7.0.2'],
+            'html_url' => 'https://github.com/owner/repo/pull/77',
+        ], extra: ['changes' => ['title' => ['from' => 'chore(deps): Bump typescript from 5.9.0 to 7.0.2']]]);
+
+        $this->assertCount(1, $r->targets);
+        $t = $r->targets[0];
+        $this->assertSame('kanban_dependabot_card', $t->handler);
+        $this->assertSame('pr-77', $t->targetId);
+        $this->assertSame(KanbanDependabotCardHandler::RENAMED_OUTCOME, $t->payload['outcome']);
+        $this->assertSame(77, $t->payload['pr_number']);
+        $this->assertSame('chore(deps): Bump typescript from 5.9.0 to 6.0.3', $t->payload['pr_title']);
+        $this->assertSame('chore(deps): Bump typescript from 5.9.0 to 7.0.2', $t->payload['name_from']);
+        // ⛔ The head REF still says 7.0.2 — it is frozen at branch creation while the diff
+        // is retargeted, so nothing here may be derived from it. Neither carried string is.
+        $this->assertStringNotContainsString('7.0.2', $t->payload['pr_title']);
+        Http::assertNothingSent();
+    }
+
+    public function test_a_pr_edit_that_is_not_a_retitle_emits_nothing(): void
+    {
+        // GitHub sends `changes` with a key per field it changed; a body edit carries no
+        // `title` key, so there is no previous title and nothing to compare a name against.
+        $this->enableDependabot();
+        Http::fake();
+
+        $r = $this->classify('pull_request.edited', [
+            'title' => 'chore(deps): Bump x from 1 to 2', 'number' => 77,
+            'head' => ['ref' => 'dependabot/composer/x-2.0'],
+        ], extra: ['changes' => ['body' => ['from' => 'old body']]]);
+
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
+    }
+
+    public function test_a_retitle_to_the_same_title_emits_nothing(): void
+    {
+        // Nothing changed ⇒ no write to make. Refused HERE so the handler never sees a
+        // rename target whose two strings are equal.
+        $this->enableDependabot();
+        Http::fake();
+
+        $r = $this->classify('pull_request.edited', [
+            'title' => 'chore(deps): Bump x from 1 to 2', 'number' => 77,
+            'head' => ['ref' => 'dependabot/composer/x-2.0'],
+        ], extra: ['changes' => ['title' => ['from' => 'chore(deps): Bump x from 1 to 2']]]);
+
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
+    }
+
+    public function test_a_retitle_of_a_non_dependabot_pr_emits_nothing(): void
+    {
+        // The restamp is bounded to the cards the bridge MINTS. A human PR's card was
+        // named by whoever opened it, and this leg never reaches for it.
+        $this->enableDependabot();
+        Http::fake();
+
+        $r = $this->classify('pull_request.edited', [
+            'title' => 'fix: something (card#77)', 'number' => 77,
+            'head' => ['ref' => 'fix/77-something'],
+        ], extra: ['changes' => ['title' => ['from' => 'fix: somthing (card#77)']]]);
+
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
+    }
+
+    public function test_a_dependabot_retitle_emits_nothing_when_the_mapping_has_not_opted_in(): void
+    {
+        // setUp's mapping has no create_dependabot_cards → the bridge minted no card here,
+        // so it owns no name to restamp.
+        Http::fake();
+
+        $r = $this->classify('pull_request.edited', [
+            'title' => 'chore(deps): Bump x from 1 to 3', 'number' => 77,
+            'head' => ['ref' => 'dependabot/composer/x-2.0'],
+        ], extra: ['changes' => ['title' => ['from' => 'chore(deps): Bump x from 1 to 2']]]);
+
+        $this->assertSame([], $r->targets);
+        Http::assertNothingSent();
     }
 
     public function test_dependabot_pr_falls_through_when_not_opted_in(): void
