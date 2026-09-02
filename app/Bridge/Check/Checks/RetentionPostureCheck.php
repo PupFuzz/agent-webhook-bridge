@@ -199,21 +199,25 @@ final class RetentionPostureCheck implements Check
      * The payload clause of the store line — the share is dropped, never guessed, when
      * either term is absent OR when the two terms disagree.
      *
-     * ⛔ THE SHARE IS A QUOTIENT ACROSS TWO ACCOUNTING BASES AND NOTHING BOUNDS IT AT
-     * 100%. The numerator is a LIVE byte sum this app scans out of its own rows; the
-     * denominator is whatever the ENGINE reports for the database, and only on SQLite is
-     * the numerator inside the denominator by construction (`page_count * page_size` is
-     * the whole file, and every stored byte is in it). On MariaDB the denominator is
-     * `information_schema`'s per-table figures for this schema — the engine's own
-     * accounting of allocated pages, not a read of the bytes this app wrote — and nothing
-     * in either source guarantees one contains the other; see {@see RetentionFootprint}
-     * and DL-331. `~234% of the database` is not a posture an operator can act on, so the
-     * share is dropped and the disagreement is NAMED instead. Both byte figures still
-     * print, because both are measurements — it is only their ratio that is not.
+     * ⛔ THE SHARE IS A QUOTIENT ACROSS TWO ACCOUNTING BASES, SO IT IS PRINTED ONLY WHERE
+     * THE PROBE SAYS THEY ARE ONE. The numerator is a LIVE byte sum this app scans out of
+     * its own rows; the denominator is whatever the ENGINE reports for the database. On
+     * SQLite the first is inside the second by construction (`page_count * page_size` is
+     * the whole file). On MariaDB it is NOT, measured rather than reasoned: off-page
+     * payload bytes are in neither `data_length` nor `index_length`
+     * ({@see RetentionFootprint}, DL-331). So the check consults the probe's declaration
+     * instead of dividing and hoping.
      *
-     * The clause is not a `warn`: the store's posture is what the age verdict decides,
-     * and an engine whose size figure disagrees with a live scan says nothing about
-     * whether retention is bounded.
+     * ⛔ THE DANGEROUS FAILURE IS THE PLAUSIBLE ONE, NOT THE 234%. An unbounded quotient
+     * printing `~234% of the database` is at least obviously wrong. An install whose
+     * payloads STRADDLE the inline-row limit gets a believable percentage computed over a
+     * denominator holding only some of its own numerator — a capacity figure nothing
+     * flags, on a line whose whole purpose is capacity. Both byte figures still print
+     * either way, because both are measurements; it is only their ratio that is not one.
+     *
+     * Neither withholding clause is a `warn`: the store's posture is what the age verdict
+     * decides, and how an engine accounts for its own pages says nothing about whether
+     * retention is bounded.
      */
     private function payloadShare(RetentionFootprint $store): string
     {
@@ -225,6 +229,12 @@ final class RetentionPostureCheck implements Check
         if ($store->storeBytes === null) {
             return $held;
         }
+        if (! $store->storeBytesContainsPayloadBytes) {
+            return $held.' (share of the database NOT shown: this engine reports its size without the payload bytes it stores off-page, so the two figures are not on one basis — compare the payload figure against the datadir itself)';
+        }
+        // The invariant on the OUTPUT, kept even though the declaration above should make
+        // it unreachable: the size is a number an engine hands us, and no share above
+        // 100% may reach an operator whatever an engine reports or a future arm declares.
         if ($store->payloadBytes > $store->storeBytes) {
             return $held.' (MORE than the database size above, so no share is shown — the payload sum is a live scan of the rows and the size is the engine\'s own accounting, and the two do not have to agree)';
         }

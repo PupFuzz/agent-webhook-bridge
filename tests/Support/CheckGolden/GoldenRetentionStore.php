@@ -18,9 +18,11 @@ use RuntimeException;
  * away is forbidden by the same rule.
  *
  * PARAMETERISED, like {@see GoldenSshEnvironment} and unlike {@see GoldenChannelEnvironment}:
- * the cost line has four operator-distinguishable shapes (a loaded store, an empty one, one
- * whose oldest row has outlived its delete window, and a store that could not be read at
- * all), and each is a fixture rather than a variation the corpus can do without.
+ * the cost line has five operator-distinguishable shapes (a loaded store, an empty one, one
+ * whose oldest row has outlived its delete window, a store that could not be read at all,
+ * and one whose ENGINE accounts for its size without the payload bytes — which is every
+ * MariaDB install), and each is a fixture rather than a variation the corpus can do
+ * without.
  *
  * {@see loaded()} IS THE DEFAULT ON EVERY FIXTURE, and its numbers are the ones from the
  * incident that produced the card — 894 MiB of payload inside a 1.2 GiB store — so the
@@ -41,6 +43,7 @@ final class GoldenRetentionStore implements RetentionStoreProbe
             rowsWithPayload: 11987,
             payloadBytes: 937426944,
             storeBytes: 1288490188,
+            storeBytesContainsPayloadBytes: true,
             oldestRowAgeDays: 12.4,
         ));
     }
@@ -57,7 +60,27 @@ final class GoldenRetentionStore implements RetentionStoreProbe
             rowsWithPayload: 0,
             payloadBytes: 0,
             storeBytes: 4194304,
+            storeBytesContainsPayloadBytes: true,
             oldestRowAgeDays: null,
+        ));
+    }
+
+    /**
+     * The shape EVERY MariaDB INSTALL GETS, and the reason it is its own fixture rather
+     * than a variation: the engine's size figure excludes off-page payload bytes
+     * (measured on MariaDB 10.6.28 / 11.8.9, DL-331), so the share is withheld and said
+     * so in words. Same footprint as {@see loaded()} in every other respect, so the diff
+     * against it is the withheld clause and nothing else.
+     */
+    public static function offPageAccounting(): self
+    {
+        return self::holding(new RetentionFootprint(
+            rows: 12345,
+            rowsWithPayload: 11987,
+            payloadBytes: 937426944,
+            storeBytes: 1288490188,
+            storeBytesContainsPayloadBytes: false,
+            oldestRowAgeDays: 12.4,
         ));
     }
 

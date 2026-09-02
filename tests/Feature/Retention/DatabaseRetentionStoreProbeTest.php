@@ -131,52 +131,58 @@ class DatabaseRetentionStoreProbeTest extends TestCase
     }
 
     /**
-     * ⛔ TEMPORARY DIAGNOSTIC — TO BE REMOVED IN THE SAME PR. It exists because the only
-     * MariaDB this branch can reach is the CI matrix, and the question it answers cannot
-     * be answered by reading: WHY does `information_schema` report 245760 bytes for a
-     * schema that just took 13107200 bytes of payload? Read-only, no DDL (an `ANALYZE
-     * TABLE` would implicitly COMMIT on MariaDB and dissolve `RefreshDatabase`'s
-     * transaction for every test after it), and every query is wrapped so that a
-     * PRIVILEGE refusal is itself a datum rather than an abort.
+     * ⛔ THE PROBE'S `storeBytesContainsPayloadBytes` DECLARATION IS A CLAIM ABOUT THE
+     * LIVE ENGINE, AND THIS IS WHERE IT IS HELD TO IT. The check divides the payload sum
+     * by the store size only where the probe says the first is inside the second, so a
+     * wrong declaration would silently restore the defect the declaration exists to
+     * remove — and no amount of reading settles it, because it is a property of how the
+     * engine accounts for its own pages.
+     *
+     * 200 rows of 64 KiB is chosen to put the question at full magnitude: it is far above
+     * the InnoDB inline-row limit, so every payload is stored OFF-PAGE.
+     *
+     * ⛤ WHAT CI MEASURED (card#8374, run 33576949649), and why each arm asserts what it
+     * does. On **MariaDB 10.6.28 and 11.8.9** the 13107200 bytes written left
+     * `webhook_events.data_length` at **16384 — one page** — and `index_length`
+     * unchanged, while `table_rows` refreshed 0 → 200 and `avg_row_length` became 81:
+     * off-page bytes are in NEITHER figure, and it is the ACCOUNTING, not stale
+     * statistics. The whole schema still reported 245760 bytes against 13107200 of
+     * payload. On **SQLite** the size is `page_count * page_size` — the whole file — so
+     * the payload is inside it by construction.
+     *
+     * ⚠ A RED IN EITHER ARM IS A FINDING ABOUT THE ENGINE, NEVER A REASON TO RELAX THE
+     * ASSERTION: it would say that engine's accounting has changed basis, and the fix is
+     * to move the declaration in `DatabaseRetentionStoreProbe::storeSize()` and record
+     * the new measurement in DL-331.
      */
-    public function test_zz_diagnostic_what_the_mariadb_size_source_actually_reports(): void
+    public function test_the_probes_declaration_about_the_two_figures_holds_on_this_engine(): void
     {
-        if (DB::connection()->getDriverName() === 'sqlite') {
-            $this->markTestSkipped('the diagnostic subject is the MariaDB size source');
-        }
-
-        $ask = function (string $sql): mixed {
-            try {
-                return DB::select($sql);
-            } catch (\Throwable $e) {
-                return 'ERR: '.$e->getMessage();
-            }
-        };
-        $isTables = 'select table_name, engine, row_format, table_rows, avg_row_length, data_length, index_length, data_free from information_schema.tables where table_schema = database() order by table_name';
-
-        $facts = ['version' => $ask('select version() as v')];
-        $facts['settings'] = $ask('select @@autocommit a, @@innodb_stats_on_metadata som, @@innodb_stats_persistent sp, @@innodb_stats_auto_recalc sar, @@innodb_page_size ps, @@tx_isolation_or_null is_null');
-        if (is_string($facts['settings'])) {
-            $facts['settings'] = $ask('select @@autocommit a, @@innodb_stats_on_metadata som, @@innodb_stats_persistent sp, @@innodb_stats_auto_recalc sar, @@innodb_page_size ps');
-        }
-        $facts['tx_level_before'] = DB::transactionLevel();
-        $facts['is_tables_before'] = $ask($isTables);
-
         $written = $this->bulkPayloads(200, 65536);
-        $facts['written'] = $written;
-        $facts['tx_level_after'] = DB::transactionLevel();
-        $facts['sum_len_payload'] = $ask('select sum(length(payload)) v, count(*) c from webhook_events');
-        $facts['is_tables_after'] = $ask($isTables);
-        $facts['probe_store_bytes'] = (new DatabaseRetentionStoreProbe)->measure()->storeBytes;
-        // The one source that reads the tablespace FILE rather than cached statistics —
-        // and the one whose refusal would confirm the PROCESS-privilege claim DL-331
-        // currently makes from documentation alone.
-        $facts['innodb_tablespaces'] = $ask("select name, file_size, allocated_size from information_schema.innodb_tablespaces where name like concat(database(), '/%')");
-        $facts['innodb_sys_tablespaces'] = $ask("select name, file_size, allocated_size from information_schema.innodb_sys_tablespaces where name like concat(database(), '/%')");
 
-        fwrite(STDERR, "\nDL331-DIAG-BEGIN\n".json_encode($facts, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\nDL331-DIAG-END\n");
+        $footprint = (new DatabaseRetentionStoreProbe)->measure();
 
-        $this->assertSame($written, (new DatabaseRetentionStoreProbe)->measure()->payloadBytes);
+        // The numerator first, and exactly: `length()` over an off-page LOB must still
+        // answer for the whole value on every engine. Without it, either arm below could
+        // be satisfied by a numerator that silently lost the off-page bytes.
+        $this->assertSame(200, $footprint->rows);
+        $this->assertSame($written, $footprint->payloadBytes, '200 payloads of exactly 64 KiB each');
+        $this->assertNotNull($footprint->storeBytes);
+
+        if ($footprint->storeBytesContainsPayloadBytes) {
+            $this->assertSame('sqlite', DB::connection()->getDriverName(), 'only the whole-file size read may declare the two figures comparable');
+            $this->assertLessThanOrEqual(
+                $footprint->storeBytes,
+                $footprint->payloadBytes,
+                'this driver declares its size CONTAINS the payload bytes, and it does not',
+            );
+        } else {
+            $this->assertContains(DB::connection()->getDriverName(), ['mysql', 'mariadb']);
+            $this->assertGreaterThan(
+                $footprint->storeBytes,
+                $footprint->payloadBytes,
+                'this engine no longer excludes off-page payload bytes from its size figure — re-measure and move the declaration in DatabaseRetentionStoreProbe::storeSize() (DL-331)',
+            );
+        }
     }
 
     /**

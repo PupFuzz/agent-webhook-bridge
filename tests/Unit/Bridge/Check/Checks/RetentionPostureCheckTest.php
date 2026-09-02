@@ -46,13 +46,14 @@ use Tests\TestCase;
  *     to a green one confirming the posture they were warned about. The store line's
  *     `ok`/`warn` split is the age verdict and nothing else, so it is the one arm where
  *     the severity IS the finding.
- *  4. THE INVERTED-SHARE ARM'S MESSAGE — the one leg here whose text the corpus COULD
- *     have carried, kept out of it on purpose. Every golden fixture is an operator-
- *     distinguishable INSTALL shape, and this arm is not one: it is reached when the
- *     ENGINE's size figure disagrees with a live payload scan, a property of the storage
- *     accounting rather than of anything an operator configured. A fixture for it would
- *     pin numbers chosen only to disagree, which asserts the pin. Its control is pinned
- *     on the boundary here for the same reason.
+ *  4. THE INVERTED-SHARE ARM — the output invariant, not an install shape. The
+ *     engine-accounting arm beside it IS an install shape (every MariaDB install), so it
+ *     has a golden fixture: `retention-store-off-page-accounting`. This one does not,
+ *     because it is reached only by a footprint that DECLARES its two figures comparable
+ *     and then contradicts itself — a state no shipped probe arm produces, kept as the
+ *     last guard on what may reach an operator. A fixture for it would pin numbers chosen
+ *     only to disagree, which asserts the pin. Its boundary control lives here for the
+ *     same reason.
  */
 class RetentionPostureCheckTest extends TestCase
 {
@@ -362,6 +363,50 @@ class RetentionPostureCheckTest extends TestCase
     }
 
     /**
+     * ⛔ EVERY MariaDB INSTALL'S ARM, and the one that matters more than the 234% the
+     * review found. On InnoDB `ROW_FORMAT=Dynamic` a payload above the inline-row limit
+     * is stored OFF-PAGE and its bytes are in NEITHER `data_length` NOR `index_length`
+     * — measured on MariaDB 10.6.28 and 11.8.9 (CI, card#8374): 200 rows carrying
+     * 13107200 bytes left `data_length` at 16384, one page, while `table_rows` refreshed
+     * to 200, so it is the ACCOUNTING and not stale statistics. An install whose payloads
+     * straddle that limit therefore gets a BELIEVABLE percentage over a denominator
+     * holding only part of its own numerator, and nothing flags it. The share is
+     * withheld, in words, and both byte figures still print.
+     *
+     * The message is pinned byte-for-byte by `retention-store-off-page-accounting`; what
+     * is here is the severity that capture witnesses nowhere.
+     */
+    public function test_an_engine_that_excludes_off_page_payload_bytes_prints_no_share(): void
+    {
+        Cache::swap(new Repository(new ArrayStore));
+
+        $line = $this->costLineFrom($this->messagesFrom($this->storeHolding(storeBytesContainsPayloadBytes: false)));
+
+        $this->assertStringContainsString('database 1.2 GiB', $line['message']);
+        $this->assertStringContainsString('11987 still carry a payload holding 894.0 MiB', $line['message']);
+        $this->assertStringContainsString('share of the database NOT shown', $line['message']);
+        $this->assertStringNotContainsString('% of the database', $line['message']);
+        // Withholding a ratio is a measurement-quality fact, not a posture: the store's
+        // severity is the age verdict and nothing else.
+        $this->assertSame(Severity::Ok, $line['severity']);
+    }
+
+    /**
+     * The discriminating control: the SAME footprint, declared comparable, prints its
+     * share. Only the declaration moves, so a check that had simply stopped printing
+     * shares would fail here.
+     */
+    public function test_an_engine_whose_size_contains_the_payload_bytes_prints_the_share(): void
+    {
+        Cache::swap(new Repository(new ArrayStore));
+
+        $line = $this->costLineFrom($this->messagesFrom($this->storeHolding(storeBytesContainsPayloadBytes: true)));
+
+        $this->assertStringContainsString('(~73% of the database)', $line['message']);
+        $this->assertStringNotContainsString('NOT shown', $line['message']);
+    }
+
+    /**
      * ⛔ NOTHING BOUNDS THE SHARE AT 100%, because it is a quotient across two accounting
      * bases: a live `sum(length(payload))` over this table's rows, divided by whatever the
      * ENGINE reports for the whole database. Only SQLite makes the numerator a subset of
@@ -472,9 +517,10 @@ class RetentionPostureCheckTest extends TestCase
         int $rowsWithPayload = 11987,
         ?int $payloadBytes = 937426944,
         ?int $storeBytes = 1288490188,
+        bool $storeBytesContainsPayloadBytes = true,
         ?float $oldestRowAgeDays = 12.4,
     ): RetentionStoreProbe {
-        $footprint = new RetentionFootprint($rows, $rowsWithPayload, $payloadBytes, $storeBytes, $oldestRowAgeDays);
+        $footprint = new RetentionFootprint($rows, $rowsWithPayload, $payloadBytes, $storeBytes, $storeBytesContainsPayloadBytes, $oldestRowAgeDays);
 
         return new class($footprint) implements RetentionStoreProbe
         {

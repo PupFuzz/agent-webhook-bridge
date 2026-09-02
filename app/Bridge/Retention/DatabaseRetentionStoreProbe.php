@@ -23,9 +23,10 @@ use RuntimeException;
  *  - store size. There is no cross-engine size query at all — SQLite counts its own
  *    pages, MariaDB keeps a per-table estimate in `information_schema`.
  *
- * ⛔ THOSE TWO FIELDS ARE NOT ONE MEASUREMENT AND ARE NOT COMPARABLE ON EVERY ENGINE —
- * see {@see storeBytes()} for which source each engine answers from and why the MariaDB
- * one may not be treated as containing the payload sum (DL-331).
+ * ⛔ THOSE TWO FIELDS ARE NOT ONE MEASUREMENT AND ARE NOT COMPARABLE ON EVERY ENGINE, so
+ * the probe DECLARES which it is (`RetentionFootprint::$storeBytesContainsPayloadBytes`)
+ * rather than leaving a consumer to divide and hope — see {@see storeSize()} for the
+ * measurement behind each arm (DL-331).
  *
  * AN UNKNOWN DRIVER YIELDS NULL FOR BOTH AND STILL RETURNS A FOOTPRINT. Row counts and
  * the oldest row's age are portable, so a Postgres install gets the half of the cost line
@@ -44,6 +45,7 @@ final class DatabaseRetentionStoreProbe implements RetentionStoreProbe
         $connection = DB::connection();
         $driver = $connection->getDriverName();
         $payloadSum = self::payloadByteSum($driver);
+        $size = self::storeSize($driver);
 
         $query = DB::table((new WebhookEvent)->getTable())
             ->selectRaw('count(*) as row_count')
@@ -79,7 +81,8 @@ final class DatabaseRetentionStoreProbe implements RetentionStoreProbe
             // The sum is null on a table with no payload rows, which is NOT the
             // driver-cannot-answer null: gate on the SELECT, not on the value.
             payloadBytes: $payloadSum === null ? null : (int) ($row->payload_bytes ?? 0),
-            storeBytes: self::storeBytes($connection, $driver),
+            storeBytes: self::storeBytes($connection, $size),
+            storeBytesContainsPayloadBytes: $size['containsPayloadBytes'] ?? false,
             oldestRowAgeDays: is_string($oldest) ? self::ageInDays($oldest) : null,
         );
     }
@@ -104,6 +107,53 @@ final class DatabaseRetentionStoreProbe implements RetentionStoreProbe
     }
 
     /**
+     * WHICH SIZE QUESTION THIS ENGINE CAN ANSWER — the SQL, and whether its answer is on
+     * the same basis as the payload sum. ONE `match`, returning both, because the second
+     * is a property of the first: split into two `match`es they could drift, and the
+     * drift would be silent (a share computed over the wrong denominator still renders).
+     *
+     * ⛔ `containsPayloadBytes` IS FALSE ON MariaDB, AND IT IS MEASURED. On InnoDB
+     * `ROW_FORMAT=Dynamic` a payload above the inline-row limit is stored OFF-PAGE, and
+     * those pages are in NEITHER `data_length` NOR `index_length`. Measured on MariaDB
+     * 10.6.28 and 11.8.9 (CI, card#8374): 200 rows carrying 13107200 bytes of payload
+     * left `webhook_events.data_length` at 16384 — one page — and `index_length`
+     * unchanged, while `table_rows` moved 0 → 200 and `avg_row_length` to 81. So this is
+     * NOT stale statistics (they refreshed); the clustered-index record simply holds the
+     * inline columns plus an off-page pointer and nothing else, and `data_free` moved
+     * 0 → 1048576 for the pages the payloads actually took.
+     *
+     * `data_length + index_length` IS STILL THE MariaDB SOURCE, because the alternatives
+     * were measured and are closed:
+     *  - `avg_row_length * table_rows` = 81 × 200 = 16200 ≈ `data_length`. It is derived
+     *    from the same statistics and answers no differently.
+     *  - `information_schema.innodb_tablespaces` — the one source that reads the
+     *    tablespace FILE — does not exist on 10.6.28 or 11.8.9 (`1109 Unknown table`),
+     *    and its predecessor `innodb_sys_tablespaces` answered
+     *    `1227 Access denied; you need (at least one of) the PROCESS privilege(s)` to the
+     *    ordinary schema user CI runs as. A GLOBAL `PROCESS` grant is not something this
+     *    app needs for anything else, and `CLAUDE_DEPLOYMENT.md` never asks for it, so
+     *    adopting it would trade a share that is unprintable for a leg that is
+     *    UNRUNNABLE on a correctly-provisioned least-privilege install.
+     *
+     * @return array{sql: literal-string, containsPayloadBytes: bool}|null
+     */
+    private static function storeSize(string $driver): ?array
+    {
+        return match ($driver) {
+            // The whole database FILE, so every stored payload byte is physically in it.
+            'sqlite' => [
+                'sql' => 'select (select * from pragma_page_count()) * (select * from pragma_page_size()) as bytes',
+                'containsPayloadBytes' => true,
+            ],
+            'mysql', 'mariadb' => [
+                'sql' => 'select sum(data_length + index_length) as bytes from information_schema.tables where table_schema = database()',
+                'containsPayloadBytes' => false,
+            ],
+            default => null,
+        };
+    }
+
+    /**
      * The database's size in bytes as the engine accounts for it, or null where it
      * reports none.
      *
@@ -111,37 +161,15 @@ final class DatabaseRetentionStoreProbe implements RetentionStoreProbe
      * measurement of an empty database — every engine here allocates pages for its own
      * schema — so it is the same "did not answer" the unknown-driver arm reports.
      *
-     * ⛔ THIS NUMBER IS NOT ON THE SAME BASIS AS THE PAYLOAD SUM ABOVE, AND THE CONSUMER
-     * MAY NOT ASSUME IT CONTAINS IT (DL-331, {@see RetentionFootprint}). SQLite's arm is
-     * the whole file, so it does. MariaDB's is the engine's ALLOCATION accounting for
-     * this schema, which is a different question from "how many bytes of text are in
-     * these rows".
-     *
-     * `data_length + index_length` IS KEPT AS THE MariaDB SOURCE, and the alternatives
-     * were rejected rather than overlooked. `avg_row_length * table_rows` is derived from
-     * the same per-table statistics, so it answers no differently. The tablespace's own
-     * file size (`information_schema.innodb_tablespaces` / `innodb_sys_tablespaces`,
-     * `file_size` / `allocated_size`) is the one source that could not miss anything the
-     * engine has allocated — and every `INNODB_*` information_schema table is documented
-     * as requiring the GLOBAL `PROCESS` privilege, which no other part of this app needs
-     * and which `CLAUDE_DEPLOYMENT.md` never asks an operator to grant, so reading it
-     * would make the cost line fail on a correctly-provisioned least-privilege install.
-     * ⚠ THAT PRIVILEGE REQUIREMENT IS DOCUMENTATION, NOT A MEASUREMENT THIS BRANCH MADE —
-     * no MariaDB was queried for it here. What the branch does instead is refuse to
-     * DEPEND on the relation: the consumer drops the share when the two disagree.
+     * @param  array{sql: literal-string, containsPayloadBytes: bool}|null  $size
      */
-    private static function storeBytes(ConnectionInterface $connection, string $driver): ?int
+    private static function storeBytes(ConnectionInterface $connection, ?array $size): ?int
     {
-        $sql = match ($driver) {
-            'sqlite' => 'select (select * from pragma_page_count()) * (select * from pragma_page_size()) as bytes',
-            'mysql', 'mariadb' => 'select sum(data_length + index_length) as bytes from information_schema.tables where table_schema = database()',
-            default => null,
-        };
-        if ($sql === null) {
+        if ($size === null) {
             return null;
         }
 
-        $bytes = (int) ($connection->selectOne($sql)->bytes ?? 0);
+        $bytes = (int) ($connection->selectOne($size['sql'])->bytes ?? 0);
 
         return $bytes > 0 ? $bytes : null;
     }
