@@ -172,7 +172,7 @@ class CheckGoldenTest extends TestCase
                 // ---- what the store is HOLDING (card#8374) ----
                 // Every posture-printing fixture runs against the DEFAULT store pin — the
                 // incident's own 894 MiB inside 1.2 GiB — so the loaded shape is already
-                // everywhere in the corpus. These three are the shapes that pin does NOT
+                // everywhere in the corpus. These four are the shapes that pin does NOT
                 // reach, and each is a different operator instruction rather than a
                 // different number. No count is stated deliberately — it is every fixture
                 // except the two retention postures that return before the cost legs, and

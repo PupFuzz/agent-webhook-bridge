@@ -6,6 +6,7 @@ use App\Bridge\Retention\DatabaseRetentionStoreProbe;
 use App\Models\WebhookEvent;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use RuntimeException;
 use Tests\TestCase;
 
 /**
@@ -27,16 +28,18 @@ use Tests\TestCase;
  * counting CHARACTERS: a payload with one two-byte character is the discriminator, and
  * the naive spelling under-reports it by exactly that one byte.
  *
- * ⛔ ONE ARM OF THE PROBE HAS NO TEST HERE, AND THE ABSENCE IS DELIBERATE RATHER THAN AN
- * OVERSIGHT — the rows-but-no-answerable-`min(received_at)` throw. Reaching it needs the
- * aggregate to answer a row count beside a null timestamp, which the real schema cannot
- * produce (`received_at` is NOT NULL and DB-defaulted), and both ways to force it are
- * worse than the gap: DDL inside a test IMPLICITLY COMMITS on MariaDB and would dissolve
- * `RefreshDatabase`'s transaction for every test after it, and mocking the `DB` facade
- * would replace the live connection this class exists to exercise. The arm is
- * driver-boundary narrowing that now FAILS LOUD where it previously produced a wrong
- * verdict silently (an age of NONE reads as an empty store); it is justified by reading,
- * and this paragraph is the disclosure of that rather than a claim it is covered.
+ * ⛔ THE ROWS-BUT-NO-ANSWERABLE-`min(received_at)` THROW IS EXERCISED HERE, ON SQLite
+ * ONLY: A PORTABLE TEST DOES NOT EXIST, AND THE BOUND IS THE ENGINE RATHER THAN THE
+ * HARNESS. SQLite's NUMERIC affinity keeps what it is handed, so an integer written into
+ * the `timestamp(3)` column comes back out of `min()` as an integer and the aggregate
+ * answers a row count beside a non-string timestamp — no DDL, no mocked facade, the live
+ * connection this class exists for. MariaDB's strict mode REFUSES that insert, so the arm
+ * SKIPS on the matrix rather than being forced: the two ways to force it there are worse
+ * than the skip (DDL inside a test IMPLICITLY COMMITS and would dissolve
+ * `RefreshDatabase`'s transaction for every test after it; mocking the `DB` facade would
+ * replace the live connection). The arm is driver-boundary narrowing that FAILS LOUD
+ * where it previously produced a wrong verdict silently (an age of NONE reads as an empty
+ * store), and it is now seen to fire rather than justified by reading.
  */
 class DatabaseRetentionStoreProbeTest extends TestCase
 {
@@ -183,6 +186,42 @@ class DatabaseRetentionStoreProbeTest extends TestCase
                 'this engine no longer excludes off-page payload bytes from its size figure — re-measure and move the declaration in DatabaseRetentionStoreProbe::storeSize() (DL-331)',
             );
         }
+    }
+
+    /**
+     * ⛤ THE C2 NARROWING, SEEN TO FIRE. A driver that answers a row count beside a
+     * non-string `min(received_at)` must THROW rather than hand the consumer the `null`
+     * age that means *there is no row to be old* — `RetentionPostureCheck` keys its EMPTY
+     * verdict on exactly that field, so the collapse would print a loaded store as one
+     * holding nothing.
+     *
+     * ⛔ SQLite ONLY, AND THE GATE IS THE ENGINE, NOT A HARNESS LIMITATION. Column types
+     * are affinities here, so the integer below survives the write and `min()` returns it
+     * as an integer; MariaDB's strict mode rejects an integer for a `timestamp(3)` column
+     * outright, which is why the matrix skips this rather than asserting a different
+     * thing. The write is an ordinary insert on the live connection — no DDL and no mock.
+     */
+    public function test_a_row_count_beside_a_non_string_timestamp_throws(): void
+    {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('MariaDB strict mode rejects an integer for a timestamp(3) column, so the non-string min(received_at) state cannot be written on this driver; the throw is exercised on the SQLite job');
+        }
+
+        DB::table((new WebhookEvent)->getTable())->insert([
+            'delivery_id' => 'd-1',
+            'provider' => 'github',
+            'scope_id' => 'owner/repo',
+            'event_type' => 'push',
+            'actor_id' => '1',
+            'payload' => '{"x":1}',
+            // NUMERIC affinity: stored as an INTEGER, and returned as one.
+            'received_at' => 12345,
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('did not answer a portable timestamp');
+
+        (new DatabaseRetentionStoreProbe)->measure();
     }
 
     /**

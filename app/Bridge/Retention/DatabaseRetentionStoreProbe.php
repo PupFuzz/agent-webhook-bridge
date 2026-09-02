@@ -64,8 +64,8 @@ final class DatabaseRetentionStoreProbe implements RetentionStoreProbe
         // read that way: the check's EMPTY verdict is keyed on this field and not on the
         // row count. So a driver that answered rows but did not answer a portable
         // `min()` must not reach the consumer as a drained store; the state is
-        // unreachable (`received_at` is NOT NULL, DB-defaulted and never written by app
-        // code), and this is driver-boundary narrowing of a `selectRaw` value in the same
+        // unreachable through app code (`received_at` is NOT NULL, DB-defaulted and never
+        // written by it), and this is driver-boundary narrowing of a `selectRaw` value in the same
         // sense as `EventConsumerReconciler`'s `is_scalar` guard — but that one falls
         // back to an inert `''`, and this one would fall back INTO a verdict.
         if ($rows > 0 && ! is_string($oldest)) {
