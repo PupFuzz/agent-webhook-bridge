@@ -351,6 +351,26 @@ class AgentToolsCallTest extends TestCase
     }
 
     /**
+     * ⛔ THE CREATE TOOL'S REFUSAL TEXT IS A SHIPPED SURFACE, AND MOVING THE GUARD TO A
+     * SHARED OWNER MUST NOT MOVE IT (card#8378). Extracting `CallerTagPolicy` reworded
+     * this one message while the DL entry and the PR body both claimed the create tool's
+     * messages were unchanged — a claim nothing checked. The exact string is pinned here
+     * so the next extraction is a refactor rather than a silent contract edit; changing
+     * it deliberately means changing this line and saying so.
+     */
+    public function test_the_create_tools_reserved_tag_message_is_exactly_what_it_shipped(): void
+    {
+        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'tags' => ['triaged']]]);
+
+        $this->assertSame(
+            'board_create_card: the tag `triaged` is reserved — tool-created cards are born untriaged by design (they surface to the triage pass)',
+            (string) $res->json('error'),
+        );
+    }
+
+    /**
      * The reserved-tag guard is case-INSENSITIVE: whether the kanban tag search
      * it protects folds case is a per-driver collation fact (MariaDB utf8mb4_bin
      * does not; a kanban running on SQLite does), so the guard refuses every case
@@ -1409,14 +1429,15 @@ class AgentToolsCallTest extends TestCase
      * PATCH.
      *
      * $patchStatus is what the BOARD answers the write with, so a test can stage a
-     * 403/404 without touching the read.
+     * 401/403/404/422 without touching the read; $patchBody is that answer's BODY, which
+     * the 422 arm needs so a test can assert the seat never sees it.
      *
      * @param  list<array<string, mixed>>  $live
      * @param  list<array<string, mixed>>  $archived
      */
-    private function correctFake(array $live, array $archived = [], int $patchStatus = 200, ?int $lookupStatus = null): \Closure
+    private function correctFake(array $live, array $archived = [], int $patchStatus = 200, ?int $lookupStatus = null, string $patchBody = 'nope'): \Closure
     {
-        return function ($request) use ($live, $archived, $patchStatus, $lookupStatus) {
+        return function ($request) use ($live, $archived, $patchStatus, $lookupStatus, $patchBody) {
             $url = urldecode($request->url());
             if (str_contains($url, '/tasks/search.json')) {
                 if ($lookupStatus !== null) {
@@ -1427,7 +1448,7 @@ class AgentToolsCallTest extends TestCase
             }
 
             if ($patchStatus !== 200) {
-                return Http::response('nope', $patchStatus);
+                return Http::response($patchBody, $patchStatus);
             }
 
             return Http::response(['data' => ['id' => 42]]);
@@ -1783,15 +1804,24 @@ class AgentToolsCallTest extends TestCase
 
     public function test_correct_maps_a_403_on_the_ownership_lookup_to_a_named_install_fault(): void
     {
-        // A 403 here is the writeback token's board membership — not anything the seat
-        // passed, and not retryable. Reporting it as the dispatcher's 502 would invite
-        // the retry loop DL-020 warns about.
+        // A 403 here is nothing the seat passed, and not retryable — reporting it as the
+        // dispatcher's 502 would invite the retry loop DL-020 warns about.
+        //
+        // ⛔ AND THE CAUSE IT NAMES HAS TO BE ONE THAT CAN PRODUCE A 403. The message
+        // said "the writeback token's membership of your board", which kanban's search
+        // never answers 403 for: it FLOORS a caller to its member boards and returns 200
+        // with zero rows. What does 403 on this route is the per-token ability gate
+        // (kanban DL-055 — a GET needs `read`), so that is what the operator is sent to
+        // audit; the membership cause belongs on the not-found refusal, where it is.
         Http::fake($this->correctFake(live: [], lookupStatus: 403));
 
         $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
 
         $res->assertStatus(422);
-        $this->assertStringContainsString('INSTALL fault', (string) $res->json('error'));
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('INSTALL fault', $error);
+        $this->assertStringContainsString('abilities', $error);
+        $this->assertStringContainsString('board membership does NOT produce a 403', $error);
         Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
     }
 
@@ -1834,6 +1864,274 @@ class AgentToolsCallTest extends TestCase
 
         $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])
             ->assertStatus(502);
+    }
+
+    // ─── board_correct_card: what a wholesale replace must NOT delete (card#8378 R1) ─
+
+    /** Write a `writeback.json` into the config dir this test's bridge reads. */
+    private function writeWriteback(string $json): void
+    {
+        File::put($this->dir.'/writeback.json', $json);
+    }
+
+    /**
+     * ⭐ THE PIN IS NOT A TAG THE CALLER MAY NOT SUPPLY — IT IS A TAG THE CALLER MAY NOT
+     * DROP, AND THE TWO SETS ARE DIFFERENT. `no-automove` is `PinGuard`'s all-outcome
+     * writeback hold: a human pins a card with it and the event path, the reconciler and
+     * the release sweep all refuse to move it. A caller MAY supply it (pinning your own
+     * card is legitimate), so it is deliberately absent from the reserved vocabulary —
+     * which is exactly why a preserve set derived from that vocabulary dropped it, and a
+     * `tags` correction un-pinned a card the human pinned. The next `merged` event then
+     * makes the terminal move card#8289 exists to prevent.
+     *
+     * The control is in the same call: the caller's OWN stale tag is still dropped, so
+     * the assertion cannot pass by preserving everything.
+     */
+    public function test_correct_preserves_the_writeback_pin_a_caller_may_supply_but_may_not_drop(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow([
+            'tags' => ['created-by:me', 'no-automove', 'stale-caller-tag'],
+        ])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'tags' => ['fresh-caller-tag'],
+        ]]);
+
+        $res->assertStatus(200);
+        $this->assertSame(
+            ['tags' => ['fresh-caller-tag', 'created-by:me', 'no-automove']],
+            $this->sentPatchBody(),
+            'the human pin survives a wholesale tag replace; the caller-owned tag does not'
+        );
+    }
+
+    /**
+     * The OPERATOR-DECLARED half of the same set (DL-194 `hold_marker_tags`), and the
+     * board filter that makes it a per-install answer rather than a global one.
+     *
+     * ⭐ THE SECOND MAPPING IS THE CONTROL, and it is what makes this a measurement: a
+     * hold tag declared for a DIFFERENT board is not this board's convention, so an
+     * implementation that unioned every mapping's tags would re-send `other-hold` and
+     * red here. The seat knows only `board_tools.board_id`, so the board-keyed read
+     * (`WritebackConfig::holdMarkerTagsForBoard`) is the whole reachability answer.
+     */
+    public function test_correct_preserves_the_hold_tags_this_install_declares_for_this_board_only(): void
+    {
+        $this->writeWriteback((string) json_encode(['mappings' => [
+            'o/mine' => ['board_id' => 10, 'stages' => ['merged' => 52], 'hold_marker_tags' => ['gate']],
+            'o/other' => ['board_id' => 999, 'stages' => ['merged' => 52], 'hold_marker_tags' => ['other-hold']],
+        ]]));
+        Http::fake($this->correctFake(live: [$this->ownCardRow([
+            'tags' => ['created-by:me', 'gate', 'other-hold'],
+        ])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'tags' => ['fresh-caller-tag'],
+        ]]);
+
+        $res->assertStatus(200);
+        $this->assertSame(
+            ['tags' => ['fresh-caller-tag', 'created-by:me', 'gate']],
+            $this->sentPatchBody(),
+            'this board\'s declared hold survives; another board\'s declared hold is not this board\'s convention'
+        );
+    }
+
+    /**
+     * ⛔ AN UNKNOWN HOLD VOCABULARY IS NOT AN EMPTY ONE. A `writeback.json` the bridge
+     * cannot parse means it cannot say which tags this install treats as a hold — and a
+     * wholesale replace under that uncertainty is precisely the silent deletion the
+     * preservation exists to stop. So the TAGS leg refuses, names the file, and writes
+     * nothing; it does not fall back to "no holds declared".
+     */
+    public function test_correct_refuses_a_tag_correction_when_the_hold_vocabulary_cannot_be_read(): void
+    {
+        $this->writeWriteback('{ this is not json');
+        Http::fake($this->correctFake(live: [$this->ownCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'tags' => ['fresh-caller-tag'],
+        ]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('writeback.json', (string) $res->json('error'));
+        $this->assertStringContainsString('INSTALL fault', (string) $res->json('error'));
+        // Nothing was READ either: the vocabulary is resolved before the ownership
+        // lookup, so a call that cannot establish it costs the board nothing.
+        Http::assertNothingSent();
+    }
+
+    /**
+     * THE CONTROL for the refusal above: it is scoped to the leg that needs the answer.
+     * A `name` correction writes no tag list, so an unparseable `writeback.json` has
+     * nothing to do with it — a blanket refusal would take a working tool offline over
+     * a file it never reads.
+     */
+    public function test_a_name_correction_is_unaffected_by_an_unreadable_writeback_config(): void
+    {
+        $this->writeWriteback('{ this is not json');
+        Http::fake($this->correctFake(live: [$this->ownCardRow()]));
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'corrected']])
+            ->assertStatus(200);
+        $this->assertSame(['name' => 'corrected'], $this->sentPatchBody());
+    }
+
+    // ─── board_correct_card: the value bounds kanban's validator imposes (R1/C2) ─
+
+    /**
+     * Kanban validates `name => string|max:255`. Unbounded on this side, a 256-character
+     * title reached the board, came back 422, and the dispatcher reported it as
+     * `502 upstream board error` — a retryable answer to a request that can never
+     * succeed, i.e. the seat retries forever with no diagnosis. It is refused HERE, by
+     * name, before anything is read or written.
+     */
+    public function test_correct_refuses_a_name_longer_than_kanban_accepts(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'name' => str_repeat('x', 256),
+        ]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('255', (string) $res->json('error'));
+        Http::assertNothingSent();
+        // The CONTROL: the boundary itself is accepted, so the refusal is a bound and
+        // not a blanket. ⚠ No second `Http::fake()` — a second registration STACKS
+        // behind the first (the first matching stub wins), so it would look like a new
+        // fixture while the old one answered.
+        $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'name' => str_repeat('x', 255),
+        ]])->assertStatus(200);
+    }
+
+    /**
+     * The same bound on the other field kanban caps: `tags.* => string|max:64`. It lives
+     * in the SHARED `CallerTagPolicy`, so it holds on both tools that write a tag list —
+     * a bound on one of them is the divergence the shared policy exists to prevent.
+     */
+    public function test_correct_refuses_a_tag_longer_than_kanban_accepts(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow()]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'tags' => [str_repeat('x', 65)],
+        ]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('64', (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    public function test_create_refuses_a_tag_longer_than_kanban_accepts(): void
+    {
+        // The create tool's half of the shared bound — and the same 502-instead-of-422
+        // misreport it fixes there (a create with an over-long tag 422'd at the board).
+        // The create endpoint is stubbed to SUCCEED, so an unbounded tool answers 200
+        // here: the refusal is what this measures, not a stub-less fake.
+        Http::fake(['*/tasks.json' => Http::response(['data' => ['id' => 1]], 201)]);
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => [
+            'title' => 'a card', 'tags' => [str_repeat('x', 65)],
+        ]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('64', (string) $res->json('error'));
+        Http::assertNothingSent();
+    }
+
+    /**
+     * ⭐ THE BOUNDS ABOVE ARE A MIRROR OF RULES THAT LIVE IN KANBAN'S REPO, so they can go
+     * stale — and this is what makes that survivable. A 422 the BOARD answers is
+     * deterministic (its validator will refuse the same value forever), so it is a
+     * refusal, not the retryable 502 the seat would loop on.
+     *
+     * ⛔ And the message is BRIDGE-AUTHORED: the board's response body is never echoed
+     * into the seat's error, so this asserts the upstream text is ABSENT as well as the
+     * bridge's own text present — an absence-only assertion would certify anything.
+     */
+    public function test_correct_maps_a_422_on_the_write_to_a_refusal_that_does_not_echo_the_board(): void
+    {
+        Http::fake($this->correctFake(
+            live: [$this->ownCardRow()],
+            patchStatus: 422,
+            patchBody: '{"message":"The name field must not be greater than 255 characters.","errors":{}}',
+        ));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $res->assertStatus(422);
+        $error = (string) $res->json('error');
+        $this->assertStringContainsString('REJECTED the value you sent', $error);
+        $this->assertStringNotContainsString('must not be greater', $error, 'the board\'s own response body must not reach the seat');
+    }
+
+    /**
+     * A 401 is the rotated/revoked writeback token — kanban's v3 API is `auth:sanctum`,
+     * so a token it no longer knows is refused at the door on every subsequent call.
+     * Deterministic, and an INSTALL fault: retrying is the one thing that cannot help.
+     */
+    public function test_correct_maps_a_401_on_the_lookup_to_a_named_install_fault(): void
+    {
+        Http::fake($this->correctFake(live: [], lookupStatus: 401));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('revoked, rotated', (string) $res->json('error'));
+        $this->assertStringContainsString('INSTALL fault', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_correct_maps_a_401_on_the_write_to_a_named_install_fault(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow()], patchStatus: 401));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('did not accept', (string) $res->json('error'));
+        $this->assertStringContainsString('INSTALL fault', (string) $res->json('error'));
+    }
+
+    /**
+     * ⭐ DECISION 9'S NON-DISCLOSURE, ASSERTED AS THE PROPERTY IT IS: the two arms answer
+     * the SAME BYTES. A seat must not be able to tell "this card is on your board but is
+     * not yours" from "no such card here" — otherwise the refusal is a card-existence
+     * oracle for every id on the board. A message improved on one arm and not the other
+     * (the shape this reds against) breaks it silently.
+     *
+     * ⚠ And the shared text now carries the third cause: kanban's search FLOORS a caller
+     * to boards it is a member of and answers 200-with-zero-rows for the rest, so an
+     * unreadable board arrives here looking exactly like an empty one (DL-323's
+     * `mapped_board_unreadable_to_this_token`). Without that sentence the seat is told a
+     * card it really did file "is not one of yours".
+     */
+    public function test_the_not_yours_refusal_is_byte_identical_across_its_arms_and_names_the_unreadable_board(): void
+    {
+        // ⛔ ONE fake, switched by a captured flag. `Http::fake()` STACKS — a second
+        // registration does not replace the first, and the first matching stub wins — so
+        // staging the second arm with a second `Http::fake()` leaves BOTH calls answered
+        // by the foreign-stamp fixture and the comparison below passes against anything.
+        // (Measured: the mutant that gives one arm a different sentence stayed green.)
+        $rows = [$this->ownCardRow(['tags' => ['created-by:someoneelse']])];
+        Http::fake(function ($request) use (&$rows) {
+            $url = urldecode($request->url());
+            if (str_contains($url, '/tasks/search.json')) {
+                return Http::response(['data' => str_contains($url, 'archived=1') ? [] : $rows]);
+            }
+
+            return Http::response(['data' => ['id' => 42]]);
+        });
+
+        $foreign = (string) $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])->json('error');
+
+        $rows = [];   // same fixture, other arm: no such card on this board
+        $absent = (string) $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']])->json('error');
+
+        $this->assertSame($foreign, $absent, 'a card-existence oracle: the two arms must answer identically');
+        $this->assertStringContainsString('membership of board 10', $foreign);
     }
 
     // ─── tool + body validation ──────────────────────────────────────────────

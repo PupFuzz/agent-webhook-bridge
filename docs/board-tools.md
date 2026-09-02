@@ -250,9 +250,11 @@ that keys on one card per subject.
 | Arg | Required | Notes |
 | --- | --- | --- |
 | `card_id` | yes | A positive **integer** — the `id` `board_my_cards` reports. A decorated string (`"42"`) or a float is refused, never coerced: a coerced id names a different card, and this id selects the row the write lands on. |
-| `name` | no | Non-empty string. There is **no clear form** — a card cannot be left without a name, so a present-but-empty `name` is refused (omit it to leave it alone). |
-| `description` | no | String. **Present-and-empty CLEARS it** (see the present/absent rule below). |
-| `tags` | no | List of strings — **your** tags. The same reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`) and bare `triaged` `board_create_card` refuses are refused here too, case-insensitively, with the same printable-ASCII / no-metacharacter (`"`, `*`, `_`, `%`) charset rule. |
+| `name` | no | Non-empty string, **≤ 255 characters** (kanban's own `name => string\|max:255`). There is **no clear form** — a card cannot be left without a name, so a present-but-empty `name` is refused (omit it to leave it alone). |
+| `description` | no | String, **trimmed**. **Present-and-empty CLEARS it**, and so does whitespace-only (see the present/absent rule below). |
+| `tags` | no | List of strings — **your** tags, each **≤ 64 characters** (kanban's `tags.* => string\|max:64`). The same reserved prefixes (`created-by:`, `idem:`, `id:`, `type:`) and bare `triaged` `board_create_card` refuses are refused here too, case-insensitively, with the same printable-ASCII / no-metacharacter (`"`, `*`, `_`, `%`) charset rule. |
+
+> ⚠ **The two length caps are a MIRROR of rules that live in the kanban repo** (`App\Support\TaskWriteRules`), held in one place here (`KanbanFieldLimits`) and stated as a mirror: they are a **diagnostic**, not the safety. The safety is kanban's own 422 — which the tool maps to a named refusal rather than the retryable 502 — so a cap that goes stale degrades the *message*, never the outcome. `board_create_card` shares the tag cap (one policy, both tools).
 
 **One rule for every argument: a key that is PRESENT is a correction; a key that is
 ABSENT leaves its field alone.** So `tags: []` means *drop my tags* (it is not the
@@ -294,14 +296,31 @@ and the mint stamp is what says the card is yours; a lane test would make a re-l
 card permanently uncorrectable by the seat that filed it. The response therefore
 reports no lane — it reports only what was checked.
 
-**⚠ `tags` is REPLACED WHOLESALE by kanban, so the write re-sends every reserved tag
-the card already carries** (`created-by:`, `idem:`, `id:`, `type:`, `triaged`) and
-lets your list replace only the rest. Without that, correcting your tags would delete
-your own mint stamp (locking you out of your own card), your `idem:` correlation key
-(re-opening duplicate minting under that key), or `triaged`/`type:` (undoing the
-triage pass) — and you could not restore any of them, because you may not supply
-them. `tags_written` in the response is what the PATCH **sent**, which is the only
-channel you have to what was preserved.
+**⚠ `tags` is REPLACED WHOLESALE by kanban, so the write re-sends every tag on the card
+that is somebody ELSE'S — and that set is deliberately WIDER than the set you are not
+allowed to send.** Two halves, and the second is the one that is easy to get wrong:
+
+1. **Tags you may not supply**, so you could not restore them either: `created-by:`
+   (your mint stamp — dropping it locks you out of your own card), `idem:` (your
+   correlation key — dropping it re-opens duplicate minting under it), `type:` and
+   `triaged` (the triage pass's work).
+2. **Holds you MAY supply and may not drop**: `no-automove` — the writeback's
+   all-outcome pin (`PinGuard`), the tag half of the same pin whose other half
+   (`block_reason`) this tool refuses to touch by name — plus **every
+   `hold_marker_tags` value your install declares in `writeback.json` for your board**
+   (DL-194). A human pins a card with these; a correction that dropped one would
+   un-pin it, and the next `merged` event would make the terminal move the pin exists
+   to prevent.
+
+⛔ **If `writeback.json` cannot be parsed, a `tags` correction is REFUSED** rather than
+falling back to "no holds declared": the bridge cannot say which tags this install
+treats as a hold, and a wholesale replace under an unknown hold vocabulary is exactly
+the silent deletion the preservation exists to stop. A `name`/`description` correction
+is unaffected — it writes no tag list. An install with **no** `writeback.json` is a
+different (and fine) answer: it declares no hold tags, and `no-automove` still holds.
+
+`tags_written` in the response is what the PATCH **sent**, which is the only channel you
+have to what was preserved.
 
 **Returns:**
 
@@ -341,16 +360,19 @@ rejects outright.
 
 | State | Refusal |
 | --- | --- |
-| The card is not on your board, or carries someone else's stamp, or none | *"card N is not one of yours"* — **one message for all three**: you are never told whether a card you do not own exists. |
+| The card is not on your board, or carries someone else's stamp, or none | *"card N is not one of yours"* — **one message for all three**: you are never told whether a card you do not own exists. ⚠ It names a **fourth** cause too, because kanban's search FLOORS a caller to the boards its token is a member of and answers **200 with zero rows** for the rest: an unreadable board and an empty one are one answer here (DL-323's `mapped_board_unreadable_to_this_token`), so the message tells you to have the token's board membership checked if you believe you filed the card. |
 | The card is yours and **ARCHIVED** | Named as the retire it is (*"unarchive it first"*) — the stamp proves the card is yours, so naming it discloses nothing, and the alternative is a guard telling you a card you demonstrably filed is not yours. The archive side is read **only when the live lookup misses**, so a successful call never pays for it. |
 | The lookup answered a row that is not that card on your board | *"a BROKEN READ, not a verdict"* (DL-323 Decision 2) — report it; it is not a statement about the card. |
-| kanban answered **403** on the lookup | The bridge could not read your board to establish the card is yours — an **install fault** (the writeback token's board membership), not something your arguments can fix. |
-| kanban answered **403** on the write | The card is yours but the writeback token may not write it — **install fault**, token scope. |
+| `writeback.json` will not parse | The install's hold vocabulary is unknown, so a **`tags`** correction is refused (see above) — **install fault**. `name`/`description` are unaffected. |
+| kanban answered **403** on the lookup | The bridge could not read your board to establish the card is yours — an **install fault**, and specifically the writeback token's **abilities** (kanban gates the v3 API per token: a GET needs `read`). ⛔ Deliberately **not** board membership: a board the token is not a member of answers 200-with-zero-rows, never 403, so it surfaces as the not-yours refusal above. |
+| kanban answered **403** on the write | The card is yours but the writeback token may not write it (a PATCH needs the `write` ability) — **install fault**, token scope. |
+| kanban answered **401** on either call | The token was not accepted at all — revoked, rotated, or replaced with a value the board does not know. **Install fault**; retrying cannot help. |
 | kanban answered **404** on the write | The card stopped existing between the ownership check and the write. **Nothing was written.** |
+| kanban answered **422** on the write | Kanban's own validator rejected the value. Deterministic, so it is a refusal and not the retryable 502 — this is what keeps the two mirrored length caps above safe to go stale. ⛔ The board's response **body is never echoed** into your error; the message is the bridge's own. |
 
-⚠ **Those board-caused 4xx are reported as 422 refusals, not as the retryable 502**,
-because they fail identically however many times you send them; a 5xx or a timeout
-still answers **502**, which is the one you may retry.
+⚠ **Those board-caused 4xx (401/403/404/422) are reported as 422 refusals, not as the
+retryable 502**, because they fail identically however many times you send them; a 5xx
+or a timeout still answers **502**, which is the one you may retry.
 
 **Cost:** two requests on a successful call (one board-scoped lookup, one PATCH) —
 no card read-back, because the row that authorized the write already carried what the
@@ -580,6 +602,14 @@ it.** Two things must hold:
    guarded by a test, not established by reading the file. A second tool, a channel-server relay,
    or a future responder that emits the header conditionally re-opens the question, because a row
    observation would then be read as an identity claim with nothing red anywhere.
+   ⚠ **DL-326 shipped a second tool that emits `board_id` and no `configured_board_id`**
+   (`board_correct_card`, where `board_id` is the board the authorizing ROW was on), and the
+   condition survives because its subject is **the envelope the PROBE reads**, not the tool
+   registry: `BoardToolsScopeHeader::read()` has exactly two callers — `SshTransportProbe` and
+   `BoardToolsHttpProbeCheck` — and both send the literal `{"tool": "board_my_cards"}`, so no
+   result of the correction tool can reach the fallback. The re-opening case is unchanged and is
+   the one those probes already name: **something other than `board_my_cards` answering the
+   probe** (a relay, a forced command running the wrong thing).
 
 Both true ⇒ the fallback is dead tolerance and goes, together with the two skew tests that pin it.
 

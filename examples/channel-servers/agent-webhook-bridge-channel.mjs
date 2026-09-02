@@ -256,9 +256,11 @@ const TOOL_DEFINITIONS = [
       '"drop my tags" and an empty description clears the body. Column moves, ' +
       'correlation refs (dl/pr/issue), external ids, card type and block_reason ' +
       'are NOT correctable here — each is refused by name with the authority that ' +
-      'owns it. Your tag list replaces only YOUR tags: the bridge re-sends the ' +
-      'reserved ones (created-by:, idem:, id:, type:, triaged) because kanban ' +
-      'replaces the tag list wholesale.',
+      'owns it. Your tag list replaces only YOUR OWN tags: because kanban replaces ' +
+      'the tag list wholesale, the bridge re-sends every tag on the card that is ' +
+      "somebody else's — the ones you may not supply (created-by:, idem:, id:, " +
+      'type:, triaged) AND the holds anyone may set but nobody else may drop ' +
+      "(no-automove, plus your install's own hold tags).",
     inputSchema: {
       type: 'object',
       properties: {
@@ -271,8 +273,8 @@ const TOOL_DEFINITIONS = [
         name: {
           type: 'string',
           description:
-            'Replacement title (non-empty). There is no clear form — omit it to ' +
-            'leave the title alone.',
+            'Replacement title (non-empty, at most 255 characters — kanban\'s own ' +
+            'limit). There is no clear form — omit it to leave the title alone.',
         },
         description: {
           type: 'string',
@@ -283,10 +285,11 @@ const TOOL_DEFINITIONS = [
           type: 'array',
           items: { type: 'string' },
           description:
-            'Your replacement tag list (an empty list drops your tags). The same ' +
+            'Your replacement tag list (an empty list drops YOUR tags). The same ' +
             'reserved prefixes (created-by:, idem:, id:, type:) and the bare tag ' +
-            '"triaged" are refused as at create; the bridge preserves the ones the ' +
-            'card already carries.',
+            '"triaged" are refused as at create, and each tag is capped at 64 ' +
+            'characters (kanban\'s own limit). Tags that are not yours to drop are ' +
+            'preserved: the reserved ones and any hold marker (no-automove).',
         },
       },
       required: ['card_id'],

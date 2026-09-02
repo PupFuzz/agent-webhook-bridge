@@ -2,9 +2,12 @@
 
 namespace App\Bridge\Tools;
 
+use App\Bridge\Exceptions\ConfigException;
 use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Writeback\KanbanClient;
+use App\Bridge\Writeback\KanbanFieldLimits;
+use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
 
@@ -65,25 +68,39 @@ use Illuminate\Support\Facades\Log;
  * "correct" in the reserved `type:` key, `triaged`, or a payload key the create
  * tool rejects outright.
  *
- * TAGS ARE REPLACED WHOLESALE BY KANBAN, so the write re-sends every reserved tag
- * the card already carries ({@see CallerTagPolicy::isReserved}) and lets the
- * caller's list replace only the rest. Without that, a seat correcting its tags
- * would delete its own `created-by:` stamp (locking itself out of its own card),
- * its `idem:` correlation key (re-opening duplicate minting under that key), or
- * `triaged`/`type:` (undoing the triage pass). ⚠ `kbcard` records the sharp edge of
- * a read-merge-write on this field — an unreadable tag list treated as "no tags"
- * destroys every tag — and it is UNREACHABLE here rather than guarded: the
- * preserved set is built from the same row whose tags had to contain
- * `created-by:<agent>` for the call to be authorized at all, so a row with no
- * readable tag list is refused before any write is composed.
+ * TAGS ARE REPLACED WHOLESALE BY KANBAN, so the write re-sends every tag on the card
+ * that is somebody else's control ({@see CallerTagPolicy::isPreserved}) and lets the
+ * caller's list replace only the rest. ⭐ THAT SET IS A SUPERSET OF THE TAGS A CALLER
+ * MAY NOT SUPPLY, and the difference is the whole point: the bridge-stamped ones
+ * (`created-by:` — losing it locks the seat out of its own card; `idem:` —
+ * re-opening duplicate minting under that key; `triaged`/`type:` — undoing the triage
+ * pass) a caller could not restore because it may not supply them, but `no-automove`
+ * and this install's `hold_marker_tags` are a HUMAN's pin on the card, forgeable and
+ * therefore absent from the refuse list, and deleting one hands the next `merged`
+ * event the terminal move card#8289 exists to prevent. This tool already refuses
+ * `block_reason` by name; preserving only half the same pin would protect one half and
+ * destroy the other.
  *
- * REFUSALS ARE DETERMINISTIC, WHICH IS WHY 403/404 ARE REPORTED AS ONE. Every
- * refusal here is a {@see ToolRefusalException} (422-class): a request that fails
- * identically however many times it is sent. That deliberately includes a 403 or
- * 404 the BOARD answers — a permission fault and a card that no longer exists are
- * both permanent, and reporting them as the dispatcher's retryable 502 would send
- * a seat into the retry loop DL-020 exists to warn about. Each names its own cause,
- * and the two that are an INSTALL fault rather than a caller fault say so.
+ * ⚠ `kbcard` records the sharp edge of a read-merge-write on this field — an unreadable
+ * tag list treated as "no tags" destroys every tag — and it is UNREACHABLE here rather
+ * than guarded: the preserved set is built from the same row whose tags had to contain
+ * `created-by:<agent>` for the call to be authorized at all, so a row with no readable
+ * tag list is refused before any write is composed. The OPERATOR-declared half of the
+ * set is a different matter, because it comes from `writeback.json` rather than from
+ * the row: a config the bridge cannot parse means the hold vocabulary is UNKNOWN, and a
+ * wholesale replace under an unknown hold vocabulary is exactly the deletion this
+ * paragraph exists to stop — so a `tags` correction refuses there, naming the config.
+ *
+ * REFUSALS ARE DETERMINISTIC, WHICH IS WHY THE BOARD'S OWN 4xx ARE REPORTED AS ONE.
+ * Every refusal here is a {@see ToolRefusalException} (422-class): a request that fails
+ * identically however many times it is sent. That deliberately includes a 401, 403, 404
+ * or 422 the BOARD answers — a rotated token, a permission fault, a card that no longer
+ * exists and a value kanban's validator rejects are all permanent — and reporting them
+ * as the dispatcher's retryable 502 would send a seat into the retry loop DL-020 exists
+ * to warn about. Each names its own cause, and the ones that are an INSTALL fault
+ * rather than a caller fault say so. ⛔ The 422 arm never echoes the board's body: it is
+ * an upstream response, and the tool's own bounded messages are what the seat can act
+ * on.
  */
 final class BoardCorrectCardTool implements Tool
 {
@@ -150,9 +167,13 @@ final class BoardCorrectCardTool implements Tool
         }
 
         $boardId = (int) $cfg->boardId;
+        // Resolved BEFORE the lookup, so a call that cannot establish the hold
+        // vocabulary reads nothing and writes nothing — and so a config fault is
+        // reported as itself rather than as a tag correction that half-applied.
+        $holdTags = $callerTags === null ? [] : $this->installHoldTags($boardId);
         $row = $this->ownedRow($client, $boardId, $cardId, $agentName);
 
-        $tagsWritten = $callerTags === null ? null : $this->tagsToWrite($row, $callerTags);
+        $tagsWritten = $callerTags === null ? null : $this->tagsToWrite($row, $callerTags, $holdTags);
         if ($tagsWritten !== null) {
             $fields['tags'] = $tagsWritten;
         }
@@ -247,7 +268,17 @@ final class BoardCorrectCardTool implements Tool
      * "clear", because a card being born has nothing to clear.
      *
      * `name` has no empty form: a card must have one, so a present-but-empty name is
-     * refused rather than written.
+     * refused rather than written — and it is bounded at
+     * {@see KanbanFieldLimits::NAME_MAX}, kanban's own cap, so an over-long title is a
+     * named caller-fixable refusal instead of a board 422 the seat reads as a retryable
+     * `502 upstream board error`.
+     *
+     * ⭐ THE DESCRIPTION IS TRIMMED, AND THAT IS WHAT MAKES "CLEAR" MEAN THE SAME THING
+     * ON BOTH DOORS. `TrimStrings` runs ahead of `ConvertEmptyStringsToNull` on the HTTP
+     * door only, so `"   "` arrives as null there (⇒ clear) and as three spaces over
+     * ssh (⇒ a card whose body is whitespace). Trimming here converges them on the
+     * behaviour the HTTP door already has, rather than leaving one transport with a
+     * second meaning for the same call.
      *
      * @param  array<string, mixed>  $args
      * @return array<string, string>
@@ -261,6 +292,11 @@ final class BoardCorrectCardTool implements Tool
             if (! is_string($name) || trim($name) === '') {
                 throw new ToolRefusalException('board_correct_card: `name` must be a non-empty string — a card cannot be left without one, so there is no "clear" for this field (omit `name` to leave it alone)');
             }
+            // mb_strlen: Laravel's `max` sizes a string that way, and a title is not
+            // charset-constrained the way a tag is, so bytes and characters differ here.
+            if (mb_strlen($name) > KanbanFieldLimits::NAME_MAX) {
+                throw new ToolRefusalException('board_correct_card: `name` is '.mb_strlen($name).' characters — kanban accepts at most '.KanbanFieldLimits::NAME_MAX.' (`name => string|max:255`), so the board would reject the write. Nothing was written; shorten it.');
+            }
             $fields['name'] = $name;
         }
 
@@ -269,7 +305,7 @@ final class BoardCorrectCardTool implements Tool
             if ($description !== null && ! is_string($description)) {
                 throw new ToolRefusalException('board_correct_card: `description` must be a string, or null/"" to CLEAR it (omit `description` to leave it alone)');
             }
-            $fields['description'] = $description ?? '';
+            $fields['description'] = trim($description ?? '');
         }
 
         return $fields;
@@ -324,7 +360,7 @@ final class BoardCorrectCardTool implements Tool
                     'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
                 ]);
 
-                throw new ToolRefusalException($this->notYoursMessage($cardId));
+                throw new ToolRefusalException($this->notYoursMessage($cardId, $boardId));
             }
 
             return $row;
@@ -359,12 +395,22 @@ final class BoardCorrectCardTool implements Tool
             'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
         ]);
 
-        throw new ToolRefusalException($this->notYoursMessage($cardId));
+        throw new ToolRefusalException($this->notYoursMessage($cardId, $boardId));
     }
 
-    private function notYoursMessage(int $cardId): string
+    /**
+     * ⚠ THE THIRD DISJUNCT IS NOT PADDING — IT IS THE ONLY CHANNEL AN UNREADABLE BOARD
+     * HAS. kanban's search floors a caller to the boards it is a MEMBER of and answers
+     * 200 with zero rows for every other one, so a board the writeback token cannot see
+     * and a board with no such card are ONE answer here (DL-323's
+     * `mapped_board_unreadable_to_this_token`); without this sentence the seat is told
+     * "not one of yours" about a card that may well be its own. It is on the SHARED
+     * message deliberately: a sentence added to the no-rows arm alone would make the
+     * three arms distinguishable and undo the non-disclosure Decision 9 is built on.
+     */
+    private function notYoursMessage(int $cardId, int $boardId): string
     {
-        return "board_correct_card: card {$cardId} is not one of yours — this tool corrects only cards YOU filed (the bridge's `created-by:` mint stamp) on your own board. Nothing was written. Use `board_my_cards` to see the cards you can correct, or `board_create_card` if this is new work.";
+        return "board_correct_card: card {$cardId} is not one of yours — this tool corrects only cards YOU filed (the bridge's `created-by:` mint stamp) on your own board. Nothing was written. ⚠ A board the bridge's writeback token is not a MEMBER of answers exactly the same way: kanban's search returns zero rows rather than an error, so an unreadable board and an empty one are one answer here — if you believe you filed this card, have your operator check that token's membership of board {$boardId}. Use `board_my_cards` to see the cards you can correct, or `board_create_card` if this is new work.";
     }
 
     /**
@@ -417,23 +463,23 @@ final class BoardCorrectCardTool implements Tool
     }
 
     /**
-     * The tag list the PATCH sends: the caller's list, plus every RESERVED tag the
-     * card already carries. kanban replaces `tags` wholesale, so a tag not re-sent
-     * is a tag deleted — and the reserved ones are exactly the tags the caller was
-     * never allowed to supply, so it could not restore them.
+     * The tag list the PATCH sends: the caller's list, plus every tag the card
+     * already carries that is somebody ELSE'S control. kanban replaces `tags`
+     * wholesale, so a tag not re-sent is a tag deleted.
      *
      * De-duplicated preserving first-seen order (the caller's own order survives),
      * so a caller re-sending a tag the card already carries writes it once.
      *
      * @param  array<string, mixed>  $row
      * @param  list<string>  $callerTags  the sanitized caller list
+     * @param  list<string>  $holdTags  this board's declared `hold_marker_tags`
      * @return list<string>
      */
-    private function tagsToWrite(array $row, array $callerTags): array
+    private function tagsToWrite(array $row, array $callerTags, array $holdTags): array
     {
         $tags = $callerTags;
         foreach ($this->rowTags($row) as $existing) {
-            if (CallerTagPolicy::isReserved($existing)) {
+            if (CallerTagPolicy::isPreserved($existing, $holdTags)) {
                 $tags[] = $existing;
             }
         }
@@ -442,16 +488,62 @@ final class BoardCorrectCardTool implements Tool
     }
 
     /**
+     * This board's OPERATOR-DECLARED hold-marker tags (DL-194), or a refusal when the
+     * config that declares them cannot be read.
+     *
+     * ⭐ THE SEAT KNOWS A BOARD AND `writeback.json` IS KEYED BY REPO, which is the only
+     * reason this needs a primitive at all: {@see WritebackConfig::holdMarkerTagsForBoard}
+     * is the board-keyed read, deduped across every repo mapping that targets the board
+     * (several can).
+     *
+     * THE THREE STATES ARE DIFFERENT ANSWERS AND ARE NOT COLLAPSED:
+     *  - no `writeback.json` (or no config dir) ⇒ `loadDefault()` is null ⇒ this install
+     *    declares no hold tags. `[]` is the TRUE answer, not a fallback.
+     *  - a parsed config ⇒ the declared set, possibly empty for this board.
+     *  - a config that will not parse ⇒ the hold vocabulary is UNKNOWN, and a wholesale
+     *    tag replace under an unknown hold vocabulary can silently delete a human's
+     *    hold. Refuse the correction and name the file: an install fault the seat cannot
+     *    fix and must not retry. ⚠ This is reachable, not defensive — the board-tools
+     *    path builds its client through `WritebackClientFactory`, which never touches
+     *    `writeback.json`, so a malformed file breaks nothing else on this door.
+     *
+     * @return list<string>
+     */
+    private function installHoldTags(int $boardId): array
+    {
+        try {
+            $writeback = WritebackConfig::loadDefault();
+        } catch (ConfigException $e) {
+            Log::warning('board_correct_card: refused a tag correction — writeback.json will not parse, so this board\'s hold-marker vocabulary is unknown', [
+                'board_id' => $boardId, 'error' => $e->getMessage(),
+            ]);
+
+            throw new ToolRefusalException("board_correct_card: the bridge cannot read its own `writeback.json`, so it cannot tell which tags this install treats as a HOLD on board {$boardId} — and correcting `tags` replaces the card's whole list, which would silently delete one. Nothing was written. This is an INSTALL fault, not something your arguments can fix; report it to your operator. Correcting `name`/`description` alone is unaffected.");
+        }
+
+        return $writeback?->holdMarkerTagsForBoard($boardId) ?? [];
+    }
+
+    /**
      * A 4xx the BOARD answered on the ownership lookup, mapped to a named refusal.
-     * A 403 here is the writeback token's board membership, not anything the seat
-     * passed — so the message says whose problem it is and does not invite a retry.
      * Anything else (5xx, a timeout) is re-thrown for the dispatcher's 502, which is
      * the correct answer for a fault that MAY clear.
+     *
+     * ⛔ THE 403 MESSAGE NAMES THE TOKEN'S ABILITIES, NOT ITS BOARD MEMBERSHIP, and the
+     * correction matters because the wrong cause sends the operator to audit something
+     * that cannot produce this status: kanban's search FLOORS a caller to its member
+     * boards and answers 200-with-zero-rows for the rest, so a membership gap arrives
+     * as a not-found refusal ({@see notYoursMessage} carries that disjunct), never as a
+     * 403. What does answer 403 on this route is the Sanctum ability gate (kanban
+     * DL-055: a GET needs `read`), i.e. a token issued with too narrow a scope.
+     *
+     * A 401 is the same class of permanent: the token was not accepted at all —
+     * revoked, rotated, or replaced by a value the board does not know.
      */
     private function lookupRefusal(RequestException $e, int $cardId, string $agentName): \Throwable
     {
         $status = $e->response->status();
-        if ($status !== 403 && $status !== 404) {
+        if ($status !== 401 && $status !== 403 && $status !== 404) {
             return $e;
         }
 
@@ -459,15 +551,30 @@ final class BoardCorrectCardTool implements Tool
             'agent' => $agentName, 'card_id' => $cardId, 'status' => $status,
         ]);
 
-        return new ToolRefusalException("board_correct_card: the bridge could not read your board to establish that card {$cardId} is yours (the board answered {$status}) — so nothing was written and nothing was read about the card. This is an INSTALL fault, not something your arguments can fix: the writeback token's membership of your board is what to audit. Retrying will not change it.");
+        $cause = match ($status) {
+            401 => "the bridge's writeback token was not accepted at all — it has been revoked, rotated or replaced with a value the board does not know",
+            403 => "the bridge's writeback token was recognised but not permitted to READ — kanban gates the API on per-token abilities, and this one lacks `read` (board membership does NOT produce a 403: an unreadable board answers zero rows instead)",
+            default => 'the board answered 404 for the card search itself, which is an API-surface fault rather than a missing card',
+        };
+
+        return new ToolRefusalException("board_correct_card: the bridge could not read your board to establish that card {$cardId} is yours (the board answered {$status}) — so nothing was written and nothing was read about the card. This is an INSTALL fault, not something your arguments can fix: {$cause}. Retrying will not change it; report it to your operator.");
     }
 
     /**
-     * A 4xx the BOARD answered on the WRITE. Both arms are deterministic, so both
-     * are refusals rather than the retryable 502: a 404 means the card stopped
-     * existing between the ownership check and the write (it was deleted or
-     * archived under us), and a 403 means the writeback token may read the card and
-     * not write it.
+     * A 4xx the BOARD answered on the WRITE. Every arm is deterministic, so every one
+     * is a refusal rather than the retryable 502: a 404 means the card stopped existing
+     * between the ownership check and the write (deleted or archived under us), a 403
+     * means the token may read the card and not write it, a 401 means the token is no
+     * longer accepted at all, and a 422 means kanban's own validator rejected a VALUE —
+     * which no number of retries will change either.
+     *
+     * ⛔ THE 422 ARM IS THE ONE THAT MAKES THE BRIDGE-SIDE VALUE BOUNDS SAFE TO GET
+     * WRONG. Those bounds ({@see KanbanFieldLimits}) mirror rules that live in kanban's
+     * repo, so they can go stale; with 422 on the retryable path, a stale bound became a
+     * seat retrying forever against `502 upstream board error` with no diagnosis. It is
+     * mapped here instead, and the message is BRIDGE-AUTHORED: the board's response body
+     * is never echoed — it is an upstream artefact whose shape and contents this tool
+     * does not control, and the caller can act on the bounded statement below.
      */
     private function writeRefusal(RequestException $e, int $cardId, string $agentName): \Throwable
     {
@@ -480,7 +587,13 @@ final class BoardCorrectCardTool implements Tool
             return new ToolRefusalException("board_correct_card: card {$cardId} no longer exists — it was removed between the ownership check and the write, so NOTHING was written. Re-read your cards with `board_my_cards`.");
         }
         if ($status === 403) {
-            return new ToolRefusalException("board_correct_card: the board refused the write to card {$cardId} (403) — the card is yours, but the bridge's writeback token may not write it. Nothing was written. This is an INSTALL fault (token scope), not something your arguments can fix; report it to your operator.");
+            return new ToolRefusalException("board_correct_card: the board refused the write to card {$cardId} (403) — the card is yours, but the bridge's writeback token may not write it (kanban gates the API on per-token abilities: a PATCH needs `write`). Nothing was written. This is an INSTALL fault (token scope), not something your arguments can fix; report it to your operator.");
+        }
+        if ($status === 401) {
+            return new ToolRefusalException("board_correct_card: the board did not accept the bridge's writeback token at all on the write to card {$cardId} (401) — it has been revoked, rotated or replaced with a value the board does not know. Nothing was written. This is an INSTALL fault; retrying will not change it.");
+        }
+        if ($status === 422) {
+            return new ToolRefusalException("board_correct_card: the board REJECTED the value you sent for card {$cardId} (422) — kanban's own validator refused it, so nothing was written and re-sending the same call cannot succeed. The bridge bounds `name` at ".KanbanFieldLimits::NAME_MAX.' characters and each tag at '.KanbanFieldLimits::TAG_MAX.' before it sends, so reaching this means a value broke a kanban rule the bridge does not mirror (or one that has moved). Shorten or simplify the field you were correcting, and report it to your operator if it persists.');
         }
 
         return $e;

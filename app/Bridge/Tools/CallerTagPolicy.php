@@ -3,10 +3,25 @@
 namespace App\Bridge\Tools;
 
 use App\Bridge\Exceptions\ToolRefusalException;
+use App\Bridge\Writeback\KanbanFieldLimits;
+use App\Bridge\Writeback\PinGuard;
+use App\Bridge\Writeback\WritebackConfig;
 
 /**
- * WHICH TAGS A CALLER MAY SUPPLY, and which belong to the bridge — one owner for
- * both board tools that touch a tag list (card#8378).
+ * WHICH TAGS A CALLER MAY SUPPLY, and which tags ALREADY ON A CARD must survive a
+ * wholesale replace — one owner for both board tools that touch a tag list
+ * (card#8378).
+ *
+ * ⭐ THOSE ARE TWO DIFFERENT QUESTIONS AND THIS CLASS ANSWERS THEM SEPARATELY. REFUSE
+ * ({@see sanitize}) is *what a caller may not forge*; PRESERVE ({@see isPreserved}) is
+ * *what on this card is somebody ELSE'S control*. The first cut of this class derived
+ * preserve FROM refuse and called them one rule read two ways; they are not, and the
+ * derived set is strictly the smaller one: `no-automove` is forgeable (a seat may
+ * pin its own card) and yet it is the writeback's all-outcome hold
+ * ({@see PinGuard::isPinned}), so deriving one from the other made a `tags` correction
+ * DELETE a human's pin and hand the next `merged` event the terminal move card#8289
+ * exists to prevent. PRESERVE ⊇ REFUSE is therefore the invariant, and
+ * the containment is asserted rather than assumed.
  *
  * Extracted from {@see BoardCreateCardTool} at its SECOND caller, not before: with
  * {@see BoardCorrectCardTool} there are now two surfaces on which a seat's own tag
@@ -42,20 +57,48 @@ final class CallerTagPolicy
     public const RESERVED_BARE = ['triaged'];
 
     /**
-     * Whether a tag ALREADY ON A CARD is one the bridge (or the triage pass) owns
-     * rather than the calling seat.
+     * Bare tags that must SURVIVE a wholesale tag replace although a caller may
+     * legitimately supply them. LOWERCASE — the match casefolds.
      *
-     * The read direction of the same rule {@see sanitize} enforces on the write
-     * direction, and single-sourced with it deliberately: `board_correct_card`
-     * replaces a card's tag list wholesale (kanban stores it as one list), so it
-     * must re-send exactly the tags a caller was never allowed to supply. If this
-     * predicate and the sanitizer's refusal ever disagreed, a correction would
-     * silently DELETE a tag the caller cannot restore.
+     * `no-automove` is {@see PinGuard}'s all-outcome writeback hold: the tag half of
+     * the pin whose other half (`block_reason`) the correction tool already refuses to
+     * touch by name. It is deliberately NOT in the refuse set — pinning your
+     * own card is a legitimate thing for a seat to do, and `board_create_card` has
+     * always accepted it — which is exactly why preserve cannot be derived from refuse.
+     *
+     * ⚠ The install's own `hold_marker_tags` (DL-194) are the OPERATOR-declared other
+     * half of this set and are not constants: they arrive per call from
+     * {@see WritebackConfig::holdMarkerTagsForBoard}.
+     *
+     * @var list<string>
+     */
+    public const PRESERVED_BARE = ['no-automove'];
+
+    /**
+     * Whether a tag ALREADY ON A CARD is somebody else's control rather than the
+     * calling seat's content — so a wholesale `tags` replace must re-send it.
+     *
+     * A SUPERSET of the refuse vocabulary, never its mirror (see the class docblock):
+     * the bridge-stamped provenance/correlation/typing tags a caller may not supply,
+     * PLUS the pin and hold markers a caller MAY supply but which, once on the card,
+     * belong to whoever put them there — the writeback's `no-automove` and every
+     * `hold_marker_tags` entry this install declares for the card's board.
+     *
+     * ⛔ The hold set is passed IN rather than read here: it is per-board operator
+     * config (`writeback.json`), and a policy class that loaded config would make every
+     * caller's reachability question invisible. The caller resolves it and decides what
+     * an unreadable config means.
      *
      * Casefolded like the sanitizer, and for the same collation reason — a card
-     * carrying `Type:feature` is still the board's tag, not the caller's.
+     * carrying `Type:feature` is still the board's tag, not the caller's. The fold is
+     * WIDER than the exact compares `PinGuard`/`KanbanMoveCardHandler` make on the same
+     * tags, deliberately: over-preserving costs a caller one tag it can re-drop by
+     * re-supplying the list, while under-preserving destroys a control it cannot
+     * restore.
+     *
+     * @param  list<string>  $installHoldTags  this board's `hold_marker_tags` (DL-194)
      */
-    public static function isReserved(string $tag): bool
+    public static function isPreserved(string $tag, array $installHoldTags): bool
     {
         $folded = strtolower(trim($tag));
         foreach (self::RESERVED_PREFIXES as $prefix) {
@@ -63,8 +106,16 @@ final class CallerTagPolicy
                 return true;
             }
         }
+        if (in_array($folded, self::RESERVED_BARE, true) || in_array($folded, self::PRESERVED_BARE, true)) {
+            return true;
+        }
+        foreach ($installHoldTags as $hold) {
+            if ($folded === strtolower(trim($hold))) {
+                return true;
+            }
+        }
 
-        return in_array($folded, self::RESERVED_BARE, true);
+        return false;
     }
 
     /**
@@ -75,8 +126,9 @@ final class CallerTagPolicy
      *
      * Refuses (422-class, via {@see ToolRefusalException}) a non-list, a
      * non-string/empty entry, an entry outside printable ASCII or carrying a
-     * kanban tag-search metacharacter (`"`/`*`/`_`/`%`), and any entry matching
-     * the reserved vocabulary above.
+     * kanban tag-search metacharacter (`"`/`*`/`_`/`%`), an entry longer than
+     * {@see KanbanFieldLimits::TAG_MAX}, and any entry matching the reserved
+     * vocabulary above.
      *
      * @param  array<string, mixed>  $args  the caller-supplied argument object
      * @param  string  $tool  the tool name every refusal is prefixed with
@@ -106,6 +158,15 @@ final class CallerTagPolicy
             if (preg_match('/^[\x20-\x7E]+$/D', $tag) !== 1 || strpbrk($tag, '"*_%') !== false) {
                 throw new ToolRefusalException("{$tool}: the tag `{$tag}` contains a character outside printable ASCII or a kanban tag-search metacharacter (\" * _ %) — these defeat the case-insensitive reserved-tag guard or mis-match the kanban tokenizer");
             }
+            // Kanban's own cap ({@see KanbanFieldLimits::TAG_MAX}, a mirror — that class
+            // states what a mirror is worth), so an over-long tag is a NAMED
+            // caller-fixable refusal instead of a board 422 the seat cannot read.
+            // mb_strlen, because Laravel's `max` sizes a string with it — the charset
+            // guard above already forces one byte per character here, so the two agree
+            // by construction and this stays right if that rule ever widens.
+            if (mb_strlen($tag) > KanbanFieldLimits::TAG_MAX) {
+                throw new ToolRefusalException("{$tool}: the tag `{$tag}` is ".mb_strlen($tag).' characters — kanban accepts at most '.KanbanFieldLimits::TAG_MAX.' per tag (`tags.* => string|max:64`), so the board would reject the write. Shorten it.');
+            }
             // Casefold the reserved match: whether the backing tag search folds
             // case is a per-driver collation fact (see the class docblock), so
             // refuse every case variant (IDEM:… reaches the lowercase idem probe
@@ -117,7 +178,7 @@ final class CallerTagPolicy
                 }
             }
             if (in_array($folded, self::RESERVED_BARE, true)) {
-                throw new ToolRefusalException("{$tool}: the tag `{$tag}` is reserved — the triage pass owns it, and tool-created cards are born untriaged by design");
+                throw new ToolRefusalException("{$tool}: the tag `{$tag}` is reserved — tool-created cards are born untriaged by design (they surface to the triage pass)");
             }
             $tags[] = $tag;
         }
