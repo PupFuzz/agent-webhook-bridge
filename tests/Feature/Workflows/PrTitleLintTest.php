@@ -1446,8 +1446,27 @@ class PrTitleLintTest extends TestCase
      * several reasons no PR title can express — an unmapped repo, a card the token
      * cannot read, the mapped-board guard, a near-miss hijack, and a PINNED card on
      * every outcome (card#8289). All are downstream of this gate and invisible to it.
-     * What is established is the biconditional on THIS predicate, the only one a title
-     * and a branch can decide.
+     * What is established is the biconditional on THIS predicate, over the corpus below.
+     *
+     * ⛔ AND IT IS NOT UNIVERSAL OVER WHAT A TITLE CAN DECIDE — the wording that said
+     * *"the only one a title and a branch can decide"* is corrected here, and it was
+     * ALREADY false when it was written. Two families of title-decidable input make the
+     * two sides answer DIFFERENTLY, both by design, and both were MEASURED rather than
+     * reasoned about: the REVERT family (card#8306 — the writeback subtracts the quoted
+     * span and refuses GitHub's wrapped ref, while the gate reads that same quoted verb as
+     * a closing form and demands nothing of a `revert-*` branch), and `[no-close]`
+     * (card#8344 / DL-327 — the gate short-circuits at its `optout=` test while the
+     * writeback reads the marker as the author's declaration and withholds the move). The
+     * corpus below carries NO row of either family, and that is a CONDITION of this leg
+     * rather than an omission.
+     *
+     * ⭐ WHAT IS TRUE OF EVERY KNOWN DISAGREEMENT IS ITS DIRECTION: the gate PASSES and the
+     * writeback REFUSES — under-promotion, which a human fixes by moving the card. The
+     * reverse (CI reds a PR whose merge would have moved the card) is the one that would be
+     * a defect, and no measured case produces it.
+     * {@see test_the_gate_and_the_predicate_disagree_by_design_on_a_marker_and_on_a_revert()}
+     * pins both families with a one-variable control, so an author who adds such a row here
+     * finds the verdict already ruled on rather than a tie to "fix".
      *
      * The `merged` outcome is passed rather than `merged_to_main` because the step
      * exempts `release/*` — the only head that reaches a `main` base — so the base
@@ -1472,6 +1491,97 @@ class PrTitleLintTest extends TestCase
         // that nothing is wrong, which is the shape of a check that cannot fail.
         $this->assertGreaterThan(0, $reds, 'the corpus contains no PR the bridge would refuse — the tie measured nothing');
         $this->assertLessThan($agreed, $reds, 'the corpus contains no PR the bridge would move — the tie measured nothing');
+    }
+
+    /**
+     * ⭐ THE TITLE-DECIDABLE ROWS WHERE THE GATE AND THE PREDICATE DISAGREE, pinned so each
+     * is a RULING rather than a gap. The tie above cannot carry them: adding one to
+     * `closureCorpus()` reds that leg, and the obvious "repair" — teaching one side the
+     * other's answer — deletes either the CI opt-out or the runtime withholding, which are
+     * the two halves of the features they belong to.
+     *
+     * WHY THEY DIFFER, and why both sides are right. The step answers *must this author
+     * write a closure claim?*; the writeback answers *does this merge claim the card is
+     * done?* Those are different questions, and two inputs separate them:
+     *
+     *  - **`[no-close]`** (card#8344 / DL-327). The author has already answered the first —
+     *    a declared NON-closure — so the gate demands nothing and exits 0, while the
+     *    writeback reads the same literal as the declaration it is and refuses BOTH routes.
+     *  - **A REVERT announced only in the TITLE** (card#8306). `Revert "… (closes card#N)"`
+     *    pushed to an ORDINARY branch is not covered by the step's `revert-*` exemption at
+     *    all: the step reads the quoted verb as a closing form and passes, while
+     *    `ClosureGrammar` subtracts the quoted span and {@see PrOutcome::mergeClosesCard()}
+     *    asks `App\Bridge\Support\RevertGrammar::isRevert()` on both surfaces, so the
+     *    writeback refuses.
+     *    ⚠ This one PREDATES the marker — the tie's docblock claim that its biconditional
+     *    covered everything a title can decide was false when written, which is why the
+     *    correction there is measured here rather than asserted there.
+     *
+     * ⭐ EVERY ROW BELOW POINTS THE SAME WAY — gate PASSES, writeback REFUSES — and that
+     * direction is the property worth holding: it fails toward UNDER-promotion, which a
+     * human repairs by moving the card. A row in the other direction (CI green-lighting a
+     * closure the writeback would not make, or reding one it would) is the defect shape, and
+     * none is known.
+     *
+     * EACH ROW CARRIES ITS OWN ONE-VARIABLE CONTROL — the same title with the marker, or the
+     * revert wrapper, removed — because a disagreement asserted without one is satisfied by
+     * any title the gate happens to pass. The marker rows run on BOTH branch shapes because
+     * the control's verdict inverts between them (on the card's own branch both sides MOVE;
+     * on `<type>/<id>-slug` both REFUSE), and the closing `assertNotSame` is what proves that
+     * pair is not one measurement taken twice.
+     */
+    public function test_the_gate_and_the_predicate_disagree_by_design_on_a_marker_and_on_a_revert(): void
+    {
+        $marked = 'docs: cite the prior ruling '.NoCloseGrammar::MARKER.' (card#8286)';
+        $control = 'docs: cite the prior ruling (card#8286)';
+        $this->assertSame($control, str_replace(NoCloseGrammar::MARKER.' ', '', $marked),
+            'the control differs from the marked title by more than the marker — it would not isolate it');
+
+        $id = CardTokenGrammar::parse($marked);
+        $this->assertSame(8286, $id, 'the marker must not disturb which card the title correlates');
+        $this->assertSame($id, CardTokenGrammar::parse($control));
+
+        $controlVerdicts = [];
+        foreach (['card-8286-context', 'docs/8286-context'] as $branch) {
+            // THE RUNTIME REFUSES, on both routes, because the marker empties both.
+            $this->assertFalse(ClosureGrammar::closesCard($marked, $id),
+                'the lexical route must be empty under the marker');
+            $this->assertFalse(PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, $id, $marked),
+                "the structural route must be empty under the marker, including on '{$branch}' which names the card");
+
+            // THE GATE PASSES IT — the disagreement, asserted rather than tolerated.
+            $this->assertSame(0, $this->runClosureStep($marked, $branch),
+                "the gate must PASS a declared non-closure on '{$branch}' — demanding a closure claim there is the over-promotion defect the marker exists to prevent");
+
+            // THE CONTROL: same title, marker removed ⇒ the two sides agree again.
+            $runtimeMoves = ClosureGrammar::closesCard($control, $id)
+                || PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, $id, $control);
+            $this->assertSame($runtimeMoves, $this->runClosureStep($control, $branch) === 0,
+                "without the marker the gate and the bridge must AGREE on '{$branch}' — otherwise the marker is not what carries the disagreement");
+            $controlVerdicts[$branch] = $runtimeMoves;
+        }
+
+        $this->assertNotSame($controlVerdicts['card-8286-context'], $controlVerdicts['docs/8286-context'],
+            'both control branches reached the same verdict — the pair measured one direction twice');
+
+        // THE REVERT FAMILY, on an ORDINARY branch so the step's `revert-*` exemption is not
+        // what carries the answer: the quoted closing form is a closing form to the gate and
+        // is subtracted by the writeback. Its control is the SAME closing form UNQUOTED.
+        $reverted = 'Revert "feat: widget rework (closes card#4811)"';
+        $unquoted = 'feat: widget rework (closes card#4811)';
+        $branch = 'fix/streaming-timeout';
+        $revertId = CardTokenGrammar::parse($reverted);
+        $this->assertSame(4811, $revertId, 'the quoted revert must still CORRELATE the card — only the closure claim is refused');
+
+        $this->assertFalse(ClosureGrammar::closesCard($reverted, $revertId),
+            'the writeback must not read a closing form out of a quoted revert title');
+        $this->assertSame(0, $this->runClosureStep($reverted, $branch),
+            'the gate reads the quoted verb as a closing form and passes — the disagreement this row exists to pin');
+
+        $this->assertTrue(ClosureGrammar::closesCard($unquoted, $revertId),
+            'unquoted, the identical closing form must close — otherwise the quoting is not what carries the refusal');
+        $this->assertSame(0, $this->runClosureStep($unquoted, $branch),
+            'the control must pass the gate too, so the two rows differ only in the writeback verdict');
     }
 
     /**
