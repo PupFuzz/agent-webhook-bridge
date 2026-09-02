@@ -587,7 +587,7 @@ final class BoardCorrectCardTool implements Tool
             return new ToolRefusalException("board_correct_card: card {$cardId} no longer exists — it was removed between the ownership check and the write, so NOTHING was written. Re-read your cards with `board_my_cards`.");
         }
         if ($status === 403) {
-            return new ToolRefusalException("board_correct_card: the board refused the write to card {$cardId} (403) — the card is yours, but the bridge's writeback token may not write it (kanban gates the API on per-token abilities: a PATCH needs `write`). Nothing was written. This is an INSTALL fault (token scope), not something your arguments can fix; report it to your operator.");
+            return new ToolRefusalException("board_correct_card: the board refused the write to card {$cardId} (403) — the card is yours, but the bridge's writeback user may not write it. TWO independent gates answer 403 here and BOTH need auditing: the token's abilities (a PATCH needs `write`) and the writeback user's board role, which needs `task.update` — a PATCH carrying anything other than `workflow_stage_id` alone authorizes update, not move (kanban DL-204), and `task.update` is new for this door (`board_my_cards` and `board_create_card` never needed it). Nothing was written. This is an INSTALL fault, not something your arguments can fix; report it to your operator.");
         }
         if ($status === 401) {
             return new ToolRefusalException("board_correct_card: the board did not accept the bridge's writeback token at all on the write to card {$cardId} (401) — it has been revoked, rotated or replaced with a value the board does not know. Nothing was written. This is an INSTALL fault; retrying will not change it.");

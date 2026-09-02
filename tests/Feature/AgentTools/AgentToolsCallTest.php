@@ -1838,6 +1838,14 @@ class AgentToolsCallTest extends TestCase
 
     public function test_correct_maps_a_403_on_the_write_to_a_named_refusal(): void
     {
+        // ⛔ TWO INDEPENDENT GATES ANSWER 403 ON `PATCH /api/v3/tasks/{id}.json`, and the
+        // message has to send the operator to BOTH or it sends them to audit half the
+        // cause: the Sanctum per-token ABILITY gate (`EnforceTokenAbilities` — a PATCH
+        // needs `write`) and the board ROLE permission (`task.update`, because a PATCH
+        // carrying anything but `workflow_stage_id` alone authorizes `update`, kanban
+        // DL-204). `task.update` is NEW for this door — the other two board tools need
+        // only `board.view` / `task.create` — so an install granting exactly those 403s
+        // here with a token whose abilities are perfectly fine.
         Http::fake($this->correctFake(live: [$this->ownCardRow()], patchStatus: 403));
 
         $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'x']]);
@@ -1845,6 +1853,8 @@ class AgentToolsCallTest extends TestCase
         $res->assertStatus(422);
         $this->assertStringContainsString('403', (string) $res->json('error'));
         $this->assertStringContainsString('Nothing was written', (string) $res->json('error'));
+        $this->assertStringContainsString('`write`', (string) $res->json('error'));
+        $this->assertStringContainsString('`task.update`', (string) $res->json('error'));
     }
 
     public function test_correct_maps_a_404_on_the_write_to_a_named_refusal(): void

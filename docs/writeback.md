@@ -66,7 +66,17 @@ The lexical verbs are GitHub's own linking keywords — `close`/`closes`/`closed
 ## Setup (operator)
 
 ### 1. A least-privilege writeback token
-Create a kanban API token scoped to **card moves on the mapped boards** (NOT the broad provisioning token), and place it:
+Create a kanban API token for the mapped boards (NOT the broad provisioning token). ⚠ **"Card moves" is NOT the scope** — that spelling stood here from DL-019, when `KanbanClient` exposed `getCard` + `moveCard` and nothing else, and it understates what the writeback needs today. kanban authorizes a card PATCH by which fields it carries: a PATCH whose SOLE key is `workflow_stage_id` takes `task.move`, every other field set takes `task.update` (kanban DL-204 — `TaskMutator::update()` → `TaskPolicy` → `BoardPermissions`). The board permissions the writeback actually needs on every mapped board are:
+
+| Permission | What needs it |
+| --- | --- |
+| `board.view` | every read (`getCard`, the board-scoped searches, the correlation lookups, `board_my_cards`) |
+| `task.move` | the stage-only move — the move handler, the coord-card move, the release-promote sweep, `bridge:reconcile --fix` |
+| `task.create` | the dependabot tracking card, the coord card, `board_create_card` |
+| `task.archive` | `_action: archive` — the closed-unmerged retire (DL-161) and the duplicate collapse |
+| `task.update` | every non-stage-only field PATCH — the draft `block_reason` overlay, the `payload` correlation stamp, and (DL-326) a `board_correct_card` correction of `name`/`description`/`tags` |
+
+A kanban **Member** role carries all five and is the simple answer. A **custom** role grants `create` / `update` / `move` / `delete` independently from its pivot JSON (and inherits `task.archive` from Member), so a token narrowed to moves alone gets a **permanent 403 on every create, every overlay/stamp write and every correction** — surfaced as that arm's permanent refusal (`board_correct_card` reports it as a named INSTALL fault, [`docs/board-tools.md`](board-tools.md)), never a silent skip. ⚠ **`task.update` is NEW for the board-tools door at DL-326** — `board_my_cards` needs only `board.view` and `board_create_card` only `task.create`, so an install that granted exactly those two now 403s on every correction. Comment-create is additionally required for the card notes (below). Place the token:
 ```bash
 # `read -rs` keeps the token off the terminal and out of your shell history — a
 # here-string (or any command-line literal) is written to that file verbatim.
