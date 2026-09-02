@@ -243,9 +243,11 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         }
 
         // Dependabot PRs carry no DL and have no pre-existing card. When opted in
-        // (per-mapping `create_dependabot_cards`), emit a create-or-move target
-        // keyed by PR NUMBER — the durable handler creates the card on open and
-        // moves it on close. Detected by dependabot's own branch namespace.
+        // (per-mapping `create_dependabot_cards`), emit a target keyed by PR NUMBER
+        // and detected by dependabot's own branch namespace; the per-event lifecycle
+        // it resolves to is owned by KanbanDependabotCardHandler and docs/writeback.md
+        // and is deliberately not restated here (this comment said "moves it on close"
+        // long after DL-161 made the closed-unmerged arm ARCHIVE instead).
         // Gated on a real MOVE outcome so a null-outcome overlay action (which was
         // previously unreachable here — it early-returned above) can't fall in.
         if ($outcome !== null && $mapping->createDependabotCards && $this->isDependabot($payload)) {
