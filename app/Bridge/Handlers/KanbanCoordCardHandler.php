@@ -45,7 +45,8 @@ use Illuminate\Support\Facades\Log;
  * widened the pin onto the dependabot archive/move only) — and DL-341's restamp inherits
  * the same blindness DL-328's does: a PINNED card whose name the bridge still owns is
  * restamped. Read as the roster the pin rulings cover, never as "every write on this
- * handler". Tracked with the rest of the class on card#8523.
+ * handler". Tracked with the rest of the pin-blind-writer class on card#8557 — the
+ * successor that took the class over as PR #649 closed card#8523.
  *
  * THE CREATE ARM, in full. Correlation + idempotency key on the `id:<sid>` TAG (the
  * locked contract adoption key): if a card already carries it, skip — which covers
@@ -374,9 +375,13 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
      * is deliberately not additionally repo-attributed the way the dependabot arm's is (it
      * has a `pr_url` to attribute by; an `id:<sid>` is not repo-qualified). So on a coord
      * board shared by two repos, a colliding `id:QUERY-4` is separated by the byte-equality
-     * test alone. That is the correlation scope the create arm already has — inherited, not
-     * widened here — and the ownership test is what makes inheriting it safe: two repos'
-     * issues would have to carry the same previous title for the wrong card to be written.
+     * test alone. ⚠ THE SCOPE IS INHERITED FROM THE CREATE ARM; THE COST OF A COLLISION IS
+     * NOT THE SAME, and flattening the two into "inherited, not widened" would understate it:
+     * on the create arm a colliding foreign card makes the pre-check SKIP — nothing is
+     * written — while here it is a WRITE onto that other repo's card. Same correlation scope,
+     * a different failure mode, with the ownership test the only thing between them: two
+     * repos' issues would have to carry the same previous title for the wrong card to be
+     * written.
      *
      * ⚑ ON >1 CORRELATED CARD THIS RESTAMPS EVERY MATCHING ONE, and does NOT collapse — the
      * same ruling as DL-328 Decision 5, for the same reason: a create-race duplicate carries
@@ -384,6 +389,13 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
      * the other asserting the stale title, while retiring it belongs to the create path's
      * own collapse. The ownership test is applied per card, so a race pair one of whose
      * cards a human renamed still writes to the other alone.
+     *
+     * ⛔ "EVERY MATCHING ONE" IS BOUNDED BY THE SHARED 4xx CATCH: a per-card refusal (a 404
+     * on a card deleted between the search and the patch) unwinds out of this loop to
+     * {@see handle}'s `catch`, which alerts and returns — so a permanent refusal on the
+     * FIRST card of a pair leaves the second unwritten. Left as it is rather than caught per
+     * card: the refusal is loud, the arm is idempotent under redelivery, and a shared cause
+     * (a 403 on the token) would refuse both anyway.
      */
     private function restampNames(KanbanClient $client, WritebackMapping $mapping, ?string $tag, mixed $nameFrom, string $title, string $repo, int $issueNumber): void
     {

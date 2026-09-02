@@ -1020,10 +1020,14 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         // on the new title would look for a tag no card carries and restamp nothing.
         // ⚠ It also means the tag is left STALE by a prefix-changing retitle: this leg
         // writes `name` and nothing else (see the handler), so the card keeps `id:QUERY-N`
-        // while its name says `[TASK]`. That divergence PRE-DATES this leg — it is what any
-        // prefix edit already does to a carded thread, on every install, restamp or not —
-        // and re-tagging is a correlation-key rewrite shared with the consumer's reconcile,
-        // not a name write. Recorded in docs/writeback.md rather than smuggled in here.
+        // while its name says `[TASK]`. ⚠ That NAME-vs-TAG disagreement is NEW here rather
+        // than inherited: before this leg a prefix edit left BOTH stale together, and only a
+        // name write moves one without the other. It is left because it is INERT — nothing
+        // correlates on a card's name. This arm and the create arm both resolve by the tag,
+        // and the consumer's reconcile keys on the `id:` tag, force-preserves it, and writes
+        // a coord card's `name` only when it creates the card. Re-tagging is a
+        // correlation-key rewrite shared with that reconcile, not a name write. Recorded in
+        // docs/writeback.md rather than smuggled in here.
         $sid = $this->stableId($retitledFrom ?? $title, $num);   // null for a non-prefixed issue (#4553)
 
         // Own gate: the repo must opt into coord-card creation. Loaded like the
