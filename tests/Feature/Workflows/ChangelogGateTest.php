@@ -156,12 +156,20 @@ class ChangelogGateTest extends TestCase
      * base→head fixture is a branch that is already up to date with its base,
      * where merge and head coincide and the defect cannot exist.
      *
+     * `$branchMergesBase` takes the branch one step further: the PR branch
+     * MERGES the moved base and pushes, which is what the remedy's own first
+     * step tells the author to do. The head sha is then a merge commit whose
+     * merge-base with the base branch IS the base branch — the branch's history
+     * has absorbed the fold — while its FORK POINT is unmoved. Nothing else
+     * about the shape changes, which is what makes the pair a discriminator
+     * between the two readings.
+     *
      * @param  array<string,string>  $fork  files at the fork point
      * @param  array<string,string>  $base  files as the base branch rewrites them after the fork
      * @param  array<string,string>  $head  files as the PR branch rewrites them after the fork
      * @return array{dir:string,base:string,head:string}
      */
-    private function makeForkedRepo(array $fork, array $base, array $head): array
+    private function makeForkedRepo(array $fork, array $base, array $head, bool $branchMergesBase = false): array
     {
         $dir = $this->initRepo();
         $git = $this->git($dir);
@@ -178,6 +186,16 @@ class ChangelogGateTest extends TestCase
         $this->writeFiles($dir, $base);
         exec($git.'add -A && '.$git.'commit -q --allow-empty -m base 2>&1');
         $baseSha = trim((string) shell_exec($git.'rev-parse HEAD'));
+
+        if ($branchMergesBase) {
+            exec($git.'checkout -q pr 2>&1');
+            $rc = 0;
+            $out = [];
+            exec($git.'merge -q --no-edit main 2>&1', $out, $rc);
+            $this->assertSame(0, $rc, "the branch's merge of the base must be clean: \n".implode("\n", $out));
+            $headSha = trim((string) shell_exec($git.'rev-parse HEAD'));
+            exec($git.'checkout -q main 2>&1');
+        }
 
         // A CONFLICTING pull request gets no merge ref and therefore no workflow
         // run at all, so a fixture that conflicts is testing nothing GitHub
@@ -417,6 +435,16 @@ class ChangelogGateTest extends TestCase
         // was open" would be false about the one branch that could not have
         // been surprised by it. The pre-fold text must NOT appear here; the
         // generic remedy must.
+        //
+        // WHICH LEG DECIDES, measured rather than assumed: the fixture is LINEAR
+        // (base → head, no fork), so the branch's fork point IS the base and the
+        // predicate's two legs read the same tree — "present on the base" and
+        // "absent at the fork point" cannot both hold here whatever the history
+        // says. The base-presence leg is the one that fails, and dropping it is
+        // what makes this fixture print the fold remedy for [1.0.0]; dropping or
+        // inverting the fork-point leg leaves this leg green (both mutations are
+        // red elsewhere — see the forked fixtures below, which is where the
+        // fork-point leg is the deciding one).
         [$rc, $out] = $this->runFeatureStep(
             ['docs/CHANGELOG.md' => $this->changelog('- old'), 'app/X.php' => 'a'],
             ['docs/CHANGELOG.md' => $this->changelog('- old', "\n## [1.0.0] - 2026-01-01\n\n- shipped (card#1234)\n"), 'app/X.php' => 'b'],
@@ -452,12 +480,18 @@ class ChangelogGateTest extends TestCase
      * @param  array<string,string>  $head
      * @return array{0:int,1:string}
      */
-    private function runFeatureStepForked(array $head, string $title, string $branch, string $mergedMustContain): array
-    {
+    private function runFeatureStepForked(
+        array $head,
+        string $title,
+        string $branch,
+        string $mergedMustContain,
+        bool $branchMergesBase = false,
+    ): array {
         $repo = $this->makeForkedRepo(
             ['docs/CHANGELOG.md' => self::PRE_FOLD_CHANGELOG, 'app/X.php' => 'a'],
             ['docs/CHANGELOG.md' => self::FOLDED_CHANGELOG],
             $head,
+            $branchMergesBase,
         );
 
         // The fixture is only worth its verdict if the MERGE really produced the
@@ -585,6 +619,133 @@ class ChangelogGateTest extends TestCase
         $this->assertStringNotContainsString('predates the fold', $out);
         $this->assertStringNotContainsString('0.79.0', $out);
         $this->assertStringContainsString("Fix: add an [Unreleased] entry citing 'card#1234'", $out);
+    }
+
+    public function test_a_pre_fold_branch_that_has_already_merged_the_base_still_gets_the_fold_remedy(): void
+    {
+        // THE REMEDY'S OWN FIRST STEP, TAKEN. The message tells the author to
+        // merge the base branch and then move the entry; an author who merges
+        // and pushes before moving lands here, with the entry still inside
+        // [1.1.0]. Read from the MERGE-BASE this shape is invisible — the merge
+        // absorbed the fold into the branch's own history, so the fold heading
+        // stands at the merge-base and the predicate goes false — and the gate
+        // answers the author, at the exact moment they did what it asked, with
+        // "add an [Unreleased] entry": the move docs/CHANGELOG.md itself calls
+        // the exact opposite of the right one.
+        //
+        // THE FORK POINT DOES NOT MOVE WHEN THE BRANCH MERGES. That is the whole
+        // reason the predicate reads it: "was the fold cut while this branch was
+        // open" is a question about where the branch STARTED, and a merge is not
+        // a re-fork.
+        [$rc, $out] = $this->runFeatureStepForked(
+            ['docs/CHANGELOG.md' => self::BRANCH_CHANGELOG, 'app/X.php' => 'b'],
+            'fix(x): the new behaviour (card#1234)',
+            'fix/1234-x',
+            "## [1.1.0] - 2026-01-02\n\n- old\n- the new behaviour (card#1234)\n",
+            branchMergesBase: true,
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString('Your entry is under [1.1.0] because the branch predates the fold', $out);
+        $this->assertStringContainsString('move it under [Unreleased]', $out);
+        $this->assertStringNotContainsString('add an [Unreleased] entry', $out);
+    }
+
+    public function test_a_branch_forked_after_the_fold_that_edits_the_just_released_section_is_not_told_a_fold_happened(): void
+    {
+        // THE FORK-POINT LEG'S OWN DISCRIMINATOR, and the one the leg above
+        // cannot supply. This branch forked AFTER [1.1.0] was cut and edits that
+        // just-released section, so the base-presence leg is satisfied by the
+        // very heading the leg above matches on: [1.1.0] stands on the base in
+        // BOTH shapes, and only the fork point tells them apart. Without the
+        // fork-point read the gate would tell this author that a fold they
+        // forked after happened while they were open, and send them to lift a
+        // SHIPPED line out of a release.
+        //
+        // The case-E fixture above uses a section released LONG before the fork
+        // and is not this leg: [0.79.0] is old enough that any reading of the
+        // history separates it. This one is adjacent to the fold by one commit.
+        $edited = "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - 2026-01-02\n\n- old\n- the new behaviour (card#1234)\n";
+
+        $repo = $this->makeForkedRepo(
+            ['docs/CHANGELOG.md' => self::FOLDED_CHANGELOG, 'app/X.php' => 'a'],
+            ['app/Y.php' => 'b'],
+            ['docs/CHANGELOG.md' => $edited, 'app/X.php' => 'b'],
+        );
+
+        $this->assertStringContainsString(
+            "## [1.1.0] - 2026-01-02\n\n- old\n- the new behaviour (card#1234)\n",
+            (string) file_get_contents($repo['dir'].'/docs/CHANGELOG.md'),
+        );
+
+        [$rc, $out] = $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
+            $repo['dir'],
+            [
+                'BASE' => $repo['base'],
+                'HEAD' => $repo['head'],
+                'TITLE' => 'fix(x): the new behaviour (card#1234)',
+                'HEAD_REF' => 'fix/1234-x',
+            ],
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString('does not name card 1234', $out);
+        $this->assertStringNotContainsString('predates the fold', $out);
+        $this->assertStringContainsString("Fix: add an [Unreleased] entry citing 'card#1234'", $out);
+    }
+
+    public function test_an_unreadable_fork_point_changelog_is_not_read_as_the_fold_being_absent(): void
+    {
+        // THE THIRD STATE. The fork-point read is the one the predicate INVERTS,
+        // so "absent" and "could not tell" have to be different answers: under a
+        // `! changelog_has_section` collapse, an extractor failure comes out as
+        // "the heading was not there" and the gate names a fold that did not
+        // happen. Here it did not: the branch forked AFTER [1.1.0] was cut and
+        // edits it, exactly like the leg above — the one variable is that the
+        // changelog AT THE FORK POINT is not valid UTF-8, which the extractor
+        // leaves on its usage code rather than its no-such-section code.
+        //
+        // The base fixes that byte and the branch does not touch it, so the
+        // BASE read and the MERGED read both succeed: this fixture breaks the
+        // one read it is about.
+        $forked = "# Changelog\n\n> notes: caf\xe9\n\n## [Unreleased]\n\n## [1.1.0] - 2026-01-02\n\n- old\n";
+        $based = "# Changelog\n\n> notes: cafe\n\n## [Unreleased]\n\n## [1.1.0] - 2026-01-02\n\n- old\n";
+        $head = "# Changelog\n\n> notes: caf\xe9\n\n## [Unreleased]\n\n## [1.1.0] - 2026-01-02\n\n- old\n- the new behaviour (card#1234)\n";
+
+        $repo = $this->makeForkedRepo(
+            ['docs/CHANGELOG.md' => $forked, 'app/X.php' => 'a'],
+            ['docs/CHANGELOG.md' => $based],
+            ['docs/CHANGELOG.md' => $head, 'app/X.php' => 'b'],
+        );
+
+        // The fixture is only worth its verdict if the merge really left the
+        // MERGED file readable and the FORK POINT unreadable.
+        $merged = (string) file_get_contents($repo['dir'].'/docs/CHANGELOG.md');
+        $this->assertStringContainsString("- old\n- the new behaviour (card#1234)\n", $merged);
+        $this->assertTrue(mb_check_encoding($merged, 'UTF-8'), 'the merged changelog must be readable');
+        $this->assertFalse(
+            mb_check_encoding($forked, 'UTF-8'),
+            'the fork-point changelog must be the unreadable one, or this leg tests nothing',
+        );
+
+        [$rc, $out] = $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
+            $repo['dir'],
+            [
+                'BASE' => $repo['base'],
+                'HEAD' => $repo['head'],
+                'TITLE' => 'fix(x): the new behaviour (card#1234)',
+                'HEAD_REF' => 'fix/1234-x',
+            ],
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringNotContainsString('predates the fold', $out);
+        $this->assertStringContainsString("Fix: add an [Unreleased] entry citing 'card#1234'", $out);
+        // `|| heading=''` is silent by construction, so the tooling failure has
+        // to announce itself or it is indistinguishable from "not this shape".
+        $this->assertStringContainsString('::notice::changelog pre-fold diagnosis unavailable', $out);
     }
 
     public function test_the_pre_fold_remedy_has_exactly_one_spelling_in_the_step(): void

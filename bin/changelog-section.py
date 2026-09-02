@@ -101,8 +101,11 @@ def locate_added(text: str, added: list[str], baseline: str) -> str | None:
     cuts the section itself, also puts a line it introduced under a version
     heading. Whether a FOLD happened while the branch was open is a fact about
     the branch's history, not about this file, so the caller establishes it —
-    `changelog-gate.yml` requires the label to exist on the base and NOT at the
-    merge-base before it prints the fold remedy. DL-329 owns the predicate.
+    `changelog-gate.yml` requires the label to stand on the base and to be ABSENT
+    at the branch's FORK POINT (the parent of its own oldest commit, not its
+    merge-base, which a branch that merges the base absorbs the fold into) before
+    it prints the fold remedy. DL-329 owns the predicate and names its
+    residuals.
 
     A needle already present in the baseline is DROPPED, and that subtraction is
     load-bearing rather than tidiness: every released section here carries
@@ -191,7 +194,14 @@ def main(argv: list[str]) -> int:
         try:
             with open(args.changelog, encoding="utf-8") as fh:
                 text = fh.read()
-        except OSError as exc:
+        # UnicodeDecodeError is caught WITH the OSErrors, and it is not an
+        # OSError: a non-UTF-8 file OPENS, then fails on read, and letting that
+        # escape ends the process on the interpreter's own exit 1 — a code every
+        # caller has to guess at. `changelog-gate.yml` classifies rc 3 as
+        # "section absent" and INVERTS one of its two reads, so an unclassifiable
+        # rc is the one shape that can turn a tooling failure into a confident
+        # diagnosis. Every unreadable input leaves here on the same usage code.
+        except (OSError, UnicodeDecodeError) as exc:
             print(f"cannot read {args.changelog}: {exc}", file=sys.stderr)
             return EXIT_USAGE
 
@@ -204,7 +214,7 @@ def main(argv: list[str]) -> int:
                 added = fh.read().splitlines()
             with open(args.baseline, encoding="utf-8") as fh:
                 baseline = fh.read()
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             print(f"cannot read the locate inputs: {exc}", file=sys.stderr)
             return EXIT_USAGE
         # An EMPTY baseline is refused rather than treated as "the base had no

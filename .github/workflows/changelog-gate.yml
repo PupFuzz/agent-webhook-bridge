@@ -317,10 +317,15 @@ jobs:
           # diagnostic carved from a second reading could contradict the verdict
           # it is explaining.
           #
-          # The NEEDLES are the lines the BRANCH adds — `$BASE...$HEAD`, whose
-          # merge-base is the fork point, not `$BASE..$HEAD`, which reports the
-          # base's own changes as this branch's (measured on --name-only: a
-          # branch touching one file is reported as touching the base's too).
+          # The NEEDLES are the lines the BRANCH adds — the three-dot
+          # `$BASE...$HEAD`, which diffs from the MERGE-BASE, not `$BASE..$HEAD`,
+          # which reports the base's own changes as this branch's (measured on
+          # --name-only: a branch touching one file is reported as touching the
+          # base's too). Merge-base is the right anchor HERE and the wrong one
+          # for the fold predicate below, and the two are not the same question:
+          # this one asks what the branch ADDS to the base's text, which a merge
+          # of the base does not change; that one asks where the branch STARTED,
+          # which a merge of the base does.
           # `--baseline` then drops any needle the base already had, so a shared
           # `### Fixed` head cannot pass for a misfiled entry.
           #
@@ -358,33 +363,129 @@ jobs:
           #     this branch was open" by somebody else.
           #
           # So the fold is asserted, not inferred: the heading must exist on the
-          # BASE and must NOT have existed at the MERGE-BASE — i.e. it appeared
-          # during this branch's life, which is what "the branch predates the
-          # fold" means. Both reads go through the same extractor as the label,
-          # never a `grep '## [x]'`: a second carve of the section boundary is
-          # DL-276's defect class one level down.
+          # BASE and must NOT have existed at the branch's FORK POINT — i.e. it
+          # appeared during this branch's life, which is what "the branch
+          # predates the fold" means. Both reads go through the same extractor as
+          # the label, never a `grep '## [x]'`: a second carve of the section
+          # boundary is DL-276's defect class one level down.
           #
-          # RESIDUAL, in the safe direction: a pre-fold branch that has ALREADY
-          # merged the folded base has the fold IN its merge-base, so it gets the
-          # generic message instead of this one. Dropping a true diagnosis costs
-          # a re-read; printing a false one sends the author to edit a release.
+          # THE FORK POINT, NOT `git merge-base`. They differ on exactly the
+          # shape this remedy creates: the remedy's own first step is "merge the
+          # base branch", and a branch that merges it makes the base its OWN
+          # merge-base, so the fold heading stands in the merge-base tree and a
+          # merge-base predicate goes false — answering the author who has just
+          # done what the gate asked with the generic "add an [Unreleased]
+          # entry", which docs/CHANGELOG.md itself names as the exact opposite of
+          # the right move. Where the branch STARTED is the question, and a merge
+          # is not a re-fork, so the fork point is what answers it. Both shapes
+          # are fixtures in ChangelogGateTest.
+          #
+          # RESIDUALS, in the safe direction — each yields no diagnosis, so the
+          # arm prints the message it always printed:
+          #   * a branch with NO commit of its own (nothing in `$HEAD ^$BASE`):
+          #     there is no fork point to read;
+          #   * a branch whose own oldest commit is a MERGE (or a root commit):
+          #     all of a merge's parents are on the base side, so "the" fork
+          #     point is a choice between them, and they can disagree about
+          #     whether the fold heading is present. Picking one would be a
+          #     second inference — the thing this predicate exists to remove.
+          #
+          # ⚠ AND ONE THAT IS DISCLOSED, NOT CLOSED. A range with MORE THAN ONE
+          # root — a branch that merged another still-unmerged branch into
+          # itself — has more than one fork point, and `tail -1` reads whichever
+          # `--topo-order` puts last. Usually harmless (a root that predates the
+          # fold makes the sentence true; one that does not drops the diagnosis),
+          # but the two roots can disagree, and the corner where that matters is
+          # a branch CORRECTING a shipped line on its post-fold side: read from
+          # the pre-fold root, the gate would tell that author to lift a shipped
+          # line out of a release — shape (a) above, which this predicate exists
+          # to exclude. Closing it means checking EVERY entry point (the parents
+          # of the range that lie outside it) rather than one, which is a
+          # predicate change of its own and needs its own item; it is disclosed
+          # here and in DL-329 rather than folded into a diagnostic fix that is
+          # already correcting one predicate.
+          # WHAT PRINTS in both is the generic "add an [Unreleased] entry" arm,
+          # and on a branch that IS genuinely pre-fold that text is not a re-read
+          # of something still correct — it is the wrong instruction, the one
+          # this whole diagnostic exists to stop giving. The trade is taken
+          # anyway: the other direction asserts a fold nobody established and
+          # sends the author to edit a RELEASED section. Unhelpful beats
+          # confidently wrong, and the residual is stated rather than claimed
+          # harmless.
+          #
+          # 0 = the section stands in that file · 1 = it does not · 2 = the
+          # question was not answered. The third state is kept APART from the
+          # second because the caller INVERTS one of these reads: collapsing
+          # every non-zero rc to "absent" lets a tooling failure satisfy the
+          # fork-point leg and print the fold remedy off an error.
           changelog_has_section() {
-            python3 bin/changelog-section.py --changelog "$1" --section "$2" >/dev/null 2>&1
+            local rc=0
+            python3 bin/changelog-section.py --changelog "$1" --section "$2" >/dev/null 2>&1 || rc=$?
+            case "$rc" in
+              0) return 0 ;;
+              3) return 1 ;;
+            esac
+            diagnosis_unavailable "bin/changelog-section.py exited ${rc} reading ${1}"
+            return 2
+          }
+
+          # The label read, with the same rc discipline: rc 3 is the ordinary
+          # "no released section carries a branch line" and is not a fault, so it
+          # is silent; anything else is a tooling failure that would otherwise
+          # vanish into `|| heading=''` with no trace in the log.
+          locate_added_label() {
+            local rc=0 out=''
+            out=$(python3 bin/changelog-section.py --changelog docs/CHANGELOG.md \
+              --locate-added "$1" --baseline "$2" 2>/dev/null) || rc=$?
+            case "$rc" in
+              0) printf '%s\n' "$out"; return 0 ;;
+              3) return 3 ;;
+            esac
+            diagnosis_unavailable "bin/changelog-section.py --locate-added exited ${rc}"
+            return "$rc"
+          }
+
+          # STDERR, not stdout: this runs inside `heading=$(prefold_heading)`,
+          # whose stdout is the label itself. The runner reads workflow commands
+          # off both streams, so the notice still reaches the log — which is the
+          # point, since the caller's `|| heading=''` is deliberately silent
+          # about WHY a diagnosis was not established.
+          diagnosis_unavailable() {
+            echo "::notice::changelog pre-fold diagnosis unavailable: $1" >&2
+          }
+
+          # The commit this branch was cut from: the parent of its own OLDEST
+          # commit. `--topo-order` never prints a parent before its child, so the
+          # last entry of `$HEAD ^$BASE` has no parent inside that set — every
+          # parent of it is on the base side, which is what a fork point is.
+          # Both refusals above are enforced here, and each returns non-zero
+          # rather than guessing.
+          branch_fork_point() {
+            local first
+            first=$(git rev-list --topo-order "$HEAD" ^"$BASE" | tail -1)
+            [ -n "$first" ] || return 1
+            # `<commit> <parent>` is two words: exactly one parent, so `$first^`
+            # names a fork point rather than choosing between merge parents.
+            [ "$(git rev-list --parents -n 1 "$first" | wc -w)" -eq 2 ] || return 1
+            git rev-parse "${first}^"
           }
 
           prefold_heading() {
-            local dir rc=0 label='' mb=''
+            local dir rc=0 fork_rc=0 label='' fork=''
             dir=$(mktemp -d)
             {
               git -c core.quotepath=false diff --no-color "$BASE...$HEAD" -- docs/CHANGELOG.md \
                 | awk '/^\+\+\+ /{next} /^\+/{print substr($0, 2)}' >"$dir/added" &&
               git show "$BASE:docs/CHANGELOG.md" >"$dir/baseline" &&
-              label=$(python3 bin/changelog-section.py --changelog docs/CHANGELOG.md \
-                --locate-added "$dir/added" --baseline "$dir/baseline" 2>/dev/null) &&
-              mb=$(git merge-base "$BASE" "$HEAD") &&
-              git show "$mb:docs/CHANGELOG.md" >"$dir/mergebase" &&
+              label=$(locate_added_label "$dir/added" "$dir/baseline") &&
+              fork=$(branch_fork_point) &&
+              git show "$fork:docs/CHANGELOG.md" >"$dir/forkpoint" &&
               changelog_has_section "$dir/baseline" "$label" &&
-              ! changelog_has_section "$dir/mergebase" "$label"
+              # NOT `! changelog_has_section …`: `!` maps rc 2 to success, which
+              # is how a tooling failure would come out as "the fold was absent".
+              # Only rc 1 — the extractor's own "no such section" — means that.
+              { changelog_has_section "$dir/forkpoint" "$label" || fork_rc=$?; } &&
+              [ "$fork_rc" -eq 1 ]
             } || rc=$?
             rm -rf "$dir"
             [ "$rc" -eq 0 ] || return "$rc"

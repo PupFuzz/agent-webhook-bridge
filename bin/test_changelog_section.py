@@ -264,6 +264,23 @@ class Cli(unittest.TestCase):
         self.assertEqual(rc, cs.EXIT_USAGE)
         self.assertIn("cannot read", err)
 
+    def test_a_non_utf8_changelog_is_a_usage_error_not_an_uncaught_traceback(self):
+        # NOT an OSError: the file opens fine and `read()` raises
+        # UnicodeDecodeError, which used to leave the process on the interpreter's
+        # own exit 1 — a code the CALLER cannot tell from any other failure. The
+        # gate's `changelog_has_section` reads rc 3 as "absent" and INVERTS one of
+        # its two reads, so an rc it cannot classify must be its own state; that
+        # is only possible if this exits on the usage code like every other
+        # unreadable input.
+        bad = Path(str(self.path) + ".latin1")
+        bad.write_bytes(b"# Changelog\n\n## [1.2.0]\n\n- caf\xe9\n")
+        self.addCleanup(bad.unlink)
+
+        rc, out, err = self._run("--changelog", str(bad), "--section", "1.2.0")
+        self.assertEqual(rc, cs.EXIT_USAGE)
+        self.assertEqual(out, "")
+        self.assertIn("cannot read", err)
+
     def _locate(self, added, baseline=CHANGELOG):
         added_path = Path(str(self.path) + ".added")
         base_path = Path(str(self.path) + ".baseline")
