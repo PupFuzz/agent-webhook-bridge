@@ -412,60 +412,21 @@ jobs:
           # line anywhere in the changelog would lose its diagnosis. Pinned by a
           # fixture that deletes exactly that.
           #
-          # RESIDUALS, in the safe direction — each yields no diagnosis, so the
-          # arm prints the message it always printed:
-          #   * a branch with NO commit of its own (nothing in `$HEAD ^$BASE`):
-          #     there is no fork point to read;
-          #   * a branch whose own oldest commit is a MERGE (or a root commit):
-          #     all of a merge's parents are on the base side, so "the" fork
-          #     point is a choice between them, and they can disagree about
-          #     whether the fold heading is present. Picking one would be a
-          #     second inference — the thing this predicate exists to remove;
-          #   * a genuinely pre-fold branch that ALSO deletes a line the folded
-          #     section carries — a reworded old bullet, or a `### Fixed` head it
-          #     dropped from its own side. Leg 3 cannot tell that from the
-          #     correction shape and refuses.
+          # RESIDUALS — the shapes that establish no diagnosis, so the arm
+          # prints the message it always printed. ⛔ THE LIST IS NOT KEPT HERE.
+          # DL-329 (Decision 6) is its ONE copy, and docs/CHANGELOG.md and
+          # VERSIONING.md already point at that copy instead of restating it; a
+          # second enumeration at this surface is that same drift one level
+          # down, and it had already happened — the copy that stood here and
+          # DL-329's differed in membership, and BOTH stated a residual for
+          # `branch_fork_point` that measurement then falsified (review round
+          # 4). Whoever edits these legs owes DL-329 the update.
           #
-          # LEG 3'S OWN RESIDUAL RUNS THE OTHER WAY, and is kept deliberately: a
-          # branch that ADDS a brand-new bullet into the folded section after
-          # merging, deleting nothing, is still diagnosed — and "move it into
-          # [Unreleased]" is the RIGHT instruction there, because that line did
-          # not ship in [X.Y.Z]. This list is kept HERE, at the predicate, because
-          # it is the surface whoever edits these legs is already reading — but
-          # DL-329 OWNS it and is the copy the prose surfaces point at
-          # (docs/CHANGELOG.md and VERSIONING.md no longer restate a narrower
-          # version of it). If this comment and DL-329 ever disagree, DL-329 is
-          # right and this one is the defect.
-          #
-          # ⚠ MULTI-ROOT: DISCLOSED, MEASURED, NOT TRACKED. A range with MORE
-          # THAN ONE root — a branch that merged another still-unmerged branch
-          # into itself — has more than one fork point, and `tail -1` reads
-          # whichever `--topo-order` puts last. The mechanism is real; no
-          # reachable shape here depends on it, and BOTH halves of that are
-          # measurements rather than arguments. `git rev-list --topo-order $HEAD
-          # ^$BASE | tail -1` returned the FIRST-PARENT root in 5 of 5
-          # constructed multi-root shapes (a sibling merged mid-branch, at the
-          # end, two siblings, an octopus merge, and one whose first-parent root
-          # is the pre-fold sibling). And of the 206 merge commits reachable from
-          # this repo's integration branch — 107 of them PR merges on its
-          # first-parent chain — exactly ONE range carries more than one root:
-          # PR #399, `sync/main-to-dev-post-v0.70.0`, which this step EXEMPTS by
-          # head ref before any of this runs, and whose topo-last commit is
-          # itself a MERGE, which `branch_fork_point` refuses. Zero non-exempt
-          # ranges, not zero ranges — the difference is the point of measuring.
-          # The ordering `--topo-order` guarantees does not cover which root
-          # comes last, so this is stated rather than relied on. It is NOT
-          # tracked as an item (canon #18 — no reachable behaviour depends on
-          # it); this comment and DL-329 are the record. If it ever bites, the
-          # fix is to enumerate every ENTRY POINT (`git rev-list --parents $HEAD
-          # ^$BASE`, the parents lying outside the range) and require the heading
-          # absent at all of them.
-          #
-          # WHAT PRINTS in every one of these is the generic "add an [Unreleased]
-          # entry" arm, and on a branch that IS genuinely pre-fold that text is
-          # not a re-read of something still correct — it is the wrong
-          # instruction, the one this whole diagnostic exists to stop giving. The
-          # trade is taken anyway: the other direction asserts a fold nobody
+          # WHAT PRINTS whenever a leg is unestablished is the generic "add an
+          # [Unreleased] entry" arm, and on a branch that IS genuinely pre-fold
+          # that is not "a message that is still correct" — it is the wrong
+          # instruction, the one this whole diagnostic exists to stop giving.
+          # The trade is taken anyway: the other direction asserts a fold nobody
           # established and sends the author to edit a RELEASED section.
           # Unhelpful beats confidently wrong, and the residual is stated rather
           # than claimed harmless.
@@ -536,15 +497,37 @@ jobs:
             echo "::notice::changelog pre-fold diagnosis unavailable: $1" >&2
           }
 
-          # The commit this branch was cut from: the parent of its own OLDEST
-          # commit. `--topo-order` never prints a parent before its child, so the
-          # last entry of `$HEAD ^$BASE` has no parent inside that set — every
-          # parent of it is on the base side, which is what a fork point is.
-          # Both refusals above are enforced here, and each returns non-zero
-          # rather than guessing.
+          # The commit this branch was cut from: the parent of the OLDEST commit
+          # on the branch's OWN first-parent line. `--topo-order` never prints a
+          # parent before its child, so the last entry has no parent inside the
+          # set; `--first-parent` is what makes that set the BRANCH's line
+          # rather than everything the range happens to contain. A refusal
+          # returns non-zero rather than guessing.
+          #
+          # ⚠ WITHOUT `--first-parent` THIS SILENTLY ANSWERS ABOUT A DIFFERENT
+          # BRANCH — measured, not argued (review round 4). A branch that forked
+          # AFTER the fold and whose own FIRST commit merges a still-unmerged
+          # sibling carries that sibling's commits inside `$HEAD ^$BASE`, and the
+          # oldest commit in that RANGE is then the SIBLING's first commit. It
+          # has exactly one parent, so the ≠1-parent refusal below never fires,
+          # and the function returns the SIBLING's fork point — pre-fold — for
+          # a branch that forked after the fold, at which point the gate asserts
+          # "the branch predates the fold" at a branch that does not. Pinned by
+          # a fixture; dropping `--first-parent` reds it.
+          #
+          # ⚠ AND THE OBVIOUS POST-HOC CHECK DOES NOT DISCRIMINATE, which is why
+          # the walk is fixed instead: the fork point this returns is a
+          # base-side commit in BOTH the right and the wrong reading, so it lies
+          # on `$HEAD`'s first-parent chain either way (measured in the same
+          # cell). The commit the fork point is taken FROM is what differs.
+          #
+          # This also settles what `--topo-order` alone left to an ordering git
+          # does not document — which ROOT of a multi-root range comes last. A
+          # first-parent walk is one chain, so there is no root to choose among.
+          # DL-329 records the re-derivation over this repo's own PR ranges.
           branch_fork_point() {
             local first
-            first=$(git rev-list --topo-order "$HEAD" ^"$BASE" | tail -1)
+            first=$(git rev-list --topo-order --first-parent "$HEAD" ^"$BASE" | tail -1)
             [ -n "$first" ] || return 1
             # `<commit> <parent>` is two words: exactly one parent, so `$first^`
             # names a fork point rather than choosing between merge parents.

@@ -102,10 +102,11 @@ def locate_added(text: str, added: list[str], baseline: str) -> str | None:
     heading. Whether a FOLD happened while the branch was open is a fact about
     the branch's history, not about this file, so the caller establishes it —
     `changelog-gate.yml` requires the label to stand on the base and to be ABSENT
-    at the branch's FORK POINT (the parent of its own oldest commit, not its
-    merge-base, which a branch that merges the base absorbs the fold into) before
-    it prints the fold remedy. DL-329 owns the predicate and names its
-    residuals.
+    at the branch's FORK POINT (the parent of the oldest commit on the branch's
+    OWN first-parent line — not its merge-base, which a branch that merges the
+    base absorbs the fold into, and not the oldest commit in the range, which is
+    a sibling's when the branch merged one) before it prints the fold remedy.
+    DL-329 owns the predicate and names its residuals.
 
     A needle already present in the baseline is DROPPED, and that subtraction is
     load-bearing rather than tidiness: every released section here carries

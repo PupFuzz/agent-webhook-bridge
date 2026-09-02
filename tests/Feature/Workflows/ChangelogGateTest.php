@@ -234,6 +234,73 @@ class ChangelogGateTest extends TestCase
     }
 
     /**
+     * Materialize the topology `makeForkedRepo` cannot express: a PR branch that
+     * forked AFTER the release fold and whose OWN FIRST COMMIT merges a sibling
+     * branch cut BEFORE it and not yet on the base.
+     *
+     * The point of the shape is what it does to `$HEAD ^$BASE`: the sibling's
+     * commits are inside that range, so the range's oldest commit belongs to the
+     * SIBLING, while the branch's own first commit is the merge. Those two
+     * readings disagree about where this branch was cut from, and only the
+     * first-parent one answers about THIS branch.
+     *
+     * The sibling touches a path of its own, so the merge is clean and the
+     * changelog in the merged tree is the base's folded one — the branch's edit
+     * of the released section is then unambiguously its own.
+     *
+     * @param  string  $head  the changelog the PR branch writes after that merge
+     * @return array{dir:string,base:string,head:string,siblingFirst:string}
+     */
+    private function makeSiblingMergeRepo(string $head): array
+    {
+        $dir = $this->initRepo();
+        $git = $this->git($dir);
+
+        $this->writeFiles($dir, ['docs/CHANGELOG.md' => self::PRE_FOLD_CHANGELOG, 'app/X.php' => 'a']);
+        exec($git.'add -A && '.$git.'commit -q -m root 2>&1');
+
+        // The sibling: cut PRE-fold, still unmerged when the PR branch takes it.
+        exec($git.'checkout -q -b sibling 2>&1');
+        $this->writeFiles($dir, ['app/Z.php' => 'z']);
+        exec($git.'add -A && '.$git.'commit -q -m sibling 2>&1');
+        $siblingFirst = trim((string) shell_exec($git.'rev-parse HEAD'));
+
+        // The fold lands on the base AFTER the sibling was cut and BEFORE the PR
+        // branch is.
+        exec($git.'checkout -q main 2>&1');
+        $this->writeFiles($dir, ['docs/CHANGELOG.md' => self::FOLDED_CHANGELOG]);
+        exec($git.'add -A && '.$git.'commit -q -m fold 2>&1');
+        $baseSha = trim((string) shell_exec($git.'rev-parse HEAD'));
+
+        exec($git.'checkout -q -b pr 2>&1');
+        $rc = 0;
+        $out = [];
+        exec($git.'merge -q --no-edit --no-ff sibling 2>&1', $out, $rc);
+        $this->assertSame(0, $rc, "the branch's merge of its sibling must be clean: \n".implode("\n", $out));
+        $this->assertStringContainsString(
+            self::FOLDED_CHANGELOG,
+            (string) file_get_contents($dir.'/docs/CHANGELOG.md'),
+            'the sibling merge must leave the FOLDED changelog standing, or the edit below is not the branch\'s own',
+        );
+
+        $this->writeFiles($dir, ['docs/CHANGELOG.md' => $head, 'app/X.php' => 'b']);
+        exec($git.'add -A && '.$git.'commit -q -m head 2>&1');
+        $headSha = trim((string) shell_exec($git.'rev-parse HEAD'));
+
+        // Same reason as `makeForkedRepo`: a CONFLICTING PR gets no merge ref
+        // and therefore no run, so a conflicting fixture tests nothing.
+        exec($git.'checkout -q main 2>&1');
+        $mergeRc = 0;
+        $mergeOut = [];
+        exec($git.'merge -q --no-edit pr 2>&1', $mergeOut, $mergeRc);
+        $this->assertSame(0, $mergeRc, "the fixture merge must be clean: \n".implode("\n", $mergeOut));
+
+        $this->installExtractor($dir);
+
+        return ['dir' => $dir, 'base' => $baseSha, 'head' => $headSha, 'siblingFirst' => $siblingFirst];
+    }
+
+    /**
      * @param  array<string,string>  $env
      * @return array{0:int,1:string} [exit code, combined output]
      */
@@ -861,6 +928,62 @@ class ChangelogGateTest extends TestCase
         $this->assertStringContainsString(
             "## [1.1.0] - 2026-01-02\n\n- old\n- the new behaviour (card#1234)\n",
             (string) file_get_contents($repo['dir'].'/docs/CHANGELOG.md'),
+        );
+
+        [$rc, $out] = $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
+            $repo['dir'],
+            [
+                'BASE' => $repo['base'],
+                'HEAD' => $repo['head'],
+                'TITLE' => 'fix(x): the new behaviour (card#1234)',
+                'HEAD_REF' => 'fix/1234-x',
+            ],
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString('does not name card 1234', $out);
+        $this->assertStringNotContainsString('predates the fold', $out);
+        $this->assertStringContainsString("Fix: add an [Unreleased] entry citing 'card#1234'", $out);
+    }
+
+    public function test_a_post_fold_branch_whose_first_commit_merges_a_pre_fold_sibling_is_not_told_a_fold_happened(): void
+    {
+        // THE SAME MISCLASSIFICATION AS THE LEG ABOVE, REACHED THROUGH THE FORK
+        // POINT ITSELF rather than through the predicate (review round 4). This
+        // branch forked AFTER [1.1.0] was cut, so "the branch predates the fold"
+        // is false of it — but its own FIRST commit merges a sibling branch cut
+        // BEFORE the fold and not yet on the base, which puts that sibling's
+        // commits inside `$HEAD ^$BASE`. The oldest commit of that RANGE is then
+        // the sibling's, not this branch's, and it has exactly one parent, so
+        // the ≠1-parent refusal does not fire: without `--first-parent` the
+        // fork-point read answers about the SIBLING and hands back a PRE-fold
+        // tree, which satisfies the fork-point leg and asserts the fold.
+        //
+        // The range has exactly ONE root, so this is not the multi-root shape
+        // DL-329 discloses — nothing about root ORDERING is involved.
+        $edited = "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - 2026-01-02\n\n- old\n- the new behaviour (card#1234)\n";
+        $repo = $this->makeSiblingMergeRepo($edited);
+        $git = $this->git($repo['dir']);
+
+        // THE FIXTURE'S OWN DISCRIMINATING PROPERTY, asserted rather than
+        // assumed: the plain `--topo-order` tail must be the SIBLING's first
+        // commit AND must have exactly one parent. If a future git orders the
+        // range differently, or the shape stops producing a single-parent tail,
+        // this fixture would silently stop being the cell it is named for and
+        // would pass for a reason that has nothing to do with the leg.
+        $topoTail = trim((string) shell_exec(
+            $git.'rev-list --topo-order '.escapeshellarg($repo['head']).' ^'.escapeshellarg($repo['base']).' | tail -1'
+        ));
+        $this->assertSame(
+            $repo['siblingFirst'],
+            $topoTail,
+            "the range's oldest commit must be the SIBLING's first commit, or this fixture is not the cell",
+        );
+        $this->assertSame(
+            2,
+            count(preg_split('/\s+/', trim((string) shell_exec($git.'rev-list --parents -n 1 '.escapeshellarg($topoTail))))),
+            'that commit must have exactly ONE parent, or the old spelling would have refused it anyway',
         );
 
         [$rc, $out] = $this->runStep(
