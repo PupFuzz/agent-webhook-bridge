@@ -230,7 +230,8 @@ const TOOL_DEFINITIONS = [
           items: { type: 'string' },
           description:
             'Optional caller tags. Reserved prefixes (created-by:, idem:, id:, type:) ' +
-            'and the bare tag "triaged" are refused.',
+            'and the bare tag "triaged" are refused, and each tag is capped at 64 ' +
+            "characters (kanban's own limit).",
         },
         idempotency_key: {
           type: 'string',
