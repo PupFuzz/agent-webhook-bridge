@@ -34,8 +34,8 @@ namespace App\Bridge\Writeback;
  * mapped-board regime included.
  *
  * ⚠ TWO legs of KanbanCoordCardMoveHandler are still outside it, and the exclusion is
- * narrow and deliberate rather than an omission: `revive` (:287) and `relane` (:349) both
- * write a LANE and both already refuse any card whose current stage was not SERVICE-set
+ * narrow and deliberate rather than an omission: `revive` and `relane` both write a LANE
+ * and both already refuse any card whose current stage was not SERVICE-set
  * (`KanbanCoordCardMoveHandler::serviceSet()`), so a human placement is not
  * overridden there today. Whether the pin should ALSO reach a service-set card on those
  * two legs was not asked of the operator with card#8523's two, and this class may not
