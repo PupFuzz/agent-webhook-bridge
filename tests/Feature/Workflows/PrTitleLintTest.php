@@ -6,6 +6,7 @@ use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\DlTokenGrammar;
 use App\Bridge\Support\NoCloseGrammar;
+use App\Bridge\Support\RevertGrammar;
 use App\Bridge\Writeback\PrOutcome;
 use Symfony\Component\Yaml\Yaml;
 use Tests\TestCase;
@@ -1450,23 +1451,30 @@ class PrTitleLintTest extends TestCase
      *
      * ⛔ AND IT IS NOT UNIVERSAL OVER WHAT A TITLE CAN DECIDE — the wording that said
      * *"the only one a title and a branch can decide"* is corrected here, and it was
-     * ALREADY false when it was written. Two families of title-decidable input make the
-     * two sides answer DIFFERENTLY, both by design, and both were MEASURED rather than
+     * ALREADY false when it was written. THREE families of title-decidable input make the
+     * two sides answer DIFFERENTLY, all by design, and all were MEASURED rather than
      * reasoned about: the REVERT family (card#8306 — the writeback subtracts the quoted
      * span and refuses GitHub's wrapped ref, while the gate reads that same quoted verb as
-     * a closing form and demands nothing of a `revert-*` branch), and `[no-close]`
+     * a closing form and demands nothing of a `revert-*` branch), `[no-close]`
      * (card#8344 / DL-327 — the gate short-circuits at its `optout=` test while the
-     * writeback reads the marker as the author's declaration and withholds the move). The
-     * corpus below carries NO row of either family, and that is a CONDITION of this leg
-     * rather than an omission.
+     * writeback reads the marker as the author's declaration and withholds the move), and
+     * the ENUMERATED SEPARATOR class (DL-272 — `closes<TAB>card#N`, which this step's
+     * separator class deliberately does not admit and the grammar does). The corpus below
+     * carries NO row of any of the three, and that is a CONDITION of this leg rather than
+     * an omission.
      *
-     * ⭐ WHAT IS TRUE OF EVERY KNOWN DISAGREEMENT IS ITS DIRECTION: the gate PASSES and the
-     * writeback REFUSES — under-promotion, which a human fixes by moving the card. The
-     * reverse (CI reds a PR whose merge would have moved the card) is the one that would be
-     * a defect, and no measured case produces it.
-     * {@see test_the_gate_and_the_predicate_disagree_by_design_on_a_marker_and_on_a_revert()}
-     * pins both families with a one-variable control, so an author who adds such a row here
-     * finds the verdict already ruled on rather than a tie to "fix".
+     * ⭐ THE DIRECTION OF THE DISAGREEMENTS IS NOT ASSERTED HERE — IT IS MEASURED, at
+     * {@see test_the_enumerated_disagreement_families_point_the_direction_they_declare()},
+     * which drives the families through this same step and these same predicates and fails
+     * on any row that answers other than the direction its family declares. Two rounds of
+     * review found this docblock holding a universal that a sibling leg in this file
+     * falsified, so it holds a POINTER now (card#8344 / DL-327, review R3).
+     * What that leg measures, in one line: every disagreement created by a RULING one of the
+     * grammars owns — the `[no-close]` marker, the revert — points gate-PASSES /
+     * writeback-WITHHOLDS (under-promotion, which a human repairs by moving the card), and
+     * the one known reverse is a PRICE rather than a ruling: DL-272's enumerated separator
+     * class (TAB/VT/FF/CR) reds a merge the writeback would move, pinned by name at
+     * {@see test_the_enumerated_separator_answers_the_same_in_every_locale()}.
      *
      * The `merged` outcome is passed rather than `merged_to_main` because the step
      * exempts `release/*` — the only head that reaches a `main` base — so the base
@@ -1517,11 +1525,18 @@ class PrTitleLintTest extends TestCase
      *    covered everything a title can decide was false when written, which is why the
      *    correction there is measured here rather than asserted there.
      *
-     * ⭐ EVERY ROW BELOW POINTS THE SAME WAY — gate PASSES, writeback REFUSES — and that
-     * direction is the property worth holding: it fails toward UNDER-promotion, which a
-     * human repairs by moving the card. A row in the other direction (CI green-lighting a
-     * closure the writeback would not make, or reding one it would) is the defect shape, and
-     * none is known.
+     * ⭐ EVERY ROW BELOW POINTS THE SAME WAY — gate PASSES, writeback WITHHOLDS — because
+     * both rows are RULINGS, and that is the direction a ruling takes: it fails toward
+     * UNDER-promotion, which a human repairs by moving the card.
+     * ⛔ THAT IS A PROPERTY OF THESE TWO ROWS, NOT A UNIVERSAL, and the wording that made it
+     * one is corrected here: the reverse direction EXISTS and is priced — the enumerated
+     * separator class reds a merge the writeback moves (DL-272, pinned at
+     * {@see test_the_enumerated_separator_answers_the_same_in_every_locale()}). The whole
+     * disagreement set, both directions, each family with its control, is enumerated and
+     * measured at
+     * {@see test_the_enumerated_disagreement_families_point_the_direction_they_declare()};
+     * a new family has to be added THERE, where its direction is measured, rather than
+     * written into a sentence here.
      *
      * EACH ROW CARRIES ITS OWN ONE-VARIABLE CONTROL — the same title with the marker, or the
      * revert wrapper, removed — because a disagreement asserted without one is satisfied by
@@ -1582,6 +1597,191 @@ class PrTitleLintTest extends TestCase
             'unquoted, the identical closing form must close — otherwise the quoting is not what carries the refusal');
         $this->assertSame(0, $this->runClosureStep($unquoted, $branch),
             'the control must pass the gate too, so the two rows differ only in the writeback verdict');
+    }
+
+    /**
+     * ⭐ THE DISAGREEMENT SET, RENDERED RATHER THAN CLAIMED (card#8344 / DL-327, review R3).
+     * Two rounds of review each replaced one hand-written universal about gate/predicate
+     * disagreements with another, and a sibling leg in this same file falsified each in
+     * turn — the second time from 400 lines below
+     * ({@see test_the_enumerated_separator_answers_the_same_in_every_locale()}). A
+     * sentence cannot be audited against a set nobody enumerated, so the set is enumerated
+     * here and the direction is MEASURED per row: the docblocks above now point at this
+     * leg instead of restating its result.
+     *
+     * WHAT A ROW DECLARES is a FAMILY (which ruling is supposed to decide it) and a
+     * VERDICT, and the verdict is one of five, derived from the two answers and never
+     * from the row's own words:
+     *
+     *  - `no-correlation` — the title names no card, so neither side has a question.
+     *  - `agree-move` / `agree-red` — the gate and the predicate answer the same way.
+     *  - `withheld` — the gate PASSES and the writeback WITHHOLDS the move (under-promotion,
+     *    which a human repairs by moving the card). Every row of this verdict is created by
+     *    a RULING one of the grammars owns: the marker ({@see NoCloseGrammar}) or the revert
+     *    ({@see RevertGrammar}).
+     *  - `false-red` — the gate REDS a merge the writeback WOULD move. This is the shape
+     *    that costs an author a retitle, and exactly one input family produces it: the
+     *    separator class DL-272 priced and enumerated deliberately (TAB/VT/FF/CR), and only
+     *    where the structural route is not also open — the same-family rows on a
+     *    card-naming branch agree, which is why they are carried here as its control.
+     *
+     * ⛔ THE ASSERTION THAT MAKES THIS AUDITABLE is the last one: a row whose family
+     * declares agreement and which DISAGREES fails with the row printed. So a new
+     * disagreement family cannot be written away in prose — it has to be added here, with
+     * its direction, where the invariant below decides whether it is a ruling or a defect.
+     *
+     * EVERY FAMILY CARRIES ITS OWN CONTROL — the near-spellings the marker grammar does not
+     * catch, the unquoted and un-reverted forms, the space-separated form, and the branch
+     * shape that reopens the structural route — because a disagreement asserted without one
+     * is satisfied by any title the gate happens to pass.
+     */
+    public function test_the_enumerated_disagreement_families_point_the_direction_they_declare(): void
+    {
+        $seen = $families = [];
+        foreach (self::disagreementRows() as [$title, $branch, $family, $declared]) {
+            $id = CardTokenGrammar::parse($title);
+            $moves = $id !== null
+                && (ClosureGrammar::closesCard($title, $id)
+                    || PrOutcome::mergeClosesCard(PrOutcome::INTEGRATION_MERGE, $branch, $id, $title));
+            $reds = $this->runClosureStep($title, $branch) !== 0;
+            $measured = match (true) {
+                $id === null => 'no-correlation',
+                ! $reds && $moves => 'agree-move',
+                $reds && ! $moves => 'agree-red',
+                ! $reds => 'withheld',
+                default => 'false-red',
+            };
+
+            $row = sprintf('family=%s title=%s branch=%s', $family, json_encode($title), $branch);
+            $this->assertSame($declared, $measured,
+                "{$row} answers '{$measured}', not the '{$declared}' its family declares — if that is a RULING, "
+                .'declare it here and in DL-327; if it is not, it is the defect this leg exists to catch');
+            if ($id === null) {
+                $this->assertFalse($reds, "{$row} correlates no card, so no merge can withhold a move and the gate must skip it");
+            }
+
+            $seen[$measured] = ($seen[$measured] ?? 0) + 1;
+            $families[$family][$measured] = ($families[$family][$measured] ?? 0) + 1;
+        }
+
+        // THE DIRECTION CLAIM, as an invariant over the table rather than a sentence: the
+        // rulings under-promote, and the ONLY over-red is the priced separator class.
+        foreach (['withheld' => ['marker', 'revert'], 'false-red' => ['separator']] as $verdict => $owners) {
+            foreach ($families as $family => $counts) {
+                if (($counts[$verdict] ?? 0) > 0) {
+                    $this->assertContains($family, $owners,
+                        "the '{$family}' family produces '{$verdict}' — a direction only ".implode('/', $owners).' is declared to produce');
+                }
+            }
+        }
+
+        // A table missing a verdict measures a narrower claim than the docblock states.
+        foreach (['no-correlation', 'agree-move', 'agree-red', 'withheld', 'false-red'] as $verdict) {
+            $this->assertArrayHasKey($verdict, $seen,
+                "no row measured '{$verdict}' — the enumeration no longer covers it, so the direction claim is over an incomplete set");
+        }
+
+        // Each disagreeing family must also AGREE somewhere, or its disagreement is
+        // asserted without the one-variable control that isolates it.
+        foreach (['marker', 'revert', 'separator'] as $family) {
+            $this->assertGreaterThan(0,
+                ($families[$family]['agree-move'] ?? 0) + ($families[$family]['agree-red'] ?? 0),
+                "the '{$family}' family carries no agreeing control row — any title the gate passes would satisfy it");
+        }
+
+        $declaredFamilies = array_keys($families);
+        sort($declaredFamilies);
+        $this->assertSame(['agree', 'dl', 'marker', 'revert', 'separator'], $declaredFamilies,
+            'a declared family disappeared from the table — the direction claim above no longer covers what it names');
+    }
+
+    /**
+     * The rows the leg above is driven over: (title, branch, FAMILY, declared VERDICT).
+     * The marker spellings are DERIVED from `NoCloseGrammar::MARKER` and the near-misses
+     * from the same literal, so a spelling change moves the corpus with it instead of
+     * leaving a hand-copied `[no-close]` here to go stale — the defect this file was
+     * written to catch, in the file itself.
+     *
+     * @return list<array{0:string,1:string,2:string,3:string}>
+     */
+    private static function disagreementRows(): array
+    {
+        $m = NoCloseGrammar::MARKER;
+        $upper = strtoupper($m);
+        $chars = str_split($m);
+        $mixed = implode('', array_map(fn (string $c, int $i) => $i % 2 === 0 ? $c : strtoupper($c), $chars, array_keys($chars)));
+        $rows = [];
+
+        // FAMILY — THE MARKER. Positions, spellings, and both branch shapes, because the
+        // structural route is open on one of them and the verdict must not depend on it.
+        foreach ([
+            "feat: thing {$m} (closes card#8286)",
+            "{$m} feat: thing (closes card#8286)",
+            "feat: thing (closes card#8286) {$m}",
+            "feat: thing {$upper} (closes card#8286)",
+            "feat: thing {$mixed} (closes card#8286)",
+            "docs: cite the ruling {$m} (card#8286)",
+        ] as $title) {
+            foreach (['card-8286-context', 'docs/8286-context'] as $branch) {
+                $rows[] = [$title, $branch, 'marker', 'withheld'];
+            }
+        }
+        // Its controls: near-spellings the grammar does not read as the marker, so the
+        // MARKER and not the bracket is what carries the disagreement above.
+        foreach ([str_replace('-', '', $m), '('.trim($m, '[]').')', substr($m, 0, -1).'!]'] as $near) {
+            $rows[] = ["feat: thing {$near} (closes card#8286)", 'docs/8286-context', 'marker', 'agree-move'];
+        }
+        // The marker OUTRANKS the other two families: it short-circuits the gate before the
+        // separator class is reached, and vetoes the closing form the DL row carries.
+        $rows[] = ["{$m} ci: gate closes\tcard#8286", 'fix/8286-x', 'marker', 'withheld'];
+        $rows[] = ["feat: thing {$m} (closes DL-239) (card#8286)", 'docs/8286-context', 'marker', 'withheld'];
+
+        // FAMILY — THE REVERT (card#8306). The gate reads the quoted verb as a closing form;
+        // the writeback subtracts the quoted span and refuses the wrapped ref.
+        $revert = 'Revert "feat: widget rework (closes card#8286)"';
+        foreach (['fix/streaming-timeout', 'revert-611-card-8286-widget'] as $branch) {
+            $rows[] = [$revert, $branch, 'revert', 'withheld'];
+        }
+        $rows[] = [lcfirst($revert), 'revert-611-card-8286-widget', 'revert', 'withheld'];
+        $rows[] = ["{$revert} {$m}", 'fix/streaming-timeout', 'revert', 'withheld'];
+        $rows[] = ['Revert "'.$revert.'"', 'fix/streaming-timeout', 'revert', 'withheld'];
+        // Its controls. The second is the one that shows WHICH span the subtraction takes:
+        // a marker INSIDE the quotes is subtracted with them, so the closing form OUTSIDE
+        // stands and both sides move — the marker only rules where it is not reverted away.
+        $rows[] = ['un'.lcfirst($revert), 'fix/streaming-timeout', 'revert', 'agree-move'];
+        $rows[] = ["Revert \"feat: widget rework {$m}\" (closes card#8286)", 'fix/streaming-timeout', 'revert', 'agree-move'];
+        $rows[] = ['feat: widget rework (closes card#8286)', 'fix/streaming-timeout', 'revert', 'agree-move'];
+
+        // FAMILY — THE DL TOKEN. Alone it correlates no card at all; beside one it is not a
+        // closure claim for that card, and both sides say so.
+        $rows[] = ['docs: record the ruling (DL-239)', 'docs/dl-239', 'dl', 'no-correlation'];
+        $rows[] = ["docs: record the ruling {$m} (DL-239)", 'docs/dl-239', 'dl', 'no-correlation'];
+        $rows[] = ['feat: thing (closes DL-239) (card#8286)', 'docs/8286-context', 'dl', 'agree-red'];
+        $rows[] = ['feat: thing (closes DL-239) (card#8286)', 'card-8286-context', 'dl', 'agree-move'];
+
+        // FAMILY — THE ENUMERATED SEPARATOR (DL-272's priced false-RED). `\s` admits these
+        // four and the step's enumerated class does not, so the gate reds a merge that
+        // moves — the ONE direction-2 family, pinned by name in
+        // {@see test_the_enumerated_separator_answers_the_same_in_every_locale()}.
+        foreach (["\t", "\v", "\f", "\r"] as $sep) {
+            foreach (['fix/8286-x', 'fix/streaming-timeout'] as $branch) {
+                $rows[] = ["ci: gate closes{$sep}card#8286", $branch, 'separator', 'false-red'];
+            }
+            // Its control, and the scope of the price: on a card-naming head the STRUCTURAL
+            // route passes the gate before the separator is read, so the same title agrees.
+            $rows[] = ["ci: gate closes{$sep}card#8286", 'card-8286-context', 'separator', 'agree-move'];
+        }
+        $rows[] = ['ci: gate closes card#8286', 'fix/8286-x', 'separator', 'agree-move'];
+
+        // FAMILY — NO RULING AT ALL: the shapes the gate exists for, in both answers.
+        $rows[] = ['feat: thing (card#8286)', 'docs/8286-context', 'agree', 'agree-red'];
+        $rows[] = ['feat: thing (card#8286)', 'card-8286-context', 'agree', 'agree-move'];
+        $rows[] = ['feat: thing (closes card#8286)', 'docs/8286-context', 'agree', 'agree-move'];
+        $rows[] = ['feat: closes the bug in card#8286', 'docs/8286-context', 'agree', 'agree-red'];
+        $rows[] = ['feat: thing (closescard#8286)', 'docs/8286-context', 'agree', 'no-correlation'];
+        $rows[] = ['chore: bump the lockfile', 'dependabot/npm/x', 'agree', 'no-correlation'];
+
+        return $rows;
     }
 
     /**
@@ -1647,6 +1847,34 @@ class PrTitleLintTest extends TestCase
             'without the marker the same title must red, or the marker is not what passes it');
         $this->assertSame(1, $this->runClosureStep('docs: cite the prior ruling, no close intended (card#8286)', 'docs/8286-context'),
             'prose resembling the marker must not pass — the opt-out is a literal, not a grammar');
+    }
+
+    /**
+     * ⭐ THE FAILURE MESSAGE IS A DOC SURFACE, and the highest-traffic copy of the marker's
+     * meaning there is: the author who has to act reads THIS, not `docs/writeback.md`. It is
+     * also the copy that went stale — it still said the marker *"suppresses THIS CHECK and
+     * nothing else — no part of the bridge reads it"* a full review round after card#8344
+     * made the writeback read it, and the reason it survived a sibling sweep is that nothing
+     * in this file read the string. This leg reads it.
+     *
+     * ⚠ A PRESENCE WITNESS BESIDE THE ABSENCE, deliberately: a leg asserting only that the
+     * superseded phrases are gone certifies whatever replaced them, silence included.
+     */
+    public function test_the_remediation_message_states_what_the_marker_now_does(): void
+    {
+        [$rc, $out] = $this->runStep(self::CLOSURE_STEP, 'docs: cite the prior ruling (card#8286)', 'docs/8286-context');
+        $this->assertSame(1, $rc, 'the row that prints the remediation must red, or this leg reads no message at all');
+        $this->assertStringContainsString(NoCloseGrammar::MARKER, $out,
+            'the failure message must name the literal the author has to type');
+
+        foreach (['nothing else', 'no part of the bridge', 'nothing at runtime', 'CI-only'] as $superseded) {
+            $this->assertStringNotContainsStringIgnoringCase($superseded, $out,
+                "the failure message still tells the author the marker is inert at runtime ('{$superseded}') — superseded by card#8344 / DL-327");
+        }
+        foreach (['withhold', 'writeback', 'merge'] as $present) {
+            $this->assertStringContainsStringIgnoringCase($present, $out,
+                "the failure message no longer states what the marker DOES at runtime ('{$present}') — an absence assertion alone would pass on silence");
+        }
     }
 
     /**

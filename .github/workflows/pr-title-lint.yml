@@ -487,5 +487,5 @@ jobs:
           echo "  LEXICAL    — a closing form in the TITLE, the token flush against the verb: ${forms//ID/$card_id}"
           echo "  STRUCTURAL — the HEAD BRANCH REF itself names the card (card-${card_id}-slug, glued card${card_id}-slug), merged to the integration branch — this PR targets '${BASE}'"
           echo "Fix: retitle to '<type>(<scope>): <subject> (closes card#${card_id})', then re-save (the 'edited' event re-runs this check)."
-          echo "Deliberately NOT finishing this card (you cite it for context)? Put the literal ${optout} in the title. It suppresses THIS CHECK and nothing else — no part of the bridge reads it."
+          echo "Deliberately NOT finishing this card (you cite it for context)? Put the literal ${optout} in the title. Since card#8344 (DL-327) BOTH layers read it as your declaration: this check stops asking, and the writeback WITHHOLDS the stage move on merge — the card is still correlated and still gets its pr stamp, it just does not advance. It can only ever withhold a move, never cause one."
           exit 1
