@@ -754,6 +754,96 @@ class ADotEnvFileIsASecretStore(unittest.TestCase):
         self.assertEqual([], _rules('cat "$BRIDGE_DIR/environments"\n'))
 
 
+class ThePerAgentConfigStoreIsASecretStore(unittest.TestCase):
+    """`agent-webhook-bridge/` is in SECRET_PATH_MARKERS on an operator ruling
+    (card#8351, comment 2302).
+
+    The per-agent config store is `<agent>.yml` under
+    `~/.config/agent-webhook-bridge/`, and `CLAUDE_CONVENTIONS.md` § *Never commit
+    secrets* puts the kanban API token and the webhook secret paths in it — so a
+    runbook line that `cat`s one resolves a secret onto stdout exactly as a `cat` of
+    the channel-token file does, and until this marker existed that line read as an
+    ordinary path.
+
+    ⚠ THE RULING IS THE PATH SEGMENT AND NOT A BARE `.yml`, AND THE NEGATIVE HALF OF
+    THIS CLASS IS WHY. Both candidates measured the same zero on every population
+    reachable today (0 findings over the 29 markdown files here; the whole-history
+    blob corpus unmoved), so the census could not separate them; the cost that
+    separates them is the one that has not been written yet. Under a bare `.yml`
+    every workflow file, a `docker-compose.yml` and the SHIPPED
+    `examples/sample-config/agent.yml.example` are one runbook line away from a red,
+    and none of them is a store. Those three are pinned green below.
+
+    The near-spelling this marker DOES pay for — the project's own source checkout —
+    is disclosed as BOUND(source-checkout) and pinned there, not here.
+
+    A secret-store marker is read by THREE rules, so this marker widened three arms —
+    `stdout`, `argv`, `history` — and each is pinned below against the same
+    delete-the-marker mutation.
+    """
+
+    STORE = '~/.config/agent-webhook-bridge/kanban.yml'
+
+    def test_a_reader_on_the_config_store_puts_a_secret_store_on_stdout(self) -> None:
+        for body in (f'cat {self.STORE}\n',
+                     'head -20 ~/.config/agent-webhook-bridge/agent.yml\n',
+                     'cat "$HOME/.config/agent-webhook-bridge/prod-agent.yml"\n'):
+            with self.subTest(body=body.strip()):
+                self.assertEqual(['stdout'], _rules(body))
+
+    def test_a_captured_store_read_is_an_argv_leak(self) -> None:
+        """The same act through the substitution leg the whole card is about."""
+        self.assertEqual(['argv'], _rules(
+            f'curl -H "Authorization: Bearer $(cat {self.STORE})" http://x/\n'))
+
+    def test_a_literal_written_INTO_the_store_is_a_history_leak(self) -> None:
+        """The third arm: a secret as a command-line LITERAL, written into the store,
+        lands verbatim in the operator's shell history. The prescribed
+        `printf '%s' "$VAR" > <store>` — an EXPANSION, not a literal — stays green,
+        so the arm is the literal and not the redirect."""
+        self.assertEqual(['history'], _rules(
+            f'echo "api_token: placeholder" >> {self.STORE}\n'))
+        self.assertEqual([], _rules(
+            f'printf \'%s\' "$KANBAN_API_TOKEN" > {self.STORE}\n'))
+
+    def test_the_finding_names_the_path_the_doc_actually_contains(self) -> None:
+        findings = _scan(f'```bash\ncat {self.STORE}\n```\n')
+        self.assertEqual(['stdout'], [f.rule for f in findings])
+        self.assertIn('agent-webhook-bridge/kanban.yml', findings[0].message)
+
+    def test_a_store_path_handed_to_a_command_that_does_not_READ_is_green(self) -> None:
+        """The marker is consulted where a rule already asks whether a path is a
+        secret store — it does not red every line the path appears on. Both of these
+        are shapes this repo's own setup instructions contain."""
+        self.assertEqual([], _rules(
+            f'cp examples/sample-config/agent.yml.example {self.STORE}\n'))
+        self.assertEqual([], _rules(f'$EDITOR {self.STORE}\n'))
+
+    def test_a_bare_yml_marker_was_NOT_what_was_ruled(self) -> None:
+        """The negative half, and the reason the ruling names a PATH SEGMENT.
+
+        All three are READS, the only position where a secret-store marker is
+        consulted at all, so a green here has to come from the SPELLING and cannot
+        come from the command. All three red under a marker widened to `.yml`, and
+        the third is a file this repository ships.
+        """
+        self.assertEqual([], _rules('cat .github/workflows/ci.yml\n'))
+        self.assertEqual([], _rules('cat docker-compose.yml\n'))
+        self.assertEqual([], _rules('cat examples/sample-config/agent.yml.example\n'))
+
+    def test_the_marker_needs_the_TRAILING_SLASH_to_fire(self) -> None:
+        """`agent-webhook-bridge` unqualified is the PROJECT name, which appears in
+        every sibling checkout and directory name, so the negative half of this
+        marker is the trailing separator that makes it a path SEGMENT.
+
+        Both cases are reads of an ordinary file in a directory whose name merely
+        STARTS with the project name; both red under a marker widened to a bare
+        `agent-webhook-bridge`, which is the mutation this pins against.
+        """
+        self.assertEqual([], _rules('cat ~/agent-webhook-bridge-dev/README.md\n'))
+        self.assertEqual([], _rules('cat ~/.config/agent-webhook-bridge-old/x.yml\n'))
+
+
 class TheWaiver(unittest.TestCase):
     """The escape hatch, and the one property that keeps it honest."""
 
@@ -1430,6 +1520,18 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
                 Payload(_fence('cp .env.example .env\n'), ()),
                 Payload(_fence('cat .env\n'), ('stdout',)),
             )),
+        'source-checkout': (
+            'test_the_SOURCE_CHECKOUT_matches_the_config_store_marker_too', (
+                Payload(_fence('cat ~/agent-webhook-bridge/README.md\n'), ('stdout',)),
+                Payload(_fence('tail -f /var/www/agent-webhook-bridge/storage/logs/'
+                               'laravel.log\n'), ('stdout',)),
+                Payload(_fence('php /path/to/agent-webhook-bridge/artisan '
+                               'bridge:inbox\n'), ()),
+                Payload(_fence('curl -sSL https://raw.githubusercontent.com/PupFuzz/'
+                               'agent-webhook-bridge/dev/bin/x.py -o x.py\n'), ()),
+                Payload(_fence('cat ~/.config/agent-webhook-bridge/kanban.yml\n'),
+                        ('stdout',)),
+            )),
         'tee-outside-a-pipeline': (
             'test_tee_OUTSIDE_a_pipeline_still_names_the_wrong_direction', (
                 Payload(_fence('tee /etc/bridge/webhook-secret-scope-kanban\n'),
@@ -1551,6 +1653,32 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
                     self.assertIn((), verdicts,
                                   'a silent direction is disclosed and no payload '
                                   'here is green')
+
+    def test_the_SOURCE_CHECKOUT_matches_the_config_store_marker_too(self) -> None:
+        """`agent-webhook-bridge/` is a SUBSTRING, so this project's own source
+        CHECKOUT — spelled the same way as the config store under `~/.config/` —
+        matches it too, and a reader on any ordinary file in it reds naming a secret
+        store that holds none.
+
+        The green is what says this is one wrong message rather than a broken
+        runbook: `php /path/to/agent-webhook-bridge/artisan …` is the invocation
+        shape `docs/consumer-guide.md` and `docs/multi-host.md` carry (in a `json`
+        and an un-tagged fence, neither of which this tool reads as shell), and it is
+        green even in a `bash` fence, because `php` is not a reading command; a URL
+        carrying the same segment is green for the same reason. The last case is the
+        red twin the bound is measured against — a reader on the real store, which is
+        the finding the marker exists to produce.
+        """
+        self.assertEqual(['stdout'], _rules('cat ~/agent-webhook-bridge/README.md\n'))
+        self.assertEqual(['stdout'], _rules(
+            'tail -f /var/www/agent-webhook-bridge/storage/logs/laravel.log\n'))
+        self.assertEqual([], _rules(
+            'php /path/to/agent-webhook-bridge/artisan bridge:inbox\n'))
+        self.assertEqual([], _rules(
+            'curl -sSL https://raw.githubusercontent.com/PupFuzz/'
+            'agent-webhook-bridge/dev/bin/x.py -o x.py\n'))
+        self.assertEqual(['stdout'], _rules(
+            'cat ~/.config/agent-webhook-bridge/kanban.yml\n'))
 
     def test_the_shipped_TEMPLATE_matches_the_secret_store_marker_too(self) -> None:
         """`.env` is a SUBSTRING, so `.env.example` — the template that ships, with

@@ -206,6 +206,25 @@ WHERE A RULE'S OWN LIST DECIDES THE VERDICT:
     read only where a rule already asks whether a path is a secret store. Narrowing
     the marker to the dotfile or its basename would change what CI accepts and
     belongs to its own ruling; until then the waiver answers this arm.
+  · BOUND(source-checkout) — ⚠ FALSE POSITIVE, and it is the price of
+    `agent-webhook-bridge/` being a SUBSTRING: the matched surface is ANY path whose
+    text contains that segment, and this project's own SOURCE CHECKOUT is spelled the
+    same way as the per-agent config store under `~/.config/`. Measured red under a
+    reader today: `cat ~/agent-webhook-bridge/README.md`, and — the shape a runbook is
+    actually likely to grow — `tail -f
+    /var/www/agent-webhook-bridge/storage/logs/laravel.log`: ordinary files in a
+    deployment, holding no secret, reported as a secret store. A URL is NOT this
+    arm: `curl …/PupFuzz/agent-webhook-bridge/dev/bin/x.py`, `git clone ….git` and
+    `cd ~/agent-webhook-bridge/` are all green, because the marker is consulted at a
+    READER's operand and nowhere else. POSITION is what decides, not the
+    spelling: `php /path/to/agent-webhook-bridge/artisan bridge:inbox` — the
+    invocation shape `docs/consumer-guide.md` and `docs/multi-host.md` carry, in a
+    `json` and an un-tagged fence this tool does not read as shell — is green even
+    placed in a `bash` fence, because `php` is not a READING_COMMANDS member and the
+    marker is read only where a rule already asks whether a path is a secret store.
+    Narrowing the marker to `.config/agent-webhook-bridge/` would separate the store
+    from the checkout, but it changes what CI ACCEPTS and belongs to its own ruling;
+    until then the waiver answers this arm.
   · BOUND(tee-outside-a-pipeline) — ⚠ FALSE POSITIVE, and the message is the false
     part. `tee <secret store>` on its own, outside a secret-carrying pipeline,
     renders the READER message — "puts the contents of … on stdout" — and `tee`
@@ -291,15 +310,27 @@ PATHY_TAIL_WORDS = {
 #: Substrings that identify a secret store on their own — nothing else is spelled
 #: like this. `.env` is here on an operator ruling (card#8351, DL-324): this
 #: repo's `CLAUDE.md` §3 puts the DB password in the Laravel `.env`. A secret-store
-#: marker is read by THREE rules, so this one widened three arms, not one — a reader
+#: marker is read by THREE rules, so a member widens three arms, not one — a reader
 #: on the file (`cat .env`, `stdout`), a captured read in an argument
 #: (`curl -H "… $(cat .env)"`, `argv`), and a command-line LITERAL written into it
-#: (`echo "DB_PASSWORD=…" >> .env`, `history`) — every one green before it. It is
-#: the one member whose SUBSTRING has a shipped near-spelling — `.env.example`, the
-#: template — and that cost is disclosed at BOUND(env-template).
+#: (`echo "DB_PASSWORD=…" >> .env`, `history`) — every one green before it.
+#: `agent-webhook-bridge/` is here on the same card's later ruling, and it is the
+#: PATH SEGMENT of the per-agent config store — `<agent>.yml` under
+#: `~/.config/agent-webhook-bridge/`, holding the kanban API token and the webhook
+#: secret paths (`CLAUDE_CONVENTIONS.md` § Never commit secrets). It widened the
+#: same three arms, all three green before it. ⚠ IT IS THE PATH SEGMENT AND
+#: DELIBERATELY NOT A BARE `.yml`: a `.yml` marker reds
+#: `cat .github/workflows/<any>.yml`, a
+#: `docker-compose.yml` and the SHIPPED `examples/sample-config/agent.yml.example`,
+#: none of which is a store — measured equal-cost on the population reachable today
+#: (0 findings either way) and very unequal on the one that has not been written yet.
+#: TWO members have a SUBSTRING with a shipped near-spelling, and each cost is
+#: DISCLOSED rather than narrowed: `.env` matches the template `.env.example`
+#: (BOUND(env-template)), and `agent-webhook-bridge/` matches this project's own
+#: SOURCE CHECKOUT (BOUND(source-checkout)).
 SECRET_PATH_MARKERS = (
     'webhook-secret-scope', 'writeback-token', 'id_rsa', 'id_ed25519', '.pem', '.p12',
-    '.env',
+    '.env', 'agent-webhook-bridge/',
 )
 
 #: Substrings that identify a secret store only in something that is actually a
