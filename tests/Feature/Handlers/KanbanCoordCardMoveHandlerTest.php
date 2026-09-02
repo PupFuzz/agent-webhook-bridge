@@ -1095,6 +1095,13 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
      * The bound, and the reason the consult sits AFTER the already-concluded no-op (DL-335
      * Decision 3, same placement): a pinned card already in the terminal has no write to
      * refuse, and an alert there would report a permanent failure that did not happen.
+     *
+     * ⭐ THE `GET` IS A PRESENCE WITNESS, NOT DECORATION (card#8523 R1). Every other assertion
+     * here is an ABSENCE, and a test asserting only absences certifies whatever replaces the
+     * behaviour: an early return added anywhere upstream of `moveOne()` — a classifier change,
+     * a correlation guard, a config gate — leaves all of them green while nothing ever reaches
+     * the arm this leg exists to bound. The card read is the first thing `moveOne()` does, so
+     * requiring it pins that the run got INTO the code under test.
      */
     public function test_a_pinned_card_already_in_the_terminal_stage_raises_no_refusal_signal(): void
     {
@@ -1107,6 +1114,7 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
 
         $this->handle(['disposition' => 'terminal']);
 
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
         $this->assertNoMove();
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }

@@ -137,6 +137,10 @@ final class BoardCreateCardTool implements Tool
             // a card nobody had read — the predicate answering "not pinned" for every row by
             // construction. `cardRowsByTag` is the row-returning twin of the same one search,
             // so this costs no extra request; the archived-axis probe above already uses it.
+            // ⛔ The DL-026 degraded-read warning `cardsByTag` carried is NOT lost in that swap:
+            // it was, in the first cut of this change, and card#8523's review caught it — the
+            // warning now lives in `cardRowsByTag` too, so this read still says so when kanban
+            // answers 200 with no card collection instead of silently reading "no duplicates".
             $live = self::rowsById($client->cardRowsByTag($boardId, $idemTag));
             if (count($live) > 1) {
                 CardCollapse::toSurvivor($client, $live, 'board_create_card', '', ['agent' => $agentName, 'idem_tag' => $idemTag]);

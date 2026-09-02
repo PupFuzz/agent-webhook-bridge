@@ -706,6 +706,35 @@ class KanbanClientTest extends TestCase
         $this->assertSame([], $this->client()->cardsByTag(8, 'id:TASK-9'));
     }
 
+    /**
+     * card#8523 R1 — THE ROW-RETURNING TWIN CARRIES THE SAME WARNING, and it did not until this
+     * round: card#8523 moved `BoardCreateCardTool`'s post-create collapse from `cardsByTag` onto
+     * this read, which silently returned `[]` on an unreadable body — dropping the DL-026 signal
+     * from the one read the DL-340 pin consult rides on. "kanban answered a body with no card
+     * collection" and "this key has no duplicates" are different facts and only the first is a
+     * bug to chase; the collapse no-ops either way, which is exactly why the silence was cheap
+     * to keep and expensive to have.
+     */
+    public function test_an_unreadable_row_correlation_read_no_ops_but_logs(): void
+    {
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(fn (string $m, array $c) => str_contains($m, 'carried no card collection')
+                && $c['board_id'] === 8
+                && str_contains($c['read'], 'id:TASK-9'));
+        Http::fake(['*/tasks/search.json*' => Http::response(['meta' => []])]);
+
+        $this->assertSame([], $this->client()->cardRowsByTag(8, 'id:TASK-9'));
+    }
+
+    public function test_an_ordinary_empty_row_read_logs_nothing(): void
+    {
+        Log::shouldReceive('warning')->never();
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+
+        $this->assertSame([], $this->client()->cardRowsByTag(8, 'id:TASK-9'));
+    }
+
     public function test_board_stage_ids_by_name_maps_names_to_ids(): void
     {
         // DL-200: the coord-config compare resolves a terminal column NAME to a stage

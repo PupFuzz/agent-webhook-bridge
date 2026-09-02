@@ -366,8 +366,9 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // WHICH card the event is about (contrast the DL-270 arm above, which must set no
         // field at all precisely because card identity is what is in question).
         // Loud so a refused move stays visible — and the report lives in the predicate's
-        // own class since card#8523 (`PinGuard::refuses`, the MappedBoardGuard pairing), so
-        // the six writers that consult the pin cannot drift on reason code or log level. The
+        // own class since card#8523 (`PinGuard::refuses`, the MappedBoardGuard pairing), so no
+        // writer that consults the pin can drift on reason code or log level. `PinGuard`'s
+        // docblock owns that population and the grep that re-derives it; no count here. The
         // two overrides are tested FIRST, before the consult: `refuses()` REPORTS as well as
         // answers, so asking it about a move we are about to make anyway would alert on it.
         if (! $isUnpark && ! $isRevive

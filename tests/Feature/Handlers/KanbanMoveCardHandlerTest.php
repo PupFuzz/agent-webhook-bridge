@@ -93,7 +93,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->writeToken();
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])   // GET
                 ->push(['data' => ['id' => 5]]),                                                // PATCH
         ] + $this->fakePreload());
 
@@ -354,7 +354,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->writeToken();
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
                 ->push(['data' => ['id' => 5]]),
         ] + $this->fakePreload());
 
@@ -514,7 +514,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->writeToken();
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET ok
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])   // GET ok
                 ->push(['error' => 'invalid stage'], 422),                                      // PATCH 4xx
         ] + $this->fakePreload());
 
@@ -535,7 +535,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake([
             '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [['id' => 49, 'position' => 3], ['id' => 52, 'position' => 5]]]]]]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET ok
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])   // GET ok
                 ->push(['message' => 'you are not authorized to move this card'], 403),         // PATCH 403 authz
         ]);
 
@@ -580,7 +580,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake([
             '*/boards/8/preload.json' => Http::response(['data' => ['workflows' => [['stages' => [['id' => 49, 'position' => 3], ['id' => 52, 'position' => 5]]]]]]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
                 ->push(['message' => 'denied', 'echo' => ['token' => 'wb-SECRET-TOKEN-abc123']], 403),
         ]);
 
@@ -885,7 +885,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         $this->writeToken();
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
                 ->push(['data' => ['id' => 5]]),
         ] + $this->fakePreload());
 
@@ -1358,7 +1358,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake($this->fakePreload() + [
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET ok — read works
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])   // GET ok — read works
                 ->push(['message' => 'this token cannot write board 8'], 403),                  // PATCH refused
         ]);
 
@@ -1384,7 +1384,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake($this->fakePreload() + [
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
                 ->push(['error' => 'invalid stage'], 422),
         ]);
 
@@ -1400,7 +1400,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake($this->fakePreload() + [
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
                 ->push(['error' => 'gone'], 404),
         ]);
 
@@ -1444,7 +1444,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake($this->fakePreload() + [
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // event 1 GET
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])   // event 1 GET
                 ->push(['message' => 'denied'], 403)                                            // event 1 move PATCH
                 ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 52]])   // event 2 GET (already there)
                 ->push(['message' => 'denied'], 403),                                           // event 2 stamp PATCH
@@ -1473,7 +1473,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake($this->fakePreload() + [
             '*://127.0.0.1:*/*' => Http::response(['ok' => true]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
                 ->push(['message' => 'denied'], 403),
         ]);
 
@@ -1492,7 +1492,7 @@ class KanbanMoveCardHandlerTest extends TestCase
         Http::fake($this->fakePreload() + [
             self::ALERT_URL.'*' => Http::response(['ok' => true]),
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])
                 ->push('upstream error', 503),
         ]);
 
@@ -2637,7 +2637,7 @@ pull request it already names', $notes[0]);
         $this->writeToken();
         Http::fake([
             '*/tasks/5.json' => Http::sequence()
-                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]])   // GET
+                ->push(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49, 'block_reason' => null, 'tags' => []]])   // GET
                 ->push(['data' => ['id' => 5]]),                                              // PATCH
         ] + $this->fakePreload());
         Log::spy();

@@ -1017,6 +1017,12 @@ class KanbanDependabotCardHandlerTest extends TestCase
     /**
      * A pinned card ALREADY in the outcome's stage raises no refusal signal: there was no
      * write to refuse, and an alert there would be a false permanent-failure report.
+     *
+     * ⭐ THE `GET` IS A PRESENCE WITNESS (card#8523 R1, the same shape fixed on the coord-move
+     * twin in the same round — two copies, so the SHAPE was fixed, not the instance). The two
+     * `assertNotSent` legs are absences and would stay green under any early return upstream of
+     * the stage compare, certifying whatever replaced it; the card read pins that the handler
+     * actually reached the arm being bounded.
      */
     public function test_a_pinned_card_already_in_the_target_stage_does_not_alert(): void
     {
@@ -1029,6 +1035,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
 
         $this->handle('merged');   // target stage 52 — already there
 
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
     }

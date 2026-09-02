@@ -17,15 +17,22 @@ use Illuminate\Support\Facades\Log;
  * redelivery re-presents nothing). Each handler keeps its OWN correlation (by-ref
  * PR vs `id:` tag); only the tie-break is single-sourced here.
  *
+ * ⚑ THIS CLASS IS THE ONE OWNER OF ITS CALLER POPULATION, and it states a RECIPE rather than
+ * a number: `grep -rn "CardCollapse::toSurvivor(" app/` names every caller, and
+ * `WritebackSuccessBoardRecordTest::test_every_collapse_call_in_the_population_passes_its_mapping`
+ * re-derives the same set on every run. `PinGuard`, DL-340, `docs/writeback.md` and
+ * `docs/board-tools.md` point here instead of restating a count — the count moves the next time
+ * a handler adopts this kernel, and a restated one is stale the moment it does.
+ *
  * ⛔ A PINNED duplicate is NOT archived (card#8523, DL-340), and the consult lives HERE
- * rather than in the three callers on purpose. DL-335 rejected widening the pin into this
+ * rather than in the callers on purpose. DL-335 rejected widening the pin into this
  * kernel on the reading that it retires a *bridge-minted create-race twin* — a
  * data-integrity repair rather than an act on a card's lifecycle — and disclosed the live
  * consequence: on a duplicated repo+PR the collapse ran BEFORE the dependabot move consult,
  * so a human's hold was honoured on the survivor and ignored on the twin. The operator
  * reversed that on card#8523, for the reason the disclosure itself named: the twin a human
- * notices is the twin a human pins. A caller-side consult would have fixed one caller and
- * left the other two (canon #5), so the refusal is per-card and inside the loop — the
+ * notices is the twin a human pins. A caller-side consult would have fixed ONE caller and
+ * left every other one (canon #5), so the refusal is per-card and inside the loop — the
  * unpinned duplicates of the same key are still retired, because a hold is a property of
  * the CARD, never of the delivery.
  */
@@ -71,11 +78,15 @@ final class CardCollapse
      * pinned" for a card nobody looked at — a check that cannot fire (canon #9). The
      * board-tools caller used to hand exactly that (`array_fill_keys($live, [])`) and now
      * reads its rows through `KanbanClient::cardRowsByTag()` instead, which is the write-site
-     * fix rather than a read-time fallback here (canon #5). ⚠ Two of the three callers get
-     * their rows from kanban's SEARCH projection rather than from the by-id read, so that
-     * projection must keep `block_reason` and `tags` top-level or this consult answers "not
-     * pinned" silently — declared on the `tags:"<tag>"` row of
-     * `docs/kanban-integration-contract.md`, which is the surface the far end can read.
+     * fix rather than a read-time fallback here (canon #5). ⚠ Most callers get their rows from
+     * kanban's SEARCH projection rather than from the by-id read, so that projection must keep
+     * `block_reason` and `tags` top-level or this consult answers "not pinned" silently —
+     * DECLARED on the `tags:"<tag>"` row of `docs/kanban-integration-contract.md`, which is the
+     * surface the far end can read. ⭐ AND IT IS CHECKED FROM THIS SIDE: a row reaching the
+     * consult with NEITHER field is exactly that degradation, and
+     * {@see PinGuard::reportUnreadableRow} makes it LOUD at the predicate. It does not refuse —
+     * that would change what the system refuses, and is card#8557's to rule on — so the seam is
+     * audible rather than closed, which is the honest state and not the same as undetectable.
      *
      * ⚑ $repo is REQUIRED and may legitimately be `''`. It is the first element of the pin
      * refusal's `(repo, outcome, reason)` alert dedup tuple, and the board-tools caller has no
@@ -96,6 +107,14 @@ final class CardCollapse
     {
         ksort($cards);
         $survivorId = array_key_first($cards);
+        // The notifier is constructed here rather than injected: this is a static kernel with
+        // no caller that holds a different one (every handler builds the same class in its own
+        // constructor default), and a parameter for it would be a seam no caller uses. ONE
+        // instance for the whole collapse rather than one per iteration: the class holds no
+        // per-card state (its config and its dedup marker are both read inside the emit), so a
+        // fresh instance per refused card could not differ from this one — writing it that way
+        // said the opposite.
+        $alerts = new WritebackAlertNotifier;
         foreach (array_keys($cards) as $id) {
             if ($id === $survivorId) {
                 continue;
@@ -103,11 +122,7 @@ final class CardCollapse
             $ctx = ['card_id' => $id, 'survivor' => $survivorId]
                 + ($mapping === null ? [] : MappedBoardGuard::boardContext($cards[$id], $mapping))
                 + $logContext;
-            // The notifier is constructed here rather than injected: this is a static kernel
-            // with no caller that holds a different one (every handler builds the same class
-            // in its own constructor default), and a parameter for it would be a seam no
-            // caller uses.
-            if (PinGuard::refuses(new WritebackAlertNotifier, $cards[$id], $subsystem, 'duplicate archive', $id, $repo, $subsystem, $ctx)) {
+            if (PinGuard::refuses($alerts, $cards[$id], $subsystem, 'duplicate archive', $id, $repo, $subsystem, $ctx)) {
                 continue;
             }
             if ($client->archiveCard($id)) {

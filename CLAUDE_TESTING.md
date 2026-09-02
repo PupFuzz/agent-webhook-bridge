@@ -160,6 +160,26 @@ Classifier that always throws. Used to verify case-A failure treatment: classify
 
 Classifier that emits a target naming a handler that doesn't exist. Used to verify case-C failure treatment: handler resolution failure marks the dispatch done-with-note (intent was staged first, per B-before-C ordering).
 
+### A faked kanban CARD row must carry `block_reason` and `tags` (card#8523)
+
+`TaskResource` emits both keys on **every** row kanban serves — the by-id read and the
+`tasks/search.json` projection alike — so a row carrying NEITHER is, in production, a degraded
+read and nothing else. `PinGuard::reportUnreadableRow()` says so with a `Log::warning` under
+`pin_row_unreadable`, at the consult, on any path that asks whether a card is pinned.
+
+That makes a thin fixture visible: `['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]`
+models a row kanban cannot serve, and a test asserting `Log::shouldHaveReceived('warning')
+->once()` over a pin-consulting path will red with *"called 2 times"* rather than with anything
+about its own subject. **Give the fixture `'block_reason' => null, 'tags' => []`** — the shape an
+unpinned card actually has — rather than relaxing the count. Five legs were red this way when the
+detector shipped and every one of them was the fixture, not the assertion.
+
+⚠ The reverse is a real trap: a fixture omitting both fields makes the pin predicate answer *"not
+pinned"* for reasons that have nothing to do with the card, so a test whose SUBJECT is the pin can
+pass for the wrong reason. The board-tools collapse leg is the shipped instance (card#8523,
+DL-340 Decision 3) — the caller handed the kernel `array_fill_keys($ids, [])` and the consult
+could not fire at all.
+
 ## The channel-server version-agreement control (DL-268)
 
 `tests/Feature/Workflows/ChannelServerVersionAgreementTest.php` extracts the
