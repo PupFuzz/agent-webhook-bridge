@@ -160,25 +160,71 @@ Classifier that always throws. Used to verify case-A failure treatment: classify
 
 Classifier that emits a target naming a handler that doesn't exist. Used to verify case-C failure treatment: handler resolution failure marks the dispatch done-with-note (intent was staged first, per B-before-C ordering).
 
-### A faked kanban CARD row must carry `block_reason` and `tags` (card#8523)
+### A pin-SUBJECT test's faked CARD row must carry `block_reason` and `tags` (card#8523)
+
+⚠ **Scoped deliberately, and the narrower scope is the true one.** This is NOT "every faked kanban
+row in the suite carries both keys" — that is false of this repo today (by how much, the recipe
+below enumerates; no figure is quoted, because it moves), and a rule stated wider than it is
+enforced teaches the next author to ignore it. The rule is: **a row
+that reaches a pin consult, in a test whose SUBJECT is the pin, must carry both keys.**
 
 `TaskResource` emits both keys on **every** row kanban serves — the by-id read and the
 `tasks/search.json` projection alike — so a row carrying NEITHER is, in production, a degraded
 read and nothing else. `PinGuard::reportUnreadableRow()` says so with a `Log::warning` under
 `pin_row_unreadable`, at the consult, on any path that asks whether a card is pinned.
 
-That makes a thin fixture visible: `['id' => 5, 'board_id' => 8, 'workflow_stage_id' => 49]`
-models a row kanban cannot serve, and a test asserting `Log::shouldHaveReceived('warning')
-->once()` over a pin-consulting path will red with *"called 2 times"* rather than with anything
-about its own subject. **Give the fixture `'block_reason' => null, 'tags' => []`** — the shape an
-unpinned card actually has — rather than relaxing the count. Five legs were red this way when the
-detector shipped and every one of them was the fixture, not the assertion.
+⛔ **Why the scope matters, and it is not tidiness.** `PinGuard::isPinned` answers *"not pinned"*
+for a row carrying neither key — not because the card is unpinned, but because **nobody could
+read the pin**. So an UNPINNED CONTROL on such a row passes for the wrong reason: it would pass
+just as green with the guard deleted from the caller, and it certifies nothing about the
+predicate. That is not hypothetical — four of them shipped that way with the detector
+(`test_close_moves_the_tagged_card_to_the_terminal_stage`,
+`test_the_same_duplicate_fixture_without_a_pin_is_archived`,
+`AgentToolsCallTest::test_idempotency_raced_duplicate_is_collapsed`,
+`test_an_unpinned_card_moves_on_this_outcome`), and they were repaired at their fixture HELPERS
+(`fakeStageOrderAndCard`, `fakeBoard`, `archiveAxisFake`), which default both keys with `+` so
+each pinned leg still states its own pin and wins. **Give the fixture
+`'block_reason' => null, 'tags' => []`** — the shape an unpinned card actually has — rather than
+relaxing a count or leaving a control that cannot discriminate.
 
-⚠ The reverse is a real trap: a fixture omitting both fields makes the pin predicate answer *"not
-pinned"* for reasons that have nothing to do with the card, so a test whose SUBJECT is the pin can
-pass for the wrong reason. The board-tools collapse leg is the shipped instance (card#8523,
-DL-340 Decision 3) — the caller handed the kernel `array_fill_keys($ids, [])` and the consult
-could not fire at all.
+Outside that scope a thin row is log NOISE, not a defect — with one exception that IS the reason
+to keep the noise readable: a test asserting `Log::shouldHaveReceived('warning')->once()` over a
+pin-consulting path reds with *"called 2 times"* rather than with anything about its own subject.
+Fix the fixture, never the count.
+
+⭐ **RE-DERIVE the population; do not trust a figure.** No count is quoted here, because the set
+moves with every fixture written. Temporarily make the detector name its caller, run the suite,
+and read the result — it is one edit and one run:
+
+```php
+// app/Bridge/Writeback/PinGuard.php, first line of reportUnreadableRow() after the early return
+$t = null;
+foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS) as $f) {
+    if (isset($f['class'], $f['function']) && str_starts_with($f['function'], 'test_')) {
+        $t = $f['class'].'::'.$f['function'];
+    }
+}
+file_put_contents(getenv('PIN_PROBE') ?: '/dev/null', ($t ?? 'UNKNOWN')."\n", FILE_APPEND);
+```
+
+```bash
+PIN_PROBE=/tmp/pin-probe.txt php artisan test && sort /tmp/pin-probe.txt | uniq -c | sort -rn
+```
+
+Then **revert the edit**. Every line is a test whose row could not be read at a consult; the ones
+that matter are the ones whose subject is the pin. ⚠ A run measures the branches that run — a
+consult reached only on a path this run did not take is not in the output.
+
+⚠ There is **no CI guard** on any of this, and that is deliberate (card#8555's standing ruling:
+delete the figure, point at ONE owner, add nothing that can block a merge). The recipe above is
+the owner. ⛔ It is also what to run FIRST if card#8557 ever rules the detector fail-CLOSED — every
+test in that output changes behaviour on the same day.
+
+⚠ The production twin of the same trap: a caller that hands the pin consult rows it never read
+makes the predicate unable to fire at all. The board-tools collapse leg was the shipped instance
+(card#8523, DL-340 Decision 3) — `array_fill_keys($ids, [])` — fixed at the write site, not with
+a read-time fallback.
+
 
 ## The channel-server version-agreement control (DL-268)
 

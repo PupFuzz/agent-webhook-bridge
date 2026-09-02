@@ -905,6 +905,13 @@ class KanbanMoveCardHandlerTest extends TestCase
     /**
      * Board-8 order for the guard: In-Progress 49 < In-Review 50 < Shipped 52 < Released 53.
      *
+     * ⛔ THE DEFAULTS AT THE END ARE LOAD-BEARING, not tidiness. This helper stubs the row the
+     * PIN CONSULT reads, and a row carrying neither `block_reason` nor `tags` makes
+     * `PinGuard::isPinned` answer "not pinned" because nobody could READ the pin — so
+     * `test_an_unpinned_card_moves_on_this_outcome`, the control for the four pinned legs,
+     * passed without the predicate ever being exercised (card#8523 R2). `$cardExtra` still
+     * wins over them, so every pinned leg states its own pin exactly as before.
+     *
      * @param  array<string, mixed>  $cardExtra  extra card fields (block_reason / tags / payload)
      */
     private function fakeStageOrderAndCard(int $currentStage, array $cardExtra = []): void
@@ -916,7 +923,9 @@ class KanbanMoveCardHandlerTest extends TestCase
                 ['id' => 52, 'position' => 5120.0],
                 ['id' => 53, 'position' => 6144.0],
             ]]]]]),
-            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => $currentStage] + $cardExtra]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => 8, 'workflow_stage_id' => $currentStage]
+                + $cardExtra
+                + ['block_reason' => null, 'tags' => []]]),
         ]);
     }
 

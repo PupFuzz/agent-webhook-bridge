@@ -513,19 +513,28 @@ class AgentToolsCallTest extends TestCase
     private function archiveAxisFake(array $live, array $archived, int $newId, ?array $postCreate = null, array $readBack = ['board_id' => 10, 'swimlane_id' => 4]): \Closure
     {
         $liveReads = 0;
+        // ⛔ EVERY SEARCH ROW CARRIES BOTH PIN FIELDS unless the caller states its own. These
+        // rows are what `BoardCreateCardTool` hands the collapse kernel, so they are what
+        // `PinGuard::isPinned` reads — and a row carrying NEITHER key answers "not pinned"
+        // because nobody could read the pin, which is why
+        // `test_idempotency_raced_duplicate_is_collapsed` (the unpinned control for the two
+        // pin legs below) archived its twin without the predicate ever being exercised
+        // (card#8523 R2). `+` keeps the caller's own keys, so the pinned and non-pin-tag
+        // fixtures below are unchanged.
+        $row = fn (array $r): array => $r + ['block_reason' => null, 'tags' => []];
 
-        return function ($request) use ($live, $archived, $newId, $postCreate, $readBack, &$liveReads) {
+        return function ($request) use ($live, $archived, $newId, $postCreate, $readBack, $row, &$liveReads) {
             $url = urldecode($request->url());
             if ($request->method() === 'GET' && preg_match('#/tasks/(\d+)\.json#', $url, $m) === 1) {
                 return Http::response(['data' => ['id' => (int) $m[1]] + $readBack]);
             }
             if (str_contains($url, '/tasks/search.json')) {
                 if (str_contains($url, 'archived=1')) {
-                    return Http::response(['data' => $archived]);
+                    return Http::response(['data' => array_map($row, $archived)]);
                 }
                 $liveReads++;
 
-                return Http::response(['data' => $liveReads > 1 && $postCreate !== null ? $postCreate : $live]);
+                return Http::response(['data' => array_map($row, $liveReads > 1 && $postCreate !== null ? $postCreate : $live)]);
             }
             if ($request->method() === 'POST') {
                 return Http::response(['data' => ['id' => $newId]], 201);

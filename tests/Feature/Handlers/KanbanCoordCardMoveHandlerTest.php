@@ -97,6 +97,13 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
     }
 
     /**
+     * ⛔ `$card` IS THE ROW THE PIN CONSULT READS, so it is defaulted to the shape kanban
+     * actually serves. A row carrying neither `block_reason` nor `tags` makes
+     * `PinGuard::isPinned` answer "not pinned" because nobody could READ the pin, which made
+     * `test_close_moves_the_tagged_card_to_the_terminal_stage` — the control for the two
+     * pinned terminal legs — pass without exercising the predicate at all (card#8523 R2).
+     * A caller's own `block_reason` / `tags` still win: `+` keeps the left operand's keys.
+     *
      * @param  array<string, mixed>  $card
      * @param  list<int>  $byTag
      */
@@ -104,7 +111,7 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
     {
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => array_map(fn ($id) => ['id' => $id], $byTag)]),
-            '*/tasks/7.json' => Http::response(['data' => $card]),
+            '*/tasks/7.json' => Http::response(['data' => $card + ['block_reason' => null, 'tags' => []]]),
         ]);
     }
 

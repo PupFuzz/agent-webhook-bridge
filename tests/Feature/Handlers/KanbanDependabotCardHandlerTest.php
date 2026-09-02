@@ -1064,7 +1064,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
                 ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
                 ['id' => 9, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
             ]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
             '*/tasks/9.json' => Http::response(['data' => ['id' => 9, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => 'human parked this twin', 'tags' => ['no-automove'], 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
         ]);
         Log::spy();
@@ -1101,8 +1101,8 @@ class KanbanDependabotCardHandlerTest extends TestCase
                 ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
                 ['id' => 9, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
             ]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
-            '*/tasks/9.json' => Http::response(['data' => ['id' => 9, 'board_id' => 8, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/9.json' => Http::response(['data' => ['id' => 9, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
         ]);
 
         $this->handle('merged');
