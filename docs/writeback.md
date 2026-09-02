@@ -71,12 +71,13 @@ Create a kanban API token for the mapped boards (NOT the broad provisioning toke
 | Permission | What needs it |
 | --- | --- |
 | `board.view` | every read (`getCard`, the board-scoped searches, the correlation lookups, `board_my_cards`) |
-| `task.move` | the stage-only move — the move handler, the coord-card move, the release-promote sweep, `bridge:reconcile --fix` |
+| `task.move` | the stage-only move — the move handler, the coord-card move, the **dependabot card's stage move** (`KanbanDependabotCardHandler`, the create-or-move arm's survivor move), the release-promote sweep, `bridge:reconcile --fix` |
 | `task.create` | the dependabot tracking card, the coord card, `board_create_card` |
 | `task.archive` | `_action: archive` — the closed-unmerged retire (DL-161) and the duplicate collapse |
 | `task.update` | every non-stage-only field PATCH — the draft `block_reason` overlay, the `payload` correlation stamp, and (DL-326) a `board_correct_card` correction of `name`/`description`/`tags` |
+| `comment.create` | the card note the writeback posts when it drops a correlation leg or refuses a move (card#7064, `KanbanClient::addComment`) — **fail-soft**: without it the note 403s and alerts, the drop still reaches the log and the alert channel, and no move outcome changes. See the card-note paragraph below for what the silence costs |
 
-A kanban **Member** role carries all five and is the simple answer. A **custom** role grants `create` / `update` / `move` / `delete` independently from its pivot JSON (and inherits `task.archive` from Member), so a token narrowed to moves alone gets a **permanent 403 on every create, every overlay/stamp write and every correction** — surfaced as that arm's permanent refusal (`board_correct_card` reports it as a named INSTALL fault, [`docs/board-tools.md`](board-tools.md)), never a silent skip. ⚠ **`task.update` is NEW for the board-tools door at DL-326** — `board_my_cards` needs only `board.view` and `board_create_card` only `task.create`, so an install that granted exactly those two now 403s on every correction. Comment-create is additionally required for the card notes (below). Place the token:
+A kanban **Member** role carries all six and is the simple answer. A **custom** role grants `create` / `update` / `move` / `delete` independently from its pivot JSON (and inherits `task.archive` and `comment.create` from Member), so a token narrowed to moves alone gets a **permanent 403 on every create, every overlay/stamp write and every correction** — surfaced as that arm's permanent refusal (`board_correct_card` reports it as a named INSTALL fault, [`docs/board-tools.md`](board-tools.md)), never a silent skip. ⚠ **`task.update` is NEW for the board-tools door at DL-326** — `board_my_cards` needs only `board.view` and `board_create_card` only `task.create`, so an install that granted exactly those two now 403s on every correction. Place the token:
 ```bash
 # `read -rs` keeps the token off the terminal and out of your shell history — a
 # here-string (or any command-line literal) is written to that file verbatim.

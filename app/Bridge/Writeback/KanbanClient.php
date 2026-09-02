@@ -9,10 +9,14 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * Kanban-board writeback client (DL-009/019) — sibling to the
- * provisioning-scoped KanbanProvisionClient, but for the card-move WRITE path.
- * It authenticates with a DEDICATED least-privilege writeback token (its own
- * 0600 file, NOT the broad provisioning token) so a leak is bounded to card
- * moves. Throws on non-2xx.
+ * provisioning-scoped KanbanProvisionClient, but for the board WRITE path.
+ * It authenticates with a DEDICATED writeback token (its own 0600 file, NOT the
+ * broad provisioning token), so it is NARROWER than the provisioning token.
+ * Which board permissions it carries is docs/writeback.md § 1's permission table
+ * to state, not this docblock's: the spelling here was "a leak is bounded to card
+ * moves", which has been wrong since the first non-stage-only PATCH shipped and
+ * understates a leak by the whole board role the token's user holds. Throws on
+ * non-2xx.
  *
  * It also owns the board-correlation READ (the search that both finders share),
  * and that is the one place it deviates from "thin verb-only client + caller
