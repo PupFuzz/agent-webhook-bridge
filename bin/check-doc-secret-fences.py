@@ -45,7 +45,9 @@ RULES (each names the SURFACE it is about, never the instrument):
   log      a secret VALUE is redirected into a log file.
   history  a secret placed as a command-line LITERAL, written verbatim into the
            operator's shell history. The sanctioned form is `read -rs` + a builtin
-           `printf`.
+           `printf`. ⛔ The finding names that literal by POSITION and LENGTH and
+           never quotes it — see `Literal`: a message that echoed the value would
+           republish it into a CI log that outlives the branch.
 
 WAIVER. A doc that must show a bad form INSIDE an executable fence writes, on the
 line IMMEDIATELY before it — a blank line drops it, so a waiver at the top of a
@@ -58,55 +60,115 @@ A waiver with no reason is itself reported — an unauditable off-switch is the 
 thing this program must not ship. Prefer inline backticks in prose: every quotation
 of a bad form in this repo today is prose, and none needed a waiver.
 
-BOUNDS, named rather than left to be discovered. Out of reach by construction:
-markdown INDENTED code blocks (four-space, no fence) and any fence whose info
-string is not in SHELL_INFO; a secret printed by a command that dumps the WHOLE
-environment with nothing in argv to read — bare `env` or `printenv`, and
-`declare -p` / `typeset -p` / `export -p` / `set` with NO operand, all of which
-resolve the value while naming nothing (given an operand, `declare` and `typeset`
-are read: see NAME_TAKING_PRINTERS); and every file that is not a `*.md`. The shell
-reader is a heuristic, not a parser: it understands quoting, pipelines, command
-substitution, redirection and here-strings, and it does not understand functions,
-loops, `eval`, aliases, or a value routed through several variables. A command
-PREFIX that takes an operand leaves it behind — `COMMAND_PREFIXES`' own comment
-owns that bound with its worked case, and this list deliberately does not restate
-it.
+BOUNDS. Every one is NAMED below with a `BOUND(<slug>)` tag, and every tag has a
+test in `bin/test_check_doc_secret_fences.py` that pins the CURRENT behaviour — so
+closing a bound reds the suite and forces this list to be rewritten instead of left
+saying the bound is still open. That class's
+`test_the_bounds_NAMED_upstairs_are_exactly_the_bounds_pinned_here` asserts the set
+of slugs HERE equals the set it pins, in BOTH directions. The tags are not
+decoration: what this replaces was a COUNT — three surfaces said "the five
+disclosed bounds ... now have one" while ELEVEN of nineteen had no pin — and a
+count is a second thing to keep true, falsified by every bound added without
+touching a line of it. Named, never counted, and the naming is checked.
 
-FOUR MORE BOUNDS, each MEASURED on this checkout rather than reasoned about. None
-fires on any doc in this repo today, and closing any of them changes what CI
-rejects — so each is disclosed here rather than quietly widened:
-  · A fence inside a BLOCKQUOTE (`> ` before the backticks) is not recognised as a
-    fence at all — an opener is matched after leading WHITESPACE only — so the
-    whole body is invisible, not merely unparsed.
-  · A Pandoc / Quarto info string — braces around the language — is not in
-    SHELL_INFO, so such a fence reads as non-executable.
-  · There is no fd table. `exec 3<` a secret file followed by `cat <&3` is green:
-    the reading command's input path is `&3`, and nothing carries the opener's
-    path forward to it.
-  · A `sh -c` / `bash -c` STRING OPERAND is not recursed into, exactly as `eval`'s
-    is not — it is read as an ordinary argument. So a single-quoted body expands
-    nothing here and is GREEN, while a double-quoted one reds under the `argv`
-    rule, which is correct: the PARENT shell expands that one into the child's
-    argv before the child ever starts.
+Most are silent GREENS; two are loud false POSITIVES, marked as such — and the
+difference decides what "fires on no doc in this repo" can even MEAN. For a LOUD
+bound it is a measurement: `bin/doc-fence-census.py` runs this program over every
+`*.md` at every tag and reports the same five known-member messages and nothing
+else, so no false positive of this list has ever fired. For a SILENT one it cannot
+be, by construction — a bound that produces no finding leaves no trace in a census
+of findings — so where the question mattered it was answered by a separate scan of
+the same corpus: BOUND(group-tail) was measured with a deliberately
+over-approximating pattern (any `|` before a `{` or `(`, and any `|&`, in any shell
+fence at any tag) returning 0 hits against a control showing 499 pipe-carrying
+lines. Closing any bound changes what CI rejects, so each is disclosed here rather
+than quietly widened.
 
-A HEREDOC is not tracked AT ALL, so its body is read as though it were commands: a
-secret expansion inside one reports an `argv` finding against what is really a
-config line. That holds for the QUOTED `<<'EOF'` spelling exactly as for the
-unquoted one — and on the quoted form the message is not just a false positive but
-a false STATEMENT, because a quoted heredoc expands nothing and no value ever
-reaches an argv. Wording, not the parser: teaching it heredocs would change what CI
-rejects, and the shape fires on no doc in this repo at any tag. The waiver is the
-answer if one appears.
+OUT OF REACH BY CONSTRUCTION — the bytes are never read as shell at all:
+  · BOUND(not-markdown) — every file that is not a `*.md`. A member minted in a
+    `.php`, a `.sh`, a workflow `run:` block or a hook script is unreachable.
+  · BOUND(indented-block) — a markdown INDENTED code block (four spaces, no
+    fence). Only fences are found, so the body is invisible, not merely unparsed.
+  · BOUND(non-shell-info) — a fence whose info string is not in SHELL_INFO.
+  · BOUND(pandoc-info) — a Pandoc / Quarto info string (braces around the language)
+    is not in SHELL_INFO, so such a fence reads as non-executable.
+  · BOUND(blockquote-fence) — a fence inside a BLOCKQUOTE (`> ` before the
+    backticks) is not recognised as a fence at all: an opener is matched after
+    leading WHITESPACE only, so the whole body is invisible.
 
-A NESTED command substitution is read one level deep on the secret-FILE leg:
-`$(cat <secret file>)` marks its enclosing command, `$(echo "$(cat <secret file>)")`
-does not and is GREEN. A nested secret VALUE expansion is unaffected — the
-expansion walk is not depth-limited — so `$(echo "$SECRET")` still reds. WITHIN
-that one level every spelling of the read is decided by ONE predicate,
-`_secret_files_on_stdout`, shared with the pipeline reader: `$(cat f)`,
-`$(cat < f)` and bash's `$(<f)` are the same act. They were two divergent copies of
-the question, and the two redirect spellings answered GREEN while the first
-reddened — a redirection character deciding a security verdict.
+THE SHELL READER IS A HEURISTIC, NOT A PARSER. It understands quoting, pipelines,
+command substitution, redirection and here-strings. It does not follow a VALUE
+across a name binding, and it executes nothing:
+  · BOUND(variable-routing) — `X="$SECRET"` then `echo "$X"` is green: only a name
+    the vocabulary itself recognises is read as holding a secret.
+  · BOUND(function) — a function BODY's commands are read as ordinary top-level
+    commands, so one that names a secret still reds; a value routed through a
+    PARAMETER is not followed at all. `show() { cat "$1"; }` + `show "$TOKEN_FILE"`
+    is green where the direct `cat "$TOKEN_FILE"` reds.
+  · BOUND(loop) — the same, through a loop VARIABLE:
+    `for f in "$TOKEN_FILE"; do cat "$f"; done` is green.
+  · BOUND(alias) — an alias body is never resolved, in either quoting.
+  · BOUND(eval) — an `eval` STRING OPERAND is read as an ordinary argument, never
+    recursed into; `eval` is a builtin, so the `argv` rule does not read it either.
+  · BOUND(sh-c-operand) — a `sh -c` / `bash -c` STRING OPERAND is not recursed into
+    either. So a single-quoted body expands nothing here and is GREEN, while a
+    double-quoted one reds under the `argv` rule — which is not the bound but the
+    correct answer: the PARENT shell expands that one into the child's argv before
+    the child ever starts.
+  · BOUND(heredoc) — a heredoc is not tracked AT ALL, so its body is read as though
+    it were commands: a secret expansion inside one reports an `argv` finding
+    against what is really a config line. That holds for the QUOTED `<<'EOF'`
+    spelling exactly as for the unquoted one — and on the quoted form the message
+    is not just a false positive but a false STATEMENT, because a quoted heredoc
+    expands nothing and no value ever reaches an argv. Wording, not the parser:
+    teaching it heredocs would change what CI rejects. The waiver is the answer if
+    one appears.
+  · BOUND(no-fd-table) — there is no fd table. `exec 3<` a secret file followed by
+    `cat <&3` is green: the reading command's input path is `&3`, and nothing
+    carries the opener's path forward to it.
+  · BOUND(nested-substitution) — a NESTED command substitution is read one level
+    deep on the secret-FILE leg: `$(cat <secret file>)` marks its enclosing
+    command, `$(echo "$(cat <secret file>)")` does not and is GREEN. A nested secret
+    VALUE expansion is unaffected — the expansion walk is not depth-limited — so
+    `$(echo "$SECRET")` still reds.
+  · BOUND(group-tail) — a pipeline whose TAIL is a group command `{ …; }` or a
+    subshell `( … )` loses the pipeline mark: `_split_segments` ends the pipeline at
+    the standalone `{` / `(`, so the tail begins a pipeline of its own where
+    `idx > 0` is false and the tail rule never runs. `echo "$SECRET" | { base64; }`
+    and `| (base64)` are green where `| base64` reds. `|&` is a third spelling: it
+    reads as `|` followed by a command named `&`, so the line reds naming a command
+    no doc contains. Carrying the mark across that flush changes what CI rejects.
+  · BOUND(prefix-operand) — ⚠ FALSE POSITIVE, the loud direction. A command PREFIX
+    that takes an OPERAND leaves the operand behind, so
+    `printf … | timeout 5 sha256sum` reads as ending at a command named `5` and
+    reds. The line is still red, which is why this is disclosed rather than fixed;
+    the message names text the doc does not contain.
+
+WHERE A RULE'S OWN LIST DECIDES THE VERDICT:
+  · BOUND(bare-env-dump) — a command that dumps the WHOLE environment with nothing
+    in argv to read. Bare `env` or `printenv` resolves every value while naming
+    none, so no `$`-expansion and no secret NAME exists for any rule to read. Given
+    an OPERAND they are read: see NAME_TAKING_PRINTERS.
+  · BOUND(bare-printer-dump) — the same for `declare -p` / `typeset -p` /
+    `export -p` / `set` with NO operand.
+  · BOUND(sink-in-another-mode) — a STDIN_SINKS member whose stdout IS a function of
+    its stdin in some OTHER mode is green as a pipeline tail. `openssl` is the
+    worked case: it is listed because `dgst` is a form the rule prescribes, and
+    membership is per-COMMAND rather than per-mode, so `printf … | openssl base64`
+    prints the value and does not red. Its argv-borne twin, the DL-322 member, is
+    caught by the `argv` rule and does not depend on this leg.
+  · BOUND(tee-outside-a-pipeline) — ⚠ FALSE POSITIVE, and the message is the false
+    part. `tee <secret store>` on its own, outside a secret-carrying pipeline,
+    renders the READER message — "puts the contents of … on stdout" — and `tee`
+    WRITES that path. Inside a pipeline the tail message, which is the true one,
+    fires instead. Closing it means deciding whether that line should red at all,
+    since it is a prescribed write form, and that is a change to what CI rejects.
+
+WITHIN one substitution level every spelling of a secret-FILE read is decided by
+ONE predicate, `_secret_files_on_stdout`, shared with the pipeline reader:
+`$(cat f)`, `$(cat < f)` and bash's `$(<f)` are the same act. They were two
+divergent copies of the question, and the two redirect spellings answered GREEN
+while the first reddened — a redirection character deciding a security verdict.
 
 ONE LEG IS NOT AN ENUMERATION, AND THE DIFFERENCE IS DELIBERATE. Where a pipeline
 carrying a secret VALUE ENDS, the question is decided deny-by-default: the tail
@@ -212,9 +274,9 @@ SHELL_BUILTINS = {
 #: `curl` — a known stdin sink — and went green while placing the value in
 #: /proc/<pid>/cmdline.
 #:
-#: ⚠ A prefix that takes an OPERAND leaves it behind: `timeout 5 sha256sum` reads
-#: as the command `5`. Named rather than left to be discovered; it fires on no doc
-#: in this repo at any tag.
+#: ⚠ A prefix that takes an OPERAND leaves it behind. Disclosed and pinned as
+#: BOUND(prefix-operand) in this file's header, which owns it rather than keeping a
+#: second copy here.
 COMMAND_PREFIXES = {'sudo', 'doas', 'command', 'exec', 'nohup', 'nice', 'ionice',
                     'timeout', 'stdbuf', 'builtin', 'then', 'do', 'else',
                     'elif', 'time'}
@@ -265,11 +327,10 @@ READING_COMMANDS = {'cat', 'head', 'tail', 'less', 'more', 'nl', 'tac', 'rev',
 #: `test_every_sink_is_admitted_by_the_rule_or_by_this_repo_s_own_docs` asserts the
 #: set rather than leaving this paragraph to drift away from it.
 #:
-#: ⚠ The bound this list buys, named rather than left to be discovered: a member
-#: whose stdout IS a function of its stdin in some other mode is green as a tail.
-#: `openssl` is the worked case — it is here because `dgst` is a form the rule
-#: prescribes, and `| openssl base64` therefore does not red (its argv-borne twin,
-#: the DL-322 member, is caught by the `argv` rule and does not depend on this).
+#: ⚠ The bound this list buys — a member whose stdout IS a function of its stdin in
+#: some OTHER mode is green as a tail, `openssl` being the worked case — is
+#: disclosed and pinned as BOUND(sink-in-another-mode) in this file's header, which
+#: owns it rather than keeping a second copy here.
 STDIN_SINKS = {
     # PRESCRIBED — "Comparing two copies. Compare digests … never the values."
     # The rule names the class and `sha256sum` as its instance; each name here
@@ -348,7 +409,9 @@ class Chunk:
 
 
 # --------------------------------------------------------------------------------
-# THE quote-state walk. One implementation, eight consumers.
+# THE quote-state walk. ONE implementation; every quote-walking function in this
+# file is a consumer, and `test_the_quote_state_toggle_exists_in_exactly_one_place`
+# is what keeps that true — a count here would only be a second thing to maintain.
 # --------------------------------------------------------------------------------
 
 class QuoteChar(NamedTuple):
@@ -830,22 +893,48 @@ def _redirect_secret_store(cmd: Command) -> str | None:
     return None
 
 
-def _literal_payload(cmd: Command) -> str | None:
-    """A quoted literal this command would WRITE — the shell-history shape.
+class Literal(NamedTuple):
+    """A quoted literal a command would WRITE, described WITHOUT quoting it.
+
+    ⛔ The value never enters the description, and that is the whole reason this
+    type exists. A finding is printed into a CI log that outlives the branch it was
+    raised on — a force-push takes the head away and leaves the log — so a message
+    that echoed the literal would republish the very value the `history` rule exists
+    to keep off a readable surface, making the check a second copy of the leak it
+    reports. Position and length locate the token for the author, who has the doc in
+    front of them, and tell a log reader nothing they could use.
+    """
+
+    #: Where the literal sits, in terms an author can count off against their own
+    #: line: `argument 2`, or `the here-string operand`.
+    where: str
+    length: int
+
+    def render(self) -> str:
+        return f'{self.where}, a literal {self.length} characters long'
+
+
+def _literal_payload(cmd: Command) -> Literal | None:
+    """The quoted literal this command would WRITE — the shell-history shape.
 
     `printf` skips its format argument: `printf '%s' "$SECRET"` places a value the
-    right way and must never be read as placing a literal.
+    right way and must never be read as placing a literal. The position counts over
+    the FULL argument list, flags included, because that is the position an author
+    reading their own line can count to.
     """
-    args = [a for a in cmd.args if not a.startswith('-')]
-    if cmd.name == 'printf':
-        args = args[1:]
-    for a in args:
-        stripped = a.strip('"\'')
+    skip_format = cmd.name == 'printf'
+    for position, arg in enumerate(cmd.args, start=1):
+        if arg.startswith('-'):
+            continue
+        if skip_format:
+            skip_format = False
+            continue
+        stripped = arg.strip('"\'')
         if not stripped or len(stripped) < 3:
             continue
-        if '$' in a or SUB_OPEN in a:
+        if '$' in arg or SUB_OPEN in arg:
             continue
-        return stripped
+        return Literal(f'argument {position}', len(stripped))
     return None
 
 
@@ -1054,7 +1143,11 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
             )
             payload = None
             if cmd.herestring and '$' not in cmd.herestring and SUB_OPEN not in cmd.herestring:
-                payload = cmd.herestring.strip('"\'')
+                # The conditional keeps the falsiness the old `str` payload had:
+                # a `Literal` is a tuple and would be truthy even when empty, which
+                # would widen what this rule reports.
+                text_of = cmd.herestring.strip('"\'')
+                payload = Literal('the here-string operand', len(text_of)) if text_of else None
             elif cmd.name in {'echo', 'printf'}:
                 payload = _literal_payload(cmd)
             if target_is_secret_store and payload and not arg_secrets:
@@ -1062,9 +1155,11 @@ def _analyse_pipeline(path: str, pipeline: list[Segment], subs: list[Chunk],
                 findings.append(Finding(
                     path, line, 'history', 'shell history',
                     f'the value written to {where} is a command-line literal '
-                    f'(`{payload}`), so your shell writes it verbatim into the '
-                    f'history file. Take it through `read -rs` and place it with a '
-                    f'builtin `printf`.'))
+                    f'({payload.render()}), so your shell writes it verbatim into '
+                    f'the history file. Take it through `read -rs` and place it '
+                    f'with a builtin `printf`. (Named by position and length, never '
+                    f'quoted: this finding is printed into a CI log that outlives '
+                    f'the branch it was raised on.)'))
 
     return findings
 

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -614,9 +615,13 @@ class AnApostropheInsideDoubleQUOTESIsNotAQuote(unittest.TestCase):
         self.assertEqual([], self._rules("echo \'nothing $SECRET here\'\n"))
 
     def test_the_quote_state_toggle_exists_in_exactly_one_place(self) -> None:
-        """The consolidation, asserted rather than described. A ninth hand-rolled
-        copy would be free to disagree with the other eight exactly as the two that
-        decided the verdict did, and nothing but this would notice."""
+        """The consolidation, asserted rather than described. There are no
+        hand-rolled copies left; a fresh one would be free to disagree with the one
+        walk exactly as the two that decided a VERDICT disagreed with the six that
+        did not, and nothing but this would notice. Counting CONSUMERS is the thing
+        this deliberately does not do — that number moved from eight to nine the
+        moment a here-string reader joined, and three prose surfaces went stale with
+        it while this test stayed true."""
         with open(_TOOL, encoding='utf-8') as fh:
             source = fh.read()
         toggles = [ln.strip() for ln in source.split('\n')
@@ -840,9 +845,12 @@ class AddingAPipeStageMustNotSilenceALeak(unittest.TestCase):
         the behaviour the set exists for. `sudo sha256sum` still forks sha256sum,
         and the tail is the digest, not the wrapper.
 
-        ⚠ A prefix that takes an OPERAND is a separate, pre-existing bound and is
-        deliberately not exercised here: `timeout 5 sha256sum` names the command
-        `5`, because the wrapper is dropped and its argument is not."""
+        ⚠ A prefix that takes an OPERAND is a separate, pre-existing bound, pinned
+        as BOUND(prefix-operand) by
+        `TheDisclosedBoundsAreCHECKEDNotJustStated.test_a_command_PREFIX_that_takes_an_operand_leaves_it_behind`
+        rather than restated here — it was disclosed and unexercised until the
+        fifth review round, which is the gap that class now guards against as a
+        SET rather than as a sentence."""
         for body in (
             'printf \'%s\' "$SECRET" | sudo sha256sum\n',
             'printf \'%s\' "$SECRET" | command sha256sum\n',
@@ -1094,23 +1102,210 @@ class AHereStringIsSTDINAndCarriesAValue(unittest.TestCase):
 class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
     """A bound named in prose and asserted nowhere is a claim, not a bound.
 
-    One test per bound the module docstring discloses, NAMED rather than counted —
-    the untracked HEREDOC, the four measured ones (a fence inside a BLOCKQUOTE, a
-    Pandoc / Quarto `{bash}` info string, the absent fd table, a single-quoted
-    `sh -c` operand) and the one-level depth limit on a secret-FILE read inside a
-    nested command substitution. The docstring here said "the two" while asserting
-    one, which is what a count does the moment a bound is added.
+    ONE PIN PER BOUND, AND THE MAPPING IS CHECKED RATHER THAN COUNTED. The module
+    docstring tags every bound it discloses `BOUND(<slug>)`; `PINS` below maps each
+    slug to the test that pins it, and
+    `test_the_bounds_NAMED_upstairs_are_exactly_the_bounds_pinned_here` asserts the
+    two sets are equal in BOTH directions. That guard is the repair, and the thing
+    it repairs is a COUNT: this docstring, DL-324 and `docs/CHANGELOG.md` each said
+    "the five disclosed bounds ... now have one" while ELEVEN of nineteen had no
+    pin at all — and before that this same docstring said "the two" while asserting
+    one. A count is a second thing to keep true, and every bound added falsifies it
+    without touching a line of it. A set that is checked cannot go stale quietly.
 
-    Each pins the CURRENT behaviour, so closing a bound reds this class and forces
-    the disclosure to be rewritten instead of being left saying the bound is still
-    open. A green that only ever passes proves nothing, so each case also carries
-    the payload that DOES red — the same bytes with the blockquote marker removed,
-    the same command with the double-quoted operand — which is what makes the
-    green a measurement of the bound rather than of the fixture.
+    Each pin fixes the CURRENT behaviour, so closing a bound reds this class and
+    forces the disclosure to be rewritten instead of being left saying the bound is
+    still open. A green that only ever passes proves nothing, so each case also
+    carries the payload that DOES red — the same bytes with the blockquote marker
+    removed, the same command without the function around it — which is what makes
+    the green a measurement of the bound rather than of the fixture.
+
+    WHAT EACH PIN'S GREEN IS WORTH. Where a one-line mutation can CLOSE a bound,
+    the pin was watched failing under it (`COMMAND_PREFIXES` losing `timeout`,
+    `STDIN_SINKS` losing `openssl`, `READING_COMMANDS` losing `tee`, the splitter's
+    separator set losing `(){}`, and either half of the tag↔pin mapping above).
+    Where no cheap mutation exists — an indented-block parser, function / loop /
+    alias / `eval` resolution, following a value across an assignment, a
+    whole-environment printer arm — the RED TWIN in the same test is what the green
+    is measured against, and it is the only thing standing between these cases and
+    a suite of assertions that pass because nothing was scanned.
+
+    ⚠ TWO OF THESE ARE FALSE POSITIVES, NOT SILENT GREENS, and are pinned in that
+    direction on purpose: `prefix-operand` reds naming a command `5`, and
+    `tee-outside-a-pipeline` renders a message that names the wrong direction. Each
+    is loud and waivable, which is why it is disclosed rather than fixed; the pin
+    exists so that fixing it forces the disclosure to move with it.
     """
+
+    #: slug in the module docstring's `BOUND(<slug>)` tag → the test that pins it.
+    #: A dotted name is a pin that already lived in another class, because the bound
+    #: is about what is READ rather than about how shell is parsed; it is referenced
+    #: here rather than copied, so there is still exactly one pin per bound.
+    PINS = {
+        'not-markdown': 'ThisCheckoutIsGreen.test_the_fixture_is_out_of_the_default_walk',
+        'indented-block': 'test_a_four_space_INDENTED_block_is_not_a_fence',
+        'non-shell-info': 'ProseIsNeverRead.test_a_non_shell_fence_is_not_executable',
+        'pandoc-info': 'test_a_pandoc_or_quarto_INFO_STRING_reads_as_a_non_shell_fence',
+        'blockquote-fence': 'test_a_fence_inside_a_BLOCKQUOTE_is_not_seen_as_a_fence_at_all',
+        'variable-routing': 'test_a_value_routed_through_several_VARIABLES_is_not_followed',
+        'function': 'test_a_value_routed_through_a_FUNCTION_parameter_is_not_followed',
+        'loop': 'test_a_value_routed_through_a_LOOP_variable_is_not_followed',
+        'alias': 'test_an_ALIAS_body_is_never_resolved',
+        'eval': 'test_an_eval_STRING_OPERAND_is_not_recursed_into',
+        'sh-c-operand': 'test_a_single_quoted_sh_c_OPERAND_is_not_recursed_into',
+        'heredoc': 'test_a_heredoc_body_is_read_as_commands_in_BOTH_quoting_forms',
+        'no-fd-table': 'test_there_is_no_fd_TABLE_so_an_opened_secret_file_is_lost',
+        'nested-substitution':
+            'test_a_NESTED_substitution_is_read_one_level_deep_on_the_FILE_leg',
+        'group-tail': 'test_a_pipeline_TAIL_that_is_a_GROUP_or_SUBSHELL_loses_the_mark',
+        'prefix-operand': 'test_a_command_PREFIX_that_takes_an_operand_leaves_it_behind',
+        'bare-env-dump': 'test_a_WHOLE_ENVIRONMENT_dump_names_nothing_the_walk_can_find',
+        'bare-printer-dump': 'test_a_bare_PRINTER_with_no_operand_is_the_same_bound',
+        'sink-in-another-mode': 'test_a_SINK_whose_stdout_is_its_stdin_in_another_MODE',
+        'tee-outside-a-pipeline':
+            'test_tee_OUTSIDE_a_pipeline_still_names_the_wrong_direction',
+    }
 
     def _rules(self, body: str) -> list[str]:
         return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
+
+    def test_the_bounds_NAMED_upstairs_are_exactly_the_bounds_pinned_here(self) -> None:
+        """The drift guard the three counts should have been.
+
+        Both failures this class has already had ran the SAME way — a bound
+        disclosed with no pin — so `disclosed <= PINS` alone would have caught
+        them. The other direction is here for the failure that has not happened
+        yet: a bound CLOSED, its tag deleted, and a pin left behind asserting
+        behaviour the tool no longer has, which is a green that means nothing.
+        """
+        with open(_TOOL, encoding='utf-8') as fh:
+            disclosed = set(re.findall(r'BOUND\(([a-z-]+)\)', fh.read()))
+        self.assertEqual(disclosed, set(self.PINS),
+                         'the module docstring and this class disagree about which '
+                         'bounds exist')
+        for slug, ref in sorted(self.PINS.items()):
+            owner_name, _, method = ref.rpartition('.')
+            owner = globals()[owner_name] if owner_name else type(self)
+            with self.subTest(bound=slug):
+                self.assertTrue(hasattr(owner, method), f'{ref} does not exist')
+
+    def test_a_four_space_INDENTED_block_is_not_a_fence(self) -> None:
+        """Only fences are found, so an indented block is invisible rather than
+        merely unparsed. The same bytes inside a fence red."""
+        self.assertEqual([], [f.rule for f in _scan(
+            'Read it back yourself:\n\n    echo "$BRIDGE_WEBHOOK_SECRET"\n\ndone.\n')])
+        self.assertEqual(['stdout'], self._rules('echo "$BRIDGE_WEBHOOK_SECRET"\n'))
+
+    def test_a_value_routed_through_several_VARIABLES_is_not_followed(self) -> None:
+        """Only a NAME the vocabulary recognises is read as holding a secret, so one
+        assignment is enough to lose the value."""
+        self.assertEqual([], self._rules('X="$SECRET"\necho "$X"\n'))
+        self.assertEqual([], self._rules('X="$SECRET"\nY="$X"\necho "$Y"\n'))
+        self.assertEqual(['stdout'], self._rules('echo "$SECRET"\n'))
+
+    def test_a_value_routed_through_a_FUNCTION_parameter_is_not_followed(self) -> None:
+        """A function BODY's commands are read as ordinary top-level commands — so a
+        body that NAMES a secret still reds, and this bound is not "functions are
+        invisible". What is lost is the value handed in as a PARAMETER."""
+        self.assertEqual([], self._rules('show() { cat "$1"; }\nshow "$TOKEN_FILE"\n'))
+        self.assertEqual(['stdout'], self._rules('cat "$TOKEN_FILE"\n'))
+        self.assertEqual(['stdout'], self._rules('show() { cat "$TOKEN_FILE"; }\nshow\n'))
+
+    def test_a_value_routed_through_a_LOOP_variable_is_not_followed(self) -> None:
+        """The same act through a loop variable rather than a parameter."""
+        self.assertEqual([], self._rules(
+            'for f in "$TOKEN_FILE"; do cat "$f"; done\n'))
+        self.assertEqual(['stdout'], self._rules('cat "$TOKEN_FILE"\n'))
+
+    def test_an_ALIAS_body_is_never_resolved(self) -> None:
+        """`alias` is a shell builtin, so the `argv` rule skips it, and it is not a
+        printing command, so the `stdout` rule has nothing to read. The call site
+        carries no expansion at all."""
+        for body in ('alias leak=\'echo "$SECRET"\'\nleak\n',
+                     'alias leak="echo $SECRET"\nleak\n'):
+            with self.subTest(body=body.strip()):
+                self.assertEqual([], self._rules(body))
+        self.assertEqual(['stdout'], self._rules('echo "$SECRET"\n'))
+
+    def test_an_eval_STRING_OPERAND_is_not_recursed_into(self) -> None:
+        """Read as an ordinary argument, exactly as `sh -c`'s is — and because
+        `eval` is a builtin the `argv` rule does not report it either, so all three
+        spellings are green."""
+        for body in ('eval "echo $SECRET"\n',
+                     'eval "echo \\$SECRET"\n',
+                     "eval 'echo \"$SECRET\"'\n"):
+            with self.subTest(body=body.strip()):
+                self.assertEqual([], self._rules(body))
+        self.assertEqual(['stdout'], self._rules('echo "$SECRET"\n'))
+
+    def test_a_pipeline_TAIL_that_is_a_GROUP_or_SUBSHELL_loses_the_mark(self) -> None:
+        """`_split_segments` ends the pipeline at the standalone `{` / `(`, so the
+        tail begins a pipeline of its own where `idx > 0` is false and the tail rule
+        never runs. `|&` is a third spelling: it reads as `|` followed by a command
+        named `&`, so the line reds naming text no doc contains."""
+        self.assertEqual([], self._rules('echo "$SECRET" | { base64; }\n'))
+        self.assertEqual([], self._rules('echo "$SECRET" | (base64)\n'))
+        self.assertEqual(['stdout'], self._rules('echo "$SECRET" | base64\n'))
+        amp = _scan('```bash\necho "$SECRET" |& base64\n```\n')
+        self.assertEqual(['stdout'], [f.rule for f in amp])
+        self.assertIn('ends at `&`', amp[0].message)
+
+    def test_a_command_PREFIX_that_takes_an_operand_leaves_it_behind(self) -> None:
+        """A FALSE POSITIVE, pinned in the loud direction. The wrapper is dropped and
+        its operand is not, so the tail's name becomes `5` — the line still reds,
+        which is why this is disclosed rather than fixed, and the message names a
+        command the doc does not contain. The control is a prefix that takes NO
+        operand (`sudo`), which is stripped correctly and stays green — so the red
+        above is the operand's doing and not the stripping's."""
+        findings = _scan('```bash\nprintf \'%s\' "$SECRET" | timeout 5 sha256sum\n```\n')
+        self.assertEqual(['stdout'], [f.rule for f in findings])
+        self.assertIn('ends at `5`', findings[0].message)
+        self.assertEqual([], self._rules('printf \'%s\' "$SECRET" | sudo sha256sum\n'))
+
+    def test_a_WHOLE_ENVIRONMENT_dump_names_nothing_the_walk_can_find(self) -> None:
+        """Bare `env` / `printenv` resolves every value while naming none, so there
+        is no `$`-expansion and no secret NAME for any rule to read. Given an
+        OPERAND `printenv` reds — the control that says this green is the bound and
+        not a broken vocabulary."""
+        for body in ('env\n', 'printenv\n', 'env | grep SECRET\n'):
+            with self.subTest(body=body.strip()):
+                self.assertEqual([], self._rules(body))
+        self.assertEqual(['stdout'], self._rules('printenv BRIDGE_WEBHOOK_SECRET\n'))
+
+    def test_a_bare_PRINTER_with_no_operand_is_the_same_bound(self) -> None:
+        """`declare -p` and friends with no operand dump the whole set."""
+        for body in ('declare -p\n', 'typeset -p\n', 'export -p\n', 'set\n'):
+            with self.subTest(body=body.strip()):
+                self.assertEqual([], self._rules(body))
+        self.assertEqual(['stdout'],
+                         self._rules('declare -p BRIDGE_WEBHOOK_SECRET\n'))
+
+    def test_a_SINK_whose_stdout_is_its_stdin_in_another_MODE(self) -> None:
+        """Membership in STDIN_SINKS is per-COMMAND, not per-mode. `openssl` is
+        listed because `dgst` is a form the rule prescribes, so `| openssl base64`
+        prints the value and is green. Its argv-borne twin — the DL-322 member — is
+        caught by the `argv` rule and does not depend on this leg, which is what
+        keeps the bound narrow."""
+        self.assertEqual([], self._rules('printf \'%s\' "$SECRET" | openssl base64\n'))
+        self.assertEqual([], self._rules(
+            'printf \'%s\' "$SECRET" | openssl dgst -sha256\n'))
+        self.assertEqual(['stdout'], self._rules('printf \'%s\' "$SECRET" | base64\n'))
+        self.assertEqual(['argv'],
+                         self._rules('openssl dgst -sha256 -hmac "$SECRET" -hex\n'))
+
+    def test_tee_OUTSIDE_a_pipeline_still_names_the_wrong_direction(self) -> None:
+        """The second false positive, and the one whose MESSAGE is false: `tee <path>`
+        on its own WRITES that path, and the reader message says it puts the file's
+        contents on stdout. Inside a secret-carrying pipeline the tail message — the
+        true one — fires instead, which is the fix DL-324's fourth round made and
+        the reason this remainder is worth pinning rather than assuming closed."""
+        alone = _scan('```bash\ntee /etc/bridge/webhook-secret-scope-kanban\n```\n')
+        self.assertEqual(['stdout'], [f.rule for f in alone])
+        self.assertIn('puts the contents of', alone[0].message)
+        piped = _scan('```bash\nprintf \'%s\' "$SECRET" | '
+                      'tee /etc/bridge/webhook-secret-scope-kanban\n```\n')
+        self.assertEqual(['stdout'], [f.rule for f in piped])
+        self.assertIn('ends at `tee`', piped[0].message)
 
     def test_a_heredoc_body_is_read_as_commands_in_BOTH_quoting_forms(self) -> None:
         """The docstring used to scope this to an UNQUOTED `<<EOF`. The tool tracks
@@ -1176,7 +1371,17 @@ class AMessageMustNameTextTHEDOCACTUALLYCONTAINS(unittest.TestCase):
     """Findings are read in a CI log, so a message may not carry the private-use
     placeholders `_mask_substitutions` leaves behind. `Bearer \x010\x02` names
     nothing an author can search their doc for, and a remediation nobody can locate
-    is noise."""
+    is noise.
+
+    ⛔ THE OTHER HALF OF THE SAME REQUIREMENT, AND IT CUTS THE OTHER WAY: the message
+    may name the COMMAND and WHERE a literal sits, both of which the doc contains,
+    and it may NOT quote the literal itself. The two are not in tension — "text the
+    doc contains" is what makes a finding actionable, and the `history` rule's
+    subject is a SECRET VALUE, so quoting it would republish into an Actions log the
+    very thing the rule exists to keep off a readable surface. Position and length
+    locate the token for an author who has the doc open, and tell a log reader
+    nothing usable.
+    """
 
     def test_the_argv_message_shows_the_substitution_not_its_placeholder(self) -> None:
         findings = _scan('```bash\ncurl -H "Authorization: Bearer $(cat "$TOKEN_FILE")" '
@@ -1189,6 +1394,26 @@ class AMessageMustNameTextTHEDOCACTUALLYCONTAINS(unittest.TestCase):
         findings = _scan('```bash\ncat "$(dirname "$TOKEN_FILE")/writeback-token"\n```\n')
         self.assertEqual(['stdout'], [f.rule for f in findings])
         self.assertIn('$(dirname "$TOKEN_FILE")', findings[0].message)
+
+    def test_the_history_message_names_the_literal_by_POSITION_and_LENGTH(self) -> None:
+        """Measured on the fixture, whose two `history` members are the two the
+        census reports across the whole tag history. The message quoted the payload
+        verbatim until this change, inside backticks in the finding text, so a CI log
+        that
+        outlives a force-pushed-away branch carried the value the rule exists to
+        keep off a readable surface. The VERDICT is unchanged: same lines, same
+        rule; only the wording moves.
+        """
+        findings = [f for f in lint.scan_text(_FIXTURE, _fixture_text())
+                    if f.rule == 'history']
+        self.assertEqual(2, len(findings))
+        messages = ' '.join(f.message for f in findings)
+        for literal in ('your-hmac-secret', '<the-token>'):
+            with self.subTest(literal=literal):
+                self.assertNotIn(literal, messages)
+        self.assertIn('argument 2, a literal 16 characters long', messages)
+        self.assertIn('the here-string operand, a literal 11 characters long',
+                      messages)
 
     def test_no_finding_this_suite_can_produce_carries_a_placeholder(self) -> None:
         """Over a population rather than over two messages: every payload this
