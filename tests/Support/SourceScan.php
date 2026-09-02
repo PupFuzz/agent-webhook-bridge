@@ -14,9 +14,8 @@ use SplFileInfo;
  *
  * ⚠ MIGRATED, not ALL: census instruments over `app/` still carry their own copy of this
  * walk — one of them beside the classes that DID migrate — and `CLAUDE_TESTING.md`
- * § *The un-migrated remainder* carries the recipe that re-derives which they are, plus the
- * card that owns consolidating them. Do not read a class's absence from this file's callers
- * as a licence to write another walk.
+ * § *The un-migrated remainder* carries the card that owns consolidating them. Do not read
+ * a class's absence from this file's callers as a licence to write another walk.
  *
  * Extracted at the second real caller (canon #5, card#7212 review, then card#8530). Four
  * copies of the line loop had been written in one directory, differing only in the regex
