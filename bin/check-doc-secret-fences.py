@@ -232,8 +232,11 @@ WHERE A RULE'S OWN LIST DECIDES THE VERDICT:
     Narrowing the marker to `.config/agent-webhook-bridge/` would separate the store
     from the checkout, but it changes what CI ACCEPTS and belongs to its own ruling;
     until then the waiver answers this arm. ⛔ NOT PINNED, AND THIS LINE IS THE ONLY
-    PLACE THAT SAYS SO: the `⚠ FALSE POSITIVE` marker on this bullet is itself
-    unchecked. `test_a_bound_declares_a_payload_in_every_DIRECTION_its_prose_names`
+    PLACE THAT SAYS SO: the false-positive marker opening this bullet is itself
+    unchecked — and it is named here in words on purpose, because a second literal
+    copy of it in this paragraph would keep the bound classified loud after the real
+    one was deleted, defeating the very check this line asks for.
+    `test_a_bound_declares_a_payload_in_every_DIRECTION_its_prose_names`
     asserts loud ⇒ some payload reds, and silent ⇒ some payload is green; it never
     asserts the converse, so deleting that marker from any loud bound that also
     declares a green payload leaves the suite GREEN — measured on this bound. The
@@ -340,6 +343,12 @@ PATHY_TAIL_WORDS = {
 #: member installed and removed, over every member below AND over one that does not
 #: exist yet, which is the claim these sentences are actually making. Read the arms
 #: there: a count here would be one more copy of the thing that was wrong.
+#: ⚠ THE RULES A PATH MEMBER CANNOT REACH ARE DISPOSED ON A BODY THAT CARRIES NO
+#: TRIGGER OF THEIR OWN, and that qualifier is the whole content of the disposal: a
+#: fixture reddening under its own rule with the member removed puts the rule on both
+#: sides of the subtraction, so the delta is zero however far this program widens.
+#: `probe` and `waiver-no-reason` were disposed that way in the first draft of the
+#: derivation and a widening of the `probe` rule left the suite green.
 #: ⚠ IT IS THE STORE'S PATH TEXT AND
 #: DELIBERATELY NOT A BARE `.yml`: a `.yml` marker reds
 #: `cat .github/workflows/<any>.yml`, a

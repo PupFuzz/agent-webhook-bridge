@@ -714,9 +714,16 @@ class TheArmSetAMemberWidensIsDERIVEDNotCounted(unittest.TestCase):
       · EACH FIXTURE IS WATCHED FIRING ITS OWN RULE. A dud fixture — one that reds
         under nothing — would shrink the derived set into agreement with whatever
         was expected, which is exactly the failure mode of a table of green cases.
-      · THE RULES A MEMBER CANNOT REACH ARE DISPOSED BY MEASUREMENT. Each fires
-        identically with the member installed and removed, so "unreachable" is a
-        reading rather than a claim, and a change that made one reachable reds.
+      · THE RULES A MEMBER CANNOT REACH ARE DISPOSED ON A BODY THAT CARRIES NO
+        TRIGGER OF THEIR OWN. ⛔ The first draft of this leg measured the delta on
+        the arm fixture, and for these two rules that fixture reds under them
+        anyway — `API_TOKEN` is a secret NAME, the waiver comment is a waiver — so
+        the rule sat in `removed` AND in `installed` and could never enter the
+        derived set however far the tool widened. It agreed with the disposal by
+        CONSTRUCTION: a probe rule widened to read a store path in a `${VAR:-…}`
+        default left this suite green. The delta is now measured on
+        `WITHOUT_ITS_OWN_TRIGGER`, and which fixtures need one is re-read from the
+        tool every run rather than listed.
 
     ⚠ THE PROPERTY IS ABOUT MEMBERSHIP, NOT ABOUT ONE MEMBER, so the derivation runs
     over every shipped member AND over a member that does not exist — the latter
@@ -748,6 +755,23 @@ class TheArmSetAMemberWidensIsDERIVEDNotCounted(unittest.TestCase):
         'waiver-no-reason': '# doc-fence-lint: allow\ncat {p}\n',
     }
 
+    #: rule id → the arm fixture above with the rule's OWN trigger taken out, for the
+    #: rules whose fixture carries one. ⚠ THIS IS THE TABLE THE DELTA IS MEASURED ON,
+    #: and the reason it exists is that a fixture reddening under its own rule
+    #: measures that trigger rather than membership — the delta on it is zero by
+    #: construction and no widening of the tool can move it. Each body below differs
+    #: from its arm fixture in the trigger and in nothing else, so what remains in the
+    #: line for a rule to read is the store path.
+    #: `test_a_fixture_that_reds_WITHOUT_the_member_declares_a_TRIGGER_FREE_twin`
+    #: re-derives which rules belong here from the tool on every run.
+    WITHOUT_ITS_OWN_TRIGGER = {
+        # `CFG` is not a secret NAME, so `probe` has nothing but the default to read.
+        'probe': 'echo "${{CFG:-{p}}}"\n',
+        # The waiver COMMENT is what the rule reads; without it this is a plain
+        # reader on the member.
+        'waiver-no-reason': 'cat {p}\n',
+    }
+
     #: rule id → why a path member cannot reach it. The reason is prose; the
     #: DISPOSITION is measured by
     #: `test_the_rules_a_member_cannot_reach_are_disposed_BY_MEASUREMENT`.
@@ -771,15 +795,28 @@ class TheArmSetAMemberWidensIsDERIVEDNotCounted(unittest.TestCase):
             lint.SECRET_PATH_MARKERS = original
         return removed, installed
 
+    def _membership_body(self, rule: str, member: str) -> str:
+        """The body `rule`'s DELTA is measured on: the arm fixture, or — where that
+        one carries a trigger of the rule's own — the twin without it."""
+        template = self.WITHOUT_ITS_OWN_TRIGGER.get(rule, self.ARM_FIXTURES[rule])
+        return template.format(p=f'{member}kanban.yml')
+
     def _derive(self, member: str) -> set[str]:
-        """The rule ids `member`'s MEMBERSHIP adds, one fixture per declared rule."""
+        """The rule ids `member`'s MEMBERSHIP adds, one fixture per declared rule.
+
+        LIVENESS is read off the arm fixture — the rule must be one this program can
+        actually produce — and the DELTA off a body with no trigger of the rule's own,
+        which for every rule but two is the same body.
+        """
         derived = set()
         for rule, template in self.ARM_FIXTURES.items():
-            body = template.format(p=f'{member}kanban.yml')
-            removed, installed = self._installed_and_removed(member, body)
-            self.assertIn(rule, installed,
+            _, live = self._installed_and_removed(
+                member, template.format(p=f'{member}kanban.yml'))
+            self.assertIn(rule, live,
                           f'the {rule} fixture does not red under {rule} — a dud '
                           f'fixture shrinks the derived set instead of measuring it')
+            removed, installed = self._installed_and_removed(
+                member, self._membership_body(rule, member))
             if rule in installed - removed:
                 derived.add(rule)
         return derived
@@ -790,6 +827,7 @@ class TheArmSetAMemberWidensIsDERIVEDNotCounted(unittest.TestCase):
         it or disposes of it in `CANNOT_REACH`."""
         self.assertEqual(set(lint.RULE_IDS), set(self.ARM_FIXTURES))
         self.assertLessEqual(set(self.CANNOT_REACH), set(lint.RULE_IDS))
+        self.assertLessEqual(set(self.WITHOUT_ITS_OWN_TRIGGER), set(self.ARM_FIXTURES))
 
     def test_the_NOVEL_member_is_a_clean_instrument(self) -> None:
         """A control on the derivation's own subject. If the stand-in member were
@@ -817,17 +855,55 @@ class TheArmSetAMemberWidensIsDERIVEDNotCounted(unittest.TestCase):
             with self.subTest(member=member):
                 self.assertEqual(expected, self._derive(member))
 
+    def test_a_fixture_that_reds_WITHOUT_the_member_declares_a_TRIGGER_FREE_twin(self) -> None:
+        """⛔ THE LEG THE FIRST DRAFT OF THIS CLASS DID NOT HAVE, AND THE REASON THE
+        DISPOSALS BELOW CAN NOW FAIL. A fixture that reds under its own rule with the
+        member REMOVED is measuring that trigger, not membership: the rule is in both
+        halves of the delta, the subtraction is zero whatever the tool does, and the
+        set compare then agrees with the disposal by construction. Which fixtures
+        those are is re-read from the tool here rather than listed, so a rule that
+        grows a trigger of its own reds until it gets a twin — and a twin nothing
+        needs reds too, because it would measure the same body twice.
+        """
+        for rule, template in self.ARM_FIXTURES.items():
+            with self.subTest(rule=rule):
+                body = template.format(p=f'{self.NOVEL_MEMBER}kanban.yml')
+                removed, _ = self._installed_and_removed(self.NOVEL_MEMBER, body)
+                if rule in removed:
+                    self.assertIn(rule, self.WITHOUT_ITS_OWN_TRIGGER,
+                                  f'the {rule} fixture reds under {rule} with the '
+                                  f'member removed, so a delta measured on it is '
+                                  f'zero by construction')
+                else:
+                    self.assertNotIn(rule, self.WITHOUT_ITS_OWN_TRIGGER,
+                                     f'the {rule} fixture has no trigger but the '
+                                     f'member itself, so a twin measures the same '
+                                     f'thing twice')
+
     def test_the_rules_a_member_cannot_reach_are_disposed_BY_MEASUREMENT(self) -> None:
         """An unexamined rule and an unreachable one look the same in a set
-        difference. Each of these fires under its fixture with the member installed
-        AND removed, so it is out of the derived set because the member does not move
-        it — not because nothing exercised it."""
+        difference, and so do an unreachable one and one whose fixture reds under it
+        regardless. So each is measured twice. UNDER ITS OWN TRIGGER it must fire with
+        the member installed AND removed — that is what says the rule is exercised
+        rather than merely absent. ON THE TWIN, with that trigger gone, membership
+        must summon nothing — and that is the leg a widening reds: a probe rule taught
+        to read a store path in a `${VAR:-…}` default fails here, and failed nothing
+        while the delta was measured on the triggered body."""
         for rule in self.CANNOT_REACH:
             with self.subTest(rule=rule):
                 body = self.ARM_FIXTURES[rule].format(p=f'{self.NOVEL_MEMBER}kanban.yml')
                 removed, installed = self._installed_and_removed(self.NOVEL_MEMBER, body)
                 self.assertIn(rule, removed)
                 self.assertIn(rule, installed)
+                twin = self._membership_body(rule, self.NOVEL_MEMBER)
+                removed, installed = self._installed_and_removed(self.NOVEL_MEMBER, twin)
+                self.assertNotIn(rule, removed,
+                                 f'the {rule} twin reds under {rule} with the trigger '
+                                 f'gone and the member removed, so it measures neither')
+                self.assertNotIn(rule, installed,
+                                 f'{rule} is disposed as out of a path member\'s reach '
+                                 f'({self.CANNOT_REACH[rule]}) and MEMBERSHIP now '
+                                 f'reaches it')
 
     def test_the_surfaces_that_POINT_here_name_this_class(self) -> None:
         """A pointer is a restatement of exactly one thing — the NAME — so it gets the
