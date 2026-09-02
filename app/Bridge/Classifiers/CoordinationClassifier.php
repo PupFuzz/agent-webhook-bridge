@@ -9,8 +9,10 @@ use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\Intent;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\RecipientAddressing;
+use App\Bridge\Support\TitleChangeEvidence;
 use App\Bridge\Writeback\CoordLaneStages;
 use App\Bridge\Writeback\WritebackConfig;
 use App\Bridge\Writeback\WritebackMapping;
@@ -85,6 +87,11 @@ use App\Bridge\Writeback\WritebackMapping;
  *     is created in real time. Runs board-level (independent of the coord-message
  *     recipient gate); own gate is prefix-recognized AND the repo's
  *     `writeback.json` mapping has `create_coord_cards`. Opt-in (not a default).
+ *     Since DL-341 the SAME family also acts on `issues.edited` that CHANGED THE
+ *     TITLE, emitting the same target with `disposition: renamed` so the handler
+ *     can restamp a card name the bridge still owns — one family because the two
+ *     arms share the gate, the mapping and the `id:<sid>` correlation key, and
+ *     because a rename is not a lifecycle transition the move family carries.
  *   - `coord-card-move` — github `issues.closed/reopened` on the coord repo whose
  *     title carries a recognized `[PREFIX]` (DL-200): emits ONE
  *     `kanban_coord_card_move` writeback target (no intent, no wake) so a tracking
@@ -174,6 +181,18 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
     private const COORD_CARD_CREATE_ACTIONS = ['opened', 'reopened'];
 
     private const COORD_CARD_MOVE_ACTIONS = ['closed', 'reopened'];
+
+    /**
+     * The issue action the coord-card RETITLE arm acts on (DL-341) — the sibling of
+     * DL-328's `pull_request.edited`. It belongs to the `coord-card-create` family
+     * rather than to a family of its own because it shares that family's gate
+     * (`create_coord_cards`), its handler and its `id:<sid>` correlation key; it is a
+     * SEPARATE constant from {@see COORD_CARD_CREATE_ACTIONS} because the two arms are
+     * mutually exclusive by construction — `edited` never creates and
+     * `opened`/`reopened` never carry `changes` — and folding `edited` into the create
+     * list would widen the CREATE guard onto an action that must never mint a card.
+     */
+    private const COORD_CARD_RETITLE_ACTIONS = ['edited'];
 
     /**
      * The issue action the `coord-card-relane` family acts on (card#6393). ONLY
@@ -276,7 +295,10 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 // qualified set would inventory requested/in_progress — one arrival
                 // per CI run, all deliberate no-ops (card #4354 design review F3).
                 'impl-ci-wake' => self::IMPL_CI_WAKE_EVENT_TYPES,
-                'coord-card-create' => self::qualify('issues.', self::COORD_CARD_CREATE_ACTIONS),   // DL-198
+                // DL-198 + DL-341: one family, two action sets — the create arm's and the
+                // retitle arm's — declared as their union, from the same two constants
+                // the family's own dispatch guard reads.
+                'coord-card-create' => [...self::qualify('issues.', self::COORD_CARD_CREATE_ACTIONS), ...self::qualify('issues.', self::COORD_CARD_RETITLE_ACTIONS)],
                 'coord-card-move' => self::qualify('issues.', self::COORD_CARD_MOVE_ACTIONS),       // DL-200
                 'coord-card-relane' => self::qualify('issues.', self::COORD_CARD_RELANE_ACTIONS), // card#6393
                 default => [],   // kanban-triage (kanban provider) + unknown families: no github event type
@@ -975,8 +997,14 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         if ($ctx->provider !== 'github') {
             return null; // coordination issues are GitHub-only
         }
-        if (! in_array($ctx->eventType, self::qualify('issues.', self::COORD_CARD_CREATE_ACTIONS), true)) {
-            return null; // opened + reopened only (a pre-ship issue backfills on its next reopen)
+        $isCreate = in_array($ctx->eventType, self::qualify('issues.', self::COORD_CARD_CREATE_ACTIONS), true);
+        // RETITLE trigger (DL-341): an `issues.edited` carrying a real title change.
+        // Non-null ONLY on that action, so it is mutually exclusive with the create arm
+        // by construction — `opened`/`reopened` carry no `changes`, and `edited` is in
+        // neither create action list.
+        $retitledFrom = $this->retitledFrom($ctx->eventType, $ctx->payload);
+        if (! $isCreate && $retitledFrom === null) {
+            return null; // opened + reopened + a real retitle (a pre-ship issue backfills on its next reopen)
         }
         $issue = is_array($ctx->payload['issue'] ?? null) ? $ctx->payload['issue'] : null;
         if ($issue === null || ! is_numeric($issue['number'] ?? null)) {
@@ -985,7 +1013,18 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
         $num = (int) $issue['number'];
         $title = is_string($issue['title'] ?? null) ? $issue['title'] : '';
 
-        $sid = $this->stableId($title, $num);   // null for a non-prefixed issue (#4553)
+        // ⭐ ON A RETITLE THE CORRELATION KEY IS DERIVED FROM THE *PREVIOUS* TITLE, not the
+        // one the event now carries. The `id:<sid>` tag on the card is the one the bridge
+        // stamped when it minted it, and `stableId` reads the anchored `[PREFIX]` — so an
+        // edit that CHANGES the prefix (`[QUERY] x` → `[TASK] x`) moves the sid, and keying
+        // on the new title would look for a tag no card carries and restamp nothing.
+        // ⚠ It also means the tag is left STALE by a prefix-changing retitle: this leg
+        // writes `name` and nothing else (see the handler), so the card keeps `id:QUERY-N`
+        // while its name says `[TASK]`. That divergence PRE-DATES this leg — it is what any
+        // prefix edit already does to a carded thread, on every install, restamp or not —
+        // and re-tagging is a correlation-key rewrite shared with the consumer's reconcile,
+        // not a name write. Recorded in docs/writeback.md rather than smuggled in here.
+        $sid = $this->stableId($retitledFrom ?? $title, $num);   // null for a non-prefixed issue (#4553)
 
         // Own gate: the repo must opt into coord-card creation. Loaded like the
         // PR-move classifier does — absent mapping / opt-out ⇒ byte-identical no-op.
@@ -1003,8 +1042,40 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
             return null; // un-prefixed / PROPOSAL / unrecognized under prefixed ⇒ not carded
         }
 
-        $itype = $this->coordItype($title);   // mirror the reconcile's _itype (see method) — NOT the anchored sid prefix
+        $itype = $this->coordItype($retitledFrom ?? $title);   // mirror the reconcile's _itype (see method) — NOT the anchored sid prefix
         $url = is_string($issue['html_url'] ?? null) ? $issue['html_url'] : '';
+
+        // RETITLE (DL-341) → a NAME-restamp target: same handler, same `issue-{N}` target
+        // id, and `name_from` — the title the card's name is compared against, byte for
+        // byte, before anything is written. That comparison is the whole ownership test, so
+        // the classifier DELIVERS the evidence rather than leaving the handler to infer it
+        // (it cannot: `changes.title.from` exists only on this event).
+        //
+        // ⛔ A NULL SID IS REFUSED HERE, and the refusal is a STATED GAP rather than an
+        // oversight: under `issue_population: all` a non-prefixed issue's card is correlated
+        // by the github_issue by-ref key and carries no `id:` tag, so this leg has no key to
+        // resolve it with — the tag is the only correlation the restamp uses. Those cards
+        // keep their birth name after a retitle. docs/writeback.md states it; widening the
+        // restamp onto the by-ref population is its own change (it costs a per-card
+        // unscoped read the tag search does not).
+        if ($retitledFrom !== null) {
+            if ($sid === null || $title === '' || $title === $retitledFrom) {
+                return null;
+            }
+
+            return new ClassifyResult(targets: [
+                ReactionTarget::make('kanban_coord_card', "issue-{$num}", payload: [
+                    'repo' => $ctx->scopeId,
+                    'issue_number' => $num,
+                    'sid' => $sid,
+                    'itype' => $itype,
+                    'title' => $title,
+                    'issue_url' => $url,
+                    'disposition' => KanbanCoordCardHandler::RENAMED_DISPOSITION,
+                    'name_from' => $retitledFrom,
+                ]),
+            ]);
+        }
 
         return new ClassifyResult(targets: [
             ReactionTarget::make('kanban_coord_card', "issue-{$num}", payload: [
@@ -1220,6 +1291,31 @@ class CoordinationClassifier extends InboxOnlyClassifier implements DeclaresCons
                 'labels' => $labels,
             ]),
         ]);
+    }
+
+    /**
+     * The PREVIOUS title of a retitled coordination issue (DL-341) — null on every action
+     * but {@see COORD_CARD_RETITLE_ACTIONS}, and on an `edited` that changed something else
+     * (a body). The ACTION gate is here because it is this family's; the payload narrowing
+     * and the rule that decides what counts as evidence belong to
+     * {@see TitleChangeEvidence}, shared with DL-328's `pull_request.edited` reader so the
+     * two arms cannot drift on a string a card-name write is gated on.
+     *
+     * ⭐ That string is EVIDENCE, not decoration: it is the exact name the bridge stamped on
+     * the card it minted for this issue, so a card whose name still equals it byte for byte
+     * has not been touched by anyone since. That is the whole authorship test the restamp
+     * gates on ({@see KanbanCoordCardHandler}), and it is why the previous title is carried
+     * on the target instead of being recomputed from anything at write time.
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function retitledFrom(string $eventType, array $payload): ?string
+    {
+        if (! in_array($eventType, self::qualify('issues.', self::COORD_CARD_RETITLE_ACTIONS), true)) {
+            return null;
+        }
+
+        return TitleChangeEvidence::previousTitle($payload);
     }
 
     /**
