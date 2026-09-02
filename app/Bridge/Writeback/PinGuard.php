@@ -16,15 +16,22 @@ namespace App\Bridge\Writeback;
  *
  * Which movers honour a pin is a property of the CALL SITES, so derive it rather than
  * trusting a list in the callee — `grep -rn "PinGuard::isPinned" app/` against the
- * `moveCard(` call sites is the whole method, and it takes seconds. As of card#8289 it
- * yields: the live event path (KanbanMoveCardHandler, on every outcome, minus the
- * DL-194 unpark and DL-195 revive, which override a pin deliberately and alert),
- * `bridge:reconcile` (ReconcileCommand, unconditional), and the release-promote sweep
- * (KanbanPromoteReleasedHandler, in its candidate filter) — and it does NOT yield
- * KanbanCoordCardMoveHandler (close / revive / relane) or KanbanDependabotCardHandler
- * (survivor move, closed-unmerged archive), both of which move a pinned card today.
- * Whether the pin should reach those two is an open question for the operator, not an
- * omission this class may close on its own: it changes what the system refuses.
+ * `moveCard(` AND `archiveCard(` call sites is the whole method, and it takes seconds. As
+ * of card#8454 it yields: the live event path (KanbanMoveCardHandler, on every outcome,
+ * minus the DL-194 unpark and DL-195 revive, which override a pin deliberately and alert),
+ * `bridge:reconcile` (ReconcileCommand, unconditional), the release-promote sweep
+ * (KanbanPromoteReleasedHandler, in its candidate filter), and KanbanDependabotCardHandler
+ * (DL-335 — its closed-unmerged archive and its survivor move, with no override) — and it
+ * does NOT yield KanbanCoordCardMoveHandler (close / revive / relane), which moves a pinned
+ * card today. Whether the pin should reach that one is an open question for the operator,
+ * not an omission this class may close on its own: it changes what the system refuses.
+ *
+ * ⛔ ARCHIVE IS A WRITE IN THIS POPULATION, not only `moveCard`: card#8454's instance was a
+ * closed-unmerged dependabot PR RETIRING a pinned card, which a `moveCard(`-only census
+ * would not have surfaced. `CardCollapse::toSurvivor()`'s duplicate-archive is the one
+ * write still outside it, deliberately — it retires a bridge-minted create-race twin rather
+ * than acting on a card's lifecycle, and it is shared with a caller outside the mapped-board
+ * regime; DL-335 recorded that rather than widening the predicate into it.
  */
 final class PinGuard
 {
