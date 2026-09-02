@@ -11,6 +11,7 @@ use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
+use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -33,6 +34,8 @@ use Illuminate\Support\Facades\Log;
  *  - outcome closed_unmerged, no card → skip (never tracked → nothing to retire).
  *  - card exists, other outcome → move it to the outcome's stage (no-op if there).
  *  - no card, outcome opened / merged / merged_to_main → create it at that stage.
+ *  - a PINNED card is refused on both writes (DL-335) — see {@see refusedAsPinned}. A
+ *    create is unreachable from a pin: there is no card yet to carry one.
  *
  * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
  * split as the move handler (DL-020/DL-285). New cards are tagged `dependencies` +
@@ -131,6 +134,9 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             // race) — archive them all. Empty (never tracked) → nothing to do.
             if ($outcome === 'closed_unmerged') {
                 foreach ($cards as $cardId => $card) {
+                    if ($this->refusedAsPinned($card, $cardId, $repo, $prNumber, $mapping, 'archive')) {
+                        continue;
+                    }
                     if ($client->archiveCard($cardId)) {
                         // ⭐ A GROUP-B write (card#7211): this id came out of a board-scoped
                         // SEARCH, so unlike the token-path arms the card's board here is not
@@ -162,6 +168,9 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 // before this guard shipped, on the PR's next event.
                 $survivor = $this->collapseDuplicates($client, $cards, $mapping, $repo, $prNumber);
                 if (($survivor['workflow_stage_id'] ?? null) !== $stageId) {
+                    if ($this->refusedAsPinned($survivor, (int) $survivor['id'], $repo, $prNumber, $mapping, 'move')) {
+                        return;
+                    }
                     $client->moveCard((int) $survivor['id'], $stageId);
                     // Group-B, as the archive arm above (card#7211/card#7212): the survivor was
                     // resolved by search, not by a token, so its own board is recorded here.
@@ -217,6 +226,42 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
             }
             throw $e;
         }
+    }
+
+    /**
+     * The pinned-card opt-out for this handler's two writes (DL-335, card#8454): true when
+     * the card is PINNED and the caller must skip the write it was about to make.
+     *
+     * DL-178's predicate is a property of the CARD, not of the mover, and until this shipped
+     * the dependabot handler was the one event-path mover that never consulted it — so a
+     * closed-unmerged dependabot PR RETIRED a card a human had parked (`block_reason` /
+     * `no-automove`) while `bridge:reconcile` and the release-promote sweep both skipped it.
+     * That is card#8289's asymmetry one handler over, and worse in kind: an archive is the
+     * hardest write here to notice and the only one that takes the card off the board.
+     *
+     * ⛔ TWO BOUNDS, both deliberate. (1) There is NO override — the DL-194 unpark and the
+     * DL-195 revive are `started`/`reopened` outcomes of the move handler and have no
+     * counterpart on a dependabot PR, so a pinned card is refused on every outcome this
+     * handler can act on. (2) The `(repo, outcome, reason)` alert dedup collapses BOTH arms
+     * into one marker, because this handler's `outcome` is the synthetic ALERT_OUTCOME: one
+     * repo's first pinned dependabot card signals, and later ones reach the durable
+     * `Log::warning` only. That is the same trade the constant already makes for every other
+     * arm here, and the log line — which `warnAndNotify` always writes — is the per-card record.
+     *
+     * @param  array<string, mixed>  $card
+     */
+    private function refusedAsPinned(array $card, int $cardId, string $repo, int $prNumber, WritebackMapping $mapping, string $write): bool
+    {
+        if (! PinGuard::isPinned($card)) {
+            return false;
+        }
+        $this->alerts->warnAndNotify(
+            "kanban_dependabot_card: {$write} refused — card is pinned (block_reason/no-automove)",
+            ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping),
+            $repo, self::ALERT_OUTCOME, $cardId, 'pinned_no_automove', $prNumber,
+        );
+
+        return true;
     }
 
     /**
