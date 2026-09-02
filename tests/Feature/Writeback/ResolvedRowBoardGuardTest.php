@@ -47,6 +47,14 @@ use Tests\TestCase;
  * they share its predicate, its `card_not_on_mapped_board` reason code and its
  * warn+notify channel, and are kept apart in the dedup tuple by their `$outcome`.
  *
+ * ⚠ THE ARM COUNT IS NOT THE LEG COUNT, and the difference is why this class grows without
+ * gaining a fourth `$outcome`. ONE arm feeds SEVERAL writes off ONE correlation — the
+ * dependabot arm's stage MOVE, its closed-unmerged ARCHIVE and the DL-328 name RESTAMP are
+ * three of them, all under the one `dependabot_card` outcome — and the gate they share sits
+ * upstream of all of them, in `cardsForRepo`. So each write earns its own method here: a leg
+ * covering one write reports on the gate over a population of one write, which is the shape
+ * canon #7 exists to refuse.
+ *
  * ⭐ THE FOURTH SITE IS NOW GUARDED TOO (DL-301) — and it is deliberately NOT covered here.
  * `bridge:reconcile --fix` (`ReconcileCommand`, board read → `moveCard`) calls the same
  * `MappedBoardGuard::refuses()` on every reconcilable row, under the synthetic `reconcile`
@@ -194,7 +202,7 @@ class ResolvedRowBoardGuardTest extends TestCase
 
     public function test_dependabot_archive_on_closed_unmerged_refuses_the_foreign_card(): void
     {
-        // The other write this correlation feeds: `closed_unmerged` ARCHIVES every
+        // Another write this correlation feeds: `closed_unmerged` ARCHIVES every
         // correlated card. Archival is the least reversible write on this path, so it gets
         // its own leg rather than inheriting the move leg's result.
         config(['bridge.writeback.correlation' => 'scan']);
@@ -218,6 +226,45 @@ class ResolvedRowBoardGuardTest extends TestCase
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
             && str_contains($r->url(), '/tasks/7.json')
             && ($r['_action'] ?? null) === 'archive');
+        $this->assertNoWriteTo(6);
+        $this->assertRefused(6, 'dependabot_card');
+    }
+
+    public function test_dependabot_retitle_restamps_the_mapped_card_and_refuses_the_foreign_one(): void
+    {
+        // A third write this correlation feeds (DL-328): an upstream retitle RESTAMPS the
+        // card `name`. Its own leg, and not an inheritance of the move leg's result, because
+        // its write is gated a second time INSIDE `restampNames` on byte-equality with
+        // `changes.title.from` — so both rows are named byte-equal to that string here, and
+        // the ownership test therefore says WRITE about both. The only thing left that can
+        // separate them is the board gate, which is what makes this leg discriminate: without
+        // it card 6 is renamed on a board this install does not own, and the ownership test
+        // would have vouched for the write.
+        config(['bridge.writeback.correlation' => 'scan']);
+        $this->writeWriteback('owner/repo', [
+            'stages' => ['opened' => 50, 'merged' => 52, 'merged_to_main' => 53, 'closed_unmerged' => 49],
+            'create_dependabot_cards' => true,
+        ]);
+        $prUrl = 'https://github.com/owner/repo/pull/42';
+        $from = 'chore(deps): Bump typescript from 5.9.0 to 7.0.2';
+        $to = 'chore(deps): Bump typescript from 5.9.0 to 6.0.3';
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response('', 204),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 6, 'payload' => ['pr_number' => 42]],
+                ['id' => 7, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/6.json' => Http::response(['data' => ['id' => 6, 'board_id' => self::FOREIGN_BOARD, 'name' => $from, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => self::MAPPED_BOARD, 'name' => $from, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+        ]);
+
+        $this->dependabot(KanbanDependabotCardHandler::RENAMED_OUTCOME, extra: ['name_from' => $from, 'pr_title' => $to]);
+
+        // PRESENCE WITNESS — the mapped card is still restamped, name-only.
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && str_contains($r->url(), '/tasks/7.json')
+            && $r->data() === ['name' => $to]);
+        // CONTROL — the foreign card is not renamed, and the refusal is reported.
         $this->assertNoWriteTo(6);
         $this->assertRefused(6, 'dependabot_card');
     }
@@ -359,10 +406,11 @@ class ResolvedRowBoardGuardTest extends TestCase
         );
     }
 
-    private function dependabot(string $outcome, int $pr = 42): void
+    /** @param array<string, mixed> $extra the retitle leg's `name_from` / its own `pr_title`; empty on every move-or-archive arm */
+    private function dependabot(string $outcome, int $pr = 42, array $extra = []): void
     {
         (new KanbanDependabotCardHandler)->handle(
-            ReactionTarget::make('kanban_dependabot_card', "pr-{$pr}", payload: [
+            ReactionTarget::make('kanban_dependabot_card', "pr-{$pr}", payload: $extra + [
                 'repo' => 'owner/repo', 'outcome' => $outcome, 'pr_number' => $pr,
                 'pr_title' => 'chore(deps): Bump x from 1 to 2', 'pr_url' => 'https://github.com/owner/repo/pull/'.$pr,
             ]),

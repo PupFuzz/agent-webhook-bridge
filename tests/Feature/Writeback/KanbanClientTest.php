@@ -124,6 +124,27 @@ class KanbanClientTest extends TestCase
             && ! isset($r['task']));            // column-only, no other fields
     }
 
+    public function test_patch_card_sends_exactly_the_named_fields_flat(): void
+    {
+        // The general flat-field PATCH verb (card#8377): it writes what the caller names
+        // and nothing else — no task wrapper (DL-219), no field the caller did not pass.
+        Http::fake(['*' => Http::response(['data' => ['id' => 5]])]);
+
+        $this->client()->patchCard(5, ['name' => 'chore(deps): Bump x from 1 to 3']);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && str_contains($r->url(), '/tasks/5.json')
+            && $r->data() === ['name' => 'chore(deps): Bump x from 1 to 3']
+            && ! isset($r['task']));
+    }
+
+    public function test_patch_card_throws_on_non_2xx(): void
+    {
+        Http::fake(['*' => Http::response(['error' => 'unprocessable'], 422)]);
+        $this->expectException(RequestException::class);
+        $this->client()->patchCard(5, ['name' => 'x']);
+    }
+
     public function test_add_comment_posts_the_nested_comments_endpoint_with_a_content_body(): void
     {
         // card#7064: the card-VISIBLE record channel. It is a POST to a NESTED resource
