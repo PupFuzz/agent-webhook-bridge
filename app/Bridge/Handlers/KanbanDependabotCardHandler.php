@@ -367,8 +367,9 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
     /**
      * Fetch the correlated cards and keep only those on the mapped BOARD and belonging
      * to $repo, as an `id => card` map — the one place every write this handler makes
-     * (archive on closed-unmerged, the collapse's archive, the survivor's move) draws
-     * its card set from, which is why both gates live here rather than at each write.
+     * draws its card set from, which is why both gates live here rather than at each
+     * write. The class docblock's lifecycle list owns WHICH writes those are; an
+     * enumeration here would be a second copy of it, and was already one arm short.
      *
      * The BOARD gate (DL-298, card#7211) re-tests the row kanban actually handed back
      * against the mapped board, through the same `MappedBoardGuard` the token-path
