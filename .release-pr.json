@@ -14,7 +14,7 @@
     "board_id": 8,
     "released_stage_id": 53,
     "api_base": "https://kanban.example.com/api/v3",
-    "_source_note": "Board 8 is NOT single-repo, so \"*\" would be a FALSE declaration: a whole-board census of all 333 cards derives 176 sources of this repo and 1 of pupfuzz/agent-roundtable. Naming the repo qualifies every dl_number/pr_number match against the card's own by-ref source, so a colliding ref number cannot promote another repo's card into a terminal stage. Costs nothing forward: all 7 cards currently in Shipped-to-Dev (stage 52) carry a correct by-ref source. A ref whose only match is an UNSOURCED card is named and skipped, never moved — stamp it with `kbcard patch --pr-url`.",
+    "_source_note": "Board 8 is NOT single-repo: it carries cards whose by-ref source is a different repo, so \"*\" (which DECLARES a single-repo board) would be a false declaration. Naming this repo qualifies every dl_number/pr_number match against the card's own by-ref source, so a colliding ref number cannot promote another repo's card. A ref whose only match is an UNSOURCED card is named and skipped, never moved -- stamp it with `kbcard patch --pr-url`. Census and evidence: card#8423.",
     "source": "PupFuzz/agent-webhook-bridge"
   }
 }
