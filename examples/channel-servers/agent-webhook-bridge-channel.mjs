@@ -191,7 +191,11 @@ const TOOL_DEFINITIONS = [
       'Return YOUR OWN cards on the board (your product swimlane grouped by stage, ' +
       'plus any shared/coordination cards your bridge identity is scoped to). Read-only; ' +
       'the kanban token never leaves the bridge. Titles only by default — pass ' +
-      'include_description when you need the SCOPE written on a card.',
+      'include_description when you need the SCOPE written on a card. A board fault ' +
+      'that cannot clear (the bridge token revoked/rotated, or its scope too narrow ' +
+      'to read) is REFUSED (422) naming the INSTALL fault — it is never an empty ' +
+      'window and never a retryable upstream error, so do not retry it: tell your ' +
+      'operator.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -219,11 +223,19 @@ const TOOL_DEFINITIONS = [
       'from the scope you are configured for, which is returned beside them as ' +
       'configured_board_id/configured_swimlane_id. placement_observed: false means ' +
       'the bridge could not read the placement — both ids are then null and the ' +
-      'response claims none; the card still exists and card_id is still the answer.',
+      'response claims none; the card still exists and card_id is still the answer. ' +
+      'A board fault that cannot clear (the bridge token revoked/rotated, its scope ' +
+      'too narrow, or a value kanban itself rejects) is REFUSED (422) with NO card ' +
+      'created — not a retryable upstream error, so do not retry it.',
     inputSchema: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: 'Card title (required).' },
+        title: {
+          type: 'string',
+          description:
+            "Card title (required, non-empty, at most 255 characters — kanban's own " +
+            'limit). An over-long title is REFUSED (422) before any request is sent.',
+        },
         description: { type: 'string', description: 'Card body (optional).' },
         tags: {
           type: 'array',
