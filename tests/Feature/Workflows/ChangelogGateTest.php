@@ -430,6 +430,35 @@ class ChangelogGateTest extends TestCase
         $this->assertStringContainsString("no '## [1.1.0]' section", $out);
     }
 
+    public function test_the_release_step_classifies_on_the_branchs_own_files_not_the_bases(): void
+    {
+        // card#8441. The classification is "does THIS PR move VERSION?", and a
+        // two-dot `$BASE $HEAD` diff cannot answer it: on a branch cut before a
+        // release fold, the BASE's own bump sits inside that diff, so an innocent
+        // feature branch is classified as a release PR and made to answer for
+        // somebody else's section. The wrong verdict is reachable in the
+        // direction that FAILS, not only the one that passes: a fold whose
+        // section is over the release-body limit (the v0.72.0 shape, whose
+        // recurrence is tracked as card#7511) reds every branch open across it.
+        $huge = str_repeat("a padded changelog line that carries no meaning\n", 3_000);
+        $repo = $this->makeForkedRepo(
+            ['VERSION' => "1.0.0\n", 'docs/CHANGELOG.md' => $this->changelog('- old'), 'app/X.php' => 'a'],
+            ['VERSION' => "1.1.0\n", 'docs/CHANGELOG.md' => $this->changelog('', "\n## [1.1.0] - 2026-01-02\n\n".$huge)],
+            ['app/X.php' => 'b'],
+        );
+
+        $this->assertScopeFormsDisagreeOn($repo, 'VERSION');
+
+        [$rc, $out] = $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::RELEASE_STEP),
+            $repo['dir'],
+            ['BASE' => $repo['base'], 'HEAD' => $repo['head']],
+        );
+
+        $this->assertSame(0, $rc, $out);
+        $this->assertStringContainsString('does not move VERSION', $out);
+    }
+
     // ---------------------------------------------------------------- feature step
 
     /**
@@ -545,6 +574,65 @@ class ChangelogGateTest extends TestCase
         $this->assertStringContainsString('does not name card 1234', $out);
         $this->assertStringNotContainsString('predates the fold', $out);
         $this->assertStringContainsString("Fix: add an [Unreleased] entry citing 'card#1234'", $out);
+    }
+
+    public function test_the_feature_step_classifies_on_the_branchs_own_files_not_the_bases(): void
+    {
+        // card#8441, the same predicate in the other step. This branch touches
+        // ONE file and it is out of scope; the BASE, meanwhile, shipped an app/
+        // change after the fork. Under a two-dot diff the base's file is reported
+        // as this PR's, so a docs-only branch is pulled into the entry
+        // requirement on the strength of somebody else's change — and the entry
+        // it is then told to write names a card that shipped nothing here.
+        $repo = $this->makeForkedRepo(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), 'docs/guide.md' => 'a', 'app/Y.php' => 'x'],
+            ['app/Y.php' => 'y'],
+            ['docs/guide.md' => 'b'],
+        );
+
+        $this->assertScopeFormsDisagreeOn($repo, 'app/Y.php');
+
+        [$rc, $out] = $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
+            $repo['dir'],
+            [
+                'BASE' => $repo['base'],
+                'HEAD' => $repo['head'],
+                'TITLE' => 'docs(guide): reword the guide (card#1234)',
+                'HEAD_REF' => 'docs/1234-guide',
+            ],
+        );
+
+        $this->assertSame(0, $rc, $out);
+        $this->assertStringContainsString(self::OUT_OF_SCOPE_MESSAGE, $out);
+    }
+
+    /**
+     * The fixture's own discriminating property, asserted rather than assumed:
+     * `$path` must be inside the two-dot `$BASE $HEAD` diff and outside the
+     * merge-base one. Without this the legs above could pass on a fixture where
+     * the two forms agree — which is every fixture whose branch is up to date
+     * with its base, and is why the linear `makeRepo` shape cannot express this.
+     *
+     * @param  array{dir:string,base:string,head:string}  $repo
+     */
+    private function assertScopeFormsDisagreeOn(array $repo, string $path): void
+    {
+        $git = $this->git($repo['dir']);
+        $names = static fn (string $range): array => array_values(array_filter(
+            explode("\n", trim((string) shell_exec($git.'diff --name-only '.$range)))
+        ));
+
+        $this->assertContains(
+            $path,
+            $names($repo['base'].' '.$repo['head']),
+            "the two-dot diff must report {$path} as this PR's, or the fixture is not the cell",
+        );
+        $this->assertNotContains(
+            $path,
+            $names($repo['base'].'...'.$repo['head']),
+            "the merge-base diff must not report {$path}, or the fixture is not the cell",
+        );
     }
 
     // ------------------------------------------------- the pre-fold shape (card#8339)

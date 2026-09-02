@@ -82,7 +82,14 @@ jobs:
           # moves next. Scoped to this guard: NOT a claim that every path-list
           # read in the repo wants the flag — DL-281's sibling audit found one
           # that provably does not.
-          CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" "$HEAD")
+          # THREE DOTS: the diff is taken from the MERGE-BASE of base and head,
+          # which is what "the files this PR changes" means. `"$BASE" "$HEAD"`
+          # answers a different question — every file the BASE changed since the
+          # fork is in that set too, so the verdict becomes a function of what
+          # merged on the base branch meanwhile (DL-337; card#8441 measured it).
+          # The merge-base must be REACHABLE for this: `fetch-depth: 0` on the
+          # checkout above is load-bearing here, not only for the `git show`s.
+          CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE...$HEAD")
           if ! grep -qxF VERSION <<<"$CHANGED"; then
             echo "OK: this PR does not move VERSION — no release section to assert."
             exit 0
@@ -259,15 +266,10 @@ jobs:
           # matched under both). Residual, bounded in DL-281 rather than claimed
           # closed: a path containing `"`, `\`, or a control byte is quoted
           # regardless of this flag.
-          # ⚠ DISCLOSED, NOT FIXED (card#8339, DL-329). This is a TWO-DOT diff, so
-          # on a branch that forked before the base moved it reports the BASE's
-          # own changes as this PR's — measured: a branch touching one file is
-          # classified as touching the base's too, which can pull a PR into the
-          # entry requirement on the strength of somebody else's change. The
-          # three-dot form is what "the files this PR changes" means, but
-          # swapping it CHANGES WHAT CI REJECTS (it also narrows the set), so it
-          # needs its own operator ruling rather than riding a diagnostic fix.
-          CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" "$HEAD")
+          # Three dots — the merge-base diff, so the set is what THIS branch
+          # changed and not what the base changed since the fork. Same reason as
+          # the release step above (DL-337).
+          CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE...$HEAD")
           if ! grep -qE '^(app/|bin/|\.github/workflows/|\.github/actions/)|^(\.release-pr\.json|phpstan-laravel\.neon|pint\.json|phpunit\.xml|composer\.json|composer\.lock|\.env\.example)$' <<<"$CHANGED"; then
             echo "OK: this PR changes no in-scope file ${SCOPE} — no [Unreleased] entry required."
             exit 0
