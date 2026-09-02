@@ -1603,7 +1603,7 @@ class PrTitleLintTest extends TestCase
      * ⭐ THE DISAGREEMENT SET, RENDERED RATHER THAN CLAIMED (card#8344 / DL-327, review R3).
      * Two rounds of review each replaced one hand-written universal about gate/predicate
      * disagreements with another, and a sibling leg in this same file falsified each in
-     * turn — the second time from 400 lines below
+     * turn — the second time from a leg far below it in this same file
      * ({@see test_the_enumerated_separator_answers_the_same_in_every_locale()}). A
      * sentence cannot be audited against a set nobody enumerated, so the set is enumerated
      * here and the direction is MEASURED per row: the docblocks above now point at this
