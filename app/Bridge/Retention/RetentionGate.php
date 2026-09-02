@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Retention;
 
+use App\Bridge\Support\FaultMarker;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -68,13 +69,6 @@ final class RetentionGate
     public const ERROR_KEY = 'bridge:retention:last-error';
 
     /**
-     * Floor on the last-error marker's lifetime. It must outlive the interval back-off
-     * so `bridge:check` still sees a persistent failure between the once-per-interval
-     * retries; a longer configured interval widens it (see {@see runSafely}).
-     */
-    private const ERROR_TTL = 2592000; // 30 days
-
-    /**
      * Ceiling on how long one bounded pass may hold the lock before it is presumed
      * dead and released. Only relevant if a worker is killed mid-pass; a pass that
      * takes anywhere near this is already pathological.
@@ -115,18 +109,19 @@ final class RetentionGate
             // persistently-throwing pass runs at most once per interval, so without a
             // durable record it leaves only this one line — in a log nobody tails —
             // while `bridge:check` still says `retention: on`. Record it so the
-            // preflight surfaces the stuck state; a later clean pass clears it. The TTL
-            // outlives the interval so the marker is still there at the next retry.
-            Cache::put(self::ERROR_KEY, [
-                'at' => now()->toIso8601String(),
-                'exception' => $e::class,
-                'error' => $e->getMessage(),
-            ], max(self::ERROR_TTL, (int) config('bridge.retention.interval') + 3600));
-            Log::warning('retention pass failed', [
-                'exception' => $e::class,
-                'at' => $e->getFile().':'.$e->getLine(),
-                'error' => $e->getMessage(),
-            ]);
+            // preflight surfaces the stuck state; a later clean pass clears it.
+            //
+            // ⛔ AND RECORDING IT MUST NOT RE-RAISE IT — {@see FaultMarker} owns the order
+            // (log first, marker second, each leg guarded) and the TTL that outlives this
+            // interval. Written here directly, the marker put was the FIRST statement of
+            // this arm, so a dead cache store threw out of a terminating callback: an
+            // unhandled fatal after the response, in the one process nobody watches.
+            FaultMarker::record(
+                self::ERROR_KEY,
+                $e,
+                (int) config('bridge.retention.interval'),
+                'retention pass failed',
+            );
         }
     }
 

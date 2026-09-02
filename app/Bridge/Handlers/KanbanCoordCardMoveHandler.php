@@ -10,6 +10,7 @@ use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CoordCardLanePlacement;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
+use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -53,9 +54,14 @@ use Illuminate\Support\Facades\Log;
  * card sits in, and additionally refuses any card not currently in a mapped lane —
  * see {@see relaneOne()} for the three gates.
  *
- * A close, by contrast, is unconditional over `user_lanes` — ruled on #18: a human's
- * priority placement YIELDS to closure ("close→Done IS the terminal case, both movers
- * agree"), so there is no PinGuard side to pick.
+ * A close is unconditional over `user_lanes` — ruled on #18: a human's priority PLACEMENT
+ * yields to closure ("close→Done IS the terminal case, both movers agree"). ⛔ That is a
+ * ruling about a lane, and until card#8523 it was carried here as though it settled the
+ * PIN too: it does not, and the close leg had no actor-gate either, so an `issues.closed`
+ * concluded a card carrying a `block_reason` / `no-automove` with nothing between it and
+ * the write but the `move_coord_cards` opt-in. Since DL-340 the terminal leg consults
+ * {@see PinGuard} — a human hold is not a lane preference, and the operator ruling on
+ * card#8523 was that it outranks a close.
  *
  * DURABLE, with the writeback's standard transient(5xx → retry) / permanent(4xx → alert
  * + log + no-op) split (DL-020/DL-285). Idempotent under at-least-once redelivery: a card
@@ -247,6 +253,19 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
         if ($disposition === 'terminal') {
             if ($stage === $mapping->coordCardTerminalStageId) {
                 return;   // already concluded — redelivery-safe no-op
+            }
+            // The DL-178 human hold (card#8523, DL-340). Taken AFTER the already-concluded
+            // no-op, exactly where the move and dependabot handlers take theirs: a pinned
+            // card that is already in the terminal has no write to refuse, and alerting
+            // there would report a permanent failure that did not happen. There is no
+            // override to test first — the DL-194 unpark and DL-195 revive are outcomes of
+            // the PR move handler and have no counterpart on an `issues.closed`.
+            if (PinGuard::refuses(
+                $this->alerts, $card, 'kanban_coord_card_move', 'terminal move', $id, $repo, self::ALERT_OUTCOME,
+                ['issue' => $issueNumber, 'sid' => $sid] + MappedBoardGuard::boardContext($card, $mapping),
+                $issueNumber,
+            )) {
+                return;
             }
             $client->moveCard($id, (int) $mapping->coordCardTerminalStageId);
             Log::info('kanban_coord_card_move: moved to terminal', ['card_id' => $id, 'stage' => $mapping->coordCardTerminalStageId, 'sid' => $sid, 'issue' => $issueNumber] + MappedBoardGuard::boardContext($card, $mapping));

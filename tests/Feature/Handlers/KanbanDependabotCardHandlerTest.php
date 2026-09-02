@@ -1017,6 +1017,12 @@ class KanbanDependabotCardHandlerTest extends TestCase
     /**
      * A pinned card ALREADY in the outcome's stage raises no refusal signal: there was no
      * write to refuse, and an alert there would be a false permanent-failure report.
+     *
+     * ⭐ THE `GET` IS A PRESENCE WITNESS (card#8523 R1, the same shape fixed on the coord-move
+     * twin in the same round — two copies, so the SHAPE was fixed, not the instance). The two
+     * `assertNotSent` legs are absences and would stay green under any early return upstream of
+     * the stage compare, certifying whatever replaced it; the card read pins that the handler
+     * actually reached the arm being bounded.
      */
     public function test_a_pinned_card_already_in_the_target_stage_does_not_alert(): void
     {
@@ -1029,7 +1035,79 @@ class KanbanDependabotCardHandlerTest extends TestCase
 
         $this->handle('merged');   // target stage 52 — already there
 
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
         Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    /**
+     * card#8523 / DL-340 — THE R1 REPRODUCTION from card#8454 comment 2258, now the guard.
+     * DL-335 refused the survivor's MOVE on a pinned card but left `CardCollapse` pin-blind,
+     * and `handle()` calls it BEFORE that consult — so on a create race (two cards for one
+     * repo+PR) the pinned TWIN was archived anyway and only the survivor's move was withheld.
+     * The reviewer measured it: `PATCH /tasks/9.json {"_action":"archive"}` went out against
+     * the post-DL-335 handler.
+     *
+     * ⭐ The fix is in the PRIMITIVE, not in this handler's call ORDER (canon #5): a
+     * pre-collapse consult would have covered this caller and left the coord create leg and
+     * the board tool, and it would have refused the WHOLE delivery — DL-335 alternative (b),
+     * which the operator did not ask for. Per-card inside the loop means the pinned twin
+     * survives and the unpinned survivor still moves, which is what a hold on ONE card means.
+     */
+    public function test_a_pinned_duplicate_twin_is_not_archived_by_the_collapse(): void
+    {
+        $this->writeWritebackWithAlert();
+        $prUrl = 'https://github.com/owner/repo/pull/42';
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 9, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/9.json' => Http::response(['data' => ['id' => 9, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => 'human parked this twin', 'tags' => ['no-automove'], 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+        ]);
+        Log::spy();
+
+        $this->handle('merged');
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/9.json'));
+        // The survivor still moves — a hold is a property of the CARD, not of the delivery,
+        // and this is the witness that the refusal is not just an inert fixture.
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json')
+            && ($r['workflow_stage_id'] ?? null) === 52);
+        // The collapse's own alert outcome is the SUBSYSTEM, not this handler's synthetic
+        // `dependabot_card`, so a collapse refusal and a move refusal never share a dedup
+        // marker and cannot silence each other.
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'pinned_no_automove'
+            && $r['outcome'] === 'kanban_dependabot_card'
+            && $r['repo'] === 'owner/repo'
+            && $r['card_id'] === 9);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'duplicate archive refused — card is pinned')
+            && $ctx['card_id'] === 9 && $ctx['survivor'] === 7 && $ctx['card_board'] === 8)->once();
+    }
+
+    /**
+     * The control for the leg above, on the SAME fixture: with no pin on card 9 the collapse
+     * archives it exactly as it did before, so the assertion above is about the pin and not
+     * about a fixture that never reaches the write.
+     */
+    public function test_the_same_duplicate_fixture_without_a_pin_is_archived(): void
+    {
+        $prUrl = 'https://github.com/owner/repo/pull/42';
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 9, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+            '*/tasks/9.json' => Http::response(['data' => ['id' => 9, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => null, 'tags' => [], 'payload' => ['pr_number' => 42, 'pr_url' => $prUrl]]]),
+        ]);
+
+        $this->handle('merged');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/9.json')
+            && ($r['_action'] ?? null) === 'archive');
     }
 }

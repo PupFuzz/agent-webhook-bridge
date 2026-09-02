@@ -40,11 +40,15 @@ use Illuminate\Support\Facades\Log;
  *    byte-identical to the title the bridge stamped ({@see restampNames} owns that test
  *    and why it is the only safe one). No card → nothing to restamp, and never a create.
  *
- * ⚠ NEITHER ARM CONSULTS `PinGuard`. That is not new here —
- * this handler has never consulted it (a create has no card to carry a pin, and DL-335
- * widened the pin onto the dependabot archive/move only) — and DL-341's restamp inherits
- * the same blindness DL-328's does: a PINNED card whose name the bridge still owns is
- * restamped. Read as the roster the pin rulings cover, never as "every write on this
+ * ⚠ NEITHER ARM CONSULTS `PinGuard` DIRECTLY, and one of them reaches it anyway —
+ * state both, because "this handler does not consult the pin" reads as "no write this
+ * handler makes is guarded" and that is false. The CREATE arm's post-create duplicate
+ * collapse is guarded: {@see CardCollapse::toSurvivor} took the consult INTO the kernel
+ * at DL-340 (card#8523), so a pinned raced twin is not archived on this path even though
+ * no line here asks. DL-341's RESTAMP is genuinely unguarded and inherits the same
+ * blindness DL-328's has: a PINNED card whose name the bridge still owns is restamped —
+ * the pin's rulings cover a card's STAGE and its LIFECYCLE, and a `{name}`-only write is
+ * neither. Read that as the roster the pin rulings cover, never as "every write on this
  * handler". Tracked with the rest of the pin-blind-writer class on card#8557 — the
  * successor that took the class over as PR #649 closed card#8523.
  *
@@ -287,7 +291,7 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
                 // warned if kanban answered a body with no `data` collection.
                 $live = $this->onMappedBoard($client->cardRowsByTag($mapping->boardId, $tag), $mapping, $repo, $issueNumber);
                 if (count($live) > 1) {
-                    CardCollapse::toSurvivor($client, $live, 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag], $mapping);
+                    CardCollapse::toSurvivor($client, $live, 'kanban_coord_card', $repo, ['repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag], $mapping);
                 }
             }
             if ($byRef) {
@@ -299,7 +303,7 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
                     // wrong, never on the ordinary single-card path.
                     $rows = $this->onMappedBoard(array_map(fn (int $id) => $client->getCard($id), $liveRef), $mapping, $repo, $issueNumber);
                     if (count($rows) > 1) {
-                        CardCollapse::toSurvivor($client, $rows, 'kanban_coord_card', ['repo' => $repo, 'issue' => $issueNumber, 'ref' => "github_issue:{$issueNumber}"], $mapping);
+                        CardCollapse::toSurvivor($client, $rows, 'kanban_coord_card', $repo, ['repo' => $repo, 'issue' => $issueNumber, 'ref' => "github_issue:{$issueNumber}"], $mapping);
                     }
                 }
             }

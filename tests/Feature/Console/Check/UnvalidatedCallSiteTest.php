@@ -173,6 +173,15 @@ class UnvalidatedCallSiteTest extends TestCase
         // unreadable store is not a store with nothing in it, and the empty arm one line
         // away is an `ok` saying exactly that.
         'app/Bridge/Check/Checks/RetentionPostureCheck.php' => 3,
+        // card#8425 / DL-325 — TWO sites, and both are limb (a): a measurement that did not
+        // happen, not a posture.
+        //   1. the `scheduled_jobs` table could not be READ. An install that upgraded
+        //      without `php artisan migrate` has no registry to report on, and reporting
+        //      "no periodic jobs" there would be a green line minted from a missing table.
+        //   2. the cache backend holding the last-pass-failure marker could not be read.
+        //      The same shape as RetentionPostureCheck's marker site, and for the same
+        //      reason: an unreachable cache is not evidence that the last pass succeeded.
+        'app/Bridge/Check/Checks/JobsPostureCheck.php' => 2,
         'app/Bridge/Check/Checks/BoardToolsBoardStateCheck.php' => 3,
         // card#7756 / DL-313 — THREE legs, and the count is the whole design rather than
         // three incidental disclosures, so it is spelled out here where a maintainer will

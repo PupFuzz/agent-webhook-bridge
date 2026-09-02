@@ -292,10 +292,9 @@ final class BoardCorrectCardTool implements Tool
             if (! is_string($name) || trim($name) === '') {
                 throw new ToolRefusalException('board_correct_card: `name` must be a non-empty string — a card cannot be left without one, so there is no "clear" for this field (omit `name` to leave it alone)');
             }
-            // mb_strlen: Laravel's `max` sizes a string that way, and a title is not
-            // charset-constrained the way a tag is, so bytes and characters differ here.
-            if (mb_strlen($name) > KanbanFieldLimits::NAME_MAX) {
-                throw new ToolRefusalException('board_correct_card: `name` is '.mb_strlen($name).' characters — kanban accepts at most '.KanbanFieldLimits::NAME_MAX.' (`name => string|max:255`), so the board would reject the write. Nothing was written; shorten it.');
+            $tooLong = BoardCallRefusal::overLongName($this->name(), 'name', $name, 'Nothing was written');
+            if ($tooLong !== null) {
+                throw $tooLong;
             }
             $fields['name'] = $name;
         }
@@ -529,21 +528,24 @@ final class BoardCorrectCardTool implements Tool
      * Anything else (5xx, a timeout) is re-thrown for the dispatcher's 502, which is
      * the correct answer for a fault that MAY clear.
      *
-     * ⛔ THE 403 MESSAGE NAMES THE TOKEN'S ABILITIES, NOT ITS BOARD MEMBERSHIP, and the
-     * correction matters because the wrong cause sends the operator to audit something
-     * that cannot produce this status: kanban's search FLOORS a caller to its member
-     * boards and answers 200-with-zero-rows for the rest, so a membership gap arrives
-     * as a not-found refusal ({@see notYoursMessage} carries that disjunct), never as a
-     * 403. What does answer 403 on this route is the Sanctum ability gate (kanban
-     * DL-055: a GET needs `read`), i.e. a token issued with too narrow a scope.
-     *
-     * A 401 is the same class of permanent: the token was not accepted at all —
-     * revoked, rotated, or replaced by a value the board does not know.
+     * ⭐ WHICH STATUSES THOSE ARE, AND WHY EACH IS AN INSTALL FAULT, IS NOT THIS TOOL'S
+     * TO DECIDE ANY MORE — {@see BoardCallRefusal} owns both for the whole door
+     * (card#8486). It was decided here first (DL-326), which is exactly what made
+     * `board_my_cards` and `board_create_card` answer the same faults with the
+     * dispatcher's retryable 502. This tool keeps only what is ITS OWN: the log line,
+     * and the two clauses saying what was being read and what the call did not do.
+     * ⛔ In particular the 403 cause names the token's ABILITIES and not its board
+     * membership — a membership gap arrives as a not-found refusal here
+     * ({@see notYoursMessage} carries that disjunct), never as a 403. ⚠ That is a property
+     * of the ROUTE, not of the door: this lookup is a card SEARCH, which kanban floors to
+     * the caller's own boards, so the route class is named explicitly rather than defaulted
+     * ({@see BoardReadRoute} — a board-scoped read 403s on exactly the membership this
+     * message rules out).
      */
     private function lookupRefusal(RequestException $e, int $cardId, string $agentName): \Throwable
     {
-        $status = $e->response->status();
-        if ($status !== 401 && $status !== 403 && $status !== 404) {
+        $status = BoardCallRefusal::permanentOnRead($e);
+        if ($status === null) {
             return $e;
         }
 
@@ -551,13 +553,13 @@ final class BoardCorrectCardTool implements Tool
             'agent' => $agentName, 'card_id' => $cardId, 'status' => $status,
         ]);
 
-        $cause = match ($status) {
-            401 => "the bridge's writeback token was not accepted at all — it has been revoked, rotated or replaced with a value the board does not know",
-            403 => "the bridge's writeback token was recognised but not permitted to READ — kanban gates the API on per-token abilities, and this one lacks `read` (board membership does NOT produce a 403: an unreadable board answers zero rows instead)",
-            default => 'the board answered 404 for the card search itself, which is an API-surface fault rather than a missing card',
-        };
-
-        return new ToolRefusalException("board_correct_card: the bridge could not read your board to establish that card {$cardId} is yours (the board answered {$status}) — so nothing was written and nothing was read about the card. This is an INSTALL fault, not something your arguments can fix: {$cause}. Retrying will not change it; report it to your operator.");
+        return BoardCallRefusal::readRefusal(
+            $this->name(),
+            BoardReadRoute::Search,
+            $status,
+            "your board to establish that card {$cardId} is yours",
+            'so nothing was written and nothing was read about the card',
+        );
     }
 
     /**
@@ -574,28 +576,32 @@ final class BoardCorrectCardTool implements Tool
      * seat retrying forever against `502 upstream board error` with no diagnosis. It is
      * mapped here instead, and the message is BRIDGE-AUTHORED: the board's response body
      * is never echoed — it is an upstream artefact whose shape and contents this tool
-     * does not control, and the caller can act on the bounded statement below.
+     * does not control, and the caller can act on {@see BoardCallRefusal::bridgeBoundsClause}.
+     *
+     * ⭐ WHICH statuses are permanent is {@see BoardCallRefusal}'s (card#8486); WHAT each one
+     * means for a CORRECTION stays here, because that is a property of this write and not of
+     * the door: only this tool has an ownership check for a 404 to have raced, and only its
+     * PATCH takes `task.update`. ⛔ The GATES a 403 sends the operator to audit are NOT that
+     * kind of property — they are kanban's, identical for every write on this door — so they
+     * are {@see BoardCallRefusal::writeGatesClause}'s. Written out longhand here they were
+     * copied onto `board_create_card` missing kanban's board write gate, with nothing red.
      */
     private function writeRefusal(RequestException $e, int $cardId, string $agentName): \Throwable
     {
-        $status = $e->response->status();
         Log::warning('board_correct_card: the board refused the correction write', [
-            'agent' => $agentName, 'card_id' => $cardId, 'status' => $status,
+            'agent' => $agentName, 'card_id' => $cardId, 'status' => $e->response->status(),
         ]);
 
-        if ($status === 404) {
-            return new ToolRefusalException("board_correct_card: card {$cardId} no longer exists — it was removed between the ownership check and the write, so NOTHING was written. Re-read your cards with `board_my_cards`.");
-        }
-        if ($status === 403) {
-            return new ToolRefusalException("board_correct_card: the board refused the write to card {$cardId} (403) — the card is yours, but the bridge's writeback user may not write it. TWO independent gates answer 403 here and BOTH need auditing: the token's abilities (a PATCH needs `write`) and the writeback user's board role, which needs `task.update` — a PATCH carrying anything other than `workflow_stage_id` alone authorizes update, not move (kanban DL-204), and `task.update` is new for this door (`board_my_cards` and `board_create_card` never needed it). Nothing was written. This is an INSTALL fault, not something your arguments can fix; report it to your operator.");
-        }
-        if ($status === 401) {
-            return new ToolRefusalException("board_correct_card: the board did not accept the bridge's writeback token at all on the write to card {$cardId} (401) — it has been revoked, rotated or replaced with a value the board does not know. Nothing was written. This is an INSTALL fault; retrying will not change it.");
-        }
-        if ($status === 422) {
-            return new ToolRefusalException("board_correct_card: the board REJECTED the value you sent for card {$cardId} (422) — kanban's own validator refused it, so nothing was written and re-sending the same call cannot succeed. The bridge bounds `name` at ".KanbanFieldLimits::NAME_MAX.' characters and each tag at '.KanbanFieldLimits::TAG_MAX.' before it sends, so reaching this means a value broke a kanban rule the bridge does not mirror (or one that has moved). Shorten or simplify the field you were correcting, and report it to your operator if it persists.');
+        $status = BoardCallRefusal::permanentOnWrite($e);
+        if ($status === null) {
+            return $e;
         }
 
-        return $e;
+        return new ToolRefusalException(match ($status) {
+            404 => "board_correct_card: card {$cardId} no longer exists — it was removed between the ownership check and the write, so NOTHING was written. Re-read your cards with `board_my_cards`.",
+            403 => "board_correct_card: the board refused the write to card {$cardId} (403) — the card is yours, but the bridge's writeback user may not write it. ".BoardCallRefusal::writeGatesClause('PATCH', 'task.update', ' — a PATCH carrying anything other than `workflow_stage_id` alone authorizes update, not move (kanban DL-204), and `task.update` is new for this door (`board_my_cards` and `board_create_card` never needed it)').' Nothing was written. This is an INSTALL fault, not something your arguments can fix; report it to your operator.',
+            401 => "board_correct_card: the board did not accept the bridge's writeback token at all on the write to card {$cardId} (401) — it has been revoked, rotated or replaced with a value the board does not know. Nothing was written. This is an INSTALL fault; retrying will not change it.",
+            422 => "board_correct_card: the board REJECTED the value you sent for card {$cardId} (422) — kanban's own validator refused it, so nothing was written and re-sending the same call cannot succeed. ".BoardCallRefusal::bridgeBoundsClause().' Shorten or simplify the field you were correcting, and report it to your operator if it persists.',
+        });
     }
 }

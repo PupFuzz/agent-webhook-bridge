@@ -466,6 +466,14 @@ final class KanbanClient
      * no `archived` key reaches the query string at all, which is what keeps a
      * pre-DL-296 kanban answering the live search identically.
      *
+     * ⛔ It carries {@see cardsByTag}'s DL-026 degraded-read warning, and did NOT until
+     * card#8523's review: this read is silent-degrading in exactly the way that one is
+     * (a 200 whose body has no card collection reads as "no rows"), and card#8523 moved
+     * `BoardCreateCardTool`'s post-create collapse onto it — dropping the warning from the
+     * one read the DL-340 pin consult depends on. Both projections now report through
+     * {@see warnUnreadableCollection}, so neither can lose it again by being switched for
+     * the other.
+     *
      * @return list<array<string, mixed>>
      */
     public function cardRowsByTag(int $boardId, string $tag, bool $archivedOnly = false): array
@@ -476,14 +484,7 @@ final class KanbanClient
         }
         $data = $this->http()->get('/tasks/search.json', $query)->throw()->json('data');
 
-        $cards = [];
-        foreach (is_array($data) ? $data : [] as $row) {
-            if (is_array($row)) {
-                $cards[] = $row;
-            }
-        }
-
-        return $cards;
+        return self::correlationRows($data, 'tag-row-search '.$tag.($archivedOnly ? ' (archived)' : ''), $boardId);
     }
 
     /**
@@ -868,10 +869,44 @@ final class KanbanClient
         if ($ids !== null) {
             return $ids;
         }
-
-        Log::warning("writeback correlation: the {$read} read returned a 200 whose body carried no card collection — it is being treated as a no-match, so this correlation silently no-ops; kanban's response shape may have changed, or something other than kanban (a proxy, an auth portal) may be answering this URL", ['board_id' => $boardId, 'read' => $read]);
+        self::warnUnreadableCollection($read, $boardId);
 
         return [];
+    }
+
+    /**
+     * {@see correlationIds}'s treatment for the ROW-returning reads, and it exists because
+     * card#8523 walked a caller off the ids-only read and lost the warning with it:
+     * `BoardCreateCardTool`'s post-create collapse moved from {@see cardsByTag} (loud on an
+     * unreadable body) to {@see cardRowsByTag} (silent), and that is the one read the DL-340
+     * pin consult now rides on — an unreadable body there reads as "no duplicates" and the
+     * collapse no-ops, which is safe, but a body kanban stopped serving is a bug to chase and
+     * a genuine no-match is not. Same policy, same words, one emitter: the degradation still
+     * returns an empty list rather than throwing (DL-020), it just stops being silent.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function correlationRows(mixed $data, string $read, int $boardId): array
+    {
+        if (! is_array($data)) {
+            self::warnUnreadableCollection($read, $boardId);
+
+            return [];
+        }
+        $rows = [];
+        foreach ($data as $row) {
+            if (is_array($row)) {
+                $rows[] = $row;
+            }
+        }
+
+        return $rows;
+    }
+
+    /** The DL-026 degraded-read line both correlation projections share — one message, one owner. */
+    private static function warnUnreadableCollection(string $read, int $boardId): void
+    {
+        Log::warning("writeback correlation: the {$read} read returned a 200 whose body carried no card collection — it is being treated as a no-match, so this correlation silently no-ops; kanban's response shape may have changed, or something other than kanban (a proxy, an auth portal) may be answering this URL", ['board_id' => $boardId, 'read' => $read]);
     }
 
     /**
