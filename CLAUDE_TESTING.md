@@ -603,7 +603,7 @@ answer is known — real sites found, prose and near-miss spellings skipped.
 
 ⛔ **The rule above is the STANDARD, not a description of this tree.** Census instruments over
 `app/` still carry their own copy of the walk and do not go through `SourceScan` — one of them
-(`BoardScopedReadConstructionTest`'s private `appPhpFiles()`) is a byte-for-byte duplicate of
+(`BoardScopedReadConstructionTest`'s private `appPhpFiles()`) is a duplicate of
 `SourceScan::appFiles()`, sitting in `tests/Feature/Writeback/` beside the two classes this rule
 was minted for and censusing the same tenant boundary. They are neither exempt nor minuted
 narrower populations: they predate the primitive, and migrating them was out of scope for the card
