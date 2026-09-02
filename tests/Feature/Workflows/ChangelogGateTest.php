@@ -15,11 +15,21 @@ use Tests\TestCase;
  * {@see PrTitleLintTest} and {@see ChannelServerVersionAgreementTest}.
  *
  * WHY A REAL GIT REPOSITORY AND NOT A FLAT DIRECTORY. Both gate steps classify
- * the PR from `git diff --name-only BASE HEAD`, and the tokenless arm reads the
- * changelog AT THE BASE through `git show`. A fixture that handed the step a
- * pre-computed file list would be asserting the fixture; the base/head SHAs are
- * genuine workflow inputs (`github.event.pull_request.base.sha`), so the test
- * supplies genuine ones.
+ * the PR from `git diff --name-only "$BASE" HEAD`, and the tokenless arm reads
+ * the changelog AT THE BASE through `git show`. A fixture that handed the step a
+ * pre-computed file list would be asserting the fixture.
+ *
+ * WHY THE WORK TREE IS A MERGE COMMIT (card#8527). Neither end of that diff is a
+ * workflow INPUT any more. CI checks out `github.sha` — the PR head merged into
+ * the base branch — and the steps derive `$BASE` from that merge's FIRST PARENT
+ * through `bin/pr-base-snapshot.sh`, because
+ * `github.event.pull_request.base.sha` was measured LAGGING the merge commit's
+ * real base (PR #640, run 33598959720, 2026-09-02) and a diff whose two ends are
+ * not one snapshot reports on a tree nobody pushed. So `makeRepo()` builds the
+ * base commit, the head commit, and then the merge of the second into the first,
+ * and the only sha the steps are handed is the head sha the pairing is CHECKED
+ * against. `bin/pr-base-snapshot.sh` has its own cases in
+ * {@see PrBaseSnapshotTest}; here it is exercised as the steps call it.
  *
  * THE STEPS CALL THE REAL `bin/changelog-section.py`. It is copied into each
  * throwaway tree at the repo-relative path the steps name, so a change to the
@@ -116,6 +126,24 @@ class ChangelogGateTest extends TestCase
     }
 
     /**
+     * Both steps derive `$BASE` from the checked-out merge through this script
+     * (card#8527), so every fixture needs it — deliberately NOT behind
+     * `$withExtractor`: a step that cannot derive its base never reaches the
+     * extractor, so withholding it would turn "the extractor is missing" cases
+     * into "the pairing is missing" ones and they would pass for the wrong
+     * reason. Copied AFTER the last commit, like the extractor, so `bin/` never
+     * appears in a fixture's diff.
+     */
+    private function installBaseSnapshot(string $dir): void
+    {
+        if (! is_dir($dir.'/bin')) {
+            mkdir($dir.'/bin', 0o777, true);
+        }
+        copy(base_path('bin/pr-base-snapshot.sh'), $dir.'/bin/pr-base-snapshot.sh');
+        chmod($dir.'/bin/pr-base-snapshot.sh', 0o755);
+    }
+
+    /**
      * Materialize a throwaway git repo with a base commit and a head commit.
      *
      * @param  array<string,string>  $base  repo-relative path => contents
@@ -137,6 +165,16 @@ class ChangelogGateTest extends TestCase
         exec($git.'add -A && '.$git.'commit -q --allow-empty -m head 2>&1');
         $headSha = trim((string) shell_exec($git.'rev-parse HEAD'));
 
+        // Leave the work tree where actions/checkout leaves it: on the merge of
+        // the head INTO the base, first parent the base — the same place
+        // `makeForkedRepo` leaves it. The base is an ancestor of the head here,
+        // so the merge tree IS the head tree and every case's verdict is
+        // unchanged by this; what changes is that the steps now have somewhere
+        // to read their base FROM (card#8527).
+        exec($git.'checkout -q --detach '.escapeshellarg($baseSha).' 2>&1');
+        exec($git.'merge -q --no-ff --no-edit '.escapeshellarg($headSha).' 2>&1');
+
+        $this->installBaseSnapshot($dir);
         if ($withExtractor) {
             $this->installExtractor($dir);
         }
@@ -223,12 +261,22 @@ class ChangelogGateTest extends TestCase
         // run at all, so a fixture that conflicts is testing nothing GitHub
         // would ever hand the gate. Assert the merge is clean rather than
         // discovering it through an unrelated failure downstream.
+        //
+        // `--no-ff` because GITHUB NEVER FAST-FORWARDS `refs/pull/<n>/merge`,
+        // measured 2026-09-02 on this repo's two open PRs whose branches already
+        // contained the base tip: #635 (merge 570d1dc) and #630 (merge 6286dc9)
+        // are both two-parent merges even though `merge-base --is-ancestor base
+        // head` is true for each. Without the flag the fixture fast-forwards on
+        // exactly the `$branchMergesBase` shape and hands the step a work tree
+        // GitHub would never produce — which `bin/pr-base-snapshot.sh` refuses,
+        // correctly, since it cannot tell that tree from a mis-pointed one.
         $mergeRc = 0;
         $mergeOut = [];
-        exec($git.'merge -q --no-edit pr 2>&1', $mergeOut, $mergeRc);
+        exec($git.'merge -q --no-ff --no-edit pr 2>&1', $mergeOut, $mergeRc);
         $this->assertSame(0, $mergeRc, "the fixture merge must be clean: \n".implode("\n", $mergeOut));
 
         $this->installExtractor($dir);
+        $this->installBaseSnapshot($dir);
 
         return ['dir' => $dir, 'base' => $baseSha, 'head' => $headSha];
     }
@@ -287,15 +335,17 @@ class ChangelogGateTest extends TestCase
         exec($git.'add -A && '.$git.'commit -q -m head 2>&1');
         $headSha = trim((string) shell_exec($git.'rev-parse HEAD'));
 
-        // Same reason as `makeForkedRepo`: a CONFLICTING PR gets no merge ref
-        // and therefore no run, so a conflicting fixture tests nothing.
+        // Same reason as `makeForkedRepo`, including its `--no-ff`: a CONFLICTING
+        // PR gets no merge ref and therefore no run, and GitHub never
+        // fast-forwards the merge ref it does build.
         exec($git.'checkout -q main 2>&1');
         $mergeRc = 0;
         $mergeOut = [];
-        exec($git.'merge -q --no-edit pr 2>&1', $mergeOut, $mergeRc);
+        exec($git.'merge -q --no-ff --no-edit pr 2>&1', $mergeOut, $mergeRc);
         $this->assertSame(0, $mergeRc, "the fixture merge must be clean: \n".implode("\n", $mergeOut));
 
         $this->installExtractor($dir);
+        $this->installBaseSnapshot($dir);
 
         return ['dir' => $dir, 'base' => $baseSha, 'head' => $headSha, 'siblingFirst' => $siblingFirst];
     }
@@ -336,7 +386,7 @@ class ChangelogGateTest extends TestCase
         [$rc, $out] = $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::RELEASE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head']],
+            ['HEAD' => $repo['head']],
         );
 
         $this->assertSame(0, $rc, $out);
@@ -353,7 +403,7 @@ class ChangelogGateTest extends TestCase
         [$rc, $out] = $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::RELEASE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head']],
+            ['HEAD' => $repo['head']],
         );
 
         $this->assertSame(0, $rc, $out);
@@ -370,7 +420,7 @@ class ChangelogGateTest extends TestCase
         [$rc, $out] = $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::RELEASE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head']],
+            ['HEAD' => $repo['head']],
         );
 
         $this->assertSame(1, $rc, $out);
@@ -390,7 +440,7 @@ class ChangelogGateTest extends TestCase
         [$rc, $out] = $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::RELEASE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head']],
+            ['HEAD' => $repo['head']],
         );
 
         $this->assertSame(1, $rc, $out);
@@ -423,7 +473,7 @@ class ChangelogGateTest extends TestCase
         [$rc, $out] = $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::RELEASE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head']],
+            ['HEAD' => $repo['head']],
         );
 
         $this->assertSame(1, $rc, $out);
@@ -443,7 +493,7 @@ class ChangelogGateTest extends TestCase
         return $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head'], 'TITLE' => $title, 'HEAD_REF' => $branch],
+            ['HEAD' => $repo['head'], 'TITLE' => $title, 'HEAD_REF' => $branch],
         );
     }
 
@@ -607,7 +657,7 @@ class ChangelogGateTest extends TestCase
         return $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head'], 'TITLE' => $title, 'HEAD_REF' => $branch],
+            ['HEAD' => $repo['head'], 'TITLE' => $title, 'HEAD_REF' => $branch],
         );
     }
 
@@ -707,7 +757,6 @@ class ChangelogGateTest extends TestCase
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
             $repo['dir'],
             [
-                'BASE' => $repo['base'],
                 'HEAD' => $repo['head'],
                 'TITLE' => 'docs(changelog): correct a shipped line (card#1234)',
                 'HEAD_REF' => 'fix/1234-x',
@@ -844,7 +893,6 @@ class ChangelogGateTest extends TestCase
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
             $repo['dir'],
             [
-                'BASE' => $repo['base'],
                 'HEAD' => $repo['head'],
                 'TITLE' => 'docs(changelog): correct a shipped line (card#1234)',
                 'HEAD_REF' => 'fix/1234-x',
@@ -891,7 +939,6 @@ class ChangelogGateTest extends TestCase
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
             $repo['dir'],
             [
-                'BASE' => $repo['base'],
                 'HEAD' => $repo['head'],
                 'TITLE' => 'fix(x): the new behaviour (card#1234)',
                 'HEAD_REF' => 'fix/1234-x',
@@ -934,7 +981,6 @@ class ChangelogGateTest extends TestCase
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
             $repo['dir'],
             [
-                'BASE' => $repo['base'],
                 'HEAD' => $repo['head'],
                 'TITLE' => 'fix(x): the new behaviour (card#1234)',
                 'HEAD_REF' => 'fix/1234-x',
@@ -990,7 +1036,6 @@ class ChangelogGateTest extends TestCase
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
             $repo['dir'],
             [
-                'BASE' => $repo['base'],
                 'HEAD' => $repo['head'],
                 'TITLE' => 'fix(x): the new behaviour (card#1234)',
                 'HEAD_REF' => 'fix/1234-x',
@@ -1041,7 +1086,6 @@ class ChangelogGateTest extends TestCase
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
             $repo['dir'],
             [
-                'BASE' => $repo['base'],
                 'HEAD' => $repo['head'],
                 'TITLE' => 'fix(x): the new behaviour (card#1234)',
                 'HEAD_REF' => 'fix/1234-x',
@@ -1161,7 +1205,7 @@ class ChangelogGateTest extends TestCase
         [$rc, $out] = $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head'], 'TITLE' => 'fix: x (card#1234)', 'HEAD_REF' => 'fix/1234-x'],
+            ['HEAD' => $repo['head'], 'TITLE' => 'fix: x (card#1234)', 'HEAD_REF' => 'fix/1234-x'],
         );
 
         $this->assertSame(1, $rc, $out);
@@ -1438,6 +1482,138 @@ class ChangelogGateTest extends TestCase
             ['.github/dependabot.yml' => 'b'],
             'chore(deps): widen the ecosystem list (card#1234)',
             'chore/1234-deps',
+        );
+
+        $this->assertSame(0, $rc, $out);
+        $this->assertStringContainsString(self::OUT_OF_SCOPE_MESSAGE, $out);
+    }
+
+    // -------------------------------------------- the pairing card#8527 fixed
+
+    // ------------------------------- the scope set is the MERGE's delta (card#8527 / card#8441)
+
+    /**
+     * The fixture's own discriminating property, asserted rather than assumed:
+     * `$path` must be inside the RETIRED pairing — the payload base against the
+     * branch tip, two commits neither of which contains the other — and outside
+     * the merge's own delta (`HEAD^1` -> the work tree, which is what the step
+     * reads now). Every branch that is up to date with its base makes the two
+     * agree, which is why the linear `makeRepo` shape cannot express any case
+     * below and why each one asserts this first.
+     *
+     * @param  array{dir:string,base:string,head:string}  $repo
+     */
+    private function assertRetiredPairingOverCollects(array $repo, string $path): void
+    {
+        $git = $this->git($repo['dir']);
+        $names = static fn (string $range): array => array_values(array_filter(
+            explode("\n", trim((string) shell_exec($git.'diff --name-only '.$range)))
+        ));
+
+        $this->assertContains(
+            $path,
+            $names($repo['base'].' '.$repo['head']),
+            "the retired pairing must report {$path} as this PR's, or the fixture is not the cell",
+        );
+
+        $derived = trim((string) shell_exec('cd '.escapeshellarg($repo['dir']).' && bin/pr-base-snapshot.sh '.escapeshellarg($repo['head'])));
+        $this->assertSame($repo['base'], $derived, 'the derived base must be the base tip the merge records');
+        $this->assertNotContains(
+            $path,
+            $names($derived.' HEAD'),
+            "the merge's own delta must not report {$path}, or the fixture is not the cell",
+        );
+    }
+
+    public function test_the_release_step_classifies_on_what_this_pr_lands_not_on_what_the_base_shipped(): void
+    {
+        // card#8441's release-step cell. The classification is "does THIS PR
+        // move VERSION?", and the retired pairing could not answer it: on a
+        // branch cut before a release fold, the BASE's own bump sat inside the
+        // diff, so an innocent feature branch was classified as a release PR and
+        // made to answer for somebody else's section — in the direction that
+        // FAILS, when the folded section is over the release-body limit (the
+        // v0.72.0 shape, recurrence tracked as card#7511).
+        $huge = str_repeat("a padded changelog line that carries no meaning\n", 3_000);
+        $repo = $this->makeForkedRepo(
+            ['VERSION' => "1.0.0\n", 'docs/CHANGELOG.md' => $this->changelog('- old'), 'app/X.php' => 'a'],
+            ['VERSION' => "1.1.0\n", 'docs/CHANGELOG.md' => $this->changelog('', "\n## [1.1.0] - 2026-01-02\n\n".$huge)],
+            ['app/X.php' => 'b'],
+        );
+
+        $this->assertRetiredPairingOverCollects($repo, 'VERSION');
+
+        [$rc, $out] = $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::RELEASE_STEP),
+            $repo['dir'],
+            ['HEAD' => $repo['head']],
+        );
+
+        $this->assertSame(0, $rc, $out);
+        $this->assertStringContainsString('does not move VERSION', $out);
+    }
+
+    public function test_the_feature_step_classifies_on_what_this_pr_lands_not_on_what_the_base_shipped(): void
+    {
+        // card#8441's feature-step cell, and the PR #640 shape on this predicate:
+        // a DOCS-ONLY branch, cut before the base shipped an `app/` change. Under
+        // the retired pairing the base's file was reported as this PR's, so the
+        // branch was pulled into the entry requirement on the strength of
+        // somebody else's change — and told to write an entry naming a card
+        // that shipped nothing here.
+        $repo = $this->makeForkedRepo(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), 'docs/guide.md' => 'a', 'app/Y.php' => 'x'],
+            ['app/Y.php' => 'y'],
+            ['docs/guide.md' => 'b'],
+        );
+
+        $this->assertRetiredPairingOverCollects($repo, 'app/Y.php');
+
+        [$rc, $out] = $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
+            $repo['dir'],
+            ['HEAD' => $repo['head'], 'TITLE' => 'docs(guide): reword the guide (card#1234)', 'HEAD_REF' => 'docs/1234-guide'],
+        );
+
+        $this->assertSame(0, $rc, $out);
+        $this->assertStringContainsString(self::OUT_OF_SCOPE_MESSAGE, $out);
+    }
+
+    public function test_a_change_the_base_already_carries_identically_is_not_in_scope(): void
+    {
+        // The one cell where the merge's delta and a merge-base (three-dot)
+        // range DISAGREE, and the merge's delta is the right answer: the branch
+        // made the same `app/` edit the base shipped after the fork. The merge is
+        // clean and lands NOTHING on the base for that file, so no entry is owed
+        // for it. A `"$BASE...$HEAD"` spelling against the branch tip reports it
+        // — the branch did change it since the fork — and would demand an entry
+        // for a change this PR does not make. The retired two-dot pairing does
+        // not even see it (identical content at both ends), so the discriminator
+        // here is three-dot vs merge delta, asserted directly.
+        $repo = $this->makeForkedRepo(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), 'docs/guide.md' => 'a', 'app/Z.php' => 'x'],
+            ['app/Z.php' => 'y'],
+            ['app/Z.php' => 'y', 'docs/guide.md' => 'b'],
+        );
+
+        $git = $this->git($repo['dir']);
+        $this->assertStringContainsString(
+            'app/Z.php',
+            (string) shell_exec($git.'diff --name-only '.$repo['base'].'...'.$repo['head']),
+            'the three-dot range must report app/Z.php, or the fixture is not the cell',
+        );
+        $derived = trim((string) shell_exec('cd '.escapeshellarg($repo['dir']).' && bin/pr-base-snapshot.sh '.escapeshellarg($repo['head'])));
+        $this->assertSame($repo['base'], $derived);
+        $this->assertStringNotContainsString(
+            'app/Z.php',
+            (string) shell_exec($git.'diff --name-only '.$derived.' HEAD'),
+            'the merge lands nothing for app/Z.php, so its delta must not carry it',
+        );
+
+        [$rc, $out] = $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
+            $repo['dir'],
+            ['HEAD' => $repo['head'], 'TITLE' => 'docs(guide): reword the guide (card#1234)', 'HEAD_REF' => 'docs/1234-guide'],
         );
 
         $this->assertSame(0, $rc, $out);

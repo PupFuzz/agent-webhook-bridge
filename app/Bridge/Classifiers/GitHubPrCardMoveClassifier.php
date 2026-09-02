@@ -15,6 +15,7 @@ use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\DlTokenGrammar;
 use App\Bridge\Support\NoCloseGrammar;
 use App\Bridge\Support\RevertGrammar;
+use App\Bridge\Support\TitleChangeEvidence;
 use App\Bridge\Writeback\CardTokenVerdict;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -1369,14 +1370,15 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
     }
 
     /**
-     * The PREVIOUS title of a retitled pull request — GitHub's `changes.title.from` on a
-     * `pull_request.edited` action — or null on every other action and on an `edited` that
-     * changed something else (body, base). GitHub sends `changes` with a key per field it
-     * changed, so the KEY's presence is the "the title changed" signal; a `changes.title`
-     * with no usable `from` is not one, and is read as no retitle rather than as an empty
-     * previous title (which would compare equal to no card name and restamp nothing).
+     * The PREVIOUS title of a retitled pull request (DL-328) — null on every action but
+     * `pull_request.edited`, and on an `edited` that changed something else (a body, a
+     * base). The ACTION gate is here because it is this classifier's; the payload narrowing
+     * and the rule that decides what counts as evidence belong to
+     * {@see TitleChangeEvidence}, hoisted there at DL-341's second reader (the coord-card
+     * `issues.edited` arm) so the two arms cannot drift on a string a card-name write is
+     * gated on. Behaviour is unchanged by that hoist.
      *
-     * ⭐ This string is EVIDENCE, not decoration: it is the exact name the bridge stamped
+     * ⭐ That string is EVIDENCE, not decoration: it is the exact name the bridge stamped
      * on the card it minted for this PR, so a card whose name still equals it byte for byte
      * has not been touched by anyone since. That is the whole authorship test the restamp
      * gates on ({@see KanbanDependabotCardHandler}), and it is why the previous title is
@@ -1389,11 +1391,8 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         if ($eventType !== 'pull_request.edited') {
             return null;
         }
-        $changes = is_array($payload['changes'] ?? null) ? $payload['changes'] : [];
-        $title = is_array($changes['title'] ?? null) ? $changes['title'] : [];
-        $from = $title['from'] ?? null;
 
-        return is_string($from) && $from !== '' ? $from : null;
+        return TitleChangeEvidence::previousTitle($payload);
     }
 
     /**
