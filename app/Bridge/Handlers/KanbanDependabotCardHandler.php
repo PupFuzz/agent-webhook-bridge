@@ -38,12 +38,16 @@ use Illuminate\Support\Facades\Log;
  *    safe one). No card → nothing to restamp.
  *  - card exists, other outcome → move it to the outcome's stage (no-op if there).
  *  - no card, outcome opened / merged / merged_to_main → create it at that stage.
- *  - a PINNED card is refused on the two writes DL-335 covers — the closed-unmerged
- *    ARCHIVE and the collapse survivor's MOVE; see {@see refusedAsPinned}. A create is
- *    unreachable from a pin: there is no card yet to carry one. ⚠ The DL-328 restamp is
- *    NOT among them: DL-335 was ruled before that arm existed and the pin was never
- *    widened onto it, so a pinned card whose name the bridge still owns is restamped.
- *    Read this as the roster DL-335 ruled, never as "every write on this handler".
+ *  - a PINNED card is refused on every write here that touches its STAGE or its
+ *    LIFECYCLE — the closed-unmerged ARCHIVE and the collapse survivor's MOVE
+ *    ({@see refusedAsPinned}, DL-335), and since DL-340 the create-race collapse's
+ *    DUPLICATE ARCHIVE, which is refused one layer down in {@see CardCollapse} and so
+ *    is not visible in this file at all. A create is unreachable from a pin: there is
+ *    no card yet to carry one. ⚠ The DL-328 restamp is NOT among them, and that is the
+ *    scope of the rule rather than an omission: the pin governs the card's STAGE
+ *    (DL-178's own annotation), widened by exactly the archive (DL-335) — read those
+ *    two entries, and DL-340's Bounds for the open question, before reading the gap as
+ *    a defect. So a pinned card whose name the bridge still owns is restamped.
  *
  * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
  * split as the move handler (DL-020/DL-285). New cards are tagged `dependencies` +
@@ -259,8 +263,10 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
     /**
      * The pinned-card opt-out for the two writes DL-335 covers (card#8454) — the
      * closed-unmerged archive and the collapse survivor's move: true when the card is
-     * PINNED and the caller must skip the write it was about to make. The DL-328 name
-     * restamp does NOT call it — see the class docblock's lifecycle list.
+     * PINNED and the caller must skip the write it was about to make. ⚠ It is NOT this
+     * handler's whole pin story: the collapse's duplicate archive is refused inside
+     * {@see CardCollapse} (DL-340), and the DL-328 name restamp is deliberately outside
+     * the predicate — see the class docblock's lifecycle list for both.
      *
      * DL-178's predicate is a property of the CARD, not of the mover, and until this shipped
      * the dependabot handler was the one event-path mover that never consulted it — so a
@@ -278,25 +284,27 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
      * `Log::warning` only. That is the same trade the constant already makes for every other
      * arm here, and the log line — which `warnAndNotify` always writes — is the per-card record.
      *
+     * ⭐ SINCE card#8523 THE CONSULT AND ITS RECORD ARE ONE PRIMITIVE ({@see PinGuard::refuses}),
+     * the same pairing `MappedBoardGuard` owns for the board rule: this method is now the
+     * handler's arm-specific CONTEXT (the PR number, the board pair) and nothing else. What
+     * it stops is a sixth writer minting a seventh spelling of the refusal.
+     *
      * @param  array<string, mixed>  $card
      */
     private function refusedAsPinned(array $card, int $cardId, string $repo, int $prNumber, WritebackMapping $mapping, string $write): bool
     {
-        if (! PinGuard::isPinned($card)) {
-            return false;
-        }
-        $this->alerts->warnAndNotify(
-            "kanban_dependabot_card: {$write} refused — card is pinned (block_reason/no-automove)",
-            ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping),
-            $repo, self::ALERT_OUTCOME, $cardId, 'pinned_no_automove', $prNumber,
+        return PinGuard::refuses(
+            $this->alerts, $card, 'kanban_dependabot_card', $write, $cardId, $repo, self::ALERT_OUTCOME,
+            ['pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping),
+            $prNumber,
         );
-
-        return true;
     }
 
     /**
-     * Restamp the card name of a retitled dependabot PR (DL-328) — the ONLY name write the
-     * bridge makes after birth, and the answer to a card asserting a version that never
+     * Restamp the card name of a retitled dependabot PR (DL-328) — the FIRST name write the
+     * bridge made after birth (DL-341 added the coord-card twin,
+     * {@see KanbanCoordCardHandler::restampNames}, so "the only one" is no longer true and
+     * is not restated here), and the answer to a card asserting a version that never
      * shipped (dependabot retitles its PR in place when it retargets a bump).
      *
      * ⭐ THE OWNERSHIP TEST IS BYTE-EQUALITY WITH WHAT THE BRIDGE ITSELF STAMPED, and it is
@@ -446,7 +454,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
      */
     private function collapseDuplicates(KanbanClient $client, array $cards, WritebackMapping $mapping, string $repo, int $prNumber): array
     {
-        return CardCollapse::toSurvivor($client, $cards, 'kanban_dependabot_card', ['repo' => $repo, 'pr' => $prNumber], $mapping);
+        return CardCollapse::toSurvivor($client, $cards, 'kanban_dependabot_card', $repo, ['repo' => $repo, 'pr' => $prNumber], $mapping);
     }
 
     /**

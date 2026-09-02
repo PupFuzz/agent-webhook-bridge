@@ -165,6 +165,12 @@ term is efficiency + defense-in-depth, not the boundary.
   a key, a retry (including any invisible MCP-client-layer retry) can
   double-create — the duplicate is visible via `board_my_cards` and bounded, but
   the key is why it exists.
+  ⚠ **A raced duplicate someone has PINNED is left alone (DL-340, card#8523).** The
+  collapse is the writeback's shared kernel, and since card#8523 it refuses to archive
+  a card carrying a non-empty `block_reason` or a `no-automove` tag — a human hold
+  outranks a tidy-up, even one this tool's own call created. The surviving (lowest-id)
+  card is still what the response names; you are simply left with two live cards for
+  the key until someone resolves the hold.
 - **⚠ Re-using a key whose card was ARCHIVED is REFUSED (422), not carded again
   (DL-297).** Kanban's search is a *switch*: without an `archived` parameter it
   returns live rows only, so an archived card is invisible to the correlation
