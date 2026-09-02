@@ -365,13 +365,13 @@ final class KanbanMoveCardHandler implements DurableReaction, Handler
         // refusal here that stamps, and it is the one whose reason casts no doubt on
         // WHICH card the event is about (contrast the DL-270 arm above, which must set no
         // field at all precisely because card identity is what is in question).
-        // Loud so a refused move stays visible.
-        if (PinGuard::isPinned($card) && ! $isUnpark && ! $isRevive) {
-            $this->alerts->warnAndNotify(
-                "kanban_move_card: {$outcome} move refused — card is pinned (block_reason/no-automove)",
-                ['card_id' => $cardId, 'repo' => $repo, 'current_stage' => $current],
-                $repo, $outcome, $cardId, 'pinned_no_automove',
-            );
+        // Loud so a refused move stays visible — and the report lives in the predicate's
+        // own class since card#8523 (`PinGuard::refuses`, the MappedBoardGuard pairing), so
+        // the six writers that consult the pin cannot drift on reason code or log level. The
+        // two overrides are tested FIRST, before the consult: `refuses()` REPORTS as well as
+        // answers, so asking it about a move we are about to make anyway would alert on it.
+        if (! $isUnpark && ! $isRevive
+            && PinGuard::refuses($this->alerts, $card, 'kanban_move_card', "{$outcome} move", $cardId, $repo, $outcome, ['current_stage' => $current])) {
             $this->stampCorrelationRefs($card, $mapping, $payload, $cardId, $client, $repo, $outcome);
 
             return;

@@ -1039,4 +1039,75 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
         Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_coord_card_move: moved to terminal'
             && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
     }
+
+    // ---- close → terminal: the DL-178 pin (card#8523 / DL-340) ----
+
+    /**
+     * card#8523 — the close leg had NO gate of any kind: `serviceSet()` guards revive and
+     * relane only, and the pin was never read here, so an `issues.closed` concluded a card a
+     * human had parked with nothing between it and the write but the `move_coord_cards`
+     * opt-in. DL-335's Bounds said this leg was "actor-gated (DL-200)" and that was FALSE;
+     * PR #639 R1 corrected the sentence and this closes the behaviour.
+     *
+     * The UNPINNED control on the identical fixture is
+     * {@see test_close_moves_the_tagged_card_to_the_terminal_stage} — same card, same
+     * disposition, no pin, PATCH sent — so a green here cannot be a fixture that never
+     * reached the write.
+     */
+    public function test_close_does_not_conclude_a_card_pinned_with_a_block_reason(): void
+    {
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'block_reason' => 'parked pending a decision']]),
+        ]);
+        Log::spy();
+
+        $this->handle(['disposition' => 'terminal']);
+
+        $this->assertNoMove();
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'pinned_no_automove'
+            && $r['repo'] === 'org/coord'
+            && $r['outcome'] === 'coord_card_move'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 4);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'terminal move refused — card is pinned')
+            && $ctx['card_id'] === 7 && $ctx['issue'] === 4 && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8)->once();
+    }
+
+    /**
+     * PinGuard's OTHER signal on the same leg — the tag, which is the spelling an operator
+     * reaches for when the card carries no block text.
+     */
+    public function test_close_does_not_conclude_a_card_tagged_no_automove(): void
+    {
+        $this->fakeBoard(['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'tags' => ['no-automove']]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        $this->assertNoMove();
+    }
+
+    /**
+     * The bound, and the reason the consult sits AFTER the already-concluded no-op (DL-335
+     * Decision 3, same placement): a pinned card already in the terminal has no write to
+     * refuse, and an alert there would report a permanent failure that did not happen.
+     */
+    public function test_a_pinned_card_already_in_the_terminal_stage_raises_no_refusal_signal(): void
+    {
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 99, 'tags' => ['no-automove']]]),
+        ]);
+
+        $this->handle(['disposition' => 'terminal']);
+
+        $this->assertNoMove();
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
 }

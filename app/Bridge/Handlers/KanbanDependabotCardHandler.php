@@ -248,20 +248,20 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
      * `Log::warning` only. That is the same trade the constant already makes for every other
      * arm here, and the log line — which `warnAndNotify` always writes — is the per-card record.
      *
+     * ⭐ SINCE card#8523 THE CONSULT AND ITS RECORD ARE ONE PRIMITIVE ({@see PinGuard::refuses}),
+     * the same pairing `MappedBoardGuard` owns for the board rule: this method is now the
+     * handler's arm-specific CONTEXT (the PR number, the board pair) and nothing else. What
+     * it stops is a sixth writer minting a seventh spelling of the refusal.
+     *
      * @param  array<string, mixed>  $card
      */
     private function refusedAsPinned(array $card, int $cardId, string $repo, int $prNumber, WritebackMapping $mapping, string $write): bool
     {
-        if (! PinGuard::isPinned($card)) {
-            return false;
-        }
-        $this->alerts->warnAndNotify(
-            "kanban_dependabot_card: {$write} refused — card is pinned (block_reason/no-automove)",
-            ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping),
-            $repo, self::ALERT_OUTCOME, $cardId, 'pinned_no_automove', $prNumber,
+        return PinGuard::refuses(
+            $this->alerts, $card, 'kanban_dependabot_card', $write, $cardId, $repo, self::ALERT_OUTCOME,
+            ['pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping),
+            $prNumber,
         );
-
-        return true;
     }
 
     /**
@@ -339,7 +339,7 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
      */
     private function collapseDuplicates(KanbanClient $client, array $cards, WritebackMapping $mapping, string $repo, int $prNumber): array
     {
-        return CardCollapse::toSurvivor($client, $cards, 'kanban_dependabot_card', ['repo' => $repo, 'pr' => $prNumber], $mapping);
+        return CardCollapse::toSurvivor($client, $cards, 'kanban_dependabot_card', $repo, ['repo' => $repo, 'pr' => $prNumber], $mapping);
     }
 
     /**

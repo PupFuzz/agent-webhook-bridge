@@ -16,6 +16,18 @@ use Illuminate\Support\Facades\Log;
  * archive the rest (idempotent — an archived card drops out of correlation, so a
  * redelivery re-presents nothing). Each handler keeps its OWN correlation (by-ref
  * PR vs `id:` tag); only the tie-break is single-sourced here.
+ *
+ * ⛔ A PINNED duplicate is NOT archived (card#8523, DL-340), and the consult lives HERE
+ * rather than in the three callers on purpose. DL-335 rejected widening the pin into this
+ * kernel on the reading that it retires a *bridge-minted create-race twin* — a
+ * data-integrity repair rather than an act on a card's lifecycle — and disclosed the live
+ * consequence: on a duplicated repo+PR the collapse ran BEFORE the dependabot move consult,
+ * so a human's hold was honoured on the survivor and ignored on the twin. The operator
+ * reversed that on card#8523, for the reason the disclosure itself named: the twin a human
+ * notices is the twin a human pins. A caller-side consult would have fixed one caller and
+ * left the other two (canon #5), so the refusal is per-card and inside the loop — the
+ * unpinned duplicates of the same key are still retired, because a hold is a property of
+ * the CARD, never of the delivery.
  */
 final class CardCollapse
 {
@@ -36,10 +48,12 @@ final class CardCollapse
      * Both records therefore carry {@see MappedBoardGuard::boardContext()}: the archived line,
      * and the 200-but-not-archived `Log::error`, which reports a write kanban ACCEPTED whose
      * effect did not take — the request DID reach that card, so the board it reached is the
-     * answer this record exists to give. A caller that hands in rows it never read
-     * (`array_fill_keys($live, [])`) gets `card_board => null`, which is the honest answer: the
-     * primitive records the absence rather than falling back to the mapped board, which would
-     * manufacture agreement.
+     * answer this record exists to give. A caller with no $mapping gets NO pair rather than a
+     * guessed one: the primitive records the absence instead of falling back to the mapped
+     * board, which would manufacture agreement. (Until card#8523 the same caller also handed
+     * in rows it had never read, so `card_board` would have been null even with a mapping;
+     * that is no longer true of any caller — every one now reads its rows, because the pin
+     * consult below is read off them.)
      *
      * ⚑ $mapping is NULLABLE, and that is a real state rather than a missing value: the
      * board-tools caller (`BoardCreateCardTool`) is outside the DL-009 mapped-board regime
@@ -51,13 +65,30 @@ final class CardCollapse
      * an omission is a defect, and it reds:
      * `WritebackSuccessBoardRecordTest::test_every_collapse_call_in_the_population_passes_its_mapping`.
      *
-     * @param  non-empty-array<int, array<string, mixed>>  $cards  id => card
+     * ⛔ $cards MUST be rows the caller actually READ, because the pin is read off them
+     * (card#8523). It is a REQUIRED parameter shape, not a best-effort one: a row handed in
+     * as `[]` carries no `block_reason` and no `tags`, so the predicate would answer "not
+     * pinned" for a card nobody looked at — a check that cannot fire (canon #9). The
+     * board-tools caller used to hand exactly that (`array_fill_keys($live, [])`) and now
+     * reads its rows through `KanbanClient::cardRowsByTag()` instead, which is the write-site
+     * fix rather than a read-time fallback here (canon #5).
+     *
+     * ⚑ $repo is REQUIRED and may legitimately be `''`. It is the first element of the pin
+     * refusal's `(repo, outcome, reason)` alert dedup tuple, and the board-tools caller has no
+     * repo at all — an empty string is the honest value there, and it dedups that caller's
+     * refusals install-wide rather than per repo, which is correct because the tool's cards
+     * belong to an agent, not to a repo. The alert's `outcome` is $subsystem, so a collapse
+     * refusal and its caller's own pin refusal (whose outcome is a synthetic constant) never
+     * share a marker and cannot silence each other.
+     *
+     * @param  non-empty-array<int, array<string, mixed>>  $cards  id => card, each one READ by the caller
+     * @param  string  $repo  the repo whose delivery is collapsing, `''` outside the writeback regime
      * @param  array<string, mixed>  $logContext  handler-specific correlation context (repo, pr/issue, tag)
      * @param  ?WritebackMapping  $mapping  the repo mapping whose board every record is paired against;
      *                                      null ONLY for a caller outside the mapped-board regime
      * @return array<string, mixed> the survivor card
      */
-    public static function toSurvivor(KanbanClient $client, array $cards, string $subsystem, array $logContext, ?WritebackMapping $mapping = null): array
+    public static function toSurvivor(KanbanClient $client, array $cards, string $subsystem, string $repo, array $logContext, ?WritebackMapping $mapping = null): array
     {
         ksort($cards);
         $survivorId = array_key_first($cards);
@@ -68,6 +99,13 @@ final class CardCollapse
             $ctx = ['card_id' => $id, 'survivor' => $survivorId]
                 + ($mapping === null ? [] : MappedBoardGuard::boardContext($cards[$id], $mapping))
                 + $logContext;
+            // The notifier is constructed here rather than injected: this is a static kernel
+            // with no caller that holds a different one (every handler builds the same class
+            // in its own constructor default), and a parameter for it would be a seam no
+            // caller uses.
+            if (PinGuard::refuses(new WritebackAlertNotifier, $cards[$id], $subsystem, 'duplicate archive', $id, $repo, $subsystem, $ctx)) {
+                continue;
+            }
             if ($client->archiveCard($id)) {
                 Log::info("{$subsystem}: archived duplicate card sharing the same correlation key", $ctx);
             } else {

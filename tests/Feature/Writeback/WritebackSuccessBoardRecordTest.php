@@ -583,9 +583,9 @@ class WritebackSuccessBoardRecordTest extends TestCase
         // scanner that had stopped matching would report the repo clean. Both directions.
         $source = <<<'PHP'
         <?php
-        // Prose: CardCollapse::toSurvivor($client, $cards, 'x', []) with no mapping.
-        CardCollapse::toSurvivor($client, $cards, $mapping, 'kanban_dependabot_card', ['repo' => $repo]);
-        CardCollapse::toSurvivor($client, array_fill_keys($live, []), 'board_create_card', ['agent' => $a]);
+        // Prose: CardCollapse::toSurvivor($client, $cards, 'x', '', []) with no mapping.
+        CardCollapse::toSurvivor($client, $cards, 'kanban_dependabot_card', $repo, ['repo' => $repo], $mapping);
+        CardCollapse::toSurvivor($client, $live, 'board_create_card', '', ['agent' => $a]);
         PHP;
 
         $this->assertSame(['Fixture.php:4'], self::collapseCallsWithoutMapping($source, 'Fixture.php'));

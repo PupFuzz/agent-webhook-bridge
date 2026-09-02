@@ -597,6 +597,59 @@ class AgentToolsCallTest extends TestCase
         Http::assertNotSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/9.json'));
     }
 
+    /**
+     * card#8523 / DL-340 — the pin reaches the BOARD-TOOLS collapse, because the consult
+     * lives in the shared kernel and not in its three callers (canon #5). This surface is
+     * outside the DL-009 mapped-board regime entirely, which is the reason DL-335 gave for
+     * NOT widening the pin into the kernel; the operator ruled the other way, and one
+     * primitive is what makes the ruling reach a caller nobody would think to edit.
+     *
+     * ⛔ THE ROWS ARE THE POINT. This path used to hand the kernel `array_fill_keys($live,
+     * [])` — ids with empty bodies — so a pin consult inside the kernel would have answered
+     * "not pinned" for every row by construction: a check that cannot fire (canon #9). The
+     * tool now reads its rows through `cardRowsByTag`, the row-returning twin of the same
+     * one search, so this test would still pass with the consult in place and the rows
+     * un-read — which is exactly why the unpinned control below is on the SAME fixture.
+     */
+    public function test_a_pinned_raced_duplicate_is_not_archived_by_the_collapse(): void
+    {
+        Http::fake($this->archiveAxisFake(
+            live: [],
+            archived: [],
+            newId: 9,
+            postCreate: [['id' => 8], ['id' => 9, 'block_reason' => 'a human parked this one']],
+        ));
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k2p']]);
+
+        $res->assertStatus(200)
+            ->assertJsonPath('result.created', true)
+            ->assertJsonPath('result.card_id', 8);   // the survivor is unchanged by the refusal
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/9.json'));
+    }
+
+    /**
+     * The control for the leg above, on the SAME fixture minus the pin: `test_idempotency
+     * _raced_duplicate_is_collapsed` covers the block_reason-free shape, and this one pins
+     * that the pin is what did it by carrying a NON-pin field in the same position — an
+     * unrecognised tag, which PinGuard reads and rejects.
+     */
+    public function test_the_same_raced_duplicate_with_a_non_pin_tag_is_archived(): void
+    {
+        Http::fake($this->archiveAxisFake(
+            live: [],
+            archived: [],
+            newId: 9,
+            postCreate: [['id' => 8], ['id' => 9, 'block_reason' => '', 'tags' => ['dependencies']]],
+        ));
+
+        $res = $this->callTool(['tool' => 'board_create_card', 'args' => ['title' => 't', 'idempotency_key' => 'k2c']]);
+
+        $res->assertStatus(200)->assertJsonPath('result.card_id', 8);
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/9.json')
+            && ($r['_action'] ?? null) === 'archive');
+    }
+
     public function test_idempotency_key_whose_only_card_is_archived_refuses_and_creates_nothing(): void
     {
         // BOARD STATE: the card this key minted (77) exists but is ARCHIVED — a
