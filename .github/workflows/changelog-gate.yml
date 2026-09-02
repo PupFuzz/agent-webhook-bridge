@@ -430,8 +430,12 @@ jobs:
           # branch that ADDS a brand-new bullet into the folded section after
           # merging, deleting nothing, is still diagnosed — and "move it into
           # [Unreleased]" is the RIGHT instruction there, because that line did
-          # not ship in [X.Y.Z]. DL-329 owns the residual list; the doc surfaces
-          # point at it rather than restating it.
+          # not ship in [X.Y.Z]. This list is kept HERE, at the predicate, because
+          # it is the surface whoever edits these legs is already reading — but
+          # DL-329 OWNS it and is the copy the prose surfaces point at
+          # (docs/CHANGELOG.md and VERSIONING.md no longer restate a narrower
+          # version of it). If this comment and DL-329 ever disagree, DL-329 is
+          # right and this one is the defect.
           #
           # ⚠ MULTI-ROOT: DISCLOSED, MEASURED, NOT TRACKED. A range with MORE
           # THAN ONE root — a branch that merged another still-unmerged branch
