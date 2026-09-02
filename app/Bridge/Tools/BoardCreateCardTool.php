@@ -44,9 +44,13 @@ use Illuminate\Support\Facades\Log;
  * owns the reasoning.
  *
  * Caller tags matching a reserved prefix (`created-by:` / `idem:` / `id:` /
- * `type:`) or the bare `triaged` are refused (422-class) — no forging an audit
+ * `type:`) or the bare `triaged` are refused (422-class): no forging an audit
  * stamp, no poisoning idempotency, no hijacking the coord adoption/type keys, no
- * defeating born-untriaged. The reserved match is CASEFOLDED (`strtolower(trim)`
+ * defeating born-untriaged. ⭐ The GUARD itself moved to {@see CallerTagPolicy} when
+ * card#8378 gave it a second caller (`board_correct_card` must refuse exactly what
+ * this tool refuses, or the correction becomes the route around it); this docblock
+ * stays the owner of WHY each entry is on the list, and the paragraph below of why
+ * the match is casefolded and charset-constrained. The reserved match is CASEFOLDED (`strtolower(trim)`
  * vs the lowercase reserved set) as defense-in-depth across driver collations:
  * whether the backing tag search folds case is a per-driver fact (MariaDB's JSON
  * column collates utf8mb4_bin ⇒ case-SENSITIVE, measured; a kanban running on
@@ -67,23 +71,11 @@ use Illuminate\Support\Facades\Log;
  */
 final class BoardCreateCardTool implements Tool
 {
-    /**
-     * Tag prefixes a caller may not supply (provenance / correlation / adoption).
-     * LOWERCASE — the match casefolds the caller tag before comparing.
-     */
-    private const RESERVED_PREFIXES = ['created-by:', 'idem:', 'id:', 'type:'];
-
-    /**
-     * Bare tags a caller may not supply — `triaged` would defeat born-untriaged.
-     * LOWERCASE — the match casefolds the (trimmed) caller tag before comparing.
-     */
-    private const RESERVED_BARE = ['triaged'];
-
     public function call(array $args, BoardToolsConfig $cfg, KanbanClient $client, string $agentName): array
     {
         $title = $this->requireTitle($args);
         $description = $this->optionalDescription($args);
-        $callerTags = $this->sanitizeCallerTags($args);
+        $callerTags = CallerTagPolicy::sanitize($args, $this->name());
         $idemKey = $this->validateIdempotencyKey($args);
 
         $boardId = (int) $cfg->boardId;
@@ -301,53 +293,6 @@ final class BoardCreateCardTool implements Tool
         }
 
         return $description;
-    }
-
-    /**
-     * @param  array<string, mixed>  $args
-     * @return list<string>
-     */
-    private function sanitizeCallerTags(array $args): array
-    {
-        if (! array_key_exists('tags', $args) || $args['tags'] === null) {
-            return [];
-        }
-        $raw = $args['tags'];
-        if (! is_array($raw) || ! array_is_list($raw)) {
-            throw new ToolRefusalException('board_create_card: `tags` must be a list of strings');
-        }
-        $tags = [];
-        foreach ($raw as $tag) {
-            if (! is_string($tag) || $tag === '') {
-                throw new ToolRefusalException('board_create_card: `tags` entries must be non-empty strings');
-            }
-            // Charset constraint (mirrors the idem-key posture): a tag outside
-            // printable ASCII folds differently under the ASCII casefold below
-            // than under a Unicode-aware driver collation, and a kanban
-            // tag-search metacharacter (" * _ %) mis-splits or
-            // wildcard-over-matches the tokenizer.
-            // `D` anchor: PCRE `$` otherwise matches before a trailing "\n", so a
-            // "tag\n" would pass — self-contained, not reliant on TrimStrings.
-            if (preg_match('/^[\x20-\x7E]+$/D', $tag) !== 1 || strpbrk($tag, '"*_%') !== false) {
-                throw new ToolRefusalException("board_create_card: the tag `{$tag}` contains a character outside printable ASCII or a kanban tag-search metacharacter (\" * _ %) — these defeat the case-insensitive reserved-tag guard or mis-match the kanban tokenizer");
-            }
-            // Casefold the reserved match: whether the backing tag search folds
-            // case is a per-driver collation fact (see class docblock), so refuse
-            // every case variant (IDEM:… reaches the lowercase idem probe on a
-            // folding backend). Safe now the charset is ASCII-constrained.
-            $folded = strtolower(trim($tag));
-            foreach (self::RESERVED_PREFIXES as $prefix) {
-                if (str_starts_with($folded, $prefix)) {
-                    throw new ToolRefusalException("board_create_card: the tag `{$tag}` uses the reserved prefix `{$prefix}` and cannot be caller-supplied (provenance/correlation/adoption tags are bridge-stamped)");
-                }
-            }
-            if (in_array($folded, self::RESERVED_BARE, true)) {
-                throw new ToolRefusalException("board_create_card: the tag `{$tag}` is reserved — tool-created cards are born untriaged by design (they surface to the triage pass)");
-            }
-            $tags[] = $tag;
-        }
-
-        return $tags;
     }
 
     /**

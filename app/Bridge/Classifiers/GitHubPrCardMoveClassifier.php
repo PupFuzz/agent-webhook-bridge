@@ -12,6 +12,7 @@ use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\DlTokenGrammar;
+use App\Bridge\Support\NoCloseGrammar;
 use App\Bridge\Support\RevertGrammar;
 use App\Bridge\Writeback\CardTokenVerdict;
 use App\Bridge\Writeback\PrOutcome;
@@ -625,6 +626,13 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      *      - `Closes card#<id>` — closes exactly the card it names, which is why the set
      *        is FILTERED rather than accepted or rejected whole.
      *
+     * ⛔ A `[no-close]` TITLE TAKES NEITHER ROUTE EITHER (card#8344 / DL-327), and it is
+     * refused in the same two authorities for the same lockstep reason: the author's
+     * declaration empties {@see ClosureGrammar}'s accept-set at its choke point and is a
+     * term in {@see PrOutcome::mergeClosesCard()}. It is the one refusal here that no
+     * predicate over the ARTIFACT could have derived — a PR that cites a card it does not
+     * finish is, on the branch and in the diff, indistinguishable from one that does.
+     *
      * ⛔ A REVERT TAKES NEITHER ROUTE (card#8306), and this filter is deliberately NOT
      * where that is decided. The refusal lives inside the two authorities the line below
      * ORs together — {@see ClosureGrammar} subtracts the quoted original title,
@@ -684,6 +692,14 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
      * the title would send them to rewrite prose when the actual answer is that their
      * branch is called `fix/streaming-timeout`.
      *
+     * IT NAMES THE `[no-close]` MARKER WHEN THAT IS THE REASON (card#8344), for the reason
+     * the revert arm below exists: the default clauses are FALSE about a marked PR. A
+     * `[no-close]` PR is usually built ON the card's own branch — that is what makes the
+     * marker necessary at all — so telling its author that the ref does not name the card
+     * would send them to rename a branch in order to undo a refusal they deliberately
+     * requested. {@see NoCloseGrammar::describeRefusal()} owns the sentence, so
+     * `bridge:reconcile`'s skip line renders the identical one.
+     *
      * IT NAMES THE REVERT WHEN THAT IS THE REASON (card#8306), because otherwise this line
      * is FALSE about exactly the subject the revert refusal creates. Its two clauses assert
      * that the ref does not name the card and the title carries no closing form — on a
@@ -714,16 +730,29 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         // why the reason is spliced as a clause and the revert paragraph is appended after
         // the machine-readable tag rather than in place of it: this change adds a case, it
         // does not restyle an operator-facing line every install already greps.
+        // THE MARKER ARM IS ASKED FIRST (card#8344), and the order carries a judgement rather
+        // than a preference: both arms can be true at once only for a HAND-MADE revert whose
+        // author typed the marker OUTSIDE the quotes (GitHub's own mint puts everything it
+        // copies inside them, where `NoCloseGrammar` does not read it). There, the author's
+        // explicit declaration is the reason the operator needs — the revert sentence would
+        // send them to look at a mechanism when the answer is that they asked for this.
+        $marked = NoCloseGrammar::marks($title);
         $isRevert = RevertGrammar::isRevert($title, $head);
-        $why = $isRevert
-            ? 'this merge takes NEITHER closure route'
-            : 'nothing in this merge claims that work is done: the HEAD BRANCH REF does not name '
+        $why = match (true) {
+            $marked => 'the TITLE declares this PR does not finish '.$them,
+            $isRevert => 'this merge takes NEITHER closure route',
+            default => 'nothing in this merge claims that work is done: the HEAD BRANCH REF does not name '
                 .$them.' and the TITLE carries no closing form naming '.$them
-                .', so this PR MENTIONS the card rather than claiming its work is done';
+                .', so this PR MENTIONS the card rather than claiming its work is done',
+        };
         Log::warning("kanban_move_card: {$where} merged (outcome '{$outcome}') and correlates card(s) "
             .implode(',', $cardIds).' — but '.$why
             .': NO stage move (mention-vs-closure, DL-305/DL-308). '
-            .($isRevert ? RevertGrammar::describeRefusal().' ' : '')
+            .match (true) {
+                $marked => NoCloseGrammar::describeRefusal().' ',
+                $isRevert => RevertGrammar::describeRefusal().' ',
+                default => '',
+            }
             .'A merge moves a card on '.PrOutcome::describeClosure().'. '
             ."The card is left where it is, never moved back. Title: {$title} — head ref: {$head}");
     }

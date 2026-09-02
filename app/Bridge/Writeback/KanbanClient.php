@@ -9,10 +9,14 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * Kanban-board writeback client (DL-009/019) — sibling to the
- * provisioning-scoped KanbanProvisionClient, but for the card-move WRITE path.
- * It authenticates with a DEDICATED least-privilege writeback token (its own
- * 0600 file, NOT the broad provisioning token) so a leak is bounded to card
- * moves. Throws on non-2xx.
+ * provisioning-scoped KanbanProvisionClient, but for the board WRITE path.
+ * It authenticates with a DEDICATED writeback token (its own 0600 file, NOT the
+ * broad provisioning token), so it is NARROWER than the provisioning token.
+ * Which board permissions it carries is docs/writeback.md § 1's permission table
+ * to state, not this docblock's: the spelling here was "a leak is bounded to card
+ * moves", which has been wrong since the first non-stage-only PATCH shipped and
+ * understates a leak by the whole board role the token's user holds. Throws on
+ * non-2xx.
  *
  * It also owns the board-correlation READ (the search that both finders share),
  * and that is the one place it deviates from "thin verb-only client + caller
@@ -120,15 +124,42 @@ final class KanbanClient
         return $rows;
     }
 
+    /**
+     * WRITE A FLAT FIELD SET ONTO A CARD — the one PATCH primitive the narrow write
+     * verbs below are expressed in (card#8378). `PATCH /tasks/{id}.json` with a FLAT
+     * body: kanban DL-219 dropped the `{"task":{…}}` wrapper and now strict-rejects a
+     * top-level `task` key. Throws on non-2xx.
+     *
+     * ⛔ THIS AUTHORIZES NOTHING. It is a thin verb like every other write here — WHICH
+     * fields a caller may write, and whether that caller may write this card at all, is
+     * the CALLER's to establish before calling (`board_correct_card` allow-lists the
+     * field set and proves ownership off a board-scoped row first). A guard here would
+     * be in the wrong place: it cannot see the authority, only the payload.
+     *
+     * ⚠ Two kanban field semantics ride on this and neither is negotiable from here:
+     * `payload` MERGES per key (kanban #2180 — so a delta patch preserves the custom
+     * fields it omits, which is what {@see stampCorrelationRefs} relies on), while
+     * `tags` is REPLACED WHOLESALE, so a caller writing tags must re-send every tag the
+     * card is to keep. {@see archiveCard} deliberately does NOT route through here: it
+     * sends the top-level `_action` CONTROL key rather than a field, and reads its own
+     * response to confirm the write applied.
+     *
+     * @param  array<string, mixed>  $fields
+     */
+    public function patchCard(int $cardId, array $fields): void
+    {
+        $this->http()->patch("/tasks/{$cardId}.json", $fields)->throw();
+    }
+
     /** Move the card to a workflow stage (column-only; never touches payload/other fields). */
     public function moveCard(int $cardId, int $stageId): void
     {
-        $this->http()->patch("/tasks/{$cardId}.json", ['workflow_stage_id' => $stageId])->throw();
+        $this->patchCard($cardId, ['workflow_stage_id' => $stageId]);
     }
 
     /**
      * Stamp correlation refs (dl_number / pr_number / pr_url) onto a card's payload — a DELTA
-     * PATCH that relies on the kanban per-key payload merge (kanban #2180): only the
+     * patch that relies on the per-key payload merge {@see patchCard} owns: only the
      * keys in $refs are written; every other custom field is left as-is (and a
      * concurrent edit to one survives). Distinct from {@see moveCard}, which stays
      * column-only — the add-if-missing decision is the caller's (from the card it
@@ -138,20 +169,20 @@ final class KanbanClient
      */
     public function stampCorrelationRefs(int $cardId, array $refs): void
     {
-        $this->http()->patch("/tasks/{$cardId}.json", ['payload' => $refs])->throw();
+        $this->patchCard($cardId, ['payload' => $refs]);
     }
 
     /**
      * Set (or clear) a card's `block_reason` field (DL-193) — a plain fillable
-     * field write, so a flat `{"block_reason":…}` PATCH (kanban DL-219 dropped the
-     * `{"task":{…}}` wrapper and now strict-rejects a top-level `task` key), mirroring
-     * {@see moveCard} (which is column-only and never touches this field). Passing null
+     * field write through {@see patchCard} (which owns the flat-body contract),
+     * mirroring {@see moveCard} (which is column-only and never touches this
+     * field). Passing null
      * clears the reason. The add-if-missing / clear-if-ours decision is the caller's
      * (from the card it already read); this is the thin write verb. Throws on non-2xx.
      */
     public function setBlockReason(int $cardId, ?string $reason): void
     {
-        $this->http()->patch("/tasks/{$cardId}.json", ['block_reason' => $reason])->throw();
+        $this->patchCard($cardId, ['block_reason' => $reason]);
     }
 
     /**

@@ -137,6 +137,50 @@ class ReleaseTagGateTest extends TestCase
     }
 
     /**
+     * ⭐ THE SOURCE-STAGE GUARD IS A SECOND DOOR INTO THE TERMINAL MOVE, and nothing else
+     * in this repo can see it (card#8344 / DL-327). `[no-close]` withholds the writeback's
+     * move to Shipped, so a marked PR's card never reaches that stage — but this workflow
+     * hands the toolkit's `promote` action the same card's DL and PR stamps, and WITHOUT
+     * `shipped-stage-ids` that tool promotes every DL/PR-matched card whatever stage it is
+     * in. Deleting this one input therefore re-opens, from CI, exactly the terminal move
+     * the marker exists to prevent — silently and greenly, because no bridge code, no
+     * bridge test and no writeback config is on that path.
+     *
+     * ⚠ WHAT THIS CANNOT ESTABLISH, named rather than implied: that the value EQUALS the
+     * mapping's `stages.merged`. That id lives in the operator's `writeback.json`, outside
+     * this repo, so no assertion here can read it; pinning the literal would also mint the
+     * second copy of a toolkit-owned number this class's own bound refuses. What is
+     * asserted is the shape that makes the guard a guard — present, non-empty, and a list
+     * of stage ids rather than prose — which is the whole of the failure mode (a removed
+     * or blanked input is the one that promotes everything). The equality is declared in
+     * `CLAUDE_DECISIONS.md` DL-327 § *Bounds* and is unchecked by construction.
+     */
+    public function test_the_promote_step_pins_the_shipped_source_stage(): void
+    {
+        $steps = $this->steps();
+        $promote = $this->indexOfStepUsing($steps, self::PROMOTE_ACTION);
+        $this->assertNotNull($promote, sprintf('no step in %s uses %s@…', self::WORKFLOW, self::PROMOTE_ACTION));
+
+        $with = $steps[$promote]['with'] ?? null;
+        $this->assertIsArray($with, 'the promote step passes no inputs at all');
+
+        $this->assertArrayHasKey('shipped-stage-ids', $with,
+            'the promote step no longer pins a SOURCE stage, so a DL/PR-matched card is promoted to Released from ANY stage — '
+            .'including one the writeback deliberately declined to move (a `[no-close]` PR, a revert, a pinned card). '
+            .'Restore it with the mapping\'s Shipped stage id.');
+
+        $ids = array_map('trim', explode(',', (string) $with['shipped-stage-ids']));
+        $ids = array_values(array_filter($ids, fn (string $v) => $v !== ''));
+        $this->assertNotEmpty($ids,
+            'shipped-stage-ids is blank — the toolkit reads a blank as "no source-stage guard", which is byte-identical to deleting the input');
+
+        foreach ($ids as $id) {
+            $this->assertMatchesRegularExpression('/^[0-9]+$/', $id,
+                "shipped-stage-ids carries '{$id}', which is not a stage id — the guard would match no stage and skip every card");
+        }
+    }
+
+    /**
      * The gate DECLARES which tag it waits for; this CHECKS that declaration is
      * true of this repo's own tagger. Without it the declaration is a comment.
      *
