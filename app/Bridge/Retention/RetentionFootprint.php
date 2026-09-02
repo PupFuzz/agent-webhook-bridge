@@ -33,9 +33,25 @@ final class RetentionFootprint
         public readonly ?int $payloadBytes,
         /**
          * The whole database's size as the ENGINE reports it — not a sum over the bridge's
-         * own tables. Null where this driver reports none. It is the engine's own
-         * accounting (SQLite's page count; MariaDB's `information_schema` estimate), which
-         * is what an operator comparing it against `du` is looking at.
+         * own tables. Null where this driver reports none.
+         *
+         * ⛔ IT IS NOT THE SAME MEASUREMENT AS {@see $payloadBytes}, AND IT IS NOT
+         * GUARANTEED TO CONTAIN IT. The two come from different sources on different
+         * bases, and only SQLite makes them comparable:
+         *
+         *  - SQLite: `page_count * page_size`, the whole database FILE. Every stored
+         *    payload byte is physically inside it, so `payloadBytes <= storeBytes` holds
+         *    by construction, and this is also what `du` on that file reports.
+         *  - MariaDB: `sum(data_length + index_length)` from `information_schema.tables`
+         *    for this schema — the engine's own accounting of what it has ALLOCATED, not
+         *    a read of the bytes this app wrote, and covering one schema of a datadir
+         *    that also holds redo/undo and every other schema. It therefore matches
+         *    neither `du` nor a live byte sum, and a payload sum taken at this instant
+         *    can exceed it.
+         *
+         * A consumer that divides one by the other owns the disagreement (DL-331):
+         * `RetentionPostureCheck` drops the share and names the mismatch rather than
+         * printing a figure above 100%.
          */
         public readonly ?int $storeBytes,
         /** Age of the oldest retained row in days; null when there are no rows. */

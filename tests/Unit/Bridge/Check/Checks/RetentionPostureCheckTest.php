@@ -46,6 +46,13 @@ use Tests\TestCase;
  *     to a green one confirming the posture they were warned about. The store line's
  *     `ok`/`warn` split is the age verdict and nothing else, so it is the one arm where
  *     the severity IS the finding.
+ *  4. THE INVERTED-SHARE ARM'S MESSAGE — the one leg here whose text the corpus COULD
+ *     have carried, kept out of it on purpose. Every golden fixture is an operator-
+ *     distinguishable INSTALL shape, and this arm is not one: it is reached when the
+ *     ENGINE's size figure disagrees with a live payload scan, a property of the storage
+ *     accounting rather than of anything an operator configured. A fixture for it would
+ *     pin numbers chosen only to disagree, which asserts the pin. Its control is pinned
+ *     on the boundary here for the same reason.
  */
 class RetentionPostureCheckTest extends TestCase
 {
@@ -352,6 +359,50 @@ class RetentionPostureCheckTest extends TestCase
         // The two shapes an inference would take: a zero, or a share computed from one.
         $this->assertStringNotContainsString('0 B', $line['message']);
         $this->assertStringNotContainsString('% of the database', $line['message']);
+    }
+
+    /**
+     * ⛔ NOTHING BOUNDS THE SHARE AT 100%, because it is a quotient across two accounting
+     * bases: a live `sum(length(payload))` over this table's rows, divided by whatever the
+     * ENGINE reports for the whole database. Only SQLite makes the numerator a subset of
+     * the denominator by construction; MariaDB's is `information_schema`'s allocation
+     * accounting, and nothing in either source guarantees one contains the other
+     * (`RetentionFootprint`, DL-331). Before this arm the renderer printed the quotient
+     * unconditionally — a footprint of 937426944 inside a reported 400000000 rendered
+     * `~234% of the database`, a capacity figure an operator cannot act on and cannot
+     * tell from a real one.
+     */
+    public function test_a_payload_sum_larger_than_the_reported_database_prints_no_share(): void
+    {
+        Cache::swap(new Repository(new ArrayStore));
+
+        $line = $this->costLineFrom($this->messagesFrom($this->storeHolding(payloadBytes: 937426944, storeBytes: 400000000)));
+
+        // Both MEASUREMENTS still print — it is only their ratio that is dropped.
+        $this->assertStringContainsString('database 381.5 MiB', $line['message']);
+        $this->assertStringContainsString('11987 still carry a payload holding 894.0 MiB', $line['message']);
+        $this->assertStringContainsString('MORE than the database size above, so no share is shown', $line['message']);
+        $this->assertStringNotContainsString('% of the database', $line['message']);
+        // The disagreement is a measurement-quality note, not a posture: the store's
+        // severity is the age verdict and nothing else.
+        $this->assertSame(Severity::Ok, $line['severity']);
+    }
+
+    /**
+     * The discriminating control, pinned ON THE BOUNDARY rather than comfortably inside
+     * it: a payload sum exactly EQUAL to the reported database still prints its share, so
+     * the arm above is `>` and not a `>=` that would silently swallow the one case where
+     * the two figures agree perfectly. Without it, a renderer that had simply stopped
+     * printing shares would satisfy the assertions above.
+     */
+    public function test_a_payload_sum_equal_to_the_reported_database_still_prints_its_share(): void
+    {
+        Cache::swap(new Repository(new ArrayStore));
+
+        $line = $this->costLineFrom($this->messagesFrom($this->storeHolding(payloadBytes: 1288490188, storeBytes: 1288490188)));
+
+        $this->assertStringContainsString('(~100% of the database)', $line['message']);
+        $this->assertStringNotContainsString('MORE than the database size', $line['message']);
     }
 
     /**

@@ -195,7 +195,26 @@ final class RetentionPostureCheck implements Check
             .$retention->olderThanDays.'d` drains it in one unbounded pass.');
     }
 
-    /** The payload clause of the store line — the share is dropped, never guessed, when either term is absent. */
+    /**
+     * The payload clause of the store line — the share is dropped, never guessed, when
+     * either term is absent OR when the two terms disagree.
+     *
+     * ⛔ THE SHARE IS A QUOTIENT ACROSS TWO ACCOUNTING BASES AND NOTHING BOUNDS IT AT
+     * 100%. The numerator is a LIVE byte sum this app scans out of its own rows; the
+     * denominator is whatever the ENGINE reports for the database, and only on SQLite is
+     * the numerator inside the denominator by construction (`page_count * page_size` is
+     * the whole file, and every stored byte is in it). On MariaDB the denominator is
+     * `information_schema`'s per-table figures for this schema — the engine's own
+     * accounting of allocated pages, not a read of the bytes this app wrote — and nothing
+     * in either source guarantees one contains the other; see {@see RetentionFootprint}
+     * and DL-331. `~234% of the database` is not a posture an operator can act on, so the
+     * share is dropped and the disagreement is NAMED instead. Both byte figures still
+     * print, because both are measurements — it is only their ratio that is not.
+     *
+     * The clause is not a `warn`: the store's posture is what the age verdict decides,
+     * and an engine whose size figure disagrees with a live scan says nothing about
+     * whether retention is bounded.
+     */
     private function payloadShare(RetentionFootprint $store): string
     {
         if ($store->payloadBytes === null) {
@@ -203,9 +222,14 @@ final class RetentionPostureCheck implements Check
         }
         $held = $store->rowsWithPayload.' still carry a payload holding '.self::bytes($store->payloadBytes);
 
-        return $store->storeBytes === null
-            ? $held
-            : $held.' (~'.(int) round($store->payloadBytes / $store->storeBytes * 100).'% of the database)';
+        if ($store->storeBytes === null) {
+            return $held;
+        }
+        if ($store->payloadBytes > $store->storeBytes) {
+            return $held.' (MORE than the database size above, so no share is shown — the payload sum is a live scan of the rows and the size is the engine\'s own accounting, and the two do not have to agree)';
+        }
+
+        return $held.' (~'.(int) round($store->payloadBytes / $store->storeBytes * 100).'% of the database)';
     }
 
     /** The cost half of the nulling-OFF warning — the sentence the 894 MB install never got. */

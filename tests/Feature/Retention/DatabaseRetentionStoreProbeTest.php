@@ -26,6 +26,17 @@ use Tests\TestCase;
  * this app wrote — and because it is the assertion that catches SQLite's `length()`
  * counting CHARACTERS: a payload with one two-byte character is the discriminator, and
  * the naive spelling under-reports it by exactly that one byte.
+ *
+ * ⛔ ONE ARM OF THE PROBE HAS NO TEST HERE, AND THE ABSENCE IS DELIBERATE RATHER THAN AN
+ * OVERSIGHT — the rows-but-no-answerable-`min(received_at)` throw. Reaching it needs the
+ * aggregate to answer a row count beside a null timestamp, which the real schema cannot
+ * produce (`received_at` is NOT NULL and DB-defaulted), and both ways to force it are
+ * worse than the gap: DDL inside a test IMPLICITLY COMMITS on MariaDB and would dissolve
+ * `RefreshDatabase`'s transaction for every test after it, and mocking the `DB` facade
+ * would replace the live connection this class exists to exercise. The arm is
+ * driver-boundary narrowing that now FAILS LOUD where it previously produced a wrong
+ * verdict silently (an age of NONE reads as an empty store); it is justified by reading,
+ * and this paragraph is the disclosure of that rather than a claim it is covered.
  */
 class DatabaseRetentionStoreProbeTest extends TestCase
 {
@@ -117,6 +128,78 @@ class DatabaseRetentionStoreProbeTest extends TestCase
 
         $this->assertNotNull($bytes);
         $this->assertGreaterThan(0, $bytes);
+    }
+
+    /**
+     * ⛔ THE CHECK DIVIDES THESE TWO FIGURES, AND THIS IS THE LEG THAT ANSWERS — PER LIVE
+     * ENGINE — WHETHER THE NUMERATOR IS EVEN INSIDE THE DENOMINATOR.
+     *
+     * 200 rows of 64 KiB is far above any inline-row limit, so on InnoDB every one of
+     * these payloads is stored OFF-PAGE rather than in the clustered index record. That
+     * matters because the two figures come from different sources: the numerator is a
+     * live `sum(length(payload))` over these rows, and the MariaDB denominator is
+     * `information_schema`'s per-table ALLOCATION accounting. Whether that accounting
+     * covers off-page LOB pages is a property of the engine, not of this code, and no
+     * MariaDB was reachable where this was written — so the relation is not settled from
+     * reading, it is ASSERTED here and answered by whichever job runs the class.
+     *
+     * ⚠ A RED HERE ON A MariaDB JOB IS THE FINDING, NOT A BROKEN TEST: it would say that
+     * engine's denominator does not contain the numerator, and the correct response is to
+     * scope this assertion to the engines where it holds and record the measurement in
+     * DL-331 — never to relax it into something that passes everywhere. The check itself
+     * does not DEPEND on the answer either way (it drops the share when the two disagree
+     * — `RetentionPostureCheckTest`); what this leg decides is whether that drop arm is
+     * known-live on a real engine or purely a boundary guard.
+     */
+    public function test_the_payload_sum_does_not_exceed_the_size_the_engine_reports(): void
+    {
+        $written = $this->bulkPayloads(200, 65536);
+
+        $footprint = (new DatabaseRetentionStoreProbe)->measure();
+
+        // The numerator first, and exactly: `length()` on an off-page LOB must still
+        // answer for the whole value. Without this the comparison below could be
+        // satisfied by a numerator that silently lost the off-page bytes.
+        $this->assertSame(200, $footprint->rows);
+        $this->assertSame($written, $footprint->payloadBytes, '200 payloads of exactly 64 KiB each');
+
+        $this->assertNotNull($footprint->storeBytes);
+        $this->assertLessThanOrEqual(
+            $footprint->storeBytes,
+            $footprint->payloadBytes,
+            'driver '.DB::connection()->getDriverName().': the payload sum is larger than the size this engine reports for the whole database, so the two figures are not on one basis and `RetentionPostureCheck` must drop the share (DL-331)',
+        );
+    }
+
+    /**
+     * Write `$rows` payloads of exactly `$bytesEach` bytes and return the total.
+     *
+     * THE FILLER IS VALID JSON, not an arbitrary blob: `$table->json()` is a `longtext`
+     * carrying a `json_valid()` CHECK on MariaDB, so a raw filler string is accepted on
+     * SQLite and REJECTED on the two jobs this test exists for.
+     */
+    private function bulkPayloads(int $rows, int $bytesEach): int
+    {
+        $payload = '{"blob":"'.str_repeat('a', $bytesEach - 11).'"}';
+        // Self-checking arithmetic: the assertion above is exact, so a wrong envelope
+        // width here would read as a probe defect.
+        $this->assertSame($bytesEach, strlen($payload));
+
+        $table = (new WebhookEvent)->getTable();
+        $now = now()->format('Y-m-d H:i:s.v');
+        foreach (array_chunk(range(1, $rows), 50) as $chunk) {
+            DB::table($table)->insert(array_map(fn (int $n) => [
+                'delivery_id' => 'bulk-'.$n,
+                'provider' => 'github',
+                'scope_id' => 'owner/repo',
+                'event_type' => 'push',
+                'actor_id' => '1',
+                'payload' => $payload,
+                'received_at' => $now,
+            ], $chunk));
+        }
+
+        return $rows * $bytesEach;
     }
 
     /** @param  array<string, mixed>  $payload */
