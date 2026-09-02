@@ -81,6 +81,37 @@ class KanbanClientTest extends TestCase
         $this->client()->cardRowsOnBoard(8, 5);
     }
 
+    public function test_patch_card_sends_one_flat_field_body_and_nothing_else(): void
+    {
+        // card#8378: the general PATCH primitive the narrow write verbs are expressed in.
+        // FLAT (kanban DL-219 dropped the `{"task":{…}}` wrapper and strict-rejects a
+        // top-level `task` key), and it sends the caller's field set VERBATIM — no key it
+        // was not given, and no authorization of its own (that is the caller's, and the
+        // caller here has already established the card is the seat's).
+        Http::fake(['*' => Http::response(['data' => ['id' => 5]])]);
+
+        $this->client()->patchCard(5, ['name' => 'corrected', 'tags' => ['a', 'created-by:me']]);
+
+        Http::assertSent(function (Request $r) {
+            $body = json_decode((string) $r->body(), true);
+
+            return $r->method() === 'PATCH'
+                && str_contains($r->url(), '/tasks/5.json')
+                && $body === ['name' => 'corrected', 'tags' => ['a', 'created-by:me']];
+        });
+    }
+
+    public function test_patch_card_throws_on_non_2xx_so_a_refused_write_is_never_read_as_applied(): void
+    {
+        // A 403/404 must reach the caller as a failure it can name, not as a silent
+        // success: `board_correct_card` answers `corrected: true` off the absence of a
+        // throw here.
+        Http::fake(['*' => Http::response('nope', 403)]);
+
+        $this->expectException(RequestException::class);
+        $this->client()->patchCard(5, ['name' => 'x']);
+    }
+
     public function test_move_card_patches_workflow_stage_only(): void
     {
         Http::fake(['*' => Http::response(['data' => ['id' => 5]])]);

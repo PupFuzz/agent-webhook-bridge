@@ -34,6 +34,16 @@
 # the reason on stderr and prints no sha — an unreadable pairing is not a clean
 # one, and a step that cannot say what its base IS must not report a verdict.
 #
+# ⚑ THE PRECONDITION IS MEASURED, NOT ASSUMED: GitHub NEVER FAST-FORWARDS
+# `refs/pull/<n>/merge`. The obvious worry about requiring two parents is a PR
+# whose branch has already merged the base — a fast-forward would leave a
+# one-parent commit and this script would refuse every such PR. Checked
+# 2026-09-02 against the two open PRs on this repo in exactly that state: #635
+# (merge 570d1dc, parents e30d34a/bd46c3b) and #630 (merge 6286dc9, parents
+# 7a11085/936a98d) are both TWO-parent merges while `git merge-base
+# --is-ancestor <base> <head>` is true for each. A plain `git merge` in a
+# fixture DOES fast-forward there, which is why the harnesses pass `--no-ff`.
+#
 # EXIT CODES (distinct so a caller — and the test harness — can tell the shapes
 # apart; every one of them means "no sha was printed"):
 #   2  no PR head sha argument

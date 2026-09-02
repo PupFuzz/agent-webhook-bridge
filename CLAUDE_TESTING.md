@@ -245,6 +245,15 @@ merge, 5 a merge of some other head) — callers propagate it under `set -e` —
 diagnostic line as a revision. The octopus-merge case is there because `HEAD^1` is readable and
 wrong on a three-parent commit, so "exactly two" is asserted rather than "is a merge".
 
+⚑ **Every workflow fixture merges with `--no-ff`, and that is not cosmetic.** Requiring two parents
+raises one obvious worry — a PR whose branch has already merged the base — and it was measured
+rather than argued: GitHub **never fast-forwards** `refs/pull/<n>/merge`. Checked 2026-09-02 against
+the two open PRs on this repo in exactly that state (#635, merge `570d1dc`; #630, merge `6286dc9`),
+both are two-parent merges while `git merge-base --is-ancestor <base> <head>` is true for each. A
+plain `git merge` in a fixture *does* fast-forward there, and the resulting one-parent work tree is
+a tree GitHub would never hand a gate — so a fixture without `--no-ff` tests a shape that does not
+exist, and the script refuses it, correctly.
+
 ## The channel-server live-state sandbox (DL-269)
 
 `examples/channel-servers/tests/` spawns the REAL channel server, and the server's
