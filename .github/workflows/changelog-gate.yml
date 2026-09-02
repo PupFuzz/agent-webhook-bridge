@@ -39,6 +39,13 @@ name: CHANGELOG gate
 # an innocent PR. A SCOPE diff's two ends must be ONE snapshot or the verdict is
 # about a tree nobody pushed, so both scope diffs run `$BASE` -> the WORK TREE.
 #
+# That derivation is also what CLOSES card#8441 — whether the two scope
+# predicates should be three-dot — for BOTH steps, rather than a change of
+# spelling: `HEAD^1` is an ancestor of `HEAD`, so `...` is a no-op on this
+# pairing. The FEATURE step's predicate comment owns that ruling and the one
+# cell where a branch-tip three-dot range would differ; DL-295's card#8527
+# amendment owns the direction and the operator approval.
+#
 # `$HEAD` — the PR BRANCH TIP — is still an input, and is a different question,
 # not a second spelling of the same one. The pre-fold diagnosis asks where the
 # branch STARTED and what the branch ADDS to the base's text; both are
@@ -63,8 +70,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # REQUIRED: both steps diff base..head, and the feature-PR step also
-          # reads the changelog AT THE BASE. A shallow clone has neither.
+          # REQUIRED, and by more than one reader, so a later "speed up the
+          # checkout" has to answer all of them: both steps diff the DERIVED base
+          # (`HEAD^1`) against the work tree, so a clone shallow enough to
+          # truncate the merge's first parent has no base at all; the feature
+          # step also reads the changelog AT THAT BASE through `git show`, and
+          # its pre-fold diagnosis walks the PR BRANCH's own history for the fork
+          # point. A shallow clone has none of the three.
           fetch-depth: 0
 
       - name: Release PR — VERSION has a CHANGELOG section that fits the release-body limit

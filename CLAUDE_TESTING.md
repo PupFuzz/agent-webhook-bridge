@@ -219,9 +219,9 @@ fetch at all, and a pre-computed file would assert the fixture.
   merge whose second parent is not this PR's head, the step propagates
   `bin/pr-base-snapshot.sh`'s refusal (exit 4 and 5) instead of substituting a payload field or a
   `merge-base` fork point. The workflow comment owns why `merge-base` would be the wrong
-  correction; it is **inert** on every other case in this file, which is exactly what makes it
-  dangerous — measured: replacing the derivation with `git merge-base HEAD^1 HEAD^2` reds only the
-  two cases above, out of 58 across the three workflow-harness classes.
+  correction, and § *The PR base snapshot* below owns the measured figure for how much of the
+  harness would notice it — deliberately not restated here, because that figure moves with every
+  merge into this branch and the first copy of it drifted inside one merge round.
 - The step calls the real `bin/decision-log.py` and the real `bin/pr-base-snapshot.sh`, copied into
   the work tree at the repo-relative paths the step names, so a change to either reds here as well
   as in `bin/test_decision_log.py` / `PrBaseSnapshotTest`.
@@ -244,6 +244,45 @@ merge, 5 a merge of some other head) — callers propagate it under `set -e` —
 **stdout is empty** on every refusal, since a caller capturing `$( )` would otherwise treat a
 diagnostic line as a revision. The octopus-merge case is there because `HEAD^1` is readable and
 wrong on a three-parent commit, so "exactly two" is asserted rather than "is a merge".
+
+⚠ **One case in that class pins the DERIVATION and the other six pin the refusals, and the split
+matters**: every refusal fixture is linear — the base an ancestor of the head — where `HEAD^1` and
+`git merge-base HEAD^1 HEAD^2` are the same commit, so the class was inert to the one substitution
+the script exists not to be until
+`test_it_reads_the_recorded_parent_rather_than_re_deriving_a_fork_point` was added. It builds PR
+#640's shape (the base branch moves after the fork) and asserts the fork point differs from the
+recorded parent *before* asserting what the script prints, so it cannot pass on a fixture where the
+two coincide.
+
+### The mutation controls, and how to RE-DERIVE them rather than cite them
+
+**This section is the one owner of these figures.** `CLAUDE_DECISIONS.md` (DL-295's card#8527
+amendment), `docs/CHANGELOG.md` and the workflow comments point here instead of restating a count:
+the denominator is the size of three test classes and moves with every merge, and the first copy of
+it was falsified by the very merge round that carried it. **Re-run all three before quoting any of
+them; the figures below are what the recipe printed at `abef6f0`, not a property of the design.**
+
+| mutation | apply it to | measured at `abef6f0` |
+| --- | --- | --- |
+| **the fork-point rewrite** — replace `bin/pr-base-snapshot.sh`'s last line with `git merge-base "$base_parent" "$head_parent"` | the derivation all four gates share | **8 red of 75**: `DlCollisionGateTest` 1/12, `ChangelogGateTest` 6/56, `PrBaseSnapshotTest` 1/7 |
+| **the retired pairing** — `diff --name-only "$BASE" "$HEAD"` at both `CHANGED=$(git … diff --name-only "$BASE" HEAD)` predicates in `changelog-gate.yml`, one per step | what card#8441 was filed against | **2 red of 56** in `ChangelogGateTest`: the release-step and feature-step cells, the first failing with an oversize `[1.1.0]` the branch never wrote |
+| **the branch-tip three-dot** — `diff --name-only "$BASE...$HEAD"` at the feature-step predicate | PR #642's superseded spelling | **1 red of 56** in `ChangelogGateTest`: `test_a_change_the_base_already_carries_identically_is_not_in_scope`, the only cell where that range and the merge's delta disagree |
+
+Denominator: run `vendor/bin/phpunit` once per file over
+`tests/Feature/Workflows/DlCollisionGateTest.php`,
+`tests/Feature/Workflows/ChangelogGateTest.php` and
+`tests/Feature/Workflows/PrBaseSnapshotTest.php`, and take each class's count from its own run —
+those three are the classes that execute a base-snapshot derivation, and the population is
+re-counted, never carried. Restore the mutated file by `cp` from a
+copy taken first and `cmp` it back, not by hand.
+
+Two readings the numerator does **not** support, stated because a bare count invites both. Six of
+the eight reds under the fork-point rewrite are not a measure of that rewrite's blast radius on
+CI: three are card#8339's pre-fold cases, which red because a fork-point base changes what the
+diagnosis reads, and three are the card#8441/8527 cells that assert the derived base directly. And
+the rewrite stays **inert on every other case in all three classes**, which is exactly what made it
+look like a harmless simplification — the reason the distinction is written out at the call sites
+rather than left to the diff.
 
 ⚑ **Every workflow fixture merges with `--no-ff`, and that is not cosmetic.** Requiring two parents
 raises one obvious worry — a PR whose branch has already merged the base — and it was measured
