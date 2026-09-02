@@ -301,8 +301,10 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
     }
 
     /**
-     * Restamp the card name of a retitled dependabot PR (DL-328) — the ONLY name write the
-     * bridge makes after birth, and the answer to a card asserting a version that never
+     * Restamp the card name of a retitled dependabot PR (DL-328) — the FIRST name write the
+     * bridge made after birth (DL-341 added the coord-card twin,
+     * {@see KanbanCoordCardHandler::restampNames}, so "the only one" is no longer true and
+     * is not restated here), and the answer to a card asserting a version that never
      * shipped (dependabot retitles its PR in place when it retargets a bump).
      *
      * ⭐ THE OWNERSHIP TEST IS BYTE-EQUALITY WITH WHAT THE BRIDGE ITSELF STAMPED, and it is

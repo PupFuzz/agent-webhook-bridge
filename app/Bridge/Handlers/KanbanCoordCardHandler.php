@@ -9,6 +9,7 @@ use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\RefusalContext;
 use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\CoordCardLanePlacement;
+use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -24,13 +25,34 @@ use Illuminate\Support\Facades\Log;
  * `reconcile_simple_board` pass. The reconcile stays the backstop: it adopts the
  * bridge-created card by its `id:<sid>` tag, so the bridge stays REGISTRY-FREE.
  *
- * CREATE-ONLY — this handler only ever creates; it never moves or archives a card.
- * The bridge as a whole is no longer create-only, though: its sibling
+ * MOVE-LESS — this handler creates and, since DL-341, RESTAMPS A NAME; it never moves
+ * or archives a card. (It was CREATE-ONLY through DL-198; the restamp is still not a
+ * move.) The bridge as a whole moves coord cards elsewhere: the sibling
  * {@see KanbanCoordCardMoveHandler} (DL-200, opt-in `move_coord_cards`) carries the
  * close→terminal / reopen→revive column moves, and under roundtable #18's partition
  * the reconcile DEFERS to it as the backstop. The reconcile still owns column and
  * lifecycle wherever that opt-in is off. Archival remains the reconcile's alone.
- * Correlation + idempotency key on the `id:<sid>` TAG (the
+ *
+ * The two arms this handler carries, selected by the target's `disposition`:
+ *  - ABSENT (the DL-198 default) → the create-if-absent path described below.
+ *  - {@see RENAMED_DISPOSITION} (DL-341, the upstream retitle) → restamp the correlated
+ *    card's NAME and write nothing else, and only on a card whose name is still
+ *    byte-identical to the title the bridge stamped ({@see restampNames} owns that test
+ *    and why it is the only safe one). No card → nothing to restamp, and never a create.
+ *
+ * ⚠ NEITHER ARM CONSULTS `PinGuard` DIRECTLY, and one of them reaches it anyway —
+ * state both, because "this handler does not consult the pin" reads as "no write this
+ * handler makes is guarded" and that is false. The CREATE arm's post-create duplicate
+ * collapse is guarded: {@see CardCollapse::toSurvivor} took the consult INTO the kernel
+ * at DL-340 (card#8523), so a pinned raced twin is not archived on this path even though
+ * no line here asks. DL-341's RESTAMP is genuinely unguarded and inherits the same
+ * blindness DL-328's has: a PINNED card whose name the bridge still owns is restamped —
+ * the pin's rulings cover a card's STAGE and its LIFECYCLE, and a `{name}`-only write is
+ * neither. Read that as the roster the pin rulings cover, never as "every write on this
+ * handler". Tracked with the rest of the pin-blind-writer class on card#8557 — the
+ * successor that took the class over as PR #649 closed card#8523.
+ *
+ * THE CREATE ARM, in full. Correlation + idempotency key on the `id:<sid>` TAG (the
  * locked contract adoption key): if a card already carries it, skip — which covers
  * redelivery, opened+reopened, AND the bridge-vs-reconcile race (both movers key on
  * the same tag). That read is LIVE-only, so a fourth duplicate source needs its own
@@ -88,6 +110,19 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
      * would also have to partition on. Class item card#7222.
      */
     private const REROUTE_ARCHIVED_TAG = 'coord:reroute-archived';
+
+    /**
+     * The MOVE-LESS `disposition` of a retitled coordination issue (DL-341) — the sibling
+     * of DL-328's `KanbanDependabotCardHandler::RENAMED_OUTCOME`, spelled in this family's
+     * own vocabulary (`disposition`, as {@see KanbanCoordCardMoveHandler} uses) because a
+     * coord-card target carries no `outcome`. It is a CONSTANT rather than a literal in two
+     * files because it is the seam between the classifier that emits the target and the
+     * handler that reads it, and it FAILS CLOSED on a typo in only one direction worth
+     * stating: a misspelling on either side degrades the target to the CREATE arm, whose
+     * `id:<sid>` pre-check finds the existing card and SKIPS — a no-op, not a duplicate
+     * mint. The constant is what keeps that from being the thing anyone has to reason about.
+     */
+    public const RENAMED_DISPOSITION = 'renamed';
 
     private WritebackAlertNotifier $alerts;
 
@@ -171,6 +206,16 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
         $tag = $isPrefixed ? "id:{$sid}" : null;
         $client = WritebackClientFactory::make();   // throws (→ 5xx) on a missing/insecure token
         try {
+            // Upstream RETITLE (DL-341) → restamp the name and return. Placed FIRST inside
+            // the try: everything below it decides whether to MINT a card, and this arm
+            // never mints one — it only ever corrects a name that already exists, so the
+            // create's archived-twin read and post-create collapse are not its questions.
+            if (($p['disposition'] ?? null) === self::RENAMED_DISPOSITION) {
+                $this->restampNames($client, $mapping, $tag, $p['name_from'] ?? null, $title, $repo, $issueNumber);
+
+                return;
+            }
+
             // Unified pre-check: skip if EITHER derivable key already resolves a card. The
             // tag covers redelivery / opened+reopened / the bridge-vs-reconcile race (both
             // movers key on the same tag). The by-ref key (under `all`) additionally covers
@@ -278,6 +323,117 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
                 return;
             }
             throw $e;
+        }
+    }
+
+    /**
+     * Restamp the card name of a retitled coordination issue (DL-341) — the sibling of
+     * DL-328's dependabot arm, and the second name write the bridge makes after create
+     * (DL-328's is the first). Without it a coord card keeps the title its issue carried at open forever,
+     * so every reader that keys on the card title sees a string the thread has moved on
+     * from.
+     *
+     * ⭐ THE OWNERSHIP TEST IS BYTE-EQUALITY WITH WHAT THE BRIDGE ITSELF STAMPED, and it is
+     * the reason this is not the naive "always write the upstream title onto the card" fix,
+     * which must not be built: the classifier delivers the issue title on every subsequent
+     * event, so an unconditional write would silently destroy a deliberate human rename on
+     * the next webhook — trading a stale machine name for a destroyed human one. `$nameFrom`
+     * is GitHub's `changes.title.from`: the title as it stood before this edit, which is
+     * exactly the string the bridge stamped when it minted the card. A card whose name still
+     * equals it byte for byte has been touched by nobody since; a card whose name differs by
+     * so much as a space has an author other than this bridge and is LEFT ALONE. No
+     * heuristic reads the name's shape.
+     *
+     * ⚑ IT WRITES `name` AND MOVES NOTHING, AND THAT IS A RULING, not an omission — the one
+     * the card asked to be decided and tested. `CoordLaneStages::governs()`
+     * gates the lane model on the ANCHORED TITLE (`[TASK]`), so a retitle across that prefix
+     * changes which model would govern the issue: `[QUERY] x` → `[TASK] x` makes it
+     * lane-governed, and the reverse un-governs it. Re-deriving a stage here is REFUSED for
+     * three reasons that agree: (1) a coord-card MOVE is a separate opt-in
+     * (`move_coord_cards` / `coord-card-move`, DL-200) and this arm runs under
+     * `create_coord_cards` — moving on it would make the create-family handler a mover on an
+     * opt-in that never granted one; (2) a title edit DECLARES NO LANE, so the derivation
+     * would land on `CoordLaneStages::DEFAULT_LANE` for any
+     * issue carrying no `stage:*` label and DEMOTE the card to `later` on a rename — exactly
+     * the invented sequencing decision the `coord-card-relane` family excludes the
+     * `unlabeled` action to avoid (card#6393); (3) in the un-governing direction the only
+     * available target is the mapping's FIXED `coord_card_stage_id`, which is a REWRITE of
+     * wherever the card currently sits — the very harm the lane model exists to stop.
+     * A `stage:*` label edit is what states a lane, and `coord-card-relane` already carries
+     * it. Pinned by `KanbanCoordCardHandlerTest::test_a_retitle_across_the_lane_model_gate_writes_the_name_and_never_a_stage`.
+     *
+     * ⚠ ITS BOUND, disclosed rather than papered over: the evidence lives on the RENAME
+     * EVENT. A retitle the bridge never received (it was down, or the repo opted in
+     * afterwards) leaves a card whose name matches no `from` string anyone can produce
+     * later, so this leg CANNOT repair it and deliberately does not try; the periodic
+     * reconcile is the backstop that owns already-wrong cards.
+     *
+     * A rename target with no ownership evidence — no `name_from`, no change, or no
+     * `id:<sid>` correlation key — is a deterministic CLASSIFIER bug: permanent, so it
+     * alerts + no-ops rather than throwing. It is checked HERE and not only at the emit site
+     * because a handler is a published extension point (docs/customization.md): another
+     * classifier can emit this target, and the failure this refuses is a card renamed to the
+     * WRONG string, which no later event corrects.
+     *
+     * ⚠ THE CARD SET IS BOARD- AND TAG-SCOPED, EXACTLY AS THE CREATE ARM'S PRE-CHECK IS, and
+     * is deliberately not additionally repo-attributed the way the dependabot arm's is (it
+     * has a `pr_url` to attribute by; an `id:<sid>` is not repo-qualified). So on a coord
+     * board shared by two repos, a colliding `id:QUERY-4` is separated by the byte-equality
+     * test alone. ⚠ THE SCOPE IS INHERITED FROM THE CREATE ARM; THE COST OF A COLLISION IS
+     * NOT THE SAME, and flattening the two into "inherited, not widened" would understate it:
+     * on the create arm a colliding foreign card makes the pre-check SKIP — nothing is
+     * written — while here it is a WRITE onto that other repo's card. Same correlation scope,
+     * a different failure mode, with the ownership test the only thing between them: two
+     * repos' issues would have to carry the same previous title for the wrong card to be
+     * written.
+     *
+     * ⚑ ON >1 CORRELATED CARD THIS RESTAMPS EVERY MATCHING ONE, and does NOT collapse — the
+     * same ruling as DL-328 Decision 5, for the same reason: a create-race duplicate carries
+     * the same bridge-stamped name as its twin, so restamping only a survivor would leave
+     * the other asserting the stale title, while retiring it belongs to the create path's
+     * own collapse. The ownership test is applied per card, so a race pair one of whose
+     * cards a human renamed still writes to the other alone.
+     *
+     * ⛔ "EVERY MATCHING ONE" IS BOUNDED BY THE SHARED 4xx CATCH: a per-card refusal (a 404
+     * on a card deleted between the search and the patch) unwinds out of this loop to
+     * {@see handle}'s `catch`, which alerts and returns — so a permanent refusal on the
+     * FIRST card of a pair leaves the second unwritten. Left as it is rather than caught per
+     * card: the refusal is loud, the arm is idempotent under redelivery, and a shared cause
+     * (a 403 on the token) would refuse both anyway.
+     */
+    private function restampNames(KanbanClient $client, WritebackMapping $mapping, ?string $tag, mixed $nameFrom, string $title, string $repo, int $issueNumber): void
+    {
+        if ($tag === null || ! is_string($nameFrom) || $nameFrom === '' || $title === $nameFrom) {
+            $this->alerts->warnAndNotify(
+                'kanban_coord_card: malformed rename payload (name_from/title/sid); no name written',
+                ['repo' => $repo, 'issue' => $issueNumber],
+                $repo, self::ALERT_OUTCOME, null, 'coord_card_rename_payload_invalid', $issueNumber,
+            );
+
+            return;
+        }
+        // ONE board-scoped tag search, and its ROWS are the read: they carry both the `name`
+        // this arm compares and the `board_id` the DL-298 gate re-checks, so nothing here
+        // needs the unscoped per-id `getCard` the create path's by-ref collapse pays for.
+        foreach ($this->onMappedBoard($client->cardRowsByTag($mapping->boardId, $tag), $mapping, $repo, $issueNumber) as $cardId => $card) {
+            $name = $card['name'] ?? null;
+            if (! is_string($name) || $name !== $nameFrom) {
+                // ⛔ THE RECORD STATES THE FACT AND NAMES NO AUTHOR, because this branch has
+                // more than one innocent history and cannot tell them apart. A human (or the
+                // reconcile) renaming the card is the case the gate exists for — but a GitHub
+                // REDELIVERY of this same edit reaches here too, and there the name it found
+                // is the one THIS bridge wrote a moment ago. Accusing a writer would be
+                // wrong-but-specific on the redelivery path (DL-314's shape), so the text
+                // reports only what was compared. Info, not warn: on every one of those
+                // histories the no-op is the designed outcome, not a failure.
+                Log::info('kanban_coord_card: card name is not `changes.title.from`; not restamped', ['card_id' => $cardId, 'repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag] + MappedBoardGuard::boardContext($card, $mapping));
+
+                continue;
+            }
+            $client->patchCard($cardId, ['name' => $title]);
+            // Group-B (card#7211/card#7212): the card came out of a board-scoped SEARCH, so
+            // its own board is recorded beside the write that landed on it.
+            Log::info('kanban_coord_card: restamped name from the upstream retitle', ['card_id' => $cardId, 'repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag] + MappedBoardGuard::boardContext($card, $mapping));
         }
     }
 

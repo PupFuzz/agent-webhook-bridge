@@ -66,10 +66,13 @@ use Illuminate\Support\Facades\Log;
  * (`KanbanMoveCardHandler::stampCorrelationRefs()`) — DL-335 widened it by exactly one
  * write, the ARCHIVE, on the reading that retiring a card is a lifecycle act and not a
  * field. So a field-only PATCH lands on a pinned card BY DESIGN, not by omission: the
- * correlation-ref stamp here, and the DL-328 `{name}`-only restamp on an upstream retitle
- * (`KanbanDependabotCardHandler::restampNames()`, which lands it on a pinned
- * card deliberately — it writes `name` alone, moves no card and retires none). An auditor
- * running the census above will not see either one, and should not: read DL-178's
+ * correlation-ref stamp here, and the `{name}`-only restamp on an upstream retitle — which
+ * has TWO producers as of DL-341 and is named as both, because this clause is the roster
+ * and a roster naming one of two is what an auditor reads as a complete list:
+ * `KanbanDependabotCardHandler::restampNames()` (DL-328, the PR path) and
+ * `KanbanCoordCardHandler::restampNames()` (DL-341, the issue path). Both land on a pinned
+ * card deliberately — each writes `name` alone, moves no card and retires none. An auditor
+ * running the census above will not see any of them, and should not: read DL-178's
  * annotation and DL-335's widening for why, rather than treating the absence as a further
  * instance of this card's defect. ⚠ *Deliberate* is a statement about the RULE'S SCOPE, not
  * a ruling that a hold should never stop a field write — nobody has been asked that. It is
@@ -176,6 +179,22 @@ final class PinGuard
      * `revive`/`relane` widening — and it is filed on card#8557, not taken here. The posture is
      * DL-026's, applied at the single read every consult shares: *make the non-erroring
      * degradation LOUD at the one place that sees it*, and let the caller's path stay unchanged.
+     *
+     * ⚑ ONE LINE PER ROW, WITH NO RATE LIMIT, AND THAT IS A CHOICE RATHER THAN AN OVERSIGHT.
+     * `ReconcileCommand` and `KanbanPromoteReleasedHandler` consult the pin once per candidate
+     * card, so a genuinely degraded projection emits one warning per card per sweep — a 50-row
+     * board is 50 lines (measured on a 50-row fixture at PR #649's R2). Three reasons that is
+     * the right shape here. (1) The ACTIONABLE fact is `card_id`: a per-run "N rows were
+     * unreadable" line names no card, and the operator's next move is to look at one. (2) The
+     * cost is a durable log write — no alert push, no dedup marker, no HTTP, nothing on the
+     * writeback's request path — and the volume is BOUNDED by the sweep, not unbounded: the
+     * degradation is all-or-nothing (the projection either carries the pair or does not), so
+     * the line count is the board size and does not grow while the fault persists. (3) A
+     * dedup would need per-run state inside a static predicate that has none, and would hide
+     * exactly the per-card detail. ⚠ THE RESIDUAL IS STATED, NOT WAVED: the argument for the
+     * AND above is that a detector which cries wolf gets muted, and a full-board sweep on a
+     * degraded projection IS loud. If that volume turns out to be what mutes it, the fix is a
+     * per-run claim at the SWEEP (which knows how many rows it read), not a counter here.
      *
      * ⚑ BOTH keys absent, not either. `TaskResource` emits the pair together, so their joint
      * absence is the degradation's own shape, while a row carrying exactly one is a partial
