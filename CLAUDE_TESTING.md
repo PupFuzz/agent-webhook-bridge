@@ -553,9 +553,11 @@ follows is a starting point for that re-derivation, not the population:
     command grep -rln 'RecursiveIteratorIterator\|glob(' tests/ \
       | xargs -r grep -ln "app/\|app_path(" | xargs -r grep -L 'SourceScan'
 
-⛔ **Its output is a LEAD LIST, and a clean run of it discharges nothing.** Every file it prints
-does walk the tree without the primitive, so each one is a real lead; what it cannot tell you is
-that there are no others, because it keys on SPELLINGS — a walk naming the tree some third way, or
+⛔ **Its output is a LEAD LIST, and a clean run of it discharges nothing.** What it prints is what
+three greps say: a file that globs or recurses, names the tree, and does not mention the primitive.
+That makes each one a real LEAD — read it and confirm the walk; a `glob()` over a fixture directory
+in a file that separately mentions `app/` would print here too. And what it cannot tell you at all
+is that there are no OTHERS, because it keys on SPELLINGS — a walk naming the tree some third way, or
 a class going through `SourceScan` for one leg and its own walk for another, is outside its reach
 by construction. **The stage-2 alternation is in there because that blind spot was LIVE, not
 hypothetical:** keyed on `'app/'` alone this recipe missed a classifier census that spells the tree
