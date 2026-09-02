@@ -7,6 +7,7 @@ database: connected
 install-suffix DSN check: ok
 inbox surfacing config: ok (layout=shared)
 retention: on (delete >30d + null payloads >7d, every 86400s, 500 rows/pass)
+retention: database 1.2 GiB · webhook_events 12345 rows, 11987 still carry a payload holding 894.0 MiB (~73% of the database) · oldest row 12.4d old, inside the 30d delete window.
 agent config ok: prod-agent
 agent prod-agent: kanban:5 has no secret at <INSTALL>/kanban/webhook-secret-scope-5 — run bridge:provision
 agent prod-agent: kanban API token not readable at <INSTALL>/kanban/token — bridge:provision will SKIP kanban scopes

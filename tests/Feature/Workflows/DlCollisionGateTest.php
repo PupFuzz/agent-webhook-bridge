@@ -19,12 +19,21 @@ use Tests\TestCase;
  * all. So the fixture is an upstream repository the work tree is cloned from,
  * and the "the target branch moved under the PR" cases advance it for real.
  *
- * WHAT `makeRepos()` DOES NOT MODEL, and `makeCiPairing()` does. It pairs a
- * head at the PR-branch tip with a base at the commit that branch was cut from,
- * which equals CI only while the branch is not behind the target. CI pairs the
- * base-branch TIP (`base.sha`) with the MERGE of the PR head into it
- * (`github.sha`), and it is that pairing — not the fork point — that makes the
- * `added` set mean "this PR's mints". One case builds it for real.
+ * EVERY FIXTURE'S WORK TREE IS A REAL MERGE COMMIT, because that is what the
+ * step now reads its base OUT OF. CI checks out `github.sha` — the merge of the
+ * PR head into the base branch — and the step derives its base snapshot from
+ * that merge's FIRST PARENT through `bin/pr-base-snapshot.sh`, so a fixture whose
+ * head is a plain branch tip would not exercise the step at all (it fails loud
+ * on it, and one case pins that). The base is therefore no longer an input the
+ * test hands in: `makeRepos()` builds the merge and the step reads it, which is
+ * the whole of card#8527's fix.
+ *
+ * ⛔ WHAT THAT FIX RETIRED, pinned by `test_a_stale_base_sha_...`. The step used
+ * to take `github.event.pull_request.base.sha`, and GitHub does not refresh that
+ * field on every `synchronize`: measured 2026-09-02 on PR #640, run 33598959720,
+ * `base.sha` was 549c894 while the merge commit the same event checked out had
+ * first parent 7a11085. That case builds exactly that divergence and runs the
+ * retired pairing as its control — red — beside the derived one — green.
  *
  * THE STEP CALLS THE REAL `bin/decision-log.py`, copied into the work tree at
  * the repo-relative path the step names, so a change to the predicate reds here
@@ -82,10 +91,13 @@ class DlCollisionGateTest extends TestCase
 
     /**
      * Upstream on `dev` at $baseLog, a work clone branched there carrying
-     * $headLog, and — when $movedTargetLog is given — an upstream `dev` that has
-     * moved on since.
+     * $headLog, and a work tree left where CI leaves it: ON THE MERGE of that PR
+     * head into the base commit, which is what the step derives its base from.
+     * When $movedTargetLog is given, upstream `dev` moves on AFTER that merge is
+     * built — the only way the live-target assertion has anything to see, now
+     * that the base snapshot is the merge's own parent.
      *
-     * @return array{dir:string,base:string}
+     * @return array{dir:string,upstream:string,base:string,head:string,merge:string}
      */
     private function makeRepos(string $baseLog, string $headLog, ?string $movedTargetLog = null): array
     {
@@ -106,17 +118,55 @@ class DlCollisionGateTest extends TestCase
         exec($wk.'checkout -q -b pr 2>&1');
         file_put_contents($work.'/CLAUDE_DECISIONS.md', $headLog);
         exec($wk.'add -A && '.$wk.'commit -q --allow-empty -m head 2>&1');
+        $headSha = trim((string) shell_exec($wk.'rev-parse HEAD'));
+
+        $mergeSha = $this->mergeOnto($work, $baseSha, $headSha);
 
         if ($movedTargetLog !== null) {
             file_put_contents($upstream.'/CLAUDE_DECISIONS.md', $movedTargetLog);
             exec($up.'add -A && '.$up.'commit -q -m "dev moves on" 2>&1');
         }
 
-        // The step invokes it by repo-relative path; give it the real one.
-        mkdir($work.'/bin', 0o777, true);
-        copy(base_path('bin/decision-log.py'), $work.'/bin/decision-log.py');
+        $this->installScripts($work);
 
-        return ['dir' => $work, 'base' => $baseSha];
+        return ['dir' => $work, 'upstream' => $upstream, 'base' => $baseSha, 'head' => $headSha, 'merge' => $mergeSha];
+    }
+
+    /**
+     * Build the commit GitHub builds for a `pull_request` event and leave the
+     * work tree on it: $headSha merged INTO $baseSha, so the first parent is the
+     * base and the second is the PR head. $resolved, when given, is the merged
+     * CLAUDE_DECISIONS.md — needed whenever both sides appended to it, which
+     * conflicts by construction (DL-295 stated bound (d)) and is resolved here
+     * the way the author would resolve it.
+     */
+    private function mergeOnto(string $work, string $baseSha, string $headSha, ?string $resolved = null): string
+    {
+        $wk = $this->git($work);
+        exec($wk.'checkout -q --detach '.escapeshellarg($baseSha).' 2>&1');
+        exec($wk.'merge -q --no-ff --no-commit '.escapeshellarg($headSha).' 2>&1');
+        if ($resolved !== null) {
+            file_put_contents($work.'/CLAUDE_DECISIONS.md', $resolved);
+        }
+        exec($wk.'add -A && '.$wk.'commit -q -m "Merge pull request" 2>&1');
+
+        $parents = preg_split('/\s+/', trim((string) shell_exec($wk.'rev-list --parents -n 1 HEAD')));
+        $this->assertCount(3, (array) $parents, 'the fixture work tree must BE a merge commit — two parents');
+        $this->assertSame($baseSha, $parents[1], 'first parent must be the base the merge was built on');
+        $this->assertSame($headSha, $parents[2], 'second parent must be the PR head');
+
+        return $parents[0];
+    }
+
+    /** The step invokes both by repo-relative path; give it the real ones. */
+    private function installScripts(string $work): void
+    {
+        if (! is_dir($work.'/bin')) {
+            mkdir($work.'/bin', 0o777, true);
+        }
+        copy(base_path('bin/decision-log.py'), $work.'/bin/decision-log.py');
+        copy(base_path('bin/pr-base-snapshot.sh'), $work.'/bin/pr-base-snapshot.sh');
+        chmod($work.'/bin/pr-base-snapshot.sh', 0o755);
     }
 
     /**
@@ -150,7 +200,7 @@ class DlCollisionGateTest extends TestCase
             $this->log(293, 294),
         );
 
-        [$rc, $out] = $this->runStep($repo['dir'], ['BASE' => $repo['base'], 'BASE_REF' => 'dev']);
+        [$rc, $out] = $this->runStep($repo['dir'], ['HEAD_SHA' => $repo['head'], 'BASE_REF' => 'dev']);
 
         $this->assertSame(1, $rc, $out);
         $this->assertStringContainsString('DL-294', $out);
@@ -164,7 +214,7 @@ class DlCollisionGateTest extends TestCase
             $this->log(293, 294, 294),
         );
 
-        [$rc, $out] = $this->runStep($repo['dir'], ['BASE' => $repo['base'], 'BASE_REF' => 'dev']);
+        [$rc, $out] = $this->runStep($repo['dir'], ['HEAD_SHA' => $repo['head'], 'BASE_REF' => 'dev']);
 
         $this->assertSame(1, $rc, $out);
         $this->assertStringContainsString('DL-294 is used TWICE', $out);
@@ -181,7 +231,7 @@ class DlCollisionGateTest extends TestCase
             $this->log(293, 294),
         );
 
-        [, $out] = $this->runStep($repo['dir'], ['BASE' => $repo['base'], 'BASE_REF' => 'dev']);
+        [, $out] = $this->runStep($repo['dir'], ['HEAD_SHA' => $repo['head'], 'BASE_REF' => 'dev']);
 
         $this->assertStringContainsString('bin/decision-log.py next', $out);
     }
@@ -196,7 +246,7 @@ class DlCollisionGateTest extends TestCase
             $this->log(293, 294),
         );
 
-        [$rc, $out] = $this->runStep($repo['dir'], ['BASE' => $repo['base'], 'BASE_REF' => 'dev']);
+        [$rc, $out] = $this->runStep($repo['dir'], ['HEAD_SHA' => $repo['head'], 'BASE_REF' => 'dev']);
 
         $this->assertSame(0, $rc, $out);
         $this->assertStringContainsString('DL-295', $out);
@@ -210,7 +260,7 @@ class DlCollisionGateTest extends TestCase
             $this->log(293, 294),
         );
 
-        [$rc, $out] = $this->runStep($repo['dir'], ['BASE' => $repo['base'], 'BASE_REF' => 'dev']);
+        [$rc, $out] = $this->runStep($repo['dir'], ['HEAD_SHA' => $repo['head'], 'BASE_REF' => 'dev']);
 
         $this->assertSame(0, $rc, $out);
         $this->assertStringContainsString('adds 0 DL entries', $out);
@@ -227,7 +277,7 @@ class DlCollisionGateTest extends TestCase
             $this->log(293),
         );
 
-        [$rc, $out] = $this->runStep($repo['dir'], ['BASE' => $repo['base'], 'BASE_REF' => 'dev']);
+        [$rc, $out] = $this->runStep($repo['dir'], ['HEAD_SHA' => $repo['head'], 'BASE_REF' => 'dev']);
 
         $this->assertSame(0, $rc, $out);
     }
@@ -244,8 +294,8 @@ class DlCollisionGateTest extends TestCase
         $first = $this->makeRepos($this->log(293), $this->log(293, 295));
         $second = $this->makeRepos($this->log(293), $this->log(293, 295));
 
-        [$rcFirst, $outFirst] = $this->runStep($first['dir'], ['BASE' => $first['base'], 'BASE_REF' => 'dev']);
-        [$rcSecond, $outSecond] = $this->runStep($second['dir'], ['BASE' => $second['base'], 'BASE_REF' => 'dev']);
+        [$rcFirst, $outFirst] = $this->runStep($first['dir'], ['HEAD_SHA' => $first['head'], 'BASE_REF' => 'dev']);
+        [$rcSecond, $outSecond] = $this->runStep($second['dir'], ['HEAD_SHA' => $second['head'], 'BASE_REF' => 'dev']);
 
         $this->assertSame(0, $rcFirst, $outFirst);
         $this->assertSame(0, $rcSecond, $outSecond);
@@ -261,68 +311,143 @@ class DlCollisionGateTest extends TestCase
             $this->log(293, 295),
         );
 
-        [$rc, $out] = $this->runStep($repo['dir'], ['BASE' => $repo['base'], 'BASE_REF' => 'dev']);
+        [$rc, $out] = $this->runStep($repo['dir'], ['HEAD_SHA' => $repo['head'], 'BASE_REF' => 'dev']);
 
         $this->assertSame(1, $rc, $out);
         $this->assertStringContainsString('DL-295', $out);
     }
 
-    // ------------------------------------------------------------------ the CI pairing
+    // ------------------------------------------------- the pairing card#8527 fixed
 
     /**
-     * The pairing CI actually hands the step, built for real: `BASE` at the
-     * base-branch TIP, and a work tree that IS the merge of the PR head into it.
+     * The divergence PR #640 hit, built for real. `dev` gains its OWN DL-294
+     * after this branch is cut, GitHub rebuilds the merge onto that newer tip,
+     * and the event payload still carries the OLD tip as `base.sha`.
      *
-     * @return array{dir:string,baseTip:string,mergeBase:string}
+     * @return array{dir:string,staleBaseSha:string,movedTip:string,head:string,baseLog:string,targetLog:string}
      */
-    private function makeCiPairing(): array
+    private function makeStaleBaseShaPairing(): array
     {
-        // `dev` gains its own DL-294 after this branch is cut; the PR mints DL-295.
-        $repo = $this->makeRepos($this->log(293), $this->log(293, 295), $this->log(293, 294));
+        // The PR mints DL-295 and nothing else; every DL-294 in this fixture is
+        // the BASE BRANCH's own, which is what makes a refusal here false.
+        $repo = $this->makeRepos($this->log(293), $this->log(293, 295));
         $work = $repo['dir'];
         $wk = $this->git($work);
 
+        $upstream = $repo['upstream'];
+        $up = $this->git($upstream);
+        file_put_contents($upstream.'/CLAUDE_DECISIONS.md', $this->log(293, 294));
+        exec($up.'add -A && '.$up.'commit -q -m "dev mints its own 294" 2>&1');
+
         exec($wk.'fetch -q origin dev 2>&1');
-        $baseTip = trim((string) shell_exec($wk.'rev-parse FETCH_HEAD'));
+        $movedTip = trim((string) shell_exec($wk.'rev-parse FETCH_HEAD'));
 
-        // A REAL merge commit. Both sides append at end-of-file, so git conflicts
-        // — that is DL-295's own stated bound (d) and is not what this case is
-        // about; what is under test is WHICH SHAs the step is handed, so the
-        // conflict is resolved the way the author would resolve it.
-        exec($wk.'merge -q --no-ff --no-commit FETCH_HEAD 2>&1');
-        file_put_contents($work.'/CLAUDE_DECISIONS.md', $this->log(293, 294, 295));
-        exec($wk.'add -A && '.$wk.'commit -q -m "merge dev into pr" 2>&1');
+        // GitHub rebuilds refs/pull/N/merge onto the tip that exists NOW. Both
+        // sides appended, so the merge conflicts and is resolved the way the
+        // author would resolve it — what is under test is which commit the step
+        // reads as its base, not git's three-way merge.
+        $this->mergeOnto($work, $movedTip, $repo['head'], $this->log(293, 294, 295));
 
-        $parents = preg_split('/\s+/', trim((string) shell_exec($wk.'rev-list --parents -n 1 HEAD')));
-        $this->assertCount(3, (array) $parents, 'the fixture head must BE a merge commit — two parents');
-
-        return ['dir' => $work, 'baseTip' => $baseTip, 'mergeBase' => $repo['base']];
+        return [
+            'dir' => $work,
+            'staleBaseSha' => $repo['base'],
+            'movedTip' => $movedTip,
+            'head' => $repo['head'],
+            'baseLog' => $this->log(293, 294),
+            'targetLog' => $this->log(293, 294),
+        ];
     }
 
-    public function test_base_sha_is_the_base_branch_tip_the_head_tree_is_merged_with_not_the_merge_base(): void
+    public function test_a_stale_base_sha_no_longer_makes_the_base_branchs_own_entry_read_as_this_prs_mint(): void
     {
-        $repo = $this->makeCiPairing();
+        $repo = $this->makeStaleBaseShaPairing();
 
-        [$rc, $out] = $this->runStep($repo['dir'], ['BASE' => $repo['baseTip'], 'BASE_REF' => 'dev']);
-
+        // LEG 1 — the step, as CI runs it. It derives its base from the merge it
+        // is standing on, so DL-294 is present at the base and only DL-295 is
+        // this PR's. Green, which is the correct verdict.
+        [$rc, $out] = $this->runStep($repo['dir'], ['HEAD_SHA' => $repo['head'], 'BASE_REF' => 'dev']);
         $this->assertSame(0, $rc, $out);
         $this->assertStringContainsString('adds 1 DL entries (DL-295)', $out);
 
-        // THE CONTROL, and the whole reason this case exists: hand the step a
-        // base sourced INDEPENDENTLY of this head — the FORK POINT, which is what
-        // "the merge base" named while the workflow's old comment stood — and
-        // `dev`'s own post-fork DL-294 sits inside the merge tree at head, absent
-        // there, and reads as this PR's mint. An innocent PR is refused. It also
-        // proves the fixture discriminates: two different commits as `BASE`, one
-        // unchanged tree, two different verdicts.
-        [$rcMergeBase, $outMergeBase] = $this->runStep(
-            $repo['dir'],
-            ['BASE' => $repo['mergeBase'], 'BASE_REF' => 'dev'],
-        );
+        // LEG 2 — the derivation itself, so leg 1's green cannot be an accident
+        // of the two commits happening to carry the same log. The base the step
+        // used IS the moved tip and is NOT the sha the event would have carried.
+        $derived = trim((string) shell_exec(
+            'cd '.escapeshellarg($repo['dir']).' && bin/pr-base-snapshot.sh '.escapeshellarg($repo['head'])
+        ));
+        $this->assertSame($repo['movedTip'], $derived);
+        $this->assertNotSame($repo['staleBaseSha'], $derived);
 
-        $this->assertSame(1, $rcMergeBase, $outMergeBase);
-        $this->assertStringContainsString('DL-294', $outMergeBase);
-        $this->assertStringContainsString('ALREADY IN USE', $outMergeBase);
+        // LEG 3 — THE CONTROL, and the reason this case exists: hand the SAME
+        // head the sha the event payload carries and the predicate refuses an
+        // innocent PR, naming the base branch's own DL-294. This is PR #640 run
+        // 33598959720 in miniature, and it is the red the fix removes. Run
+        // against the predicate directly because the step no longer HAS an input
+        // that could carry a stale sha — which is the point of the change.
+        $rcStale = 0;
+        $out = [];
+        exec($this->predicateAgainst($repo['dir'], $repo['staleBaseSha'], $repo['targetLog']), $out, $rcStale);
+        $this->assertSame(6, $rcStale, implode("\n", $out));
+        $this->assertStringContainsString('DL-294', implode("\n", $out));
+        $this->assertStringContainsString('ALREADY IN USE', implode("\n", $out));
+    }
+
+    /**
+     * `bin/decision-log.py check` run on the fixture's head tree against an
+     * arbitrary base commit — the shape the workflow ran before card#8527, when
+     * the base came from the event payload rather than from the head.
+     */
+    private function predicateAgainst(string $work, string $baseSha, string $targetLog): string
+    {
+        $tmp = $work.'/.control-'.bin2hex(random_bytes(4));
+        mkdir($tmp, 0o777, true);
+        file_put_contents($tmp.'/target.md', $targetLog);
+        exec($this->git($work).'show '.escapeshellarg($baseSha.':CLAUDE_DECISIONS.md').' > '.escapeshellarg($tmp.'/base.md').' 2>&1');
+
+        return 'cd '.escapeshellarg($work).' && python3 bin/decision-log.py check'
+            .' --head CLAUDE_DECISIONS.md'
+            .' --base '.escapeshellarg($tmp.'/base.md')
+            .' --target '.escapeshellarg($tmp.'/target.md').' 2>&1';
+    }
+
+    // --------------------------------------- the pairing is CHECKED, not assumed
+
+    public function test_a_work_tree_that_is_not_this_prs_merge_fails_loud_instead_of_guessing_a_base(): void
+    {
+        // The step's base has exactly one source. Standing anywhere other than
+        // the merge GitHub built for this event, it must refuse — never fall back
+        // to a payload field and never re-derive a fork point, which are the two
+        // ways this gate has been wrong.
+        $repo = $this->makeRepos($this->log(293), $this->log(293, 295), $this->log(293, 295));
+        exec($this->git($repo['dir']).'checkout -q '.escapeshellarg($repo['head']).' 2>&1');
+
+        [$rc, $out] = $this->runStep($repo['dir'], ['HEAD_SHA' => $repo['head'], 'BASE_REF' => 'dev']);
+
+        // 4 is bin/pr-base-snapshot.sh's documented "HEAD is not a merge" code,
+        // propagated by `set -e` through the assignment. Asserted rather than
+        // "non-zero" so the step is pinned to SURFACE the helper's refusal rather
+        // than catch it and re-report it as one of its own arms.
+        $this->assertSame(4, $rc, $out);
+        $this->assertStringContainsString('not a two-parent merge commit', $out);
+        // Without this leg the case would pass on any failure, including the
+        // refusal it is supposed to prove did NOT happen: on this fixture the
+        // colliding-number arm would also exit 1.
+        $this->assertStringNotContainsString('already in use', $out);
+    }
+
+    public function test_a_merge_of_a_different_head_fails_loud(): void
+    {
+        // A stale refs/pull/N/merge — GitHub rebuilds it per event, so a merge
+        // whose second parent is not the head this event names is a merge of a
+        // tree nobody pushed. Reporting a verdict on it is worse than refusing.
+        $repo = $this->makeRepos($this->log(293), $this->log(293, 295), $this->log(293, 295));
+
+        [$rc, $out] = $this->runStep($repo['dir'], ['HEAD_SHA' => $repo['base'], 'BASE_REF' => 'dev']);
+
+        // 5 — the helper's "second parent is not this PR's head" code. See above.
+        $this->assertSame(5, $rc, $out);
+        $this->assertStringContainsString('is not this PR\'s head sha', $out);
+        $this->assertStringNotContainsString('already in use', $out);
     }
 
     // ------------------------------------------------------------------ fail-loud
@@ -332,7 +457,7 @@ class DlCollisionGateTest extends TestCase
         $repo = $this->makeRepos($this->log(293), $this->log(293, 294));
         unlink($repo['dir'].'/CLAUDE_DECISIONS.md');
 
-        [$rc, $out] = $this->runStep($repo['dir'], ['BASE' => $repo['base'], 'BASE_REF' => 'dev']);
+        [$rc, $out] = $this->runStep($repo['dir'], ['HEAD_SHA' => $repo['head'], 'BASE_REF' => 'dev']);
 
         $this->assertSame(1, $rc, $out);
         $this->assertStringContainsString('must not be reported as a clean one', $out);

@@ -4,6 +4,8 @@ namespace App\Providers;
 
 use App\Bridge\Dispatch\DispatchService;
 use App\Bridge\Dispatch\IntentLog;
+use App\Bridge\Retention\DatabaseRetentionStoreProbe;
+use App\Bridge\Retention\RetentionStoreProbe;
 use App\Bridge\Scheduling\JobHandlerRegistry;
 use App\Bridge\Scheduling\JobRegistry;
 use App\Bridge\Scheduling\JobScheduler;
@@ -101,6 +103,12 @@ class BridgeServiceProvider extends ServiceProvider
         // (DL-242 stage 5b) — the default connects for real; a test binds a fake so a
         // live-vs-dead endpoint (and the platform's own error text) is deterministic.
         $this->app->bind(ChannelProbeEnvironment::class, SystemChannelProbeEnvironment::class);
+
+        // The store-cost seam behind the bridge:check retention posture (card#8374) —
+        // the default queries the live database; the golden harness binds a pinned answer,
+        // because the subject is the storage ENGINE and the suite runs against SQLite and
+        // the MariaDB matrix alike, where a real size read is a different number per job.
+        $this->app->bind(RetentionStoreProbe::class, DatabaseRetentionStoreProbe::class);
 
         $this->app->bind(DispatchService::class, function (): DispatchService {
             $configDir = (string) config('bridge.config_dir');

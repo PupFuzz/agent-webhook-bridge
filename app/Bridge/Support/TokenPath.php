@@ -22,8 +22,11 @@ final class TokenPath
     /**
      * The DEDICATED writeback token path (DL-009): <secret_dir>/<provider>/
      * writeback-token. Distinct from for() on purpose — the writeback token is
-     * least-privilege (card-move scope only), so it must NOT collide with the
-     * broad provisioning token at the same (secret_dir, provider) key.
+     * narrower than the provisioning one, so it must NOT collide with that broad
+     * token at the same (secret_dir, provider) key. Which board permissions it
+     * carries is docs/writeback.md § 1's permission table to state, not this
+     * docblock's: the spelling here was "card-move scope only", which has been
+     * wrong since the first non-stage-only PATCH shipped (DL-328 bound (e)).
      */
     public static function forWriteback(string $secretDir, string $provider): string
     {

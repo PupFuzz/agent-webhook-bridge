@@ -85,7 +85,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          fetch-depth: 0   # need the merge-base to diff base..head
+          fetch-depth: 0   # need the merge commit's first parent, and the merge base, to diff base..head
 
       # Both files carry the snapshot version and only `npm version` /
       # `npm install` move them together, so a hand-edited manifest drifts the
@@ -116,10 +116,21 @@ jobs:
       - name: Require a package.json version bump when shipped files change
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # The PR head sha, for the pairing check only — see below.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          # The base snapshot is `HEAD^1`, the base commit the checked-out merge
+          # RECORDS, not `github.event.pull_request.base.sha` (card#8527): GitHub
+          # does not refresh that field on every `synchronize` and it was measured
+          # lagging by one merge on PR #640, run 33598959720, 2026-09-02. Paired
+          # with a lagging base, the diff below picks up files the BASE BRANCH
+          # changed after the fork and demands a version bump for them.
+          BASE_SHA=$(bin/pr-base-snapshot.sh "$HEAD_SHA")
           # Shipped files only: exclude the gitignored node_modules (never copied).
+          # The three dots are now redundant — `$BASE_SHA` IS HEAD's first parent,
+          # so the merge base of the two is `$BASE_SHA` — and are left in place
+          # because they still say what the diff means to a reader.
           changed=$(git diff --name-only "$BASE_SHA"...HEAD -- examples/channel-servers/ \
             | grep -v '/node_modules/' || true)
           if [ -z "$changed" ]; then

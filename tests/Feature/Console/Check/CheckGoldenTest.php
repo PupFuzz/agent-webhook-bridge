@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\Console\Check;
 
+use App\Bridge\Retention\RetentionFootprint;
 use App\Bridge\Retention\RetentionGate;
+use App\Bridge\Retention\RetentionStoreProbe;
 use App\Bridge\Tools\CallProvenance;
 use App\Bridge\Tools\SshProbeEnvironment;
 use App\Models\BoardToolsClientCall;
@@ -16,6 +18,7 @@ use Tests\Support\CheckGolden\BootsGoldenInstall;
 use Tests\Support\CheckGolden\GoldenCapture;
 use Tests\Support\CheckGolden\GoldenChannelEnvironment;
 use Tests\Support\CheckGolden\GoldenInstall;
+use Tests\Support\CheckGolden\GoldenRetentionStore;
 use Tests\Support\CheckGolden\GoldenSshEnvironment;
 use Tests\TestCase;
 
@@ -163,6 +166,62 @@ class CheckGoldenTest extends TestCase
                     'error' => 'disk full',
                     'at' => '2026-01-01T00:00:00+00:00',
                 ], 60);
+
+                return $default;
+
+                // ---- what the store is HOLDING (card#8374) ----
+                // Every posture-printing fixture runs against the DEFAULT store pin — the
+                // incident's own 894 MiB inside 1.2 GiB — so the loaded shape is already
+                // everywhere in the corpus. These four are the shapes that pin does NOT
+                // reach, and each is a different operator instruction rather than a
+                // different number. No count is stated deliberately — it is every fixture
+                // except the two retention postures that return before the cost legs, and
+                // a number written here would be a second copy of that list.
+            case 'retention-store-empty':
+                // THE CONTROL THE CARD REQUIRES: a store with nothing in it must report
+                // that without inventing a row or an age. Its database still has a SIZE
+                // (its own schema), which is why the empty arm cannot be read off one.
+                $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
+                $this->app->instance(RetentionStoreProbe::class, GoldenRetentionStore::drained());
+
+                return $default;
+
+            case 'retention-store-past-window':
+                // The one cost arm that is a `warn`: rows the 30d window should have taken
+                // are still here. Only the AGE moves from the default pin, so the diff
+                // against `minimal` is the verdict and nothing else.
+                $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
+                $this->app->instance(RetentionStoreProbe::class, GoldenRetentionStore::holding(
+                    new RetentionFootprint(
+                        rows: 12345,
+                        rowsWithPayload: 11987,
+                        payloadBytes: 937426944,
+                        storeBytes: 1288490188,
+                        storeBytesContainsPayloadBytes: true,
+                        oldestRowAgeDays: 47.2,
+                    ),
+                ));
+
+                return $default;
+
+            case 'retention-store-off-page-accounting':
+                // EVERY MariaDB INSTALL'S SHAPE. The size the engine reports excludes the
+                // payload bytes it stores off-page (measured, DL-331), so the share is
+                // withheld rather than computed over a denominator missing its own
+                // numerator. Only that declaration moves from the default pin, so the diff
+                // against `minimal` is the withheld clause and nothing else.
+                $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
+                $this->app->instance(RetentionStoreProbe::class, GoldenRetentionStore::offPageAccounting());
+
+                return $default;
+
+            case 'retention-store-unmeasurable':
+                // The store could not be read at all. The posture line above it stays
+                // green because the CONFIG is fine, which is exactly why this line has to
+                // say what it could not measure — a green posture beside a silent cost is
+                // the state card#8374 exists to end.
+                $i->boot()->agent('prod-agent', $this->kanbanAgentYaml());
+                $this->app->instance(RetentionStoreProbe::class, GoldenRetentionStore::unreadable());
 
                 return $default;
 
@@ -580,6 +639,10 @@ class CheckGoldenTest extends TestCase
             'retention-payload-leg-off',
             'retention-row-leg-off',
             'retention-last-pass-failed',
+            'retention-store-empty',
+            'retention-store-past-window',
+            'retention-store-off-page-accounting',
+            'retention-store-unmeasurable',
             'agent-yaml-malformed',
             'agent-classifier-missing',
             'agent-missing-secret-and-token',
@@ -666,6 +729,14 @@ class CheckGoldenTest extends TestCase
             // same reason as its sibling — the absence is the subject.
             'retention-row-leg-off' => ['retention: on (null payloads >7d, every 86400s, 500 rows/pass)'],
             'retention-last-pass-failed' => ['retention: the LAST PASS FAILED'],
+            // ---- the cost line (card#8374) ----
+            // Each subject is the VERDICT clause, never the pinned figures: the numbers
+            // come from the harness, so asserting them here would only prove the pin was
+            // read back. What must hold is which arm the check chose.
+            'retention-store-empty' => ['webhook_events is EMPTY (0 rows)'],
+            'retention-store-past-window' => ['PAST the 30d delete window'],
+            'retention-store-off-page-accounting' => ['share of the database NOT shown'],
+            'retention-store-unmeasurable' => ['could NOT measure what the store is holding'],
 
             // ---- per-agent legs ----
             'agent-yaml-malformed' => ['is not valid YAML'],

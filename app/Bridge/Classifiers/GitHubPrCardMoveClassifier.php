@@ -8,12 +8,14 @@ use App\Bridge\Contracts\EmitsWritebackReactions;
 use App\Bridge\Dispatch\ClassifyContext;
 use App\Bridge\Dispatch\ClassifyResult;
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Handlers\KanbanDependabotCardHandler;
 use App\Bridge\Support\CardTokenGrammar;
 use App\Bridge\Support\ClassifierConfig;
 use App\Bridge\Support\ClosureGrammar;
 use App\Bridge\Support\DlTokenGrammar;
 use App\Bridge\Support\NoCloseGrammar;
 use App\Bridge\Support\RevertGrammar;
+use App\Bridge\Support\TitleChangeEvidence;
 use App\Bridge\Writeback\CardTokenVerdict;
 use App\Bridge\Writeback\PrOutcome;
 use App\Bridge\Writeback\WritebackClientFactory;
@@ -194,8 +196,13 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         // outcome (converted_to_draft/ready_for_review), so both being null is the
         // "we act on this event neither way" no-op.
         $overlayAction = $this->draftOverlayAction($eventType, $payload);
-        if ($outcome === null && $overlayAction === null) {
-            return new ClassifyResult;   // an action we don't act on (edited, synchronize, …)
+        // RETITLE trigger (DL-328): `pull_request.edited` carrying a real title change.
+        // Non-null ONLY on that action, so it is mutually exclusive with both of the
+        // above by construction — an `edited` event has no move outcome and no draft
+        // action, and every action that has one carries no `changes`.
+        $retitledFrom = $this->retitledFrom($eventType, $payload);
+        if ($outcome === null && $overlayAction === null && $retitledFrom === null) {
+            return new ClassifyResult;   // an action we don't act on (synchronize, labeled, …)
         }
 
         $repo = $scopeId;   // GitHubAdapter sets scope_id = repository.full_name
@@ -205,10 +212,43 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
             return new ClassifyResult;   // repo not configured for writeback
         }
 
+        // RETITLE of a dependabot PR (DL-328) → a name-restamp target: same handler,
+        // same `pr-{N}` target id, a MOVE-LESS outcome. Dependabot retitles its own PR
+        // in place on a retarget, and a card whose name was stamped at birth then asserts
+        // a version that never shipped. The target carries BOTH sides of the change: the
+        // new title to write, and `name_from` — the title the card's name is compared
+        // against, byte for byte, before anything is written. That comparison is the whole
+        // ownership test, so it is the classifier's job to deliver the evidence rather
+        // than the handler's to infer it. ⛔ The head REF is never a source for either
+        // string: it is frozen at branch creation while the diff is retargeted, so it
+        // names the version the PR no longer bumps (it stays the dependabot DETECTOR,
+        // which is a claim about the author, not about the version).
+        if ($retitledFrom !== null && $mapping->createDependabotCards && $this->isDependabot($payload)) {
+            $prNumber = $this->prNumber($payload);
+            $pr = is_array($payload['pull_request'] ?? null) ? $payload['pull_request'] : [];
+            $title = $pr['title'] ?? null;
+            if ($prNumber === null || ! is_string($title) || $title === '' || $title === $retitledFrom) {
+                return new ClassifyResult;
+            }
+
+            return new ClassifyResult(targets: [
+                ReactionTarget::make('kanban_dependabot_card', "pr-{$prNumber}", payload: [
+                    'repo' => $repo,
+                    'outcome' => KanbanDependabotCardHandler::RENAMED_OUTCOME,
+                    'pr_number' => $prNumber,
+                    'pr_title' => $title,
+                    'pr_url' => is_string($pr['html_url'] ?? null) ? $pr['html_url'] : '',
+                    'name_from' => $retitledFrom,
+                ]),
+            ]);
+        }
+
         // Dependabot PRs carry no DL and have no pre-existing card. When opted in
-        // (per-mapping `create_dependabot_cards`), emit a create-or-move target
-        // keyed by PR NUMBER — the durable handler creates the card on open and
-        // moves it on close. Detected by dependabot's own branch namespace.
+        // (per-mapping `create_dependabot_cards`), emit a target keyed by PR NUMBER
+        // and detected by dependabot's own branch namespace; the per-event lifecycle
+        // it resolves to is owned by KanbanDependabotCardHandler and docs/writeback.md
+        // and is deliberately not restated here (this comment said "moves it on close"
+        // long after DL-161 made the closed-unmerged arm ARCHIVE instead).
         // Gated on a real MOVE outcome so a null-outcome overlay action (which was
         // previously unreachable here — it early-returned above) can't fall in.
         if ($outcome !== null && $mapping->createDependabotCards && $this->isDependabot($payload)) {
@@ -1327,6 +1367,32 @@ class GitHubPrCardMoveClassifier implements Classifier, DeclaresConsumedEvents, 
         }
 
         return $refs;
+    }
+
+    /**
+     * The PREVIOUS title of a retitled pull request (DL-328) — null on every action but
+     * `pull_request.edited`, and on an `edited` that changed something else (a body, a
+     * base). The ACTION gate is here because it is this classifier's; the payload narrowing
+     * and the rule that decides what counts as evidence belong to
+     * {@see TitleChangeEvidence}, hoisted there at DL-341's second reader (the coord-card
+     * `issues.edited` arm) so the two arms cannot drift on a string a card-name write is
+     * gated on. Behaviour is unchanged by that hoist.
+     *
+     * ⭐ That string is EVIDENCE, not decoration: it is the exact name the bridge stamped
+     * on the card it minted for this PR, so a card whose name still equals it byte for byte
+     * has not been touched by anyone since. That is the whole authorship test the restamp
+     * gates on ({@see KanbanDependabotCardHandler}), and it is why the previous title is
+     * carried on the target instead of being recomputed from anything at write time.
+     *
+     * @param  array<mixed>  $payload
+     */
+    private function retitledFrom(string $eventType, array $payload): ?string
+    {
+        if ($eventType !== 'pull_request.edited') {
+            return null;
+        }
+
+        return TitleChangeEvidence::previousTitle($payload);
     }
 
     /**

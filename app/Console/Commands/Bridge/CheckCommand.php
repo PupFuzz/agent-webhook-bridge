@@ -52,6 +52,7 @@ use App\Bridge\Check\CheckSlot;
 use App\Bridge\Check\EventConsumers\EventConsumerReconciler;
 use App\Bridge\Contracts\DeclaresConsumedEvents;
 use App\Bridge\Contracts\EmitsWritebackReactions;
+use App\Bridge\Retention\RetentionStoreProbe;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\AgentRegistry;
 use App\Bridge\Support\ChannelProbeEnvironment;
@@ -770,7 +771,7 @@ class CheckCommand extends BridgeCommand
             ->register(CheckSlot::Install, new InstallConfigDirCheck, new InstallSecretDirCheck)
             ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck)
             ->register(CheckSlot::Inbox, new InboxSurfacingConfigCheck)
-            ->register(CheckSlot::Retention, new RetentionPostureCheck)
+            ->register(CheckSlot::Retention, new RetentionPostureCheck($this->laravel->make(RetentionStoreProbe::class)))
             ->register(CheckSlot::Jobs, new JobsPostureCheck)
             ->register(CheckSlot::Providers, new InstallEndpointUrlsCheck, new InstallProviderAdaptersCheck)
             ->registerPerAgent(CheckSlot::AgentClassifier, new AgentClassifierResolvableCheck)

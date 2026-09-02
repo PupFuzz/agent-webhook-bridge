@@ -81,6 +81,37 @@ class KanbanClientTest extends TestCase
         $this->client()->cardRowsOnBoard(8, 5);
     }
 
+    public function test_patch_card_sends_one_flat_field_body_and_nothing_else(): void
+    {
+        // card#8378: the general PATCH primitive the narrow write verbs are expressed in.
+        // FLAT (kanban DL-219 dropped the `{"task":{…}}` wrapper and strict-rejects a
+        // top-level `task` key), and it sends the caller's field set VERBATIM — no key it
+        // was not given, and no authorization of its own (that is the caller's, and the
+        // caller here has already established the card is the seat's).
+        Http::fake(['*' => Http::response(['data' => ['id' => 5]])]);
+
+        $this->client()->patchCard(5, ['name' => 'corrected', 'tags' => ['a', 'created-by:me']]);
+
+        Http::assertSent(function (Request $r) {
+            $body = json_decode((string) $r->body(), true);
+
+            return $r->method() === 'PATCH'
+                && str_contains($r->url(), '/tasks/5.json')
+                && $body === ['name' => 'corrected', 'tags' => ['a', 'created-by:me']];
+        });
+    }
+
+    public function test_patch_card_throws_on_non_2xx_so_a_refused_write_is_never_read_as_applied(): void
+    {
+        // A 403/404 must reach the caller as a failure it can name, not as a silent
+        // success: `board_correct_card` answers `corrected: true` off the absence of a
+        // throw here.
+        Http::fake(['*' => Http::response('nope', 403)]);
+
+        $this->expectException(RequestException::class);
+        $this->client()->patchCard(5, ['name' => 'x']);
+    }
+
     public function test_move_card_patches_workflow_stage_only(): void
     {
         Http::fake(['*' => Http::response(['data' => ['id' => 5]])]);
@@ -91,6 +122,27 @@ class KanbanClientTest extends TestCase
             && str_contains($r->url(), '/tasks/5.json')
             && $r['workflow_stage_id'] === 52   // DL-219: flat top-level field, NOT under a task wrapper
             && ! isset($r['task']));            // column-only, no other fields
+    }
+
+    public function test_patch_card_sends_exactly_the_named_fields_flat(): void
+    {
+        // The general flat-field PATCH verb (card#8377): it writes what the caller names
+        // and nothing else — no task wrapper (DL-219), no field the caller did not pass.
+        Http::fake(['*' => Http::response(['data' => ['id' => 5]])]);
+
+        $this->client()->patchCard(5, ['name' => 'chore(deps): Bump x from 1 to 3']);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && str_contains($r->url(), '/tasks/5.json')
+            && $r->data() === ['name' => 'chore(deps): Bump x from 1 to 3']
+            && ! isset($r['task']));
+    }
+
+    public function test_patch_card_throws_on_non_2xx(): void
+    {
+        Http::fake(['*' => Http::response(['error' => 'unprocessable'], 422)]);
+        $this->expectException(RequestException::class);
+        $this->client()->patchCard(5, ['name' => 'x']);
     }
 
     public function test_add_comment_posts_the_nested_comments_endpoint_with_a_content_body(): void
