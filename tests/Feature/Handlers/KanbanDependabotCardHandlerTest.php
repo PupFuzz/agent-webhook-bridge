@@ -733,4 +733,112 @@ class KanbanDependabotCardHandlerTest extends TestCase
         Log::shouldHaveReceived('error')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'duplicate archive returned 200 but the card is not archived')
             && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
     }
+
+    /**
+     * card#8454 / DL-335 — the ARCHIVE arm. Before this guard a closed-unmerged dependabot
+     * PR retired a card a human had parked, while `bridge:reconcile` and the release-promote
+     * sweep both skipped it: the backstop could not even see what the event path had taken
+     * off the board. The pinned card here carries a `block_reason`, one of PinGuard's two
+     * signals; the tag half rides the move leg below.
+     */
+    public function test_closed_unmerged_does_not_archive_a_pinned_card(): void
+    {
+        $this->writeWritebackWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'block_reason' => 'holding this one', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+        Log::spy();
+
+        $this->handle('closed_unmerged');
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'pinned_no_automove'
+            && $r['repo'] === 'owner/repo'
+            && $r['outcome'] === 'dependabot_card'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 42);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'archive refused — card is pinned')
+            && $ctx['card_id'] === 7 && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8)->once();
+    }
+
+    /**
+     * The control for the leg above: the SAME fixture with no pin signal archives, so the
+     * assertion is about the pin and not about a fixture that never reaches the write.
+     */
+    public function test_the_same_closed_unmerged_fixture_without_a_pin_is_archived(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'block_reason' => '', 'archived_at' => '2026-06-19T00:00:00+00:00', 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+
+        $this->handle('closed_unmerged');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && $r['_action'] === 'archive');
+    }
+
+    /**
+     * card#8454 / DL-335 — the MOVE arm, on the other PinGuard signal (`no-automove`). The
+     * refusal is taken where the move handler takes its own: AFTER the already-in-target-stage
+     * no-op, so a pinned card that needs no write raises no alert.
+     */
+    public function test_a_pinned_card_is_not_moved_to_the_outcomes_stage(): void
+    {
+        $this->writeWritebackWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'tags' => ['no-automove'], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+        Log::spy();
+
+        $this->handle('merged');   // target stage 52, card sits at 50
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'pinned_no_automove'
+            && $r['outcome'] === 'dependabot_card'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 42);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'move refused — card is pinned')
+            && $ctx['card_id'] === 7)->once();
+    }
+
+    /**
+     * The control for the leg above: the SAME fixture with an unrecognised tag moves.
+     */
+    public function test_the_same_move_fixture_without_a_pin_is_moved(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 50, 'tags' => ['dependencies'], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+
+        $this->handle('merged');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && ($r['workflow_stage_id'] ?? null) === 52);
+    }
+
+    /**
+     * A pinned card ALREADY in the outcome's stage raises no refusal signal: there was no
+     * write to refuse, and an alert there would be a false permanent-failure report.
+     */
+    public function test_a_pinned_card_already_in_the_target_stage_does_not_alert(): void
+    {
+        $this->writeWritebackWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 52, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 52, 'tags' => ['no-automove'], 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+
+        $this->handle('merged');   // target stage 52 — already there
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
 }
