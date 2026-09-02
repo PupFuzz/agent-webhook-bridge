@@ -42,6 +42,7 @@ class JobRegistryTest extends TestCase
             owner: $overrides['owner'] ?? 'suite',
             docsRef: $overrides['docsRef'] ?? 'docs/periodic-jobs.md',
             justification: $overrides['justification'] ?? 'no arrival on this install can create or gate this work',
+            enabled: $overrides['enabled'] ?? true,
         );
     }
 
@@ -66,6 +67,39 @@ class JobRegistryTest extends TestCase
 
         $this->assertCount(1, $registry->all(), 'a caller re-declaring its job on every boot must converge on one row');
         $this->assertSame(900, (int) $registry->find('a-job')?->interval_s);
+    }
+
+    /**
+     * ⛔ A RE-DECLARE MUST NOT UNDO AN OPERATOR'S `disable`. Insert is an upsert a caller
+     * re-runs — the shape this registry was built for is a subsystem declaring its job on
+     * every boot — so writing the spec's `enabled` on the UPDATE path would silently revert
+     * `bridge:jobs disable` at the next boot, with nothing said anywhere and the switch's own
+     * docblock promising the opposite. A declaration says what a job IS; whether this install
+     * currently wants it running is {@see JobRegistry::setEnabled()}'s to say.
+     */
+    public function test_a_re_declare_does_not_re_enable_a_job_an_operator_disabled(): void
+    {
+        $registry = $this->registry();
+        $registry->insert($this->spec());
+        $registry->setEnabled('a-job', false);
+
+        $registry->insert($this->spec(['intervalS' => 900]));
+
+        $this->assertFalse((bool) $registry->find('a-job')?->enabled, 'a boot-time re-declare reverted an operator act');
+
+        // The control: everything that is NOT the operator's switch still converges on the
+        // re-declare, which is the whole point of the upsert. Without this leg the test above
+        // would pass for an insert that had stopped updating anything at all.
+        $this->assertSame(900, (int) $registry->find('a-job')?->interval_s);
+    }
+
+    /** The other side of the carve-out: on CREATE the spec's own value is what is stored. */
+    public function test_an_instance_declared_disabled_is_created_disabled(): void
+    {
+        $registry = $this->registry();
+        $registry->insert($this->spec(['enabled' => false]));
+
+        $this->assertFalse((bool) $registry->find('a-job')?->enabled);
     }
 
     public function test_a_disabled_instance_stays_enumerable(): void

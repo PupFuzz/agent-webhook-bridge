@@ -120,6 +120,14 @@ thing a dead cache CANNOT leave behind — the marker lives in the store that fa
 log, not the marker, when the store is the suspect; and a tick whose stamp could not be
 written reads as `unmeasured`, never as fresh.
 
+⚠ **If BOTH recording legs are down at once — one unwritable `storage/` takes the log and the
+`file` cache together — what still carries the fault is NOT the same for every caller.** The
+TICK path is the one described above: the fault rides the pass RESULT, so the exit code says
+so with neither log nor marker written. The two `void` after-response gates and the EVENT
+ingress have no result to carry and are UNREPORTED in that case, deliberately. The per-caller
+split is owned by `App\Bridge\Support\FaultMarker`'s class docblock — read it there rather
+than inferring it from this section, which is about the tick.
+
 ## Death is the alarm
 
 The tick becomes the single point of failure for every periodic job on an install that

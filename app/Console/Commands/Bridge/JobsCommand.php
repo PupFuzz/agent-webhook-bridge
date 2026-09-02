@@ -149,6 +149,20 @@ class JobsCommand extends BridgeCommand
         return $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
     }
 
+    /**
+     * ⛔ EVERY STORED COLUMN IS PRINTED HERE, AND THAT IS THE CONTRACT — not a courtesy and
+     * not a formatting preference. `App\Models\ScheduledJob` states the no-secrets rule over
+     * the whole STORE, and that rule is only honest while the enumeration prints what the
+     * store holds: a column this method omits is a place a value can sit unread on the one
+     * surface an operator audits. The claim was maintained by hand and was false twice
+     * (`payload` and `last_duration_ms`; then `next_due_at` and a conditional
+     * `last_summary`), so it is now held by a test that reads the column list off the SCHEMA
+     * — `Tests\Feature\Console\JobsCommandOutputTest` — rather than by care.
+     *
+     * ⚑ `--json` PRINTS THE SAME POPULATION, and the two surfaces are separately guarded:
+     * {@see self::rowToArray()} is the machine half, this is the human half, and a column
+     * reaching only one of them is the defect the guard exists to red.
+     */
     private function describe(ScheduledJob $job): string
     {
         $head = sprintf(
@@ -161,17 +175,30 @@ class JobsCommand extends BridgeCommand
             (string) $job->docs_ref,
         );
 
+        // ⚑ `last_summary` IS PRINTED ON EVERY OUTCOME, not only on `ok`. It carries the
+        // handler's own account of a good pass, the EXCEPTION CLASS of a failed one and the
+        // refusal REASON of a refused one — three different facts, and the two that were
+        // dropped are the two an operator reading this listing is there to find. Each
+        // remaining part is keyed on ITS OWN value rather than on the status, so a row
+        // cannot lose a stored value to a branch it does not sit on.
         $last = $job->last_status === null
             ? '    last: never run'
             : sprintf(
-                '    last: %s at %s%s%s',
+                '    last: %s at %s%s — %s%s%s',
                 strtoupper((string) $job->last_status),
                 $job->last_run_at?->toIso8601String() ?? '?',
                 $job->last_duration_ms === null ? '' : ' in '.(int) $job->last_duration_ms.'ms',
-                $job->last_status === ScheduledJob::STATUS_OK
-                    ? ' — '.(string) $job->last_summary
-                    : ' — '.(string) $job->last_error.' ('.(int) $job->consecutive_failures.' consecutive)',
+                (string) $job->last_summary,
+                $job->last_error === null ? '' : ' — '.(string) $job->last_error,
+                (int) $job->consecutive_failures > 0 ? ' ('.(int) $job->consecutive_failures.' consecutive)' : '',
             );
+
+        // ⚑ WHEN IT RUNS NEXT is the other half of "when", and the half a reader asking
+        // "is this thing still going to happen?" needs. NULL is not unknown: the column's
+        // stored meaning is "never run, due now" (both drivers sort NULL first on ASC, so a
+        // fresh row wins the oldest-first ordering), so it is printed as that rather than
+        // as a blank that reads like a missing value.
+        $next = '    next due: '.($job->next_due_at?->toIso8601String() ?? 'now (never run)');
 
         // ⭐ `payload` IS PRINTED, and its absence would have falsified this command's own
         // headline claim. "GET the job list and you have named the entire periodic
@@ -185,7 +212,7 @@ class JobsCommand extends BridgeCommand
 
         // Last, and on its own line, because it is the line a reader auditing the
         // population is actually there to read.
-        return $head."\n".$last.$payload."\n    why periodic: ".(string) $job->justification."\n";
+        return $head."\n".$last."\n".$next.$payload."\n    why periodic: ".(string) $job->justification."\n";
     }
 
     /**

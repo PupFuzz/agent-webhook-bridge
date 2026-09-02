@@ -29,7 +29,10 @@ return new class extends Migration
         // printed by `bridge:jobs` — `payload` included, on both the human listing and
         // `--json` — and several are summarised by `bridge:check`. The surrogate `id` and the
         // framework timestamps carry no caller value and are not printed. The rule is over
-        // the STORE, and it is only honest while the enumeration prints what the store holds.
+        // the STORE, and it is only honest while the enumeration prints what the store holds
+        // — which is why that universal is held by a test reading the column list off the
+        // SCHEMA (`Tests\Feature\Console\JobsCommandOutputTest`) rather than by care.
+        // ⛔ ADDING A COLUMN HERE REDS THAT TEST until both surfaces print it.
         Schema::create('scheduled_jobs', function (Blueprint $table) {
             $table->id();
 

@@ -99,6 +99,44 @@ class DeadCacheBackendTest extends TestCase
             ->assertExitCode(TickCommand::FAILURE);
     }
 
+    /**
+     * ⚑ TWO LOG LINES FROM ONE `bridge:tick`, AND THE PAIRING IS THE CLAIM.
+     * `docs/periodic-jobs.md` tells an operator debugging a dead cache store to read the LOG,
+     * because the marker lives in the store that failed — and it tells them to expect a line
+     * PER FAILED LEG: the tick stamp and the pass fail separately and each records its own.
+     * A single line would mean one of the two legs recorded nothing, which is exactly the
+     * silent half this strand exists to end, and nothing pinned the pair.
+     */
+    public function test_one_dead_cache_tick_logs_the_stamp_and_the_pass_separately(): void
+    {
+        Log::spy();
+        $this->killTheCache();
+
+        $this->artisan('bridge:tick')->assertExitCode(TickCommand::FAILURE);
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $m) => $m === 'the tick stamp could not be written; this tick will read as unmeasured')
+            ->once();
+        Log::shouldHaveReceived('warning')
+            ->withArgs(fn (string $m) => $m === 'scheduled job pass failed')
+            ->once();
+    }
+
+    /**
+     * ⚑ THE CONTROL FOR THE PAIR ABOVE. On a HEALTHY cache the same tick records neither
+     * line — without this, a spy that matched everything (or a message string that had
+     * drifted into something always logged) would satisfy the test while measuring nothing.
+     */
+    public function test_a_healthy_cache_tick_logs_neither_fault_line(): void
+    {
+        Log::spy();
+
+        $this->artisan('bridge:tick')->assertExitCode(TickCommand::SUCCESS);
+
+        Log::shouldNotHaveReceived('warning', fn (string $m) => $m === 'the tick stamp could not be written; this tick will read as unmeasured');
+        Log::shouldNotHaveReceived('warning', fn (string $m) => $m === 'scheduled job pass failed');
+    }
+
     /** The same fault through the operator's hand-run pass — same contract, same exit. */
     public function test_a_hand_run_pass_exits_non_zero_on_a_dead_cache_backend(): void
     {

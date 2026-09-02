@@ -15,6 +15,11 @@ use Illuminate\Support\Facades\Log;
  * common shape: a subsystem that wants "my cleanup, every 30 minutes") must converge on one
  * row rather than minting a schedule per boot. The name is the identity.
  *
+ * ⛔ WITH ONE FIELD CARVED OUT: `enabled` is written at CREATE ONLY. A declaration says what
+ * a job IS; whether this install currently wants it running is an OPERATOR fact, owned by
+ * {@see self::setEnabled()}, and a re-declare that reverted it would undo `bridge:jobs
+ * disable` at the next boot with nothing said anywhere.
+ *
  * ⭐ IT REFUSES AT INSERT AS WELL AS AT RUN, and the two refusals share ONE predicate
  * ({@see JobHandlerRegistry::refusalFor()}). Insert-time refusal is what stops an install
  * accumulating rows that can never execute — a registry full of jobs nobody can run is a
@@ -44,18 +49,28 @@ final class JobRegistry
             throw new JobSpecException("job '{$spec->name}' refused: ".$refusal->message);
         }
 
-        $job = ScheduledJob::query()->updateOrCreate(
-            ['name' => $spec->name],
-            [
-                'handler' => $spec->handler,
-                'interval_s' => $spec->intervalS,
-                'owner' => $spec->owner,
-                'docs_ref' => $spec->docsRef,
-                'justification' => trim($spec->justification),
-                'enabled' => $spec->enabled,
-                'payload' => $spec->payload === [] ? null : $spec->payload,
-            ],
-        );
+        $job = ScheduledJob::query()->firstOrNew(['name' => $spec->name]);
+
+        // ⛔ `enabled` IS WRITTEN ON CREATE ONLY, and that is why this is not a plain
+        // `updateOrCreate`. Insert is an upsert a caller RE-RUNS — the common shape is a
+        // subsystem re-declaring its job on every boot — so writing the spec's `enabled` on
+        // the update path would let the next boot silently undo `bridge:jobs disable`, an
+        // operator act, with nothing said anywhere. {@see self::setEnabled()} owns the
+        // switch; a declaration says what a job IS, not whether this install currently wants
+        // it running. Every other field still converges on the re-declare, which is what
+        // makes the upsert worth having.
+        if (! $job->exists) {
+            $job->enabled = $spec->enabled;
+        }
+
+        $job->fill([
+            'handler' => $spec->handler,
+            'interval_s' => $spec->intervalS,
+            'owner' => $spec->owner,
+            'docs_ref' => $spec->docsRef,
+            'justification' => trim($spec->justification),
+            'payload' => $spec->payload === [] ? null : $spec->payload,
+        ])->save();
 
         // A periodic population that changed shape is a fact about the install, and the one
         // place it is cheap to notice is the moment it changed. The line carries the

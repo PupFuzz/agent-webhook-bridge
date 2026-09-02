@@ -8,6 +8,7 @@ use App\Bridge\Scheduling\JobSpec;
 use App\Console\Commands\Bridge\JobsCommand;
 use App\Models\ScheduledJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Schema;
@@ -29,6 +30,40 @@ use Tests\TestCase;
 class JobsCommandOutputTest extends TestCase
 {
     use RefreshDatabase;
+
+    /**
+     * ⛔ THE DECLARED CARVE-OUT, and the only one. The surrogate key and the framework
+     * timestamps carry no caller value, which is why the model docblock and the migration
+     * comment both name them as not printed. Everything else in the table is a value some
+     * caller put there, and the no-secrets rule is stated over the whole store.
+     */
+    private const NOT_PRINTED = ['id', 'created_at', 'updated_at'];
+
+    /**
+     * column => [the text the HUMAN listing must carry, the text the `--json` VALUE must
+     * carry]. The two differ where a surface renders rather than dumps — `enabled` is a
+     * `[disabled]` marker to a reader and `false` to a parser — so one needle for both would
+     * be a needle for neither.
+     *
+     * @var array<string, array{string, string}>
+     */
+    private const WITNESS = [
+        'name' => ['guarded-job', 'guarded-job'],
+        'handler' => ['handler=standup_digest', 'standup_digest'],
+        'interval_s' => ['every=1800s', '1800'],
+        'owner' => ['the-suite-owner', 'the-suite-owner'],
+        'docs_ref' => ['docs/periodic-jobs.md#guard', 'docs/periodic-jobs.md#guard'],
+        'justification' => ['nothing that arrives here creates or gates this work', 'nothing that arrives here creates or gates this work'],
+        'enabled' => ['[disabled]', 'false'],
+        'payload' => ['"board_id":4242', '4242'],
+        'last_run_at' => ['2026-08-30T11:22:33', '2026-08-30T11:22:33'],
+        'next_due_at' => ['2026-08-30T11:52:33', '2026-08-30T11:52:33'],
+        'last_status' => ['FAILED', 'failed'],
+        'last_summary' => ['the board refused the digest', 'the board refused the digest'],
+        'last_error' => ['the board said no', 'the board said no'],
+        'last_duration_ms' => ['4321ms', '4321'],
+        'consecutive_failures' => ['7 consecutive', '7'],
+    ];
 
     protected function setUp(): void
     {
@@ -59,6 +94,78 @@ class JobsCommandOutputTest extends TestCase
         $job->save();
 
         return $job;
+    }
+
+    /** Every column of the table given a value that is findable as text on both surfaces. */
+    private function plantEveryColumn(): ScheduledJob
+    {
+        $job = (new JobRegistry($this->app->make(JobHandlerRegistry::class)))->insert(new JobSpec(
+            name: 'guarded-job',
+            handler: 'standup_digest',
+            intervalS: 1800,
+            owner: 'the-suite-owner',
+            docsRef: 'docs/periodic-jobs.md#guard',
+            justification: 'nothing that arrives here creates or gates this work',
+            enabled: false,
+            payload: ['board_id' => 4242],
+        ));
+
+        // The scheduler's own columns are deliberately not fillable, so they are written the
+        // way the scheduler writes them. A FAILED row is the case that carried the defect:
+        // `last_summary` holds the exception's own account on `ok` and the failure/refusal
+        // reason otherwise, and the listing used to drop it on everything but `ok`.
+        $job->last_run_at = Carbon::parse('2026-08-30T11:22:33+00:00');
+        $job->next_due_at = Carbon::parse('2026-08-30T11:52:33+00:00');
+        $job->last_status = ScheduledJob::STATUS_FAILED;
+        $job->last_summary = 'the board refused the digest';
+        $job->last_error = 'the board said no';
+        $job->last_duration_ms = 4321;
+        $job->consecutive_failures = 7;
+        $job->save();
+
+        return $job;
+    }
+
+    /**
+     * ⭐ THE UNIVERSAL IS A GUARD NOW, NOT A SENTENCE SOMEBODY MAINTAINS. `ScheduledJob`'s
+     * docblock, the migration comment and the changelog all assert that EVERY stored column
+     * is printed by `bridge:jobs` on BOTH surfaces — and the model states the no-secrets rule
+     * over the whole store *because* of it: "a column the enumeration omits is a place a
+     * secret could sit unread". That hand-maintained claim was false twice (`payload` and
+     * `last_duration_ms`, then `next_due_at` and a `last_summary` printed only on `ok`), and
+     * each repair narrowed to the columns the last review named — which is the shape that
+     * mints the third instance.
+     *
+     * ⛔ THE POPULATION COMES FROM THE SCHEMA, which is what makes this different from the
+     * per-column assertions below it: a column ADDED to `scheduled_jobs` and printed nowhere
+     * reds this test at the first leg, naming itself, instead of quietly widening the space
+     * the rule is stated over.
+     */
+    public function test_every_stored_column_is_printed_on_both_surfaces(): void
+    {
+        $this->plantEveryColumn();
+
+        $columns = array_values(array_diff(Schema::getColumnListing('scheduled_jobs'), self::NOT_PRINTED));
+        $witnessed = array_keys(self::WITNESS);
+        sort($columns);
+        sort($witnessed);
+        $this->assertSame(
+            $columns,
+            $witnessed,
+            'a column of scheduled_jobs has no witness here: print it on BOTH surfaces and add it to WITNESS, or add it to the declared NOT_PRINTED carve-out and say so in the model docblock',
+        );
+
+        Artisan::call('bridge:jobs');
+        $human = Artisan::output();
+
+        Artisan::call('bridge:jobs', ['--json' => true]);
+        $row = json_decode(Artisan::output(), true)['jobs'][0];
+
+        foreach (self::WITNESS as $column => [$onHuman, $inJson]) {
+            $this->assertStringContainsString($onHuman, $human, "'{$column}' carries no value on the HUMAN listing");
+            $this->assertArrayHasKey($column, $row, "'{$column}' is missing from the --json document");
+            $this->assertStringContainsString($inJson, (string) json_encode($row[$column], JSON_UNESCAPED_SLASHES), "'{$column}' carries no value under --json");
+        }
     }
 
     public function test_the_human_listing_prints_the_payload_and_the_duration(): void

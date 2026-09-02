@@ -30,7 +30,14 @@ use Illuminate\Support\Carbon;
  * honest while the listing really does print what is stored: a column the enumeration omits
  * is a place a secret could sit unread, which is why omitting one is a defect and not a
  * formatting choice. (`id` and the framework `created_at`/`updated_at` carry no caller value
- * and are not printed.)
+ * and are not printed — that is the whole carve-out.)
+ *
+ * ⚑ AND THAT UNIVERSAL IS A GUARD, NOT A SENTENCE SOMEBODY MAINTAINS. It was hand-maintained
+ * and it was false twice, each repair narrowing to the columns the last review had named.
+ * `Tests\Feature\Console\JobsCommandOutputTest` now enumerates this table's columns FROM THE
+ * SCHEMA, subtracts the three above, and reds on any remaining column missing from either
+ * surface — so a column added here without a printer fails, naming itself, instead of quietly
+ * widening the space this rule is stated over.
  *
  * ⚑ `last_status` HAS THREE VALUES AND A NULL, and collapsing them loses the remedy.
  * `ok` / `failed` / `refused` / never-run: a refusal means the scheduler declined to invoke
