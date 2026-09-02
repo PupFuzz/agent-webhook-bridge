@@ -3,6 +3,7 @@
 namespace Tests\Feature\Writeback;
 
 use App\Bridge\Dispatch\ReactionTarget;
+use App\Bridge\Handlers\KanbanBlockReasonHandler;
 use App\Bridge\Handlers\KanbanMoveCardHandler;
 use App\Bridge\Support\AgentConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -15,12 +16,13 @@ use Tests\TestCase;
 
 /**
  * THE TENANT BOUNDARY IS A PROPERTY OF THIS CODE, NOT OF THE WRITEBACK TOKEN'S SCOPE
- * (card#8375).
+ * (card#8375, extended to the draft overlay by card#8415).
  *
- * ⛔ WHAT THIS CLASS EXISTS TO MAKE FALSIFIABLE. `payload.card_id` reaches the move handler
- * as a literal parsed out of AUTHOR-CONTROLLED text (`card#NNNN` in a PR title or head ref),
+ * ⛔ WHAT THIS CLASS EXISTS TO MAKE FALSIFIABLE. The card id reaches BOTH token-resolved arms
+ * — `kanban_move_card` and the `kanban_block_reason` draft overlay — as a literal parsed out
+ * of AUTHOR-CONTROLLED text (`card#NNNN` in a PR title or head ref),
  * and kanban's card id space is GLOBAL across every board on the instance — so an id naming
- * another install's card arrives intact. Before this, the handler resolved it with an
+ * another install's card arrives intact. Before this, each handler resolved it with an
  * UNSCOPED `GET /tasks/{id}.json` and only then compared the returned `board_id` against the
  * mapping. Measured live: a repo event on one install resolved to a card another install
  * owns, and what stopped it was the API answering 403 — i.e. whatever that token's scope
@@ -64,7 +66,9 @@ class WritebackTenantScopeTest extends TestCase
         File::put($this->dir.'/writeback.json', (string) json_encode([
             'identity_id' => 4242,
             'alert_channel' => ['url' => self::ALERT_URL],
-            'mappings' => ['owner/repo' => ['board_id' => self::BOARD, 'stages' => ['merged' => 52]]],
+            // `draft_overlay` opts the second token-resolved arm in (card#8415). It is inert
+            // for the move legs — only the classifier and `KanbanBlockReasonHandler` read it.
+            'mappings' => ['owner/repo' => ['board_id' => self::BOARD, 'stages' => ['merged' => 52], 'draft_overlay' => true]],
         ]));
         File::put($this->dir.'/kanban/writeback-token', 'wb-token');
         chmod($this->dir.'/kanban/writeback-token', 0o600);
@@ -81,6 +85,22 @@ class WritebackTenantScopeTest extends TestCase
         (new KanbanMoveCardHandler)->handle(
             ReactionTarget::make('kanban_move_card', (string) $cardId, payload: [
                 'card_id' => $cardId, 'repo' => 'owner/repo', 'outcome' => 'merged',
+            ]),
+            AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
+        );
+    }
+
+    /**
+     * The SECOND token-resolved arm (card#8415): the draft overlay, whose card id comes from
+     * the same `card#`/DL token grammar against the same global id space. A `set` is used
+     * because it is the writing direction — a refusal that let the read through would be one
+     * PATCH away from stamping another install's card.
+     */
+    private function handleOverlay(int $cardId = self::FOREIGN_CARD): void
+    {
+        (new KanbanBlockReasonHandler)->handle(
+            ReactionTarget::make('kanban_block_reason', (string) $cardId, payload: [
+                'repo' => 'owner/repo', 'action' => 'set',
             ]),
             AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
         );
@@ -317,5 +337,75 @@ class WritebackTenantScopeTest extends TestCase
         $this->assertSame('boardscope_403_token_scope', $alerts[0]['reason']);
         $this->assertStringNotContainsString('foreign', $alerts[0]['reason']);
         $this->assertTrue($alerts[0]['card_id_withheld'] ?? false);
+    }
+
+    // --- card#8415: the SECOND token-resolved arm. The verdicts, the archive switch and the
+    //     transient/permanent split are `MappedBoardGuard`'s and are pinned by the move legs
+    //     above — one primitive, one rule. What these two legs own is that THIS arm asks it,
+    //     and asks it BEFORE the unscoped read. ---
+
+    /**
+     * ⭐ THE HEADLINE LEG FOR THE OVERLAY, and the same measurement as the move handler's:
+     * the foreign card read is stubbed to SUCCEED (the widened token), so "the card was never
+     * read" is a property of the bridge and not of the credential. Seen to fail before the
+     * fix: the overlay GETs `/tasks/7756.json`, the fixture hands another install's card over,
+     * and only the post-read compare refuses it — a refusal whose precondition is the
+     * cross-tenant read that already happened.
+     */
+    public function test_the_draft_overlay_refuses_a_foreign_card_id_with_the_unscoped_read_never_made(): void
+    {
+        Log::spy();
+        Http::fake($this->alertStub() + [
+            '*/tasks/search.json?q=board_id%3D8%20id%3D7756*' => Http::response(['data' => []]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 1]], 'meta' => ['total' => 12]]),
+        ] + $this->foreignCardIsReadable());
+
+        $this->handleOverlay();
+
+        Http::assertNotSent(fn (Request $r) => self::isUnscopedCardRead($r));
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertSent(fn (Request $r) => self::isScopeLookup($r));
+
+        $alerts = $this->alerts();
+        $this->assertCount(1, $alerts, 'a permanent refusal must emit exactly one live signal');
+        $this->assertSame('card_id_outside_mapped_board', $alerts[0]['reason']);
+        // The overlay's synthetic outcome, so this refusal cannot share a dedup tuple with the
+        // move handler's identical one on the same repo (DL-274(3)).
+        $this->assertSame('draft_overlay', $alerts[0]['outcome']);
+        $this->assertNull($alerts[0]['card_id']);
+        $this->assertTrue($alerts[0]['card_id_withheld'] ?? false);
+        Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $msg, array $ctx) => str_contains($msg, 'kanban_block_reason: REFUSED')
+            && str_contains($msg, 'not on the mapped board')
+            && ($ctx['card_id'] ?? null) === self::FOREIGN_CARD
+            && ($ctx['mapped_board'] ?? null) === self::BOARD);
+    }
+
+    /**
+     * The order, on the overlay: asserted on the recorded sequence rather than on a count,
+     * because a check that ran after the read would satisfy any count. A card on the mapped
+     * board still reaches the field write exactly as before — the check costs one request and
+     * changes nothing on the happy path.
+     */
+    public function test_the_overlay_scope_lookup_precedes_the_card_read_and_the_set_still_lands(): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 5, 'board_id' => self::BOARD]]]),
+            '*/tasks/5.json' => Http::response(['data' => ['id' => 5, 'board_id' => self::BOARD, 'block_reason' => null]]),
+        ]);
+
+        $this->handleOverlay(5);
+
+        $reads = collect(Http::recorded())
+            ->map(fn ($pair) => $pair[0])
+            ->filter(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/'))
+            ->map(fn (Request $r) => str_contains($r->url(), '/search.json') ? 'scope' : 'card')
+            ->values()->all();
+
+        $this->assertSame(['scope', 'card'], $reads,
+            'the board-scoped check must run BEFORE the unscoped card read, exactly once — the whole point is that '
+            .'an id outside the mapping is never resolved at all');
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && str_contains($r->url(), '/tasks/5.json')
+            && $r['block_reason'] === KanbanBlockReasonHandler::MARKER);
     }
 }
