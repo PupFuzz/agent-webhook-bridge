@@ -101,6 +101,35 @@ class PrBaseSnapshotTest extends TestCase
         $this->assertSame('', $stderr);
     }
 
+    public function test_it_reads_the_recorded_parent_rather_than_re_deriving_a_fork_point(): void
+    {
+        // The one shape that separates `HEAD^1` from `git merge-base HEAD^1
+        // HEAD^2` — the rewrite this script exists NOT to be, and the shape PR
+        // #640 actually was: the base branch moves after the fork, so the merge's
+        // recorded parent is the MOVED TIP while the fork point is where the
+        // branch was cut. Every other fixture in this class is linear, where the
+        // two coincide and the substitution is invisible; without this case the
+        // class is inert to it and the discrimination lives only in the callers'
+        // harnesses, which is how a derivation defect reaches four gates.
+        $repo = $this->makeRepo(merge: false);
+        $git = $this->git($repo['dir']);
+
+        exec($git.'checkout -q --detach '.escapeshellarg($repo['base']).' 2>&1');
+        file_put_contents($repo['dir'].'/f', "base moved\n");
+        exec($git.'add -A && '.$git.'commit -q -m "base moves after the fork" 2>&1');
+        $movedTip = trim((string) shell_exec($git.'rev-parse HEAD'));
+        exec($git.'merge -q --no-ff --no-edit '.escapeshellarg($repo['head']).' 2>&1');
+
+        $forkPoint = trim((string) shell_exec($git.'merge-base '.escapeshellarg($movedTip).' '.escapeshellarg($repo['head'])));
+        $this->assertSame($repo['base'], $forkPoint, 'the fixture must make the fork point differ from the recorded parent');
+        $this->assertNotSame($movedTip, $forkPoint);
+
+        [$rc, $stdout, $stderr] = $this->runScript($repo['dir'], $repo['head']);
+
+        $this->assertSame(0, $rc, $stderr);
+        $this->assertSame($movedTip, $stdout, 'the base is the parent the merge RECORDS, not a fork point re-derived from it');
+    }
+
     public function test_a_non_merge_head_is_refused_rather_than_guessed_at(): void
     {
         // The `push`-triggered run, the local invocation, the re-pointed fixture:
