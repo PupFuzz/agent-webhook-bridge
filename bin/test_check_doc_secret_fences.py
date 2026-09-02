@@ -690,6 +690,163 @@ class TheNegativeHalfOfTheVocabulary(unittest.TestCase):
         self.assertEqual(['argv'], self._rules('openssl pkey -passin "pass:$API_KEY"\n'))
 
 
+class TheArmSetAMemberWidensIsDERIVEDNotCounted(unittest.TestCase):
+    """WHAT A `SECRET_PATH_MARKERS` MEMBER WIDENS, READ OUT OF THE PROGRAM.
+
+    ⛔ THE DEFECT THIS EXISTS FOR IS NOT A WRONG NUMBER, IT IS A RESTATED ONE. Two
+    consecutive rulings published a hand-written arm list on eight surfaces between
+    them — the `.env` one said ONE arm, its correction said THREE — and both were
+    short. A member also reaches the `log` rule: `_secret_files_on_stdout` sets
+    `pipeline_carries_secret`, which is that rule's own gate, so
+    `cat <store> > /var/log/deploy.log` is green before the member and reds after
+    it. Nothing that SAID "three" could red when it stopped being true.
+    `app/Bridge/Writeback/MappedBoardGuard.php` carries the identical scar in this
+    repo: an arm list in a docstring that went stale twice.
+
+    So the set is derived HERE and stated nowhere, and every surface that used to
+    list the arms now points at this class by name. Three legs make the derivation
+    worth reading, and each is a check rather than a sentence:
+
+      · THE DENOMINATOR IS THE TOOL'S OWN `RULE_IDS`. A rule added to the program
+        reds `test_the_fixture_table_covers_every_RULE_ID_the_tool_declares` until
+        someone writes its fixture, so the derived set cannot silently under-count
+        the way a hand list does.
+      · EACH FIXTURE IS WATCHED FIRING ITS OWN RULE. A dud fixture — one that reds
+        under nothing — would shrink the derived set into agreement with whatever
+        was expected, which is exactly the failure mode of a table of green cases.
+      · THE RULES A MEMBER CANNOT REACH ARE DISPOSED BY MEASUREMENT. Each fires
+        identically with the member installed and removed, so "unreachable" is a
+        reading rather than a claim, and a change that made one reachable reds.
+
+    ⚠ THE PROPERTY IS ABOUT MEMBERSHIP, NOT ABOUT ONE MEMBER, so the derivation runs
+    over every shipped member AND over a member that does not exist — the latter
+    being the claim the docs actually make about the NEXT ruling.
+    """
+
+    #: A spelling nothing in this repo carries, standing in for the member the next
+    #: ruling adds. ⚠ It must contain no GENERIC_PATH_MARKERS word: a member spelled
+    #: like one would red through the generic leg with the member REMOVED, and the
+    #: delta would attribute nothing. Checked below rather than trusted.
+    NOVEL_MEMBER = 'zzq-store-fixture/'
+
+    #: rule id → a fence body that reds under THAT rule when `{p}` is a secret store,
+    #: `{p}` being a path built out of the member under test. ⚠ The path deliberately
+    #: carries no leading `~/`: a directory prefix would put a `/` in the token for
+    #: EVERY member, and the members spelled like a GENERIC marker
+    #: (`writeback-token`, `webhook-secret-scope`) would then red through the generic
+    #: leg with the member removed, leaving the delta measuring nothing.
+    ARM_FIXTURES = {
+        'stdout': 'cat {p}\n',
+        'argv': 'curl -H "Authorization: Bearer $(cat {p})" http://x/\n',
+        'history': 'echo "api_token: placeholder" >> {p}\n',
+        'log': 'cat {p} > /var/log/deploy.log\n',
+        # The marker sits inside the probe's own DEFAULT here, so this is not a
+        # fixture that simply keeps the member away from the rule.
+        'probe': 'echo "${{API_TOKEN:-{p}}}"\n',
+        # A reasonless waiver reds and does NOT suppress the command under it, so
+        # this doc carries both the waiver arm and a reader on the member.
+        'waiver-no-reason': '# doc-fence-lint: allow\ncat {p}\n',
+    }
+
+    #: rule id → why a path member cannot reach it. The reason is prose; the
+    #: DISPOSITION is measured by
+    #: `test_the_rules_a_member_cannot_reach_are_disposed_BY_MEASUREMENT`.
+    CANNOT_REACH = {
+        'probe': 'reads EXPANSIONS of a secret-NAMED variable; a path is not one',
+        'waiver-no-reason': 'reads the waiver COMMENT; it never asks about a path',
+    }
+
+    @staticmethod
+    def _installed_and_removed(member: str, body: str) -> tuple[set[str], set[str]]:
+        """The rule ids `body` reds under with `member` REMOVED from the marker
+        tuple, and with it installed — the pair the whole derivation is built on."""
+        original = lint.SECRET_PATH_MARKERS
+        without = tuple(m for m in original if m != member)
+        try:
+            lint.SECRET_PATH_MARKERS = without
+            removed = set(_rules(body))
+            lint.SECRET_PATH_MARKERS = without + (member,)
+            installed = set(_rules(body))
+        finally:
+            lint.SECRET_PATH_MARKERS = original
+        return removed, installed
+
+    def _derive(self, member: str) -> set[str]:
+        """The rule ids `member`'s MEMBERSHIP adds, one fixture per declared rule."""
+        derived = set()
+        for rule, template in self.ARM_FIXTURES.items():
+            body = template.format(p=f'{member}kanban.yml')
+            removed, installed = self._installed_and_removed(member, body)
+            self.assertIn(rule, installed,
+                          f'the {rule} fixture does not red under {rule} — a dud '
+                          f'fixture shrinks the derived set instead of measuring it')
+            if rule in installed - removed:
+                derived.add(rule)
+        return derived
+
+    def test_the_fixture_table_covers_every_RULE_ID_the_tool_declares(self) -> None:
+        """The denominator, and the reason this cannot go quietly stale: a rule added
+        to the program has no fixture here, so it reds until someone either exercises
+        it or disposes of it in `CANNOT_REACH`."""
+        self.assertEqual(set(lint.RULE_IDS), set(self.ARM_FIXTURES))
+        self.assertLessEqual(set(self.CANNOT_REACH), set(lint.RULE_IDS))
+
+    def test_the_NOVEL_member_is_a_clean_instrument(self) -> None:
+        """A control on the derivation's own subject. If the stand-in member were
+        already a marker, or spelled like a generic one, every delta below would be
+        measuring something other than membership."""
+        self.assertNotIn(self.NOVEL_MEMBER, lint.SECRET_PATH_MARKERS)
+        for generic in lint.GENERIC_PATH_MARKERS:
+            self.assertNotIn(generic, self.NOVEL_MEMBER)
+        self.assertEqual([], _rules(f'cat {self.NOVEL_MEMBER}kanban.yml\n'),
+                         'the stand-in already reds without being a member')
+
+    def test_a_member_THAT_DOES_NOT_EXIST_YET_widens_the_derived_arm_set(self) -> None:
+        """The claim every doc surface makes, asserted as a SET and never as a count:
+        adding a member widens every rule id the tool declares, less the ones
+        disposed in `CANNOT_REACH`."""
+        self.assertEqual(set(lint.RULE_IDS) - set(self.CANNOT_REACH),
+                         self._derive(self.NOVEL_MEMBER))
+
+    def test_EVERY_shipped_member_widens_the_SAME_derived_set(self) -> None:
+        """Membership is the property, not the spelling — so the derivation is run
+        over the whole tuple rather than over the two members a doc happens to
+        describe."""
+        expected = set(lint.RULE_IDS) - set(self.CANNOT_REACH)
+        for member in lint.SECRET_PATH_MARKERS:
+            with self.subTest(member=member):
+                self.assertEqual(expected, self._derive(member))
+
+    def test_the_rules_a_member_cannot_reach_are_disposed_BY_MEASUREMENT(self) -> None:
+        """An unexamined rule and an unreachable one look the same in a set
+        difference. Each of these fires under its fixture with the member installed
+        AND removed, so it is out of the derived set because the member does not move
+        it — not because nothing exercised it."""
+        for rule in self.CANNOT_REACH:
+            with self.subTest(rule=rule):
+                body = self.ARM_FIXTURES[rule].format(p=f'{self.NOVEL_MEMBER}kanban.yml')
+                removed, installed = self._installed_and_removed(self.NOVEL_MEMBER, body)
+                self.assertIn(rule, removed)
+                self.assertIn(rule, installed)
+
+    def test_the_surfaces_that_POINT_here_name_this_class(self) -> None:
+        """A pointer is a restatement of exactly one thing — the NAME — so it gets the
+        one guard a name can have. Renaming this class reds until the surfaces that
+        stopped listing the arms are moved with it.
+
+        `docs/CHANGELOG.md` points here too and is deliberately NOT asserted: its
+        entries are trimmed by the retention policy, so a green here would eventually
+        depend on a doc that is supposed to disappear.
+        """
+        with open(_TOOL, encoding='utf-8') as fh:
+            self.assertIn(type(self).__name__, fh.read())
+        with open(os.path.join(_REPO, 'CLAUDE_DECISIONS.md'), encoding='utf-8') as fh:
+            self.assertIn(type(self).__name__, fh.read())
+        for pointing in (ADotEnvFileIsASecretStore, ThePerAgentConfigStoreIsASecretStore):
+            with self.subTest(cls=pointing.__name__):
+                self.assertIn(type(self).__name__, pointing.__doc__ or '')
+
+
 class ADotEnvFileIsASecretStore(unittest.TestCase):
     """`.env` is in SECRET_PATH_MARKERS on an operator ruling (card#8351).
 
@@ -704,8 +861,11 @@ class ADotEnvFileIsASecretStore(unittest.TestCase):
     The near-spelling `.env.example` is disclosed as BOUND(env-template) and pinned
     there, not here.
 
-    A secret-store marker is read by THREE rules, so the marker widened three arms —
-    `stdout`, `argv`, `history` — and each is pinned below against the same
+    ⛔ THE ARM SET THIS MEMBER WIDENED IS NOT LISTED HERE. It is derived, over every
+    member including this one, by `TheArmSetAMemberWidensIsDERIVEDNotCounted` — this
+    docstring said "THREE arms" and the tool's `log` rule made that false the day the
+    marker landed. What the cases below pin is this member's own SPELLINGS — the
+    reader, the captured read, the command-line literal — against the same
     delete-the-marker mutation.
     """
 
@@ -777,9 +937,11 @@ class ThePerAgentConfigStoreIsASecretStore(unittest.TestCase):
     The near-spelling this marker DOES pay for — the project's own source checkout —
     is disclosed as BOUND(source-checkout) and pinned there, not here.
 
-    A secret-store marker is read by THREE rules, so this marker widened three arms —
-    `stdout`, `argv`, `history` — and each is pinned below against the same
-    delete-the-marker mutation.
+    ⛔ THE ARM SET THIS MEMBER WIDENED IS NOT LISTED HERE, for the same reason it is
+    not listed on the `.env` class: a hand-written list of arms was wrong on both,
+    twice. It is derived over every member by
+    `TheArmSetAMemberWidensIsDERIVEDNotCounted`. What the cases below pin is this
+    member's own SPELLINGS, against the same delete-the-marker mutation.
     """
 
     STORE = '~/.config/agent-webhook-bridge/kanban.yml'
@@ -834,14 +996,32 @@ class ThePerAgentConfigStoreIsASecretStore(unittest.TestCase):
     def test_the_marker_needs_the_TRAILING_SLASH_to_fire(self) -> None:
         """`agent-webhook-bridge` unqualified is the PROJECT name, which appears in
         every sibling checkout and directory name, so the negative half of this
-        marker is the trailing separator that makes it a path SEGMENT.
+        marker is the trailing separator — which is what stops
+        `agent-webhook-bridge-dev/` matching.
 
-        Both cases are reads of an ordinary file in a directory whose name merely
-        STARTS with the project name; both red under a marker widened to a bare
-        `agent-webhook-bridge`, which is the mutation this pins against.
+        ⚠ THE SEPARATOR DOES NOT MAKE THIS A PATH SEGMENT, and this test pins only
+        one of the two directions: the predicate is `'agent-webhook-bridge/' in low`,
+        unanchored on the left. The direction it does NOT pin is the case below.
+
+        Both cases here are reads of an ordinary file in a directory whose name
+        merely STARTS with the project name; both red under a marker widened to a
+        bare `agent-webhook-bridge`, which is the mutation this pins against.
         """
         self.assertEqual([], _rules('cat ~/agent-webhook-bridge-dev/README.md\n'))
         self.assertEqual([], _rules('cat ~/.config/agent-webhook-bridge-old/x.yml\n'))
+
+    def test_the_match_is_UNANCHORED_on_the_LEFT(self) -> None:
+        """The other direction, pinned as the pair that separates them: a directory
+        whose name ENDS in the segment matches, because nothing anchors the left.
+
+        This is not a defect report — every such directory IS a checkout, so the
+        finding sits inside BOUND(source-checkout), which now says the match is
+        unanchored rather than leaving it to be inferred from "path segment". It is
+        here because the CLAIM was wrong, and because narrowing the predicate would
+        change what CI accepts and is its own ruling.
+        """
+        self.assertEqual(['stdout'], _rules('cat ~/dev-agent-webhook-bridge/README.md\n'))
+        self.assertEqual([], _rules('cat ~/agent-webhook-bridge-dev/README.md\n'))
 
 
 class TheWaiver(unittest.TestCase):
@@ -1531,6 +1711,8 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
                                'agent-webhook-bridge/dev/bin/x.py -o x.py\n'), ()),
                 Payload(_fence('cat ~/.config/agent-webhook-bridge/kanban.yml\n'),
                         ('stdout',)),
+                Payload(_fence('cat ~/dev-agent-webhook-bridge/README.md\n'),
+                        ('stdout',)),
             )),
         'tee-outside-a-pipeline': (
             'test_tee_OUTSIDE_a_pipeline_still_names_the_wrong_direction', (
@@ -1668,6 +1850,10 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
         carrying the same segment is green for the same reason. The last case is the
         red twin the bound is measured against — a reader on the real store, which is
         the finding the marker exists to produce.
+
+        The LAST case is the direction the bullet's "unanchored on the left" sentence
+        names: a directory whose name ENDS in the segment matches too, and it is
+        still a checkout, so it belongs to this bound rather than beside it.
         """
         self.assertEqual(['stdout'], _rules('cat ~/agent-webhook-bridge/README.md\n'))
         self.assertEqual(['stdout'], _rules(
@@ -1679,6 +1865,8 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
             'agent-webhook-bridge/dev/bin/x.py -o x.py\n'))
         self.assertEqual(['stdout'], _rules(
             'cat ~/.config/agent-webhook-bridge/kanban.yml\n'))
+        self.assertEqual(['stdout'], _rules(
+            'cat ~/dev-agent-webhook-bridge/README.md\n'))
 
     def test_the_shipped_TEMPLATE_matches_the_secret_store_marker_too(self) -> None:
         """`.env` is a SUBSTRING, so `.env.example` — the template that ships, with
