@@ -339,6 +339,64 @@ class GetCardTenantCheckCoverageTest extends TestCase
         );
     }
 
+    public function test_the_shared_walk_never_offers_a_structural_token_to_a_predicate(): void
+    {
+        // {@see SourceScan::sites} STATES this exclusion; without this arm it is a
+        // declaration with no check, on the primitive minted to retire that shape. The scope
+        // tracking consumes four tokens before the predicate is asked — `{`, `}`, a `;`
+        // closing a bodiless declaration, and the `function` keyword — so a predicate whose
+        // subject is a DECLARATION comes back EMPTY. That is a census failing OPEN, the one
+        // direction these instruments must not fail in, and neither shipped predicate would
+        // notice: both answer `null` for all four already.
+        //
+        // ⛔ The fixture is chosen so that every token the structural predicate matches is one
+        // the walk consumes: its ONE `;` is the bodiless declaration's, which is the only `;`
+        // the contract covers. Adding a statement to `named()` would put an unconsumed `;` in
+        // the source and red this arm for a reason that is not a defect.
+        $source = <<<'PHP'
+        <?php
+        abstract class Fixture
+        {
+            abstract public function bodiless(): void;
+
+            public function named(): void
+            {
+            }
+        }
+        PHP;
+
+        $structural = static fn (array $tokens, int $index): ?string => in_array($tokens[$index][1], ['{', '}', ';'], true) || $tokens[$index][0] === T_FUNCTION
+            ? $tokens[$index][1]
+            : null;
+
+        // The PRESENCE witness, first and on the SAME fixture: an absence assertion whose
+        // walk never ran is satisfied by a walk that does nothing at all. This predicate
+        // matches the return type — a token sitting BETWEEN the consumed ones — so a
+        // non-empty result here is proof the fixture was tokenized and both declarations
+        // were reached.
+        $returnType = static fn (array $tokens, int $index): ?string => $tokens[$index][0] === T_STRING && $tokens[$index][1] === 'void'
+            ? $tokens[$index][1]
+            : null;
+
+        $this->assertSame(
+            [
+                'Fixture.php::bodiless#1' => 'void',
+                'Fixture.php::named#1' => 'void',
+            ],
+            SourceScan::sites($source, 'Fixture.php', $returnType),
+            'the control fixture is no longer being walked, so the absence assertion below proves nothing',
+        );
+
+        $this->assertSame(
+            [],
+            SourceScan::sites($source, 'Fixture.php', $structural),
+            'a STRUCTURAL token reached the predicate. SourceScan::sites\'s docblock says the four '
+            .'scope-tracking tokens are consumed before $siteAt is called; if that changed, the docblock '
+            .'is now false and a declaration-subject census that reads as clean may simply never have '
+            .'been asked. Either restore the dispatch or move the contract.',
+        );
+    }
+
     public function test_the_scanner_tells_an_honoured_guard_from_one_whose_refusal_is_dropped(): void
     {
         // The leg that makes the GUARDED arm a check rather than a second declaration. A

@@ -8,9 +8,15 @@ use RecursiveIteratorIterator;
 use SplFileInfo;
 
 /**
- * The source-reading preamble the census instruments in `tests/Feature/Writeback/` share,
- * in its two shapes: a LINE walk that skips prose, and a TOKENIZED walk over the whole of
- * `app/` that keys every site it finds to the function it sits in.
+ * The source-reading preamble the MIGRATED census instruments share, in its two shapes: a
+ * LINE walk that skips prose, and a TOKENIZED walk over the whole of `app/` that keys every
+ * site it finds to the function it sits in.
+ *
+ * ⚠ MIGRATED, not ALL: census instruments over `app/` still carry their own copy of this
+ * walk — one of them beside the classes that DID migrate — and `CLAUDE_TESTING.md`
+ * § *The un-migrated remainder* carries the recipe that re-derives which they are, plus the
+ * card that owns consolidating them. Do not read a class's absence from this file's callers
+ * as a licence to write another walk.
  *
  * Extracted at the second real caller (canon #5, card#7212 review, then card#8530). Four
  * copies of the line loop had been written in one directory, differing only in the regex
@@ -138,7 +144,10 @@ final class SourceScan
      * closes a bodiless declaration, and the `function` keyword — so a predicate whose subject
      * is a DECLARATION cannot be expressed here without changing that dispatch. Stated rather
      * than left to be discovered: both shipped predicates answer `null` for all four, so the
-     * exclusion is invisible until it is not. `null` is the ONLY absence — `false`, `0` and `''` are
+     * exclusion is invisible until it is not — and CHECKED rather than merely stated, by
+     * `GetCardTenantCheckCoverageTest::test_the_shared_walk_never_offers_a_structural_token_to_a_predicate`,
+     * because a declaration-subject census silently getting zero sites is a census failing
+     * OPEN. `null` is the ONLY absence — `false`, `0` and `''` are
      * VALUES and land in the map. (`GetCardTenantCheckCoverageTest` stores exactly `false`
      * for an unguarded read, and its fixture control pins those entries, so a walk that
      * confused the two reds there.) $siteAt receives the whole token list, the index, and

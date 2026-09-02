@@ -481,7 +481,9 @@ answer "is every X in this repo accounted for?", where a MISS is silent: the sui
 the site nobody listed. `GetCardTenantCheckCoverageTest` (every `->getCard(` in `app/`),
 `WritebackRefusalSignalCoverageTest` (every bare `Log::warning`/`Log::error` in the writeback
 handlers, and every read of a card's `board_id` in `app/`) and `WritebackSuccessBoardRecordTest`
-(every kanban write) are the members.
+(every kanban write) are the ones that derive their population THROUGH the shared primitive. ⛔
+**They are not the whole census population of this repo** — see *The un-migrated remainder* below
+before you conclude that a class you are reading is out of scope for the rule.
 
 **Read the source through `Tests\Support\SourceScan`, never through a walk of your own.** That
 class owns the two shapes:
@@ -503,12 +505,12 @@ globs — a board compare in `app/Bridge/Tools/` was outside both, and it was fo
 whose population was the tree, not by the bound that disclosed it (card#8440 → card#8530). If the
 population you need is "everything in `app/`", say so in code — `sitesInApp()` is that spelling.
 
-⚠ **A narrower FILE population is not forbidden; an UNMINUTED one is.** Two remain, both on
-purpose and both minuted: `WritebackRefusalSignalCoverageTest`'s LEVEL-keyed leg globs the
+⚠ **A narrower FILE population is not forbidden; an UNMINUTED one is.** The minuted ones:
+`WritebackRefusalSignalCoverageTest`'s LEVEL-keyed leg globs the
 `Kanban*Handler.php` files under `app/Bridge/Handlers/` because its subject — a bare `Log::warning`/`Log::error`
 that should have been a paired alert — is a property of the writeback handlers (DL-274/DL-285), and
-`WritebackSuccessBoardRecordTest` globs three directories for the same kind of reason. Both still
-do their SCANNING through `SourceScan::codeLines`. What is forbidden is the shape card#8530 paid
+`WritebackSuccessBoardRecordTest` globs the directories that can hold a kanban write for the same
+kind of reason. Both still do their SCANNING through `SourceScan::codeLines`. What is forbidden is the shape card#8530 paid
 for: a glob chosen because it was the code in front of the author, carrying a STATED BOUND for
 everything outside it. ⛔ **That bound was measured, not hypothetical** — the old KIND leg globbed
 handlers by NAME (`Kanban*Handler.php`), so a scratch handler named off-pattern was invisible to it
@@ -523,6 +525,29 @@ gone (a stale exemption is its own defect).
 **Every census instrument owns a fixture control**, because its expectation is satisfied by a
 scanner that has stopped matching. The control asserts BOTH directions on a source string whose
 answer is known — real sites found, prose and near-miss spellings skipped.
+
+### The un-migrated remainder
+
+⛔ **The rule above is the STANDARD, not a description of this tree.** Census instruments over
+`app/` still carry their own copy of the walk and do not go through `SourceScan` — one of them
+(`BoardScopedReadConstructionTest`'s private `appPhpFiles()`) is a byte-for-byte duplicate of
+`SourceScan::appFiles()`, sitting in `tests/Feature/Writeback/` beside the two classes this rule
+was minted for and censusing the same tenant boundary. They are neither exempt nor minuted
+narrower populations: they predate the primitive, and migrating them was out of scope for the card
+that minted it (card#8530 — one change does one thing). **bridge card#8575 owns that
+consolidation.** ⚠ Do not read their existence as licence. Copying the nearest neighbour is exactly
+how the N+1th copy gets minted, which is the failure this § exists to stop — and an un-migrated
+walk is where the next silently-narrow population comes from.
+
+**Re-derive the remainder; do not trust a list written here** — a hand-written member list is how
+this § came to tell the next author that the class they were about to copy was out of scope:
+
+    command grep -rln 'RecursiveIteratorIterator\|glob(' tests/ | xargs grep -ln 'app/' | xargs grep -L 'SourceScan'
+
+Every file it prints walks the tree without the primitive; an empty result means the remainder is
+gone and card#8575 is dischargeable. ⚠ Its one bound: a class that uses `SourceScan` for one leg
+and its own walk for another is invisible to it — `WritebackRefusalSignalCoverageTest`'s LEVEL-keyed
+leg is exactly that shape, and is minuted above.
 
 ## Anti-patterns to avoid
 
