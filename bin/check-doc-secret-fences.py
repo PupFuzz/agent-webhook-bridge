@@ -195,14 +195,16 @@ WHERE A RULE'S OWN LIST DECIDES THE VERDICT:
     prints the value and does not red. Its argv-borne twin, the DL-322 member, is
     caught by the `argv` rule and does not depend on this leg.
   · BOUND(env-template) — ⚠ FALSE POSITIVE, and it is the price of `.env` being a
-    SUBSTRING. `.env.example` is the template that SHIPS, carrying placeholders and
-    no value (`CLAUDE.md` §3), and it contains `.env`, so a READING command on the
-    template reds as though it had opened the populated file. POSITION is what
-    decides, not the spelling: `cat .env.example` reds where
+    SUBSTRING: the matched surface is ANY path whose text contains `.env`, not the
+    dotfile. Measured red under a reader today: `.env.example`, `.env.dist`, `.envrc`,
+    `README.env`, `conf.environment`, `notes.envelope`, `docs/setup.environment.md`
+    — of which the one this repo SHIPS is `.env.example`, the template carrying
+    placeholders and no value (`CLAUDE.md` §3), so `cat .env.example` reds as though
+    it had opened the populated file. POSITION is what decides, not the spelling:
     `cp .env.example .env` — the line this repo's own install runbooks contain —
-    does not, because `cp` is not a READING_COMMANDS member and the marker is read
-    only where a rule already asks whether a path is a secret store. Narrowing the
-    marker to exclude the template spellings would change what CI accepts and
+    does not red, because `cp` is not a READING_COMMANDS member and the marker is
+    read only where a rule already asks whether a path is a secret store. Narrowing
+    the marker to the dotfile or its basename would change what CI accepts and
     belongs to its own ruling; until then the waiver answers this arm.
   · BOUND(tee-outside-a-pipeline) — ⚠ FALSE POSITIVE, and the message is the false
     part. `tee <secret store>` on its own, outside a secret-carrying pipeline,
@@ -288,10 +290,13 @@ PATHY_TAIL_WORDS = {
 
 #: Substrings that identify a secret store on their own — nothing else is spelled
 #: like this. `.env` is here on an operator ruling (card#8351, DL-324): this
-#: repo's `CLAUDE.md` §3 puts the DB password in the Laravel `.env`, so a command
-#: that reads one resolves a secret. It is the one member with a shipped NEAR-SPELLING
-#: — `.env.example` is the template, with placeholders, and it matches this substring
-#: too; see BOUND(env-template).
+#: repo's `CLAUDE.md` §3 puts the DB password in the Laravel `.env`. A secret-store
+#: marker is read by THREE rules, so this one widened three arms, not one — a reader
+#: on the file (`cat .env`, `stdout`), a captured read in an argument
+#: (`curl -H "… $(cat .env)"`, `argv`), and a command-line LITERAL written into it
+#: (`echo "DB_PASSWORD=…" >> .env`, `history`) — every one green before it. It is
+#: the one member whose SUBSTRING has a shipped near-spelling — `.env.example`, the
+#: template — and that cost is disclosed at BOUND(env-template).
 SECRET_PATH_MARKERS = (
     'webhook-secret-scope', 'writeback-token', 'id_rsa', 'id_ed25519', '.pem', '.p12',
     '.env',

@@ -87,6 +87,15 @@ def _fence(body: str, info: str = 'bash') -> str:
     return f'```{info}\n{body}```\n'
 
 
+def _rules(body: str) -> list[str]:
+    """The rule ids a `bash` fence containing `body` reds under, sorted.
+
+    ONE module-level copy. The classes below that carry a byte-identical `_rules`
+    method predate it; that duplication is a filed class item, and a new case must
+    use this one rather than mint an eleventh."""
+    return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
+
+
 class Payload(NamedTuple):
     """The bytes of a doc, and the verdict this program must return for them.
 
@@ -694,20 +703,30 @@ class ADotEnvFileIsASecretStore(unittest.TestCase):
 
     The near-spelling `.env.example` is disclosed as BOUND(env-template) and pinned
     there, not here.
-    """
 
-    def _rules(self, body: str) -> list[str]:
-        return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
+    A secret-store marker is read by THREE rules, so the marker widened three arms —
+    `stdout`, `argv`, `history` — and each is pinned below against the same
+    delete-the-marker mutation.
+    """
 
     def test_a_reader_on_a_dotenv_file_puts_a_secret_store_on_stdout(self) -> None:
         for body in ('cat .env\n', 'head -5 .env\n', 'cat "$BRIDGE_DIR/.env"\n'):
             with self.subTest(body=body.strip()):
-                self.assertEqual(['stdout'], self._rules(body))
+                self.assertEqual(['stdout'], _rules(body))
 
     def test_a_captured_dotenv_read_is_an_argv_leak(self) -> None:
         """The same act through the substitution leg the whole card is about."""
-        self.assertEqual(['argv'], self._rules(
+        self.assertEqual(['argv'], _rules(
             'curl -H "Authorization: Bearer $(cat .env)" http://x/\n'))
+
+    def test_a_literal_written_INTO_a_dotenv_file_is_a_history_leak(self) -> None:
+        """The third arm, and the shell-history leak this card was filed for: a
+        secret as a command-line LITERAL, written into the store, lands verbatim in
+        the operator's history. The prescribed `printf '%s' "$VAR" > .env` — an
+        EXPANSION, not a literal — stays green, so the arm is the literal and not the
+        redirect."""
+        self.assertEqual(['history'], _rules('echo "DB_PASSWORD=placeholder" >> .env\n'))
+        self.assertEqual([], _rules('printf \'%s\' "$DB_PASSWORD" > .env\n'))
 
     def test_the_finding_names_the_path_the_doc_actually_contains(self) -> None:
         findings = _scan('```bash\ncat .env\n```\n')
@@ -718,9 +737,9 @@ class ADotEnvFileIsASecretStore(unittest.TestCase):
         """The marker is consulted where a rule already asks whether a path is a
         secret store — it does not red every line the path appears on. Both of these
         are lines this repo's install runbooks contain."""
-        self.assertEqual([], self._rules(
+        self.assertEqual([], _rules(
             'cp .env.example .env && php artisan key:generate\n'))
-        self.assertEqual([], self._rules('$EDITOR .env\n'))
+        self.assertEqual([], _rules('$EDITOR .env\n'))
 
     def test_the_marker_needs_the_DOT_to_fire(self) -> None:
         """`env` unqualified is one of the commonest words in a runbook, so the
@@ -731,8 +750,8 @@ class ADotEnvFileIsASecretStore(unittest.TestCase):
         come from the command. Both red under a marker widened to a bare `env`,
         which is the mutation this pins against.
         """
-        self.assertEqual([], self._rules('cat environment-notes.md\n'))
-        self.assertEqual([], self._rules('cat "$BRIDGE_DIR/environments"\n'))
+        self.assertEqual([], _rules('cat environment-notes.md\n'))
+        self.assertEqual([], _rules('cat "$BRIDGE_DIR/environments"\n'))
 
 
 class TheWaiver(unittest.TestCase):
