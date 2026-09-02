@@ -41,7 +41,9 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
+from typing import NamedTuple
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_HERE)
@@ -75,6 +77,27 @@ def _line_of(text: str, needle: str) -> int:
 
 def _scan(text: str, enabled=None):
     return lint.scan_text('fixture.md', text, enabled)
+
+
+def _fence(body: str, info: str = 'bash') -> str:
+    """A one-fence markdown doc. Used only where the bound is about what is INSIDE a
+    fence: the bounds that are about the WRAPPER write their bytes out in full,
+    because there the wrapper is the thing under test and a helper that supplied one
+    would defeat the case."""
+    return f'```{info}\n{body}```\n'
+
+
+class Payload(NamedTuple):
+    """The bytes of a doc, and the verdict this program must return for them.
+
+    `name` is the filename it is written as before the WALK reads it, which is the
+    whole of BOUND(not-markdown) — the one bound whose subject is which files are
+    read at all rather than what is inside one.
+    """
+
+    text: str
+    verdict: tuple[str, ...]
+    name: str = 'doc.md'
 
 
 class TheFiveKnownMembers(unittest.TestCase):
@@ -1120,6 +1143,15 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
     removed, the same command without the function around it — which is what makes
     the green a measurement of the bound rather than of the fixture.
 
+    ⚠ A NAME MAPPING IS NOT A BEHAVIOUR, WHICH IS WHAT THE FIFTH ROUND'S GUARD COULD
+    NOT SEE. Both sets it compares are lists of NAMES, so both stay complete while a
+    bullet describes behaviour the tool does not have: `BOUND(heredoc)` named an
+    `argv` false positive for every heredoc body, and an assignment-shaped body had
+    been silently green the whole time. So each pin now carries its PAYLOADS AS DATA
+    — the bytes of a doc and the verdict this program must return for it — and the
+    two tests below re-run every one of them and require a payload in every direction
+    the disclosure's own markers name.
+
     WHAT EACH PIN'S GREEN IS WORTH. Where a one-line mutation can CLOSE a bound,
     the pin was watched failing under it (`COMMAND_PREFIXES` losing `timeout`,
     `STDIN_SINKS` losing `openssl`, `READING_COMMANDS` losing `tee`, the splitter's
@@ -1130,40 +1162,193 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
     is measured against, and it is the only thing standing between these cases and
     a suite of assertions that pass because nothing was scanned.
 
-    ⚠ TWO OF THESE ARE FALSE POSITIVES, NOT SILENT GREENS, and are pinned in that
-    direction on purpose: `prefix-operand` reds naming a command `5`, and
-    `tee-outside-a-pipeline` renders a message that names the wrong direction. Each
-    is loud and waivable, which is why it is disclosed rather than fixed; the pin
-    exists so that fixing it forces the disclosure to move with it.
+    ⚠ SOME OF THESE ARE FALSE POSITIVES RATHER THAN SILENT GREENS, and are pinned in
+    that direction on purpose: `prefix-operand` reds naming a command `5`,
+    `tee-outside-a-pipeline` renders a message that names the wrong direction, and
+    `heredoc` reds on a command-shaped body while staying silent on an
+    assignment-shaped one. A loud arm is waivable, which is why it is disclosed
+    rather than fixed; the pin exists so that fixing it forces the disclosure to move
+    with it. WHICH bounds those are is not a list kept here — it is read out of the
+    tool's own markers by
+    `test_a_bound_declares_a_payload_in_every_DIRECTION_its_prose_names`, because a
+    list here would be one more thing to keep true.
+
+    ⛔ AND THE LIMIT NONE OF THIS TOUCHES: every mechanism in this class reads the
+    DISCLOSED list. A bound nobody wrote down has no tag, no pin and no payload, and
+    nothing here is looking for it.
     """
 
-    #: slug in the module docstring's `BOUND(<slug>)` tag → the test that pins it.
-    #: A dotted name is a pin that already lived in another class, because the bound
-    #: is about what is READ rather than about how shell is parsed; it is referenced
-    #: here rather than copied, so there is still exactly one pin per bound.
+    #: slug in the module docstring's `BOUND(<slug>)` tag → (the test that pins it,
+    #: the payloads it is disclosed over). A dotted test name is a pin that already
+    #: lived in another class, because the bound is about what is READ rather than
+    #: about how shell is parsed; it is referenced here rather than copied, so there
+    #: is still exactly one pin per bound.
+    #:
+    #: THE PAYLOADS ARE WHAT MAKES THIS A REGISTRY OF BEHAVIOUR RATHER THAN OF NAMES.
+    #: Each is a whole doc plus the verdict this program must return for it, re-run by
+    #: `test_every_DECLARED_PAYLOAD_still_gets_its_DECLARED_VERDICT`. Rewriting a
+    #: disclosure without moving the behaviour — or moving the behaviour without
+    #: rewriting the disclosure — reds here.
+    #:
+    #: Where a payload here repeats one inside the method that pins the same bound,
+    #: that overlap is deliberate rather than missed: the METHOD carries what a table
+    #: cannot — the message text, the red twin read in context — and the TABLE
+    #: carries the disclosure-level witness over every bound uniformly. Both assert
+    #: against the live program, so a behaviour change reds both; neither can go
+    #: quietly stale against the other.
     PINS = {
-        'not-markdown': 'ThisCheckoutIsGreen.test_the_fixture_is_out_of_the_default_walk',
-        'indented-block': 'test_a_four_space_INDENTED_block_is_not_a_fence',
-        'non-shell-info': 'ProseIsNeverRead.test_a_non_shell_fence_is_not_executable',
-        'pandoc-info': 'test_a_pandoc_or_quarto_INFO_STRING_reads_as_a_non_shell_fence',
-        'blockquote-fence': 'test_a_fence_inside_a_BLOCKQUOTE_is_not_seen_as_a_fence_at_all',
-        'variable-routing': 'test_a_value_routed_through_several_VARIABLES_is_not_followed',
-        'function': 'test_a_value_routed_through_a_FUNCTION_parameter_is_not_followed',
-        'loop': 'test_a_value_routed_through_a_LOOP_variable_is_not_followed',
-        'alias': 'test_an_ALIAS_body_is_never_resolved',
-        'eval': 'test_an_eval_STRING_OPERAND_is_not_recursed_into',
-        'sh-c-operand': 'test_a_single_quoted_sh_c_OPERAND_is_not_recursed_into',
-        'heredoc': 'test_a_heredoc_body_is_read_as_commands_in_BOTH_quoting_forms',
-        'no-fd-table': 'test_there_is_no_fd_TABLE_so_an_opened_secret_file_is_lost',
-        'nested-substitution':
-            'test_a_NESTED_substitution_is_read_one_level_deep_on_the_FILE_leg',
-        'group-tail': 'test_a_pipeline_TAIL_that_is_a_GROUP_or_SUBSHELL_loses_the_mark',
-        'prefix-operand': 'test_a_command_PREFIX_that_takes_an_operand_leaves_it_behind',
-        'bare-env-dump': 'test_a_WHOLE_ENVIRONMENT_dump_names_nothing_the_walk_can_find',
-        'bare-printer-dump': 'test_a_bare_PRINTER_with_no_operand_is_the_same_bound',
-        'sink-in-another-mode': 'test_a_SINK_whose_stdout_is_its_stdin_in_another_MODE',
-        'tee-outside-a-pipeline':
-            'test_tee_OUTSIDE_a_pipeline_still_names_the_wrong_direction',
+        'not-markdown': (
+            'ThisCheckoutIsGreen.test_the_fixture_is_out_of_the_default_walk', (
+                Payload(_fence('echo "$BRIDGE_WEBHOOK_SECRET"\n'), (), 'leak.sh'),
+                Payload(_fence('echo "$BRIDGE_WEBHOOK_SECRET"\n'), ('stdout',)),
+            )),
+        'indented-block': (
+            'test_a_four_space_INDENTED_block_is_not_a_fence', (
+                Payload('Read it back yourself:\n\n'
+                        '    echo "$BRIDGE_WEBHOOK_SECRET"\n\ndone.\n', ()),
+                Payload(_fence('echo "$BRIDGE_WEBHOOK_SECRET"\n'), ('stdout',)),
+            )),
+        'non-shell-info': (
+            'ProseIsNeverRead.test_a_non_shell_fence_is_not_executable', (
+                Payload(_fence('echo "$BRIDGE_WEBHOOK_SECRET"\n', 'text'), ()),
+                Payload(_fence('echo "$BRIDGE_WEBHOOK_SECRET"\n', 'json'), ()),
+                Payload(_fence('echo "$BRIDGE_WEBHOOK_SECRET"\n'), ('stdout',)),
+            )),
+        'pandoc-info': (
+            'test_a_pandoc_or_quarto_INFO_STRING_reads_as_a_non_shell_fence', (
+                Payload(_fence('echo "$BRIDGE_WEBHOOK_SECRET"\n', '{bash}'), ()),
+                Payload(_fence('echo "$BRIDGE_WEBHOOK_SECRET"\n', '{.bash}'), ()),
+                Payload(_fence('echo "$BRIDGE_WEBHOOK_SECRET"\n'), ('stdout',)),
+            )),
+        'blockquote-fence': (
+            'test_a_fence_inside_a_BLOCKQUOTE_is_not_seen_as_a_fence_at_all', (
+                Payload('> ```bash\n> echo "$BRIDGE_WEBHOOK_SECRET"\n> ```\n', ()),
+                Payload(_fence('echo "$BRIDGE_WEBHOOK_SECRET"\n'), ('stdout',)),
+            )),
+        'root-prompt': (
+            'test_a_ROOT_PROMPT_line_in_a_prompt_style_fence_is_never_read', (
+                Payload(_fence('# echo "$BRIDGE_WEBHOOK_SECRET"\n', 'console'), ()),
+                Payload(_fence('# echo "$BRIDGE_WEBHOOK_SECRET"\n',
+                               'shell-session'), ()),
+                Payload(_fence('# curl -H "Authorization: Bearer '
+                               '$BRIDGE_CHANNEL_TOKEN" http://x/\n', 'console'), ()),
+                Payload(_fence('# echo "${BRIDGE_WEBHOOK_SECRET:-none}"\n',
+                               'console'), ()),
+                Payload(_fence('# echo "$BRIDGE_WEBHOOK_SECRET" >> /var/log/x.log\n',
+                               'console'), ()),
+                Payload(_fence('$ echo "$BRIDGE_WEBHOOK_SECRET"\n', 'console'),
+                        ('stdout',)),
+                Payload(_fence('$ curl -H "Authorization: Bearer '
+                               '$BRIDGE_CHANNEL_TOKEN" http://x/\n', 'console'),
+                        ('argv',)),
+            )),
+        'variable-routing': (
+            'test_a_value_routed_through_several_VARIABLES_is_not_followed', (
+                Payload(_fence('X="$SECRET"\necho "$X"\n'), ()),
+                Payload(_fence('X="$SECRET"\nY="$X"\necho "$Y"\n'), ()),
+                Payload(_fence('echo "$SECRET"\n'), ('stdout',)),
+            )),
+        'function': (
+            'test_a_value_routed_through_a_FUNCTION_parameter_is_not_followed', (
+                Payload(_fence('show() { cat "$1"; }\nshow "$TOKEN_FILE"\n'), ()),
+                Payload(_fence('cat "$TOKEN_FILE"\n'), ('stdout',)),
+                Payload(_fence('show() { cat "$TOKEN_FILE"; }\nshow\n'), ('stdout',)),
+            )),
+        'loop': (
+            'test_a_value_routed_through_a_LOOP_variable_is_not_followed', (
+                Payload(_fence('for f in "$TOKEN_FILE"; do cat "$f"; done\n'), ()),
+                Payload(_fence('cat "$TOKEN_FILE"\n'), ('stdout',)),
+            )),
+        'alias': (
+            'test_an_ALIAS_body_is_never_resolved', (
+                Payload(_fence('alias leak=\'echo "$SECRET"\'\nleak\n'), ()),
+                Payload(_fence('alias leak="echo $SECRET"\nleak\n'), ()),
+                Payload(_fence('echo "$SECRET"\n'), ('stdout',)),
+            )),
+        'eval': (
+            'test_an_eval_STRING_OPERAND_is_not_recursed_into', (
+                Payload(_fence('eval "echo $SECRET"\n'), ()),
+                Payload(_fence("eval 'echo \"$SECRET\"'\n"), ()),
+                Payload(_fence('echo "$SECRET"\n'), ('stdout',)),
+            )),
+        'sh-c-operand': (
+            'test_a_single_quoted_sh_c_OPERAND_is_not_recursed_into', (
+                Payload(_fence('sh -c \'echo "$BRIDGE_WEBHOOK_SECRET"\'\n'), ()),
+                Payload(_fence('bash -c \'echo "$BRIDGE_WEBHOOK_SECRET"\'\n'), ()),
+                Payload(_fence('sh -c "echo $BRIDGE_WEBHOOK_SECRET"\n'), ('argv',)),
+            )),
+        'heredoc': (
+            'test_a_heredoc_body_is_read_as_commands_in_BOTH_DIRECTIONS', (
+                Payload(_fence('cat <<EOF > /etc/bridge/app.conf\n'
+                               'secret = "$BRIDGE_SECRET"\nEOF\n'), ('argv',)),
+                Payload(_fence("cat <<'EOF' > /etc/bridge/app.conf\n"
+                               'secret = "$BRIDGE_SECRET"\nEOF\n'), ('argv',)),
+                Payload(_fence('cat <<EOF\ntoken=$BRIDGE_CHANNEL_TOKEN\nEOF\n'), ()),
+                Payload(_fence('cat <<EOF\nexport TOKEN=$BRIDGE_CHANNEL_TOKEN\n'
+                               'EOF\n'), ()),
+                Payload(_fence('cat <<EOF\n$BRIDGE_CHANNEL_TOKEN\nEOF\n'), ()),
+                Payload(_fence('cat <<-EOF\ntoken=$BRIDGE_CHANNEL_TOKEN\nEOF\n'), ()),
+                Payload(_fence('cat <<EOF | base64\ntoken=$BRIDGE_CHANNEL_TOKEN\n'
+                               'EOF\n'), ()),
+            )),
+        'no-fd-table': (
+            'test_there_is_no_fd_TABLE_so_an_opened_secret_file_is_lost', (
+                Payload(_fence('exec 3< /etc/bridge/webhook-secret-scope\n'
+                               'cat <&3\n'), ()),
+                Payload(_fence('cat < /etc/bridge/webhook-secret-scope\n'),
+                        ('stdout',)),
+            )),
+        'nested-substitution': (
+            'test_a_NESTED_substitution_is_read_one_level_deep_on_the_FILE_leg', (
+                Payload(_fence('echo "$(echo "$(cat "$TOKEN_FILE")")"\n'), ()),
+                Payload(_fence('echo "$(cat "$TOKEN_FILE")"\n'), ('stdout',)),
+                Payload(_fence('echo "$(echo "$SECRET")"\n'), ('stdout',)),
+            )),
+        'group-tail': (
+            'test_a_pipeline_TAIL_that_is_a_GROUP_or_SUBSHELL_loses_the_mark', (
+                Payload(_fence('echo "$SECRET" | { base64; }\n'), ()),
+                Payload(_fence('echo "$SECRET" | (base64)\n'), ()),
+                Payload(_fence('echo "$SECRET" | base64\n'), ('stdout',)),
+                Payload(_fence('echo "$SECRET" |& base64\n'), ('stdout',)),
+            )),
+        'prefix-operand': (
+            'test_a_command_PREFIX_that_takes_an_operand_leaves_it_behind', (
+                Payload(_fence('printf \'%s\' "$SECRET" | timeout 5 sha256sum\n'),
+                        ('stdout',)),
+                Payload(_fence('printf \'%s\' "$SECRET" | sudo sha256sum\n'), ()),
+            )),
+        'bare-env-dump': (
+            'test_a_WHOLE_ENVIRONMENT_dump_names_nothing_the_walk_can_find', (
+                Payload(_fence('env\n'), ()),
+                Payload(_fence('printenv\n'), ()),
+                Payload(_fence('env | grep SECRET\n'), ()),
+                Payload(_fence('printenv BRIDGE_WEBHOOK_SECRET\n'), ('stdout',)),
+            )),
+        'bare-printer-dump': (
+            'test_a_bare_PRINTER_with_no_operand_is_the_same_bound', (
+                Payload(_fence('declare -p\n'), ()),
+                Payload(_fence('typeset -p\n'), ()),
+                Payload(_fence('export -p\n'), ()),
+                Payload(_fence('set\n'), ()),
+                Payload(_fence('declare -p BRIDGE_WEBHOOK_SECRET\n'), ('stdout',)),
+            )),
+        'sink-in-another-mode': (
+            'test_a_SINK_whose_stdout_is_its_stdin_in_another_MODE', (
+                Payload(_fence('printf \'%s\' "$SECRET" | openssl base64\n'), ()),
+                Payload(_fence('printf \'%s\' "$SECRET" | openssl dgst -sha256\n'),
+                        ()),
+                Payload(_fence('printf \'%s\' "$SECRET" | base64\n'), ('stdout',)),
+                Payload(_fence('openssl dgst -sha256 -hmac "$SECRET" -hex\n'),
+                        ('argv',)),
+            )),
+        'tee-outside-a-pipeline': (
+            'test_tee_OUTSIDE_a_pipeline_still_names_the_wrong_direction', (
+                Payload(_fence('tee /etc/bridge/webhook-secret-scope-kanban\n'),
+                        ('stdout',)),
+                Payload(_fence('printf \'%s\' "$SECRET" | tee '
+                               '/etc/bridge/webhook-secret-scope-kanban\n'),
+                        ('stdout',)),
+            )),
     }
 
     def _rules(self, body: str) -> list[str]:
@@ -1183,11 +1368,100 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
         self.assertEqual(disclosed, set(self.PINS),
                          'the module docstring and this class disagree about which '
                          'bounds exist')
-        for slug, ref in sorted(self.PINS.items()):
-            owner_name, _, method = ref.rpartition('.')
+        for slug, (ref, _) in sorted(self.PINS.items()):
+            owner_name, _sep, method = ref.rpartition('.')
             owner = globals()[owner_name] if owner_name else type(self)
             with self.subTest(bound=slug):
                 self.assertTrue(hasattr(owner, method), f'{ref} does not exist')
+
+    def test_every_DECLARED_PAYLOAD_still_gets_its_DECLARED_VERDICT(self) -> None:
+        """The leg the tag↔pin guard cannot cover: that the DISCLOSURE is true of the
+        PROGRAM.
+
+        The guard above proves the two SETS agree. Both of them are lists of names,
+        so both can be complete while a bullet says the tool does one thing and the
+        tool does another — which is what had happened to BOUND(heredoc), whose prose
+        named an `argv` false positive for every body while an assignment-shaped body
+        had always been silently green. Each pin therefore carries the BYTES of a doc
+        and the verdict this program must return for it, and this test runs the lot
+        through the REAL entry point: `scan_paths` over a directory, not `scan_text`
+        over a string, because BOUND(not-markdown) is about which files are read at
+        all.
+
+        ⛔ WHAT THIS CANNOT CLOSE, AND IT IS NOT A DETAIL: a bound nobody wrote down.
+        Every mechanism here — the tag scan, the pin registry, this payload table —
+        reads the DISCLOSED list, so an unnamed bound has no tag, no pin, no payload
+        and nothing looking for it. This proves the disclosed bounds behave as
+        disclosed. It says nothing whatever about the undisclosed ones, and no
+        arrangement of this file could.
+        """
+        seen = 0
+        for slug, (_, payloads) in sorted(self.PINS.items()):
+            self.assertTrue(payloads, f'{slug} discloses a bound and declares no '
+                                      f'payload, so nothing checks its prose')
+            for index, payload in enumerate(payloads):
+                with tempfile.TemporaryDirectory() as tmp:
+                    with open(os.path.join(tmp, payload.name), 'w',
+                              encoding='utf-8') as fh:
+                        fh.write(payload.text)
+                    verdict = tuple(sorted(f.rule for f in lint.scan_paths([tmp])))
+                seen += 1
+                with self.subTest(bound=slug, payload=index, name=payload.name):
+                    self.assertEqual(payload.verdict, verdict,
+                                     f'{slug}: this payload no longer returns the '
+                                     f'verdict its disclosure claims')
+        self.assertGreater(seen, len(self.PINS),
+                           'the payload table ran on nothing worth calling a table')
+
+    #: Read out of each bound's own paragraph by the test below. `⚠ FALSE POSITIVE`
+    #: says the bound has a LOUD arm; `SILENT ARM` beside it says it also has a green
+    #: one. A bullet carrying neither is silent-only. The tool's BOUNDS paragraph
+    #: states that vocabulary, and it is the tool's own prose that is parsed here.
+    LOUD_MARKER = '⚠ FALSE POSITIVE'
+    SILENT_ARM_MARKER = 'SILENT ARM'
+
+    @staticmethod
+    def _disclosures() -> dict[str, str]:
+        """Each bound's paragraph, cut out of the tool's module docstring at its own
+        bullet and ended at the first blank line."""
+        parts = re.split(r'· BOUND\(([a-z-]+)\)', lint.__doc__ or '')
+        return {slug: text.split('\n\n')[0]
+                for slug, text in zip(parts[1::2], parts[2::2])}
+
+    def test_a_bound_declares_a_payload_in_every_DIRECTION_its_prose_names(self) -> None:
+        """A payload table can be complete and still one-sided.
+
+        BOUND(heredoc) is why this exists: its bullet named a loud false positive, its
+        pin asserted that loud arm, and the silent arm — the shape a real config
+        heredoc actually has — was disclosed nowhere and pinned nowhere. Direction is
+        therefore read off the disclosure's own markers and REQUIRED of the data, so
+        a bound cannot name a direction that nothing exercises.
+        """
+        segments = self._disclosures()
+        self.assertEqual(set(self.PINS), set(segments),
+                         'a bound is disclosed somewhere other than in its own '
+                         '`· BOUND(<slug>)` bullet, so its prose cannot be read')
+        loud = {slug for slug, text in segments.items() if self.LOUD_MARKER in text}
+        # Controls on the parse itself: a segmenter that returned everything, or
+        # nothing, would satisfy every assertion below without reading a word.
+        self.assertTrue(0 < len(loud) < len(segments),
+                        'the loud/silent split is not discriminating')
+        for slug, text in sorted(segments.items()):
+            with self.subTest(bound=slug):
+                self.assertTrue(text.strip(), 'empty disclosure')
+                for other in segments:
+                    if other != slug:
+                        self.assertNotIn(f'BOUND({other})', text,
+                                         'one bullet swallowed another')
+                verdicts = [p.verdict for p in self.PINS[slug][1]]
+                if slug in loud:
+                    self.assertTrue(any(v for v in verdicts),
+                                    'disclosed as a FALSE POSITIVE and no payload '
+                                    'here reds')
+                if slug not in loud or self.SILENT_ARM_MARKER in text:
+                    self.assertIn((), verdicts,
+                                  'a silent direction is disclosed and no payload '
+                                  'here is green')
 
     def test_a_four_space_INDENTED_block_is_not_a_fence(self) -> None:
         """Only fences are found, so an indented block is invisible rather than
@@ -1307,18 +1581,82 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
         self.assertEqual(['stdout'], [f.rule for f in piped])
         self.assertIn('ends at `tee`', piped[0].message)
 
-    def test_a_heredoc_body_is_read_as_commands_in_BOTH_quoting_forms(self) -> None:
-        """The docstring used to scope this to an UNQUOTED `<<EOF`. The tool tracks
-        no heredocs at all, so a `<<'EOF'` body — where the shell expands NOTHING —
-        reports the same `argv` finding, and that finding's text is false for the
-        quoted form. Wording, not the parser: fixing the parser changes what CI
-        rejects, and it fires on no doc in this repo at any tag."""
+    def test_a_heredoc_body_is_read_as_commands_in_BOTH_DIRECTIONS(self) -> None:
+        """A heredoc is not tracked at all, and WHICH WAY that is wrong depends on the
+        body — which the disclosure got wrong twice.
+
+        The fourth round scoped it to an UNQUOTED `<<EOF` and the fifth widened it to
+        both quotings, but both wrote the bound as a FALSE POSITIVE full stop. It is
+        that only for a body the reader parses as a command carrying a secret in an
+        ARGUMENT. The commoner config shape is SILENT: `token=$SECRET` is eaten whole
+        by the assignment-prefix strip in `_read_command`, `export TOKEN=$SECRET`
+        names a builtin the `argv` rule skips and no printing rule reads, and a bare
+        `$SECRET` line puts the expansion in the command NAME. So the arm an author
+        SEES is loud and the arm that would matter is silent, in every heredoc
+        spelling. Wording, not the parser: teaching it heredocs changes what CI
+        rejects.
+        """
         for body in (
             'cat <<EOF > /etc/bridge/app.conf\nsecret = "$BRIDGE_SECRET"\nEOF\n',
             "cat <<'EOF' > /etc/bridge/app.conf\nsecret = \"$BRIDGE_SECRET\"\nEOF\n",
         ):
-            with self.subTest(body=body.strip()):
+            with self.subTest(loud=body.strip()):
                 self.assertEqual(['argv'], self._rules(body))
+        for body in (
+            'cat <<EOF\ntoken=$BRIDGE_CHANNEL_TOKEN\nEOF\n',
+            'cat <<EOF\nexport TOKEN=$BRIDGE_CHANNEL_TOKEN\nEOF\n',
+            'cat <<EOF\n$BRIDGE_CHANNEL_TOKEN\nEOF\n',
+            'cat <<-EOF\ntoken=$BRIDGE_CHANNEL_TOKEN\nEOF\n',
+            'cat <<EOF | base64\ntoken=$BRIDGE_CHANNEL_TOKEN\nEOF\n',
+        ):
+            with self.subTest(silent=body.strip()):
+                self.assertEqual([], self._rules(body))
+        # The control the silent arm needs: the same expansions OUTSIDE a heredoc,
+        # where the reader is quiet about two of them for the same reason and loud
+        # about the third — so the greens above are the heredoc's shape and not a
+        # vocabulary that never recognised `$BRIDGE_CHANNEL_TOKEN` at all.
+        self.assertEqual([], self._rules('token=$BRIDGE_CHANNEL_TOKEN\n'))
+        self.assertEqual([], self._rules('export TOKEN=$BRIDGE_CHANNEL_TOKEN\n'))
+        self.assertEqual(['stdout'], self._rules('echo "$BRIDGE_CHANNEL_TOKEN"\n'))
+
+    def test_a_ROOT_PROMPT_line_in_a_prompt_style_fence_is_never_read(self) -> None:
+        """`_strip_comment` runs BEFORE the prompt strip, and to it a `#` starting a
+        word is a comment — so a root-prompt line is emptied and the command in it
+        never reaches a rule. The `#` arm of that prompt regex was therefore
+        UNREACHABLE, and the regex is narrowed to `$` so the source stops claiming
+        coverage it never had; the BEHAVIOUR is unchanged and disclosed as
+        BOUND(root-prompt), because closing it means ruling that a comment inside a
+        prompt-style fence is a command — a change to what CI rejects.
+
+        The `$ ` spelling of the identical line is the control: it reds, so the fence
+        is being read and the green above is the prompt's doing.
+        """
+        for info in ('console', 'shell-session', 'bash-session', 'sh-session',
+                     'shellsession'):
+            with self.subTest(info=info):
+                self.assertEqual([], [f.rule for f in _scan(
+                    f'```{info}\n# echo "$BRIDGE_WEBHOOK_SECRET"\n```\n')])
+                self.assertEqual(['stdout'], [f.rule for f in _scan(
+                    f'```{info}\n$ echo "$BRIDGE_WEBHOOK_SECRET"\n```\n')])
+        # Every rule that reads a COMMAND, not just the one that is easiest to spell.
+        for rule, command in (
+            ('argv', 'curl -H "Authorization: Bearer $BRIDGE_CHANNEL_TOKEN" http://x/'),
+            ('probe', 'echo "${BRIDGE_WEBHOOK_SECRET:-none}"'),
+            ('log', 'echo "$BRIDGE_WEBHOOK_SECRET" >> /var/log/x.log'),
+            ('history', 'echo -n "your-hmac-secret" > '
+                        '"$BRIDGE_SECRET_DIR/your_provider/webhook-secret-scope-x"'),
+        ):
+            with self.subTest(rule=rule):
+                self.assertEqual([], [f.rule for f in _scan(
+                    f'```console\n# {command}\n```\n')])
+                self.assertEqual([rule], [f.rule for f in _scan(
+                    f'```console\n$ {command}\n```\n')])
+        # `waiver-no-reason` is not a command rule — it reads COMMENTS — so it is NOT
+        # silenced, and the disclosure says that rather than claiming all six.
+        self.assertEqual(
+            ['stdout', 'waiver-no-reason'],
+            sorted(f.rule for f in _scan('```console\n# doc-fence-lint: allow\n'
+                                         '$ echo "$BRIDGE_WEBHOOK_SECRET"\n```\n')))
 
     def test_a_fence_inside_a_BLOCKQUOTE_is_not_seen_as_a_fence_at_all(self) -> None:
         """An opener is matched after leading WHITESPACE only, so `> ` in front of
@@ -1399,10 +1737,9 @@ class AMessageMustNameTextTHEDOCACTUALLYCONTAINS(unittest.TestCase):
         """Measured on the fixture, whose two `history` members are the two the
         census reports across the whole tag history. The message quoted the payload
         verbatim until this change, inside backticks in the finding text, so a CI log
-        that
-        outlives a force-pushed-away branch carried the value the rule exists to
-        keep off a readable surface. The VERDICT is unchanged: same lines, same
-        rule; only the wording moves.
+        that outlives a force-pushed-away branch carried the value the rule exists to
+        keep off a readable surface. The VERDICT is unchanged: same lines, same rule;
+        only the wording moves.
         """
         findings = [f for f in lint.scan_text(_FIXTURE, _fixture_text())
                     if f.rule == 'history']

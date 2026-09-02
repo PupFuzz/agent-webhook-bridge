@@ -71,18 +71,32 @@ disclosed bounds ... now have one" while ELEVEN of nineteen had no pin — and a
 count is a second thing to keep true, falsified by every bound added without
 touching a line of it. Named, never counted, and the naming is checked.
 
-Most are silent GREENS; two are loud false POSITIVES, marked as such — and the
-difference decides what "fires on no doc in this repo" can even MEAN. For a LOUD
-bound it is a measurement: `bin/doc-fence-census.py` runs this program over every
-`*.md` at every tag and reports the same five known-member messages and nothing
-else, so no false positive of this list has ever fired. For a SILENT one it cannot
-be, by construction — a bound that produces no finding leaves no trace in a census
-of findings — so where the question mattered it was answered by a separate scan of
-the same corpus: BOUND(group-tail) was measured with a deliberately
-over-approximating pattern (any `|` before a `{` or `(`, and any `|&`, in any shell
-fence at any tag) returning 0 hits against a control showing 499 pipe-carrying
-lines. Closing any bound changes what CI rejects, so each is disclosed here rather
-than quietly widened.
+⚠ A TAG SET IS NOT A BEHAVIOUR. That guard proves every bound named here has a pin
+and every pin has a tag; it cannot see whether what the pin ASSERTS is what this
+sentence CLAIMS. So each entry in `PINS` also carries its PAYLOADS AS DATA — the
+bytes of a doc, and the verdict this program must return for them — and one test
+re-runs every declared payload and asserts that verdict. TWO MARKERS IN THE BULLETS
+BELOW ARE READ BY THAT TEST, not decoration: `⚠ FALSE POSITIVE` says the bound has
+a LOUD arm, and `SILENT ARM` on such a bullet says it also has a green one; a
+bullet with neither marker is silent-only. A bound must declare a payload in every
+direction its markers claim, so a disclosure that names a direction with no payload
+behind it reds. ⛔ THE LIMIT THIS CANNOT CLOSE: a bound nobody wrote down. Every
+mechanism here reads THIS LIST, so an unnamed bound has no tag, no pin and no
+payload, and nothing in the suite is looking for it — which is why the top of this
+file stands and a green run is still not a clean bill of health.
+
+Most are silent GREENS; some carry a loud FALSE-POSITIVE arm and are marked with
+it — and the difference decides what "fires on no doc in this repo" can even
+MEAN. For a LOUD bound it is a measurement: `bin/doc-fence-census.py` runs this
+program over every `*.md` at every tag and reports the same five known-member
+messages and nothing else, so no false positive of this list has ever fired. For
+a SILENT one it cannot be, by construction — a bound that produces no finding
+leaves no trace in a census of findings — so where the question mattered it was
+answered by a separate scan of the same corpus: BOUND(group-tail) was measured
+with a deliberately over-approximating pattern (any `|` before a `{` or `(`, and
+any `|&`, in any shell fence at any tag) returning 0 hits against a control
+showing 499 pipe-carrying lines. Closing any bound changes what CI rejects, so
+each is disclosed here rather than quietly widened.
 
 OUT OF REACH BY CONSTRUCTION — the bytes are never read as shell at all:
   · BOUND(not-markdown) — every file that is not a `*.md`. A member minted in a
@@ -95,6 +109,19 @@ OUT OF REACH BY CONSTRUCTION — the bytes are never read as shell at all:
   · BOUND(blockquote-fence) — a fence inside a BLOCKQUOTE (`> ` before the
     backticks) is not recognised as a fence at all: an opener is matched after
     leading WHITESPACE only, so the whole body is invisible.
+  · BOUND(root-prompt) — a ROOT-PROMPT line in a prompt-style fence (```console,
+    ```shell-session, ```bash-session, ```sh-session, ```shellsession) is dropped
+    before anything reads it as a command. `_strip_comment` runs FIRST, and to it a
+    `#` starting a word is a comment, so `# echo "$BRIDGE_WEBHOOK_SECRET"` empties
+    the line and the prompt strip further down never sees it. The command is then
+    invisible to every rule that reads one — `argv`, `stdout`, `probe`, `log` and
+    `history` were each measured green under it — where the `$ ` prompt spelling of
+    the same line reds. (`waiver-no-reason` is not a command rule: it reads
+    COMMENTS, and it still fires.) The two spellings are not distinguishable by
+    bytes — `# NOT: openssl dgst -hmac "$SECRET"`, a teaching comment this repo
+    writes on purpose, is the same shape — so closing this means ruling that a
+    comment inside a prompt-style fence is a command, which is a change to what CI
+    rejects and belongs to its own ruling.
 
 THE SHELL READER IS A HEURISTIC, NOT A PARSER. It understands quoting, pipelines,
 command substitution, redirection and here-strings. It does not follow a VALUE
@@ -116,13 +143,23 @@ across a name binding, and it executes nothing:
     correct answer: the PARENT shell expands that one into the child's argv before
     the child ever starts.
   · BOUND(heredoc) — a heredoc is not tracked AT ALL, so its body is read as though
-    it were commands: a secret expansion inside one reports an `argv` finding
-    against what is really a config line. That holds for the QUOTED `<<'EOF'`
-    spelling exactly as for the unquoted one — and on the quoted form the message
-    is not just a false positive but a false STATEMENT, because a quoted heredoc
-    expands nothing and no value ever reaches an argv. Wording, not the parser:
-    teaching it heredocs would change what CI rejects. The waiver is the answer if
-    one appears.
+    it were ordinary commands. WHICH WAY THAT IS WRONG DEPENDS ON THE BODY, and the
+    disclosure said only one of the two directions until this was measured.
+    ⚠ FALSE POSITIVE on a body that reads as a COMMAND: `secret = "$BRIDGE_SECRET"`
+    inside `cat <<EOF > /etc/bridge/app.conf` reports an `argv` finding against what
+    is really a config line — and on the QUOTED `<<'EOF'` spelling that message is
+    not merely a false positive but a false STATEMENT, since a quoted heredoc
+    expands nothing and no value ever reaches an argv. SILENT ARM, and it is the
+    likelier shape a real config heredoc has: a body line the command reader
+    consumes without leaving a secret in an ARGUMENT is GREEN. `token=$SECRET` is
+    eaten whole by `_ASSIGN_RE`'s assignment-prefix strip in `_read_command`, so the
+    command has no name and no args; `export TOKEN=$SECRET` names a SHELL_BUILTINS
+    member, which the `argv` rule skips and no printing rule reads; a bare `$SECRET`
+    line puts the expansion in the command NAME, which no rule reads as a leak. That
+    holds in every heredoc spelling — `<<EOF`, `<<-EOF`, `<<EOF | base64`. So the
+    arm an author is likely to SEE is the loud one and the arm that would matter is
+    silent. Wording, not the parser: teaching it heredocs would change what CI
+    rejects. The waiver answers the loud arm; nothing here answers the silent one.
   · BOUND(no-fd-table) — there is no fd table. `exec 3<` a secret file followed by
     `cat <&3` is green: the reading command's input path is `&3`, and nothing
     carries the opener's path forward to it.
@@ -1260,7 +1297,11 @@ def scan_text(path: str, text: str, enabled: set[str] | None = None) -> list[Fin
                 continue
 
             # A prompt-style fence (```console) shows the prompt, not the command.
-            code = re.sub(r'^\s*[$#]\s+', '', code)
+            # Only the `$` prompt gets here: `_strip_comment` above has already
+            # emptied any line whose first word starts with `#`, so a ROOT prompt is
+            # never seen — disclosed as BOUND(root-prompt) rather than closed, since
+            # closing it changes what CI rejects.
+            code = re.sub(r'^\s*\$\s+', '', code)
 
             if not buf.text.strip() and not code.strip():
                 # A waiver claims the line BELOW it, which is what its docstring
