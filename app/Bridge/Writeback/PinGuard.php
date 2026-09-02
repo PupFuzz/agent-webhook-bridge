@@ -67,21 +67,28 @@ use Illuminate\Support\Facades\Log;
  * which is why a refused move still stamps its correlation refs
  * (`KanbanMoveCardHandler::stampCorrelationRefs()`) — DL-335 widened it by exactly one
  * write, the ARCHIVE, on the reading that retiring a card is a lifecycle act and not a
- * field. So a field-only PATCH lands on a pinned card BY DESIGN, not by omission: the
- * correlation-ref stamp here, and the `{name}`-only restamp on an upstream retitle — which
- * has TWO producers as of DL-341 and is named as both, because this clause is the roster
- * and a roster naming one of two is what an auditor reads as a complete list:
- * `KanbanDependabotCardHandler::restampNames()` (DL-328, the PR path) and
- * `KanbanCoordCardHandler::restampNames()` (DL-341, the issue path). Both land on a pinned
- * card deliberately — each writes `name` alone, moves no card and retires none. An auditor
- * running the census above will not see any of them, and should not: read DL-178's
- * annotation and DL-335's widening for why, rather than treating the absence as a further
- * instance of this card's defect. ⚠ *Deliberate* is a statement about the RULE'S SCOPE, not
- * a ruling that a hold should never stop a field write — nobody has been asked that. It is
- * filed on **card#8557** (with `docs/writeback.md`'s dependabot pin paragraph as the prose
- * statement of it), and that card records what this roster cannot: the field-writing arms
- * have MULTIPLIED since the 2026-08-30 annotation was made, so the ruling is being applied
- * past the population it was made over. Enumerate them from the card, not from here.
+ * field. So a field-only PATCH lands on a pinned card BY DESIGN, not by omission. ⛔ WHICH
+ * writes those are is NOT restated here. An earlier draft of this clause named a subset of
+ * them and called ITSELF the roster, which is what an auditor reads as a complete list. The
+ * `PATCH /api/v3/tasks/{id}.json` row of `docs/kanban-integration-contract.md` owns that
+ * population, and it is re-derivable in seconds rather than trusted:
+ * `grep -rnP '^(?!\s*[/*]).*->patchCard\(' app/`. ⚠ The character class is spelt `[/*]` and NOT the
+ * other way round, which would close this docblock at that character; the anchor and the
+ * trailing `\(` are load-bearing for the same reason they are on the census above.
+ * {@see KanbanClient::patchCard} is the single primitive a field write is expressed in
+ * ({@see KanbanClient::archiveCard} deliberately is not — it sends a top-level `_action` CONTROL
+ * key, the same distinction that puts the ARCHIVE inside the pin and a field write outside it),
+ * so a producer absent from that census is absent from the bridge. The `moveCard(` /
+ * `archiveCard(` census above surfaces none of them, and should not: read DL-178's annotation
+ * and DL-335's widening for why, rather than treating the absence as a further instance of this
+ * card's defect.
+ *
+ * ⚠ *Deliberate* is a statement about the RULE'S SCOPE, not a ruling that a hold should never
+ * stop a field write — nobody has been asked that. It is filed on **card#8557** (with `docs/writeback.md`'s
+ * dependabot pin paragraph as the prose statement of it), and that card records what a roster
+ * here cannot: the field-writing arms have MULTIPLIED since the 2026-08-30 annotation was made,
+ * so the ruling is being applied past the population it was made over. Derive them from the
+ * recipe above, not from a list.
  */
 final class PinGuard
 {
