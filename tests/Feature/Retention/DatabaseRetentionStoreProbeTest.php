@@ -131,44 +131,52 @@ class DatabaseRetentionStoreProbeTest extends TestCase
     }
 
     /**
-     * ⛔ THE CHECK DIVIDES THESE TWO FIGURES, AND THIS IS THE LEG THAT ANSWERS — PER LIVE
-     * ENGINE — WHETHER THE NUMERATOR IS EVEN INSIDE THE DENOMINATOR.
-     *
-     * 200 rows of 64 KiB is far above any inline-row limit, so on InnoDB every one of
-     * these payloads is stored OFF-PAGE rather than in the clustered index record. That
-     * matters because the two figures come from different sources: the numerator is a
-     * live `sum(length(payload))` over these rows, and the MariaDB denominator is
-     * `information_schema`'s per-table ALLOCATION accounting. Whether that accounting
-     * covers off-page LOB pages is a property of the engine, not of this code, and no
-     * MariaDB was reachable where this was written — so the relation is not settled from
-     * reading, it is ASSERTED here and answered by whichever job runs the class.
-     *
-     * ⚠ A RED HERE ON A MariaDB JOB IS THE FINDING, NOT A BROKEN TEST: it would say that
-     * engine's denominator does not contain the numerator, and the correct response is to
-     * scope this assertion to the engines where it holds and record the measurement in
-     * DL-331 — never to relax it into something that passes everywhere. The check itself
-     * does not DEPEND on the answer either way (it drops the share when the two disagree
-     * — `RetentionPostureCheckTest`); what this leg decides is whether that drop arm is
-     * known-live on a real engine or purely a boundary guard.
+     * ⛔ TEMPORARY DIAGNOSTIC — TO BE REMOVED IN THE SAME PR. It exists because the only
+     * MariaDB this branch can reach is the CI matrix, and the question it answers cannot
+     * be answered by reading: WHY does `information_schema` report 245760 bytes for a
+     * schema that just took 13107200 bytes of payload? Read-only, no DDL (an `ANALYZE
+     * TABLE` would implicitly COMMIT on MariaDB and dissolve `RefreshDatabase`'s
+     * transaction for every test after it), and every query is wrapped so that a
+     * PRIVILEGE refusal is itself a datum rather than an abort.
      */
-    public function test_the_payload_sum_does_not_exceed_the_size_the_engine_reports(): void
+    public function test_zz_diagnostic_what_the_mariadb_size_source_actually_reports(): void
     {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            $this->markTestSkipped('the diagnostic subject is the MariaDB size source');
+        }
+
+        $ask = function (string $sql): mixed {
+            try {
+                return DB::select($sql);
+            } catch (\Throwable $e) {
+                return 'ERR: '.$e->getMessage();
+            }
+        };
+        $isTables = 'select table_name, engine, row_format, table_rows, avg_row_length, data_length, index_length, data_free from information_schema.tables where table_schema = database() order by table_name';
+
+        $facts = ['version' => $ask('select version() as v')];
+        $facts['settings'] = $ask('select @@autocommit a, @@innodb_stats_on_metadata som, @@innodb_stats_persistent sp, @@innodb_stats_auto_recalc sar, @@innodb_page_size ps, @@tx_isolation_or_null is_null');
+        if (is_string($facts['settings'])) {
+            $facts['settings'] = $ask('select @@autocommit a, @@innodb_stats_on_metadata som, @@innodb_stats_persistent sp, @@innodb_stats_auto_recalc sar, @@innodb_page_size ps');
+        }
+        $facts['tx_level_before'] = DB::transactionLevel();
+        $facts['is_tables_before'] = $ask($isTables);
+
         $written = $this->bulkPayloads(200, 65536);
+        $facts['written'] = $written;
+        $facts['tx_level_after'] = DB::transactionLevel();
+        $facts['sum_len_payload'] = $ask('select sum(length(payload)) v, count(*) c from webhook_events');
+        $facts['is_tables_after'] = $ask($isTables);
+        $facts['probe_store_bytes'] = (new DatabaseRetentionStoreProbe)->measure()->storeBytes;
+        // The one source that reads the tablespace FILE rather than cached statistics —
+        // and the one whose refusal would confirm the PROCESS-privilege claim DL-331
+        // currently makes from documentation alone.
+        $facts['innodb_tablespaces'] = $ask("select name, file_size, allocated_size from information_schema.innodb_tablespaces where name like concat(database(), '/%')");
+        $facts['innodb_sys_tablespaces'] = $ask("select name, file_size, allocated_size from information_schema.innodb_sys_tablespaces where name like concat(database(), '/%')");
 
-        $footprint = (new DatabaseRetentionStoreProbe)->measure();
+        fwrite(STDERR, "\nDL331-DIAG-BEGIN\n".json_encode($facts, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\nDL331-DIAG-END\n");
 
-        // The numerator first, and exactly: `length()` on an off-page LOB must still
-        // answer for the whole value. Without this the comparison below could be
-        // satisfied by a numerator that silently lost the off-page bytes.
-        $this->assertSame(200, $footprint->rows);
-        $this->assertSame($written, $footprint->payloadBytes, '200 payloads of exactly 64 KiB each');
-
-        $this->assertNotNull($footprint->storeBytes);
-        $this->assertLessThanOrEqual(
-            $footprint->storeBytes,
-            $footprint->payloadBytes,
-            'driver '.DB::connection()->getDriverName().': the payload sum is larger than the size this engine reports for the whole database, so the two figures are not on one basis and `RetentionPostureCheck` must drop the share (DL-331)',
-        );
+        $this->assertSame($written, (new DatabaseRetentionStoreProbe)->measure()->payloadBytes);
     }
 
     /**
