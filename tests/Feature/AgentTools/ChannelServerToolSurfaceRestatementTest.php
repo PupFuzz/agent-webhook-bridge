@@ -79,7 +79,21 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
         return substr($src, $start, $end - $start);
     }
 
-    /** One property block of a tool's inputSchema — the surface a seat reads for that field. */
+    /**
+     * One property block of a tool's inputSchema — the surface a seat reads for that field.
+     *
+     * ⛔ THE EXTRACTION ASSERTS ITS OWN SCOPE, because the close anchor alone does not carry
+     * it: a property written on ONE LINE (`title: { type: 'string', description: '…' },`)
+     * has no `\n        },` of its own, so `strpos` runs on to the NEXT property's close and
+     * the region silently grows to cover a field this one does not own. Measured, not
+     * reasoned — against the pre-card#8486 schema, where `title` was exactly that one-liner,
+     * this returned the `tags` block too. A cap check over an over-wide region is the same
+     * defect the class docblock already records for a bare number over a whole entry: it can
+     * pass on a digit that belongs to a neighbour. Every property in this schema sits at
+     * eight spaces and its own keys at ten, so a sibling opener inside the region is the
+     * signal — and it is an ANCHOR failure, not a schema verdict, which is what the message
+     * says.
+     */
     private function property(string $tool, string $property): string
     {
         $definition = $this->toolDefinition($tool);
@@ -88,7 +102,14 @@ class ChannelServerToolSurfaceRestatementTest extends TestCase
         $end = strpos($definition, "\n        },", $start);
         $this->assertNotFalse($end, "{$tool}'s `{$property}` property no longer closes where this test expects — re-anchor the extraction");
 
-        return substr($definition, $start, $end - $start);
+        $block = substr($definition, $start, $end - $start);
+        $this->assertSame(
+            0,
+            preg_match('/\n {8}[A-Za-z_][A-Za-z0-9_]*:/', $block),
+            "{$tool}'s `{$property}` property does not close before the next property begins, so this extraction covers a field it does not own — re-anchor it (a one-line property has no `},` of its own)"
+        );
+
+        return $block;
     }
 
     /** @return array<string, array{string}> */
