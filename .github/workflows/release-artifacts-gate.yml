@@ -33,12 +33,38 @@ jobs:
         with:
           # Required by the action: it resolves the FORK POINT of base and head, reads the
           # version file at both ends and each artifact's contents at head through `git show`,
-          # none of which a shallow clone can serve.
+          # none of which a shallow clone can serve. The base-deriving step below needs the
+          # merge commit's first parent for the same reason.
           fetch-depth: 0
+
+      # THE BASE SNAPSHOT THE ACTION IS HANDED, derived here rather than taken from
+      # `github.event.pull_request.base.sha` (card#8527). GitHub does not refresh that
+      # field on every `synchronize`, so it can LAG the base tip the checked-out merge
+      # commit was built on — measured on PR #640, run 33598959720, 2026-09-02:
+      # `base.sha` 549c894 against a merge commit whose first parent was 7a11085. The
+      # action resolves the FORK POINT of the two shas it is given, and a base that
+      # lags the real base tip UNDERSTATES that fork point, putting the base branch's
+      # own post-fork commits inside the diff this gate asserts on. `HEAD^1` is the
+      # base commit the merge itself records, so it cannot lag; the script fails loud
+      # rather than substituting a guess when the work tree is not that merge.
+      # The action is pinned by sha and lives in another repo, so the correction lands
+      # at the CALL SITE — the input — not inside the action. The identical `base-sha`
+      # input on the toolkit's and kanban-board's own release-artifacts-gate.yml is
+      # the same defect at their call sites; those are their repos' cards.
+      - name: Derive the base snapshot from the checked-out merge commit
+        id: pr-base
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          sha=$(bin/pr-base-snapshot.sh "$HEAD_SHA")
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
       # Pin maintained by dependabot's github-actions ecosystem (see .github/dependabot.yml)
       # — it has opened a bump PR for this action on the weekly cadence since adoption, so a
       # pin behind the toolkit's newest tag is a between-runs lag, not an unmaintained pin.
       - uses: PupFuzz/agent-board-toolkit/release-artifacts@d792a821537a3fbdd05a54357c2669626b1d627a  # v0.31.0
         with:
-          base-sha: ${{ github.event.pull_request.base.sha }}
+          base-sha: ${{ steps.pr-base.outputs.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}

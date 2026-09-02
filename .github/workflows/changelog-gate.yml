@@ -29,6 +29,14 @@ name: CHANGELOG gate
 # SECURITY: the PR title and head branch are author-controlled. They reach the
 # scripts ONLY via `env:` and are used quoted — never interpolated as ${{ }}
 # inside a `run:` body (the Actions script-injection class; DL-182).
+#
+# THE BASE SNAPSHOT IS DERIVED, NOT TAKEN FROM THE PAYLOAD (card#8527). Both
+# steps below pair `HEAD` — the merge commit actions/checkout leaves in the work
+# tree — with `HEAD^1`, the base commit that merge RECORDS, read by
+# `bin/pr-base-snapshot.sh`. `github.event.pull_request.base.sha` is NOT that
+# commit: GitHub does not refresh it on every `synchronize`, and it was measured
+# lagging by one merge on PR #640 (run 33598959720, 2026-09-02). The two ends of
+# a diff must be ONE snapshot or the verdict is about something nobody pushed.
 
 on:
   pull_request:
@@ -53,10 +61,20 @@ jobs:
       - name: Release PR — VERSION has a CHANGELOG section that fits the release-body limit
         shell: bash
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          # Only the PR head sha: it is the second leg of the pairing check in
+          # bin/pr-base-snapshot.sh, not a diff operand. The diff's head end is
+          # the work tree, and its base end is derived from it.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+
+          # ONE SNAPSHOT, BOTH ENDS (card#8527). `HEAD` is the merge commit
+          # actions/checkout left here; `$BASE` is that merge's own first parent,
+          # so `$BASE` -> `HEAD` is exactly what this PR adds to the base branch.
+          # NOT `github.event.pull_request.base.sha`: it lags (measured on PR #640
+          # — see the file header), and a base that is not this head's own parent
+          # makes the base branch's post-fork changes read as this PR's.
+          BASE=$(bin/pr-base-snapshot.sh "$HEAD_SHA")
 
           # Classified by "does this PR move VERSION?", NOT by the base ref.
           # That is circular for the guard that asks whether a feature PR
@@ -82,7 +100,7 @@ jobs:
           # moves next. Scoped to this guard: NOT a claim that every path-list
           # read in the repo wants the flag — DL-281's sibling audit found one
           # that provably does not.
-          CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" "$HEAD")
+          CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" HEAD)
           if ! grep -qxF VERSION <<<"$CHANGED"; then
             echo "OK: this PR does not move VERSION — no release section to assert."
             exit 0
@@ -125,12 +143,19 @@ jobs:
       - name: Feature PR — the change is named in the CHANGELOG [Unreleased] section
         shell: bash
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          # See the release step: the head sha is the pairing check's second leg,
+          # not a diff operand.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           TITLE: ${{ github.event.pull_request.title }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
+
+          # ONE SNAPSHOT, BOTH ENDS — the release step above owns the reason.
+          # This step needs it twice: for the scope diff and for the `git show`
+          # of the base's own [Unreleased] section in the tokenless arm, which
+          # must be the section THIS head was built on top of.
+          BASE=$(bin/pr-base-snapshot.sh "$HEAD_SHA")
 
           # Same exemption set as pr-title-lint.yml, for the same reasons:
           # dependabot and revert PRs carry no card, and release/sync PRs are
@@ -259,7 +284,7 @@ jobs:
           # matched under both). Residual, bounded in DL-281 rather than claimed
           # closed: a path containing `"`, `\`, or a control byte is quoted
           # regardless of this flag.
-          CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" "$HEAD")
+          CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" HEAD)
           if ! grep -qE '^(app/|bin/|\.github/workflows/|\.github/actions/)|^(\.release-pr\.json|phpstan-laravel\.neon|pint\.json|phpunit\.xml|composer\.json|composer\.lock|\.env\.example)$' <<<"$CHANGED"; then
             echo "OK: this PR changes no in-scope file ${SCOPE} — no [Unreleased] entry required."
             exit 0

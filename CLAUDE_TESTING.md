@@ -199,20 +199,51 @@ fetch at all, and a pre-computed file would assert the fixture.
 - **Two cases pin the gate's stated BOUND, not its catch:** two concurrently-open PRs minting one
   number both pass, and the second reds only after the first has merged *and* it re-runs. They
   exist so the claim cannot quietly widen into "no duplicate DL can be minted".
-- **One case builds the CI PAIRING for real, because every other case only approximates it.**
-  `BASE` is the PR's `base.sha` — a snapshot of the base-branch **tip**, NOT the merge base — while
-  the tree the step reads as head is `github.sha`, the merge of the PR head into that same
-  `base.sha`. "Present at head, absent at `BASE`" means "this PR minted it" only because those two
-  are one snapshot; the other cases pair a branch tip with the commit it was cut from, which equals
-  CI only while the branch is not behind the target. That case therefore builds a real merge commit
-  (two parents, asserted) and runs the step twice: with `BASE` at the base tip it passes, and with
-  `BASE` at the **fork point** — the control, and what a `merge-base` against the PR branch returns
-  — it reds, naming the target branch's own post-fork entry as if this PR had minted it. The
-  invariant itself is owned by the workflow comment, which also records why rewriting the step to
-  derive its base with `git merge-base` would leave every case green while breaking the contract.
-- The step calls the real `bin/decision-log.py`, copied into the work tree at the repo-relative
-  path the step names, so a change to the predicate reds here as well as in
-  `bin/test_decision_log.py`.
+- **EVERY case's work tree is a real merge commit, because that is what the step reads its base
+  OUT OF (card#8527).** The base is no longer an input the test hands in: CI checks out
+  `github.sha` — the PR head merged into the base branch — and the step derives its snapshot from
+  that merge's **first parent** via `bin/pr-base-snapshot.sh`. "Present at head, absent at base"
+  means "this PR minted it" only because those two are one snapshot, and they now are one *by
+  construction*: the base end is the commit the head end records as its parent. `makeRepos()`
+  builds the merge and asserts its two parents; the only sha the step is handed is the PR head sha
+  the pairing is CHECKED against.
+- **One case pins what that fix retired, with the measured red as its control.** The step used to
+  take `github.event.pull_request.base.sha`, which GitHub does not refresh on every `synchronize`:
+  on PR #640 (run 33598959720, 2026-09-02) it carried `549c894` while the merge commit the same
+  event checked out had first parent `7a11085`. The case builds exactly that divergence — the base
+  branch mints its own DL after the fork, the merge is rebuilt onto the newer tip — and runs three
+  legs: the step passes; the derived base is asserted to BE the moved tip and NOT the stale sha;
+  and the predicate run against the stale sha returns **6**, naming the base branch's own entry as
+  this PR's mint. That last leg is PR #640's refusal in miniature.
+- **Two cases pin that the pairing is CHECKED, not assumed.** Standing on a non-merge HEAD, or on a
+  merge whose second parent is not this PR's head, the step propagates
+  `bin/pr-base-snapshot.sh`'s refusal (exit 4 and 5) instead of substituting a payload field or a
+  `merge-base` fork point. The workflow comment owns why `merge-base` would be the wrong
+  correction; it is **inert** on every other case in this file, which is exactly what makes it
+  dangerous — measured: replacing the derivation with `git merge-base HEAD^1 HEAD^2` reds only the
+  two cases above, out of 58 across the three workflow-harness classes.
+- The step calls the real `bin/decision-log.py` and the real `bin/pr-base-snapshot.sh`, copied into
+  the work tree at the repo-relative paths the step names, so a change to either reds here as well
+  as in `bin/test_decision_log.py` / `PrBaseSnapshotTest`.
+
+## The PR base snapshot, derived once for four gates (card#8527)
+
+`bin/pr-base-snapshot.sh` prints the first parent of the merge commit `actions/checkout` leaves in
+the work tree, and refuses — loudly, printing no sha — when that work tree is not a two-parent
+merge whose second parent is the PR head sha the event carried. Four gates call it:
+`dl-collision-gate.yml`, both steps of `changelog-gate.yml`,
+`channel-server-supply-chain.yml`'s version-bump guard, and `release-artifacts-gate.yml` (which
+feeds the derived sha to a pinned composite action's `base-sha` input through a step output).
+
+`tests/Feature/Workflows/PrBaseSnapshotTest.php` exercises the script itself, because each caller's
+harness only takes the arm its own fixtures reach. **Its refusal arms are the point, not edge
+cases:** the script's value is that it says "I cannot tell you what the base is" rather than
+substituting the payload field or a fork point, both of which return a plausible sha and a wrong
+verdict. Every arm asserts its exit code (2 no argument, 3 unreadable HEAD, 4 not a two-parent
+merge, 5 a merge of some other head) — callers propagate it under `set -e` — and asserts that
+**stdout is empty** on every refusal, since a caller capturing `$( )` would otherwise treat a
+diagnostic line as a revision. The octopus-merge case is there because `HEAD^1` is readable and
+wrong on a three-parent commit, so "exactly two" is asserted rather than "is a merge".
 
 ## The channel-server live-state sandbox (DL-269)
 

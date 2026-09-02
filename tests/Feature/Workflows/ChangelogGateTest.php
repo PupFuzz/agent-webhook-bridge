@@ -15,11 +15,21 @@ use Tests\TestCase;
  * {@see PrTitleLintTest} and {@see ChannelServerVersionAgreementTest}.
  *
  * WHY A REAL GIT REPOSITORY AND NOT A FLAT DIRECTORY. Both gate steps classify
- * the PR from `git diff --name-only BASE HEAD`, and the tokenless arm reads the
- * changelog AT THE BASE through `git show`. A fixture that handed the step a
- * pre-computed file list would be asserting the fixture; the base/head SHAs are
- * genuine workflow inputs (`github.event.pull_request.base.sha`), so the test
- * supplies genuine ones.
+ * the PR from `git diff --name-only "$BASE" HEAD`, and the tokenless arm reads
+ * the changelog AT THE BASE through `git show`. A fixture that handed the step a
+ * pre-computed file list would be asserting the fixture.
+ *
+ * WHY THE WORK TREE IS A MERGE COMMIT (card#8527). Neither end of that diff is a
+ * workflow INPUT any more. CI checks out `github.sha` — the PR head merged into
+ * the base branch — and the steps derive `$BASE` from that merge's FIRST PARENT
+ * through `bin/pr-base-snapshot.sh`, because
+ * `github.event.pull_request.base.sha` was measured LAGGING the merge commit's
+ * real base (PR #640, run 33598959720, 2026-09-02) and a diff whose two ends are
+ * not one snapshot reports on a tree nobody pushed. So `makeRepo()` builds the
+ * base commit, the head commit, and then the merge of the second into the first,
+ * and the only sha the steps are handed is the head sha the pairing is CHECKED
+ * against. `bin/pr-base-snapshot.sh` has its own cases in
+ * {@see PrBaseSnapshotTest}; here it is exercised as the steps call it.
  *
  * THE STEPS CALL THE REAL `bin/changelog-section.py`. It is copied into each
  * throwaway tree at the repo-relative path the steps name, so a change to the
@@ -110,13 +120,27 @@ class ChangelogGateTest extends TestCase
         exec($git.'add -A && '.$git.'commit -q --allow-empty -m head 2>&1');
         $headSha = trim((string) shell_exec($git.'rev-parse HEAD'));
 
+        // Leave the work tree where actions/checkout leaves it: on the merge of
+        // the head INTO the base, first parent the base. The base is an ancestor
+        // of the head here, so the merge tree IS the head tree and every case's
+        // verdict is unchanged by this — what changes is that the steps now have
+        // somewhere to read their base FROM.
+        exec($git.'checkout -q --detach '.escapeshellarg($baseSha).' 2>&1');
+        exec($git.'merge -q --no-ff --no-edit '.escapeshellarg($headSha).' 2>&1');
+
         // The steps invoke it by repo-relative path; give them the real one.
         // Committed AFTER the head commit on purpose: it must never appear in
         // the base..head diff, or every fixture would read as touching bin/.
+        if (! is_dir($dir.'/bin')) {
+            mkdir($dir.'/bin', 0o777, true);
+        }
+        // The base-deriving helper is NOT behind $withExtractor: a step that
+        // cannot derive its base never reaches the extractor, so withholding it
+        // would turn "the extractor is missing" cases into "the pairing is
+        // missing" ones and they would pass for the wrong reason.
+        copy(base_path('bin/pr-base-snapshot.sh'), $dir.'/bin/pr-base-snapshot.sh');
+        chmod($dir.'/bin/pr-base-snapshot.sh', 0o755);
         if ($withExtractor) {
-            if (! is_dir($dir.'/bin')) {
-                mkdir($dir.'/bin', 0o777, true);
-            }
             copy(base_path('bin/changelog-section.py'), $dir.'/bin/changelog-section.py');
         }
 
@@ -159,7 +183,7 @@ class ChangelogGateTest extends TestCase
         [$rc, $out] = $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::RELEASE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head']],
+            ['HEAD_SHA' => $repo['head']],
         );
 
         $this->assertSame(0, $rc, $out);
@@ -176,7 +200,7 @@ class ChangelogGateTest extends TestCase
         [$rc, $out] = $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::RELEASE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head']],
+            ['HEAD_SHA' => $repo['head']],
         );
 
         $this->assertSame(0, $rc, $out);
@@ -193,7 +217,7 @@ class ChangelogGateTest extends TestCase
         [$rc, $out] = $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::RELEASE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head']],
+            ['HEAD_SHA' => $repo['head']],
         );
 
         $this->assertSame(1, $rc, $out);
@@ -213,7 +237,7 @@ class ChangelogGateTest extends TestCase
         [$rc, $out] = $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::RELEASE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head']],
+            ['HEAD_SHA' => $repo['head']],
         );
 
         $this->assertSame(1, $rc, $out);
@@ -246,7 +270,7 @@ class ChangelogGateTest extends TestCase
         [$rc, $out] = $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::RELEASE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head']],
+            ['HEAD_SHA' => $repo['head']],
         );
 
         $this->assertSame(1, $rc, $out);
@@ -266,7 +290,7 @@ class ChangelogGateTest extends TestCase
         return $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head'], 'TITLE' => $title, 'HEAD_REF' => $branch],
+            ['HEAD_SHA' => $repo['head'], 'TITLE' => $title, 'HEAD_REF' => $branch],
         );
     }
 
@@ -416,7 +440,7 @@ class ChangelogGateTest extends TestCase
         [$rc, $out] = $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
             $repo['dir'],
-            ['BASE' => $repo['base'], 'HEAD' => $repo['head'], 'TITLE' => 'fix: x (card#1234)', 'HEAD_REF' => 'fix/1234-x'],
+            ['HEAD_SHA' => $repo['head'], 'TITLE' => 'fix: x (card#1234)', 'HEAD_REF' => 'fix/1234-x'],
         );
 
         $this->assertSame(1, $rc, $out);
@@ -697,6 +721,72 @@ class ChangelogGateTest extends TestCase
 
         $this->assertSame(0, $rc, $out);
         $this->assertStringContainsString(self::OUT_OF_SCOPE_MESSAGE, $out);
+    }
+
+    // -------------------------------------------- the pairing card#8527 fixed
+
+    public function test_the_scope_set_is_this_prs_own_change_not_what_the_base_branch_shipped_after_the_fork(): void
+    {
+        // A DOCS-ONLY PR, cut before the base branch shipped an `app/` change.
+        // Its scope verdict must be a function of the PR, never of what merged
+        // on the base branch meanwhile.
+        $dir = sys_get_temp_dir().'/changelog-gate-'.bin2hex(random_bytes(6));
+        $this->trees[] = $dir;
+        mkdir($dir.'/docs', 0o777, true);
+        mkdir($dir.'/app', 0o777, true);
+        mkdir($dir.'/bin', 0o777, true);
+
+        $git = 'git -C '.escapeshellarg($dir).' -c user.email=t@example.invalid -c user.name=t ';
+        exec($git.'init -q -b main 2>&1');
+        file_put_contents($dir.'/docs/CHANGELOG.md', $this->changelog('- work'));
+        file_put_contents($dir.'/app/X.php', 'a');
+        exec($git.'add -A && '.$git.'commit -q -m base 2>&1');
+        $forkPoint = trim((string) shell_exec($git.'rev-parse HEAD'));
+
+        exec($git.'checkout -q -b pr 2>&1');
+        file_put_contents($dir.'/docs/CHANGELOG.md', $this->changelog('- work')."\n<!-- a docs edit -->\n");
+        exec($git.'add -A && '.$git.'commit -q -m head 2>&1');
+        $headSha = trim((string) shell_exec($git.'rev-parse HEAD'));
+
+        // The base branch ships an `app/` change AFTER the fork.
+        exec($git.'checkout -q main 2>&1');
+        file_put_contents($dir.'/app/X.php', 'b');
+        exec($git.'add -A && '.$git.'commit -q -m "base ships code" 2>&1');
+        $movedTip = trim((string) shell_exec($git.'rev-parse HEAD'));
+
+        exec($git.'checkout -q --detach '.escapeshellarg($movedTip).' 2>&1');
+        exec($git.'merge -q --no-ff --no-edit '.escapeshellarg($headSha).' 2>&1');
+
+        copy(base_path('bin/pr-base-snapshot.sh'), $dir.'/bin/pr-base-snapshot.sh');
+        chmod($dir.'/bin/pr-base-snapshot.sh', 0o755);
+        copy(base_path('bin/changelog-section.py'), $dir.'/bin/changelog-section.py');
+
+        [$rc, $out] = $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
+            $dir,
+            ['HEAD_SHA' => $headSha, 'TITLE' => 'docs: a note', 'HEAD_REF' => 'docs/note'],
+        );
+
+        $this->assertSame(0, $rc, $out);
+        $this->assertStringContainsString(self::OUT_OF_SCOPE_MESSAGE, $out);
+
+        // THE CONTROL, and the reason the green above is a measurement rather
+        // than a fixture that could not have failed: the RETIRED pairing — a base
+        // out of the event payload against the PR head sha, two commits neither
+        // of which contains the other — puts the BASE BRANCH's own `app/X.php`
+        // change in this PR's scope set, in reverse, and the step would have
+        // demanded an [Unreleased] entry for a change the PR never made. (That
+        // is also card#8441's measured defect on this predicate's two dots; it is
+        // out of scope here and its own card owns the ruling. What this case
+        // pins is that the two ends of the diff are now ONE snapshot.)
+        $retired = (string) shell_exec($git.'diff --name-only '.escapeshellarg($movedTip).' '.escapeshellarg($headSha));
+        $this->assertStringContainsString('app/X.php', $retired);
+
+        $derived = trim((string) shell_exec('cd '.escapeshellarg($dir).' && bin/pr-base-snapshot.sh '.escapeshellarg($headSha)));
+        $this->assertSame($movedTip, $derived);
+        $paired = (string) shell_exec($git.'diff --name-only '.escapeshellarg($derived).' HEAD');
+        $this->assertStringNotContainsString('app/X.php', $paired);
+        $this->assertStringContainsString('docs/CHANGELOG.md', $paired);
     }
 
     // ---------------------------------------------------------------- publish step
