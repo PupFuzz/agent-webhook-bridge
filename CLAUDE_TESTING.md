@@ -466,6 +466,7 @@ docker rm -f bridge-test-mariadb
 | A security-sensitive change | additional regression tests for the attack surface (e.g. `WebhookReceiveTest` covers path-traversal scope, empty secret, relative secret_dir) |
 | A change to `bridge:check`'s output, or a refactor of it | see § The `bridge:check` golden harness below — a behavior-preserving refactor is checked by the golden files, an intended change regenerates them |
 | A `Check` migrated into the DL-242 registry | `tests/Unit/Bridge/Check/Checks/<Name>CheckTest.php`, scoped to **the legs the golden suite cannot reach** — `catch` arms, `switch` arms, and any leg needing an unreachable backend or a controlled HTTP outcome. Do NOT re-cover golden-measured legs: the golden files pin the operator-visible line, which is the stronger measurement. Every absence assertion needs a witness that the check ran |
+| A structural coverage / census class over the source tree | read the source through `Tests\Support\SourceScan`, never a fresh walk of your own; a file population narrower than `app/` needs a minuted reason — see § *Structural coverage classes derive ONE population* |
 
 ## The `bridge:check` golden harness (DL-242)
 
@@ -538,6 +539,99 @@ what turns that from an intention into a measurement.
   wrong sentence would pass silently, where an unrecognised right one merely fails loudly. It
   gates the copy-a-neighbour path that minted fifteen of these at once, **not** the truth of any
   individual claim: a false claim carrying a sanctioned sentence still passes.
+
+## Structural coverage classes derive ONE population (`Tests\Support\SourceScan`)
+
+Several tests here are not behavioural — they are **census instruments** over the source tree. They
+answer "is every X in this repo accounted for?", where a MISS is silent: the suite goes green over
+the site nobody listed. `GetCardTenantCheckCoverageTest` (every `->getCard(` in `app/`),
+`WritebackRefusalSignalCoverageTest` (every bare `Log::warning`/`Log::error` in the writeback
+handlers, and every read of a card's `board_id` in `app/`) and `WritebackSuccessBoardRecordTest`
+(a kanban write made under the DL-009 mapped-board regime) are the ones that derive their
+population THROUGH the shared primitive. ⛔
+**They are not the whole census population of this repo** — see *The un-migrated remainder* below
+before you conclude that a class you are reading is out of scope for the rule.
+
+**Read the source through `Tests\Support\SourceScan`, never through a walk of your own.** That
+class owns the two shapes:
+
+- **`codeLines($source)`** — the LINE walk, for a regex-per-line census. It skips lines that open
+  or continue a comment; its bound (a trailing comment on a code line is not skipped) is in its
+  docblock, and it fails LOUD — an extra site the caller must account for.
+- **`sitesInApp($siteAt)` / `sites($source, $file, $siteAt)`** — the TOKENIZED walk over the whole
+  of `app/`. The caller supplies a PREDICATE over tokens and gets back sites keyed
+  `<path under app/>::<enclosing function>#<ordinal>`. Comments, docblocks and string mentions are
+  excluded by construction rather than by a regex the next spelling walks past, and the key never
+  carries a LINE NUMBER — an offset pin reds on an unrelated docblock edit, and its only
+  remediation ("re-derive the offsets") is the same action that absorbs a real new site.
+
+⛔ **A hand-written glob plus a STATED BOUND for everything outside it is a declaration with no
+check, and this repo has paid for it.** Two classes police the two ends of ONE tenant boundary;
+while they derived two different populations — one walking all of `app/`, the other a pair of
+globs — a board compare in `app/Bridge/Tools/` was outside both, and it was found by the class
+whose population was the tree, not by the bound that disclosed it (card#8440 → card#8530). If the
+population you need is "everything in `app/`", say so in code — `sitesInApp()` is that spelling.
+
+⚠ **A narrower FILE population is not forbidden; an UNMINUTED one is.** The minuted ones:
+`WritebackRefusalSignalCoverageTest`'s LEVEL-keyed leg globs the
+`Kanban*Handler.php` files under `app/Bridge/Handlers/` because its subject — a bare `Log::warning`/`Log::error`
+that should have been a paired alert — is a property of the writeback handlers (DL-274/DL-285), and
+`WritebackSuccessBoardRecordTest` globs the writeback surface for the same kind of reason — its
+subject is a kanban write made under the DL-009 mapped-board regime, and the board-tools door sits
+outside that REGIME rather than merely outside a directory list. ⛔ **Neither clause here is either
+class's SCOPE — each class's own docblock is, and both carry theirs** (`WritebackSuccessBoardRecordTest`'s
+*STATED BOUNDS*, narrower and longer than this § should ever restate: it names what a write in
+`app/Bridge/Tools/` is outside, and why). Read the scope there; what belongs on this page is only
+that each narrowing was MINUTED, never a second copy of what it says. Both still do their SCANNING
+through `SourceScan::codeLines`. What is forbidden is the shape card#8530 paid
+for: a glob chosen because it was the code in front of the author, carrying a STATED BOUND for
+everything outside it. ⛔ **That bound was measured, not hypothetical** — the old KIND leg globbed
+handlers by NAME (`Kanban*Handler.php`), so a scratch handler named off-pattern was invisible to it
+exactly as the `app/Bridge/Tools/` compare was.
+
+**When the answer for a site is "yes, and that is fine", DISPOSITION it — do not narrow the
+population to exclude it.** A disposition list entry names the SUBJECT the site reads and why it
+is not the thing being policed; a narrowed population reports clean over a question nobody asked.
+Both directions of set equality, always: a new site reds, and so does a disposition whose site has
+gone (a stale exemption is its own defect).
+
+**Every census instrument owns a fixture control**, because its expectation is satisfied by a
+scanner that has stopped matching. The control asserts BOTH directions on a source string whose
+answer is known — real sites found, prose and near-miss spellings skipped.
+
+### The un-migrated remainder
+
+⛔ **The rule above is the STANDARD, not a description of this tree.** Census instruments over
+`app/` still carry their own copy of the walk and do not go through `SourceScan` — one of them
+(`BoardScopedReadConstructionTest`'s private `appPhpFiles()`) is a duplicate of
+`SourceScan::appFiles()`, sitting in `tests/Feature/Writeback/` beside the two classes this rule
+was minted for and censusing the same tenant boundary. They are neither exempt nor minuted
+narrower populations: they predate the primitive, and migrating them was out of scope for the card
+that minted it (card#8530 — one change does one thing). **bridge card#8575 owns that
+consolidation.** ⚠ Do not read their existence as licence. Copying the nearest neighbour is exactly
+how the N+1th copy gets minted, which is the failure this § exists to stop — and an un-migrated
+walk is where the next silently-narrow population comes from.
+
+**Re-derive the remainder; do not trust a list written here** — a hand-written member list is how
+this § came to tell the next author that the class they were about to copy was out of scope. What
+follows is a starting point for that re-derivation, not the population:
+
+    command grep -rln 'RecursiveIteratorIterator\|glob(' tests/ \
+      | xargs -r grep -ln "app/\|app_path(" | xargs -r grep -L 'SourceScan'
+
+⛔ **Its output is a LEAD LIST, and a clean run of it discharges nothing.** What it prints is what
+three greps say: a file that globs or recurses, names the tree, and does not mention the primitive.
+That makes each one a real LEAD — read it and confirm the walk; a `glob()` over a fixture directory
+in a file that separately mentions `app/` would print here too. And what it cannot tell you at all
+is that there are no OTHERS, because it keys on SPELLINGS — a walk naming the tree some third way, or
+a class going through `SourceScan` for one leg and its own walk for another, is outside its reach
+by construction. **The stage-2 alternation is in there because that blind spot was LIVE, not
+hypothetical:** keyed on `'app/'` alone this recipe missed a classifier census that spells the tree
+`app_path(`, while the sentence above it told the reader an empty result meant the remainder was
+gone. Reading a recipe's silence as coverage is the same defect as reading a stated bound as a
+check — the one this whole § exists to stop, re-minted by the § itself. **The enumeration belongs
+to bridge card#8575, not to this recipe and not to this page:** take what this prints to that card,
+and let the card own what the population is and when it is empty.
 
 ## Anti-patterns to avoid
 
