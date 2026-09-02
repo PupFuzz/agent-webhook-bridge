@@ -481,7 +481,8 @@ answer "is every X in this repo accounted for?", where a MISS is silent: the sui
 the site nobody listed. `GetCardTenantCheckCoverageTest` (every `->getCard(` in `app/`),
 `WritebackRefusalSignalCoverageTest` (every bare `Log::warning`/`Log::error` in the writeback
 handlers, and every read of a card's `board_id` in `app/`) and `WritebackSuccessBoardRecordTest`
-(every kanban write) are the ones that derive their population THROUGH the shared primitive. ⛔
+(a kanban write made under the DL-009 mapped-board regime) are the ones that derive their
+population THROUGH the shared primitive. ⛔
 **They are not the whole census population of this repo** — see *The un-migrated remainder* below
 before you conclude that a class you are reading is out of scope for the rule.
 
@@ -509,8 +510,14 @@ population you need is "everything in `app/`", say so in code — `sitesInApp()`
 `WritebackRefusalSignalCoverageTest`'s LEVEL-keyed leg globs the
 `Kanban*Handler.php` files under `app/Bridge/Handlers/` because its subject — a bare `Log::warning`/`Log::error`
 that should have been a paired alert — is a property of the writeback handlers (DL-274/DL-285), and
-`WritebackSuccessBoardRecordTest` globs the directories that can hold a kanban write for the same
-kind of reason. Both still do their SCANNING through `SourceScan::codeLines`. What is forbidden is the shape card#8530 paid
+`WritebackSuccessBoardRecordTest` globs the writeback surface for the same kind of reason — its
+subject is a kanban write made under the DL-009 mapped-board regime, and the board-tools door sits
+outside that REGIME rather than merely outside a directory list. ⛔ **Neither clause here is either
+class's SCOPE — each class's own docblock is, and both carry theirs** (`WritebackSuccessBoardRecordTest`'s
+*STATED BOUNDS*, narrower and longer than this § should ever restate: it names what a write in
+`app/Bridge/Tools/` is outside, and why). Read the scope there; what belongs on this page is only
+that each narrowing was MINUTED, never a second copy of what it says. Both still do their SCANNING
+through `SourceScan::codeLines`. What is forbidden is the shape card#8530 paid
 for: a glob chosen because it was the code in front of the author, carrying a STATED BOUND for
 everything outside it. ⛔ **That bound was measured, not hypothetical** — the old KIND leg globbed
 handlers by NAME (`Kanban*Handler.php`), so a scratch handler named off-pattern was invisible to it
@@ -540,14 +547,23 @@ how the N+1th copy gets minted, which is the failure this § exists to stop — 
 walk is where the next silently-narrow population comes from.
 
 **Re-derive the remainder; do not trust a list written here** — a hand-written member list is how
-this § came to tell the next author that the class they were about to copy was out of scope:
+this § came to tell the next author that the class they were about to copy was out of scope. What
+follows is a starting point for that re-derivation, not the population:
 
-    command grep -rln 'RecursiveIteratorIterator\|glob(' tests/ | xargs grep -ln 'app/' | xargs grep -L 'SourceScan'
+    command grep -rln 'RecursiveIteratorIterator\|glob(' tests/ \
+      | xargs -r grep -ln "app/\|app_path(" | xargs -r grep -L 'SourceScan'
 
-Every file it prints walks the tree without the primitive; an empty result means the remainder is
-gone and card#8575 is dischargeable. ⚠ Its one bound: a class that uses `SourceScan` for one leg
-and its own walk for another is invisible to it — `WritebackRefusalSignalCoverageTest`'s LEVEL-keyed
-leg is exactly that shape, and is minuted above.
+⛔ **Its output is a LEAD LIST, and a clean run of it discharges nothing.** Every file it prints
+does walk the tree without the primitive, so each one is a real lead; what it cannot tell you is
+that there are no others, because it keys on SPELLINGS — a walk naming the tree some third way, or
+a class going through `SourceScan` for one leg and its own walk for another, is outside its reach
+by construction. **The stage-2 alternation is in there because that blind spot was LIVE, not
+hypothetical:** keyed on `'app/'` alone this recipe missed a classifier census that spells the tree
+`app_path(`, while the sentence above it told the reader an empty result meant the remainder was
+gone. Reading a recipe's silence as coverage is the same defect as reading a stated bound as a
+check — the one this whole § exists to stop, re-minted by the § itself. **The enumeration belongs
+to bridge card#8575, not to this recipe and not to this page:** take what this prints to that card,
+and let the card own what the population is and when it is empty.
 
 ## Anti-patterns to avoid
 
