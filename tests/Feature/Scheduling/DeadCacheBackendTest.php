@@ -133,8 +133,11 @@ class DeadCacheBackendTest extends TestCase
      * ⚑ THE OTHER RECORDING SURFACE. "Never throws past the pass" is a property of the
      * WHOLE arm, not of the cache write alone: an unwritable `storage/logs` is the same
      * class of fault, and a log call that re-raised would put the throw back on the exact
-     * path this shell exists to keep clean. Nothing is recorded in that case — the pass
-     * still reports the fault through its RESULT, which is what the exit code reads.
+     * path this shell exists to keep clean. Nothing is recorded in that case, and what
+     * carries the fault instead depends on the INGRESS: on this one (`JobPassSource::Tick`)
+     * the pass reports it through its RESULT, which is what the tick's exit code reads. The
+     * event ingress discards that result, so there a dead log AND a dead cache together are
+     * unreported — see `App\Bridge\Support\FaultMarker`'s per-caller split.
      */
     public function test_a_dead_log_backend_does_not_escape_the_pass_either(): void
     {

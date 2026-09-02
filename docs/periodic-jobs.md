@@ -112,10 +112,13 @@ its own exception: `bridge:tick` died at the tick stamp with a trace and exit 1 
 — no summary line, no log line, no marker — and the event ingress ended every delivery with
 an unhandled fatal in the FPM worker. The fault is now **logged first** and the marker written
 second and guarded, so what an operator sees on a dead cache store is the ordinary contract
-above: one summary line, one log line, exit 1. ⚠ The last-pass-failure marker (the one
-`bridge:check`'s `jobs.posture` leg reports) is the one thing a dead cache CANNOT leave
-behind — the marker lives in the store that failed. Read the log, not the marker, when the store is the
-suspect; and a tick whose stamp could not be written reads as `unmeasured`, never as fresh.
+above: one summary line, **a log line per failed leg**, exit 1. That is TWO log lines from one
+`bridge:tick`, not one: the tick stamp and the pass fail separately and each records its own
+(`the tick stamp could not be written…`, then `scheduled job pass failed`). ⚠ The
+last-pass-failure marker (the one `bridge:check`'s `jobs.posture` leg reports) is the one
+thing a dead cache CANNOT leave behind — the marker lives in the store that failed. Read the
+log, not the marker, when the store is the suspect; and a tick whose stamp could not be
+written reads as `unmeasured`, never as fresh.
 
 ## Death is the alarm
 
