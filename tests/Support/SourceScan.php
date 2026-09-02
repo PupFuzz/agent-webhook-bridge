@@ -132,8 +132,13 @@ final class SourceScan
      * what stops a SECOND site in an already-declared method inheriting the first one's
      * disposition.
      *
-     * ⛔ $siteAt IS ASKED ABOUT EVERY TOKEN and answers with the site's VALUE, or `null`
-     * when the token is not a site. `null` is the ONLY absence — `false`, `0` and `''` are
+     * ⛔ $siteAt IS ASKED ABOUT EVERY TOKEN THE WALK DOES NOT CONSUME, and answers with the
+     * site's VALUE, or `null` when the token is not a site. The consumed ones are the four
+     * STRUCTURAL tokens the scope tracking below reads and returns on — `{`, `}`, a `;` that
+     * closes a bodiless declaration, and the `function` keyword — so a predicate whose subject
+     * is a DECLARATION cannot be expressed here without changing that dispatch. Stated rather
+     * than left to be discovered: both shipped predicates answer `null` for all four, so the
+     * exclusion is invisible until it is not. `null` is the ONLY absence — `false`, `0` and `''` are
      * VALUES and land in the map. (`GetCardTenantCheckCoverageTest` stores exactly `false`
      * for an unguarded read, and its fixture control pins those entries, so a walk that
      * confused the two reds there.) $siteAt receives the whole token list, the index, and
