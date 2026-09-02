@@ -329,14 +329,16 @@ jobs:
           # `--baseline` then drops any needle the base already had, so a shared
           # `### Fixed` head cannot pass for a misfiled entry.
           #
-          # ⚠ THE THREE-DOT IS NOT PINNED BY A FIXTURE, and saying so is cheaper
-          # than a leg that cannot fail: swapping it for `..` was mutated in and
-          # the suite stayed GREEN. The two filters make the forms agree on this
-          # predicate — a `..`-only extra needle is a line the base DELETED after
-          # the fork, which the merge then deletes too, so it is never in the
-          # merged section this matches against. Three dots is kept because it is
-          # what "the lines this branch adds" MEANS; the equivalence is an
-          # argument, not a measurement.
+          # ⚠ THE THREE-DOT WAS UNPINNED UNTIL LEG 3 EXISTED, and this file said
+          # so: swapping it for `..` was mutated in and the suite stayed GREEN,
+          # because the two filters made the forms agree on the NEEDLES — a
+          # `..`-only extra needle is a line the base DELETED after the fork,
+          # which the merge deletes too, so it is never in the merged section.
+          # THAT IS NO LONGER TRUE, and the reason is the `-` side: under `..`
+          # the base's own fold shows up as a DELETION of `## [X.Y.Z] - <date>`,
+          # which is the first line of that section on the base, so leg 3 fires
+          # on every genuinely pre-fold branch and the diagnosis is thrown away.
+          # Mutated in and measured: RED ×3, all three pre-fold fixtures.
           #
           # It NEVER changes the verdict — the gate has already decided to fail
           # when this runs, and every arm below still exits 1. It only chooses
@@ -351,20 +353,25 @@ jobs:
           # be the worse failure.
           #
           # THE LABEL IS NOT THE DIAGNOSIS. "A line this branch adds sits in a
-          # released section" is also true of two shapes where the fold sentence
-          # below is FALSE, both measured as fixtures:
+          # released section" is also true of THREE shapes where the fold
+          # sentence below is FALSE, each measured as a fixture:
           #
-          #   * the branch CORRECTS a line inside a section released long before
-          #     it forked (the stale-fix shape) — the message would date a fold
-          #     to a window it did not happen in, and would tell the author to
-          #     lift a SHIPPED line out of a release;
+          #   * the branch CORRECTS a line inside a section that already stood at
+          #     its FORK POINT (the stale-fix shape) — the message would date a
+          #     fold to a window it did not happen in, and would tell the author
+          #     to lift a SHIPPED line out of a release;
           #   * the branch CUTS the section itself — a PR that adds
           #     `## [X.Y.Z]` and files under it is told that X.Y.Z "was cut while
-          #     this branch was open" by somebody else.
+          #     this branch was open" by somebody else;
+          #   * the branch forked PRE-fold, MERGED the folded base — the remedy's
+          #     own first instruction — and THEN corrected a line inside the
+          #     just-folded section. No reading of the history excludes this one;
+          #     LEG 3 below is why.
           #
-          # So the fold is asserted, not inferred: the heading must exist on the
-          # BASE and must NOT have existed at the branch's FORK POINT — i.e. it
-          # appeared during this branch's life, which is what "the branch
+          # So the fold is asserted, not inferred, and the predicate has THREE
+          # legs. Legs 1 and 2 ask about the HISTORY: the heading must exist on
+          # the BASE and must NOT have existed at the branch's FORK POINT — i.e.
+          # it appeared during this branch's life, which is what "the branch
           # predates the fold" means. Both reads go through the same extractor as
           # the label, never a `grep '## [x]'`: a second carve of the section
           # boundary is DL-276's defect class one level down.
@@ -380,6 +387,31 @@ jobs:
           # is not a re-fork, so the fork point is what answers it. Both shapes
           # are fixtures in ChangelogGateTest.
           #
+          # LEG 3 — THE BRANCH DELETES NO LINE OF THAT SECTION AS THE SECTION
+          # STANDS ON `$BASE`. This is a THIRD QUESTION, not a tighter spelling
+          # of the first two, and the third shape above is why: legs 1-2 settle a
+          # fact about the HISTORY, while the remedy makes a claim about a LINE —
+          # "the fold carried YOUR entry into [X.Y.Z], so move it out". A branch
+          # that forked pre-fold, merged the folded base and then edited a line
+          # inside the just-folded section satisfies both history legs and
+          # falsifies that claim, and NO reading of the three trees can separate
+          # them: fork point, base and merged tree are byte-identical whether the
+          # fold CARRIED that line in or the author WROTE it there after merging.
+          # The `-` SIDE of the diff is what differs — correcting a shipped line
+          # DELETES it, and a fold carries lines in while deleting none. So a
+          # branch that removes a line the released section carries on the base
+          # has not established this diagnosis, and the arm prints what it always
+          # printed. "Restricted to that section" IS the comparison: the section
+          # body comes from the same extractor read leg 1 makes, so no section
+          # boundary is re-derived here either.
+          #
+          # ⚠ BLANK LINES ARE DROPPED FROM THE `-` SIDE, and that filter is
+          # load-bearing rather than tidy: `grep -x -f` takes an empty pattern
+          # line as matching every empty line, and every section body has blank
+          # lines in it, so without the filter a branch that deletes ONE blank
+          # line anywhere in the changelog would lose its diagnosis. Pinned by a
+          # fixture that deletes exactly that.
+          #
           # RESIDUALS, in the safe direction — each yields no diagnosis, so the
           # arm prints the message it always printed:
           #   * a branch with NO commit of its own (nothing in `$HEAD ^$BASE`):
@@ -388,44 +420,90 @@ jobs:
           #     all of a merge's parents are on the base side, so "the" fork
           #     point is a choice between them, and they can disagree about
           #     whether the fold heading is present. Picking one would be a
-          #     second inference — the thing this predicate exists to remove.
+          #     second inference — the thing this predicate exists to remove;
+          #   * a genuinely pre-fold branch that ALSO deletes a line the folded
+          #     section carries — a reworded old bullet, or a `### Fixed` head it
+          #     dropped from its own side. Leg 3 cannot tell that from the
+          #     correction shape and refuses.
           #
-          # ⚠ AND ONE THAT IS DISCLOSED, NOT CLOSED. A range with MORE THAN ONE
-          # root — a branch that merged another still-unmerged branch into
-          # itself — has more than one fork point, and `tail -1` reads whichever
-          # `--topo-order` puts last. Usually harmless (a root that predates the
-          # fold makes the sentence true; one that does not drops the diagnosis),
-          # but the two roots can disagree, and the corner where that matters is
-          # a branch CORRECTING a shipped line on its post-fold side: read from
-          # the pre-fold root, the gate would tell that author to lift a shipped
-          # line out of a release — shape (a) above, which this predicate exists
-          # to exclude. Closing it means checking EVERY entry point (the parents
-          # of the range that lie outside it) rather than one, which is a
-          # predicate change of its own and needs its own item; it is disclosed
-          # here and in DL-329 rather than folded into a diagnostic fix that is
-          # already correcting one predicate.
-          # WHAT PRINTS in both is the generic "add an [Unreleased] entry" arm,
-          # and on a branch that IS genuinely pre-fold that text is not a re-read
-          # of something still correct — it is the wrong instruction, the one
-          # this whole diagnostic exists to stop giving. The trade is taken
-          # anyway: the other direction asserts a fold nobody established and
-          # sends the author to edit a RELEASED section. Unhelpful beats
-          # confidently wrong, and the residual is stated rather than claimed
-          # harmless.
+          # LEG 3'S OWN RESIDUAL RUNS THE OTHER WAY, and is kept deliberately: a
+          # branch that ADDS a brand-new bullet into the folded section after
+          # merging, deleting nothing, is still diagnosed — and "move it into
+          # [Unreleased]" is the RIGHT instruction there, because that line did
+          # not ship in [X.Y.Z]. DL-329 owns the residual list; the doc surfaces
+          # point at it rather than restating it.
+          #
+          # ⚠ MULTI-ROOT: DISCLOSED, MEASURED, NOT TRACKED. A range with MORE
+          # THAN ONE root — a branch that merged another still-unmerged branch
+          # into itself — has more than one fork point, and `tail -1` reads
+          # whichever `--topo-order` puts last. The mechanism is real; no
+          # reachable shape here depends on it, and BOTH halves of that are
+          # measurements rather than arguments. `git rev-list --topo-order $HEAD
+          # ^$BASE | tail -1` returned the FIRST-PARENT root in 5 of 5
+          # constructed multi-root shapes (a sibling merged mid-branch, at the
+          # end, two siblings, an octopus merge, and one whose first-parent root
+          # is the pre-fold sibling). And of the 206 merge commits reachable from
+          # this repo's integration branch — 107 of them PR merges on its
+          # first-parent chain — exactly ONE range carries more than one root:
+          # PR #399, `sync/main-to-dev-post-v0.70.0`, which this step EXEMPTS by
+          # head ref before any of this runs, and whose topo-last commit is
+          # itself a MERGE, which `branch_fork_point` refuses. Zero non-exempt
+          # ranges, not zero ranges — the difference is the point of measuring.
+          # The ordering `--topo-order` guarantees does not cover which root
+          # comes last, so this is stated rather than relied on. It is NOT
+          # tracked as an item (canon #18 — no reachable behaviour depends on
+          # it); this comment and DL-329 are the record. If it ever bites, the
+          # fix is to enumerate every ENTRY POINT (`git rev-list --parents $HEAD
+          # ^$BASE`, the parents lying outside the range) and require the heading
+          # absent at all of them.
+          #
+          # WHAT PRINTS in every one of these is the generic "add an [Unreleased]
+          # entry" arm, and on a branch that IS genuinely pre-fold that text is
+          # not a re-read of something still correct — it is the wrong
+          # instruction, the one this whole diagnostic exists to stop giving. The
+          # trade is taken anyway: the other direction asserts a fold nobody
+          # established and sends the author to edit a RELEASED section.
+          # Unhelpful beats confidently wrong, and the residual is stated rather
+          # than claimed harmless.
           #
           # 0 = the section stands in that file · 1 = it does not · 2 = the
           # question was not answered. The third state is kept APART from the
           # second because the caller INVERTS one of these reads: collapsing
           # every non-zero rc to "absent" lets a tooling failure satisfy the
           # fork-point leg and print the fold remedy off an error.
+          #
+          # `$3` is where the section BODY lands when the caller wants it (leg 3
+          # compares against the base's section). It is the same read, not a
+          # second one: two extractor calls over one file could be made to
+          # disagree by anything that edits the file between them, and the body
+          # leg 3 subtracts from must be the body leg 1 accepted.
           changelog_has_section() {
             local rc=0
-            python3 bin/changelog-section.py --changelog "$1" --section "$2" >/dev/null 2>&1 || rc=$?
+            # stderr to /dev/null EXPLICITLY, not `2>&1`: with `$3` set that
+            # would fold the extractor's diagnostics into the section body.
+            python3 bin/changelog-section.py --changelog "$1" --section "$2" >"${3:-/dev/null}" 2>/dev/null || rc=$?
             case "$rc" in
               0) return 0 ;;
               3) return 1 ;;
             esac
             diagnosis_unavailable "bin/changelog-section.py exited ${rc} reading ${1}"
+            return 2
+          }
+
+          # LEG 3, with the same three-state rc discipline for the same reason —
+          # the caller inverts this read too. 0 = the branch deletes at least one
+          # line of that section · 1 = it deletes none · 2 = the question was not
+          # answered (grep's own rc 2: an unreadable input, never a verdict).
+          # `-x` because a section line is a whole line, and `-F` because a
+          # changelog bullet is text, not a pattern.
+          branch_deletes_from_section() {
+            local rc=0
+            grep -qxF -f "$1" -- "$2" || rc=$?
+            case "$rc" in
+              0) return 0 ;;
+              1) return 1 ;;
+            esac
+            diagnosis_unavailable "grep exited ${rc} comparing the branch's deletions against [${3}]"
             return 2
           }
 
@@ -471,21 +549,40 @@ jobs:
           }
 
           prefold_heading() {
-            local dir rc=0 fork_rc=0 label='' fork=''
+            local dir rc=0 fork_rc=0 del_rc=0 label='' fork=''
             dir=$(mktemp -d)
             {
-              git -c core.quotepath=false diff --no-color "$BASE...$HEAD" -- docs/CHANGELOG.md \
-                | awk '/^\+\+\+ /{next} /^\+/{print substr($0, 2)}' >"$dir/added" &&
+              # ONE diff, both sides read off it: the `+` side is the needles and
+              # the `-` side is leg 3, and a second `git diff` could answer a
+              # question the first one did not.
+              # `--output-indicator-old='<'` because the `-` side is the one
+              # whose misreads are UNSAFE: with the default indicator a deleted
+              # line spelled `-- text` prints as `--- text` and is indistinguish-
+              # able from the `--- a/path` header, and skipping it would hide a
+              # deletion — i.e. KEEP a diagnosis leg 3 would have dropped. The
+              # `+` side keeps the default: there a missed line is a lost needle,
+              # which drops the diagnosis, and that is the safe direction.
+              git -c core.quotepath=false diff --no-color --output-indicator-old='<' \
+                "$BASE...$HEAD" -- docs/CHANGELOG.md >"$dir/diff" &&
+              awk '/^\+\+\+ /{next} /^\+/{print substr($0, 2)}' "$dir/diff" >"$dir/added" &&
+              # Blank deletions dropped — see the LEG 3 comment: an empty pattern
+              # line makes `grep -x -f` match every blank line in the section.
+              awk '/^</{ line = substr($0, 2); if (line ~ /[^[:space:]]/) print line }' \
+                "$dir/diff" >"$dir/deleted" &&
               git show "$BASE:docs/CHANGELOG.md" >"$dir/baseline" &&
               label=$(locate_added_label "$dir/added" "$dir/baseline") &&
               fork=$(branch_fork_point) &&
               git show "$fork:docs/CHANGELOG.md" >"$dir/forkpoint" &&
-              changelog_has_section "$dir/baseline" "$label" &&
+              changelog_has_section "$dir/baseline" "$label" "$dir/basesection" &&
               # NOT `! changelog_has_section …`: `!` maps rc 2 to success, which
               # is how a tooling failure would come out as "the fold was absent".
               # Only rc 1 — the extractor's own "no such section" — means that.
               { changelog_has_section "$dir/forkpoint" "$label" || fork_rc=$?; } &&
-              [ "$fork_rc" -eq 1 ]
+              [ "$fork_rc" -eq 1 ] &&
+              # Inverted for the same reason, and refused the same way: only
+              # grep's own rc 1 means "this branch deletes nothing from it".
+              { branch_deletes_from_section "$dir/deleted" "$dir/basesection" "$label" || del_rc=$?; } &&
+              [ "$del_rc" -eq 1 ]
             } || rc=$?
             rm -rf "$dir"
             [ "$rc" -eq 0 ] || return "$rc"

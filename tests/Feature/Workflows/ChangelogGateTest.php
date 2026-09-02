@@ -164,13 +164,25 @@ class ChangelogGateTest extends TestCase
      * about the shape changes, which is what makes the pair a discriminator
      * between the two readings.
      *
+     * `$afterMerge` rewrites files on the branch AFTER that merge, which is the
+     * only way to express an edit made in FULL SIGHT of the folded text — the
+     * author who merges the base and then corrects a line the fold had already
+     * shipped. A pre-merge edit is a different shape: it was written when the
+     * line still stood under `[Unreleased]`.
+     *
      * @param  array<string,string>  $fork  files at the fork point
      * @param  array<string,string>  $base  files as the base branch rewrites them after the fork
      * @param  array<string,string>  $head  files as the PR branch rewrites them after the fork
+     * @param  array<string,string>  $afterMerge  files the branch rewrites after merging the base
      * @return array{dir:string,base:string,head:string}
      */
-    private function makeForkedRepo(array $fork, array $base, array $head, bool $branchMergesBase = false): array
-    {
+    private function makeForkedRepo(
+        array $fork,
+        array $base,
+        array $head,
+        bool $branchMergesBase = false,
+        array $afterMerge = [],
+    ): array {
         $dir = $this->initRepo();
         $git = $this->git($dir);
 
@@ -187,12 +199,22 @@ class ChangelogGateTest extends TestCase
         exec($git.'add -A && '.$git.'commit -q --allow-empty -m base 2>&1');
         $baseSha = trim((string) shell_exec($git.'rev-parse HEAD'));
 
+        if ($afterMerge !== []) {
+            // A post-merge rewrite on a branch that never merged is not a
+            // shape — it is the fixture silently testing something else.
+            $this->assertTrue($branchMergesBase, '$afterMerge needs the branch to have merged the base');
+        }
+
         if ($branchMergesBase) {
             exec($git.'checkout -q pr 2>&1');
             $rc = 0;
             $out = [];
             exec($git.'merge -q --no-edit main 2>&1', $out, $rc);
             $this->assertSame(0, $rc, "the branch's merge of the base must be clean: \n".implode("\n", $out));
+            if ($afterMerge !== []) {
+                $this->writeFiles($dir, $afterMerge);
+                exec($git.'add -A && '.$git.'commit -q -m after-merge 2>&1');
+            }
             $headSha = trim((string) shell_exec($git.'rev-parse HEAD'));
             exec($git.'checkout -q main 2>&1');
         }
@@ -477,7 +499,16 @@ class ChangelogGateTest extends TestCase
     private const BRANCH_CHANGELOG = "# Changelog\n\n## [Unreleased]\n\n- old\n- the new behaviour (card#1234)\n";
 
     /**
+     * The branch AFTER it merged the fold and then corrected the line the fold
+     * had already shipped. Byte-for-byte `FOLDED_CHANGELOG` with one bullet
+     * reworded — so the branch adds a line under a released heading without a
+     * fold having carried anything of its own in.
+     */
+    private const CORRECTED_SHIPPED_CHANGELOG = "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - 2026-01-02\n\n- old, described correctly\n";
+
+    /**
      * @param  array<string,string>  $head
+     * @param  array<string,string>  $afterMerge
      * @return array{0:int,1:string}
      */
     private function runFeatureStepForked(
@@ -486,12 +517,14 @@ class ChangelogGateTest extends TestCase
         string $branch,
         string $mergedMustContain,
         bool $branchMergesBase = false,
+        array $afterMerge = [],
     ): array {
         $repo = $this->makeForkedRepo(
             ['docs/CHANGELOG.md' => self::PRE_FOLD_CHANGELOG, 'app/X.php' => 'a'],
             ['docs/CHANGELOG.md' => self::FOLDED_CHANGELOG],
             $head,
             $branchMergesBase,
+            $afterMerge,
         );
 
         // The fixture is only worth its verdict if the MERGE really produced the
@@ -648,6 +681,158 @@ class ChangelogGateTest extends TestCase
         $this->assertSame(1, $rc, $out);
         $this->assertStringContainsString('Your entry is under [1.1.0] because the branch predates the fold', $out);
         $this->assertStringContainsString('move it under [Unreleased]', $out);
+        $this->assertStringNotContainsString('add an [Unreleased] entry', $out);
+    }
+
+    public function test_a_branch_that_corrects_a_shipped_line_after_merging_the_fold_is_not_told_to_move_it(): void
+    {
+        // LEG 3'S OWN DISCRIMINATOR, and the shape no reading of the HISTORY can
+        // exclude. Identical fork, identical fold, identical base to the two
+        // legs above — the branch merges the folded base exactly as the remedy's
+        // first line instructs, and then corrects a line the fold had ALREADY
+        // SHIPPED into [1.1.0]. Both history legs hold (the section stands on
+        // the base, and was absent at the fork point), and the three trees the
+        // predicate can read are byte-identical to the pre-fold case: the
+        // corrected line is a line the branch adds, sitting under a released
+        // heading. Telling this author to "MOVE your entry out of [1.1.0]" is
+        // telling them to lift a SHIPPED line out of a release — the very thing
+        // the fork-point leg was added to stop, arriving by another route.
+        //
+        // The `-` side is what separates them, and only it: a correction DELETES
+        // the shipped line, while a fold carries lines in and deletes none.
+        [$rc, $out] = $this->runFeatureStepForked(
+            ['app/X.php' => 'b'],
+            'docs(changelog): correct a shipped line (card#1234)',
+            'fix/1234-x',
+            "## [1.1.0] - 2026-01-02\n\n- old, described correctly\n",
+            branchMergesBase: true,
+            afterMerge: ['docs/CHANGELOG.md' => self::CORRECTED_SHIPPED_CHANGELOG],
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString('does not name card 1234', $out);
+        $this->assertStringNotContainsString('predates the fold', $out);
+        $this->assertStringNotContainsString('1.1.0', $out);
+        $this->assertStringContainsString("Fix: add an [Unreleased] entry citing 'card#1234'", $out);
+    }
+
+    public function test_a_tokenless_correction_of_a_shipped_line_after_the_fold_is_not_told_to_move_it(): void
+    {
+        // The same shape on the other arm. The two arms reach the failure by
+        // different routes and share ONE diagnosis helper, so a leg on only one
+        // of them would leave the class half-measured — the same reason the
+        // pre-fold pair above is a pair.
+        [$rc, $out] = $this->runFeatureStepForked(
+            ['app/X.php' => 'b'],
+            'chore: tidy the thing',
+            'chore/tidy',
+            "## [1.1.0] - 2026-01-02\n\n- old, described correctly\n",
+            branchMergesBase: true,
+            afterMerge: ['docs/CHANGELOG.md' => self::CORRECTED_SHIPPED_CHANGELOG],
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString("leaves docs/CHANGELOG.md's [Unreleased] section untouched", $out);
+        $this->assertStringNotContainsString('predates the fold', $out);
+        $this->assertStringNotContainsString('1.1.0', $out);
+        $this->assertStringContainsString('Fix: add an [Unreleased] entry (and, if the work has a card', $out);
+    }
+
+    public function test_a_deleted_line_spelled_like_a_diff_header_is_still_read_as_a_deletion(): void
+    {
+        // WHY THE `-` SIDE IS READ THROUGH `--output-indicator-old`. Under the
+        // default indicator a deleted line whose own text starts with `-- ` is
+        // printed as `--- text`, which is exactly the shape of the `--- a/path`
+        // file header the awk has to skip — so the header filter would eat a
+        // real deletion, leg 3 would see none, and the gate would tell this
+        // author to lift a SHIPPED line out of a release. That is the UNSAFE
+        // direction, which is why the old side is disambiguated at the source
+        // and the `+` side (where a lost line only drops the diagnosis) is not.
+        //
+        // Same shape as the correction fixture above; the one variable is how
+        // the shipped line is spelled.
+        $fork = "# Changelog\n\n## [Unreleased]\n\n-- old\n";
+        $folded = "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - 2026-01-02\n\n-- old\n";
+        $corrected = "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - 2026-01-02\n\n-- old, described correctly\n";
+
+        $repo = $this->makeForkedRepo(
+            ['docs/CHANGELOG.md' => $fork, 'app/X.php' => 'a'],
+            ['docs/CHANGELOG.md' => $folded],
+            ['app/X.php' => 'b'],
+            branchMergesBase: true,
+            afterMerge: ['docs/CHANGELOG.md' => $corrected],
+        );
+
+        // The fixture is only worth its verdict if git really prints that
+        // deletion the way this leg is about.
+        $this->assertStringContainsString(
+            "\n--- old\n",
+            (string) shell_exec(
+                $this->git($repo['dir'])."diff --no-color {$repo['base']}...{$repo['head']} -- docs/CHANGELOG.md"
+            ),
+            'the deleted line must be indistinguishable from a --- file header under the default indicator',
+        );
+
+        [$rc, $out] = $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
+            $repo['dir'],
+            [
+                'BASE' => $repo['base'],
+                'HEAD' => $repo['head'],
+                'TITLE' => 'docs(changelog): correct a shipped line (card#1234)',
+                'HEAD_REF' => 'fix/1234-x',
+            ],
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringNotContainsString('predates the fold', $out);
+        $this->assertStringContainsString("Fix: add an [Unreleased] entry citing 'card#1234'", $out);
+    }
+
+    public function test_a_pre_fold_branch_that_also_deletes_a_blank_line_is_still_diagnosed(): void
+    {
+        // LEG 3'S BLANK FILTER, pinned. `grep -x -f` reads an EMPTY pattern line
+        // as matching every empty line, and every section body has blank lines
+        // in it, so an unfiltered `-` side turns "this branch deleted one blank
+        // line anywhere in the changelog" into "this branch deleted a line of
+        // [1.1.0]" and throws the diagnosis away. This branch is the ordinary
+        // pre-fold one — it adds its entry and, in the same edit, drops the
+        // blank line at the end of the file, which is what reflowing prose does.
+        // It must still be told to move its entry.
+        $fork = "# Changelog\n\n## [Unreleased]\n\n- old\n\n## [0.9.0] - 2025-12-01\n\n- ancient\n\n";
+        $folded = "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - 2026-01-02\n\n- old\n\n## [0.9.0] - 2025-12-01\n\n- ancient\n\n";
+        $branch = "# Changelog\n\n## [Unreleased]\n\n- old\n- the new behaviour (card#1234)\n\n## [0.9.0] - 2025-12-01\n\n- ancient\n";
+
+        $repo = $this->makeForkedRepo(
+            ['docs/CHANGELOG.md' => $fork, 'app/X.php' => 'a'],
+            ['docs/CHANGELOG.md' => $folded],
+            ['docs/CHANGELOG.md' => $branch, 'app/X.php' => 'b'],
+        );
+
+        // The fixture is only worth its verdict if the branch really did delete
+        // a blank line and nothing else from the shared text.
+        $deleted = (string) shell_exec(
+            $this->git($repo['dir'])."diff --no-color {$repo['base']}...{$repo['head']} -- docs/CHANGELOG.md"
+        );
+        $removed = array_values(array_filter(
+            explode("\n", $deleted),
+            static fn (string $l): bool => str_starts_with($l, '-') && ! str_starts_with($l, '--- '),
+        ));
+        $this->assertSame(['-'], $removed, "the branch must delete exactly one BLANK line:\n".$deleted);
+
+        [$rc, $out] = $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
+            $repo['dir'],
+            [
+                'BASE' => $repo['base'],
+                'HEAD' => $repo['head'],
+                'TITLE' => 'fix(x): the new behaviour (card#1234)',
+                'HEAD_REF' => 'fix/1234-x',
+            ],
+        );
+
+        $this->assertSame(1, $rc, $out);
+        $this->assertStringContainsString('Your entry is under [1.1.0] because the branch predates the fold', $out);
         $this->assertStringNotContainsString('add an [Unreleased] entry', $out);
     }
 
