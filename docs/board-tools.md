@@ -73,7 +73,7 @@ never silently no-ops.
 ```
 
 ⚠ **A board fault this tool cannot read past is a REFUSAL, never an empty window** —
-see [§ A board-caused 4xx is a refusal, on every tool](#a-board-caused-4xx-is-a-refusal-on-every-tool-dl-339).
+see [§ A PERMANENT board 4xx is a refusal, on every tool](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339).
 The whole call refuses, including when only the **coord** leg failed: a response silently
 missing its coordination cards reads exactly like a board with none.
 
@@ -185,7 +185,7 @@ term is efficiency + defense-in-depth, not the boundary.
     re-mints over a retire, which is the defect this closes. ⚠ Since card#8486 the
     STATUS depends on the cause — a permanent board 4xx is a **422 refusal naming the
     install fault** and only a fault that may clear is the retryable **502**; see
-    [§ A board-caused 4xx is a refusal, on every tool](#a-board-caused-4xx-is-a-refusal-on-every-tool-dl-339).
+    [§ A PERMANENT board 4xx is a refusal, on every tool](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339).
 
 **Returns:**
 
@@ -381,7 +381,7 @@ rejects outright.
 retryable 502**, because they fail identically however many times you send them; a 5xx
 or a timeout still answers **502**, which is the one you may retry. Since card#8486 that
 is the rule for **every** tool on this door, not this one's alone —
-[§ A board-caused 4xx is a refusal, on every tool](#a-board-caused-4xx-is-a-refusal-on-every-tool-dl-339)
+[§ A PERMANENT board 4xx is a refusal, on every tool](#a-permanent-board-4xx-is-a-refusal-on-every-tool-dl-339)
 owns it, and the rows above are what it means for a *correction* specifically.
 
 **Cost:** two requests on a successful call (one board-scoped lookup, one PATCH) —
