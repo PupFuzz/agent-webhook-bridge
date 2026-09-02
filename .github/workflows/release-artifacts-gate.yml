@@ -41,16 +41,23 @@ jobs:
       # `github.event.pull_request.base.sha` (card#8527). GitHub does not refresh that
       # field on every `synchronize`, so it can LAG the base tip the checked-out merge
       # commit was built on — measured on PR #640, run 33598959720, 2026-09-02:
-      # `base.sha` 549c894 against a merge commit whose first parent was 7a11085. The
-      # action resolves the FORK POINT of the two shas it is given, and a base that
-      # lags the real base tip UNDERSTATES that fork point, putting the base branch's
-      # own post-fork commits inside the diff this gate asserts on. `HEAD^1` is the
-      # base commit the merge itself records, so it cannot lag; the script fails loud
-      # rather than substituting a guess when the work tree is not that merge.
-      # The action is pinned by sha and lives in another repo, so the correction lands
-      # at the CALL SITE — the input — not inside the action. The identical `base-sha`
-      # input on the toolkit's and kanban-board's own release-artifacts-gate.yml is
-      # the same defect at their call sites; those are their repos' cards.
+      # `base.sha` 549c894 against a merge commit whose first parent was 7a11085.
+      # ⚠ THIS CALL SITE HAD NO LIVE RED ON THAT SHAPE, and it is moved for ONE
+      # derivation across four callers, not to fix one. The action's own contract
+      # (`action.yml` at the pinned sha) consumes `base-sha` ONLY through
+      # `merge-base(base, head)`, and a lagging base cannot move that fork point
+      # unless the PR branch has itself merged the base — measured: a branch cut
+      # at B0 while the base advanced to B1 has merge-base(B0,H) == merge-base(B1,H)
+      # == B0. Only a branch that merged B1 differs (merge-base(B0,H) = B0 while
+      # merge-base(B1,H) = B1), and there the stale sha puts the base's own B0..B1
+      # commits inside the range this gate asserts on. `HEAD^1` is the base commit
+      # the merge itself records, so it cannot lag on either shape; the script
+      # fails loud rather than substituting a guess when the work tree is not that
+      # merge. The action is pinned by sha and lives in another repo, so the
+      # derivation lands at the CALL SITE — the input — not inside the action. The
+      # identical `base-sha` input on the toolkit's and kanban-board's own
+      # release-artifacts-gate.yml has that same NARROW exposure (branch merged the
+      # base), not the PR #640 one; those are their repos' cards, at that shape.
       - name: Derive the base snapshot from the checked-out merge commit
         id: pr-base
         shell: bash

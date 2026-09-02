@@ -1490,68 +1490,134 @@ class ChangelogGateTest extends TestCase
 
     // -------------------------------------------- the pairing card#8527 fixed
 
-    public function test_the_scope_set_is_this_prs_own_change_not_what_the_base_branch_shipped_after_the_fork(): void
+    // ------------------------------- the scope set is the MERGE's delta (card#8527 / card#8441)
+
+    /**
+     * The fixture's own discriminating property, asserted rather than assumed:
+     * `$path` must be inside the RETIRED pairing — the payload base against the
+     * branch tip, two commits neither of which contains the other — and outside
+     * the merge's own delta (`HEAD^1` -> the work tree, which is what the step
+     * reads now). Every branch that is up to date with its base makes the two
+     * agree, which is why the linear `makeRepo` shape cannot express any case
+     * below and why each one asserts this first.
+     *
+     * @param  array{dir:string,base:string,head:string}  $repo
+     */
+    private function assertRetiredPairingOverCollects(array $repo, string $path): void
     {
-        // A DOCS-ONLY PR, cut before the base branch shipped an `app/` change.
-        // Its scope verdict must be a function of the PR, never of what merged
-        // on the base branch meanwhile.
-        $dir = sys_get_temp_dir().'/changelog-gate-'.bin2hex(random_bytes(6));
-        $this->trees[] = $dir;
-        mkdir($dir.'/docs', 0o777, true);
-        mkdir($dir.'/app', 0o777, true);
-        mkdir($dir.'/bin', 0o777, true);
+        $git = $this->git($repo['dir']);
+        $names = static fn (string $range): array => array_values(array_filter(
+            explode("\n", trim((string) shell_exec($git.'diff --name-only '.$range)))
+        ));
 
-        $git = 'git -C '.escapeshellarg($dir).' -c user.email=t@example.invalid -c user.name=t ';
-        exec($git.'init -q -b main 2>&1');
-        file_put_contents($dir.'/docs/CHANGELOG.md', $this->changelog('- work'));
-        file_put_contents($dir.'/app/X.php', 'a');
-        exec($git.'add -A && '.$git.'commit -q -m base 2>&1');
-        $forkPoint = trim((string) shell_exec($git.'rev-parse HEAD'));
+        $this->assertContains(
+            $path,
+            $names($repo['base'].' '.$repo['head']),
+            "the retired pairing must report {$path} as this PR's, or the fixture is not the cell",
+        );
 
-        exec($git.'checkout -q -b pr 2>&1');
-        file_put_contents($dir.'/docs/CHANGELOG.md', $this->changelog('- work')."\n<!-- a docs edit -->\n");
-        exec($git.'add -A && '.$git.'commit -q -m head 2>&1');
-        $headSha = trim((string) shell_exec($git.'rev-parse HEAD'));
+        $derived = trim((string) shell_exec('cd '.escapeshellarg($repo['dir']).' && bin/pr-base-snapshot.sh '.escapeshellarg($repo['head'])));
+        $this->assertSame($repo['base'], $derived, 'the derived base must be the base tip the merge records');
+        $this->assertNotContains(
+            $path,
+            $names($derived.' HEAD'),
+            "the merge's own delta must not report {$path}, or the fixture is not the cell",
+        );
+    }
 
-        // The base branch ships an `app/` change AFTER the fork.
-        exec($git.'checkout -q main 2>&1');
-        file_put_contents($dir.'/app/X.php', 'b');
-        exec($git.'add -A && '.$git.'commit -q -m "base ships code" 2>&1');
-        $movedTip = trim((string) shell_exec($git.'rev-parse HEAD'));
+    public function test_the_release_step_classifies_on_what_this_pr_lands_not_on_what_the_base_shipped(): void
+    {
+        // card#8441's release-step cell. The classification is "does THIS PR
+        // move VERSION?", and the retired pairing could not answer it: on a
+        // branch cut before a release fold, the BASE's own bump sat inside the
+        // diff, so an innocent feature branch was classified as a release PR and
+        // made to answer for somebody else's section — in the direction that
+        // FAILS, when the folded section is over the release-body limit (the
+        // v0.72.0 shape, recurrence tracked as card#7511).
+        $huge = str_repeat("a padded changelog line that carries no meaning\n", 3_000);
+        $repo = $this->makeForkedRepo(
+            ['VERSION' => "1.0.0\n", 'docs/CHANGELOG.md' => $this->changelog('- old'), 'app/X.php' => 'a'],
+            ['VERSION' => "1.1.0\n", 'docs/CHANGELOG.md' => $this->changelog('', "\n## [1.1.0] - 2026-01-02\n\n".$huge)],
+            ['app/X.php' => 'b'],
+        );
 
-        exec($git.'checkout -q --detach '.escapeshellarg($movedTip).' 2>&1');
-        exec($git.'merge -q --no-ff --no-edit '.escapeshellarg($headSha).' 2>&1');
+        $this->assertRetiredPairingOverCollects($repo, 'VERSION');
 
-        copy(base_path('bin/pr-base-snapshot.sh'), $dir.'/bin/pr-base-snapshot.sh');
-        chmod($dir.'/bin/pr-base-snapshot.sh', 0o755);
-        copy(base_path('bin/changelog-section.py'), $dir.'/bin/changelog-section.py');
+        [$rc, $out] = $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::RELEASE_STEP),
+            $repo['dir'],
+            ['HEAD' => $repo['head']],
+        );
+
+        $this->assertSame(0, $rc, $out);
+        $this->assertStringContainsString('does not move VERSION', $out);
+    }
+
+    public function test_the_feature_step_classifies_on_what_this_pr_lands_not_on_what_the_base_shipped(): void
+    {
+        // card#8441's feature-step cell, and the PR #640 shape on this predicate:
+        // a DOCS-ONLY branch, cut before the base shipped an `app/` change. Under
+        // the retired pairing the base's file was reported as this PR's, so the
+        // branch was pulled into the entry requirement on the strength of
+        // somebody else's change — and told to write an entry naming a card
+        // that shipped nothing here.
+        $repo = $this->makeForkedRepo(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), 'docs/guide.md' => 'a', 'app/Y.php' => 'x'],
+            ['app/Y.php' => 'y'],
+            ['docs/guide.md' => 'b'],
+        );
+
+        $this->assertRetiredPairingOverCollects($repo, 'app/Y.php');
 
         [$rc, $out] = $this->runStep(
             $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
-            $dir,
-            ['HEAD' => $headSha, 'TITLE' => 'docs: a note', 'HEAD_REF' => 'docs/note'],
+            $repo['dir'],
+            ['HEAD' => $repo['head'], 'TITLE' => 'docs(guide): reword the guide (card#1234)', 'HEAD_REF' => 'docs/1234-guide'],
         );
 
         $this->assertSame(0, $rc, $out);
         $this->assertStringContainsString(self::OUT_OF_SCOPE_MESSAGE, $out);
+    }
 
-        // THE CONTROL, and the reason the green above is a measurement rather
-        // than a fixture that could not have failed: the RETIRED pairing — a base
-        // out of the event payload against the PR head sha, two commits neither
-        // of which contains the other — puts the BASE BRANCH's own `app/X.php`
-        // change in this PR's scope set, in reverse, and the step would have
-        // demanded an [Unreleased] entry for a change the PR never made. (That
-        // is also card#8441's measured defect on this predicate's two dots; it is
-        // out of scope here and its own card owns the ruling. What this case
-        // pins is that the two ends of the diff are now ONE snapshot.)
-        $retired = (string) shell_exec($git.'diff --name-only '.escapeshellarg($movedTip).' '.escapeshellarg($headSha));
-        $this->assertStringContainsString('app/X.php', $retired);
+    public function test_a_change_the_base_already_carries_identically_is_not_in_scope(): void
+    {
+        // The one cell where the merge's delta and a merge-base (three-dot)
+        // range DISAGREE, and the merge's delta is the right answer: the branch
+        // made the same `app/` edit the base shipped after the fork. The merge is
+        // clean and lands NOTHING on the base for that file, so no entry is owed
+        // for it. A `"$BASE...$HEAD"` spelling against the branch tip reports it
+        // — the branch did change it since the fork — and would demand an entry
+        // for a change this PR does not make. The retired two-dot pairing does
+        // not even see it (identical content at both ends), so the discriminator
+        // here is three-dot vs merge delta, asserted directly.
+        $repo = $this->makeForkedRepo(
+            ['docs/CHANGELOG.md' => $this->changelog('- old'), 'docs/guide.md' => 'a', 'app/Z.php' => 'x'],
+            ['app/Z.php' => 'y'],
+            ['app/Z.php' => 'y', 'docs/guide.md' => 'b'],
+        );
 
-        $derived = trim((string) shell_exec('cd '.escapeshellarg($dir).' && bin/pr-base-snapshot.sh '.escapeshellarg($headSha)));
-        $this->assertSame($movedTip, $derived);
-        $paired = (string) shell_exec($git.'diff --name-only '.escapeshellarg($derived).' HEAD');
-        $this->assertStringNotContainsString('app/X.php', $paired);
-        $this->assertStringContainsString('docs/CHANGELOG.md', $paired);
+        $git = $this->git($repo['dir']);
+        $this->assertStringContainsString(
+            'app/Z.php',
+            (string) shell_exec($git.'diff --name-only '.$repo['base'].'...'.$repo['head']),
+            'the three-dot range must report app/Z.php, or the fixture is not the cell',
+        );
+        $derived = trim((string) shell_exec('cd '.escapeshellarg($repo['dir']).' && bin/pr-base-snapshot.sh '.escapeshellarg($repo['head'])));
+        $this->assertSame($repo['base'], $derived);
+        $this->assertStringNotContainsString(
+            'app/Z.php',
+            (string) shell_exec($git.'diff --name-only '.$derived.' HEAD'),
+            'the merge lands nothing for app/Z.php, so its delta must not carry it',
+        );
+
+        [$rc, $out] = $this->runStep(
+            $this->stepScript('changelog-gate.yml', 'changelog-gate', self::FEATURE_STEP),
+            $repo['dir'],
+            ['HEAD' => $repo['head'], 'TITLE' => 'docs(guide): reword the guide (card#1234)', 'HEAD_REF' => 'docs/1234-guide'],
+        );
+
+        $this->assertSame(0, $rc, $out);
+        $this->assertStringContainsString(self::OUT_OF_SCOPE_MESSAGE, $out);
     }
 
     // ---------------------------------------------------------------- publish step

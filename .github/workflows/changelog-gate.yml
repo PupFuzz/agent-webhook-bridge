@@ -291,23 +291,25 @@ jobs:
           # matched under both). Residual, bounded in DL-281 rather than claimed
           # closed: a path containing `"`, `\`, or a control byte is quoted
           # regardless of this flag.
-          # ⚠ DISCLOSED BY card#8339 / DL-329, AND ITS MEASURED SHAPE NO LONGER
-          # REPRODUCES HERE — read both halves. The disclosure was that this
-          # TWO-DOT diff, on a branch forked before the base moved, reports the
-          # BASE's own changes as this PR's, pulling a PR into the entry
-          # requirement on the strength of somebody else's change. That was
-          # measured against `"$BASE" "$HEAD"` — two commits sourced
-          # independently, neither containing the other. card#8527 replaced BOTH
-          # ends: `$BASE` is now `HEAD`'s own first parent, so this diff is the
-          # merge's delta and the base's post-fork changes are on both sides of
-          # it. `ChangelogGateTest`'s fork-then-base-moved case pins that, with
-          # the retired pairing as its control.
+          # THE SCOPE SET IS THE MERGE'S OWN DELTA (card#8527; closes card#8441).
+          # DL-329 disclosed that this diff, taken as `"$BASE" "$HEAD"` — two
+          # commits sourced independently, neither containing the other —
+          # reported the BASE's post-fork changes as this PR's on any branch not
+          # up to date with its base. Both ends are now ONE snapshot: `$BASE` is
+          # `HEAD`'s own first parent, so the base's post-fork work is on both
+          # sides and drops out.
           #
-          # ⛔ WHAT IS NOT DECIDED HERE: whether the predicate should be
-          # three-dot. That is card#8441's own approved change and its own
-          # ruling — this comment is a note that the correction may now be a
-          # no-op for THIS pairing, not a closure of it. Do not read the
-          # paragraph above as "card#8441 is done".
+          # ⛔ NOT THREE-DOT, AND DELIBERATELY: `HEAD^1` is an ancestor of `HEAD`,
+          # so `"$BASE...HEAD"` ≡ `"$BASE..HEAD"` here — three dots would be a
+          # no-op spelling. Against the BRANCH TIP (`"$BASE...$HEAD"`) it is not
+          # a no-op, and the one cell where it differs from this delta decides
+          # for this delta: a branch that made the same edit the base already
+          # shipped is in that range and lands NOTHING on the base, so no entry
+          # is owed. Containment: merge delta ⊆ branch-tip three-dot ⊆ retired
+          # two-dot, so this can only stop the gate firing, never start it.
+          # Pinned in `ChangelogGateTest` (three forked cells; the three-dot
+          # spelling watched red on the identical-change one). DL-295's
+          # card#8527 amendment owns the ruling.
           CHANGED=$(git -c core.quotepath=false diff --name-only "$BASE" HEAD)
           if ! grep -qE '^(app/|bin/|\.github/workflows/|\.github/actions/)|^(\.release-pr\.json|phpstan-laravel\.neon|pint\.json|phpunit\.xml|composer\.json|composer\.lock|\.env\.example)$' <<<"$CHANGED"; then
             echo "OK: this PR changes no in-scope file ${SCOPE} — no [Unreleased] entry required."

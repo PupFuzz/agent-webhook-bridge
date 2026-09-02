@@ -79,7 +79,7 @@ head_parent="${fields[2]}"
 if [ "$head_parent" != "$expected_head" ]; then
     echo "::error::HEAD's second parent (${head_parent}) is not this PR's head sha (${expected_head}), so the checked-out merge is not a merge of this PR's current head." >&2
     echo "GitHub recomputes refs/pull/N/merge per event; a mismatch means this job is running against a stale or foreign merge, and pairing it with any base would report a verdict about a tree nobody pushed." >&2
-    echo "Fix: re-run the job (a re-run recomputes the merge), or push again if the PR has merge conflicts — GitHub cannot build the merge commit while it does." >&2
+    echo "Fix: if GitHub had not yet rebuilt refs/pull/N/merge for this push, re-run the job (the checkout resolves the merge ref live). If a NEWER push has already superseded this run, read that run instead — a re-run replays THIS event's head sha and can never match a merge ref built for a later one; a fresh push or close-and-reopen is what mints an event that can. If the PR has merge conflicts, GitHub cannot build the merge commit at all until they are resolved." >&2
     exit 5
 fi
 
