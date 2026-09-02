@@ -333,6 +333,10 @@ final class BoardCreateCardTool implements Tool
      * ⛔ Failing closed here rather than creating anyway is DL-297's rule, unchanged: a
      * create the bridge could not correlate is the duplicate (or the re-mint over a retire)
      * the probes exist to prevent.
+     *
+     * ⚠ BOTH READS ARE CARD SEARCHES, and the route class is named rather than defaulted:
+     * what a 403/404 means is a property of the route ({@see BoardReadRoute}), and this tool
+     * touches no board-scoped read at all.
      */
     private function lookupRefusal(RequestException $e, int $boardId, string $agentName, string $leg): \Throwable
     {
@@ -347,6 +351,7 @@ final class BoardCreateCardTool implements Tool
 
         return BoardCallRefusal::readRefusal(
             $this->name(),
+            BoardReadRoute::Search,
             $status,
             "your board {$boardId} to run the `idempotency_key` {$leg}",
             'so NO card was created — the bridge does not create a card it could not correlate first',
@@ -364,6 +369,11 @@ final class BoardCreateCardTool implements Tool
      * above and {@see CallerTagPolicy}'s tag cap mirror rules that live in kanban's repo, so
      * reaching a board 422 with both satisfied is precisely the signal that one has moved.
      * The message is BRIDGE-AUTHORED: the board's response body is never echoed.
+     *
+     * ⭐ THE 403 ARM DOES NOT ENUMERATE ITS OWN GATES — {@see BoardCallRefusal::writeGatesClause}
+     * does, for every write on this door. This arm enumerated them longhand when it was first
+     * written and inherited `board_correct_card`'s omission of kanban's board write gate; a
+     * gate the clause does not name is a gate the operator does not audit.
      */
     private function createRefusal(RequestException $e, int $boardId, string $agentName): \Throwable
     {
@@ -378,7 +388,7 @@ final class BoardCreateCardTool implements Tool
 
         return new ToolRefusalException(match ($status) {
             404 => "board_create_card: the board answered 404 for the create itself, which is an API-surface fault rather than anything about board {$boardId} — NO card was created. This is an INSTALL fault, not something your arguments can fix; report it to your operator.",
-            403 => "board_create_card: the board refused the create (403) — the bridge's writeback user may not create cards on board {$boardId}. TWO independent gates answer 403 here and BOTH need auditing: the token's abilities (a POST needs `write`) and the writeback user's board role, which needs `task.create`. NO card was created. This is an INSTALL fault, not something your arguments can fix; report it to your operator.",
+            403 => "board_create_card: the board refused the create (403) — the bridge's writeback user may not create cards on board {$boardId}. ".BoardCallRefusal::writeGatesClause('POST', 'task.create').' NO card was created. This is an INSTALL fault, not something your arguments can fix; report it to your operator.',
             401 => 'board_create_card: the board did not accept the bridge\'s writeback token at all on the create (401) — it has been revoked, rotated or replaced with a value the board does not know. NO card was created. This is an INSTALL fault; retrying will not change it.',
             422 => 'board_create_card: the board REJECTED the value you sent (422) — kanban\'s own validator refused it, so NO card was created and re-sending the same call cannot succeed. '.BoardCallRefusal::bridgeBoundsClause().' Shorten or simplify your `title`, `description` or tags, and report it to your operator if it persists.',
         });

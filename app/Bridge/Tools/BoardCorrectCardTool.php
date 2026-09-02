@@ -536,7 +536,11 @@ final class BoardCorrectCardTool implements Tool
      * and the two clauses saying what was being read and what the call did not do.
      * ⛔ In particular the 403 cause names the token's ABILITIES and not its board
      * membership — a membership gap arrives as a not-found refusal here
-     * ({@see notYoursMessage} carries that disjunct), never as a 403.
+     * ({@see notYoursMessage} carries that disjunct), never as a 403. ⚠ That is a property
+     * of the ROUTE, not of the door: this lookup is a card SEARCH, which kanban floors to
+     * the caller's own boards, so the route class is named explicitly rather than defaulted
+     * ({@see BoardReadRoute} — a board-scoped read 403s on exactly the membership this
+     * message rules out).
      */
     private function lookupRefusal(RequestException $e, int $cardId, string $agentName): \Throwable
     {
@@ -551,6 +555,7 @@ final class BoardCorrectCardTool implements Tool
 
         return BoardCallRefusal::readRefusal(
             $this->name(),
+            BoardReadRoute::Search,
             $status,
             "your board to establish that card {$cardId} is yours",
             'so nothing was written and nothing was read about the card',
@@ -576,7 +581,10 @@ final class BoardCorrectCardTool implements Tool
      * ⭐ WHICH statuses are permanent is {@see BoardCallRefusal}'s (card#8486); WHAT each one
      * means for a CORRECTION stays here, because that is a property of this write and not of
      * the door: only this tool has an ownership check for a 404 to have raced, and only its
-     * PATCH takes `task.update`.
+     * PATCH takes `task.update`. ⛔ The GATES a 403 sends the operator to audit are NOT that
+     * kind of property — they are kanban's, identical for every write on this door — so they
+     * are {@see BoardCallRefusal::writeGatesClause}'s. Written out longhand here they were
+     * copied onto `board_create_card` missing kanban's board write gate, with nothing red.
      */
     private function writeRefusal(RequestException $e, int $cardId, string $agentName): \Throwable
     {
@@ -591,7 +599,7 @@ final class BoardCorrectCardTool implements Tool
 
         return new ToolRefusalException(match ($status) {
             404 => "board_correct_card: card {$cardId} no longer exists — it was removed between the ownership check and the write, so NOTHING was written. Re-read your cards with `board_my_cards`.",
-            403 => "board_correct_card: the board refused the write to card {$cardId} (403) — the card is yours, but the bridge's writeback user may not write it. TWO independent gates answer 403 here and BOTH need auditing: the token's abilities (a PATCH needs `write`) and the writeback user's board role, which needs `task.update` — a PATCH carrying anything other than `workflow_stage_id` alone authorizes update, not move (kanban DL-204), and `task.update` is new for this door (`board_my_cards` and `board_create_card` never needed it). Nothing was written. This is an INSTALL fault, not something your arguments can fix; report it to your operator.",
+            403 => "board_correct_card: the board refused the write to card {$cardId} (403) — the card is yours, but the bridge's writeback user may not write it. ".BoardCallRefusal::writeGatesClause('PATCH', 'task.update', ' — a PATCH carrying anything other than `workflow_stage_id` alone authorizes update, not move (kanban DL-204), and `task.update` is new for this door (`board_my_cards` and `board_create_card` never needed it)').' Nothing was written. This is an INSTALL fault, not something your arguments can fix; report it to your operator.',
             401 => "board_correct_card: the board did not accept the bridge's writeback token at all on the write to card {$cardId} (401) — it has been revoked, rotated or replaced with a value the board does not know. Nothing was written. This is an INSTALL fault; retrying will not change it.",
             422 => "board_correct_card: the board REJECTED the value you sent for card {$cardId} (422) — kanban's own validator refused it, so nothing was written and re-sending the same call cannot succeed. ".BoardCallRefusal::bridgeBoundsClause().' Shorten or simplify the field you were correcting, and report it to your operator if it persists.',
         });
