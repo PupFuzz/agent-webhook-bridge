@@ -18,11 +18,12 @@ use Illuminate\Support\Facades\Log;
  * PR vs `id:` tag); only the tie-break is single-sourced here.
  *
  * ⚑ THIS CLASS IS THE ONE OWNER OF ITS CALLER POPULATION, and it states a RECIPE rather than
- * a number: `grep -rn "CardCollapse::toSurvivor(" app/` names every caller, and
- * `WritebackSuccessBoardRecordTest::test_every_collapse_call_in_the_population_passes_its_mapping`
- * re-derives the same set on every run. `PinGuard`, DL-340, `docs/writeback.md` and
- * `docs/board-tools.md` point here instead of restating a count — the count moves the next time
- * a handler adopts this kernel, and a restated one is stale the moment it does.
+ * a number: `grep -rnP '^(?!\s*\*).*CardCollapse::toSurvivor\(' app/` names every caller,
+ * and `WritebackSuccessBoardRecordTest::test_every_collapse_call_in_the_population_passes_its_mapping`
+ * re-derives the same set on every run. ⚠ The anchor is load-bearing: without it the recipe
+ * also returns comment prose — the recipe line above included — and `@see` mentions that call
+ * nothing. Point here rather than restating a count anywhere else — the count moves the
+ * next time a handler adopts this kernel, and a restated one is stale the moment it does.
  *
  * ⛔ A PINNED duplicate is NOT archived (card#8523, DL-340), and the consult lives HERE
  * rather than in the callers on purpose. DL-335 rejected widening the pin into this

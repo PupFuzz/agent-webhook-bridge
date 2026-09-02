@@ -22,9 +22,11 @@ use Illuminate\Support\Facades\Log;
  * decides whether to ask, and this class still never answers "will it move".
  *
  * Which movers honour a pin is a property of the CALL SITES, so derive it rather than
- * trusting a list in the callee — `grep -rn "PinGuard::isPinned\|PinGuard::refuses" app/`
+ * trusting a list in the callee — `grep -rnP '^(?!\s*\*).*PinGuard::(isPinned|refuses)\(' app/`
  * against the `moveCard(` AND `archiveCard(` call sites is the whole method, and it takes
- * seconds. As of card#8523 it yields every STAGE-or-LIFECYCLE write the bridge makes:
+ * seconds. ⚠ The anchor and the trailing `\(` are load-bearing: without them the recipe also
+ * returns comment prose — this paragraph included — and `@see` mentions that consult nothing.
+ * As of card#8523 it yields:
  * the live event path (KanbanMoveCardHandler, on every outcome, minus the DL-194 unpark
  * and DL-195 revive, which override a pin deliberately and alert), `bridge:reconcile`
  * (ReconcileCommand, unconditional), the release-promote sweep (KanbanPromoteReleasedHandler,
@@ -46,7 +48,7 @@ use Illuminate\Support\Facades\Log;
  * card on those two legs was not asked of the operator with card#8523's two, and this
  * class may not close it on its own: it changes what the system refuses. ⭐ **card#8557
  * is the successor that owns it** — card#8523 closes with this change, and that card
- * carries both this question and the three-arm field-write question below. File further
+ * carries both this question and the field-write question below. File further
  * instances there rather than minting a second item.
  *
  * ⛔ A ROW THAT CARRIES NEITHER PIN FIELD IS A DEGRADED READ, AND IT IS DETECTED HERE

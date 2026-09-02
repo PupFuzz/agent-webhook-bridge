@@ -60,8 +60,8 @@ use Illuminate\Support\Facades\Log;
  * PIN too: it does not, and the close leg had no actor-gate either, so an `issues.closed`
  * concluded a card carrying a `block_reason` / `no-automove` with nothing between it and
  * the write but the `move_coord_cards` opt-in. Since DL-340 the terminal leg consults
- * {@see PinGuard} like every other card write the bridge makes — a human hold is not a
- * lane preference, and the operator ruling on card#8523 was that it outranks a close.
+ * {@see PinGuard} — a human hold is not a lane preference, and the operator ruling on
+ * card#8523 was that it outranks a close.
  *
  * DURABLE, with the writeback's standard transient(5xx → retry) / permanent(4xx → alert
  * + log + no-op) split (DL-020/DL-285). Idempotent under at-least-once redelivery: a card
