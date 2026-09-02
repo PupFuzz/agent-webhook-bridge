@@ -53,7 +53,11 @@ deliberately the *only* thing allowed to: it holds an FPM worker, so it is inter
 drained), bounded (`retention.batch` rows per leg), guarded by a **non-blocking** `Cache::lock` (a
 blocking one would queue concurrent receives behind the pruner — the exact DL-001 regression), and it
 never throws (a 5xx would make the provider redeliver, compounding the failure). This replaced DL-012's
-cron, which three installs never scheduled.
+cron, which three installs never scheduled. ⛔ **"Never throws" includes the catch arm's own fault
+recording**, which is why all three gates on this stage record through `App\Bridge\Support\FaultMarker`
+(log first, marker second, each leg guarded): each arm used to write its last-error marker to the cache
+unguarded, so a DEAD CACHE STORE re-raised out of a terminating callback — an unhandled fatal after the
+response, in the one process nobody watches (card#8425/DL-325).
 
 ⚠ **"No cron exception at all" was true of DL-199 and is no longer the whole picture — DL-325 amended it.** Three subsystems now ride this stage with the same four properties (retention, the opt-in standup digest, and the periodic-job registry), and the registry additionally accepts a **second, OPT-IN ingress**: ONE crontab line running `bridge:tick`. It is opt-in because the event-gated path above is complete on its own — an install that adds no line behaves exactly as it did — and it exists because no arrival-gated mechanism can run periodic work on an install receiving NOTHING (DL-306's documented dead end). Job execution is never on a client-visible path on either ingress. See `docs/periodic-jobs.md`; a periodic job is the **last** resort there, and the registry refuses an instance that does not say why the work cannot be event-driven.
 

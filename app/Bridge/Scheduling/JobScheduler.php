@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Scheduling;
 
+use App\Bridge\Support\FaultMarker;
 use App\Models\ScheduledJob;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -37,7 +38,11 @@ use Throwable;
  *    about the wrong thing while the registry keeps the actual record). ⚑ Swallowing the
  *    THROW is not swallowing the FACT: the result says whether the pass ran, and
  *    {@see JobPassResult::passFailed()} says whether it did not run because something is
- *    broken, which is what `bridge:tick`'s exit code is decided by.
+ *    broken, which is what `bridge:tick`'s exit code is decided by. ⛔ AND THE RECORDING
+ *    ITSELF MUST NOT RE-RAISE ({@see FaultMarker}): the arm used to write its marker to the
+ *    cache unguarded, so with the CACHE as the fault it threw out of the shell — no log, no
+ *    marker, an unhandled fatal in the FPM worker and a stack trace instead of an exit code.
+ *    A shell whose catch arm can throw is not a shell.
  *
  * ⚑ THE MINIMUM PASS INTERVAL IS SHARED BY BOTH INGRESSES, on purpose. The event gate is
  * evaluated on EVERY delivery, so without it a busy install would query the registry once
@@ -50,10 +55,13 @@ use Throwable;
  * the other due jobs their pass — the same per-agent isolation DL-001 treatment (C) applies
  * to handlers.
  *
- * ⚑ `next_due_at` IS ADVANCED BEFORE THE HANDLER RUNS, not after it succeeds. A handler
- * that throws every time therefore retries once per its own interval instead of on every
- * delivery — DL-199's marker-before-work rule. The cost is stated rather than discovered: a
- * pass killed mid-handler (worker OOM) has already given up its slot for one interval.
+ * ⚑ A THROWING HANDLER GIVES UP ITS SLOT; A KILLED ONE DOES NOT. `next_due_at` is advanced
+ * before the handler runs, but the row is only SAVED after it returns or throws — and both
+ * of those paths reach the save, so a handler that throws every time retries once per its
+ * own interval rather than on every delivery (DL-199's marker-before-work rule). A pass
+ * KILLED mid-handler (worker OOM) persists nothing, so that row is due again on the next
+ * pass; what bounds the retry there is the shared `min_pass_interval` marker, which was
+ * written before the work and outlives the killed process.
  */
 final class JobScheduler
 {
@@ -68,11 +76,13 @@ final class JobScheduler
      * an unwritable cache — and nothing in the registry has run since. A clean pass forgets
      * it. Without this a persistently-throwing pass leaves only a log line nobody tails
      * while the registry still enumerates as healthy: DL-012's silent inertness, rebuilt.
+     *
+     * ⚠ IT IS THE ONE SURFACE A DEAD CACHE CANNOT REACH — the marker lives in the store
+     * that failed. That is why {@see FaultMarker} logs before it marks, and why the pass
+     * result carries the fault as well: `bridge:check` reads this, but the tick's exit code
+     * does not depend on it.
      */
     public const ERROR_KEY = 'bridge:jobs:last-error';
-
-    /** Floor on the last-error marker's lifetime; a longer pass interval widens it. */
-    private const ERROR_TTL = 2592000; // 30 days
 
     /**
      * Ceiling on how long one bounded pass may hold the lock before it is presumed dead and
@@ -107,17 +117,18 @@ final class JobScheduler
 
             return $result;
         } catch (Throwable $e) {
-            Cache::put(self::ERROR_KEY, [
-                'at' => now()->toIso8601String(),
-                'exception' => $e::class,
-                'error' => $e->getMessage(),
-            ], max(self::ERROR_TTL, self::minPassInterval() + 3600));
-            Log::warning('scheduled job pass failed', [
-                'source' => $source->value,
-                'exception' => $e::class,
-                'at' => $e->getFile().':'.$e->getLine(),
-                'error' => $e->getMessage(),
-            ]);
+            // ⛔ RECORDING THE FAULT MUST NOT RE-RAISE IT — {@see FaultMarker}, which owns
+            // the order (log first, marker second) and guards each leg. Writing the marker
+            // here directly is how this arm used to re-raise on the one fault it most
+            // needed to survive: with the CACHE as the fault, the shell that promises never
+            // to throw threw, and both ingresses' contracts went with it.
+            FaultMarker::record(
+                self::ERROR_KEY,
+                $e,
+                self::minPassInterval(),
+                'scheduled job pass failed',
+                ['source' => $source->value],
+            );
 
             return JobPassResult::failed($source, 'the pass itself failed: '.$e->getMessage());
         }
@@ -284,12 +295,11 @@ final class JobScheduler
     }
 
     /**
-     * A TTL FLOOR, and its only caller is the catch arm: the last-error marker must outlive
-     * the pass cadence, or an install with a long interval loses the marker before the next
-     * pass could clear it. ⚑ The `max(1, …)` here is NOT the clamp {@see JobsConfig} exists
-     * to refuse — a TTL has to be a positive number of seconds whatever the config says, and
-     * this runs in the arm where the config may be the very thing that could not be
-     * resolved. Nothing decides a CADENCE from this value.
+     * This install's pass cadence as {@see FaultMarker} needs it — a positive number of
+     * seconds — and its only caller is the catch arm. ⚑ The `max(1, …)` here is NOT the
+     * clamp {@see JobsConfig} exists to refuse: it runs in the arm where the config may be
+     * the very thing that could not be resolved, and it feeds a TTL, never a cadence.
+     * Nothing schedules anything from this value.
      */
     private static function minPassInterval(): int
     {

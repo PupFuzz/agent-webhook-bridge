@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Scheduling;
 
+use App\Bridge\Support\FaultMarker;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Throwable;
@@ -41,23 +42,36 @@ final class TickRecord
      */
     private const TTL = 2592000;
 
+    /**
+     * ⛔ A STAMP THAT CANNOT BE WRITTEN IS UNMEASURED, NEVER A THROW. This is called first
+     * and unconditionally by `bridge:tick`, so an unguarded write made a dead cache store
+     * kill the command before its pass ever ran — a stack trace and an accidental exit 1
+     * where the contract promises a summary line and a reported pass fault. The failure
+     * direction this class is built on (absence reads as unmeasured, never as fresh) is
+     * only true if the write can fail quietly.
+     */
     public static function stamp(): void
     {
-        Cache::put(self::KEY, now()->toIso8601String(), self::TTL);
+        try {
+            Cache::put(self::KEY, now()->toIso8601String(), self::TTL);
+        } catch (Throwable $e) {
+            FaultMarker::log('the tick stamp could not be written; this tick will read as unmeasured', [
+                'exception' => $e::class,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     public static function lastAt(): ?Carbon
     {
-        $raw = Cache::get(self::KEY);
-
-        if (! is_string($raw)) {
-            return null;
-        }
-
         try {
-            return Carbon::parse($raw);
+            $raw = Cache::get(self::KEY);
+
+            // A stamp we cannot read — unparseable, or in a store that is gone — is not a
+            // tick we can date. Unmeasured, never fresh, and never an exception thrown at
+            // a caller whose whole job is to REPORT the tick's state.
+            return is_string($raw) ? Carbon::parse($raw) : null;
         } catch (Throwable) {
-            // A stamp we cannot read is not a tick we can date. Unmeasured, never fresh.
             return null;
         }
     }

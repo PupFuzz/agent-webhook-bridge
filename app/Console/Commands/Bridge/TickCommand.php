@@ -41,7 +41,11 @@ use App\Bridge\Scheduling\TickRecord;
  * a crontab line that mails the operator on a handler bug trains them to filter the mail
  * that would have carried a dead-clock alarm. Only a fault that stopped the pass from
  * running at all — an unreachable database, an unusable cache backend, a cadence this
- * install cannot act on — is a non-zero exit.
+ * install cannot act on — is a non-zero exit. ⛔ EACH OF THOSE THREE RIDES THE RESULT, and
+ * the cache one only started to when `App\Bridge\Support\FaultMarker` landed: the pass's
+ * catch arm recorded its fault BY WRITING TO THE CACHE, so a dead store re-raised out of
+ * the shell and this command died at the stamp with a stack trace — exit 1 by accident,
+ * with no summary line and nothing in the log.
  *
  * ⛔ AN ORDINARY SKIP IS EXIT 0, and the distinction is read off
  * {@see JobPassResult::passFailed()} rather than off the reason
@@ -50,11 +54,13 @@ use App\Bridge\Scheduling\TickRecord;
  * designed; a crontab line reddening on those would red on most of its runs on a busy
  * install and the alarm would be filtered within a week.
  *
- * ⚑ THERE IS NO `guardDatabase()` HERE, deliberately. `passSafely()` catches every
- * `Throwable`, so a `QueryException` cannot reach this frame and a guard around the call
- * would be a branch for a state its own callee excludes. The unreachable-DB case is
- * reported through the result — which is what makes the exit code above true rather than
- * documented.
+ * ⚑ THERE IS NO `guardDatabase()` HERE, deliberately, and what makes that safe is that both
+ * of this command's calls INTO the registry are total. `passSafely()` catches every `Throwable`
+ * (recording included), and `TickRecord::stamp()` treats a stamp it cannot write as
+ * unmeasured rather than throwing — so a `QueryException` cannot reach this frame and a
+ * guard around the call would be a branch for a state its callee excludes. ⚠ That was an
+ * ASSERTION about the callees before it was a property of them: the stamp threw on a dead
+ * cache store, one line above the call this paragraph reasons about.
  */
 class TickCommand extends BridgeCommand
 {
@@ -70,7 +76,8 @@ class TickCommand extends BridgeCommand
     public function handle(): int
     {
         // Stamped first and unconditionally: see the class docblock. A pass that skips
-        // (another one holds the lock) is still a tick that arrived.
+        // (another one holds the lock) is still a tick that arrived. It cannot throw — a
+        // stamp that cannot be written reads as unmeasured, which is TickRecord's own rule.
         TickRecord::stamp();
 
         $result = $this->scheduler->passSafely(JobPassSource::Tick);

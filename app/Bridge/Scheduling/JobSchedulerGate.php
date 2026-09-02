@@ -37,7 +37,9 @@ final class JobSchedulerGate
      */
     public function schedule(): void
     {
-        if (! JobHandlerRegistry::isEnabled()) {
+        // Asked of the resolved posture directly: {@see JobsConfig} is the one home for
+        // the enabled predicate, and a second name for it here bought nothing.
+        if (! JobsConfig::fromConfig()->enabled) {
             return;
         }
 

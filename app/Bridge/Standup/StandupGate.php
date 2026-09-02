@@ -2,6 +2,7 @@
 
 namespace App\Bridge\Standup;
 
+use App\Bridge\Support\FaultMarker;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -59,9 +60,6 @@ final class StandupGate
      */
     public const ERROR_KEY = 'bridge:standup:last-error';
 
-    /** Floor on the last-error marker's lifetime; a longer interval widens it. */
-    private const ERROR_TTL = 2592000; // 30 days
-
     /** Ceiling on how long one pass may hold the lock before it is presumed dead. */
     private const LOCK_TTL = 300;
 
@@ -88,16 +86,17 @@ final class StandupGate
         try {
             $this->runPass();
         } catch (\Throwable $e) {
-            Cache::put(self::ERROR_KEY, [
-                'at' => now()->toIso8601String(),
-                'exception' => $e::class,
-                'error' => $e->getMessage(),
-            ], max(self::ERROR_TTL, (int) config('bridge.standup.interval') + 3600));
-            Log::warning('standup pass failed', [
-                'exception' => $e::class,
-                'at' => $e->getFile().':'.$e->getLine(),
-                'error' => $e->getMessage(),
-            ]);
+            // ⛔ RECORDING THE FAULT MUST NOT RE-RAISE IT — {@see FaultMarker} owns the
+            // order (log first, marker second) and guards each leg. This arm used to write
+            // the marker to the cache unguarded, so a DEAD CACHE STORE threw straight out
+            // of a terminating callback: an unhandled fatal after the response, in the FPM
+            // worker, on every delivery, and not one line saying why.
+            FaultMarker::record(
+                self::ERROR_KEY,
+                $e,
+                (int) config('bridge.standup.interval'),
+                'standup pass failed',
+            );
         }
     }
 

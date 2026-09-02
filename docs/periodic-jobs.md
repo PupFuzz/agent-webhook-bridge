@@ -105,6 +105,18 @@ a busy install, and the mail that would have carried a real fault gets filtered 
 ⚑ The tick is **stamped before the pass either way**, so a fault does not also read as a dead
 clock — those are two different alarms.
 
+⛔ **A DEAD CACHE BACKEND IS A REPORTED FAULT, NOT A STACK TRACE**, and it only became one
+when the pass's fault-recording moved behind `App\Bridge\Support\FaultMarker`. The catch arm
+recorded the fault by WRITING TO THE CACHE, so when the cache was the fault the arm re-raised
+its own exception: `bridge:tick` died at the tick stamp with a trace and exit 1 *by accident*
+— no summary line, no log line, no marker — and the event ingress ended every delivery with
+an unhandled fatal in the FPM worker. The fault is now **logged first** and the marker written
+second and guarded, so what an operator sees on a dead cache store is the ordinary contract
+above: one summary line, one log line, exit 1. ⚠ The last-pass-failure marker (the one
+`bridge:check`'s `jobs.posture` leg reports) is the one thing a dead cache CANNOT leave
+behind — the marker lives in the store that failed. Read the log, not the marker, when the store is the
+suspect; and a tick whose stamp could not be written reads as `unmeasured`, never as fresh.
+
 ## Death is the alarm
 
 The tick becomes the single point of failure for every periodic job on an install that

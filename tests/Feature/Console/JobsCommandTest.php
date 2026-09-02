@@ -8,6 +8,7 @@ use App\Models\ScheduledJob;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Testing\PendingCommand;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\ConsoleOutput;
@@ -112,6 +113,22 @@ class JobsCommandTest extends TestCase
             ->assertExitCode(0);
 
         $this->assertSame(ScheduledJob::STATUS_OK, ScheduledJob::query()->where('name', 'a-job')->value('last_status'));
+    }
+
+    /**
+     * ⛔ THE OTHER HALF OF `run`'s CONTRACT, and the one a script reads. An operator asking
+     * for a pass and getting exit 0 has been told the registry is fine when NOTHING ran —
+     * the same collapse `bridge:tick` exists not to make. The fault here is the shape an
+     * install actually lands in: upgraded without `php artisan migrate`, so the command
+     * exists and the table does not.
+     */
+    public function test_run_exits_non_zero_when_the_pass_could_not_run_at_all(): void
+    {
+        Schema::drop('scheduled_jobs');
+
+        $this->artisan('bridge:jobs', ['action' => 'run'])
+            ->expectsOutputToContain('the pass itself failed')
+            ->assertExitCode(1);
     }
 
     public function test_the_json_document_carries_the_tick_posture_and_every_justification(): void

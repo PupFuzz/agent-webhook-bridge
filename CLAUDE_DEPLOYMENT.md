@@ -303,6 +303,8 @@ php artisan bridge:sign --scope=<scope> [--provider=github] [--body-file=]   # p
 | `retention.null_payloads_older_than` | `BRIDGE_RETENTION_NULL_PAYLOADS_OLDER_THAN` | **`7d`** | Null payloads past the replay window, keeping the row. **Defaults ON** — an upgrade starts nulling payloads without operator action (DL-315). ⚠ **It IS the replay window:** `bridge:replay` REFUSES a payload-nulled event. **No grace period** — the gate's marker is a cache key, so the first inbound webhook after deploy runs a pass. To opt out (`''`) or widen it, set the value **before** the upgrade and re-run `php artisan config:cache`. ⚠ **This default moving also changes what an EMPTY `BRIDGE_RETENTION_OLDER_THAN` does** — see that row above; an install with both windows empty was reported MISCONFIGURED and pruned nothing, and now runs this leg. |
 | `retention.batch` | `BRIDGE_RETENTION_BATCH` | `500` | Max rows one pass touches per leg. While a backlog remains the gate keeps draining on successive deliveries rather than waiting out `interval`. |
 
+An unparseable window (or a non-positive `interval`/`batch`) prunes **nothing** and logs a warning once per day — it never falls back to a default cutoff, because that would delete on a typo. `bridge:check` reports the resolved retention posture at preflight.
+
 ### Standup digest config (DL-306)
 
 `bridge:standup` is the **manual** entry point; when `standup.enabled` the receiver pushes the same digest automatically, after the response, at most once per `interval`. **Off by default** — unlike retention, a pass makes outbound calls (one board read per mapped board, then the channel push).
@@ -342,7 +344,7 @@ Jobs are **data**: one row per instance in `scheduled_jobs`, carrying `{name, ha
 | `jobs.armed_mutators` | `BRIDGE_JOBS_ARMED_MUTATORS` | *(empty)* | ⭐ The governance gate. A handler declaring the state-mutating capability is INERT until named here — refused at insert **and** at run. Read-and-alert handlers need no entry. |
 | `jobs.tick_expected_every` | `BRIDGE_JOBS_TICK_EXPECTED_EVERY` | *(unset)* | The tick adoption knob **and** the freshness horizon, in seconds. Unset ⇒ the tick was not adopted and its absence is never reported as a fault. |
 
-An unparseable window (or a non-positive `interval`/`batch`) prunes **nothing** and logs a warning once per day — it never falls back to a default cutoff, because that would delete on a typo. `bridge:check` reports the resolved retention posture at preflight.
+⚠ **The jobs rule is NOT retention's rule.** A `min_pass_interval` / `max_per_pass` value outside its bound is **REFUSED, never clamped**: no pass runs on either ingress, `bridge:check`'s `jobs.posture` leg **FAILS** naming the key, and `bridge:tick` exits **non-zero** — where a misconfigured retention window prunes nothing, warns once a day and leaves the preflight reporting a posture. Same direction (a typo runs nothing), louder surface, because a crontab line has only an exit code to read.
 
 `bridge:replay` re-runs the `processed_at`-guarded dispatch loop: errored rows (`processed_at` null) re-run; **already-succeeded rows are skipped** so a sibling's already-delivered push / `spawn_detached` is never re-fired. `--agent` scopes to one agent. `--force` clears `processed_at` first so done rows (incl. handler-note rows) re-run too — use it to re-attempt a missed channel push once the agent is back.
 

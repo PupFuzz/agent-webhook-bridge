@@ -52,7 +52,7 @@ class JobsCommand extends BridgeCommand
         .'{--justification= : REQUIRED on add — one sentence on why this cannot be event-driven} '
         .'{--payload= : JSON handler input} '
         .'{--json : machine-readable output} '
-        .'{--assert-tick : exit non-zero when a DECLARED tick is not fresh}';
+        .'{--assert-tick : list only — exit non-zero when a DECLARED tick is not fresh}';
 
     protected $description = 'Enumerate and edit the periodic-job registry; report tick freshness';
 
