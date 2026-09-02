@@ -160,6 +160,15 @@ class WritebackSuccessBoardRecordTest extends TestCase
             'record' => 'CREATE — no resolved card exists to read a board from; the board is the POST target, '
                 .'so `board` there is outcome and intent at once. The create RESPONSE returns an id only.',
         ],
+        'KanbanCoordCardHandler.php:patchCard' => [
+            'sites' => 1,
+            'record' => 'PAIRED — the DL-341 name restamp on an upstream issue retitle, the coord sibling of '
+                .'the DL-328 dependabot one below. Group-B (card#7211): the id came from the board-scoped '
+                .'`cardRowsByTag` search, so the row is the only reading of where the write landed. '
+                .'`restamped name from the upstream retitle` carries the pair — and so does the arm that '
+                .'writes NOTHING because the name is not the one the bridge stamped, which is deliberate: it '
+                .'names a card this delivery READ and decided about, and a no-write is not a refusal by kanban.',
+        ],
         'KanbanCoordCardMoveHandler.php:moveCard' => [
             'sites' => 3,
             'record' => 'PAIRED — terminal / revived / re-laned each carry boardContext($card, $mapping). '
