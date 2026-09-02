@@ -54,9 +54,13 @@ namespace App\Bridge\Writeback;
  * write, the ARCHIVE, on the reading that retiring a card is a lifecycle act and not a
  * field. So a field-only PATCH lands on a pinned card BY DESIGN, not by omission: the
  * correlation-ref stamp here, and the DL-328 `{name}`-only restamp on an upstream retitle
- * (PR #635, not in this tree at the time of writing) when it lands. An auditor running the
- * census above will not see either one, and should not: read DL-178's annotation and DL-335
- * for why, rather than treating the absence as a sixth instance of this card's defect.
+ * (`KanbanDependabotCardHandler::restampNames()`, which lands it on a pinned
+ * card deliberately — it writes `name` alone, moves no card and retires none). An auditor
+ * running the census above will not see either one, and should not: read DL-178's
+ * annotation and DL-335's widening for why, rather than treating the absence as a further
+ * instance of this card's defect. ⚠ *Deliberate* is a statement about the RULE'S SCOPE, not
+ * a ruling that a hold should never stop a field write — nobody has been asked that, and
+ * `docs/writeback.md`'s dependabot pin paragraph is where it is filed.
  */
 final class PinGuard
 {

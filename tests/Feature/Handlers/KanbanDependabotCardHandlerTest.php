@@ -90,6 +90,197 @@ class KanbanDependabotCardHandlerTest extends TestCase
         );
     }
 
+    /**
+     * The DL-328 rename target — the retitle leg's own entry point. `name_from` is the
+     * title the PR carried BEFORE the edit, i.e. the string the bridge stamped on the card
+     * at birth; `pr_title` is what it carries now.
+     */
+    private function handleRename(string $nameFrom, string $title, int $pr = 42): void
+    {
+        (new KanbanDependabotCardHandler)->handle(
+            ReactionTarget::make('kanban_dependabot_card', "pr-{$pr}", payload: [
+                'repo' => 'owner/repo', 'outcome' => KanbanDependabotCardHandler::RENAMED_OUTCOME, 'pr_number' => $pr,
+                'pr_title' => $title, 'pr_url' => 'https://github.com/owner/repo/pull/'.$pr,
+                'name_from' => $nameFrom,
+            ]),
+            AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
+        );
+    }
+
+    /**
+     * A correlated dependabot card on the mapped board carrying $name. `$boardId` is the
+     * ROW's own spelling of its board — the accepted interval (DL-292) admits the numeric
+     * string, which is what lets a card#7212 record be forced apart from the config value.
+     */
+    private function fakeCardNamed(string $name, int|string $boardId = 8): void
+    {
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => $boardId, 'name' => $name, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+        ]);
+    }
+
+    public function test_retitle_restamps_a_card_whose_name_is_still_the_one_the_bridge_stamped(): void
+    {
+        // The live incident (roundtable 212): dependabot retitled the PR 45 minutes before
+        // merging it, and the card kept asserting a version that never shipped. The retitle
+        // here is a DOWNGRADE (7.0.2 → 6.0.3) — the direction a fix assuming monotonic
+        // version bumps would get wrong, and the direction the reported drift ran.
+        $this->fakeCardNamed('chore(deps): Bump typescript from 5.9.0 to 7.0.2');
+
+        $this->handleRename(
+            'chore(deps): Bump typescript from 5.9.0 to 7.0.2',
+            'chore(deps): Bump typescript from 5.9.0 to 6.0.3',
+        );
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json')
+            && $r['name'] === 'chore(deps): Bump typescript from 5.9.0 to 6.0.3'
+            && ! isset($r['task'])                     // DL-219: flat field write
+            && $r->data() === ['name' => 'chore(deps): Bump typescript from 5.9.0 to 6.0.3']);
+        // A retitle writes the name and NOTHING else: no column move, no archive, no create.
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && (isset($r['workflow_stage_id']) || isset($r['_action'])));
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST');
+    }
+
+    public function test_retitle_restamps_every_matching_card_of_a_create_race(): void
+    {
+        // ⚑ THE >1-CARD RULING, pinned (DL-328 Decision 5): a create race leaves two cards
+        // carrying the SAME bridge-stamped name, so both are the bridge's and both are
+        // restamped. Restamping only a survivor would leave the twin asserting the version
+        // that never shipped — this leg's whole defect, re-minted on the duplicate — and
+        // this arm deliberately does not collapse: retiring a duplicate belongs to the move
+        // path (DL-198), which is where the survivor is chosen.
+        $from = 'chore(deps): Bump typescript from 5.9.0 to 7.0.2';
+        $to = 'chore(deps): Bump typescript from 5.9.0 to 6.0.3';
+        $row = fn (int $id, string $name) => ['id' => $id, 'board_id' => 8, 'name' => $name, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']];
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [
+                ['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+                ['id' => 9, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]],
+            ]]),
+            '*/tasks/7.json' => Http::response(['data' => $row(7, $from)]),
+            '*/tasks/9.json' => Http::response(['data' => $row(9, $from)]),
+        ]);
+
+        $this->handleRename($from, $to);
+
+        foreach ([7, 9] as $id) {
+            Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), "/tasks/{$id}.json")
+                && $r->data() === ['name' => $to]);
+        }
+        // Name-only on BOTH: no collapse rides along, so neither twin is archived here.
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH' && isset($r['_action']));
+    }
+
+    public function test_retitle_leaves_a_human_renamed_card_alone(): void
+    {
+        // ⭐ THE CONTROL, and without it this change is indistinguishable from the naive
+        // "always overwrite the name from the upstream title" fix that destroys a human
+        // edit on the next webhook. The card's name differs from the title the bridge
+        // stamped (`name_from`) by exactly the human's edit ⇒ the bridge does not own it
+        // ⇒ NO write at all. Same event, same card, same everything else as the test above.
+        $this->fakeCardNamed('typescript bump — HOLD, breaks the build (see #221)');
+
+        $this->handleRename(
+            'chore(deps): Bump typescript from 5.9.0 to 7.0.2',
+            'chore(deps): Bump typescript from 5.9.0 to 6.0.3',
+        );
+
+        Http::assertNotSent(fn ($r) => in_array($r->method(), ['PATCH', 'POST'], true));
+    }
+
+    public function test_retitle_leaves_a_card_whose_name_differs_by_one_character(): void
+    {
+        // The test is BYTE-equality, not resemblance: a name that merely looks machine-made
+        // is not evidence the machine wrote it. One trailing space is the whole difference.
+        $this->fakeCardNamed('chore(deps): Bump typescript from 5.9.0 to 7.0.2 ');
+
+        $this->handleRename(
+            'chore(deps): Bump typescript from 5.9.0 to 7.0.2',
+            'chore(deps): Bump typescript from 5.9.0 to 6.0.3',
+        );
+
+        Http::assertNotSent(fn ($r) => in_array($r->method(), ['PATCH', 'POST'], true));
+    }
+
+    public function test_retitle_with_no_correlated_card_writes_nothing(): void
+    {
+        // Never tracked ⇒ nothing to restamp, and emphatically NOT a create: the retitle
+        // leg only ever corrects a name that already exists.
+        Http::fake(['*/tasks/search.json*' => Http::response(['data' => []])]);
+
+        $this->handleRename('chore(deps): Bump x from 1 to 2', 'chore(deps): Bump x from 1 to 3');
+
+        Http::assertNotSent(fn ($r) => in_array($r->method(), ['PATCH', 'POST'], true));
+    }
+
+    public function test_retitle_with_a_malformed_payload_alerts_and_writes_nothing(): void
+    {
+        // A rename target with no `name_from` carries no ownership evidence — a
+        // deterministic upstream bug, so it alerts + no-ops rather than writing the name
+        // it cannot justify (and rather than throwing into a redelivery storm).
+        $this->writeWritebackWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response('', 204),
+            '*/tasks/search.json*' => Http::response(['data' => []]),
+        ]);
+
+        (new KanbanDependabotCardHandler)->handle(
+            ReactionTarget::make('kanban_dependabot_card', 'pr-42', payload: [
+                'repo' => 'owner/repo', 'outcome' => KanbanDependabotCardHandler::RENAMED_OUTCOME, 'pr_number' => 42,
+                'pr_title' => 'chore(deps): Bump x from 1 to 3', 'pr_url' => 'https://github.com/owner/repo/pull/42',
+            ]),
+            AgentConfig::fromArray('prod-agent', ['identity' => ['kanban_user_id' => 1], 'subscriptions' => []]),
+        );
+
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['reason'] === 'dependabot_card_rename_payload_invalid'
+            && $r['repo'] === 'owner/repo'
+            && $r['card_id'] === null
+            && $r['issue_number'] === 42);
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    public function test_the_restamp_record_reads_the_rows_own_board_and_is_not_a_second_copy_of_the_mapped_one(): void
+    {
+        // card#7212 on the DL-328 write site: a record that only PROVED both keys present would
+        // pass against a "fix" rendering `mapped_board` into both slots, so the two values are
+        // forced apart through the accepted interval (DL-292) — the ROW says the numeric string
+        // `'8'`, the CONFIG says int 8 — and pinned with `===`. Group-B, like the archive and
+        // move arms: the id came from a board-scoped search, so this row is the only reading of
+        // where the name write landed, and `cardsForRepo`'s DL-298 gate does not substitute for
+        // it (a gate emits evidence only when it REFUSES).
+        $this->fakeCardNamed('chore(deps): Bump typescript from 5.9.0 to 7.0.2', boardId: '8');
+        Log::spy();
+
+        $this->handleRename(
+            'chore(deps): Bump typescript from 5.9.0 to 7.0.2',
+            'chore(deps): Bump typescript from 5.9.0 to 6.0.3',
+        );
+
+        Http::assertSent(fn ($r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/7.json') && isset($r['name']));
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'restamped name from the upstream retitle')
+            && $ctx['card_board'] === '8'      // the ROW's spelling, verbatim
+            && $ctx['mapped_board'] === 8);    // the CONFIG's, unchanged
+    }
+
+    public function test_the_left_alone_record_also_names_the_board_the_read_landed_on(): void
+    {
+        // The no-write arm carries the pair too: it names a card this delivery read and made a
+        // decision about, so "which board was that card on" stays answerable on the path where
+        // nothing was written — the same reason the success record exists at all.
+        $this->fakeCardNamed('typescript bump — HOLD, breaks the build (see #221)', boardId: '8');
+        Log::spy();
+
+        $this->handleRename(
+            'chore(deps): Bump typescript from 5.9.0 to 7.0.2',
+            'chore(deps): Bump typescript from 5.9.0 to 6.0.3',
+        );
+
+        Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'not `changes.title.from`; not restamped')
+            && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
+    }
+
     public function test_opened_with_no_existing_card_creates_one_at_the_opened_stage(): void
     {
         Http::fake([

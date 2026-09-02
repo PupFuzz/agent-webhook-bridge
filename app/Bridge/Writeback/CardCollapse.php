@@ -71,7 +71,11 @@ final class CardCollapse
      * pinned" for a card nobody looked at — a check that cannot fire (canon #9). The
      * board-tools caller used to hand exactly that (`array_fill_keys($live, [])`) and now
      * reads its rows through `KanbanClient::cardRowsByTag()` instead, which is the write-site
-     * fix rather than a read-time fallback here (canon #5).
+     * fix rather than a read-time fallback here (canon #5). ⚠ Two of the three callers get
+     * their rows from kanban's SEARCH projection rather than from the by-id read, so that
+     * projection must keep `block_reason` and `tags` top-level or this consult answers "not
+     * pinned" silently — declared on the `tags:"<tag>"` row of
+     * `docs/kanban-integration-contract.md`, which is the surface the far end can read.
      *
      * ⚑ $repo is REQUIRED and may legitimately be `''`. It is the first element of the pin
      * refusal's `(repo, outcome, reason)` alert dedup tuple, and the board-tools caller has no
