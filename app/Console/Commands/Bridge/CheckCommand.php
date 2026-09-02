@@ -33,6 +33,7 @@ use App\Bridge\Check\Checks\InstallEndpointUrlsCheck;
 use App\Bridge\Check\Checks\InstallProviderAdaptersCheck;
 use App\Bridge\Check\Checks\InstallSecretDirCheck;
 use App\Bridge\Check\Checks\InstallSuffixDsnCheck;
+use App\Bridge\Check\Checks\JobsPostureCheck;
 use App\Bridge\Check\Checks\ReconcileRepoTokensCheck;
 use App\Bridge\Check\Checks\RetentionPostureCheck;
 use App\Bridge\Check\Checks\SharedIdentitiesCheck;
@@ -155,6 +156,12 @@ class CheckCommand extends BridgeCommand
         }
 
         if (! $this->emitReport($runner->run(CheckSlot::Retention, $ctx))) {
+            $ok = false;
+        }
+
+        // The periodic-job registry (DL-325). Silent unless this install adopted the tick or
+        // holds instances, so it costs a line only where there is one to give.
+        if (! $this->emitReport($runner->run(CheckSlot::Jobs, $ctx))) {
             $ok = false;
         }
 
@@ -765,6 +772,7 @@ class CheckCommand extends BridgeCommand
             ->register(CheckSlot::Database, new DatabaseConnectivityCheck, new InstallSuffixDsnCheck)
             ->register(CheckSlot::Inbox, new InboxSurfacingConfigCheck)
             ->register(CheckSlot::Retention, new RetentionPostureCheck($this->laravel->make(RetentionStoreProbe::class)))
+            ->register(CheckSlot::Jobs, new JobsPostureCheck)
             ->register(CheckSlot::Providers, new InstallEndpointUrlsCheck, new InstallProviderAdaptersCheck)
             ->registerPerAgent(CheckSlot::AgentClassifier, new AgentClassifierResolvableCheck)
             ->registerPerAgent(CheckSlot::AgentPolicy, new CiFailureFilterCheck, new WakeMembershipCheck)

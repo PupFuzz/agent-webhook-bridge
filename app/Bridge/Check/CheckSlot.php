@@ -49,6 +49,17 @@ enum CheckSlot: string
     case Retention = 'retention';
 
     /**
+     * The periodic-job registry's posture (card#8425 / DL-325), immediately after retention
+     * and before the provider plane — beside retention because they are the same subject at
+     * two scales: work the bridge does to itself on a cadence rather than on a request.
+     *
+     * ⚑ ITS CHECK IS SILENT ON AN INSTALL THAT ADOPTED NOTHING, which is the common case:
+     * no rows, no declared tick, nothing to say. The slot still runs — registration is
+     * unconditional (plan constraint (a)) — and the inventory accounts for it.
+     */
+    case Jobs = 'jobs';
+
+    /**
      * The per-install PROVIDER plane, after the retention leg and before the per-agent
      * config iteration: the endpoint URLs this install was configured with, and whether
      * every configured provider has an adapter to receive for it.

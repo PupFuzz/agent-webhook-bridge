@@ -1,11 +1,12 @@
 # Customization
 
-## Two extension points
+## Three extension points
 
 | Extension | What it does | Loaded via | Default |
 |---|---|---|---|
 | **Classifier** | Maps webhook events to `Intent` (inbox) and/or `ReactionTarget` (handler) instances. | `classifier.class` in agent YAML (FQCN). | `App\Bridge\Classifiers\InboxOnlyClassifier` |
-| **Handler** | Implements `Handler` contract; dispatched by name synchronously in the same request. | `afterResolving(HandlerRegistry::class, fn ($r) => $r->register(name, instance))` in a `ServiceProvider`. | Eight always ship: `log_intent`, `registry_append`, `channel_push`, and the five kanban writeback handlers `kanban_move_card` (DL-020), `kanban_dependabot_card` (DL-024), `kanban_block_reason` (DL-193), `kanban_coord_card` (DL-198), `kanban_coord_card_move` (DL-200) — all inert without `writeback.json`. `spawn_detached` is opt-in (`BRIDGE_SPAWN_ENABLED`, DL-011). |
+| **Handler** | Implements `Handler` contract; dispatched by name synchronously in the same request. | `afterResolving(HandlerRegistry::class, fn ($r) => $r->register(name, instance))` in a `ServiceProvider`. | NINE always ship: `log_intent`, `registry_append`, `channel_push`, and the six kanban writeback handlers `kanban_move_card` (DL-020), `kanban_promote_released` (DL-207), `kanban_dependabot_card` (DL-024), `kanban_block_reason` (DL-193), `kanban_coord_card` (DL-198), `kanban_coord_card_move` (DL-200) — all inert without `writeback.json`. `spawn_detached` is opt-in (`BRIDGE_SPAWN_ENABLED`, DL-011). |
+| **Periodic job handler** (DL-325) | Implements `App\Bridge\Scheduling\JobHandler`; run on a cadence by the job registry, from the after-response event gate and/or the opt-in `bridge:tick`. | `afterResolving(JobHandlerRegistry::class, fn ($r) => $r->register(new MyJob))` in a `ServiceProvider` **both the FPM worker and the CLI load** — a handler wired anywhere else exists on one ingress and is a loud refusal on the other. | ONE ships: `standup_digest`. ⛔ **Read `docs/periodic-jobs.md` first — a periodic job is the LAST resort here**, and an instance is refused unless it states why the work cannot be event-driven. A handler declaring `JobCapability::MutatesState` is inert until the install arms it. |
 
 The Python-era surface formatter (a callable swapped into `bin/inbox`) does not exist in v0.12. `bridge:inbox` ships one built-in Markdown renderer; the output format is not operator-swappable. To reshape output, post-process `bridge:inbox` stdout or read `inbox.jsonl` directly (see [`consumer-guide.md`](consumer-guide.md)).
 

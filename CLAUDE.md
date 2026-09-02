@@ -36,6 +36,11 @@ php artisan bridge:replay <N>            # re-dispatch a stored event by id (rec
 php artisan bridge:inspect <N>           # pretty-print one event + its dispatch ledger
 php artisan bridge:stats                 # event / dispatch / board-divergence counts
 php artisan bridge:standup --dry-run     # PM standup digest (DL-306): print what the bridge can derive, push nothing
+php artisan bridge:jobs                  # periodic-job registry (DL-325): the whole periodic population + why each entry
+                                         # is periodic. --json for a hook; --assert-tick reds a DECLARED-but-dead tick
+php artisan bridge:tick                  # ONE bounded pass over that registry — the OPT-IN second ingress, driven by
+                                         # ONE crontab line (DL-325). Never required: the registry also runs off the
+                                         # inbound webhook's after-response gate. docs/periodic-jobs.md
 php artisan bridge:sign --scope=<scope>  # sign a raw body (on stdin) with this install's HMAC secret — the secret
                                          # never becomes an argv token (DL-322); used by the deployment smoke test
 
@@ -76,6 +81,7 @@ python3 bin/check-channel-snapshot.py <deployed channel-server dir>
 | [`docs/customization.md`](docs/customization.md) | Writing custom classifiers + handlers + surface formatters (PHP) | Adding agent-specific behavior |
 | [`docs/provider-adapters.md`](docs/provider-adapters.md) | Adding a third upstream provider (HMAC header, envelope shape, `WebhookAdapter`) | Integrating GitLab / Jira / etc. |
 | [`docs/multi-agent.md`](docs/multi-agent.md) | Running parallel agents on the bridge | Onboarding a second agent |
+| [`docs/periodic-jobs.md`](docs/periodic-jobs.md) | **The periodic-job registry (DL-325): why a periodic job is the LAST resort here and what to try first, the two ingresses (after-response event gate + the opt-in ONE-line `bridge:tick`), the handler contract and its capability gate, the runtime insert/remove API, the required per-instance justification, and the tick's death-is-the-alarm freshness states** | Before adding ANY periodic work to the bridge, or when adopting/auditing the tick |
 | [`docs/multi-host.md`](docs/multi-host.md) | Running agents across multiple hosts | Scaling beyond one box |
 | [`docs/consumer-guide.md`](docs/consumer-guide.md) | Agent-author's guide to consuming staged intents (inbox shape, hook wiring) | Building the agent that reads the bridge |
 | [`docs/writeback.md`](docs/writeback.md) | The GitHub-PR → card-move writeback (the only writeback): `writeback.json`, the least-privilege token, the correlation classifier, the repo-webhook setup | Setting up / operating the card-move writeback (FR #2016) |

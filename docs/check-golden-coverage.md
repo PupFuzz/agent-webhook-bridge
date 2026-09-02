@@ -4,6 +4,18 @@
 > Measured against `app/Console/Commands/Bridge/CheckCommand.php` over the
 > 49 branch predicates in `handle()`, in 50 minutes. Decision record: **DL-242**.
 
+> ⚠ **STALE — the counts below are NOT this branch's.** card#8425 / DL-325 added one
+> predicate to `handle()` (the `CheckSlot::Jobs` emit for the periodic-job registry's
+> posture leg), so the live enumeration finds one more predicate than the run above
+> measured. The measurement was NOT re-run: it is a ~50-minute mutation pass, and nothing
+> in this change touches a predicate the tables below name.
+
+> ⚠ **SUBJECT MOVED — the predicates described below are NOT this branch's.** The one
+> predicate present but never measured is `if ! $this->emitReport($runner->run(CheckSlot::Jobs, $ctx))`
+> (card#8425 / DL-325). Its verdict is therefore UNKNOWN here, in either direction — it is
+> not in the disclosed-gap table because it was not measured, which is a different thing
+> from being protected. Re-run `php bin/check-golden-mutate.php` to retire both banners.
+
 > ⚑ **WHAT IS GUARDED HERE, AND WHAT IS NOT (card#7992).** Two suite guards keep this file
 > honest about its SUBJECT — the predicate count stated above, and the set of conditions the
 > tables below name. Both are compared against a live enumeration of `handle()` on every suite
