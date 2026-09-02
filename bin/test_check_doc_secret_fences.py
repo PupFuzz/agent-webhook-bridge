@@ -87,6 +87,15 @@ def _fence(body: str, info: str = 'bash') -> str:
     return f'```{info}\n{body}```\n'
 
 
+def _rules(body: str) -> list[str]:
+    """The rule ids a `bash` fence containing `body` reds under, sorted.
+
+    ONE module-level copy. The classes below that carry a byte-identical `_rules`
+    method predate it; that duplication is a filed class item, and a new case must
+    use this one rather than mint an eleventh."""
+    return sorted(f.rule for f in _scan(f'```bash\n{body}```\n'))
+
+
 class Payload(NamedTuple):
     """The bytes of a doc, and the verdict this program must return for them.
 
@@ -681,6 +690,70 @@ class TheNegativeHalfOfTheVocabulary(unittest.TestCase):
         self.assertEqual(['argv'], self._rules('openssl pkey -passin "pass:$API_KEY"\n'))
 
 
+class ADotEnvFileIsASecretStore(unittest.TestCase):
+    """`.env` is in SECRET_PATH_MARKERS on an operator ruling (card#8351).
+
+    This repo's `CLAUDE.md` §3 puts the DB password in the Laravel `.env`, so a
+    runbook line that prints one resolves a secret onto stdout exactly as a `cat` of
+    the channel-token file does — and until this marker existed that line read as an
+    ordinary path. Widening a marker widens what CI rejects, which is why the round
+    that found the gap asked rather than took it; the cost was measured before the
+    ask and is nil on the known population (0 findings over the 29 markdown files
+    here, before and after).
+
+    The near-spelling `.env.example` is disclosed as BOUND(env-template) and pinned
+    there, not here.
+
+    A secret-store marker is read by THREE rules, so the marker widened three arms —
+    `stdout`, `argv`, `history` — and each is pinned below against the same
+    delete-the-marker mutation.
+    """
+
+    def test_a_reader_on_a_dotenv_file_puts_a_secret_store_on_stdout(self) -> None:
+        for body in ('cat .env\n', 'head -5 .env\n', 'cat "$BRIDGE_DIR/.env"\n'):
+            with self.subTest(body=body.strip()):
+                self.assertEqual(['stdout'], _rules(body))
+
+    def test_a_captured_dotenv_read_is_an_argv_leak(self) -> None:
+        """The same act through the substitution leg the whole card is about."""
+        self.assertEqual(['argv'], _rules(
+            'curl -H "Authorization: Bearer $(cat .env)" http://x/\n'))
+
+    def test_a_literal_written_INTO_a_dotenv_file_is_a_history_leak(self) -> None:
+        """The third arm, and the shell-history leak this card was filed for: a
+        secret as a command-line LITERAL, written into the store, lands verbatim in
+        the operator's history. The prescribed `printf '%s' "$VAR" > .env` — an
+        EXPANSION, not a literal — stays green, so the arm is the literal and not the
+        redirect."""
+        self.assertEqual(['history'], _rules('echo "DB_PASSWORD=placeholder" >> .env\n'))
+        self.assertEqual([], _rules('printf \'%s\' "$DB_PASSWORD" > .env\n'))
+
+    def test_the_finding_names_the_path_the_doc_actually_contains(self) -> None:
+        findings = _scan('```bash\ncat .env\n```\n')
+        self.assertEqual(['stdout'], [f.rule for f in findings])
+        self.assertIn('.env', findings[0].message)
+
+    def test_a_dotenv_path_handed_to_a_command_that_does_not_READ_is_green(self) -> None:
+        """The marker is consulted where a rule already asks whether a path is a
+        secret store — it does not red every line the path appears on. Both of these
+        are lines this repo's install runbooks contain."""
+        self.assertEqual([], _rules(
+            'cp .env.example .env && php artisan key:generate\n'))
+        self.assertEqual([], _rules('$EDITOR .env\n'))
+
+    def test_the_marker_needs_the_DOT_to_fire(self) -> None:
+        """`env` unqualified is one of the commonest words in a runbook, so the
+        negative half of this marker is the leading DOT.
+
+        Both cases are READS, which is the only position where the marker is
+        consulted at all — a green here has to come from the spelling and cannot
+        come from the command. Both red under a marker widened to a bare `env`,
+        which is the mutation this pins against.
+        """
+        self.assertEqual([], _rules('cat environment-notes.md\n'))
+        self.assertEqual([], _rules('cat "$BRIDGE_DIR/environments"\n'))
+
+
 class TheWaiver(unittest.TestCase):
     """The escape hatch, and the one property that keeps it honest."""
 
@@ -1236,6 +1309,16 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
                                'console'), ()),
                 Payload(_fence('# echo "$BRIDGE_WEBHOOK_SECRET" >> /var/log/x.log\n',
                                'console'), ()),
+                # The `history` leg of the five this bound's prose claims green.
+                # It was claimed and unpinned: `history` is the one rule that reads
+                # a LITERAL rather than an expansion, so a payload naming a secret
+                # by `$NAME` could not have exercised it.
+                Payload(_fence('# printf \'%s\' "placeholder-value" > '
+                               '/etc/bridge/webhook-secret-scope-kanban\n',
+                               'console'), ()),
+                Payload(_fence('$ printf \'%s\' "placeholder-value" > '
+                               '/etc/bridge/webhook-secret-scope-kanban\n',
+                               'console'), ('history',)),
                 Payload(_fence('$ echo "$BRIDGE_WEBHOOK_SECRET"\n', 'console'),
                         ('stdout',)),
                 Payload(_fence('$ curl -H "Authorization: Bearer '
@@ -1340,6 +1423,12 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
                 Payload(_fence('printf \'%s\' "$SECRET" | base64\n'), ('stdout',)),
                 Payload(_fence('openssl dgst -sha256 -hmac "$SECRET" -hex\n'),
                         ('argv',)),
+            )),
+        'env-template': (
+            'test_the_shipped_TEMPLATE_matches_the_secret_store_marker_too', (
+                Payload(_fence('cat .env.example\n'), ('stdout',)),
+                Payload(_fence('cp .env.example .env\n'), ()),
+                Payload(_fence('cat .env\n'), ('stdout',)),
             )),
         'tee-outside-a-pipeline': (
             'test_tee_OUTSIDE_a_pipeline_still_names_the_wrong_direction', (
@@ -1462,6 +1551,21 @@ class TheDisclosedBoundsAreCHECKEDNotJustStated(unittest.TestCase):
                     self.assertIn((), verdicts,
                                   'a silent direction is disclosed and no payload '
                                   'here is green')
+
+    def test_the_shipped_TEMPLATE_matches_the_secret_store_marker_too(self) -> None:
+        """`.env` is a SUBSTRING, so `.env.example` — the template that ships, with
+        placeholders and no value — matches it too, and a reader on the template
+        reds naming a secret store that holds none.
+
+        The green is what says this is one wrong message rather than a broken
+        runbook: `cp .env.example .env` is the line `CLAUDE_DEPLOYMENT.md` and
+        `CLAUDE_GOTCHAS.md` actually contain, and `cp` is not a reading command. The
+        third case is the red twin the bound is measured against — the same command
+        on the populated file, which is the finding the marker exists to produce.
+        """
+        self.assertEqual(['stdout'], self._rules('cat .env.example\n'))
+        self.assertEqual([], self._rules('cp .env.example .env\n'))
+        self.assertEqual(['stdout'], self._rules('cat .env\n'))
 
     def test_a_four_space_INDENTED_block_is_not_a_fence(self) -> None:
         """Only fences are found, so an indented block is invisible rather than
