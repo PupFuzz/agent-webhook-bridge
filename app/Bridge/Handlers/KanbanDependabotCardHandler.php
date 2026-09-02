@@ -32,10 +32,18 @@ use Illuminate\Support\Facades\Log;
  *    Archive needs no stage mapping. Idempotent: an archived card is excluded
  *    from correlation, so a redelivered close finds nothing and no-ops.
  *  - outcome closed_unmerged, no card → skip (never tracked → nothing to retire).
+ *  - outcome `renamed` (DL-328, the upstream retitle) → restamp the card NAME and move
+ *    nothing, and only on a card whose name is still byte-identical to the title the
+ *    bridge stamped there ({@see restampNames} owns that test and why it is the only
+ *    safe one). No card → nothing to restamp.
  *  - card exists, other outcome → move it to the outcome's stage (no-op if there).
  *  - no card, outcome opened / merged / merged_to_main → create it at that stage.
- *  - a PINNED card is refused on both writes (DL-335) — see {@see refusedAsPinned}. A
- *    create is unreachable from a pin: there is no card yet to carry one.
+ *  - a PINNED card is refused on the two writes DL-335 covers — the closed-unmerged
+ *    ARCHIVE and the collapse survivor's MOVE; see {@see refusedAsPinned}. A create is
+ *    unreachable from a pin: there is no card yet to carry one. ⚠ The DL-328 restamp is
+ *    NOT among them: DL-335 was ruled before that arm existed and the pin was never
+ *    widened onto it, so a pinned card whose name the bridge still owns is restamped.
+ *    Read this as the roster DL-335 ruled, never as "every write on this handler".
  *
  * DURABLE, with the same transient(5xx → retry) / permanent(4xx → alert + log + no-op)
  * split as the move handler (DL-020/DL-285). New cards are tagged `dependencies` +
@@ -66,6 +74,17 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
      * @var list<string>
      */
     public const CREATE_PAYLOAD_KEYS = ['pr_number', 'pr_url', 'origin'];
+
+    /**
+     * The MOVE-LESS outcome of a retitled PR (DL-328) — a handler-internal outcome with no
+     * stage of its own, exactly like the move handler's `reopened` (DL-195), so
+     * `WritebackConfig::OUTCOMES` (the operator-configurable stage keys) is unchanged and a
+     * `writeback.json` naming it still fails validation. It is a CONSTANT rather than a
+     * literal in two files because it is the seam between the classifier that emits the
+     * target and the handler that reads it: a typo on either side would degrade to the
+     * "no stage mapped for outcome" no-op, which is silent.
+     */
+    public const RENAMED_OUTCOME = 'renamed';
 
     private WritebackAlertNotifier $alerts;
 
@@ -156,6 +175,15 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
                 return;
             }
 
+            // Upstream RETITLE (DL-328) → restamp the name, move nothing. Placed after the
+            // correlation (it writes to the same card set every other arm does) and before
+            // the stage lookup, which has no entry for this outcome and would no-op it.
+            if ($outcome === self::RENAMED_OUTCOME) {
+                $this->restampNames($client, $cards, $p['name_from'] ?? null, $p['pr_title'] ?? null, $mapping, $repo, $prNumber);
+
+                return;
+            }
+
             $stageId = $mapping->stageFor($outcome);
             if ($stageId === null) {
                 Log::info('kanban_dependabot_card: no stage mapped for outcome; ignoring', ['repo' => $repo, 'outcome' => $outcome, 'pr' => $prNumber]);
@@ -229,8 +257,10 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
     }
 
     /**
-     * The pinned-card opt-out for this handler's two writes (DL-335, card#8454): true when
-     * the card is PINNED and the caller must skip the write it was about to make.
+     * The pinned-card opt-out for the two writes DL-335 covers (card#8454) — the
+     * closed-unmerged archive and the collapse survivor's move: true when the card is
+     * PINNED and the caller must skip the write it was about to make. The DL-328 name
+     * restamp does NOT call it — see the class docblock's lifecycle list.
      *
      * DL-178's predicate is a property of the CARD, not of the mover, and until this shipped
      * the dependabot handler was the one event-path mover that never consulted it — so a
@@ -265,10 +295,87 @@ final class KanbanDependabotCardHandler implements DurableReaction, Handler
     }
 
     /**
+     * Restamp the card name of a retitled dependabot PR (DL-328) — the ONLY name write the
+     * bridge makes after birth, and the answer to a card asserting a version that never
+     * shipped (dependabot retitles its PR in place when it retargets a bump).
+     *
+     * ⭐ THE OWNERSHIP TEST IS BYTE-EQUALITY WITH WHAT THE BRIDGE ITSELF STAMPED, and it is
+     * the reason this is not the naive "always overwrite the name from the upstream title"
+     * fix, which must not be built: the classifier delivers the upstream title on every
+     * subsequent event, so an unconditional write would silently destroy a deliberate human
+     * rename on the next webhook — trading a stale machine name for a destroyed human one.
+     * `$nameFrom` is GitHub's `changes.title.from`: the title as it stood before this edit,
+     * which is exactly the string the bridge stamped when it minted the card. A card whose
+     * name still equals it byte for byte has been touched by nobody since; a card whose name
+     * differs by so much as a space has an author other than this bridge and is LEFT ALONE.
+     * No heuristic reads the name's shape, no monotonic assumption is made about the version
+     * (the measured drift runs BOTH ways — 7.0.2→6.0.3 as readily as 29.1.1→30.0.0), and the
+     * head ref is never consulted: it is frozen at branch creation while the diff is
+     * retargeted, so it names the bump the PR no longer carries.
+     *
+     * ⚠ ITS BOUND, disclosed rather than papered over: the evidence lives on the RENAME
+     * EVENT. A retitle the bridge never received (it was down, or the repo predates this
+     * leg) leaves a card whose name matches no `from` string anyone can produce later, and a
+     * merge event carries the new title but no witness for the old one — so this leg CANNOT
+     * repair it, and deliberately does not try. Already-wrong cards are a separate one-off
+     * backfill (card#8377's scope), not a data migration folded into a behaviour change.
+     *
+     * A malformed rename payload is a deterministic CLASSIFIER bug — permanent, so it
+     * alerts + no-ops rather than throwing, exactly like the entry-point validation. It is
+     * checked HERE and not only at the emit site because a handler is a published extension
+     * point (docs/customization.md): another classifier can emit this target, and the failure
+     * this refuses is a card renamed to the WRONG string, which no later event corrects.
+     *
+     * ⚑ ON >1 CORRELATED CARD THIS RESTAMPS EVERY MATCHING ONE, and does NOT collapse:
+     * a create-race duplicate carries the same bridge-stamped name as its twin, so restamping
+     * only a survivor would leave the other asserting the version that never shipped — the
+     * exact defect this leg exists to remove — while the collapse itself belongs to the
+     * move path, which is where a duplicate is actually retired (DL-198). The ownership test
+     * is applied per card, so a race pair one of whose cards a human renamed still writes to
+     * the other alone.
+     *
+     * @param  array<int, array<string, mixed>>  $cards  id => card, already board- and repo-gated
+     */
+    private function restampNames(KanbanClient $client, array $cards, mixed $nameFrom, mixed $title, WritebackMapping $mapping, string $repo, int $prNumber): void
+    {
+        if (! is_string($nameFrom) || $nameFrom === '' || ! is_string($title) || $title === '' || $title === $nameFrom) {
+            $this->alerts->warnAndNotify(
+                'kanban_dependabot_card: malformed rename payload (name_from/pr_title); no name written',
+                ['repo' => $repo, 'pr' => $prNumber],
+                $repo, self::ALERT_OUTCOME, null, 'dependabot_card_rename_payload_invalid', $prNumber,
+            );
+
+            return;
+        }
+        foreach ($cards as $cardId => $card) {
+            $name = $card['name'] ?? null;
+            if (! is_string($name) || $name !== $nameFrom) {
+                // ⛔ THE RECORD STATES THE FACT AND NAMES NO AUTHOR, because this branch has
+                // more than one innocent history and cannot tell them apart. A human (or
+                // another writer) renaming the card is the case the gate exists for — but a
+                // GitHub REDELIVERY of this same edit reaches here too, as does a retried
+                // partial restamp, and in both of those the name it found is the one THIS
+                // bridge wrote a moment ago. Accusing a writer would be wrong-but-specific on
+                // the redelivery path (DL-314's shape), so the text reports only what was
+                // compared. Info, not warn: on every one of those histories the no-op is the
+                // designed outcome, not a failure.
+                Log::info('kanban_dependabot_card: card name is not `changes.title.from`; not restamped', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
+
+                continue;
+            }
+            $client->patchCard($cardId, ['name' => $title]);
+            // Group-B (card#7211/card#7212): the card came out of a board-scoped SEARCH, so
+            // its own board is recorded beside the write that landed on it.
+            Log::info('kanban_dependabot_card: restamped name from the upstream retitle', ['card_id' => $cardId, 'repo' => $repo, 'pr' => $prNumber] + MappedBoardGuard::boardContext($card, $mapping));
+        }
+    }
+
+    /**
      * Fetch the correlated cards and keep only those on the mapped BOARD and belonging
      * to $repo, as an `id => card` map — the one place every write this handler makes
-     * (archive on closed-unmerged, the collapse's archive, the survivor's move) draws
-     * its card set from, which is why both gates live here rather than at each write.
+     * draws its card set from, which is why both gates live here rather than at each
+     * write. The class docblock's lifecycle list owns WHICH writes those are; an
+     * enumeration here would be a second copy of it, and was already one arm short.
      *
      * The BOARD gate (DL-298, card#7211) re-tests the row kanban actually handed back
      * against the mapped board, through the same `MappedBoardGuard` the token-path
