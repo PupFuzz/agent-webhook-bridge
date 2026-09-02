@@ -31,7 +31,10 @@ namespace App\Bridge\Writeback;
  * would not have surfaced. `CardCollapse::toSurvivor()`'s duplicate-archive is the one
  * write still outside it, deliberately — it retires a bridge-minted create-race twin rather
  * than acting on a card's lifecycle, and it is shared with a caller outside the mapped-board
- * regime; DL-335 recorded that rather than widening the predicate into it.
+ * regime; DL-335 recorded that rather than widening the predicate into it. ⚠ Its live
+ * consequence, so the exclusion is not read as harmless: on a duplicated repo+PR the
+ * collapse runs BEFORE the dependabot move consult, so a pinned DUPLICATE twin is
+ * archived even though the survivor's move is refused.
  */
 final class PinGuard
 {
