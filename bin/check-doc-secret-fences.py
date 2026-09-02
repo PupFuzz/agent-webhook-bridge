@@ -206,6 +206,43 @@ WHERE A RULE'S OWN LIST DECIDES THE VERDICT:
     read only where a rule already asks whether a path is a secret store. Narrowing
     the marker to the dotfile or its basename would change what CI accepts and
     belongs to its own ruling; until then the waiver answers this arm.
+  · BOUND(source-checkout) — ⚠ FALSE POSITIVE, and it is the price of
+    `agent-webhook-bridge/` being a SUBSTRING: the matched surface is ANY path whose
+    text contains that segment, and this project's own SOURCE CHECKOUT is spelled the
+    same way as the per-agent config store under `~/.config/`. ⚠ THE MATCH IS
+    UNANCHORED ON THE LEFT, so the trailing separator does not make this a path
+    SEGMENT: it pins the SUFFIX direction only — `~/agent-webhook-bridge-dev/` does
+    not match — while anything ENDING in the segment does, and
+    `cat ~/dev-agent-webhook-bridge/README.md`,
+    `cat /var/www/prod-agent-webhook-bridge/README.md` and the lowercased
+    `AGENT-WEBHOOK-BRIDGE/` all red today. Each of those IS a checkout, so they sit
+    inside this bound rather than beside it. Measured red under a
+    reader today: `cat ~/agent-webhook-bridge/README.md`, and — the shape a runbook is
+    actually likely to grow — `tail -f
+    /var/www/agent-webhook-bridge/storage/logs/laravel.log`: ordinary files in a
+    deployment, holding no secret, reported as a secret store. A URL is NOT this
+    arm: `curl …/PupFuzz/agent-webhook-bridge/dev/bin/x.py`, `git clone ….git` and
+    `cd ~/agent-webhook-bridge/` are all green, because the marker is consulted at a
+    READER's operand and nowhere else. POSITION is what decides, not the
+    spelling: `php /path/to/agent-webhook-bridge/artisan bridge:inbox` — the
+    invocation shape `docs/consumer-guide.md` and `docs/multi-host.md` carry, in a
+    `json` and an un-tagged fence this tool does not read as shell — is green even
+    placed in a `bash` fence, because `php` is not a READING_COMMANDS member and the
+    marker is read only where a rule already asks whether a path is a secret store.
+    Narrowing the marker to `.config/agent-webhook-bridge/` would separate the store
+    from the checkout, but it changes what CI ACCEPTS and belongs to its own ruling;
+    until then the waiver answers this arm. ⛔ NOT PINNED, AND THIS LINE IS THE ONLY
+    PLACE THAT SAYS SO: the false-positive marker opening this bullet is itself
+    unchecked — and it is named here in words on purpose, because a second literal
+    copy of it in this paragraph would keep the bound classified loud after the real
+    one was deleted, defeating the very check this line asks for.
+    `test_a_bound_declares_a_payload_in_every_DIRECTION_its_prose_names`
+    asserts loud ⇒ some payload reds, and silent ⇒ some payload is green; it never
+    asserts the converse, so deleting that marker from any loud bound that also
+    declares a green payload leaves the suite GREEN — measured on this bound. The
+    converse needs `Payload` to distinguish a bound's OWN arm from the RED TWIN every
+    silent bound declares as its control, which is a change to the payload schema
+    rather than a line, and it is why this is disclosed here instead of fixed.
   · BOUND(tee-outside-a-pipeline) — ⚠ FALSE POSITIVE, and the message is the false
     part. `tee <secret store>` on its own, outside a secret-carrying pipeline,
     renders the READER message — "puts the contents of … on stdout" — and `tee`
@@ -290,16 +327,44 @@ PATHY_TAIL_WORDS = {
 
 #: Substrings that identify a secret store on their own — nothing else is spelled
 #: like this. `.env` is here on an operator ruling (card#8351, DL-324): this
-#: repo's `CLAUDE.md` §3 puts the DB password in the Laravel `.env`. A secret-store
-#: marker is read by THREE rules, so this one widened three arms, not one — a reader
-#: on the file (`cat .env`, `stdout`), a captured read in an argument
-#: (`curl -H "… $(cat .env)"`, `argv`), and a command-line LITERAL written into it
-#: (`echo "DB_PASSWORD=…" >> .env`, `history`) — every one green before it. It is
-#: the one member whose SUBSTRING has a shipped near-spelling — `.env.example`, the
-#: template — and that cost is disclosed at BOUND(env-template).
+#: repo's `CLAUDE.md` §3 puts the DB password in the Laravel `.env`.
+#: `agent-webhook-bridge/` is here on the same card's later ruling, and it is the
+#: path of the per-agent config store — `<agent>.yml` under
+#: `~/.config/agent-webhook-bridge/`, holding the kanban API token and the webhook
+#: secret paths (`CLAUDE_CONVENTIONS.md` § Never commit secrets).
+#: ⛔ MEMBERSHIP WIDENS AN ARM SET, NOT ONE ARM — AND THE SET IS NOT WRITTEN DOWN
+#: HERE. A hand-written list of the arms went stale in two consecutive rulings: the
+#: `.env` one said ONE arm, the correction said THREE, and both were short, because
+#: a marker also reaches the `log` rule — `_secret_files_on_stdout` sets
+#: `pipeline_carries_secret`, which is that rule's own gate. Nothing that SAID
+#: "three" could red when it stopped being true. So the set is DERIVED from this
+#: file's own `RULE_IDS` by `TheArmSetAMemberWidensIsDERIVEDNotCounted` in
+#: `bin/test_check_doc_secret_fences.py` — one fixture per rule id, run with the
+#: member installed and removed, over every member below AND over one that does not
+#: exist yet, which is the claim these sentences are actually making. Read the arms
+#: there: a count here would be one more copy of the thing that was wrong.
+#: ⚠ THE RULES A PATH MEMBER CANNOT REACH ARE DISPOSED ON A BODY THAT CARRIES NO
+#: TRIGGER OF THEIR OWN, and that qualifier is the whole content of the disposal: a
+#: fixture reddening under its own rule with the member removed puts the rule on both
+#: sides of the subtraction, so the delta is zero however far this program widens.
+#: `probe` and `waiver-no-reason` were disposed that way in the first draft of the
+#: derivation and a widening of the `probe` rule left the suite green.
+#: ⚠ IT IS THE STORE'S PATH TEXT AND
+#: DELIBERATELY NOT A BARE `.yml`: a `.yml` marker reds
+#: `cat .github/workflows/<any>.yml`, a
+#: `docker-compose.yml` and the SHIPPED `examples/sample-config/agent.yml.example`,
+#: none of which is a store — measured equal-cost on the population reachable today
+#: (0 findings either way) and very unequal on the one that has not been written yet.
+#: EVERY member is matched as a plain SUBSTRING, anchored at neither end — the
+#: trailing separator on `agent-webhook-bridge/` pins the SUFFIX direction only, and
+#: a directory whose name ENDS in the segment matches (BOUND(source-checkout)).
+#: TWO members have a SUBSTRING with a shipped near-spelling, and each cost is
+#: DISCLOSED rather than narrowed: `.env` matches the template `.env.example`
+#: (BOUND(env-template)), and `agent-webhook-bridge/` matches this project's own
+#: SOURCE CHECKOUT (BOUND(source-checkout)).
 SECRET_PATH_MARKERS = (
     'webhook-secret-scope', 'writeback-token', 'id_rsa', 'id_ed25519', '.pem', '.p12',
-    '.env',
+    '.env', 'agent-webhook-bridge/',
 )
 
 #: Substrings that identify a secret store only in something that is actually a
