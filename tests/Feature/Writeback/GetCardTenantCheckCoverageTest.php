@@ -10,9 +10,10 @@ use Tests\TestCase;
 /**
  * THE STRUCTURAL ENFORCER FOR THE PRE-READ TENANT CHECK (card#8440, DL-330).
  *
- * `KanbanClient::getCard()` is the only per-id read the client exposes, and it NAMES NO
- * BOARD: `GET /tasks/{id}.json` against a kanban id space that is GLOBAL across every board
- * on the instance. So whether a call site is safe is a property of WHERE ITS ID CAME FROM,
+ * `KanbanClient::getCard()` is the only per-id read the client exposes THAT NAMES NO BOARD
+ * (`cardRowsOnBoard()` is per-id too, and is the board-scoped lookup the guard uses):
+ * `GET /tasks/{id}.json` against a kanban id space that is GLOBAL across every board on the
+ * instance. So whether a call site is safe is a property of WHERE ITS ID CAME FROM,
  * and there are exactly two ways to establish that:
  *
  *   1. **The id was resolved by a board-scoped read** — `cardsByTag`, `cardRowsByTag`,
@@ -45,12 +46,13 @@ use Tests\TestCase;
  * the first one's declaration.
  *
  * ⭐ THE TWO ARMS ARE NOT EQUALLY CHECKABLE, AND THE DIFFERENCE IS STATED RATHER THAN BLURRED:
- *  - The GUARDED arm is VERIFIED. {@see ID_GUARDED_BY_PRE_READ_CHECK} is not taken on its
- *    word — the scanner requires an HONOURED `MappedBoardGuard::refusesCardIdOutsideMappedBoard()`
- *    earlier in the same function body, where *honoured* means inside an `if` whose body
- *    exits at its TOP LEVEL (`return`/`throw`/`continue`/`break` — see {@see EXITS}). A
- *    guard whose result is dropped on the floor is a guard that does nothing, and it would
- *    otherwise read exactly like a guard that works.
+ *  - The GUARDED arm is VERIFIED FOR CONTROL FLOW. {@see ID_GUARDED_BY_PRE_READ_CHECK} is
+ *    not taken on its word — the scanner requires an HONOURED
+ *    `MappedBoardGuard::refusesCardIdOutsideMappedBoard()` earlier in the same function body,
+ *    where *honoured* means inside an `if` whose body exits at its TOP LEVEL
+ *    (`return`/`throw`/`continue`/`break` — see {@see EXITS}). A guard whose result is
+ *    dropped on the floor is a guard that does nothing, and it would otherwise read exactly
+ *    like a guard that works. ID CORRESPONDENCE IS NOT CHECKED — see the bounds.
  *  - The BOARD-SCOPED arm is DECLARED. {@see ID_RESOLVED_BOARD_SCOPED} carries, per entry,
  *    the read that produced the id; establishing that by machine is a dataflow question this
  *    class does not answer. What IS machine-checked is the PARTITION: a site declared
@@ -70,6 +72,16 @@ use Tests\TestCase;
  *  - **Control flow BETWEEN the guard and the read is not modelled.** The guard must precede
  *    the read textually in the same function body; a read reachable AROUND an honoured guard
  *    (a second path into the same body, a `goto`) is not caught here.
+ *  - **Id correspondence between the guard and the read is NOT checked.** The guarded arm
+ *    verifies that an honoured guard precedes the read, not that the guard was asked about
+ *    the SAME id the read then resolves: a guard on `$other` followed by `getCard($attacker)`
+ *    is green here. Both shipped arms guard and read one `$cardId`; the reviewer of a new
+ *    guarded entry owns reading that the two ids are the same variable.
+ *  - **A call outside any named function is keyed `<file>::(file scope)#n`, never skipped.**
+ *    A top-level closure or a bare statement in a file has no enclosing method to attribute
+ *    to, and an unattributable read must surface as an UNDECLARED site rather than fall out
+ *    of the population — the one shape that failed open in the first draft, found by a
+ *    review control.
  *  - **The population is `app/` only, and it assumes `getCard` names the client's method.**
  *    Both are pinned below rather than assumed: a second `getCard` declaration anywhere in
  *    `app/` reds, because every `->getCard(` would then be ambiguous.
@@ -87,6 +99,14 @@ class GetCardTenantCheckCoverageTest extends TestCase
 
     /** The by-id read whose call sites are the population. */
     private const READ_METHOD = 'getCard';
+
+    /**
+     * The "enclosing function" of a call that has none — a top-level closure, a bare
+     * statement. It is a KEY, not a skip: a read the scanner cannot attribute to a method
+     * must land in the population as an undeclared site. Skipping it was the one shape in
+     * the first draft that failed OPEN, where every other unrecognised shape fails closed.
+     */
+    private const FILE_SCOPE = '(file scope)';
 
     /**
      * What makes a refusal HONOURED: the token kinds that leave the read unreached.
@@ -149,9 +169,10 @@ class GetCardTenantCheckCoverageTest extends TestCase
      * token grammar — and which therefore establish the id on the mapped board BEFORE
      * reading it.
      *
-     * Every entry here is VERIFIED, not declared: the scanner requires an honoured
-     * `MappedBoardGuard::refusesCardIdOutsideMappedBoard()` earlier in the same function
-     * body. The value records which card landed the arm, so a deletion is legible as a
+     * Every entry here is VERIFIED FOR CONTROL FLOW, not merely declared: the scanner
+     * requires an honoured `MappedBoardGuard::refusesCardIdOutsideMappedBoard()` earlier in
+     * the same function body. It does NOT check that the guard and the read name the same id
+     * (class docblock, bounds) — that is the reviewer's to read on each entry. The value records which card landed the arm, so a deletion is legible as a
      * reversal of a specific decision.
      *
      * @var array<string, string>
@@ -182,7 +203,7 @@ class GetCardTenantCheckCoverageTest extends TestCase
             .'`ID_RESOLVED_BOARD_SCOPED` if the id came out of a board-scoped read (name that read in the '
             .'value), or `ID_GUARDED_BY_PRE_READ_CHECK` if the id comes from author-controlled text, in '
             .'which case call `'.self::GUARD_CLASS.'::'.self::PRE_READ_CHECK.'()` first and the entry is '
-            .'then VERIFIED rather than taken (card#8440, DL-323/DL-330). An entry with no call site is the '
+            .'then VERIFIED FOR CONTROL FLOW rather than taken (card#8440, DL-323/DL-330). An entry with no call site is the '
             .'other direction of the same red: a stale exemption outlives the code it exempted — delete it.',
         );
     }
@@ -217,7 +238,7 @@ class GetCardTenantCheckCoverageTest extends TestCase
                 "`{$site}` is declared as board-scoped by its id resolution ({$producer}), but it now also "
                 .'carries an honoured '.self::GUARD_CLASS.'::'.self::PRE_READ_CHECK.'(). That is a stronger '
                 .'position, not a weaker one — move the entry to `ID_GUARDED_BY_PRE_READ_CHECK`, where the '
-                .'claim is machine-verified instead of taken on its word.',
+                .'control-flow claim is machine-verified instead of taken on its word.',
             );
         }
     }
@@ -287,6 +308,8 @@ class GetCardTenantCheckCoverageTest extends TestCase
         // known: the two `getCard` mentions in comments, the string literal and the
         // declaration itself are out, the three real calls are in, and the SECOND call in a
         // method gets its own ordinal rather than inheriting the first one's declaration.
+        // The top-level closure after the class has no enclosing method and must still land
+        // in the population, keyed to the file scope — the shape that failed open once.
         $source = <<<'PHP'
         <?php
         class Fixture
@@ -310,6 +333,10 @@ class GetCardTenantCheckCoverageTest extends TestCase
                 $d = $client?->getCard($id);
             }
         }
+
+        $loose = function ($client, $id) {
+            return $client->getCard($id);
+        };
         PHP;
 
         $this->assertSame(
@@ -317,6 +344,7 @@ class GetCardTenantCheckCoverageTest extends TestCase
                 'Fixture.php::reads#1' => false,
                 'Fixture.php::reads#2' => false,
                 'Fixture.php::readsOnce#1' => false,
+                'Fixture.php::(file scope)#1' => false,
             ],
             self::callSites($source, 'Fixture.php'),
         );
@@ -480,20 +508,54 @@ class GetCardTenantCheckCoverageTest extends TestCase
     {
         $tokens = self::significantTokens($source);
         $sites = [];
-        $function = null;
-        $ordinal = 0;
+        $function = self::FILE_SCOPE;
+        $ordinals = [];
         $guarded = false;
+        $depth = 0;
+        $awaitingBody = false;
+        $bodyDepth = null;
 
         foreach ($tokens as $i => $token) {
+            // Brace tracking is what returns the scope to the FILE once a named body
+            // closes. Without it the last method in a file owns everything after it, and a
+            // trailing closure's read is attributed to a method it is not in — the
+            // misattribution the fixture control below pins.
+            if ($token[1] === '{') {
+                $depth++;
+                if ($awaitingBody) {
+                    $bodyDepth = $depth;
+                    $awaitingBody = false;
+                }
+
+                continue;
+            }
+            if ($token[1] === '}') {
+                $depth--;
+                if ($bodyDepth !== null && $depth < $bodyDepth) {
+                    $function = self::FILE_SCOPE;
+                    $guarded = false;
+                    $bodyDepth = null;
+                }
+
+                continue;
+            }
+            if ($token[1] === ';' && $awaitingBody) {
+                // An abstract or interface declaration has no body to enter.
+                $awaitingBody = false;
+
+                continue;
+            }
+
             if ($token[0] === T_FUNCTION) {
                 // A named declaration opens a new body; an anonymous `function (` or an
                 // arrow `fn (` does not, so a closure's calls stay attributed to the method
-                // that contains it — which is the body a reviewer reads.
+                // that contains it — which is the body a reviewer reads — or, outside any
+                // method, to the file scope.
                 $next = $tokens[$i + 1] ?? null;
                 if ($next !== null && $next[0] === T_STRING) {
                     $function = $next[1];
-                    $ordinal = 0;
                     $guarded = false;
+                    $awaitingBody = true;
                 }
 
                 continue;
@@ -517,11 +579,12 @@ class GetCardTenantCheckCoverageTest extends TestCase
             $isCall = ($arrow === T_OBJECT_OPERATOR || $arrow === T_NULLSAFE_OBJECT_OPERATOR)
                 && ($tokens[$i + 1][1] ?? null) === '(';
 
-            if (! $isCall || $function === null) {
+            if (! $isCall) {
                 continue;
             }
 
-            $sites[$file.'::'.$function.'#'.(++$ordinal)] = $guarded;
+            $ordinals[$function] = ($ordinals[$function] ?? 0) + 1;
+            $sites[$file.'::'.$function.'#'.$ordinals[$function]] = $guarded;
         }
 
         return $sites;
