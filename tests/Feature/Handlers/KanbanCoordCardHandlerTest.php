@@ -10,6 +10,7 @@ use App\Bridge\Handlers\KanbanCoordCardHandler;
 use App\Bridge\Support\AgentConfig;
 use App\Bridge\Support\HandlerRegistry;
 use Closure;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\File;
@@ -21,6 +22,15 @@ use Tests\TestCase;
 
 class KanbanCoordCardHandlerTest extends TestCase
 {
+    // The DL-341 retitle arm is the first leg in this class that can make
+    // `MappedBoardGuard::refuses()` PERSIST a `writeback_board_divergences` row (DL-300):
+    // its card set comes from a live tag search whose rows a test can point at another
+    // board. A committed row on the mysql leg outlives the class and is read by every
+    // later test in the run — `TestCase`'s isolation guard fails the class by name for
+    // exactly that, and SQLite `:memory:` never reproduces it (CLAUDE_TESTING.md
+    // § Isolation).
+    use RefreshDatabase;
+
     private string $dir;
 
     protected function setUp(): void
