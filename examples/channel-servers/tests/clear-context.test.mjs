@@ -123,6 +123,9 @@ test('clear_context is ABSENT from tools/list when $STY is unset', async (t) => 
   const names = tools.map((x) => x.name);
   assert.ok(!names.includes('clear_context'), `clear_context must be absent, got ${JSON.stringify(names)}`);
   assert.ok(names.includes('board_my_cards'), 'board tools stay advertised — the gates are orthogonal');
+  // The whole board family stays advertised, not just the first member of it: a gate
+  // that withheld one write tool would read as "board tools are on" from the line above.
+  assert.ok(names.includes('board_correct_card'), 'every board tool stays advertised — the gates are orthogonal');
 });
 
 // Orthogonality the other way: clear_context is advertised even with board tools OFF.
