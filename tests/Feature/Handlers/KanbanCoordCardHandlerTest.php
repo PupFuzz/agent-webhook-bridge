@@ -1192,4 +1192,69 @@ class KanbanCoordCardHandlerTest extends TestCase
         Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'not `changes.title.from`; not restamped')
             && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
     }
+
+    // =====================================================================
+    // card#8557 — the DL-178 hold reaches the NAME write
+    // =====================================================================
+
+    /**
+     * ⭐ THE REFUSAL SEEN TO FIRE, which is the acceptance criterion the ruling shipped with:
+     * a NAME write to a pinned card must fail LOUDLY, never silently no-op, or the next
+     * reader inherits exactly the defect the card was filed for. So this asserts the ALERT
+     * and the warning as well as the absent PATCH.
+     *
+     * ⭐ ITS CONTROL IS {@see test_a_retitle_restamps_a_card_whose_name_is_still_the_one_the_bridge_stamped}
+     * — same event, same card, same tag, same name-ownership test passed, no pin, PATCH sent.
+     * Without it a green here could be a fixture that never reached the write at all.
+     */
+    public function test_a_pinned_card_is_not_restamped_and_the_refusal_is_loud(): void
+    {
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [[
+                'id' => 7, 'board_id' => 8, 'name' => '[QUERY] can we ship?',
+                'workflow_stage_id' => 21, 'tags' => ['id:QUERY-4', 'type:query'],
+                'block_reason' => 'parked pending a decision',
+            ]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7]]),
+        ]);
+        Log::spy();
+
+        $this->handleRename('[QUERY] can we ship?', '[QUERY] can we ship it THIS week?');
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'pinned_no_automove'
+            && $r['repo'] === 'org/coord'
+            && $r['outcome'] === 'coord_card_create'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 4);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'name restamp refused — card is pinned')
+            && $ctx['card_id'] === 7 && $ctx['issue'] === 4 && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8)->once();
+    }
+
+    /**
+     * The pin's OTHER spelling on the same leg — the tag, which is what an operator reaches
+     * for when the card carries no block text. The predicate is a disjunction and a test of
+     * one arm says nothing about the other.
+     */
+    public function test_a_card_tagged_no_automove_is_not_restamped_either(): void
+    {
+        // ⚠ NO `fakeTaggedCardNamed()` first: `Http::fake()` STACKS and the FIRST matching
+        // stub wins, so a helper call ahead of this one would serve the unpinned row and
+        // this test would pass by never reaching the guard.
+        Http::fake([
+            '*/tasks/search.json*' => Http::response(['data' => [[
+                'id' => 7, 'board_id' => 8, 'name' => '[QUERY] can we ship?',
+                'workflow_stage_id' => 21, 'tags' => ['id:QUERY-4', 'no-automove'],
+            ]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7]]),
+        ]);
+
+        $this->handleRename('[QUERY] can we ship?', '[QUERY] can we ship it THIS week?');
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+    }
 }

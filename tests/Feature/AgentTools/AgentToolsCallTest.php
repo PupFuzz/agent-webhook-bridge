@@ -2091,6 +2091,86 @@ class AgentToolsCallTest extends TestCase
         $this->assertSame(['name' => 'corrected'], $this->sentPatchBody());
     }
 
+    // ─── board_correct_card: a PINNED card refuses a `name` correction (card#8557) ─
+
+    /**
+     * ⭐ THE REFUSAL SEEN TO FIRE, and it is this door's half of the card#8557 ruling: a
+     * pinned card is immune to a STAGE move and to a NAME write. This tool was the third
+     * NAME producer and the one nobody had counted — its file carried no `PinGuard`
+     * reference at all — so shipping the ruling against the two-producer roster it was
+     * justified with would have left an operator a card that was frozen against the
+     * bridge's own restamps and rename-able by any seat that filed it.
+     *
+     * ⭐ ITS CONTROL IS {@see test_correct_writes_the_named_fields_on_a_card_this_agent_filed}
+     * — the same call, the same row, the same ownership stamp, no pin, PATCH sent.
+     */
+    public function test_a_name_correction_on_a_pinned_card_is_refused_by_name(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow(['block_reason' => 'parked pending a decision'])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'renamed anyway']]);
+
+        $res->assertStatus(422);
+        // LOUD, and by NAME: a silent 200 would leave the seat believing it renamed a card
+        // it did not — the same defect the foreign-argument refusal exists to prevent.
+        $this->assertStringContainsString('is PINNED', (string) $res->json('error'));
+        $this->assertStringContainsString('NOTHING WAS WRITTEN', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * The pin's OTHER spelling. `PinGuard`'s predicate is a disjunction, and the tag is the
+     * one a caller may itself supply — so a seat can pin its own card and then be refused
+     * the rename, which is the intended reading of a hold rather than an accident.
+     */
+    public function test_a_name_correction_is_refused_on_a_no_automove_tag_too(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow(['tags' => ['created-by:me', 'no-automove']])]));
+
+        $this->callTool(['tool' => 'board_correct_card', 'args' => ['card_id' => 42, 'name' => 'renamed anyway']])
+            ->assertStatus(422);
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
+    /**
+     * ⭐ THE OTHER HALF OF THE RULING, ON THE SAME PINNED ROW — and it is the half that says
+     * the pin was NARROWED rather than turned into a blanket field freeze. Freezing every
+     * field would stop the correlation stamps automation legitimately writes, which record
+     * what happened TO a card without restating what the card IS; `description` is the same
+     * kind of write from the seat's side. Without this leg the change would be
+     * indistinguishable from a freeze nobody ruled.
+     */
+    public function test_a_pinned_card_still_takes_a_description_correction(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow(['block_reason' => 'parked pending a decision'])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'description' => 'corrected body',
+        ]]);
+
+        $res->assertStatus(200)->assertJsonPath('result.fields', ['description']);
+        $this->assertSame(['description' => 'corrected body'], $this->sentPatchBody());
+    }
+
+    /**
+     * ⚠ A `name` SENT ALONGSIDE AN ALLOWED FIELD WRITES NEITHER, and the refusal says so.
+     * The correction is ONE `PATCH` and there is no half-applied form of it, so a tool that
+     * dropped the name and wrote the description would answer 200 for a change it did not
+     * make — the same silent-partial the foreign-argument refusal exists to prevent.
+     */
+    public function test_a_correction_carrying_a_name_beside_a_description_writes_neither(): void
+    {
+        Http::fake($this->correctFake(live: [$this->ownCardRow(['tags' => ['created-by:me', 'no-automove']])]));
+
+        $res = $this->callTool(['tool' => 'board_correct_card', 'args' => [
+            'card_id' => 42, 'name' => 'renamed anyway', 'description' => 'corrected body',
+        ]]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('not the `description` or `tags`', (string) $res->json('error'));
+        Http::assertNotSent(fn ($r) => $r->method() === 'PATCH');
+    }
+
     // ─── board_correct_card: the value bounds kanban's validator imposes (R1/C2) ─
 
     /**

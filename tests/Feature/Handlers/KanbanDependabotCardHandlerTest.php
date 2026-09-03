@@ -111,12 +111,22 @@ class KanbanDependabotCardHandlerTest extends TestCase
      * A correlated dependabot card on the mapped board carrying $name. `$boardId` is the
      * ROW's own spelling of its board — the accepted interval (DL-292) admits the numeric
      * string, which is what lets a card#7212 record be forced apart from the config value.
+     *
+     * ⛔ THE ROW CARRIES BOTH PIN FIELDS, DEFAULTED TO UNPINNED, and that is not decoration
+     * (card#8523 R2's lesson, reached here by card#8557). Since the restamp consults
+     * `PinGuard`, a row carrying NEITHER `block_reason` nor `tags` would make the predicate
+     * answer "not pinned" because nobody could READ the pin — every restamp test would then
+     * pass without exercising the guard at all, and each would emit a `pin_row_unreadable`
+     * warning about a fixture rather than about the code. Kanban emits both keys on every
+     * row it serves, so this is also the more faithful shape.
+     *
+     * @param  list<string>  $tags
      */
-    private function fakeCardNamed(string $name, int|string $boardId = 8): void
+    private function fakeCardNamed(string $name, int|string $boardId = 8, ?string $blockReason = null, array $tags = []): void
     {
         Http::fake([
             '*/tasks/search.json*' => Http::response(['data' => [['id' => 7, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42]]]]),
-            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => $boardId, 'name' => $name, 'workflow_stage_id' => 50, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => $boardId, 'name' => $name, 'workflow_stage_id' => 50, 'block_reason' => $blockReason, 'tags' => $tags, 'payload' => ['pr_number' => 42, 'pr_url' => 'https://github.com/owner/repo/pull/42']]]),
         ]);
     }
 
@@ -1109,5 +1119,50 @@ class KanbanDependabotCardHandlerTest extends TestCase
 
         Http::assertSent(fn (Request $r) => $r->method() === 'PATCH' && str_contains($r->url(), '/tasks/9.json')
             && ($r['_action'] ?? null) === 'archive');
+    }
+
+    // --- card#8557: the DL-178 hold reaches the DL-328 NAME write ---
+
+    /**
+     * ⭐ THE REFUSAL SEEN TO FIRE. DL-335 shipped with a disclosure that the restamp was
+     * outside the pin *by the rule as written*; card#8557 is the ruling that changed the
+     * rule, and its acceptance criterion is that the refusal is LOUD — a silent no-op would
+     * leave an operator believing a frozen card is frozen while nothing said otherwise.
+     *
+     * ⭐ ITS CONTROL IS {@see test_retitle_restamps_a_card_whose_name_is_still_the_one_the_bridge_stamped}
+     * — the same event, the same card, the same ownership test passed, no pin, PATCH sent.
+     */
+    public function test_a_pinned_card_is_not_restamped_and_the_refusal_is_loud(): void
+    {
+        $this->writeWritebackWithAlert();
+        Http::fake([self::ALERT_URL.'*' => Http::response(['ok' => true])]);
+        $this->fakeCardNamed('chore(deps): Bump x from 1 to 2', blockReason: 'parked pending a decision');
+        Log::spy();
+
+        $this->handleRename('chore(deps): Bump x from 1 to 2', 'chore(deps): Bump x from 1 to 3');
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'pinned_no_automove'
+            && $r['repo'] === 'owner/repo'
+            && $r['outcome'] === 'dependabot_card'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 42);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'name restamp refused — card is pinned')
+            && $ctx['card_id'] === 7 && $ctx['pr'] === 42 && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8)->once();
+    }
+
+    /**
+     * The pin's OTHER spelling on the same leg. The predicate is a disjunction, so a test of
+     * the `block_reason` arm says nothing about the tag.
+     */
+    public function test_a_card_tagged_no_automove_is_not_restamped_either(): void
+    {
+        $this->fakeCardNamed('chore(deps): Bump x from 1 to 2', tags: ['dependencies', 'no-automove']);
+
+        $this->handleRename('chore(deps): Bump x from 1 to 2', 'chore(deps): Bump x from 1 to 3');
+
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 }

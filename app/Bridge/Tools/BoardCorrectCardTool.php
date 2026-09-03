@@ -7,6 +7,7 @@ use App\Bridge\Exceptions\ToolRefusalException;
 use App\Bridge\Support\BoardToolsConfig;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\KanbanFieldLimits;
+use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\WritebackConfig;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Log;
@@ -90,6 +91,22 @@ use Illuminate\Support\Facades\Log;
  * the row: a config the bridge cannot parse means the hold vocabulary is UNKNOWN, and a
  * wholesale replace under an unknown hold vocabulary is exactly the deletion this
  * paragraph exists to stop — so a `tags` correction refuses there, naming the config.
+ *
+ * ⭐ A PINNED CARD REFUSES A `name` CORRECTION (card#8557). The DL-178 hold — a non-empty
+ * `block_reason` or a `no-automove` tag — governs a card's STAGE, its LIFECYCLE and, since
+ * that card, the fields {@see PinGuard::PINNED_FIELDS} names, and this door is one of the
+ * producers that writes one. The seat is told BY NAME and nothing is written; a silent
+ * no-op would leave it believing it renamed a card it did not, which is the same defect
+ * the foreign-argument refusal above exists to prevent, and the pin's whole point is that
+ * an operator returns to the card they froze. ⛔ IT IS SCOPED TO THE GOVERNED FIELDS, not to
+ * the call: `description` and `tags` corrections still land on a held card, because the
+ * ruling deliberately did not freeze every field (freezing them all would stop the
+ * correlation stamps automation legitimately writes). ⚠ A call that sends `name` ALONGSIDE
+ * them writes NOTHING — the PATCH is one request and there is no half-applied form of it —
+ * so the refusal says so rather than leaving the seat to infer which half landed. ⚠ Its
+ * REPORT is this tool's, not `PinGuard`'s: the writeback arms mint an `alert_channel` push
+ * keyed `(repo, outcome, reason)` and this door has neither a repo nor an outcome, so the
+ * refusal travels back down the call that asked, carrying {@see PinGuard::REASON} in the log.
  *
  * REFUSALS ARE DETERMINISTIC, WHICH IS WHY THE BOARD'S OWN 4xx ARE REPORTED AS ONE.
  * Every refusal here is a {@see ToolRefusalException} (422-class): a request that fails
@@ -176,6 +193,14 @@ final class BoardCorrectCardTool implements Tool
         $tagsWritten = $callerTags === null ? null : $this->tagsToWrite($row, $callerTags, $holdTags);
         if ($tagsWritten !== null) {
             $fields['tags'] = $tagsWritten;
+        }
+        if (PinGuard::isPinnedAgainst($row, $fields)) {
+            Log::warning('board_correct_card: refused — the card is PINNED and this correction writes a field the pin governs', [
+                'agent' => $agentName, 'card_id' => $cardId, 'board_id' => $boardId,
+                'fields' => array_keys($fields), 'reason' => PinGuard::REASON,
+            ]);
+
+            throw new ToolRefusalException("board_correct_card: card {$cardId} is PINNED — it carries a `block_reason` or a `no-automove` tag, which is how a human says this card is frozen, and a `name` correction is one of the writes that hold covers (the bridge's own automation is refused the same write on the same card). NOTHING WAS WRITTEN — not the name, and not the `description` or `tags` you may have sent with it. Ask whoever pinned it to lift the pin, or correct `description`/`tags` on their own without `name`.");
         }
 
         try {

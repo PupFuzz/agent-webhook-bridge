@@ -11,6 +11,7 @@ use App\Bridge\Writeback\CardCollapse;
 use App\Bridge\Writeback\CoordCardLanePlacement;
 use App\Bridge\Writeback\KanbanClient;
 use App\Bridge\Writeback\MappedBoardGuard;
+use App\Bridge\Writeback\PinGuard;
 use App\Bridge\Writeback\WritebackAlertNotifier;
 use App\Bridge\Writeback\WritebackClientFactory;
 use App\Bridge\Writeback\WritebackConfig;
@@ -40,17 +41,17 @@ use Illuminate\Support\Facades\Log;
  *    byte-identical to the title the bridge stamped ({@see restampNames} owns that test
  *    and why it is the only safe one). No card → nothing to restamp, and never a create.
  *
- * ⚠ NEITHER ARM CONSULTS `PinGuard` DIRECTLY, and one of them reaches it anyway —
- * state both, because "this handler does not consult the pin" reads as "no write this
- * handler makes is guarded" and that is false. The CREATE arm's post-create duplicate
- * collapse is guarded: {@see CardCollapse::toSurvivor} took the consult INTO the kernel
- * at DL-340 (card#8523), so a pinned raced twin is not archived on this path even though
- * no line here asks. DL-341's RESTAMP is genuinely unguarded and inherits the same
- * blindness DL-328's has: a PINNED card whose name the bridge still owns is restamped —
- * the pin's rulings cover a card's STAGE and its LIFECYCLE, and a `{name}`-only write is
- * neither. Read that as the roster the pin rulings cover, never as "every write on this
- * handler". Tracked with the rest of the pin-blind-writer class on card#8557 — the
- * successor that took the class over as PR #649 closed card#8523.
+ * ⚠ BOTH ARMS HONOUR THE PIN, AND THEY REACH IT BY DIFFERENT ROUTES — state both, because
+ * "this handler consults the pin" would hide that only one line here asks. The CREATE
+ * arm's post-create duplicate collapse is guarded one layer down:
+ * {@see CardCollapse::toSurvivor} took the consult INTO the kernel at DL-340 (card#8523),
+ * so a pinned raced twin is not archived on this path even though nothing here asks.
+ * DL-341's RESTAMP asks directly, since card#8557 ({@see PinGuard::refusesFieldWrite} in
+ * {@see restampNames}) — a `{name}` write with no human in the loop rewrites what the card
+ * IS under an operator who froze it, which is the reading that put NAME inside the rule
+ * beside a card's stage and lifecycle. ⛔ THAT IS THE WHOLE RULE, NOT A LICENCE TO READ IT
+ * WIDER: a field PATCH is refused only for the fields {@see PinGuard::PINNED_FIELDS} names,
+ * and the correlation stamps a card carries are deliberately outside it.
  *
  * THE CREATE ARM, in full. Correlation + idempotency key on the `id:<sid>` TAG (the
  * locked contract adoption key): if a card already carries it, skip — which covers
@@ -430,7 +431,23 @@ final class KanbanCoordCardHandler implements DurableReaction, Handler
 
                 continue;
             }
-            $client->patchCard($cardId, ['name' => $title]);
+            $fields = ['name' => $title];
+            // The DL-178 human hold, widened to a NAME write on card#8557. Taken here, per
+            // card, AFTER the ownership test above: a card whose name is not the one this
+            // bridge stamped has no write to refuse, and an alert there would report a
+            // permanent failure that did not happen. The hold reaches a `{name}` write
+            // because a restamp with no human in the loop rewrites what the card IS under
+            // an operator who froze it; the correlation stamps a card carries are outside
+            // the rule by the same reading — {@see PinGuard::PINNED_FIELDS} owns it.
+            if (PinGuard::refusesFieldWrite(
+                $this->alerts, $card, $fields, 'kanban_coord_card', 'name restamp', $cardId, $repo,
+                self::ALERT_OUTCOME,
+                ['issue' => $issueNumber, 'tag' => $tag] + MappedBoardGuard::boardContext($card, $mapping),
+                $issueNumber,
+            )) {
+                continue;
+            }
+            $client->patchCard($cardId, $fields);
             // Group-B (card#7211/card#7212): the card came out of a board-scoped SEARCH, so
             // its own board is recorded beside the write that landed on it.
             Log::info('kanban_coord_card: restamped name from the upstream retitle', ['card_id' => $cardId, 'repo' => $repo, 'issue' => $issueNumber, 'tag' => $tag] + MappedBoardGuard::boardContext($card, $mapping));

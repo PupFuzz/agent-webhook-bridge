@@ -52,7 +52,7 @@ use Illuminate\Support\Facades\Log;
  * on is live work, and dragging it back to the revive target is exactly the backward
  * regression DL-163 forbids. Relane reuses the same allow-list against the LANE the
  * card sits in, and additionally refuses any card not currently in a mapped lane —
- * see {@see relaneOne()} for the three gates.
+ * see {@see relaneOne()} for its four gates.
  *
  * A close is unconditional over `user_lanes` — ruled on #18: a human's priority PLACEMENT
  * yields to closure ("close→Done IS the terminal case, both movers agree"). ⛔ That is a
@@ -62,6 +62,15 @@ use Illuminate\Support\Facades\Log;
  * the write but the `move_coord_cards` opt-in. Since DL-340 the terminal leg consults
  * {@see PinGuard} — a human hold is not a lane preference, and the operator ruling on
  * card#8523 was that it outranks a close.
+ *
+ * ⭐ ALL THREE LEGS CONSULT THE PIN SINCE card#8557, and the two that were left out are
+ * worth naming because their exclusion was DELIBERATE and still wrong. `revive` and
+ * `relane` already refused any card whose current stage was not service-set, and that was
+ * read as covering the hold: it does not. Pinning is a field PATCH, so `last_stage_move`
+ * stays service-set and a card pinned AFTER the bridge parked it walked through both legs
+ * — an operator told the card was frozen, watching a reopen or a label edit move it. The
+ * widening changes what the system refuses and was taken to the operator under card#8523's
+ * gate rather than settled here.
  *
  * DURABLE, with the writeback's standard transient(5xx → retry) / permanent(4xx → alert
  * + log + no-op) split (DL-020/DL-285). Idempotent under at-least-once redelivery: a card
@@ -302,6 +311,20 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
 
             return;
         }
+        // The DL-178 human hold (card#8557), taken LAST — after the two gates above, both
+        // of which end in no write at all. A card this leg was never going to move has
+        // nothing to refuse, and alerting there would report a permanent failure that did
+        // not happen; it is the same placement the terminal leg takes for the same reason.
+        // ⚠ It is NOT redundant beside `serviceSet()`: that gate asks who made the card's
+        // LAST STAGE MOVE, and pinning is a field PATCH, so a card an operator pins after
+        // the bridge parked it stays service-set and reaches here every time.
+        if (PinGuard::refuses(
+            $this->alerts, $card, 'kanban_coord_card_move', 'revive', $id, $repo, self::ALERT_OUTCOME,
+            ['issue' => $issueNumber, 'sid' => $sid] + MappedBoardGuard::boardContext($card, $mapping),
+            $issueNumber,
+        )) {
+            return;
+        }
         $this->warnUnmappedLanes($placement, $mapping, $id, $repo, $issueNumber);
         $client->moveCard($id, $placement['stage']);
         Log::info('kanban_coord_card_move: revived', ['card_id' => $id, 'stage' => $placement['stage'], 'lane' => $placement['lane'], 'sid' => $sid, 'issue' => $issueNumber] + MappedBoardGuard::boardContext($card, $mapping));
@@ -313,7 +336,7 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
      * consumer's lane→label writeback stops converging the new label back to the lane
      * the card was created in.
      *
-     * THREE gates, each closing a way this leg could become a third mover fighting the
+     * FOUR gates, each closing a way this leg could become a third mover fighting the
      * other two:
      *   1. the answer must be LANE-DERIVED (`lane` non-null) — no lane map configured, or
      *      a non-`[TASK]` issue the lane model does not govern, and there is no lane to
@@ -327,7 +350,12 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
      *      current stage must be SERVICE-set. A human who dragged this card to a lane
      *      expressed a placement, and overriding it from a label would re-mint card#6393's
      *      own defect pointing the other way: instead of the writeback overwriting a
-     *      label, the label would overwrite a board move.
+     *      label, the label would overwrite a board move;
+     *   4. the DL-178 human hold (card#8557). It is NOT gate 3 restated: gate 3 asks who
+     *      made the card's LAST STAGE MOVE, and a pin is a field PATCH, so a card pinned
+     *      after the bridge laned it is still service-set and reaches the write. Taken
+     *      last, where the write is, so a card the gates above already left alone raises
+     *      no alert.
      *
      * @param  array<string, mixed>  $card  as returned by {@see KanbanClient::getCard()}
      * @param  array{stage: int, lane: ?string, unmapped: list<string>}  $placement
@@ -362,6 +390,16 @@ final class KanbanCoordCardMoveHandler implements DurableReaction, Handler
             $lastMove = is_array($card['last_stage_move'] ?? null) ? $card['last_stage_move'] : [];
             Log::info('kanban_coord_card_move: lane was not service-set; refusing to re-lane', ['card_id' => $id, 'actor_type' => $lastMove['actor_type'] ?? null, 'sid' => $sid, 'issue' => $issueNumber]);
 
+            return;
+        }
+        // The DL-178 human hold (card#8557) — gate 4, and last for the reason the revive
+        // leg's twin states: every gate above it ends in no write, so this is the first
+        // point at which there is a refusal to report.
+        if (PinGuard::refuses(
+            $this->alerts, $card, 'kanban_coord_card_move', 're-lane', $id, $repo, self::ALERT_OUTCOME,
+            ['issue' => $issueNumber, 'sid' => $sid] + MappedBoardGuard::boardContext($card, $mapping),
+            $issueNumber,
+        )) {
             return;
         }
         $this->warnUnmappedLanes($placement, $mapping, $id, $repo, $issueNumber);

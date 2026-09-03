@@ -67,14 +67,18 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
     /**
      * The default mapping WITH an alert channel. This handler had no notifier wiring of
      * any kind before card#5968, so none of its refusal arms could signal.
+     *
+     * @param  array<string, mixed>  $overrides  merged over the default mapping — the lane
+     *                                           legs need `coord_card_lane_stage_ids` and an
+     *                                           alert channel at once
      */
-    private function writeMappingWithAlert(): void
+    private function writeMappingWithAlert(array $overrides = []): void
     {
         File::put($this->dir.'/writeback.json', (string) json_encode([
             'identity_id' => 4242,
             'alert_channel' => ['url' => self::ALERT_URL],
-            'mappings' => ['org/coord' => ['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
-                'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99]],
+            'mappings' => ['org/coord' => array_merge(['board_id' => 8, 'stages' => ['opened' => 50], 'move_coord_cards' => true,
+                'coord_card_stage_id' => 21, 'coord_card_terminal_stage_id' => 99], $overrides)],
         ]));
     }
 
@@ -1120,6 +1124,133 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
         ]);
 
         $this->handle(['disposition' => 'terminal']);
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
+        $this->assertNoMove();
+        Http::assertNotSent(fn (Request $r) => $this->isAlertPush($r));
+    }
+
+    // =====================================================================
+    // card#8557 — the pin reaches the two LANE-writing legs
+    // =====================================================================
+    //
+    // ⛔ WHY THESE LEGS NEEDED ANYTHING AT ALL, since both already refuse a card whose
+    // stage was not SERVICE-set. That gate asks who made the card's LAST STAGE MOVE, and
+    // pinning is a field PATCH — so a card the BRIDGE parked and an operator then pinned
+    // is still service-set, walks every gate, and moves. Both fixtures below are exactly
+    // that shape (`actor_type: service` AND a pin), which is what makes them reachable
+    // rather than hypothetical, and it is why the fixture keeps the service actor instead
+    // of relying on the pin alone to stop the write.
+
+    /**
+     * ⭐ THE REFUSAL SEEN TO FIRE on the revive leg. Its control is
+     * {@see test_revive_returns_a_service_set_terminal_card_to_the_create_stage} — same
+     * card, same disposition, same service-set terminal, no pin, PATCH sent.
+     */
+    public function test_revive_does_not_return_a_pinned_card_and_the_refusal_is_loud(): void
+    {
+        $this->writeMappingWithAlert();
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 99,
+                'block_reason' => 'parked pending a decision', 'tags' => [],
+                'last_stage_move' => ['to_stage_id' => 99, 'actor_type' => 'service', 'actor_id' => 3]]]),
+        ]);
+        Log::spy();
+
+        $this->handle(['disposition' => 'revive']);
+
+        $this->assertNoMove();
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'pinned_no_automove'
+            && $r['repo'] === 'org/coord'
+            && $r['outcome'] === 'coord_card_move'
+            && $r['card_id'] === 7
+            && $r['issue_number'] === 4);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 'revive refused — card is pinned')
+            && $ctx['card_id'] === 7 && $ctx['issue'] === 4 && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8)->once();
+    }
+
+    /** The pin's other spelling on the revive leg — the predicate is a disjunction. */
+    public function test_revive_leaves_a_card_tagged_no_automove(): void
+    {
+        $this->fakeBoard(['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 99, 'tags' => ['no-automove'],
+            'last_stage_move' => ['to_stage_id' => 99, 'actor_type' => 'service', 'actor_id' => 3]]);
+
+        $this->handle(['disposition' => 'revive']);
+
+        $this->assertNoMove();
+    }
+
+    /**
+     * ⭐ THE REFUSAL SEEN TO FIRE on the relane leg. Its control is
+     * {@see test_relane_moves_a_task_to_the_lane_its_new_label_declares} — same card in the
+     * same mapped lane, same label, no pin, PATCH sent.
+     */
+    public function test_relane_does_not_move_a_pinned_card_and_the_refusal_is_loud(): void
+    {
+        $this->writeMappingWithAlert(['create_coord_cards' => true,
+            'coord_card_lane_stage_ids' => ['now' => 40, 'next' => 41, 'later' => 42, 'maybe' => 43]]);
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 42,
+                'block_reason' => 'parked pending a decision', 'tags' => [],
+                'last_stage_move' => ['to_stage_id' => 42, 'actor_type' => 'service', 'actor_id' => 3]]]),
+        ]);
+        Log::spy();
+
+        $this->handleTask(['disposition' => 'relane', 'labels' => ['stage:now']]);
+
+        $this->assertNoMove();
+        Http::assertSent(fn (Request $r) => $this->isAlertPush($r)
+            && $r['type'] === 'writeback_move_failed'
+            && $r['reason'] === 'pinned_no_automove'
+            && $r['outcome'] === 'coord_card_move'
+            && $r['card_id'] === 7);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $m, array $ctx) => str_contains($m, 're-lane refused — card is pinned')
+            && $ctx['card_id'] === 7 && $ctx['issue'] === 4)->once();
+    }
+
+    /** The pin's other spelling on the relane leg. */
+    public function test_relane_leaves_a_card_tagged_no_automove(): void
+    {
+        $this->writeLaneMapping();
+        $this->fakeBoard(['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 42, 'tags' => ['no-automove'],
+            'last_stage_move' => ['to_stage_id' => 42, 'actor_type' => 'service', 'actor_id' => 3]]);
+
+        $this->handleTask(['disposition' => 'relane', 'labels' => ['stage:now']]);
+
+        $this->assertNoMove();
+    }
+
+    /**
+     * THE BOUND, and the reason both consults sit LAST — after every gate that ends in no
+     * write. A pinned card the relane gates were never going to move has no write to
+     * refuse, and an alert there would report a permanent failure that did not happen. The
+     * fixture is a pinned card in the TERMINAL, which gate 2 (must be in a mapped lane)
+     * already refuses.
+     *
+     * ⭐ THE `GET` IS A PRESENCE WITNESS, NOT DECORATION: every other assertion here is an
+     * absence, and an absence-only test certifies whatever replaces the behaviour. The card
+     * read is the first thing `moveOne()` does, so requiring it pins that the run got INTO
+     * the code under test.
+     */
+    public function test_a_pinned_card_the_lane_gates_already_refuse_raises_no_alert(): void
+    {
+        $this->writeMappingWithAlert(['create_coord_cards' => true,
+            'coord_card_lane_stage_ids' => ['now' => 40, 'next' => 41, 'later' => 42, 'maybe' => 43]]);
+        Http::fake([
+            self::ALERT_URL.'*' => Http::response(['ok' => true]),
+            '*/tasks/search.json*' => Http::response(['data' => [['id' => 7]]]),
+            '*/tasks/7.json' => Http::response(['data' => ['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 99,
+                'tags' => ['no-automove'],
+                'last_stage_move' => ['to_stage_id' => 99, 'actor_type' => 'service', 'actor_id' => 3]]]),
+        ]);
+
+        $this->handleTask(['disposition' => 'relane', 'labels' => ['stage:now']]);
 
         Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
         $this->assertNoMove();
