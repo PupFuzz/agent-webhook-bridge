@@ -269,7 +269,13 @@ const TOOL_DEFINITIONS = [
       '"drop my tags" and an empty description clears the body. Column moves, ' +
       'correlation refs (dl/pr/issue), external ids, card type and block_reason ' +
       'are NOT correctable here — each is refused by name with the authority that ' +
-      'owns it. Your tag list replaces only YOUR OWN tags: because kanban replaces ' +
+      'owns it. A PINNED card also refuses a name correction: a non-empty ' +
+      'block_reason or a no-automove tag is a human freezing the card, and the ' +
+      "bridge's own automation is refused the same write on the same card. " +
+      'Because the correction is ONE patch with no half-applied form, a call ' +
+      'sending name BESIDE description or tags then writes NEITHER — send those ' +
+      'on their own, or ask whoever pinned it to lift the hold. ' +
+      'Your tag list replaces only YOUR OWN tags: because kanban replaces ' +
       'the tag list wholesale, the bridge re-sends every tag on the card that is ' +
       "somebody else's — the ones you may not supply (created-by:, idem:, id:, " +
       'type:, triaged) AND the holds anyone may set but nobody else may drop ' +

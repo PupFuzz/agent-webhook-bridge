@@ -1239,6 +1239,11 @@ class KanbanCoordCardHandlerTest extends TestCase
      * The pin's OTHER spelling on the same leg — the tag, which is what an operator reaches
      * for when the card carries no block text. The predicate is a disjunction and a test of
      * one arm says nothing about the other.
+     *
+     * ⭐ THE READ IS A PRESENCE WITNESS, NOT DECORATION. Every other assertion here is an
+     * ABSENCE, and an absence-only test certifies whatever replaces the behaviour: an early
+     * return added anywhere upstream leaves it green while nothing ever reaches the guard.
+     * Requiring the read pins that the run got INTO the code under test.
      */
     public function test_a_card_tagged_no_automove_is_not_restamped_either(): void
     {
@@ -1255,6 +1260,7 @@ class KanbanCoordCardHandlerTest extends TestCase
 
         $this->handleRename('[QUERY] can we ship?', '[QUERY] can we ship it THIS week?');
 
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/search.json'));
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 }

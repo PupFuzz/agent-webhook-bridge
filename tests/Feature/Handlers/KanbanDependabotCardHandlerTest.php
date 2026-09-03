@@ -1156,6 +1156,11 @@ class KanbanDependabotCardHandlerTest extends TestCase
     /**
      * The pin's OTHER spelling on the same leg. The predicate is a disjunction, so a test of
      * the `block_reason` arm says nothing about the tag.
+     *
+     * ⭐ THE READ IS A PRESENCE WITNESS, NOT DECORATION. Every other assertion here is an
+     * ABSENCE, and an absence-only test certifies whatever replaces the behaviour: an early
+     * return added anywhere upstream leaves it green while nothing ever reaches the guard.
+     * Requiring the read pins that the run got INTO the code under test.
      */
     public function test_a_card_tagged_no_automove_is_not_restamped_either(): void
     {
@@ -1163,6 +1168,7 @@ class KanbanDependabotCardHandlerTest extends TestCase
 
         $this->handleRename('chore(deps): Bump x from 1 to 2', 'chore(deps): Bump x from 1 to 3');
 
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
         Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH');
     }
 }

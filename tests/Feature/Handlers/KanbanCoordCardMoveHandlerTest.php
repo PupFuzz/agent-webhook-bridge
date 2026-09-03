@@ -1173,7 +1173,14 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
             && $ctx['card_id'] === 7 && $ctx['issue'] === 4 && $ctx['card_board'] === 8 && $ctx['mapped_board'] === 8)->once();
     }
 
-    /** The pin's other spelling on the revive leg — the predicate is a disjunction. */
+    /**
+     * The pin's other spelling on the revive leg — the predicate is a disjunction.
+     *
+     * ⭐ THE READ IS A PRESENCE WITNESS, NOT DECORATION. Every other assertion here is an
+     * ABSENCE, and an absence-only test certifies whatever replaces the behaviour: an early
+     * return added anywhere upstream leaves it green while nothing ever reaches the guard.
+     * Requiring the read pins that the run got INTO the code under test.
+     */
     public function test_revive_leaves_a_card_tagged_no_automove(): void
     {
         $this->fakeBoard(['id' => 7, 'board_id' => 8, 'workflow_stage_id' => 99, 'tags' => ['no-automove'],
@@ -1181,6 +1188,7 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
 
         $this->handle(['disposition' => 'revive']);
 
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
         $this->assertNoMove();
     }
 
@@ -1214,7 +1222,14 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
             && $ctx['card_id'] === 7 && $ctx['issue'] === 4)->once();
     }
 
-    /** The pin's other spelling on the relane leg. */
+    /**
+     * The pin's other spelling on the relane leg.
+     *
+     * ⭐ THE READ IS A PRESENCE WITNESS, NOT DECORATION. Every other assertion here is an
+     * ABSENCE, and an absence-only test certifies whatever replaces the behaviour: an early
+     * return added anywhere upstream leaves it green while nothing ever reaches the guard.
+     * Requiring the read pins that the run got INTO the code under test.
+     */
     public function test_relane_leaves_a_card_tagged_no_automove(): void
     {
         $this->writeLaneMapping();
@@ -1223,6 +1238,7 @@ class KanbanCoordCardMoveHandlerTest extends TestCase
 
         $this->handleTask(['disposition' => 'relane', 'labels' => ['stage:now']]);
 
+        Http::assertSent(fn (Request $r) => $r->method() === 'GET' && str_contains($r->url(), '/tasks/7.json'));
         $this->assertNoMove();
     }
 

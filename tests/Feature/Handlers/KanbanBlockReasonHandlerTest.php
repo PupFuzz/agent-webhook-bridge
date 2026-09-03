@@ -809,8 +809,12 @@ class KanbanBlockReasonHandlerTest extends TestCase
      *  3. **The inverse cannot weaken it.** `clear` is clear-if-OURS: it nulls a
      *     `block_reason` only when it is byte-identical to this handler's own marker, and
      *     it never touches `tags` at all — so no path here can remove the operator's pin.
-     * Accept-current-state, evidence-backed. If any of the three stops holding, this test
-     * reds and the ruling is back open.
+     * Accept-current-state, evidence-backed. ⚠ THIS METHOD PINS GROUNDS 1 AND 2 — it drives a
+     * tag-only pinned card through the write and asserts the marker lands and the `tags` key
+     * is absent. Ground 3, clear-if-OURS, is pinned by
+     * {@see test_clear_leaves_a_human_block_reason_intact} elsewhere in this file, and saying
+     * so here is the point: a docblock claiming one method reds on all three would send a
+     * reader who deleted the OTHER test looking for a red that never comes.
      */
     public function test_a_tag_pinned_card_still_takes_the_draft_marker_and_that_is_the_ruling(): void
     {
