@@ -11,7 +11,7 @@ Three tools ship today (two since DL-217; the correction tool since DL-326):
 | --- | --- | --- |
 | `board_my_cards` | read | Return YOUR own cards (your product swimlane grouped by stage, the shared cross-system swimlane when configured, and coordination cards addressed to you when the coord leg is configured). Read-proxied — the kanban token never leaves the bridge. |
 | `board_create_card` | write | Create a card in YOUR OWN swimlane. The swimlane is forced from your bridge identity; you cannot target another lane. The card is born **untriaged** and surfaces to the triage pass. |
-| `board_correct_card` | write | **Correct a card YOU filed** — its `name`, `description` or `tags`. Scoped to cards carrying your own bridge-stamped `created-by:<you>`, on your own board; anything else is **refused, loudly**. |
+| `board_correct_card` | write | **Correct a card YOU filed** — its `name`, `description` or `tags`. Scoped to cards carrying your own bridge-stamped `created-by:<you>`, on your own board; anything else is **refused, loudly**. A `name` correction is refused on a **pinned** card (DL-342). |
 
 ## Discovering them
 
@@ -309,6 +309,23 @@ and the mint stamp is what says the card is yours; a lane test would make a re-l
 card permanently uncorrectable by the seat that filed it. The response therefore
 reports no lane — it reports only what was checked.
 
+**⛔ A PINNED card refuses a `name` correction (DL-342, card#8557).** If the card carries
+the DL-178 hold — a non-empty `block_reason` **or** a `no-automove` tag — a correction that
+writes `name` is refused (422), by name, and **nothing at all is written**. The pin means a
+human has frozen the card, and the bridge's own restamps are refused the same write on the
+same card; a seat renaming it would defeat that hold exactly as a stage move would.
+
+- **It is scoped to `name`, not to the call.** `description` and `tags` corrections still
+  land on a held card, because the ruling narrowed the pin by one field rather than freezing
+  every field — the same reading that keeps the writeback's correlation stamps working on a
+  card it refuses to move.
+- **⚠ A call that sends `name` ALONGSIDE `description`/`tags` writes NEITHER.** The
+  correction is one `PATCH` and there is no half-applied form of it, so the refusal says so
+  rather than leaving you to work out which half landed. Send the other fields on their own
+  if you want them.
+- **What to do:** ask whoever pinned the card to lift the hold, or correct the fields the
+  hold does not cover. Retrying is pointless — the refusal is deterministic.
+
 **⚠ `tags` is REPLACED WHOLESALE by kanban, so the write re-sends every tag on the card
 that is somebody ELSE'S — and that set is deliberately WIDER than the set you are not
 allowed to send.** Two halves, and the second is the one that is easy to get wrong:
@@ -377,6 +394,7 @@ rejects outright.
 | The card is yours and **ARCHIVED** | Named as the retire it is (*"unarchive it first"*) — the stamp proves the card is yours, so naming it discloses nothing, and the alternative is a guard telling you a card you demonstrably filed is not yours. The archive side is read **only when the live lookup misses**, so a successful call never pays for it. |
 | The lookup answered a row that is not that card on your board | *"a BROKEN READ, not a verdict"* (DL-323 Decision 2) — report it; it is not a statement about the card. |
 | `writeback.json` will not parse | The install's hold vocabulary is unknown, so a **`tags`** correction is refused (see above) — **install fault**. `name`/`description` are unaffected. |
+| The card is **PINNED** and the correction writes `name` | *"card N is PINNED"* — a human froze it with a `block_reason` or a `no-automove` tag, and a `name` write is one of the writes that hold covers (DL-342; the bridge's own restamps are refused the same write on the same card). **Nothing at all is written**, including any `description`/`tags` sent in the same call, because the correction is one `PATCH` with no half-applied form. Not an install fault: ask whoever pinned it, or correct the fields the hold does not cover. |
 | kanban answered **403** on the lookup | The bridge could not read your board to establish the card is yours — an **install fault**, and specifically the writeback token's **abilities** (kanban gates the v3 API per token: a GET needs `read`). ⛔ Deliberately **not** board membership — **because this lookup is a card SEARCH**, which kanban floors to the caller's own boards: an unreadable board answers 200-with-zero-rows, never 403, so it surfaces as the not-yours refusal above. (A **board-scoped** read *does* 403 on membership — see the owner section below; this tool makes none.) |
 | kanban answered **403** on the write | The card is yours but the writeback user may not write it — **install fault**, and **several independent gates answer 403 on this route, so every one must be audited** (`BoardCallRefusal::writeGatesClause()` enumerates them — including kanban's board write gate, which refuses every write to an archived or trashed board): the token's per-token **abilities** (`EnforceTokenAbilities` — a PATCH needs `write`), and the writeback user's **board role**, which needs **`task.update`** — kanban authorizes a PATCH by the fields it carries, so anything other than `workflow_stage_id` alone is an `update`, not a `move` (kanban DL-204 → `TaskPolicy::update` → `BoardPermissions::TASK_UPDATE`, an independently grantable `board_custom` slot in `CUSTOM_TASK_SLOT_MAP`). ⚠ **`task.update` is NEW for the board-tools door** — `board_my_cards` needs only `board.view` and `board_create_card` only `task.create` — so an install granting exactly those 403s here with a perfectly valid token. A **Member**-role writeback user already holds it. See [`writeback.md` § 1](writeback.md#1-a-least-privilege-writeback-token) for the full grant list. |
 | kanban answered **401** on either call | The token was not accepted at all — revoked, rotated, or replaced with a value the board does not know. **Install fault**; retrying cannot help. |

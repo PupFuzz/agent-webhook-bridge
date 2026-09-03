@@ -787,4 +787,49 @@ class KanbanBlockReasonHandlerTest extends TestCase
         Log::shouldHaveReceived('info')->withArgs(fn (string $m, array $ctx) => $m === 'kanban_block_reason: set'
             && $ctx['card_board'] === '8' && $ctx['mapped_board'] === 8);
     }
+
+    /**
+     * ⭐ AN EXPLICIT RULING, PINNED AS A TEST RATHER THAN LEFT AS PROSE (card#8557): a card
+     * pinned by the `no-automove` TAG ALONE still takes this overlay's draft marker, and
+     * that is the DESIGNED outcome, not a hole the pin forgot to cover.
+     *
+     * The finding that raised it: the add-if-missing guard tests `block_reason` only, so a
+     * tag-only pin does not stop the write — which reads like the pin-blindness card#8557
+     * was filed on. It is not, for three reasons, and they are recorded here because the
+     * decision is only falsifiable if the reasoning is written where the behaviour is.
+     *  1. **The rule as ruled.** The pin governs a card's STAGE, its LIFECYCLE and the
+     *     fields `PinGuard::PINNED_FIELDS` names. `block_reason` is deliberately outside
+     *     that set, on the same reading that keeps the correlation stamps in policy: this
+     *     write records what happened TO the card (its PR went to draft), it does not
+     *     restate what the card IS.
+     *  2. **It only ever STRENGTHENS the hold.** The marker is a non-empty `block_reason`,
+     *     so the card comes out of this write pinned by BOTH spellings — which is DL-193's
+     *     stated intent (a drafted card is gated against the branch-push promote), not a
+     *     side effect.
+     *  3. **The inverse cannot weaken it.** `clear` is clear-if-OURS: it nulls a
+     *     `block_reason` only when it is byte-identical to this handler's own marker, and
+     *     it never touches `tags` at all — so no path here can remove the operator's pin.
+     * Accept-current-state, evidence-backed. ⚠ THIS METHOD PINS GROUNDS 1 AND 2 — it drives a
+     * tag-only pinned card through the write and asserts the marker lands and the `tags` key
+     * is absent. Ground 3, clear-if-OURS, is pinned by
+     * {@see test_clear_leaves_a_human_block_reason_intact} elsewhere in this file, and saying
+     * so here is the point: a docblock claiming one method reds on all three would send a
+     * reader who deleted the OTHER test looking for a red that never comes.
+     */
+    public function test_a_tag_pinned_card_still_takes_the_draft_marker_and_that_is_the_ruling(): void
+    {
+        $this->writeWriteback();
+        $this->writeToken();
+        Http::fake(['*/tasks/5.json' => Http::response(['data' => [
+            'id' => 5, 'board_id' => 8, 'block_reason' => null, 'tags' => ['no-automove'],
+        ]])]);
+
+        $this->handle('set');
+
+        Http::assertSent(fn (Request $r) => $r->method() === 'PATCH'
+            && $r->data() === ['block_reason' => KanbanBlockReasonHandler::MARKER]);
+        // …and the operator's own pin is untouched: this write names no `tags` key, and
+        // kanban replaces `tags` WHOLESALE, so sending one would have been the deletion.
+        Http::assertNotSent(fn (Request $r) => $r->method() === 'PATCH' && array_key_exists('tags', $r->data()));
+    }
 }

@@ -546,7 +546,8 @@ Several tests here are not behavioural — they are **census instruments** over 
 answer "is every X in this repo accounted for?", where a MISS is silent: the suite goes green over
 the site nobody listed. `GetCardTenantCheckCoverageTest` (every `->getCard(` in `app/`),
 `WritebackRefusalSignalCoverageTest` (every bare `Log::warning`/`Log::error` in the writeback
-handlers, and every read of a card's `board_id` in `app/`) and `WritebackSuccessBoardRecordTest`
+handlers, and every read of a card's `board_id` in `app/`), `PinnedFieldWriteCoverageTest` (every
+`->patchCard(` in `app/`, against the DL-342 pinned-field rule) and `WritebackSuccessBoardRecordTest`
 (a kanban write made under the DL-009 mapped-board regime) are the ones that derive their
 population THROUGH the shared primitive. ⛔
 **They are not the whole census population of this repo** — see *The un-migrated remainder* below
