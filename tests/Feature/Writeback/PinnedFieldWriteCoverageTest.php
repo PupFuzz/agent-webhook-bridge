@@ -81,6 +81,18 @@ use Tests\TestCase;
  *  - **A literal key that is not a plain quoted string** (an interpolation, a spread, a
  *    constant) is not read as a key, so the site's field set comes back UNREADABLE and the
  *    site is required to consult — loud, in the safe direction, never a silent pass.
+ *  - **The PREMISE leg matches ONE SPELLING of the raw verb, and that is narrower than its own
+ *    method name reads.** Its predicate is an ARROW call on the token `patch` — `->patch(` and
+ *    `?->patch(` — so `Http::patch(` (static), a variable method name (`->{$verb}(`) and
+ *    `->send('PATCH', …)` are all outside it; the last of those is already in-tree in
+ *    `ChannelPushTransport`, which is the same *"the counter-shape already exists"* argument
+ *    that motivated the leg. MEASURED at PR #651's R2, not reasoned: a live, governed,
+ *    unguarded `name` write spelled `$this->http()->send('PATCH', …)` in `KanbanClient` passes
+ *    this class, phpstan and pint. So a green run says *no new ARROW `patch` call has appeared
+ *    outside the two client primitives* — never *a card field write cannot be spelled any other
+ *    way*. Widening the predicate to the other spellings was declined here in favour of stating
+ *    the bound: a widening owes a fixture arm per spelling, and one without moves the gap rather
+ *    than closing it.
  *  - **This says nothing about the STAGE half of the pin.** `moveCard(` / `archiveCard(` are a
  *    different population with a different rule; `PinGuard`'s docblock owns that recipe.
  */
@@ -93,8 +105,9 @@ class PinnedFieldWriteCoverageTest extends TestCase
     private const RAW_WRITE_VERB = 'patch';
 
     /**
-     * The only two bodies in `app/` that may reach the raw verb — the premise the population
-     * rests on.
+     * The only two bodies in `app/` that may reach the raw verb IN ITS ARROW-CALL SPELLING —
+     * the premise the population rests on, at the reach its predicate actually has (the STATED
+     * BOUNDS entry on the premise leg owns which spellings sit outside it).
      *
      * ⛔ THIS IS NOT THE EXEMPTION LIST THIS CLASS FORBIDS, and the difference is which way it
      * fails. An exemption list lets a new PRODUCER pass by being added to it. This one lets
