@@ -20,9 +20,10 @@ use Illuminate\Contracts\Foundation\Application;
  *
  * It is the third user of the after-response gate shape (`App\Bridge\Retention\RetentionGate`,
  * `App\Bridge\Standup\StandupGate`) and deliberately does NOT re-implement the interval
- * marker, the non-blocking lock or the never-throws shell: those live once, in
- * {@see JobScheduler}, because the tick ingress needs the identical rules and a second copy
- * of them would let one ingress drift from the other.
+ * marker, the non-blocking lock or the never-throws shell. Since card#8432 those rules live
+ * once for all three, in `App\Bridge\Support\AfterResponseGate`; {@see JobScheduler} binds
+ * them to this subsystem's keys, because the tick ingress needs the identical rules and a
+ * second copy of them would let one ingress drift from the other.
  */
 final class JobSchedulerGate
 {

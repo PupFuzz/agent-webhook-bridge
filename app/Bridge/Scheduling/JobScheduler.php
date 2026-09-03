@@ -2,9 +2,9 @@
 
 namespace App\Bridge\Scheduling;
 
-use App\Bridge\Support\FaultMarker;
+use App\Bridge\Support\AfterResponseGate;
+use App\Bridge\Support\GateSkip;
 use App\Models\ScheduledJob;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -62,6 +62,14 @@ use Throwable;
  * KILLED mid-handler (worker OOM) persists nothing, so that row is due again on the next
  * pass; what bounds the retry there is the shared `min_pass_interval` marker, which was
  * written before the work and outlives the killed process.
+ *
+ * ⭐ THE GATE SHAPE ITSELF NOW LIVES IN {@see AfterResponseGate} (card#8432). The interval
+ * marker, the non-blocking lock and the never-throws recording were restated by hand here,
+ * in `App\Bridge\Retention\RetentionGate` and in `App\Bridge\Standup\StandupGate`, so a
+ * defect fixed in one copy survived in the other two — which is what happened to the catch
+ * arm DL-325 had to repair three times over. What stays here is what is genuinely the
+ * registry's: the posture, the BOUNDED due query, the per-job isolation, and the
+ * {@see JobPassResult} vocabulary the tick's exit code is read off.
  */
 final class JobScheduler
 {
@@ -85,13 +93,23 @@ final class JobScheduler
     public const ERROR_KEY = 'bridge:jobs:last-error';
 
     /**
-     * Ceiling on how long one bounded pass may hold the lock before it is presumed dead and
-     * released. Only relevant if a worker is killed mid-pass; a pass approaching this is
-     * already pathological (its handlers are not bounded).
+     * The lock, the interval marker and the fault recording, owned once for every
+     * after-response subsystem in this app (card#8432). Constructed here rather than
+     * injected: its arguments are this subsystem's own key strings, which the container
+     * cannot resolve and no other class has any business supplying.
      */
-    private const LOCK_TTL = 300;
+    private readonly AfterResponseGate $gate;
 
-    public function __construct(private readonly JobHandlerRegistry $handlers) {}
+    public function __construct(private readonly JobHandlerRegistry $handlers)
+    {
+        $this->gate = new AfterResponseGate(
+            lockKey: self::LOCK_KEY,
+            markerKey: self::MARKER_KEY,
+            errorKey: self::ERROR_KEY,
+            faultMessage: 'scheduled job pass failed',
+            cadenceSeconds: self::minPassInterval(...),
+        );
+    }
 
     /**
      * Run a pass, swallowing anything that escapes the per-job catches. This is what BOTH
@@ -112,23 +130,24 @@ final class JobScheduler
             // `bridge:check`'s error leg would be dead code. Same rule, same reason, as
             // RetentionGate/StandupGate, which forget it only after the work completed.
             if ($result->didRun()) {
-                Cache::forget(self::ERROR_KEY);
+                $this->gate->clearFault();
             }
 
             return $result;
         } catch (Throwable $e) {
-            // ⛔ RECORDING THE FAULT MUST NOT RE-RAISE IT — {@see FaultMarker}, which owns
-            // the order (log first, marker second) and guards each leg. Writing the marker
-            // here directly is how this arm used to re-raise on the one fault it most
-            // needed to survive: with the CACHE as the fault, the shell that promises never
-            // to throw threw, and both ingresses' contracts went with it.
-            FaultMarker::record(
-                self::ERROR_KEY,
-                $e,
-                self::minPassInterval(),
-                'scheduled job pass failed',
-                ['source' => $source->value],
-            );
+            // ⛔ RECORDING THE FAULT MUST NOT RE-RAISE IT — {@see AfterResponseGate::recordFault()}
+            // records through {@see App\Bridge\Support\FaultMarker}, which owns the order (log
+            // first, marker second) and guards each leg. Writing the marker here directly is how
+            // this arm used to re-raise on the one fault it most needed to survive: with the
+            // CACHE as the fault, the shell that promises never to throw threw, and both
+            // ingresses' contracts went with it.
+            //
+            // ⚑ THIS ARM KEEPS ITS OWN try/catch rather than handing the pass to
+            // {@see AfterResponseGate::neverThrows()}, which the two void gates use: the fault
+            // has to become a TYPED `JobPassResult` here, because `bridge:tick`'s exit code is
+            // read off it. What is shared is the RECORDING, which is the leg that carried the
+            // defect.
+            $this->gate->recordFault($e, ['source' => $source->value]);
 
             return JobPassResult::failed($source, 'the pass itself failed: '.$e->getMessage());
         }
@@ -163,30 +182,23 @@ final class JobScheduler
             return JobPassResult::failed($source, 'the registry is MISCONFIGURED and no pass can run: '.$cfg->problem);
         }
 
-        // The due-check lives INSIDE the lock, and only there. A cheaper check before the
-        // lock would be an optimization that buys a race: two receives can both read "due"
-        // before either acquires, and the loser then runs a second pass the moment the
-        // winner releases. One check under the lock has no such window (DL-199).
-        //
-        // `Lock::get(Closure)` returns FALSE when the lock was not acquired and the
-        // closure's own return when it was — so the returned TYPE is the discriminator,
-        // and no separate "did we acquire" flag (whose disagreement with the result would
-        // be an unreachable branch to guard) is needed.
-        $outcome = Cache::lock(self::LOCK_KEY, self::LOCK_TTL)->get(function () use ($source, $cfg): JobPassResult {
-            if (Cache::has(self::MARKER_KEY)) {
-                return JobPassResult::skipped($source, JobPassResult::SKIP_TOO_SOON);
-            }
+        // The non-blocking lock, the due-check inside it and the marker armed BEFORE the work
+        // all belong to the gate primitive now (DL-199's rules, owned once). It reports the
+        // two no-work outcomes as a {@see GateSkip} rather than as the boolean FALSE the raw
+        // `Lock::get(Closure)` returns, so the registry's own skip vocabulary is a mapping
+        // rather than a type test standing in for one.
+        $outcome = $this->gate->oncePerInterval(
+            $cfg->minPassInterval,
+            fn (): JobPassResult => $this->runDue($source, $cfg->maxPerPass),
+        );
 
-            // Marked BEFORE the work, so a pass that throws backs off a full interval
-            // instead of retrying on every subsequent delivery.
-            Cache::put(self::MARKER_KEY, true, $cfg->minPassInterval);
+        if ($outcome instanceof JobPassResult) {
+            return $outcome;
+        }
 
-            return $this->runDue($source, $cfg->maxPerPass);
-        });
-
-        return $outcome instanceof JobPassResult
-            ? $outcome
-            : JobPassResult::skipped($source, JobPassResult::SKIP_LOCKED);
+        return JobPassResult::skipped($source, $outcome === GateSkip::TooSoon
+            ? JobPassResult::SKIP_TOO_SOON
+            : JobPassResult::SKIP_LOCKED);
     }
 
     private function runDue(JobPassSource $source, int $maxPerPass): JobPassResult
@@ -295,11 +307,12 @@ final class JobScheduler
     }
 
     /**
-     * This install's pass cadence as {@see FaultMarker} needs it — a positive number of
-     * seconds — and its only caller is the catch arm. ⚑ The `max(1, …)` here is NOT the
-     * clamp {@see JobsConfig} exists to refuse: it runs in the arm where the config may be
-     * the very thing that could not be resolved, and it feeds a TTL, never a cadence.
-     * Nothing schedules anything from this value.
+     * This install's pass cadence as `App\Bridge\Support\FaultMarker` needs it — a positive
+     * number of seconds. It is bound as {@see AfterResponseGate}'s cadence and is therefore
+     * asked exactly once, at FAULT time. ⚑ The `max(1, …)` here is NOT the clamp
+     * {@see JobsConfig} exists to refuse: it runs where the config may be the very thing that
+     * could not be resolved, and it feeds a TTL, never a cadence. Nothing schedules anything
+     * from this value.
      */
     private static function minPassInterval(): int
     {

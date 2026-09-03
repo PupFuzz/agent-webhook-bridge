@@ -2,9 +2,8 @@
 
 namespace App\Bridge\Standup;
 
-use App\Bridge\Support\FaultMarker;
+use App\Bridge\Support\AfterResponseGate;
 use Illuminate\Contracts\Foundation\Application;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -44,6 +43,12 @@ use Illuminate\Support\Facades\Log;
  * retention, and by the fact that a multi-agent install is the one documented to run the
  * `per-agent` layout, where each read is that seat's own file). That, and not caution, is
  * why the digest is OFF by default where retention is on: it is opt-in per install.
+ *
+ * ⭐ THE GATE SHAPE ITSELF NOW LIVES IN {@see AfterResponseGate} (card#8432). The interval
+ * marker, the non-blocking lock and the never-throws recording were restated by hand here,
+ * in `App\Bridge\Retention\RetentionGate` and in `App\Bridge\Scheduling\JobScheduler`, so a
+ * defect fixed in one copy survived in the other two. What stays here is what is genuinely
+ * the digest's: the posture, the misconfig back-off, and the pass itself.
  */
 final class StandupGate
 {
@@ -60,13 +65,26 @@ final class StandupGate
      */
     public const ERROR_KEY = 'bridge:standup:last-error';
 
-    /** Ceiling on how long one pass may hold the lock before it is presumed dead. */
-    private const LOCK_TTL = 300;
+    /**
+     * The lock, the interval marker and the fault recording, owned once for every
+     * after-response subsystem in this app (card#8432). Constructed here rather than
+     * injected: its arguments are this subsystem's own key strings, which the container
+     * cannot resolve and no other class has any business supplying.
+     */
+    private readonly AfterResponseGate $gate;
 
     public function __construct(
         private readonly Application $app,
         private readonly StandupService $standup,
-    ) {}
+    ) {
+        $this->gate = new AfterResponseGate(
+            lockKey: self::LOCK_KEY,
+            markerKey: self::MARKER_KEY,
+            errorKey: self::ERROR_KEY,
+            faultMessage: 'standup pass failed',
+            cadenceSeconds: static fn (): int => (int) config('bridge.standup.interval'),
+        );
+    }
 
     /**
      * Queue a standup pass to run after this request's response has been sent. Cheap and
@@ -83,21 +101,13 @@ final class StandupGate
 
     private function runSafely(): void
     {
-        try {
-            $this->runPass();
-        } catch (\Throwable $e) {
-            // ⛔ RECORDING THE FAULT MUST NOT RE-RAISE IT — {@see FaultMarker} owns the
-            // order (log first, marker second) and guards each leg. This arm used to write
-            // the marker to the cache unguarded, so a DEAD CACHE STORE threw straight out
-            // of a terminating callback: an unhandled fatal after the response, in the FPM
-            // worker, on every delivery, and not one line saying why.
-            FaultMarker::record(
-                self::ERROR_KEY,
-                $e,
-                (int) config('bridge.standup.interval'),
-                'standup pass failed',
-            );
-        }
+        // ⛔ RECORDING THE FAULT MUST NOT RE-RAISE IT — {@see AfterResponseGate::neverThrows()}
+        // records through {@see App\Bridge\Support\FaultMarker}, which owns the order (log
+        // first, marker second) and guards each leg. This arm used to write the marker to the
+        // cache unguarded, so a DEAD CACHE STORE threw straight out of a terminating callback:
+        // an unhandled fatal after the response, in the FPM worker, on every delivery, and not
+        // one line saying why.
+        $this->gate->neverThrows($this->runPass(...));
     }
 
     /**
@@ -118,20 +128,18 @@ final class StandupGate
      */
     public function runPass(): void
     {
-        // The due-check lives INSIDE the lock and only there: a cheaper pre-lock check
-        // buys a race where two receives both read "due" and the loser pushes a second
-        // digest the moment the winner releases.
-        Cache::lock(self::LOCK_KEY, self::LOCK_TTL)->get(function () {
-            if (Cache::has(self::MARKER_KEY)) {
-                return;
-            }
-
+        // The non-blocking lock, the due-check inside it and the marker armed BEFORE the
+        // push all belong to the gate primitive now. Marking before the work is what stops a
+        // pass that throws retrying on every subsequent delivery, and stops a push that
+        // half-succeeded being re-sent by the next one; the interval handed over is the same
+        // value {@see StandupConfig::fromConfig()} resolves.
+        $this->gate->oncePerInterval((int) config('bridge.standup.interval'), function (): void {
             $cfg = StandupConfig::fromConfig();
 
             if (! $cfg->isUsable()) {
-                // Back off a full day before complaining again: this runs per webhook, and
-                // a config mistake must not turn every delivery into a log line.
-                Cache::put(self::MARKER_KEY, true, 86400);
+                // Back off a full DAY rather than the ordinary interval: this runs per
+                // webhook, and a config mistake must not turn every delivery into a log line.
+                $this->gate->backOff(86400);
                 Log::warning('standup is enabled but misconfigured; nothing pushed', [
                     'problem' => $cfg->problem,
                 ]);
@@ -139,15 +147,10 @@ final class StandupGate
                 return;
             }
 
-            // Mark BEFORE pushing, so a pass that throws backs off a full interval instead
-            // of retrying on every subsequent delivery — and so a push that half-succeeded
-            // cannot be re-sent by the next delivery.
-            Cache::put(self::MARKER_KEY, true, $cfg->interval);
-
             $digest = $this->standup->build();
             $this->standup->push($digest, (string) $cfg->agent);
 
-            Cache::forget(self::ERROR_KEY);
+            $this->gate->clearFault();
 
             // A pass that leaves no trace cannot be caught doing nothing (DL-012). The
             // counts are of what the snapshot COVERED — never a "N stalled" reading.
